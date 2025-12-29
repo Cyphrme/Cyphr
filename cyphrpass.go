@@ -20,10 +20,9 @@ import (
 // "URI safe Base 64 canonical truncated", b64t.
 type B64s string
 
-// A Transaction includes all signatures required to result in a new block.
-// A single signature is required for the most frequent use case. Multiple signatures may be
-// required to perform a transaction (Level 5) so multiple cozies may be
-// require.
+// A Transaction includes all signatures required to result in a new block. A
+// single signature is required for the most frequent use case. Multiple
+// signatures may be required to perform a Level 5+ transaction.
 type Tran map[B64s][]coze.Coze
 
 // Account represents a Cyphrpass user account (Levels 1–3).
@@ -38,8 +37,8 @@ type Tran map[B64s][]coze.Coze
 type Account struct {
 	AR          coze.B64           `json:"ar"`
 	MR          coze.B64           `json:"mr"`
-	Keys        map[B64s]*coze.Key `json:"keys,omitempty"`         // tmb.String() → key
-	RevokedKeys map[B64s]int64     `json:"revoked_keys,omitempty"` // tmb.String() → rvk unix timestamp
+	Keys        map[B64s]*coze.Key `json:"keys,omitempty"`
+	RevokedKeys map[B64s]int64     `json:"revoked_keys,omitempty"`
 	Tran        `json:"transactions,omitempty"`
 }
 
@@ -62,8 +61,8 @@ type Block struct {
 	// which are the `Idents`
 	BID        coze.B64       // Block ID: Block ID is the hash of the block.
 	Prev       coze.B64       // Previous Block.  Nil on genesis.
-	Next       coze.B64       // Next Block. Might be nil.
-	now        int64          // Local Timestamp for when the block was created.
+	Next       coze.B64       // Next Block. (Might be nil. Dunno yet)
+	now        int64          // Local timestamp for when the block was created.
 	Idents     map[B64s]Ident // Digests in various algorithms.  Cryptographically secure to the alg.
 	State      Tran           // Last transaction to create the current state at this block.
 	Checkpoint Account        // Full account.  Checkpoints are useful for rebuilding state.
