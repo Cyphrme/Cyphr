@@ -6,10 +6,10 @@ import (
 
 var GoldenKey = coz.Key{
 	Alg: coz.SEAlg(coz.ES256),
-	Kid: "Zami's Majuscule Key.",
-	Iat: 1623132000,
-	X:   coz.MustDecode("2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"),
-	D:   coz.MustDecode("bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA"),
+	Tag: "Zami's Majuscule Key.",
+	Now: 1623132000,
+	Pub: coz.MustDecode("2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"),
+	Prv: coz.MustDecode("bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA"),
 	Tmb: coz.MustDecode("cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk"),
 }
 
