@@ -4,13 +4,23 @@ import (
 	"github.com/cyphrme/coz"
 )
 
+// Coz Golden key:
+//
+//	{
+//		"alg":"ES256",
+//		"now":1623132000,
+//		"prv":"bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
+//		"pub":"2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+//		"tag":"Zami's Majuscule Key.",
+//		"tmb":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+//	}
 var GoldenKey = coz.Key{
 	Alg: coz.SEAlg(coz.ES256),
 	Tag: "Zami's Majuscule Key.",
 	Now: 1623132000,
 	Pub: coz.MustDecode("2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"),
 	Prv: coz.MustDecode("bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA"),
-	Tmb: coz.MustDecode("cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk"),
+	Tmb: coz.MustDecode("U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"),
 }
 
 // func TestAccountCreationAndUpsert(t *testing.T) {
