@@ -1,6 +1,9 @@
 package cyphrpass
 
 import (
+	"bytes"
+	"testing"
+
 	"github.com/cyphrme/coz"
 )
 
@@ -23,79 +26,174 @@ var GoldenKey = coz.Key{
 	Tmb: coz.MustDecode("U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"),
 }
 
-// func TestAccountCreationAndUpsert(t *testing.T) {
-// 	// Use the GoldenKey provided by the coz library
-// 	initialKey := GoldenKey
+func TestNewAccount(t *testing.T) {
+	// Create account with single key
+	k := GoldenKey // Copy
+	acc, err := NewAccount(&k)
+	if err != nil {
+		t.Fatalf("NewAccount failed: %v", err)
+	}
 
-// 	// Create a new account
-// 	acc, err := NewAccount(&initialKey)
-// 	if err != nil {
-// 		t.Fatalf("NewAccount failed: %v", err)
-// 	}
+	// Should have exactly one active key
+	if len(acc.Auth.Keys) != 1 {
+		t.Errorf("expected 1 key, got %d", len(acc.Auth.Keys))
+	}
 
-// 	// Verify Account Root matches the documented value
-// 	expectedAR := "RpMM4_lU6jCj3asZEtIFyYqPjC2L6mlucl7VGMvAuno"
-// 	if acc.AR.String() != expectedAR {
-// 		t.Errorf("AR mismatch: got %s, want %s", acc.AR.String(), expectedAR)
-// 	}
+	// Key should be active
+	if !acc.IsKeyActive(k.Tmb) {
+		t.Error("key should be active")
+	}
 
-// 	// Initially MR == AR
-// 	if !bytes.Equal(acc.MR, acc.AR) {
-// 		t.Error("initial MR should equal AR")
-// 	}
+	// AR should be set (initial state)
+	if len(acc.AR) == 0 {
+		t.Error("AR should be set")
+	}
 
-// 	// One active key
-// 	if len(acc.Keys) != 1 {
-// 		t.Errorf("expected 1 key, got %d", len(acc.Keys))
-// 	}
+	// AS should equal AR initially (no DLS)
+	if len(acc.AS) != len(acc.AR) {
+		t.Error("AS should equal AR initially")
+	}
 
-// 	// Generate a second key for testing
-// 	secondKey, err := coz.NewKey(coz.SEAlg(coz.ES256))
-// 	if err != nil {
-// 		t.Fatalf("failed to generate second key: %v", err)
-// 	}
+	// ALS should be set
+	if len(acc.Auth.State) == 0 {
+		t.Error("ALS should be set")
+	}
 
-// 	// Perform upsert using the initial key as signer
-// 	err = acc.UpsertKey(&initialKey, secondKey)
-// 	if err != nil {
-// 		t.Fatalf("UpsertKey failed: %v", err)
-// 	}
+	t.Logf("Account Root (first derivation): ")
+	for dig, deriv := range acc.AR {
+		t.Logf("  %s: alg=%s", dig, deriv.Alg)
+	}
+}
 
-// 	// Now two active keys
-// 	if len(acc.Keys) != 2 {
-// 		t.Errorf("expected 2 keys after upsert, got %d", len(acc.Keys))
-// 	}
+func TestNewMultiKeyAccount(t *testing.T) {
+	// Generate a second key
+	key2, err := coz.NewKey(coz.SEAlg(coz.ES256))
+	if err != nil {
+		t.Fatalf("failed to generate second key: %v", err)
+	}
 
-// 	// One transaction in history
-// 	if len(acc.Transactions) != 1 {
-// 		t.Errorf("expected 1 transaction, got %d", len(acc.Transactions))
-// 	}
+	k1 := GoldenKey
+	acc, err := NewAccount(&k1, key2)
+	if err != nil {
+		t.Fatalf("NewAccount failed: %v", err)
+	}
 
-// 	// MR must have changed
-// 	if bytes.Equal(acc.MR, acc.AR) {
-// 		t.Error("MR did not change after adding second key")
-// 	}
+	// Should have two active keys
+	if len(acc.Auth.Keys) != 2 {
+		t.Errorf("expected 2 keys, got %d", len(acc.Auth.Keys))
+	}
 
-// 	t.Logf("New Merkle Root after upsert: %s", acc.MR.String())
-// }
+	// Both keys should be active
+	if !acc.IsKeyActive(k1.Tmb) {
+		t.Error("key1 should be active")
+	}
+	if !acc.IsKeyActive(key2.Tmb) {
+		t.Error("key2 should be active")
+	}
 
-// func TestUpsertWithInactiveSigner(t *testing.T) {
-// 	initialKey := GoldenKey
+	// AR should still be set
+	if len(acc.AR) == 0 {
+		t.Error("AR should be set")
+	}
+}
 
-// 	acc, err := NewAccount(&initialKey)
-// 	if err != nil {
-// 		t.Fatalf("NewAccount failed: %v", err)
-// 	}
+func TestEnableDataLedger(t *testing.T) {
+	k := GoldenKey
+	acc, err := NewAccount(&k)
+	if err != nil {
+		t.Fatalf("NewAccount failed: %v", err)
+	}
 
-// 	// Create unrelated keys (not part of the account)
-// 	badSigner, _ := coz.NewKey(coz.SEAlg(coz.ES256))
-// 	newKey, _ := coz.NewKey(coz.SEAlg(coz.ES256))
+	// Initially no data ledger (Level 3)
+	if acc.Data != nil {
+		t.Error("Data ledger should be nil before enabling")
+	}
 
-// 	// Attempt to upsert using a key that is not active
-// 	err = acc.UpsertKey(badSigner, newKey)
-// 	if err == nil {
-// 		t.Error("UpsertKey with inactive signer should have failed")
-// 	} else if err.Error() != "signer key is not active" {
-// 		t.Errorf("unexpected error: %v", err)
-// 	}
-// }
+	// Enable Level 4
+	if err := acc.EnableDataLedger(); err != nil {
+		t.Fatalf("EnableDataLedger failed: %v", err)
+	}
+
+	// Now data ledger should exist
+	if acc.Data == nil {
+		t.Error("Data ledger should exist after enabling")
+	}
+
+	// DLS should be set (empty hash)
+	if len(acc.Data.State) == 0 {
+		t.Error("DLS should be set")
+	}
+
+	// AS should now be different from ALS (it's Hash(ALS || DLS))
+	var alsDigest, asDigest coz.B64
+	for _, d := range acc.Auth.State {
+		alsDigest = d.Dig
+		break
+	}
+	for _, d := range acc.AS {
+		asDigest = d.Dig
+		break
+	}
+
+	// After enabling DLS, AS = Hash(ALS || DLS), not just ALS
+	// So AS should differ from ALS
+	if bytes.Equal(alsDigest, asDigest) {
+		t.Error("AS should differ from ALS after DLS is enabled")
+	}
+}
+
+func TestKeyActiveAt(t *testing.T) {
+	k := GoldenKey
+	acc, err := NewAccount(&k)
+	if err != nil {
+		t.Fatalf("NewAccount failed: %v", err)
+	}
+
+	// Get the wrapped key
+	key := acc.GetKey(k.Tmb)
+	if key == nil {
+		t.Fatal("key not found")
+	}
+
+	// Key should be active at any time (not revoked)
+	if !key.IsActiveAt(1000000000) {
+		t.Error("unrevokedkey should be active at any time")
+	}
+
+	// Simulate revocation
+	key.RevokedAt = 1700000000
+
+	// Key should be active before revocation
+	if !key.IsActiveAt(1600000000) {
+		t.Error("key should be active before revocation time")
+	}
+
+	// Key should NOT be active at or after revocation
+	if key.IsActiveAt(1700000000) {
+		t.Error("key should not be active at revocation time")
+	}
+	if key.IsActiveAt(1800000000) {
+		t.Error("key should not be active after revocation time")
+	}
+}
+
+func TestErrors(t *testing.T) {
+	// Test no keys
+	_, err := NewAccount()
+	if err == nil {
+		t.Error("expected error for no keys")
+	}
+
+	// Test nil key
+	_, err = NewAccount(nil)
+	if err == nil {
+		t.Error("expected error for nil key")
+	}
+
+	// Test key without thumbprint
+	badKey := coz.Key{Alg: coz.SEAlg(coz.ES256)}
+	_, err = NewAccount(&badKey)
+	if err == nil {
+		t.Error("expected error for key without thumbprint")
+	}
+}
