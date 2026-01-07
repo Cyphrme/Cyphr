@@ -406,6 +406,59 @@ After successful PoP, the service issues a bearer token:
 
 **Note:** The service signs the token with its own key. The principal verifies the token came from the expected service.
 
+### 5.5 Storage Models
+
+Cyphrpass distinguishes between two storage contexts:
+
+#### 5.5.1 Client/Principal Storage
+
+Clients are categorized as **thin** or **fat** based on storage capacity:
+
+**Thin Client** (browser, IoT):
+
+| Data         | Required | Notes                             |
+| ------------ | -------- | --------------------------------- |
+| Private keys | ✓        | Never transmitted                 |
+| PR           | Optional | Can derive from key if single-key |
+| Public keys  | Optional | Retrieve from service             |
+| Current PS   | Optional | Retrieve from service             |
+| Transactions | Optional | Delegate to service               |
+
+Thin clients rely on services for state resolution. Only the private key is essential.
+
+**Fat Client** (desktop app, trusted device):
+
+| Data         | Required | Notes                  |
+| ------------ | -------- | ---------------------- |
+| Private keys | ✓        | Never transmitted      |
+| Public keys  | ✓        | With `tmb`, `alg`      |
+| PR           | ✓        | Permanent identity     |
+| Current PS   | ✓        | For state verification |
+| Transactions | ✓        | Full audit trail       |
+| Actions      | Optional | Application-specific   |
+
+Fat clients store exhaustive history for offline verification and maximum sovereignty.
+
+#### 5.5.2 Third-Party Service Storage
+
+Services that interact with principals store:
+
+| Data                | Purpose                |
+| ------------------- | ---------------------- |
+| PR                  | Principal identity     |
+| Current PS          | State verification     |
+| Active public keys  | Signature verification |
+| Transaction history | Full audit trail       |
+| Actions (DS)        | Application data       |
+
+**Service operations:**
+
+- **Pruning**: Services may discard irrelevant user data (old actions, etc.)
+- **Key recovery**: Services may assist in recovery flows (see Disaster Recovery section)
+- **State resolution**: Services can provide transaction history for principals to verify
+
+**Trust model:** Services are optional — principals can self-host or use multiple services. Full verification is always possible with transaction history.
+
 ---
 
 ## 6. State Calculation
