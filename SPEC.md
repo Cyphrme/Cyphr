@@ -690,11 +690,148 @@ To verify a principal's current state:
 
 ---
 
-## 9. Derivations
+## 9. Disaster Recovery
+
+When a principal loses access to all active keys, recovery mechanisms allow regaining control.
+
+### 9.1 Recovery Mechanisms
+
+| Mechanism               | Description                       | Trust Model       |
+| ----------------------- | --------------------------------- | ----------------- |
+| **Paper wallet**        | Backup key printed/stored offline | User custody      |
+| **Hardware key**        | Yubikey or similar device         | User custody      |
+| **Airgapped key**       | Cold storage, never online        | User custody      |
+| **Social recovery**     | M-of-N trusted contacts           | Distributed trust |
+| **Third-party service** | Verification service              | Service trust     |
+
+### 9.2 Implicit Fallback (Single-Key Accounts)
+
+For implicit (single-key) accounts, a `fallback` field MAY be included at key creation:
+
+```json
+{
+  "alg": "ES256",
+  "pub": "<b64ut>",
+  "tmb": "<b64ut>",
+  "fallback": "<backup key tmb>"
+}
+```
+
+**Fallback types by level:**
+
+| Level | Fallback Value | Description                                                |
+| ----- | -------------- | ---------------------------------------------------------- |
+| 1-2   | `tmb`          | Backup key thumbprint                                      |
+| 3+    | `PS`           | Principal State of recovery agent (with rules or defaults) |
+
+**Notes:**
+
+- The `fallback` field IS included in thumbprint calculation
+- Assumes a trusted initial setup
+
+### 9.2.1 Recovery Validity
+
+Recovery agents can ONLY act when the account is in an **unrecoverable state**:
+
+- All regular keys have been revoked or are inaccessible
+- Insufficient keys remain to meet threshold for mutations (Level 5+)
+- Signatures from recovery agents are invalid while account is recoverable
+- This prevents recovery from being used as a backdoor
+
+### 9.3 Recovery Transactions
+
+#### 9.3.1 `recovery/designate` — Register Fallback
+
+Registers a recovery agent (backup key, service, or social contacts).
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/recovery/designate",
+    "pre": "<previous AS>",
+    "agent": "<recovery agent PR or tmb>",
+    "threshold": 1
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Fields:**
+
+- `agent`: PR of service, tmb of backup key, or array of contact PRs
+- `threshold`: For social recovery, M-of-N threshold (default: 1)
+
+#### 9.3.2 `recovery/delete` — Remove Fallback
+
+Removes a previously designated recovery agent.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/recovery/delete",
+    "pre": "<previous AS>",
+    "agent": "<recovery agent PR or tmb>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+### 9.4 Recovery Flow
+
+When a principal is locked out:
+
+1. **User contacts recovery agent** (out-of-band)
+2. **Agent verifies identity** (method varies by agent type)
+3. **Agent signs `key/add`** for new user key:
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<recovery agent tmb>",
+    "typ": "<authority>/key/add",
+    "pre": "<previous AS>",
+    "id": "<new user key tmb>"
+  },
+  "key": {
+    /* new user key */
+  },
+  "sig": "<b64ut>"
+}
+```
+
+Because the agent was designated via `recovery/designate`, their `key/add` is valid even though no regular user key signed it.
+
+### 9.5 Social Recovery
+
+For social recovery, multiple contacts sign:
+
+- Each contact signs the same `key/add` transaction
+- When `threshold` signatures are collected, the transaction is valid
+- Contacts are identified by their PR
+
+**Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/add`.
+
+### 9.6 Security Considerations
+
+- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period
+- **Revocation:** Backup keys can be revoked if compromised
+- **Multiple agents:** A principal MAY designate multiple fallback mechanisms
+
+---
+
+## 10. Derivations
 
 A **derivation** is the digest of a state computed using a specific hash algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple derivations.
 
-### 9.1 Algorithm Mapping
+### 10.1 Algorithm Mapping
 
 Each key algorithm implies a hash algorithm:
 
@@ -705,7 +842,7 @@ Each key algorithm implies a hash algorithm:
 | ES512         | SHA-512        | 64 bytes    |
 | Ed25519       | SHA-512        | 64 bytes    |
 
-### 9.2 Derivation Semantics
+### 10.2 Derivation Semantics
 
 **Singular state, multiple references:**
 
@@ -728,7 +865,7 @@ PS_sha384 = SHA384(sort(AS, DS?, nonce?))
 
 If the ES384 key is removed, only `PS_sha256` is computed going forward.
 
-### 9.3 Verification Context
+### 10.3 Verification Context
 
 When verifying a signature:
 
@@ -740,7 +877,7 @@ When verifying a signature:
 
 ---
 
-## 10. Transaction Type Grammar
+## 11. Transaction Type Grammar
 
 ```
 <typ> = <authority>/<action>
@@ -781,7 +918,7 @@ The authority may be a domain or a Principal Root.
 
 ---
 
-## 11. Test Vectors
+## 12. Test Vectors
 
 _TODO: Add golden test vectors for Go/Rust implementation verification._
 
