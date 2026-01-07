@@ -96,6 +96,46 @@ One or more cryptographic nonces may be included at any level of the state tree:
 - `PS = H(AS, DS)`
 - Enables Authenticated Atomic Actions (AAA)
 
+### 3.5 Genesis (Account Creation)
+
+A principal is created (genesis) in one of two ways:
+
+**Implicit Genesis (Single Key)**
+
+- No transaction required
+- `PR = tmb` of the single key (via implicit promotion)
+- First signature by this key constitutes Proof of Possession (PoP)
+- Principal exists the moment the key exists
+
+```
+PR = PS = AS = KS = tmb
+```
+
+**Explicit Genesis (Multi-Key)**
+
+- Requires a signed genesis transaction
+- One key signs a `key/add` transaction to register additional keys
+- `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
+- The genesis transaction constitutes PoP for the signing key
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<genesis key tmb>",
+    "typ": "<authority>/key/add",
+    "id": "<second key tmb>"
+  },
+  "key": {
+    /* second key public material */
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Design Note:** The first transaction establishing multiple keys is the genesis. There is no separate "create account" operation — identity emerges from the first key or transaction.
+
 ---
 
 ## 4. Data Structures
@@ -130,9 +170,13 @@ Example key:
 
 The `tmb` (thumbprint) is the digest of the canonical public key representation, using the hash algorithm associated with `alg`.
 
-### 4.2 Transaction
+### 4.2 Transactions
 
-A signed Coz message that mutates AS:
+Transactions are signed Coz messages that mutate Auth State. Each transaction references the prior AS via the `pre` field.
+
+#### 4.2.1 `key/add` — Add a Key (Level 3+)
+
+Adds a new key to KS.
 
 ```json
 {
@@ -140,27 +184,110 @@ A signed Coz message that mutates AS:
     "alg": "ES256",
     "now": 1628181264,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/key/upsert",
-    "key": {
-      /* public key being added */
-    }
+    "typ": "<authority>/key/add",
+    "pre": "<previous AS>",
+    "id": "<new key tmb>"
+  },
+  "key": {
+    "alg": "ES256",
+    "pub": "<new key pub>",
+    "tmb": "<new key tmb>"
   },
   "sig": "<b64ut>"
 }
 ```
 
-**Key Transaction Types:**
+**Required fields:**
 
-| Type          | Level | Description                                                                     |
-| ------------- | ----- | ------------------------------------------------------------------------------- |
-| `key/replace` | 2+    | Atomic swap: removes signing key, adds new key. Maintains single-key invariant. |
-| `key/add`     | 3+    | Add a new key.                                                                  |
-| `key/delete`  | 3+    | Remove a key from KS.                                                           |
-| `key/revoke`  | 2+    | Remove a key. Sets Coz `rvk` field with revocation timestamp.                   |
+- `tmb`: Thumbprint of the signing key (must be in current KS)
+- `pre`: Previous Auth State digest
+- `id`: Thumbprint of the key being added
+- `key`: Public key material (separate from `pay` for clarity)
 
-**Notes:**
+#### 4.2.2 `key/delete` — Remove a Key (Level 3+)
 
-- `key/revoke` with `rvk = now` removes a key without implying past signatures are invalid.
+Removes a key from KS without marking it as compromised.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/key/delete",
+    "pre": "<previous AS>",
+    "id": "<key to delete tmb>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Required fields:**
+
+- `id`: Thumbprint of the key being removed
+
+#### 4.2.3 `key/replace` — Atomic Key Swap (Level 2+)
+
+Removes the signing key and adds a new key atomically. Maintains single-key invariant for Level 2 devices.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<old key tmb>",
+    "typ": "<authority>/key/replace",
+    "pre": "<previous AS>",
+    "id": "<new key tmb>"
+  },
+  "key": {
+    "alg": "ES256",
+    "pub": "<new key pub>",
+    "tmb": "<new key tmb>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Semantics:** The signing key (`tmb`) is removed; the new key (`id`) is added.
+
+#### 4.2.4 `key/revoke` — Revoke a Key (Level 2+)
+
+Removes a key and marks it as compromised with a revocation timestamp.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/key/revoke",
+    "pre": "<previous AS>",
+    "id": "<key to revoke tmb>",
+    "rvk": 1628181264
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Required fields:**
+
+- `id`: Thumbprint of the key being revoked
+- `rvk`: Revocation timestamp (Coz standard field)
+
+**Semantics:**
+
+- Signatures by the revoked key with `now >= rvk` are invalid
+- Setting `rvk = now` removes a key without invalidating past signatures
+
+**Transaction Type Summary:**
+
+| Type          | Level | Adds Key | Removes Key | Notes                   |
+| ------------- | ----- | -------- | ----------- | ----------------------- |
+| `key/add`     | 3+    | ✓        | —           | —                       |
+| `key/delete`  | 3+    | —        | ✓           | No revocation timestamp |
+| `key/replace` | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
+| `key/revoke`  | 2+    | —        | ✓           | Sets `rvk` timestamp    |
 
 ### 4.3 Action (Level 4)
 
