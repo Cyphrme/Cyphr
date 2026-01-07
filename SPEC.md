@@ -308,9 +308,109 @@ A signed Coz message representing a user action, recorded in DS:
 
 ---
 
-## 5. State Calculation
+## 5. Authentication
 
-### 5.1 Canonical Digest Algorithm
+Cyphrpass replaces password-based authentication with cryptographic Proof of Possession (PoP).
+
+### 5.1 Proof of Possession (PoP)
+
+Every valid signature by an authorized key constitutes a Proof of Possession:
+
+- **Genesis PoP**: First signature by a key proves possession (account creation)
+- **Transaction PoP**: Signing a key mutation proves authorization
+- **Action PoP**: Signing an action proves the principal performed it
+- **Login PoP**: Signing a challenge proves identity to a service
+
+### 5.2 Login Flow
+
+To authenticate to a service:
+
+**Option A: Challenge-Response**
+
+1. Service generates a 256-bit cryptographic challenge (nonce)
+2. Principal signs the challenge with an authorized key
+3. Service verifies:
+   - Signature is valid
+   - `tmb` belongs to an active key in principal's KS
+   - Challenge matches the one issued (prevents replay)
+4. Service issues bearer token
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<service>/auth/login",
+    "challenge": "<256-bit nonce from service>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Option B: Timestamp-Based**
+
+1. Principal signs a login request with current `now` timestamp
+2. Service verifies:
+   - Signature is valid
+   - `tmb` belongs to an active key in principal's KS
+   - `now` is within acceptable window (e.g., ±60 seconds of server time)
+3. Service issues bearer token
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<service>/auth/login"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+### 5.3 Replay Prevention
+
+Two mechanisms prevent signature replay:
+
+| Mechanism            | How it works                                          | Trade-off           |
+| -------------------- | ----------------------------------------------------- | ------------------- |
+| **Challenge nonce**  | Service issues unique 256-bit nonce per login attempt | Requires round-trip |
+| **Timestamp window** | `now` must be within ±N seconds of server time        | Clock sync required |
+
+**Recommendation:** Use challenge-response for high-security contexts. Timestamp-based is acceptable for low-friction flows with trusted time sources.
+
+### 5.4 Bearer Tokens
+
+After successful PoP, the service issues a bearer token:
+
+- Token is a signed Coz message from the service
+- `typ` is service-defined (e.g., `<service>/auth/token`)
+- Contains: principal PR, authorized permissions, expiry
+- Used for subsequent requests (avoids re-signing each request)
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<service key tmb>",
+    "typ": "<service>/auth/token",
+    "pr": "<principal root>",
+    "exp": 1628267664,
+    "perms": ["read", "write"]
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Note:** The service signs the token with its own key. The principal verifies the token came from the expected service.
+
+---
+
+## 6. State Calculation
+
+### 6.1 Canonical Digest Algorithm
 
 All state digests follow the same algorithm:
 
@@ -325,7 +425,7 @@ digest = H(sort(d₀, d₁, ...))
 
 **Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
 
-### 5.2 Key State (KS)
+### 6.2 Key State (KS)
 
 ```
 if n == 1:
@@ -334,7 +434,7 @@ else:
     KS = H(sort(tmb₀, tmb₁, nonce?, PS?, ...))
 ```
 
-### 5.3 Transaction State (TS)
+### 6.3 Transaction State (TS)
 
 TS is the digest of all transaction `czd`s:
 
@@ -347,7 +447,7 @@ else:
     TS = H(sort(czd₀, czd₁, nonce?, ...))
 ```
 
-### 5.4 Data State (DS) — Level 4+
+### 6.4 Data State (DS) — Level 4+
 
 DS is the digest of all action `czd`s:
 
@@ -360,7 +460,7 @@ else:
     DS = H(sort(czd₀, czd₁,  nonce?, ...))
 ```
 
-### 5.5 Auth State (AS)
+### 6.5 Auth State (AS)
 
 AS combines authentication-related states:
 
@@ -371,7 +471,7 @@ else:
     AS = H(sort(KS, TS?, RS?,  nonce?) ||)   # nil components excluded from sort
 ```
 
-### 5.6 Principal State (PS)
+### 6.6 Principal State (PS)
 
 ```
 if DS == nil && no nonce:
@@ -380,7 +480,7 @@ else:
     PS = H(sort(AS, DS?) || nonce?)
 ```
 
-### 5.7 Principal Root (PR)
+### 6.7 Principal Root (PR)
 
 The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
 
@@ -394,11 +494,11 @@ When a principal upgrades (e.g., adds a second key), the **PR stays the same**, 
 
 ---
 
-## 6. Node Structure
+## 7. Node Structure
 
 The **Auth State (AS) chain** is the core of Cyphrpass — it provides the authentication and permission layer for the Internet. Each auth transaction forms a node referencing the prior AS.
 
-### 6.1 Transaction Node
+### 7.1 Transaction Node
 
 Transactions mutate the AS and form a chain via the `pre` field:
 
@@ -428,7 +528,7 @@ When verifying the transaction, Cyphrpass clients must be sure that the
 transaction is valid base on key state, rule state, and prior transaction. See
 section "Resolve" for more detail.
 
-### 6.2 Actions (Level 4)
+### 7.2 Actions (Level 4)
 
 Actions are **stateless** signed messages. They are simply signed by an authorized key without chain structure:
 
@@ -438,7 +538,7 @@ Actions are **stateless** signed messages. They are simply signed by an authoriz
 
 This keeps actions lightweight for common use cases (comments, posts, etc.).
 
-### 6.3 State Resolution
+### 7.3 State Resolution
 
 To resolve from a **target AS** to a **prior known AS**:
 
@@ -452,13 +552,13 @@ ZAMI brainstorm with AI on Checkpoints.
 
 1. Not sure if this is possible or useful. All blocks may already be checkpoints.
 
-### 6.3.1 Checkpoint State Resolution
+### 7.3.1 Checkpoint State Resolution
 
 With long chains, transitive transactions may represent a significant amount of data.  
 To shorten require resolution, a checkpoint may be created.
 If not wanting to include transitive transactions (Transitive closure)
 
-### 6.4 Level 5 Preview: Weighted Permissions
+### 7.4 Level 5 Preview: Weighted Permissions
 
 At Level 5, the Rule State (RS) introduces **weighted keys**:
 
@@ -519,7 +619,7 @@ total transaction:
 
 ---
 
-## 7. Verification (Level 3)
+## 8. Verification (Level 3)
 
 To verify a principal's current state:
 
@@ -537,7 +637,7 @@ To verify a principal's current state:
 
 ---
 
-## 8. Derivations
+## 9. Derivations
 
 Cyphrpass supports multiple cryptographic algorithms. A **derivation** is the digest of a state using a specific hash algorithm.
 
@@ -551,7 +651,7 @@ By default, derivations are computed for all algorithms referenced by active key
 
 ---
 
-## 9. Transaction Type Grammar
+## 10. Transaction Type Grammar
 
 ```
 <typ> = <authority>/<action>
@@ -592,7 +692,7 @@ The authority may be a domain or a Principal Root.
 
 ---
 
-## 10. Test Vectors
+## 11. Test Vectors
 
 _TODO: Add golden test vectors for Go/Rust implementation verification._
 
