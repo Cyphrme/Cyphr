@@ -827,7 +827,69 @@ For social recovery, multiple contacts sign:
 
 ---
 
-## 10. Derivations
+## 10. Timestamp Verification
+
+When a key is compromised, attackers can sign messages with arbitrary `now` values. Timestamp verification prevents retroactive and future-dated attacks.
+
+### 10.1 PS Timestamp Binding
+
+The **latest known timestamp** for a principal is:
+
+- The `now` field of the most recent transaction (if any)
+- Otherwise, the key creation `now` (implicit accounts)
+
+**Rule:** Services SHOULD reject actions where:
+
+- `now` < latest known PS timestamp (too far in the past)
+- `now` > server time + tolerance (too far in the future)
+
+### 10.2 Tolerance Window
+
+Services accept `now` values within an acceptable variance:
+
+| Type             | Tolerance       | Rationale                                        |
+| ---------------- | --------------- | ------------------------------------------------ |
+| **Transactions** | ±60 seconds     | Strict — key mutations are security-critical     |
+| **Actions**      | Service-defined | Looser — user data may legitimately be backdated |
+
+**Implementation:** Compare `now` to server time at receipt. Reject if outside tolerance.
+
+### 10.3 Revocation Timestamp Semantics
+
+When a key is revoked with `rvk = T`:
+
+- Signatures with `now >= T` are **invalid** (key was compromised)
+- Signatures with `now < T` are **valid** (signed before compromise)
+- Attackers cannot forge pre-revocation signatures if services enforce PS timestamp binding
+
+### 10.4 Oracle Tiers
+
+| Tier        | Method                               | Trust Level | Use Case                |
+| ----------- | ------------------------------------ | ----------- | ----------------------- |
+| **None**    | Trust `now` field                    | Lowest      | Simple apps, low-value  |
+| **Service** | Service logs first-seen time         | Medium      | Most applications       |
+| **Trusted** | Hash into blockchain (Bitcoin, etc.) | Highest     | Legal, financial, audit |
+
+**No Oracle (Default):**
+
+- Accept `now` field as claimed
+- Simple but vulnerable to retroactive signing
+
+**Service Oracle:**
+
+- Service records `received_at` timestamp when signature arrives
+- Stored alongside action for dispute resolution
+- Not cryptographically provable, but practical
+
+**Trusted Oracle:**
+
+- Signature (or `czd`) is hashed into a blockchain transaction
+- Block timestamp proves signature existed before that time
+- Irrefutable, but adds latency and cost
+
+---
+
+## 11. Derivations
 
 A **derivation** is the digest of a state computed using a specific hash algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple derivations.
 
@@ -877,7 +939,7 @@ When verifying a signature:
 
 ---
 
-## 11. Transaction Type Grammar
+## 12. Transaction Type Grammar
 
 ```
 <typ> = <authority>/<action>
@@ -918,7 +980,7 @@ The authority may be a domain or a Principal Root.
 
 ---
 
-## 12. Test Vectors
+## 13. Test Vectors
 
 _TODO: Add golden test vectors for Go/Rust implementation verification._
 
