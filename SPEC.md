@@ -692,15 +692,51 @@ To verify a principal's current state:
 
 ## 9. Derivations
 
-Cyphrpass supports multiple cryptographic algorithms. A **derivation** is the digest of a state using a specific hash algorithm.
+A **derivation** is the digest of a state computed using a specific hash algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple derivations.
 
-For each key `alg`, the associated hash algorithm is used:
+### 9.1 Algorithm Mapping
 
-- ES256 → SHA-256
-- ES384 → SHA-384
-- ES512, Ed25519 → SHA-512
+Each key algorithm implies a hash algorithm:
 
-By default, derivations are computed for all algorithms referenced by active keys.
+| Key Algorithm | Hash Algorithm | Digest Size |
+| ------------- | -------------- | ----------- |
+| ES256         | SHA-256        | 32 bytes    |
+| ES384         | SHA-384        | 48 bytes    |
+| ES512         | SHA-512        | 64 bytes    |
+| Ed25519       | SHA-512        | 64 bytes    |
+
+### 9.2 Derivation Semantics
+
+**Singular state, multiple references:**
+
+- PR, PS, AS, KS are singular underlying states
+- Each can be referenced by multiple derivations (one per hash algorithm)
+- All derivations of the same state are equivalent references
+
+**Active key dependency:**
+
+- Derivations are computed for algorithms of **currently active keys**
+- When a key is removed, its algorithm's derivation is no longer computed
+- When a key is added, its algorithm's derivation begins being computed
+
+**Example:** A principal with ES256 + ES384 keys has two derivations of PS:
+
+```
+PS_sha256 = SHA256(sort(AS, DS?, nonce?))
+PS_sha384 = SHA384(sort(AS, DS?, nonce?))
+```
+
+If the ES384 key is removed, only `PS_sha256` is computed going forward.
+
+### 9.3 Verification Context
+
+When verifying a signature:
+
+1. Identify the signing key's algorithm (from `alg` field)
+2. Use the corresponding hash algorithm for derivation
+3. Compute/compare state using that derivation
+
+**Rule:** The derivation used for verification matches the signing key's algorithm.
 
 ---
 
