@@ -279,14 +279,40 @@ Self-revoke is built into the Coz standard.
 - Signatures by the revoked key with `now >= rvk` are invalid
 - Setting `rvk = now` removes a key without invalidating past signatures
 
+#### 4.2.5 `key/other-revoke` — Revoke Another Key (Level 3+)
+
+Revokes a different key from the signing key. Used in multi-key accounts.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/key/revoke",
+    "pre": "<previous AS>",
+    "id": "<key to revoke tmb>",
+    "rvk": 1628181264
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Required fields:**
+
+- `pre`: Previous Auth State digest
+- `id`: Thumbprint of the key being revoked (must differ from `tmb`)
+- `rvk`: Revocation timestamp
+
 **Transaction Type Summary:**
 
-| Type          | Level | Adds Key | Removes Key | Notes                   |
-| ------------- | ----- | -------- | ----------- | ----------------------- |
-| `key/add`     | 3+    | ✓        | —           | —                       |
-| `key/delete`  | 3+    | —        | ✓           | No revocation timestamp |
-| `key/replace` | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
-| `key/revoke`  | 2+    | —        | ✓           | Sets `rvk` timestamp    |
+| Type                 | Level | Adds Key | Removes Key | Notes                   |
+| -------------------- | ----- | -------- | ----------- | ----------------------- |
+| `key/add`            | 3+    | ✓        | —           | —                       |
+| `key/delete`         | 3+    | —        | ✓           | No revocation timestamp |
+| `key/replace`        | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
+| `key/revoke` (self)  | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
+| `key/revoke` (other) | 3+    | —        | ✓           | Revoke another key      |
 
 ### 4.3 Action (Level 4)
 
