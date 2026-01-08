@@ -1,0 +1,30 @@
+//! # Cyphrpass
+//!
+//! Self-sovereign identity protocol implementation.
+//!
+//! Cyphrpass enables password-free authentication via public key cryptography,
+//! multi-device key management, and Authenticated Atomic Actions (AAA).
+//!
+//! Built on [Coz](https://github.com/Cyphrme/Coz) cryptographic messaging.
+//!
+//! ## Feature Levels
+//!
+//! - **Level 1**: Single static key
+//! - **Level 2**: Key replacement
+//! - **Level 3**: Multi-key management
+//! - **Level 4**: Arbitrary data (AAA)
+
+#![warn(missing_docs)]
+#![warn(rust_2018_idioms)]
+
+pub mod error;
+pub mod key;
+pub mod principal;
+pub mod state;
+pub mod transaction;
+
+// Re-exports
+pub use error::Error;
+pub use key::Key;
+pub use principal::Principal;
+pub use state::{AuthState, KeyState, PrincipalRoot, PrincipalState};
