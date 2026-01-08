@@ -980,7 +980,67 @@ The authority may be a domain or a Principal Root.
 
 ---
 
-## 13. Test Vectors
+## 13. Error Conditions
+
+This section defines error conditions that implementations MUST detect. Error _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
+
+### 13.1 Transaction Errors
+
+| Error               | Condition                                        | Level |
+| ------------------- | ------------------------------------------------ | ----- |
+| `INVALID_SIGNATURE` | Signature does not verify against claimed key    | All   |
+| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KS | All   |
+| `INVALID_PRIOR`     | `pre` does not match current AS                  | 2+    |
+| `TIMESTAMP_PAST`    | `now` < latest known PS timestamp                | All   |
+| `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                  | All   |
+| `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                    | 2+    |
+| `MALFORMED_PAYLOAD` | Missing required fields for transaction type     | All   |
+| `DUPLICATE_KEY`     | `key/add` for key already in KS                  | 3+    |
+| `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
+
+### 13.2 Recovery Errors
+
+| Error                     | Condition                                        | Level |
+| ------------------------- | ------------------------------------------------ | ----- |
+| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `recovery/designate`    | 3+    |
+| `ACCOUNT_RECOVERABLE`     | Recovery attempted while regular keys are active | 3+    |
+| `ACCOUNT_UNRECOVERABLE`   | No active keys AND no designated recovery agents | All   |
+
+### 13.3 State Errors
+
+| Error                 | Condition                                               | Level |
+| --------------------- | ------------------------------------------------------- | ----- |
+| `STATE_MISMATCH`      | Computed PS does not match claimed PS                   | All   |
+| `CHAIN_BROKEN`        | `pre` references do not form valid chain to known state | 2+    |
+| `DERIVATION_MISMATCH` | Derivation computed with wrong algorithm                | All   |
+
+### 13.4 Action Errors (Level 4+)
+
+| Error                 | Condition                               | Level |
+| --------------------- | --------------------------------------- | ----- |
+| `UNAUTHORIZED_ACTION` | Action `typ` not permitted for this key | 5+    |
+
+### 13.5 Error Handling Guidance
+
+**Implementations MUST:**
+
+- Reject transactions with any error condition
+- Not apply partial state changes (atomic)
+- Log errors for debugging (optional but recommended)
+
+**Implementations SHOULD:**
+
+- Return meaningful error identifiers to clients
+- Distinguish between client errors (fixable) and server errors (retry)
+
+**Implementations MAY:**
+
+- Define additional application-specific error conditions
+- Implement rate limiting for repeated errors
+
+---
+
+## 14. Test Vectors
 
 _TODO: Add golden test vectors for Go/Rust implementation verification._
 
