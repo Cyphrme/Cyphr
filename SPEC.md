@@ -73,6 +73,7 @@ One or more cryptographic nonces may be included at any level of the state tree:
 - `PR = PS = AS = KS = tmb`
 - No transactions, no TS
 - Use case: IoT devices, hardware tokens
+- **Self-revoke**: A Level 1 key can self-revoke, but this results in permanent lockout (no recovery without sideband intervention)
 
 ### 3.2 Level 2: Key Replacement
 
@@ -80,7 +81,6 @@ One or more cryptographic nonces may be included at any level of the state tree:
 - `key/replace` transaction swaps current key for new key
 - TS is implicit at Level 2 (not stored in protocol)
 - Use case: Devices that can rotate keys but only store one
-  ZAMI: Need to talk in disaster recover in disaster recovery section about revoke.
 
 ### 3.3 Level 3: Multi-Key
 
@@ -96,7 +96,29 @@ One or more cryptographic nonces may be included at any level of the state tree:
 - `PS = H(AS, DS)`
 - Enables Authenticated Atomic Actions (AAA)
 
-### 3.5 Genesis (Account Creation)
+### 3.5 Level 5: Rules (Weighted Permissions)
+
+- Introduces Rule State (RS) for access control
+- Each key has a weight (default: 1)
+- Transactions and actions have threshold requirements
+- Enables: M-of-N signing, tiered permissions, timelocks
+- RS is a digest component of AS (like KS and TS); we sort by digest _value_ (bytes), not by label
+
+**Key concepts:**
+
+- **Weight**: Numeric value assigned to each key
+- **Threshold**: Minimum total weight required for an action
+- **Timelock**: Delay before certain actions take effect
+
+### 3.6 Level 6: Turing Complete VM
+
+- Introduces programmable rule execution
+- Rules are executable bytecode stored in RS
+- Enables: Complex conditional logic, programmable policies
+- VM execution produces a deterministic state transition
+- Use case: Smart contracts, complex organizational policies
+
+### 3.7 Genesis (Account Creation)
 
 A principal is created (genesis) in one of two ways:
 
@@ -225,6 +247,10 @@ Removes a key from KS without marking it as compromised.
 **Required fields:**
 
 - `id`: Thumbprint of the key being removed
+
+**Semantics:** Unlike `key/revoke`, `key/delete` does NOT invalidate the key itself — only removes it from KS. Use for graceful key retirement (e.g., decommissioning a device) when the key was never compromised.
+
+**TODO:** Define retrospection semantics — how past signatures are validated after key removal/revocation needs further specification.
 
 #### 4.2.3 `key/replace` — Atomic Key Swap (Level 2+)
 
@@ -596,7 +622,7 @@ The **Auth State (AS) chain** is the core of Cyphrpass — it provides the authe
 
 Transactions mutate the AS and form a chain via the `pre` field:
 
-typ` may be "<authority>/key/add" or "<authority>/key/upsert"
+`typ` may be `<authority>/key/add` or similar key mutation type.
 
 ```json5
 {
@@ -619,7 +645,7 @@ The `pre` field links to the previous AS, enabling chain traversal without
 full history.
 
 When verifying the transaction, Cyphrpass clients must be sure that the
-transaction is valid base on key state, rule state, and prior transaction. See
+transaction is valid based on key state, rule state, and prior transaction. See
 section "Resolve" for more detail.
 
 ### 8.2 Actions (Level 4)
@@ -641,17 +667,11 @@ To resolve from a **target AS** to a **prior known AS**:
 3. Verify `pre` references form unbroken chain
 4. Validate each signature against KS at that point
 
-Trust is optional, full independent verification is always possible
+Trust is optional — full independent verification is always possible.
 
-ZAMI brainstorm with AI on Checkpoints.
+### 8.3.1 Checkpoints
 
-1. Not sure if this is possible or useful. All blocks may already be checkpoints.
-
-### 8.3.1 Checkpoint State Resolution
-
-With long chains, transitive transactions may represent a significant amount of data.  
-To shorten require resolution, a checkpoint may be created.
-If not wanting to include transitive transactions (Transitive closure)
+Each state digest (AS, PS) encapsulates the full state at that point. Verifiers only need the current state plus the transaction chain back to a known-good checkpoint. The genesis state is the ultimate checkpoint; services MAY cache intermediate checkpoints to reduce chain length for verification.
 
 ### 8.4 Level 5 Preview: Weighted Permissions
 
@@ -668,7 +688,6 @@ For example, for 2 out of three for a "cyphrpass/key/create", two cozies need to
 be signed by independent keys of weight 1 for the transaction to be valid.
 
 First, define the rule:
-// Good point why `upsert` might be bad for keys.
 
 ```json5
 {
@@ -779,7 +798,7 @@ For implicit (single-key) accounts, a `fallback` field MAY be included at key cr
 
 **Notes:**
 
-- The `fallback` field IS included in thumbprint calculation
+- The `fallback` field is NOT included in thumbprint calculation (allows changing fallback without changing identity)
 - Assumes a trusted initial setup
 - **Level 2 Restriction**: Level 2 accounts only support **atomic swap** (`key/replace`). The fallback functionality must adhere to this, replacing the lost key rather than complying with `key/add` like Level 3+.
 
@@ -890,32 +909,68 @@ For social recovery, multiple contacts sign:
 
 **Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/add`.
 
-### 10.7 Security Considerations
-
-- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period
-- **Revocation:** Backup keys can be revoked if compromised
-- **Multiple agents:** A principal MAY designate multiple fallback mechanisms
-
-### 10.8 Account Freeze
+### 10.7 Account Freeze
 
 A **freeze** is a global protocol state where valid transactions are temporarily rejected to prevent unauthorized changes during a potential compromise. A freeze halts all key mutations (`key/*`) and may restrict other actions depending on service policy.
 
 Freezes are **global** — they apply to the principal across all services that observe the freeze state.
 
-#### 10.8.1 Self-Freeze
+#### 10.7.1 Self-Freeze
 
 A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
 
 - **Mechanism**: User signs a `freeze/init` transaction with an active key.
 - **Effect**: Stops all mutations until unfrozen.
 
-#### 10.8.2 External Freeze
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/freeze/init",
+    "pre": "<previous AS>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+#### 10.7.2 External Freeze
 
 A designated **Recovery Authority** may initiate a freeze based on heuristics (irregular activity) or out-of-band communication (user phone call).
 
 - **Mechanism**: Recovery agent signs `freeze/init`.
 - **Effect**: Same as self-freeze.
 - **Trust**: The principal explicitly delegates this power to the authority via `recovery/designate`.
+
+#### 10.7.3 Thaw (Unfreeze)
+
+To unfreeze an account:
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/freeze/thaw",
+    "pre": "<previous AS>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Rules:**
+
+- Self-freeze can be thawed by any active key
+- External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
+
+### 10.8 Security Considerations
+
+- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period
+- **Revocation:** Backup keys can be revoked if compromised
+- **Multiple agents:** A principal MAY designate multiple fallback mechanisms, including M-of-N threshold requirements
+- **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
 ---
 
@@ -1039,7 +1094,13 @@ When verifying a signature:
 <verb> = create | read | update | upsert | delete | revoke
 ```
 
-TODO brainstorm with AI about "action" being overloaded. DS has actions, `typ` is an action, and `typ` semantics itself has an action.
+**Terminology note:** "Action" is used in three contexts:
+
+1. **DS Action**: A signed user message recorded in Data State (Level 4+)
+2. **Type Action**: The path after authority in a `typ` field
+3. **Grammar verb**: The final component of a type (create, delete, etc.)
+
+Context disambiguates usage.
 
 Example type: "cyphr.me/ac/image/create"
 
