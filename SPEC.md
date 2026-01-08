@@ -251,9 +251,11 @@ Removes the signing key and adds a new key atomically. Maintains single-key inva
 
 **Semantics:** The signing key (`tmb`) is removed; the new key (`id`) is added.
 
-#### 4.2.4 `key/revoke` — Revoke a Key (Level 2+)
+#### 4.2.4 `key/revoke` — Revoke a Key (Self-Revoke, Level 1+)
 
-Removes a key and marks it as compromised with a revocation timestamp.
+Self-revoke is a special case of `key/revoke` where the signing key is the same
+as the key being revoked. It is used to revoke a key that has been compromised.
+Self-revoke is built into the Coz standard.
 
 ```json
 {
@@ -262,8 +264,6 @@ Removes a key and marks it as compromised with a revocation timestamp.
     "now": 1628181264,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/key/revoke",
-    "pre": "<previous AS>",
-    "id": "<key to revoke tmb>",
     "rvk": 1628181264
   },
   "sig": "<b64ut>"
@@ -272,7 +272,6 @@ Removes a key and marks it as compromised with a revocation timestamp.
 
 **Required fields:**
 
-- `id`: Thumbprint of the key being revoked
 - `rvk`: Revocation timestamp (Coz standard field)
 
 **Semantics:**
@@ -310,7 +309,12 @@ A signed Coz message representing a user action, recorded in DS:
 
 ## 5. Authentication
 
-Cyphrpass replaces password-based authentication with cryptographic Proof of Possession (PoP).
+Cyphrpass replaces password-based authentication with cryptographic Proof of
+Possession (PoP).
+
+Cyphrpass suggests AAA (Authenticated Atomic Action) over bearer tokens when
+possible, but bearer tokens are still useful for access control and quickly
+upgrading legacy password systems.
 
 ### 5.1 Proof of Possession (PoP)
 
@@ -406,11 +410,11 @@ After successful PoP, the service issues a bearer token:
 
 **Note:** The service signs the token with its own key. The principal verifies the token came from the expected service.
 
-### 5.5 Storage Models
+## 6. Storage Models
 
 Cyphrpass distinguishes between two storage contexts:
 
-#### 5.5.1 Client/Principal Storage
+### 6.1 Client/Principal Storage
 
 Clients are categorized as **thin** or **fat** based on storage capacity:
 
@@ -439,7 +443,7 @@ Thin clients rely on services for state resolution. Only the private key is esse
 
 Fat clients store exhaustive history for offline verification and maximum sovereignty.
 
-#### 5.5.2 Third-Party Service Storage
+### 6.2 Third-Party Service Storage
 
 Services that interact with principals store:
 
@@ -461,9 +465,9 @@ Services that interact with principals store:
 
 ---
 
-## 6. State Calculation
+## 7. State Calculation
 
-### 6.1 Canonical Digest Algorithm
+### 7.1 Canonical Digest Algorithm
 
 All state digests follow the same algorithm:
 
@@ -478,7 +482,7 @@ digest = H(sort(d₀, d₁, ...))
 
 **Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
 
-### 6.2 Key State (KS)
+### 7.2 Key State (KS)
 
 ```
 if n == 1:
@@ -487,7 +491,7 @@ else:
     KS = H(sort(tmb₀, tmb₁, nonce?, PS?, ...))
 ```
 
-### 6.3 Transaction State (TS)
+### 7.3 Transaction State (TS)
 
 TS is the digest of all transaction `czd`s:
 
@@ -500,7 +504,7 @@ else:
     TS = H(sort(czd₀, czd₁, nonce?, ...))
 ```
 
-### 6.4 Data State (DS) — Level 4+
+### 7.4 Data State (DS) — Level 4+
 
 DS is the digest of all action `czd`s:
 
@@ -513,7 +517,7 @@ else:
     DS = H(sort(czd₀, czd₁,  nonce?, ...))
 ```
 
-### 6.5 Auth State (AS)
+### 7.5 Auth State (AS)
 
 AS combines authentication-related states:
 
@@ -524,7 +528,7 @@ else:
     AS = H(sort(KS, TS?, RS?,  nonce?) ||)   # nil components excluded from sort
 ```
 
-### 6.6 Principal State (PS)
+### 7.6 Principal State (PS)
 
 ```
 if DS == nil && no nonce:
@@ -533,7 +537,7 @@ else:
     PS = H(sort(AS, DS?) || nonce?)
 ```
 
-### 6.7 Principal Root (PR)
+### 7.7 Principal Root (PR)
 
 The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
 
@@ -547,11 +551,22 @@ When a principal upgrades (e.g., adds a second key), the **PR stays the same**, 
 
 ---
 
-## 7. Node Structure
+## 8. Node Structure
 
 The **Auth State (AS) chain** is the core of Cyphrpass — it provides the authentication and permission layer for the Internet. Each auth transaction forms a node referencing the prior AS.
 
-### 7.1 Transaction Node
+```text
+       PR/PS (Genesis)             PS (State 2)               PS (State 3)
+     +-------------------+      +-------------------+      +-------------------+
+     |                   |      |                   |      |                   |
+     |   [AS]     [DS]   | ===> |   [AS]     [DS]   | ===> |   [AS]     [DS]   |
+     |    ^              |      |    |              |      |    |              |
+     +----|--------------+      +----V--------------+      +----V--------------+
+          |                          |                          |
+          + <---------(pre)----------+ <-----------(pre)--------+
+```
+
+### 8.1 Transaction Node
 
 Transactions mutate the AS and form a chain via the `pre` field:
 
@@ -581,7 +596,7 @@ When verifying the transaction, Cyphrpass clients must be sure that the
 transaction is valid base on key state, rule state, and prior transaction. See
 section "Resolve" for more detail.
 
-### 7.2 Actions (Level 4)
+### 8.2 Actions (Level 4)
 
 Actions are **stateless** signed messages. They are simply signed by an authorized key without chain structure:
 
@@ -591,27 +606,28 @@ Actions are **stateless** signed messages. They are simply signed by an authoriz
 
 This keeps actions lightweight for common use cases (comments, posts, etc.).
 
-### 7.3 State Resolution
+### 8.3 State Resolution
 
 To resolve from a **target AS** to a **prior known AS**:
 
 1. Obtain current AS (from principal or trusted service)
-2. Request transaction chain from target back to prior known
+2. Request transaction chain from target back to prior known (`pre`)
 3. Verify `pre` references form unbroken chain
 4. Validate each signature against KS at that point
-5. Trust is optional — full independent verification is always possible
+
+Trust is optional, full independent verification is always possible
 
 ZAMI brainstorm with AI on Checkpoints.
 
 1. Not sure if this is possible or useful. All blocks may already be checkpoints.
 
-### 7.3.1 Checkpoint State Resolution
+### 8.3.1 Checkpoint State Resolution
 
 With long chains, transitive transactions may represent a significant amount of data.  
 To shorten require resolution, a checkpoint may be created.
 If not wanting to include transitive transactions (Transitive closure)
 
-### 7.4 Level 5 Preview: Weighted Permissions
+### 8.4 Level 5 Preview: Weighted Permissions
 
 At Level 5, the Rule State (RS) introduces **weighted keys**:
 
@@ -672,7 +688,7 @@ total transaction:
 
 ---
 
-## 8. Verification (Level 3)
+## 9. Verification (Level 3)
 
 To verify a principal's current state:
 
@@ -690,21 +706,31 @@ To verify a principal's current state:
 
 ---
 
-## 9. Disaster Recovery
+## 10. Recovery
 
-When a principal loses access to all active keys, recovery mechanisms allow regaining control.
+When a principal loses access to all active keys, or the account is otherwise in
+an **unrecoverable state** recovery mechanisms allow regaining control.
 
-### 9.1 Recovery Mechanisms
+There are two main mechanisms:
 
-| Mechanism               | Description                       | Trust Model       |
-| ----------------------- | --------------------------------- | ----------------- |
-| **Paper wallet**        | Backup key printed/stored offline | User custody      |
-| **Hardware key**        | Yubikey or similar device         | User custody      |
-| **Airgapped key**       | Cold storage, never online        | User custody      |
-| **Social recovery**     | M-of-N trusted contacts           | Distributed trust |
-| **Third-party service** | Verification service              | Service trust     |
+- **Self Recovery**, various methods of backup. For user self management.
+- **External Recovery** Where some permissions are delegated to an external
+  account, a **Recovery Authority**. This may be social recovery or third-party service.
 
-### 9.2 Implicit Fallback (Single-Key Accounts)
+Level 1 doesn't support recovery. Any recovery is accomplished through sideband.
+Level 2 supports recovery but only atomic swaps. The recovery key can replace the exiting key.
+Level 3+ supports recovery and can add new keys.
+
+### 10.1 Self-Recovery Mechanisms
+
+| Mechanism         | Description                            | Trust Model  |
+| ----------------- | -------------------------------------- | ------------ |
+| **Backup Key**    | Backup key stored in a secure location | User custody |
+| **Paper wallet**  | Backup key printed/stored offline      | User custody |
+| **Hardware key**  | Yubikey or similar device              | User custody |
+| **Airgapped key** | Cold storage, never online             | User custody |
+
+### 10.2 Implicit Fallback (Single-Key Accounts)
 
 For implicit (single-key) accounts, a `fallback` field MAY be included at key creation:
 
@@ -721,15 +747,17 @@ For implicit (single-key) accounts, a `fallback` field MAY be included at key cr
 
 | Level | Fallback Value | Description                                                |
 | ----- | -------------- | ---------------------------------------------------------- |
-| 1-2   | `tmb`          | Backup key thumbprint                                      |
-| 3+    | `PS`           | Principal State of recovery agent (with rules or defaults) |
+| 1     | —              | No recovery support (static key)                           |
+| 2     | `tmb`          | Backup key thumbprint                                      |
+| 3+    | `PS`           | External Principal recovery agent (with rules or defaults) |
 
 **Notes:**
 
 - The `fallback` field IS included in thumbprint calculation
 - Assumes a trusted initial setup
+- **Level 2 Restriction**: Level 2 accounts only support **atomic swap** (`key/replace`). The fallback functionality must adhere to this, replacing the lost key rather than complying with `key/add` like Level 3+.
 
-### 9.2.1 Recovery Validity
+### 10.2.1 Recovery Validity
 
 Recovery agents can ONLY act when the account is in an **unrecoverable state**:
 
@@ -737,10 +765,11 @@ Recovery agents can ONLY act when the account is in an **unrecoverable state**:
 - Insufficient keys remain to meet threshold for mutations (Level 5+)
 - Signatures from recovery agents are invalid while account is recoverable
 - This prevents recovery from being used as a backdoor
+- The rule for key/add is of a higher weight than keys on the account
 
-### 9.3 Recovery Transactions
+### 10.3 Recovery Transactions
 
-#### 9.3.1 `recovery/designate` — Register Fallback
+#### 10.3.1 `recovery/designate` — Register Fallback
 
 Registers a recovery agent (backup key, service, or social contacts).
 
@@ -752,19 +781,21 @@ Registers a recovery agent (backup key, service, or social contacts).
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/designate",
     "pre": "<previous AS>",
-    "agent": "<recovery agent PR or tmb>",
-    "threshold": 1
+    "recovery": {
+      "agent": "<recovery agent PR or tmb>",
+      "threshold": 1
+    }
   },
   "sig": "<b64ut>"
 }
 ```
 
-**Fields:**
+**Fields (within `recovery` object):**
 
 - `agent`: PR of service, tmb of backup key, or array of contact PRs
 - `threshold`: For social recovery, M-of-N threshold (default: 1)
 
-#### 9.3.2 `recovery/delete` — Remove Fallback
+#### 10.3.2 `recovery/delete` — Remove Fallback
 
 Removes a previously designated recovery agent.
 
@@ -776,19 +807,24 @@ Removes a previously designated recovery agent.
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/delete",
     "pre": "<previous AS>",
-    "agent": "<recovery agent PR or tmb>"
+    "recovery": {
+      "agent": "<recovery agent PR or tmb>"
+    }
   },
   "sig": "<b64ut>"
 }
 ```
 
-### 9.4 Recovery Flow
+### 10.4 Recovery Flow
 
 When a principal is locked out:
 
+0. **User generates a new account with a fresh PS**
 1. **User contacts recovery agent** (out-of-band)
 2. **Agent verifies identity** (method varies by agent type)
-3. **Agent signs `key/add`** for new user key:
+3. **Agent signs a Recovery Initialization transaction** for the new user key:
+
+   This initializes a new Principal State (PS) that is manually linked to the previous state by the Recovery Authority. The new PS is not cryptographically linked to the previous state, but it is manually linked to the original PR by the Recovery Authority's recovery transaction.
 
 ```json
 {
@@ -809,7 +845,16 @@ When a principal is locked out:
 
 Because the agent was designated via `recovery/designate`, their `key/add` is valid even though no regular user key signed it.
 
-### 9.5 Social Recovery
+### 10.5 External Recovery
+
+External recovery delegates recovery authority to an external principal. The recovery agent verifies identity out-of-band and signs a recovery transaction on behalf of the locked-out user.
+
+| Mechanism               | Description             | Trust Model       |
+| ----------------------- | ----------------------- | ----------------- |
+| **Social recovery**     | M-of-N trusted contacts | Distributed trust |
+| **Third-party service** | Verification service    | Service trust     |
+
+### 10.6 Social Recovery
 
 For social recovery, multiple contacts sign:
 
@@ -819,19 +864,40 @@ For social recovery, multiple contacts sign:
 
 **Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/add`.
 
-### 9.6 Security Considerations
+### 10.7 Security Considerations
 
 - **Timelocks (Level 5+):** Recovery can have a mandatory waiting period
 - **Revocation:** Backup keys can be revoked if compromised
 - **Multiple agents:** A principal MAY designate multiple fallback mechanisms
 
+### 10.8 Account Freeze
+
+A **freeze** is a global protocol state where valid transactions are temporarily rejected to prevent unauthorized changes during a potential compromise. A freeze halts all key mutations (`key/*`) and may restrict other actions depending on service policy.
+
+Freezes are **global** — they apply to the principal across all services that observe the freeze state.
+
+#### 10.8.1 Self-Freeze
+
+A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
+
+- **Mechanism**: User signs a `freeze/init` transaction with an active key.
+- **Effect**: Stops all mutations until unfrozen.
+
+#### 10.8.2 External Freeze
+
+A designated **Recovery Authority** may initiate a freeze based on heuristics (irregular activity) or out-of-band communication (user phone call).
+
+- **Mechanism**: Recovery agent signs `freeze/init`.
+- **Effect**: Same as self-freeze.
+- **Trust**: The principal explicitly delegates this power to the authority via `recovery/designate`.
+
 ---
 
-## 10. Timestamp Verification
+## 11. Timestamp Verification
 
 When a key is compromised, attackers can sign messages with arbitrary `now` values. Timestamp verification prevents retroactive and future-dated attacks.
 
-### 10.1 PS Timestamp Binding
+### 11.1 PS Timestamp Binding
 
 The **latest known timestamp** for a principal is:
 
@@ -843,7 +909,7 @@ The **latest known timestamp** for a principal is:
 - `now` < latest known PS timestamp (too far in the past)
 - `now` > server time + tolerance (too far in the future)
 
-### 10.2 Tolerance Window
+### 11.2 Tolerance Window
 
 Services accept `now` values within an acceptable variance:
 
@@ -854,7 +920,7 @@ Services accept `now` values within an acceptable variance:
 
 **Implementation:** Compare `now` to server time at receipt. Reject if outside tolerance.
 
-### 10.3 Revocation Timestamp Semantics
+### 11.3 Revocation Timestamp Semantics
 
 When a key is revoked with `rvk = T`:
 
@@ -862,7 +928,7 @@ When a key is revoked with `rvk = T`:
 - Signatures with `now < T` are **valid** (signed before compromise)
 - Attackers cannot forge pre-revocation signatures if services enforce PS timestamp binding
 
-### 10.4 Oracle Tiers
+### 11.4 Oracle Tiers
 
 | Tier        | Method                               | Trust Level | Use Case                |
 | ----------- | ------------------------------------ | ----------- | ----------------------- |
@@ -889,11 +955,11 @@ When a key is revoked with `rvk = T`:
 
 ---
 
-## 11. Derivations
+## 12. Derivations
 
 A **derivation** is the digest of a state computed using a specific hash algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple derivations.
 
-### 10.1 Algorithm Mapping
+### 12.1 Algorithm Mapping
 
 Each key algorithm implies a hash algorithm:
 
@@ -904,7 +970,7 @@ Each key algorithm implies a hash algorithm:
 | ES512         | SHA-512        | 64 bytes    |
 | Ed25519       | SHA-512        | 64 bytes    |
 
-### 10.2 Derivation Semantics
+### 12.2 Derivation Semantics
 
 **Singular state, multiple references:**
 
@@ -927,7 +993,7 @@ PS_sha384 = SHA384(sort(AS, DS?, nonce?))
 
 If the ES384 key is removed, only `PS_sha256` is computed going forward.
 
-### 10.3 Verification Context
+### 12.3 Verification Context
 
 When verifying a signature:
 
@@ -939,7 +1005,7 @@ When verifying a signature:
 
 ---
 
-## 12. Transaction Type Grammar
+## 13. Transaction Type Grammar
 
 ```
 <typ> = <authority>/<action>
@@ -980,11 +1046,11 @@ The authority may be a domain or a Principal Root.
 
 ---
 
-## 13. Error Conditions
+## 14. Error Conditions
 
 This section defines error conditions that implementations MUST detect. Error _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
-### 13.1 Transaction Errors
+### 14.1 Transaction Errors
 
 | Error               | Condition                                        | Level |
 | ------------------- | ------------------------------------------------ | ----- |
@@ -998,7 +1064,7 @@ This section defines error conditions that implementations MUST detect. Error _r
 | `DUPLICATE_KEY`     | `key/add` for key already in KS                  | 3+    |
 | `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
 
-### 13.2 Recovery Errors
+### 14.2 Recovery Errors
 
 | Error                     | Condition                                        | Level |
 | ------------------------- | ------------------------------------------------ | ----- |
@@ -1006,7 +1072,7 @@ This section defines error conditions that implementations MUST detect. Error _r
 | `ACCOUNT_RECOVERABLE`     | Recovery attempted while regular keys are active | 3+    |
 | `ACCOUNT_UNRECOVERABLE`   | No active keys AND no designated recovery agents | All   |
 
-### 13.3 State Errors
+### 14.3 State Errors
 
 | Error                 | Condition                                               | Level |
 | --------------------- | ------------------------------------------------------- | ----- |
@@ -1014,13 +1080,13 @@ This section defines error conditions that implementations MUST detect. Error _r
 | `CHAIN_BROKEN`        | `pre` references do not form valid chain to known state | 2+    |
 | `DERIVATION_MISMATCH` | Derivation computed with wrong algorithm                | All   |
 
-### 13.4 Action Errors (Level 4+)
+### 14.4 Action Errors (Level 4+)
 
 | Error                 | Condition                               | Level |
 | --------------------- | --------------------------------------- | ----- |
 | `UNAUTHORIZED_ACTION` | Action `typ` not permitted for this key | 5+    |
 
-### 13.5 Error Handling Guidance
+### 14.5 Error Handling Guidance
 
 **Implementations MUST:**
 
@@ -1040,7 +1106,7 @@ This section defines error conditions that implementations MUST detect. Error _r
 
 ---
 
-## 14. Test Vectors
+## 15. Test Vectors
 
 _TODO: Add golden test vectors for Go/Rust implementation verification._
 
