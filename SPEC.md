@@ -1195,7 +1195,77 @@ This section defines error conditions that implementations MUST detect. Error _r
 
 ## 15. Test Vectors
 
-_TODO: Add golden test vectors for Go/Rust implementation verification._
+These golden test vectors enable implementation verification. All values use B64ut encoding without padding.
+
+### 15.1 Golden Key (ES256)
+
+```json
+{
+  "alg": "ES256",
+  "now": 1623132000,
+  "tag": "Zami's Majuscule Key.",
+  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
+  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+}
+```
+
+**Notes:**
+
+- `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
+- ES256 uses P-256 curve, SHA-256 for thumbprint
+
+### 15.2 Golden Message
+
+The canonical Coz test message with verified signature:
+
+```json
+{
+  "pay": {
+    "msg": "Coz is a cryptographic JSON messaging specification.",
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/msg/create"
+  },
+  "sig": "OJ4_timgp-wxpLF3hllrbe55wdjhzGOLgRYsGO1BmIMYbo4VKAdgZHnYyIU907ZTJkVr8B81A2K8U4nQA6ONEg"
+}
+```
+
+**Computed digests:**
+
+- `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
+- `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
+
+**Note:** `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
+
+### 15.3 State Derivation (Level 1/2)
+
+For a single-key account with the golden key:
+
+```
+KS = tmb (implicit promotion)
+AS = KS (no TS, no RS)
+PS = AS (no DS)
+PR = PS = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+```
+
+### 15.4 Transaction State (Level 3+)
+
+Given a `key/add` transaction with `czd = "<transaction czd>"`:
+
+```
+TS = czd (single transaction, implicit promotion)
+AS = H(sort(KS, TS))  # KS and TS are digests; sort by byte value, not label
+PS = AS (no DS)
+```
+
+### 15.5 Implementation Notes
+
+- All signatures must be verified using the key's `alg`
+- ECDSA signatures must be low-S normalized (non-malleable)
+- Thumbprints use the hash algorithm associated with `alg`
+- State digests use the hash algorithm of the signing key
 
 ---
 
