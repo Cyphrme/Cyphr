@@ -27,4 +27,7 @@ pub mod transaction;
 pub use error::Error;
 pub use key::Key;
 pub use principal::Principal;
-pub use state::{AuthState, KeyState, PrincipalRoot, PrincipalState};
+pub use state::{
+    AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
+    compute_as, compute_ds, compute_ks, compute_ps, compute_ts,
+};
