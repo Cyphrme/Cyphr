@@ -1,9 +1,10 @@
 //! Principal (identity) types.
 
+use indexmap::IndexMap;
+
 use crate::key::Key;
 use crate::state::{AuthState, KeyState, PrincipalRoot, PrincipalState, TransactionState};
 use crate::transaction::Transaction;
-use indexmap::IndexMap;
 
 /// Auth ledger holding keys and transactions.
 #[derive(Debug, Clone, Default)]

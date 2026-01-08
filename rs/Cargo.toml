@@ -1,21 +1,21 @@
 [package]
-name = "cyphrpass"
-version = "0.1.0"
-edition = "2024"
+categories   = ["authentication", "cryptography"]
+description  = "Cyphrpass self-sovereign identity protocol"
+edition      = "2024"
+keywords     = ["identity", "authentication", "cryptography", "self-sovereign"]
+name         = "cyphrpass"
+repository   = "https://github.com/Cyphrme/Cyphrpass"
 rust-version = "1.85"
-description = "Cyphrpass self-sovereign identity protocol"
-repository = "https://github.com/Cyphrme/Cyphrpass"
-keywords = ["identity", "authentication", "cryptography", "self-sovereign"]
-categories = ["authentication", "cryptography"]
+version      = "0.1.0"
 
 [dependencies]
 # Core crypto - from coz-rs
 coz = { package = "coz-rs", path = "../coz-rust/coz-rs" }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
+indexmap   = { version = "2", features = ["serde"] }
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-indexmap = { version = "2", features = ["serde"] }
 
 # Error handling
 thiserror = "2"
