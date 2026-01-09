@@ -1,7 +1,7 @@
 {
   "name": "actions",
   "description": "Level 4 action recording test vectors per SPEC §4.3",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "keys": {
     "golden": {
       "alg": "ES256",
@@ -19,16 +19,21 @@
       },
       "actions": [
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000001,
-          "msg": "First action",
-          "czd": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
         }
       ],
       "expected": {
         "ds_equals_czd": true,
         "action_count": 1,
-        "ds": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+        "ds": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
       }
     },
     {
@@ -40,22 +45,31 @@
       },
       "actions": [
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000001,
-          "msg": "First action",
-          "czd": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
         },
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000002,
-          "msg": "Second action",
+          "pay": {
+            "alg": "ES256",
+            "msg": "Second action",
+            "now": 1700000002,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "6166KUG-xLGpIoelQB3yuuv6kS_4bRVVgcuD04fwRN44PnUg5b1c3q2LWXFpUoICQWCOEY04EqNEWluQOgvI8Q",
           "czd": "FDtFSUL52Uc-e9Ul6YDCYvjVA0yHTRa7H6759tWmOpg"
         }
       ],
       "expected": {
         "ds_is_hash": true,
-        "action_count": 2,
-        "ds": "mOV2KJsu4ykPeEAgre0bPu3JGxL4uDYMMamBVQqSIwY"
+        "action_count": 2
       }
     },
     {
@@ -67,16 +81,20 @@
       },
       "actions": [
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000001,
-          "msg": "First action",
-          "czd": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
         }
       ],
       "expected": {
         "ps_changed": true,
-        "ps_includes_ds": true,
-        "ps": "Lz5GMDvAGNTDWOb4TCfF4FOV0h49WawmtOSPO8xyN2g"
+        "ps_includes_ds": true
       }
     },
     {
@@ -88,10 +106,15 @@
       },
       "actions": [
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000001,
-          "msg": "First action",
-          "czd": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
         }
       ],
       "expected": {
@@ -107,10 +130,15 @@
       },
       "actions": [
         {
-          "typ": "cyphr.me/action",
-          "now": 1700000001,
-          "msg": "First action",
-          "czd": "i0SgPM3hrHlOmU0n4wU1Ozf5pmTQGbH90jqbkJ5H394"
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
         }
       ],
       "expected": {

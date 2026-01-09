@@ -1,7 +1,7 @@
 {
   "name": "transactions",
-  "description": "Transaction test vectors per SPEC §4.2",
-  "version": "0.1.0",
+  "description": "Transaction test vectors per SPEC §4.2 with actual signed Coz messages",
+  "version": "0.2.0",
   "keys": {
     "golden": {
       "alg": "ES256",
@@ -27,11 +27,21 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transaction": {
-        "type": "key/add",
-        "signer": "golden",
-        "add_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/add"
+        },
+        "key": {
+          "alg": "ES256",
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+        },
+        "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
       "expected": {
@@ -41,8 +51,8 @@
         "as_changed": true,
         "ps_changed": true,
         "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
-        "as": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8",
-        "ps": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8"
+        "as": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms",
+        "ps": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms"
       }
     },
     {
@@ -52,11 +62,21 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transaction": {
-        "type": "key/add",
-        "signer": "golden",
-        "add_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/add"
+        },
+        "key": {
+          "alg": "ES256",
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+        },
+        "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
       "expected": {
@@ -65,8 +85,8 @@
         "as_changed": true,
         "ps_changed": true,
         "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
-        "as": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8",
-        "ps": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8"
+        "as": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms",
+        "ps": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms"
       }
     },
     {
@@ -76,11 +96,16 @@
         "genesis": "explicit",
         "initial_keys": ["golden", "key_a"]
       },
-      "transaction": {
-        "type": "key/delete",
-        "signer": "golden",
-        "delete_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/delete"
+        },
+        "sig": "t6pMIApgJym77LaGAX7Ht-fL9Y6N0fRMsiOVwmbFXnIoNlgOGsQfT-pF4Ry6PSKr18Abv6aCNAeuLolP7-e8CQ",
         "czd": "0pnpK-SpGqFrMo-aG7m030_Wh2kLC3gWcC0Q3AXJjXI"
       },
       "expected": {
@@ -88,8 +113,8 @@
         "level": 3,
         "active_keys": ["golden"],
         "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "as": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ",
-        "ps": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ"
+        "as": "xuyUMVd2yauql9tTh_TCAgql7Pq1cz9NnliWPK66X1c",
+        "ps": "xuyUMVd2yauql9tTh_TCAgql7Pq1cz9NnliWPK66X1c"
       }
     },
     {
@@ -99,11 +124,21 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transaction": {
-        "type": "key/replace",
-        "signer": "golden",
-        "new_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/replace"
+        },
+        "key": {
+          "alg": "ES256",
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+        },
+        "sig": "mF75EZikIq3HgZjNGiUtt7bKwGUyc4oPmNApGNNFBjJCXYES7EAOJreEcq0ZYXchorjaw7KcrjGgexLHIvbrqQ",
         "czd": "7UpopTQkLdh4D3UCBsax33FjK9XoNGL45b2RF4Cd-e8"
       },
       "expected": {
@@ -112,8 +147,8 @@
         "signer_active": false,
         "pr_changed": false,
         "ks": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        "as": "JiMN8KLwH4BwW6kJDjq1dNaha6KbPLivxOQ8RBLSuMA",
-        "ps": "JiMN8KLwH4BwW6kJDjq1dNaha6KbPLivxOQ8RBLSuMA"
+        "as": "rXpvK14Y1Xh-4D3_QqBJf1Y5a9rTJFSY4CgPJji1H8Q",
+        "ps": "rXpvK14Y1Xh-4D3_QqBJf1Y5a9rTJFSY4CgPJji1H8Q"
       }
     },
     {
@@ -123,11 +158,15 @@
         "genesis": "explicit",
         "initial_keys": ["golden", "key_a"]
       },
-      "transaction": {
-        "type": "key/revoke",
-        "signer": "key_a",
-        "rvk": 1700000000,
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "now": 1700000000,
+          "rvk": 1700000000,
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "typ": "cyphr.me/key/revoke"
+        },
+        "sig": "TO3dbx4-gqgPnukDoZ_BrM4Pxo33dupjTJYKJzmTjpN_gTyWdm0FiBl_j6-2kJoDIGbUoBKm9_xO-E0QHcklqw",
         "czd": "Wlu1Hja7-DemNjkelNlWX56AlKmsNXJB9RvZs9b101Y"
       },
       "expected": {
@@ -136,8 +175,8 @@
         "revoked_keys": ["key_a"],
         "key_a_rvk": 1700000000,
         "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "as": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ",
-        "ps": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ"
+        "as": "35Xqki0MFPhWlnKVHq78rg92Jfb0elgQlYnws1GE99E",
+        "ps": "35Xqki0MFPhWlnKVHq78rg92Jfb0elgQlYnws1GE99E"
       }
     },
     {
@@ -147,12 +186,16 @@
         "genesis": "explicit",
         "initial_keys": ["golden", "key_a"]
       },
-      "transaction": {
-        "type": "key/revoke",
-        "signer": "golden",
-        "revoke_key": "key_a",
-        "rvk": 1700000000,
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "rvk": 1700000000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/revoke"
+        },
+        "sig": "BPuVJiEfyoDzWGuipTgA_UHwGCrPrAOQYM9LzgpjhuZ_IVv1TZ_6eW6LG8ZAKx5UCALTruVXPBe53mu7KDIQMg",
         "czd": "nPnfEQdbpujJTKlgwc2sGD9BKrGeTG4QJ2ef7fY-Twk"
       },
       "expected": {
@@ -160,8 +203,8 @@
         "active_keys": ["golden"],
         "revoked_keys": ["key_a"],
         "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "as": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ",
-        "ps": "-p8bLAhSvSYtaaokGWCz7ptRl7CVbMB6HSLYw7D_5MQ"
+        "as": "ftCu1TQT1NN1tbKueosY1RKDr_Gy9avRWk63Asbji6U",
+        "ps": "ftCu1TQT1NN1tbKueosY1RKDr_Gy9avRWk63Asbji6U"
       }
     },
     {
@@ -171,27 +214,52 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transactions": [
+      "coz_sequence": [
         {
-          "type": "key/add",
-          "signer": "golden",
-          "add_key": "key_a",
-          "now": 1700000001,
+          "pay": {
+            "alg": "ES256",
+            "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "now": 1700000001,
+            "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/add"
+          },
+          "key": {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          },
+          "sig": "7JQErUGhd0yJXq4rg_u_VQ2gtEdhV-iiK0ZzcolggMxclAus0bM1VeJDTOqIRYLE72SbVeQYI1SSlh3P7ehuFA",
           "czd": "aLTY8tZcHjdXPUkDWyApz-gBophyOL3438bCGGHr-wo"
         },
         {
-          "type": "key/add",
-          "signer": "golden",
-          "add_key": "key_b",
-          "now": 1700000002,
+          "pay": {
+            "alg": "ES256",
+            "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
+            "now": 1700000002,
+            "pre": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/add"
+          },
+          "key": {
+            "alg": "ES256",
+            "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
+            "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+          },
+          "sig": "_PPNziAPPdLRUn9E-Zu91yplWBWD-RAUDnzM0skCpZUTEg6QfIKneHWD84AON83BjtJcyO-5i-Awedv2Fv8xGA",
           "czd": "YBD2S6Fu0UMQZznSdF17DGFW0BagnzkctwWTctyuvcc"
         },
         {
-          "type": "key/delete",
-          "signer": "key_a",
-          "delete_key": "key_b",
-          "now": 1700000003,
-          "czd": "BzDQUaaSflls66rsN3dZTcwxQtZ7asZlkL6dqU0xWmg"
+          "pay": {
+            "alg": "ES256",
+            "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
+            "now": 1700000003,
+            "pre": "Lm93xrAZABTwb_DixgoHH5DRRV__SLZ9Ftu8k0QzWRE",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "typ": "cyphr.me/key/delete"
+          },
+          "sig": "8W3uu3m7qEGvNJfqaCd6Iw4J3XUQdV8v37l8UWHppUw3LEh3O0tL6IrIZn_-oCX_ZauwZ8JcKFN13Bux8WpKGw",
+          "czd": "nW7wLAwjjjjYzzhlIhUMRQfpWZVjmZlhhi2NJJox820"
         }
       ],
       "expected": {
@@ -199,8 +267,8 @@
         "active_keys": ["golden", "key_a"],
         "transaction_count": 3,
         "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
-        "as": "iYQ6meQjin6quqSmHDNZvhffcwQ1UGHYj0nrZ_P7tUw",
-        "ps": "iYQ6meQjin6quqSmHDNZvhffcwQ1UGHYj0nrZ_P7tUw"
+        "as": "BdtjpYJ8lFaFWHoTd8Njh2AjtnO2HIEsHEojpX_zvE0",
+        "ps": "BdtjpYJ8lFaFWHoTd8Njh2AjtnO2HIEsHEojpX_zvE0"
       }
     }
   ]

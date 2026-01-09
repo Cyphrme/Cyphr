@@ -1,7 +1,7 @@
 {
   "name": "state_computation",
   "description": "State computation test vectors per SPEC §7",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "keys": {
     "golden": {
       "alg": "ES256",
@@ -46,11 +46,21 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transaction": {
-        "type": "key/add",
-        "signer": "golden",
-        "add_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/add"
+        },
+        "key": {
+          "alg": "ES256",
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+        },
+        "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
       "expected": {
@@ -65,19 +75,34 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transactions": [
+      "coz_sequence": [
         {
-          "type": "key/add",
-          "signer": "golden",
-          "add_key": "key_a",
-          "now": 1700000001,
+          "pay": {
+            "alg": "ES256",
+            "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "now": 1700000001,
+            "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/add"
+          },
+          "key": {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          },
+          "sig": "7JQErUGhd0yJXq4rg_u_VQ2gtEdhV-iiK0ZzcolggMxclAus0bM1VeJDTOqIRYLE72SbVeQYI1SSlh3P7ehuFA",
           "czd": "aLTY8tZcHjdXPUkDWyApz-gBophyOL3438bCGGHr-wo"
         },
         {
-          "type": "key/delete",
-          "signer": "golden",
-          "delete_key": "key_a",
-          "now": 1700000002,
+          "pay": {
+            "alg": "ES256",
+            "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "now": 1700000002,
+            "pre": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/delete"
+          },
+          "sig": "9eKw3feDrShjmKQkHzwd1nStbvB5JvoQlBYfxhPkKf1hZF6nl-FG4B-738EkQoApHn0AINr37g1rqpoO9IOe6Q",
           "czd": "OBZ-gxOROWf_ZTbSgQEmEyPl0UuG-M24GpVGluw4el8"
         }
       ],
@@ -105,15 +130,25 @@
         "genesis": "implicit",
         "initial_key": "golden"
       },
-      "transaction": {
-        "type": "key/add",
-        "signer": "golden",
-        "add_key": "key_a",
-        "now": 1700000000,
+      "coz": {
+        "pay": {
+          "alg": "ES256",
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "now": 1700000000,
+          "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/key/add"
+        },
+        "key": {
+          "alg": "ES256",
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+        },
+        "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
       "expected": {
-        "as": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8",
+        "as": "M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms",
         "as_is_hash_of_ks_ts": true
       }
     },
@@ -137,9 +172,14 @@
         "initial_key": "golden"
       },
       "action": {
-        "typ": "cyphr.me/action",
-        "now": 1700000000,
-        "msg": "Test action for Level 4",
+        "pay": {
+          "alg": "ES256",
+          "now": 1700000000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/action",
+          "msg": "Test action for Level 4"
+        },
+        "sig": "IcPYft6zIuV1t0l6gTk9o9ptiJ1w0x5FypCm8_IYILUw_glOLrYetLgt3jQ_70afJlny07Gfe-0aBimI8Jihdg",
         "czd": "9sX_vRlabqbnlv2pAT1WMEDn9HTMrxyVAY_2WvKxOnU"
       },
       "expected": {
