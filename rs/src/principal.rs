@@ -5,11 +5,12 @@
 use coz::Thumbprint;
 use indexmap::IndexMap;
 
+use crate::action::Action;
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
-    AuthState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState, compute_as,
-    compute_ks, compute_ps,
+    AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
+    compute_as, compute_ds, compute_ks, compute_ps,
 };
 use crate::transaction::Transaction;
 
@@ -26,6 +27,13 @@ pub struct AuthLedger {
     pub revoked: IndexMap<String, Key>,
     /// Signed transactions.
     pub transactions: Vec<Transaction>,
+}
+
+/// Data ledger holding actions (Level 4+).
+#[derive(Debug, Clone, Default)]
+pub struct DataLedger {
+    /// All recorded actions.
+    pub actions: Vec<Action>,
 }
 
 // ============================================================================
@@ -67,8 +75,12 @@ pub struct Principal {
     ts: Option<TransactionState>,
     /// Current Auth State.
     auth_state: AuthState,
+    /// Current Data State (Level 4+).
+    ds: Option<DataState>,
     /// Auth ledger.
     auth: AuthLedger,
+    /// Data ledger (Level 4+).
+    data: DataLedger,
     /// Primary hash algorithm (from first key's alg).
     hash_alg: HashAlg,
 }
@@ -106,10 +118,12 @@ impl Principal {
             ks,
             ts: None,
             auth_state,
+            ds: None,
             auth: AuthLedger {
                 keys,
                 ..Default::default()
             },
+            data: DataLedger::default(),
             hash_alg,
         }
     }
@@ -149,10 +163,12 @@ impl Principal {
             ks,
             ts: None,
             auth_state,
+            ds: None,
             auth: AuthLedger {
                 keys: key_map,
                 ..Default::default()
             },
+            data: DataLedger::default(),
             hash_alg,
         })
     }
@@ -212,14 +228,58 @@ impl Principal {
 
     /// Determine the current feature level.
     pub fn level(&self) -> Level {
-        // Level 4 requires data layer (not yet implemented)
-        // Level 3 requires multiple keys or transactions
+        // Level 4: has actions
+        if !self.data.actions.is_empty() {
+            return Level::L4;
+        }
+        // Level 3: multiple keys or transactions
         if self.auth.keys.len() > 1 || !self.auth.transactions.is_empty() {
             return Level::L3;
         }
         // Level 2 if any key/replace occurred (detected by Transaction history)
         // For now, single key with no transactions = Level 1
         Level::L1
+    }
+
+    // ========================================================================
+    // Action recording (Level 4)
+    // ========================================================================
+
+    /// Record an action to the Data State (Level 4+).
+    ///
+    /// Returns the new Principal State after recording the action.
+    /// The action signature must be verified before calling this.
+    ///
+    /// # Errors
+    ///
+    /// - `UnknownKey`: Signer's key not in current KS
+    pub fn record_action(&mut self, action: Action) -> Result<&PrincipalState> {
+        // Verify signer is an active key
+        if !self.is_key_active(&action.signer) {
+            return Err(Error::UnknownKey);
+        }
+
+        // Record action
+        self.data.actions.push(action);
+
+        // Recompute DS
+        let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
+        self.ds = compute_ds(&czds, None, self.hash_alg);
+
+        // Recompute PS = H(sort(AS, DS?))
+        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, self.hash_alg);
+
+        Ok(&self.ps)
+    }
+
+    /// Get the current Data State (None if no actions).
+    pub fn data_state(&self) -> Option<&DataState> {
+        self.ds.as_ref()
+    }
+
+    /// Get the number of recorded actions.
+    pub fn action_count(&self) -> usize {
+        self.data.actions.len()
     }
 
     // ========================================================================
@@ -526,5 +586,68 @@ mod tests {
         let pr_after = principal.pr().as_cad().as_bytes().to_vec();
         // PR is permanent, never changes
         assert_eq!(pr_before, pr_after);
+    }
+
+    // ========================================================================
+    // Action recording tests (Level 4)
+    // ========================================================================
+
+    fn make_test_action(signer: &Thumbprint) -> Action {
+        use coz::{Czd, Pay, PayBuilder};
+
+        let pay = PayBuilder::new()
+            .typ("cyphr.me/comment/create")
+            .alg("ES256")
+            .now(3000)
+            .tmb(signer.clone())
+            .msg("Test action")
+            .build();
+        let czd = Czd::from_bytes(vec![0xCC; 32]);
+
+        Action::from_pay(pay, czd).unwrap()
+    }
+
+    #[test]
+    fn record_action_upgrades_to_level_4() {
+        let key = make_test_key(0xAA);
+        let mut principal = Principal::implicit(key.clone());
+
+        assert_eq!(principal.level(), Level::L1);
+        assert!(principal.data_state().is_none());
+
+        let action = make_test_action(&key.tmb);
+        principal.record_action(action).unwrap();
+
+        assert_eq!(principal.level(), Level::L4);
+        assert!(principal.data_state().is_some());
+        assert_eq!(principal.action_count(), 1);
+    }
+
+    #[test]
+    fn record_action_changes_ps() {
+        let key = make_test_key(0xBB);
+        let mut principal = Principal::implicit(key.clone());
+
+        let ps_before = principal.ps().as_cad().as_bytes().to_vec();
+
+        let action = make_test_action(&key.tmb);
+        principal.record_action(action).unwrap();
+
+        let ps_after = principal.ps().as_cad().as_bytes().to_vec();
+        // PS changes when DS is added
+        assert_ne!(ps_before, ps_after);
+    }
+
+    #[test]
+    fn record_action_unknown_signer_fails() {
+        let key = make_test_key(0xCC);
+        let mut principal = Principal::implicit(key);
+
+        // Try to record action from unknown key
+        let unknown_tmb = Thumbprint::from_bytes(vec![0xFF; 32]);
+        let action = make_test_action(&unknown_tmb);
+
+        let result = principal.record_action(action);
+        assert!(matches!(result, Err(Error::UnknownKey)));
     }
 }

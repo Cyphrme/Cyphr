@@ -17,6 +17,7 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
+pub mod action;
 pub mod error;
 pub mod key;
 pub mod principal;
@@ -24,6 +25,7 @@ pub mod state;
 pub mod transaction;
 
 // Re-exports
+pub use action::Action;
 pub use error::Error;
 pub use key::Key;
 pub use principal::Principal;
