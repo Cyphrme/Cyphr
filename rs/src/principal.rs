@@ -329,9 +329,12 @@ impl Principal {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
-                // Remove signer, add new key
-                self.remove_key(&tx.signer)?;
+                // Atomic swap: add new key first, then remove signer
+                // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, tx.now);
+                // Use shift_remove directly to bypass NoActiveKeys check
+                // (we just added a key, so this is safe)
+                self.auth.keys.shift_remove(&tx.signer.to_b64());
             },
             TransactionKind::SelfRevoke { rvk } => {
                 self.revoke_key(&tx.signer, *rvk, None)?;

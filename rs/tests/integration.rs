@@ -273,3 +273,404 @@ fn test_explicit_genesis() {
         );
     }
 }
+
+// ============================================================================
+// Transaction tests (C11.2)
+// ============================================================================
+
+/// Transaction test fixture structure.
+#[derive(Debug, Deserialize)]
+struct TransactionTestFile {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    version: String,
+    keys: std::collections::HashMap<String, KeyInput>,
+    tests: Vec<TransactionTestCase>,
+}
+
+/// A single transaction test case.
+#[derive(Debug, Deserialize)]
+struct TransactionTestCase {
+    name: String,
+    description: String,
+    setup: TransactionSetup,
+    #[serde(default)]
+    transaction: Option<TransactionInput>,
+    #[serde(default)]
+    transactions: Option<Vec<TransactionInput>>,
+    expected: TransactionExpected,
+}
+
+/// Setup for transaction tests.
+#[derive(Debug, Deserialize)]
+struct TransactionSetup {
+    genesis: String,
+    #[serde(default)]
+    initial_key: Option<String>,
+    #[serde(default)]
+    initial_keys: Option<Vec<String>>,
+}
+
+/// Transaction input.
+#[derive(Debug, Deserialize)]
+struct TransactionInput {
+    #[serde(rename = "type")]
+    tx_type: String,
+    signer: String,
+    #[serde(default)]
+    add_key: Option<String>,
+    #[serde(default)]
+    delete_key: Option<String>,
+    #[serde(default)]
+    new_key: Option<String>,
+    #[serde(default)]
+    revoke_key: Option<String>,
+    #[serde(default)]
+    rvk: Option<i64>,
+    now: i64,
+    #[allow(dead_code)]
+    czd: String,
+}
+
+/// Expected state after transaction.
+#[derive(Debug, Deserialize)]
+struct TransactionExpected {
+    #[serde(default)]
+    key_count: Option<usize>,
+    #[serde(default)]
+    level: Option<u8>,
+    #[serde(default)]
+    active_keys: Option<Vec<String>>,
+    #[serde(default)]
+    revoked_keys: Option<Vec<String>>,
+    #[serde(default)]
+    pr_changed: Option<bool>,
+    #[serde(default)]
+    as_changed: Option<bool>,
+    #[serde(default)]
+    ps_changed: Option<bool>,
+    #[serde(default)]
+    signer_active: Option<bool>,
+    #[serde(default)]
+    transaction_count: Option<usize>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    ks: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    ts: Option<String>,
+    #[allow(dead_code)]
+    #[serde(rename = "as", default)]
+    auth_state: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    ps: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pr: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    key_a_rvk: Option<i64>,
+}
+
+/// Load transaction test vectors.
+fn load_transaction_tests(name: &str) -> TransactionTestFile {
+    let path = test_vectors_dir()
+        .join("transactions")
+        .join(format!("{name}.json"));
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+    serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", path.display(), e))
+}
+
+#[test]
+fn test_transactions() {
+    use coz::Czd;
+    use cyphrpass::transaction::{Transaction, TransactionKind};
+
+    let vectors_path = test_vectors_dir()
+        .join("transactions")
+        .join("mutations.json");
+    if !vectors_path.exists() {
+        println!("Skipping transaction tests (fixture not yet created)");
+        return;
+    }
+
+    let fixture = load_transaction_tests("mutations");
+
+    for test in fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Setup: create principal with initial keys
+        let mut principal = match test.setup.genesis.as_str() {
+            "implicit" => {
+                let key_name = test
+                    .setup
+                    .initial_key
+                    .as_ref()
+                    .expect("implicit needs initial_key");
+                let key_input = fixture.keys.get(key_name).expect("key not found");
+                Principal::implicit(key_input.to_key()).expect("implicit genesis failed")
+            },
+            "explicit" => {
+                let key_names = test
+                    .setup
+                    .initial_keys
+                    .as_ref()
+                    .expect("explicit needs initial_keys");
+                let keys: Vec<Key> = key_names
+                    .iter()
+                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .collect();
+                Principal::explicit(keys).expect("explicit genesis failed")
+            },
+            _ => panic!("Unknown genesis type: {}", test.setup.genesis),
+        };
+
+        let initial_pr = cad_to_b64(principal.pr().as_cad());
+        let initial_as = cad_to_b64(principal.auth_state().as_cad());
+        let initial_ps = cad_to_b64(principal.ps().as_cad());
+
+        // Apply transaction(s)
+        let txs: Vec<&TransactionInput> = if let Some(ref tx) = test.transaction {
+            vec![tx]
+        } else if let Some(ref txs) = test.transactions {
+            txs.iter().collect()
+        } else {
+            panic!("{}: no transaction or transactions", test.name);
+        };
+
+        for tx_input in txs {
+            let signer_key = fixture
+                .keys
+                .get(&tx_input.signer)
+                .expect("signer not found");
+            let signer_tmb = &signer_key.to_key().tmb;
+
+            let kind = match tx_input.tx_type.as_str() {
+                "key/add" => {
+                    let add_key_name = tx_input.add_key.as_ref().expect("key/add needs add_key");
+                    let add_key = fixture.keys.get(add_key_name).expect("add_key not found");
+                    TransactionKind::KeyAdd {
+                        pre: principal.auth_state().clone(),
+                        id: add_key.to_key().tmb,
+                    }
+                },
+                "key/delete" => {
+                    let del_key_name = tx_input
+                        .delete_key
+                        .as_ref()
+                        .expect("key/delete needs delete_key");
+                    let del_key = fixture
+                        .keys
+                        .get(del_key_name)
+                        .expect("delete_key not found");
+                    TransactionKind::KeyDelete {
+                        pre: principal.auth_state().clone(),
+                        id: del_key.to_key().tmb,
+                    }
+                },
+                "key/replace" => {
+                    let new_key_name = tx_input
+                        .new_key
+                        .as_ref()
+                        .expect("key/replace needs new_key");
+                    let new_key = fixture.keys.get(new_key_name).expect("new_key not found");
+                    TransactionKind::KeyReplace {
+                        pre: principal.auth_state().clone(),
+                        id: new_key.to_key().tmb,
+                    }
+                },
+                "key/revoke" => {
+                    let rvk = tx_input.rvk.unwrap_or(tx_input.now);
+                    if let Some(ref revoke_key_name) = tx_input.revoke_key {
+                        // Other-revoke
+                        let revoke_key = fixture
+                            .keys
+                            .get(revoke_key_name)
+                            .expect("revoke_key not found");
+                        TransactionKind::OtherRevoke {
+                            pre: principal.auth_state().clone(),
+                            id: revoke_key.to_key().tmb,
+                            rvk,
+                        }
+                    } else {
+                        // Self-revoke
+                        TransactionKind::SelfRevoke { rvk }
+                    }
+                },
+                _ => panic!("Unknown tx type: {}", tx_input.tx_type),
+            };
+
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb.clone(),
+                now: tx_input.now,
+                czd: Czd::from_bytes(vec![0xAB; 32]), // Placeholder czd
+            };
+
+            // For key/add and key/replace, we need to provide the new key
+            let new_key_opt = match tx_input.tx_type.as_str() {
+                "key/add" => {
+                    let name = tx_input.add_key.as_ref().unwrap();
+                    Some(fixture.keys.get(name).unwrap().to_key())
+                },
+                "key/replace" => {
+                    let name = tx_input.new_key.as_ref().unwrap();
+                    Some(fixture.keys.get(name).unwrap().to_key())
+                },
+                _ => None,
+            };
+
+            principal
+                .apply_transaction(tx, new_key_opt)
+                .expect("transaction failed");
+        }
+
+        // Generate golden values if fixture has placeholders
+        let has_placeholder = test
+            .expected
+            .ks
+            .as_ref()
+            .is_some_and(|s| s.starts_with("PLACEHOLDER"))
+            || test
+                .expected
+                .auth_state
+                .as_ref()
+                .is_some_and(|s| s.starts_with("PLACEHOLDER"));
+        if has_placeholder {
+            println!(
+                "  [GENERATE] ks: \"{}\"",
+                cad_to_b64(principal.key_state().as_cad())
+            );
+            // TS is implicitly part of AS computation; not separately exposed
+            println!("  [GENERATE] ts: \"<computed internally>\"");
+            println!(
+                "  [GENERATE] as: \"{}\"",
+                cad_to_b64(principal.auth_state().as_cad())
+            );
+            println!(
+                "  [GENERATE] ps: \"{}\"",
+                cad_to_b64(principal.ps().as_cad())
+            );
+        }
+
+        // Verify expected state
+        if let Some(count) = test.expected.key_count {
+            assert_eq!(
+                principal.active_key_count(),
+                count,
+                "{}: key_count mismatch",
+                test.name
+            );
+        }
+
+        if let Some(level) = test.expected.level {
+            // Level enum: L1=0, L2=1, L3=2, L4=3; fixture uses 1-4
+            assert_eq!(
+                principal.level() as u8 + 1,
+                level,
+                "{}: level mismatch",
+                test.name
+            );
+        }
+
+        if let Some(ref active) = test.expected.active_keys {
+            for key_name in active {
+                let key = fixture.keys.get(key_name).expect("key not found");
+                assert!(
+                    principal.is_key_active(&key.to_key().tmb),
+                    "{}: {} should be active",
+                    test.name,
+                    key_name
+                );
+            }
+        }
+
+        if let Some(pr_changed) = test.expected.pr_changed {
+            let current_pr = cad_to_b64(principal.pr().as_cad());
+            assert_eq!(
+                current_pr != initial_pr,
+                pr_changed,
+                "{}: pr_changed mismatch",
+                test.name
+            );
+        }
+
+        if let Some(as_changed) = test.expected.as_changed {
+            let current_as = cad_to_b64(principal.auth_state().as_cad());
+            assert_eq!(
+                current_as != initial_as,
+                as_changed,
+                "{}: as_changed mismatch",
+                test.name
+            );
+        }
+
+        if let Some(ps_changed) = test.expected.ps_changed {
+            let current_ps = cad_to_b64(principal.ps().as_cad());
+            assert_eq!(
+                current_ps != initial_ps,
+                ps_changed,
+                "{}: ps_changed mismatch",
+                test.name
+            );
+        }
+
+        if let Some(signer_active) = test.expected.signer_active {
+            // Get the signer from the last transaction
+            if let Some(ref tx) = test.transaction {
+                let signer_key = fixture.keys.get(&tx.signer).expect("signer not found");
+                assert_eq!(
+                    principal.is_key_active(&signer_key.to_key().tmb),
+                    signer_active,
+                    "{}: signer_active mismatch",
+                    test.name
+                );
+            }
+        }
+
+        if let Some(tx_count) = test.expected.transaction_count {
+            // Note: transaction_count is internal tracking, for now just log
+            println!("  [INFO] expected transaction_count: {}", tx_count);
+        }
+
+        // Verify golden hash values (language-agnostic verification)
+        if let Some(ref expected_ks) = test.expected.ks {
+            if !expected_ks.starts_with("TODO") && !expected_ks.starts_with("PLACEHOLDER") {
+                assert_eq!(
+                    cad_to_b64(principal.key_state().as_cad()),
+                    *expected_ks,
+                    "{}: ks mismatch",
+                    test.name
+                );
+            }
+        }
+        if let Some(ref expected_as) = test.expected.auth_state {
+            if !expected_as.starts_with("TODO") && !expected_as.starts_with("PLACEHOLDER") {
+                assert_eq!(
+                    cad_to_b64(principal.auth_state().as_cad()),
+                    *expected_as,
+                    "{}: as mismatch",
+                    test.name
+                );
+            }
+        }
+        if let Some(ref expected_ps) = test.expected.ps {
+            if !expected_ps.starts_with("TODO") && !expected_ps.starts_with("PLACEHOLDER") {
+                assert_eq!(
+                    cad_to_b64(principal.ps().as_cad()),
+                    *expected_ps,
+                    "{}: ps mismatch",
+                    test.name
+                );
+            }
+        }
+
+        println!("  ✓ PASSED");
+    }
+}
