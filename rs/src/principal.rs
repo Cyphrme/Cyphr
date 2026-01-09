@@ -310,7 +310,7 @@ impl Principal {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
-                self.add_key(key);
+                self.add_key(key, tx.now);
             },
             TransactionKind::KeyDelete { pre, id } => {
                 self.verify_pre(pre)?;
@@ -324,7 +324,7 @@ impl Principal {
                 }
                 // Remove signer, add new key
                 self.remove_key(&tx.signer)?;
-                self.add_key(key);
+                self.add_key(key, tx.now);
             },
             TransactionKind::SelfRevoke { rvk } => {
                 self.revoke_key(&tx.signer, *rvk, None)?;
@@ -369,10 +369,11 @@ impl Principal {
         czd: coz::Czd,
         new_key: Option<Key>,
     ) -> Result<&AuthState> {
-        use crate::transaction::{verify_signature, Transaction};
+        use crate::transaction::{Transaction, verify_signature};
 
         // Parse Pay to get signer thumbprint
-        let pay: coz::Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+        let pay: coz::Pay =
+            serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
         let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
 
         // Look up signer key
@@ -399,7 +400,10 @@ impl Principal {
     }
 
     /// Add a key to the active key set.
-    fn add_key(&mut self, key: Key) {
+    ///
+    /// Sets `first_seen` to the given timestamp.
+    fn add_key(&mut self, mut key: Key, first_seen: i64) {
+        key.first_seen = first_seen;
         let tmb_b64 = key.tmb.to_b64();
         self.auth.keys.insert(tmb_b64, key);
     }
@@ -765,5 +769,29 @@ mod tests {
         assert_eq!(principal.active_key_count(), 1);
         assert!(principal.is_key_active(&key1.tmb));
         assert!(!principal.is_key_active(&key2.tmb));
+    }
+
+    // ========================================================================
+    // Key first_seen tests (C14)
+    // ========================================================================
+
+    #[test]
+    fn key_add_sets_first_seen_from_tx_now() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone());
+
+        let pre = principal.auth_state().clone();
+        let mut key2 = make_test_key(0x22);
+        key2.first_seen = 0; // Caller may not set this
+
+        // Transaction has now=2000
+        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+        assert_eq!(tx.now, 2000);
+
+        principal.apply_transaction(tx, Some(key2.clone())).unwrap();
+
+        // New key's first_seen should be set from tx.now
+        let added_key = principal.get_key(&key2.tmb).unwrap();
+        assert_eq!(added_key.first_seen, 2000);
     }
 }
