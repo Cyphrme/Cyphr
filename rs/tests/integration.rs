@@ -1197,3 +1197,219 @@ fn test_action_recording() {
         println!("  ✓ PASSED");
     }
 }
+
+// ============================================================================
+// Error condition tests (C11.5)
+// ============================================================================
+
+/// Error test fixture structure.
+#[derive(Debug, Deserialize)]
+struct ErrorTestFile {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    version: String,
+    keys: std::collections::HashMap<String, KeyInput>,
+    tests: Vec<ErrorTestCase>,
+}
+
+/// A single error test case.
+#[derive(Debug, Deserialize)]
+struct ErrorTestCase {
+    name: String,
+    description: String,
+    setup: ErrorSetup,
+    #[serde(default)]
+    transaction: Option<ErrorTransactionInput>,
+    expected_error: String,
+}
+
+/// Setup for error tests.
+#[derive(Debug, Deserialize)]
+struct ErrorSetup {
+    genesis: String,
+    #[serde(default)]
+    initial_key: Option<String>,
+    #[serde(default)]
+    initial_keys: Option<Vec<String>>,
+    #[serde(default)]
+    revoke_key: Option<String>,
+    #[serde(default)]
+    revoke_at: Option<i64>,
+    #[serde(default)]
+    unsupported_alg: Option<bool>,
+}
+
+/// Transaction input for error tests.
+#[derive(Debug, Deserialize)]
+struct ErrorTransactionInput {
+    #[serde(rename = "type")]
+    tx_type: String,
+    signer: String,
+    #[serde(default)]
+    add_key: Option<String>,
+    #[serde(default)]
+    delete_key: Option<String>,
+    #[serde(default)]
+    rvk: Option<i64>,
+    now: i64,
+    #[serde(default)]
+    pre_override: Option<String>,
+}
+
+#[test]
+fn test_error_conditions() {
+    use coz::Czd;
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphrpass::error::Error;
+    use cyphrpass::transaction::{Transaction, TransactionKind};
+
+    let vectors_path = test_vectors_dir().join("errors").join("conditions.json");
+    if !vectors_path.exists() {
+        println!("Skipping error condition tests (fixture not yet created)");
+        return;
+    }
+
+    let content = fs::read_to_string(&vectors_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", vectors_path.display(), e));
+    let fixture: ErrorTestFile = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", vectors_path.display(), e));
+
+    for test in fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Handle unsupported algorithm test specially
+        if test.setup.unsupported_alg == Some(true) {
+            let bad_key = Key {
+                alg: "BadAlg".to_string(),
+                tmb: coz::Thumbprint::from_bytes(vec![0xAA; 32]),
+                pub_key: vec![0xBB; 32],
+                first_seen: 0,
+                last_used: None,
+                revocation: None,
+                tag: None,
+            };
+            let result = Principal::implicit(bad_key);
+            match result {
+                Err(Error::UnsupportedAlgorithm(_)) => {
+                    println!("  ✓ PASSED (UnsupportedAlgorithm)");
+                    continue;
+                },
+                other => panic!(
+                    "{}: expected UnsupportedAlgorithm, got {:?}",
+                    test.name, other
+                ),
+            }
+        }
+
+        // Setup: create principal
+        let mut principal = match test.setup.genesis.as_str() {
+            "implicit" => {
+                let key_name = test.setup.initial_key.as_ref().expect("need initial_key");
+                let key_input = fixture.keys.get(key_name).expect("key not found");
+                Principal::implicit(key_input.to_key()).expect("genesis failed")
+            },
+            "explicit" => {
+                let key_names = test.setup.initial_keys.as_ref().expect("need initial_keys");
+                let keys: Vec<Key> = key_names
+                    .iter()
+                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .collect();
+                let mut p = Principal::explicit(keys).expect("genesis failed");
+
+                // Handle revoke_key setup
+                if let Some(ref revoke_name) = test.setup.revoke_key {
+                    let revoke_key = fixture.keys.get(revoke_name).expect("revoke key not found");
+                    let rvk = test.setup.revoke_at.unwrap_or(0);
+                    let tx = Transaction {
+                        kind: TransactionKind::SelfRevoke { rvk },
+                        signer: revoke_key.to_key().tmb,
+                        now: rvk,
+                        czd: Czd::from_bytes(vec![0xAB; 32]),
+                    };
+                    p.apply_transaction(tx, None).expect("setup revoke failed");
+                }
+                p
+            },
+            _ => panic!("Unknown genesis type"),
+        };
+
+        // Apply transaction and expect error
+        if let Some(ref tx_input) = test.transaction {
+            let signer_key = fixture
+                .keys
+                .get(&tx_input.signer)
+                .expect("signer not found");
+            let signer_tmb = signer_key.to_key().tmb;
+
+            // Determine pre value
+            let pre = if let Some(ref override_pre) = tx_input.pre_override {
+                let pre_bytes =
+                    Base64UrlUnpadded::decode_vec(override_pre).unwrap_or_else(|_| vec![0xFF; 32]);
+                cyphrpass::state::AuthState(coz::Cad::from_bytes(pre_bytes))
+            } else {
+                principal.auth_state().clone()
+            };
+
+            let kind = match tx_input.tx_type.as_str() {
+                "key/add" => {
+                    let add_key_name = tx_input.add_key.as_ref().expect("need add_key");
+                    let add_key = fixture.keys.get(add_key_name).expect("add_key not found");
+                    TransactionKind::KeyAdd {
+                        pre,
+                        id: add_key.to_key().tmb,
+                    }
+                },
+                "key/delete" => {
+                    let del_key_name = tx_input.delete_key.as_ref().expect("need delete_key");
+                    let del_key = fixture
+                        .keys
+                        .get(del_key_name)
+                        .expect("delete_key not found");
+                    TransactionKind::KeyDelete {
+                        pre,
+                        id: del_key.to_key().tmb,
+                    }
+                },
+                "key/revoke" => {
+                    let rvk = tx_input.rvk.unwrap_or(tx_input.now);
+                    TransactionKind::SelfRevoke { rvk }
+                },
+                _ => panic!("Unsupported tx type: {}", tx_input.tx_type),
+            };
+
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb,
+                now: tx_input.now,
+                czd: Czd::from_bytes(vec![0xAB; 32]),
+            };
+
+            let new_key_opt = if tx_input.tx_type == "key/add" {
+                let name = tx_input.add_key.as_ref().unwrap();
+                Some(fixture.keys.get(name).unwrap().to_key())
+            } else {
+                None
+            };
+
+            let result = principal.apply_transaction(tx, new_key_opt);
+
+            // Verify expected error
+            match (&test.expected_error[..], &result) {
+                ("InvalidPrior", Err(Error::InvalidPrior)) => {},
+                ("UnknownKey", Err(Error::UnknownKey)) => {},
+                ("KeyRevoked", Err(Error::KeyRevoked)) => {},
+                ("NoActiveKeys", Err(Error::NoActiveKeys)) => {},
+                ("DuplicateKey", Err(Error::DuplicateKey)) => {},
+                _ => panic!(
+                    "{}: expected error {}, got {:?}",
+                    test.name, test.expected_error, result
+                ),
+            }
+        }
+
+        println!("  ✓ PASSED ({})", test.expected_error);
+    }
+}

@@ -301,7 +301,8 @@ impl Principal {
     /// # Errors
     ///
     /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
-    /// - `KeyNotFound`: Referenced key doesn't exist
+    /// - `UnknownKey`: Signer key not in current KS
+    /// - `KeyRevoked`: Signer key has been revoked
     /// - `NoActiveKeys`: Would leave principal with no active keys
     pub fn apply_transaction(
         &mut self,
@@ -310,12 +311,27 @@ impl Principal {
     ) -> Result<&AuthState> {
         use crate::transaction::TransactionKind;
 
+        // Verify signer is an active key (except for self-revoke which is handled specially)
+        if !matches!(&tx.kind, TransactionKind::SelfRevoke { .. }) {
+            if !self.is_key_active(&tx.signer) {
+                // Check if key exists but is revoked
+                if self.auth.revoked.contains_key(&tx.signer.to_b64()) {
+                    return Err(Error::KeyRevoked);
+                }
+                return Err(Error::UnknownKey);
+            }
+        }
+
         match &tx.kind {
             TransactionKind::KeyAdd { pre, id } => {
                 self.verify_pre(pre)?;
                 let key = new_key.ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
+                }
+                // Check for duplicate key
+                if self.auth.keys.contains_key(&id.to_b64()) {
+                    return Err(Error::DuplicateKey);
                 }
                 self.add_key(key, tx.now);
             },

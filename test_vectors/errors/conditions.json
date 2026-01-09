@@ -1,0 +1,111 @@
+{
+  "name": "errors",
+  "description": "Error condition test vectors per SPEC §14",
+  "version": "0.1.0",
+  "keys": {
+    "golden": {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    "key_a": {
+      "alg": "ES256",
+      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+    },
+    "unknown_key": {
+      "alg": "ES256",
+      "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
+      "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+    }
+  },
+  "tests": [
+    {
+      "name": "pre_mismatch_fails",
+      "description": "Transaction with wrong `pre` value fails with InvalidPrior (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/add",
+        "signer": "golden",
+        "add_key": "key_a",
+        "now": 1700000000,
+        "pre_override": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "expected_error": "InvalidPrior"
+    },
+    {
+      "name": "unknown_key_fails",
+      "description": "Transaction signed by unknown key fails with UnknownKey (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/add",
+        "signer": "unknown_key",
+        "add_key": "key_a",
+        "now": 1700000000
+      },
+      "expected_error": "UnknownKey"
+    },
+    {
+      "name": "revoked_key_fails",
+      "description": "Transaction signed by revoked key fails with KeyRevoked (SPEC §14.1)",
+      "setup": {
+        "genesis": "explicit",
+        "initial_keys": ["golden", "key_a"],
+        "revoke_key": "key_a",
+        "revoke_at": 1699999999
+      },
+      "transaction": {
+        "type": "key/delete",
+        "signer": "key_a",
+        "delete_key": "golden",
+        "now": 1700000000
+      },
+      "expected_error": "KeyRevoked"
+    },
+    {
+      "name": "last_key_revoke_fails",
+      "description": "Self-revoke of last key fails with NoActiveKeys (Level 1 guard)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/revoke",
+        "signer": "golden",
+        "rvk": 1700000000,
+        "now": 1700000000
+      },
+      "expected_error": "NoActiveKeys"
+    },
+    {
+      "name": "unsupported_algorithm_fails",
+      "description": "Key with unsupported algorithm fails during genesis",
+      "setup": {
+        "genesis": "implicit",
+        "unsupported_alg": true
+      },
+      "expected_error": "UnsupportedAlgorithm"
+    },
+    {
+      "name": "duplicate_key_fails",
+      "description": "Adding key already in KS fails with DuplicateKey (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/add",
+        "signer": "golden",
+        "add_key": "golden",
+        "now": 1700000000
+      },
+      "expected_error": "DuplicateKey"
+    }
+  ]
+}
