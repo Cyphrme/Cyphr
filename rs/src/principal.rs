@@ -221,6 +221,138 @@ impl Principal {
         // For now, single key with no transactions = Level 1
         Level::L1
     }
+
+    // ========================================================================
+    // Transaction application
+    // ========================================================================
+
+    /// Apply a verified transaction to mutate principal state.
+    ///
+    /// Returns the new Auth State after applying the transaction.
+    /// The transaction must have been verified before calling this.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
+    /// - `KeyNotFound`: Referenced key doesn't exist
+    /// - `NoActiveKeys`: Would leave principal with no active keys
+    pub fn apply_transaction(
+        &mut self,
+        tx: Transaction,
+        new_key: Option<Key>,
+    ) -> Result<&AuthState> {
+        use crate::transaction::TransactionKind;
+
+        match &tx.kind {
+            TransactionKind::KeyAdd { pre, id } => {
+                self.verify_pre(pre)?;
+                let key = new_key.ok_or(Error::MalformedPayload)?;
+                if key.tmb.to_b64() != id.to_b64() {
+                    return Err(Error::MalformedPayload);
+                }
+                self.add_key(key);
+            },
+            TransactionKind::KeyDelete { pre, id } => {
+                self.verify_pre(pre)?;
+                self.remove_key(id)?;
+            },
+            TransactionKind::KeyReplace { pre, id } => {
+                self.verify_pre(pre)?;
+                let key = new_key.ok_or(Error::MalformedPayload)?;
+                if key.tmb.to_b64() != id.to_b64() {
+                    return Err(Error::MalformedPayload);
+                }
+                // Remove signer, add new key
+                self.remove_key(&tx.signer)?;
+                self.add_key(key);
+            },
+            TransactionKind::SelfRevoke { rvk } => {
+                self.revoke_key(&tx.signer, *rvk, None)?;
+            },
+            TransactionKind::OtherRevoke { pre, id, rvk } => {
+                self.verify_pre(pre)?;
+                self.revoke_key(id, *rvk, Some(tx.signer.clone()))?;
+            },
+        }
+
+        // Record transaction and recompute state
+        self.auth.transactions.push(tx);
+        self.recompute_state();
+
+        Ok(&self.auth_state)
+    }
+
+    /// Verify that `pre` matches current Auth State.
+    fn verify_pre(&self, pre: &AuthState) -> Result<()> {
+        if self.auth_state.as_cad().as_bytes() != pre.as_cad().as_bytes() {
+            return Err(Error::InvalidPrior);
+        }
+        Ok(())
+    }
+
+    /// Add a key to the active key set.
+    fn add_key(&mut self, key: Key) {
+        let tmb_b64 = key.tmb.to_b64();
+        self.auth.keys.insert(tmb_b64, key);
+    }
+
+    /// Remove a key from the active key set (delete, not revoke).
+    fn remove_key(&mut self, tmb: &Thumbprint) -> Result<()> {
+        let tmb_b64 = tmb.to_b64();
+        if self.auth.keys.shift_remove(&tmb_b64).is_none() {
+            return Err(Error::UnknownKey);
+        }
+        if self.auth.keys.is_empty() {
+            return Err(Error::NoActiveKeys);
+        }
+        Ok(())
+    }
+
+    /// Revoke a key (marks as revoked, moves to revoked set).
+    fn revoke_key(&mut self, tmb: &Thumbprint, rvk: i64, by: Option<Thumbprint>) -> Result<()> {
+        use crate::key::Revocation;
+
+        let tmb_b64 = tmb.to_b64();
+        let mut key = self
+            .auth
+            .keys
+            .shift_remove(&tmb_b64)
+            .ok_or(Error::UnknownKey)?;
+
+        // Set revocation
+        key.revocation = Some(Revocation { rvk, by });
+
+        // Move to revoked set for historical verification
+        self.auth.revoked.insert(tmb_b64, key);
+
+        // Can't leave principal with no keys
+        if self.auth.keys.is_empty() {
+            return Err(Error::NoActiveKeys);
+        }
+
+        Ok(())
+    }
+
+    /// Recompute all state digests after mutation.
+    fn recompute_state(&mut self) {
+        use crate::state::compute_ts;
+
+        // Recompute KS from active keys
+        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        self.ks = compute_ks(&thumbprints, None, self.hash_alg);
+
+        // Recompute TS from transactions
+        let czds: Vec<&coz::Czd> = self.auth.transactions.iter().map(|t| &t.czd).collect();
+        self.ts = compute_ts(&czds, None, self.hash_alg);
+
+        // Recompute AS = H(sort(KS, TS?))
+        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, self.hash_alg);
+
+        // Recompute PS = H(sort(AS, DS?)) - no DS yet
+        self.ps = compute_ps(&self.auth_state, None, None, self.hash_alg);
+
+        // PR never changes
+    }
 }
 
 // ============================================================================
@@ -309,5 +441,90 @@ mod tests {
         let pr_bytes = principal.pr().as_cad().as_bytes().to_vec();
         let ps_bytes = principal.ps().as_cad().as_bytes().to_vec();
         assert_eq!(pr_bytes, ps_bytes);
+    }
+
+    // ========================================================================
+    // Transaction application tests
+    // ========================================================================
+
+    fn make_key_add_tx(pre: &AuthState, new_key: &Key, signer: &Thumbprint) -> Transaction {
+        use coz::Czd;
+
+        use crate::state::AuthState;
+        use crate::transaction::{Transaction, TransactionKind};
+
+        Transaction {
+            kind: TransactionKind::KeyAdd {
+                pre: AuthState(pre.as_cad().clone()),
+                id: new_key.tmb.clone(),
+            },
+            signer: signer.clone(),
+            now: 2000,
+            czd: Czd::from_bytes(vec![0xAB; 32]),
+        }
+    }
+
+    #[test]
+    fn apply_key_add_increases_key_count() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone());
+
+        let pre = principal.auth_state().clone();
+        let key2 = make_test_key(0x22);
+        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+
+        principal.apply_transaction(tx, Some(key2.clone())).unwrap();
+
+        assert_eq!(principal.active_key_count(), 2);
+        assert!(principal.is_key_active(&key2.tmb));
+        assert_eq!(principal.level(), Level::L3);
+    }
+
+    #[test]
+    fn apply_key_add_changes_state() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone());
+
+        let old_as = principal.auth_state().as_cad().as_bytes().to_vec();
+        let pre = principal.auth_state().clone();
+        let key2 = make_test_key(0x22);
+        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+
+        principal.apply_transaction(tx, Some(key2)).unwrap();
+
+        let new_as = principal.auth_state().as_cad().as_bytes().to_vec();
+        // Auth state must change after adding key
+        assert_ne!(old_as, new_as);
+    }
+
+    #[test]
+    fn apply_key_add_pre_mismatch_fails() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone());
+
+        // Wrong pre value
+        let wrong_pre = AuthState(coz::Cad::from_bytes(vec![0xFF; 32]));
+        let key2 = make_test_key(0x22);
+        let tx = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
+
+        let result = principal.apply_transaction(tx, Some(key2));
+        assert!(matches!(result, Err(Error::InvalidPrior)));
+    }
+
+    #[test]
+    fn pr_unchanged_after_transaction() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone());
+
+        let pr_before = principal.pr().as_cad().as_bytes().to_vec();
+        let pre = principal.auth_state().clone();
+        let key2 = make_test_key(0x22);
+        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+
+        principal.apply_transaction(tx, Some(key2)).unwrap();
+
+        let pr_after = principal.pr().as_cad().as_bytes().to_vec();
+        // PR is permanent, never changes
+        assert_eq!(pr_before, pr_after);
     }
 }
