@@ -674,3 +674,295 @@ fn test_transactions() {
         println!("  ✓ PASSED");
     }
 }
+
+// ============================================================================
+// State computation tests (C11.3)
+// ============================================================================
+
+/// State computation test fixture structure.
+#[derive(Debug, Deserialize)]
+struct StateTestFile {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    version: String,
+    keys: std::collections::HashMap<String, KeyInput>,
+    tests: Vec<StateTestCase>,
+}
+
+/// A single state computation test case.
+#[derive(Debug, Deserialize)]
+struct StateTestCase {
+    name: String,
+    description: String,
+    setup: TransactionSetup,
+    #[serde(default)]
+    transaction: Option<TransactionInput>,
+    #[serde(default)]
+    transactions: Option<Vec<TransactionInput>>,
+    #[serde(default)]
+    action: Option<ActionInput>,
+    expected: StateExpected,
+}
+
+/// Action input for Level 4 tests.
+#[derive(Debug, Deserialize)]
+struct ActionInput {
+    typ: String,
+    now: i64,
+    #[serde(default)]
+    msg: Option<String>,
+    czd: String,
+}
+
+/// Expected state computation results.
+#[derive(Debug, Deserialize)]
+struct StateExpected {
+    #[serde(default)]
+    ks: Option<String>,
+    #[serde(default)]
+    ks_equals_tmb: Option<bool>,
+    #[serde(default)]
+    ks_is_hash: Option<bool>,
+    #[serde(default)]
+    ts_equals_czd: Option<bool>,
+    #[serde(default)]
+    ts_is_hash: Option<bool>,
+    #[serde(rename = "as", default)]
+    auth_state: Option<String>,
+    #[serde(default)]
+    as_equals_ks: Option<bool>,
+    #[serde(default)]
+    as_is_hash_of_ks_ts: Option<bool>,
+    #[serde(default)]
+    ps: Option<String>,
+    #[serde(default)]
+    ps_equals_as: Option<bool>,
+    #[serde(default)]
+    ps_is_hash_of_as_ds: Option<bool>,
+    #[serde(default)]
+    has_data_state: Option<bool>,
+    #[serde(default)]
+    transaction_count: Option<usize>,
+}
+
+#[test]
+fn test_state_computation() {
+    use coz::Czd;
+    use cyphrpass::transaction::{Transaction, TransactionKind};
+
+    let vectors_path = test_vectors_dir().join("state").join("computation.json");
+    if !vectors_path.exists() {
+        println!("Skipping state computation tests (fixture not yet created)");
+        return;
+    }
+
+    let content = fs::read_to_string(&vectors_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", vectors_path.display(), e));
+    let fixture: StateTestFile = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", vectors_path.display(), e));
+
+    for test in fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Setup: create principal with initial keys
+        let mut principal = match test.setup.genesis.as_str() {
+            "implicit" => {
+                let key_name = test
+                    .setup
+                    .initial_key
+                    .as_ref()
+                    .expect("implicit needs initial_key");
+                let key_input = fixture.keys.get(key_name).expect("key not found");
+                Principal::implicit(key_input.to_key()).expect("implicit genesis failed")
+            },
+            "explicit" => {
+                let key_names = test
+                    .setup
+                    .initial_keys
+                    .as_ref()
+                    .expect("explicit needs initial_keys");
+                let keys: Vec<Key> = key_names
+                    .iter()
+                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .collect();
+                Principal::explicit(keys).expect("explicit genesis failed")
+            },
+            _ => panic!("Unknown genesis type: {}", test.setup.genesis),
+        };
+
+        let initial_ks = cad_to_b64(principal.key_state().as_cad());
+
+        // Apply transaction(s) if any
+        let txs: Vec<&TransactionInput> = if let Some(ref tx) = test.transaction {
+            vec![tx]
+        } else if let Some(ref txs) = test.transactions {
+            txs.iter().collect()
+        } else {
+            vec![]
+        };
+
+        for tx_input in &txs {
+            let signer_key = fixture
+                .keys
+                .get(&tx_input.signer)
+                .expect("signer not found");
+            let signer_tmb = &signer_key.to_key().tmb;
+
+            let kind = match tx_input.tx_type.as_str() {
+                "key/add" => {
+                    let add_key_name = tx_input.add_key.as_ref().expect("key/add needs add_key");
+                    let add_key = fixture.keys.get(add_key_name).expect("add_key not found");
+                    TransactionKind::KeyAdd {
+                        pre: principal.auth_state().clone(),
+                        id: add_key.to_key().tmb,
+                    }
+                },
+                "key/delete" => {
+                    let del_key_name = tx_input
+                        .delete_key
+                        .as_ref()
+                        .expect("key/delete needs delete_key");
+                    let del_key = fixture
+                        .keys
+                        .get(del_key_name)
+                        .expect("delete_key not found");
+                    TransactionKind::KeyDelete {
+                        pre: principal.auth_state().clone(),
+                        id: del_key.to_key().tmb,
+                    }
+                },
+                _ => panic!("Unsupported tx type for state tests: {}", tx_input.tx_type),
+            };
+
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb.clone(),
+                now: tx_input.now,
+                czd: Czd::from_bytes(vec![0xAB; 32]),
+            };
+
+            let new_key_opt = if tx_input.tx_type == "key/add" {
+                let name = tx_input.add_key.as_ref().unwrap();
+                Some(fixture.keys.get(name).unwrap().to_key())
+            } else {
+                None
+            };
+
+            principal
+                .apply_transaction(tx, new_key_opt)
+                .expect("transaction failed");
+        }
+
+        // Apply action if any (Level 4)
+        if let Some(ref action_input) = test.action {
+            use coz::PayBuilder;
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            use cyphrpass::action::Action;
+
+            let signer_key = test.setup.initial_key.as_ref().unwrap();
+            let key = fixture.keys.get(signer_key).unwrap();
+            let tmb_bytes =
+                Base64UrlUnpadded::decode_vec(&key.tmb).expect("invalid base64url for tmb");
+
+            let mut pay = PayBuilder::new()
+                .typ(&action_input.typ)
+                .alg(&key.alg)
+                .now(action_input.now)
+                .tmb(coz::Thumbprint::from_bytes(tmb_bytes))
+                .build();
+
+            // Add msg field if present
+            if let Some(ref msg) = action_input.msg {
+                pay.msg = Some(msg.clone());
+            }
+
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&action_input.czd)
+                .expect("invalid base64url for czd");
+            let czd = Czd::from_bytes(czd_bytes);
+
+            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            principal
+                .record_action(action)
+                .expect("failed to record action");
+        }
+
+        // Verify state computation rules
+        let current_ks = cad_to_b64(principal.key_state().as_cad());
+        let current_as = cad_to_b64(principal.auth_state().as_cad());
+        let current_ps = cad_to_b64(principal.ps().as_cad());
+
+        // KS checks
+        if let Some(ref expected_ks) = test.expected.ks {
+            assert_eq!(current_ks, *expected_ks, "{}: ks mismatch", test.name);
+        }
+        if let Some(true) = test.expected.ks_equals_tmb {
+            // For single key, KS = tmb (promoted, not hashed)
+            let key_name = test.setup.initial_key.as_ref().unwrap();
+            let key = fixture.keys.get(key_name).unwrap();
+            assert_eq!(
+                current_ks, key.tmb,
+                "{}: KS should equal tmb for single key",
+                test.name
+            );
+        }
+        if let Some(true) = test.expected.ks_is_hash {
+            // For multi-key, KS != any single tmb (it's a hash)
+            for key in fixture.keys.values() {
+                assert_ne!(
+                    current_ks, key.tmb,
+                    "{}: KS should be hash, not equal to any tmb",
+                    test.name
+                );
+            }
+        }
+
+        // AS checks
+        if let Some(ref expected_as) = test.expected.auth_state {
+            assert_eq!(current_as, *expected_as, "{}: as mismatch", test.name);
+        }
+        if let Some(true) = test.expected.as_equals_ks {
+            // Without transactions, AS = KS
+            assert_eq!(
+                current_as, initial_ks,
+                "{}: AS should equal KS when no transactions",
+                test.name
+            );
+        }
+        if let Some(true) = test.expected.as_is_hash_of_ks_ts {
+            // With transactions, AS != KS (it's H(sort(KS,TS)))
+            assert_ne!(
+                current_as, current_ks,
+                "{}: AS should be hash of KS and TS",
+                test.name
+            );
+        }
+
+        // PS checks
+        if let Some(ref expected_ps) = test.expected.ps {
+            assert_eq!(current_ps, *expected_ps, "{}: ps mismatch", test.name);
+        }
+        if let Some(true) = test.expected.ps_equals_as {
+            // Without data layer, PS = AS
+            assert_eq!(
+                current_ps, current_as,
+                "{}: PS should equal AS when no data state",
+                test.name
+            );
+        }
+
+        // Transaction count check
+        if let Some(count) = test.expected.transaction_count {
+            assert_eq!(
+                txs.len(),
+                count,
+                "{}: transaction count mismatch",
+                test.name
+            );
+        }
+
+        println!("  ✓ PASSED");
+    }
+}

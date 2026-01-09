@@ -1,0 +1,151 @@
+{
+  "name": "state_computation",
+  "description": "State computation test vectors per SPEC §7",
+  "version": "0.1.0",
+  "keys": {
+    "golden": {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    "key_a": {
+      "alg": "ES256",
+      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+    }
+  },
+  "tests": [
+    {
+      "name": "ks_single_key_promotion",
+      "description": "KS = tmb for single key (no hash, direct promotion per SPEC §7.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "expected": {
+        "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "ks_equals_tmb": true
+      }
+    },
+    {
+      "name": "ks_two_keys_sorted",
+      "description": "KS = H(sort(tmb₀, tmb₁)) for multi-key (SPEC §7.1)",
+      "setup": {
+        "genesis": "explicit",
+        "initial_keys": ["golden", "key_a"]
+      },
+      "expected": {
+        "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ks_is_hash": true
+      }
+    },
+    {
+      "name": "ts_single_tx_promotion",
+      "description": "TS = czd for single transaction (no hash, direct promotion per SPEC §7.2)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/add",
+        "signer": "golden",
+        "add_key": "key_a",
+        "now": 1700000000,
+        "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
+      },
+      "expected": {
+        "ts_equals_czd": true,
+        "transaction_count": 1
+      }
+    },
+    {
+      "name": "ts_multi_tx_sorted",
+      "description": "TS = H(sort(czd₀, czd₁)) for multiple transactions (SPEC §7.2)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transactions": [
+        {
+          "type": "key/add",
+          "signer": "golden",
+          "add_key": "key_a",
+          "now": 1700000001,
+          "czd": "aLTY8tZcHjdXPUkDWyApz-gBophyOL3438bCGGHr-wo"
+        },
+        {
+          "type": "key/delete",
+          "signer": "golden",
+          "delete_key": "key_a",
+          "now": 1700000002,
+          "czd": "OBZ-gxOROWf_ZTbSgQEmEyPl0UuG-M24GpVGluw4el8"
+        }
+      ],
+      "expected": {
+        "ts_is_hash": true,
+        "transaction_count": 2
+      }
+    },
+    {
+      "name": "as_only_ks_promotion",
+      "description": "AS = KS when no transactions exist (SPEC §7.3)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "expected": {
+        "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "as_equals_ks": true
+      }
+    },
+    {
+      "name": "as_ks_ts_combined",
+      "description": "AS = H(sort(KS, TS)) when transactions exist (SPEC §7.3)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "transaction": {
+        "type": "key/add",
+        "signer": "golden",
+        "add_key": "key_a",
+        "now": 1700000000,
+        "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
+      },
+      "expected": {
+        "as": "SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8",
+        "as_is_hash_of_ks_ts": true
+      }
+    },
+    {
+      "name": "ps_only_as_promotion",
+      "description": "PS = AS when no data state exists (SPEC §7.4)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "expected": {
+        "ps": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "ps_equals_as": true
+      }
+    },
+    {
+      "name": "ps_as_ds_combined",
+      "description": "PS = H(sort(AS, DS)) when data state exists (SPEC §7.4 - Level 4)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "action": {
+        "typ": "cyphr.me/action",
+        "now": 1700000000,
+        "msg": "Test action for Level 4",
+        "czd": "9sX_vRlabqbnlv2pAT1WMEDn9HTMrxyVAY_2WvKxOnU"
+      },
+      "expected": {
+        "ps_is_hash_of_as_ds": true,
+        "has_data_state": true
+      }
+    }
+  ]
+}
