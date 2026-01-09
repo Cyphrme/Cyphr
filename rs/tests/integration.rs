@@ -7,8 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use coz::Thumbprint;
+use cyphrpass::Principal;
 use cyphrpass::key::Key;
-use cyphrpass::{HashAlg, Principal};
 use serde::Deserialize;
 
 // ============================================================================
@@ -206,6 +206,27 @@ fn test_explicit_genesis() {
         let domain_keys: Vec<Key> = keys.iter().map(|k| k.to_key()).collect();
         let principal = Principal::explicit(domain_keys).expect("genesis should succeed");
 
+        // Print computed values for fixture generation (useful for bootstrapping)
+        if test.expected.pr.starts_with("PLACEHOLDER") {
+            println!(
+                "  [GENERATE] pr: \"{}\"",
+                cad_to_b64(principal.pr().as_cad())
+            );
+            println!(
+                "  [GENERATE] ps: \"{}\"",
+                cad_to_b64(principal.ps().as_cad())
+            );
+            println!(
+                "  [GENERATE] as: \"{}\"",
+                cad_to_b64(principal.auth_state().as_cad())
+            );
+            println!(
+                "  [GENERATE] ks: \"{}\"",
+                cad_to_b64(principal.key_state().as_cad())
+            );
+            continue; // Skip assertions for placeholder tests
+        }
+
         // Verify expected states
         assert_eq!(
             cad_to_b64(principal.pr().as_cad()),
@@ -217,6 +238,30 @@ fn test_explicit_genesis() {
             cad_to_b64(principal.ps().as_cad()),
             test.expected.ps,
             "{}: PS mismatch",
+            test.name
+        );
+        assert_eq!(
+            cad_to_b64(principal.auth_state().as_cad()),
+            test.expected.auth_state,
+            "{}: AS mismatch",
+            test.name
+        );
+        assert_eq!(
+            cad_to_b64(principal.key_state().as_cad()),
+            test.expected.ks,
+            "{}: KS mismatch",
+            test.name
+        );
+
+        // TS and DS should be None for genesis
+        assert!(
+            test.expected.ts.is_none(),
+            "{}: expected TS to be null",
+            test.name
+        );
+        assert!(
+            test.expected.ds.is_none(),
+            "{}: expected DS to be null",
             test.name
         );
 

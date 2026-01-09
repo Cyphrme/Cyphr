@@ -1,0 +1,65 @@
+{
+  "name": "explicit_genesis",
+  "description": "Explicit multi-key genesis test vectors per SPEC §3.7",
+  "version": "0.1.0",
+  "tests": [
+    {
+      "name": "explicit_genesis_two_keys_es256",
+      "description": "Level 3 explicit genesis with two ES256 keys. PR = H(sort(tmb0, tmb1)).",
+      "input": {
+        "type": "explicit_genesis",
+        "keys": [
+          {
+            "alg": "ES256",
+            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+          },
+          {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          }
+        ]
+      },
+      "expected": {
+        "pr": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ps": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "as": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ts": null,
+        "ds": null,
+        "level": 3,
+        "error": null
+      }
+    },
+    {
+      "name": "explicit_genesis_idempotent_order",
+      "description": "Idempotency: Keys in different order produce same PR (verifies sorting).",
+      "input": {
+        "type": "explicit_genesis",
+        "keys": [
+          {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          },
+          {
+            "alg": "ES256",
+            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+          }
+        ]
+      },
+      "expected": {
+        "pr": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ps": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "as": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ks": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
+        "ts": null,
+        "ds": null,
+        "level": 3,
+        "error": null
+      }
+    }
+  ]
+}
