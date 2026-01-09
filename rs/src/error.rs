@@ -78,6 +78,10 @@ pub enum Error {
     #[error("no active keys")]
     NoActiveKeys,
 
+    /// Algorithm not supported.
+    #[error("unsupported algorithm: {0}")]
+    UnsupportedAlgorithm(String),
+
     /// Underlying Coz error.
     #[error("coz: {0}")]
     Coz(#[from] coz::Error),

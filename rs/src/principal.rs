@@ -96,8 +96,12 @@ impl Principal {
     /// - `PR = PS = AS = KS = tmb` (fully promoted)
     ///
     /// This is the Level 1/2 genesis path.
-    pub fn implicit(key: Key) -> Self {
-        let hash_alg = HashAlg::from_alg(&key.alg);
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
+    pub fn implicit(key: Key) -> Result<Self> {
+        let hash_alg = HashAlg::from_alg(&key.alg)?;
         let tmb_b64 = key.tmb.to_b64();
 
         // KS = tmb (single key promotes)
@@ -112,7 +116,7 @@ impl Principal {
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64, key);
 
-        Self {
+        Ok(Self {
             pr,
             ps,
             ks,
@@ -125,7 +129,7 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
-        }
+        })
     }
 
     /// Create a principal with explicit genesis (multiple keys).
@@ -139,7 +143,7 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        let hash_alg = HashAlg::from_alg(&keys[0].alg);
+        let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
 
         // Collect thumbprints for KS computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
@@ -508,7 +512,7 @@ mod tests {
     #[test]
     fn implicit_genesis_single_key() {
         let key = make_test_key(0xAA);
-        let principal = Principal::implicit(key.clone());
+        let principal = Principal::implicit(key.clone()).unwrap();
 
         // Level 1: PR = PS = AS = KS = tmb
         assert_eq!(principal.pr().as_cad().as_bytes(), key.tmb.as_bytes());
@@ -527,7 +531,7 @@ mod tests {
     fn implicit_genesis_has_one_active_key() {
         let key = make_test_key(0xBB);
         let tmb = key.tmb.clone();
-        let principal = Principal::implicit(key);
+        let principal = Principal::implicit(key).unwrap();
 
         assert_eq!(principal.active_key_count(), 1);
         assert!(principal.is_key_active(&tmb));
@@ -562,7 +566,7 @@ mod tests {
     #[test]
     fn pr_is_immutable_across_reference() {
         let key = make_test_key(0xCC);
-        let principal = Principal::implicit(key);
+        let principal = Principal::implicit(key).unwrap();
 
         // PR should be the same as PS at genesis
         let pr_bytes = principal.pr().as_cad().as_bytes().to_vec();
@@ -594,7 +598,7 @@ mod tests {
     #[test]
     fn apply_key_add_increases_key_count() {
         let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone());
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let pre = principal.auth_state().clone();
         let key2 = make_test_key(0x22);
@@ -610,7 +614,7 @@ mod tests {
     #[test]
     fn apply_key_add_changes_state() {
         let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone());
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let old_as = principal.auth_state().as_cad().as_bytes().to_vec();
         let pre = principal.auth_state().clone();
@@ -627,7 +631,7 @@ mod tests {
     #[test]
     fn apply_key_add_pre_mismatch_fails() {
         let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone());
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Wrong pre value
         let wrong_pre = AuthState(coz::Cad::from_bytes(vec![0xFF; 32]));
@@ -641,7 +645,7 @@ mod tests {
     #[test]
     fn pr_unchanged_after_transaction() {
         let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone());
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let pr_before = principal.pr().as_cad().as_bytes().to_vec();
         let pre = principal.auth_state().clone();
@@ -677,7 +681,7 @@ mod tests {
     #[test]
     fn record_action_upgrades_to_level_4() {
         let key = make_test_key(0xAA);
-        let mut principal = Principal::implicit(key.clone());
+        let mut principal = Principal::implicit(key.clone()).unwrap();
 
         assert_eq!(principal.level(), Level::L1);
         assert!(principal.data_state().is_none());
@@ -693,7 +697,7 @@ mod tests {
     #[test]
     fn record_action_changes_ps() {
         let key = make_test_key(0xBB);
-        let mut principal = Principal::implicit(key.clone());
+        let mut principal = Principal::implicit(key.clone()).unwrap();
 
         let ps_before = principal.ps().as_cad().as_bytes().to_vec();
 
@@ -708,7 +712,7 @@ mod tests {
     #[test]
     fn record_action_unknown_signer_fails() {
         let key = make_test_key(0xCC);
-        let mut principal = Principal::implicit(key);
+        let mut principal = Principal::implicit(key).unwrap();
 
         // Try to record action from unknown key
         let unknown_tmb = Thumbprint::from_bytes(vec![0xFF; 32]);
@@ -729,7 +733,7 @@ mod tests {
         use crate::transaction::{Transaction, TransactionKind};
 
         let key = make_test_key(0xDD);
-        let mut principal = Principal::implicit(key.clone());
+        let mut principal = Principal::implicit(key.clone()).unwrap();
 
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
@@ -787,7 +791,7 @@ mod tests {
     #[test]
     fn key_add_sets_first_seen_from_tx_now() {
         let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone());
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let pre = principal.auth_state().clone();
         let mut key2 = make_test_key(0x22);

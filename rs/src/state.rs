@@ -111,12 +111,16 @@ pub enum HashAlg {
 
 impl HashAlg {
     /// Get hash algorithm from signing algorithm name.
-    pub fn from_alg(alg: &str) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedAlgorithm` if the algorithm is not recognized.
+    pub fn from_alg(alg: &str) -> crate::error::Result<Self> {
         match alg {
-            "ES256" => Self::Sha256,
-            "ES384" => Self::Sha384,
-            "ES512" | "Ed25519" => Self::Sha512,
-            _ => Self::Sha256, // Default
+            "ES256" => Ok(Self::Sha256),
+            "ES384" => Ok(Self::Sha384),
+            "ES512" | "Ed25519" => Ok(Self::Sha512),
+            _ => Err(crate::error::Error::UnsupportedAlgorithm(alg.to_string())),
         }
     }
 }
