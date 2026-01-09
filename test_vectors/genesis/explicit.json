@@ -33,6 +33,40 @@
       }
     },
     {
+      "name": "explicit_genesis_three_keys",
+      "description": "Level 3 explicit genesis with three ES256 keys. Verifies sorting order with 3+ keys.",
+      "input": {
+        "type": "explicit_genesis",
+        "keys": [
+          {
+            "alg": "ES256",
+            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+          },
+          {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          },
+          {
+            "alg": "ES256",
+            "pub": "SkREZtbEprEhxqoazXFGG8VUMJXInC5H4Kx6b0-jx0-tToAYjGJYB63K_YhXRfLWM3XAChrg-PGYN_RY8M66kg",
+            "tmb": "-g8dQJM6IF7Ot9BV-SGiXj7mL7Lg_9wJqzTUJc6s_xU"
+          }
+        ]
+      },
+      "expected": {
+        "pr": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
+        "ps": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
+        "as": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
+        "ks": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
+        "ts": null,
+        "ds": null,
+        "level": 3,
+        "error": null
+      }
+    },
+    {
       "name": "explicit_genesis_idempotent_order",
       "description": "Idempotency: Keys in different order produce same PR (verifies sorting).",
       "input": {
