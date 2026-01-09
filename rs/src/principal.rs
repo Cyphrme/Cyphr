@@ -342,6 +342,54 @@ impl Principal {
         Ok(&self.auth_state)
     }
 
+    /// Verify signature and apply a transaction in one step.
+    ///
+    /// This is the primary method for processing incoming transactions.
+    /// It verifies the signature against the signer's key, parses the
+    /// transaction, and applies it atomically.
+    ///
+    /// # Arguments
+    ///
+    /// * `pay_json` - Raw JSON bytes of the Pay object
+    /// * `sig` - Signature bytes
+    /// * `czd` - Coz digest for this transaction
+    /// * `new_key` - New key to add (required for KeyAdd/KeyReplace)
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: Signature doesn't verify
+    /// - `UnknownKey`: Signer not in active key set
+    /// - `MalformedPayload`: Missing required fields
+    /// - `InvalidPrior`: `pre` doesn't match current AS
+    /// - `NoActiveKeys`: Would leave principal with no keys
+    pub fn verify_and_apply_transaction(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        new_key: Option<Key>,
+    ) -> Result<&AuthState> {
+        use crate::transaction::{verify_signature, Transaction};
+
+        // Parse Pay to get signer thumbprint
+        let pay: coz::Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+        let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
+
+        // Look up signer key
+        let signer_key = self.get_key(signer_tmb).ok_or(Error::UnknownKey)?;
+
+        // Verify signature
+        if !verify_signature(pay_json, sig, signer_key) {
+            return Err(Error::InvalidSignature);
+        }
+
+        // Parse transaction
+        let tx = Transaction::parse(&pay, czd)?;
+
+        // Apply
+        self.apply_transaction(tx, new_key)
+    }
+
     /// Verify that `pre` matches current Auth State.
     fn verify_pre(&self, pre: &AuthState) -> Result<()> {
         if self.auth_state.as_cad().as_bytes() != pre.as_cad().as_bytes() {
