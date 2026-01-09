@@ -369,26 +369,32 @@ impl Principal {
     }
 
     /// Revoke a key (marks as revoked, moves to revoked set).
+    ///
+    /// # Errors
+    ///
+    /// - `UnknownKey`: Key not found in active set
+    /// - `NoActiveKeys`: Would leave principal with no active keys
     fn revoke_key(&mut self, tmb: &Thumbprint, rvk: i64, by: Option<Thumbprint>) -> Result<()> {
         use crate::key::Revocation;
 
         let tmb_b64 = tmb.to_b64();
-        let mut key = self
-            .auth
-            .keys
-            .shift_remove(&tmb_b64)
-            .ok_or(Error::UnknownKey)?;
 
-        // Set revocation
+        // Check if key exists
+        if !self.auth.keys.contains_key(&tmb_b64) {
+            return Err(Error::UnknownKey);
+        }
+
+        // Check BEFORE mutation: would this leave us with no keys?
+        if self.auth.keys.len() == 1 {
+            return Err(Error::NoActiveKeys);
+        }
+
+        // Safe to proceed - remove and revoke
+        let mut key = self.auth.keys.shift_remove(&tmb_b64).unwrap();
         key.revocation = Some(Revocation { rvk, by });
 
         // Move to revoked set for historical verification
         self.auth.revoked.insert(tmb_b64, key);
-
-        // Can't leave principal with no keys
-        if self.auth.keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
 
         Ok(())
     }
@@ -649,5 +655,67 @@ mod tests {
 
         let result = principal.record_action(action);
         assert!(matches!(result, Err(Error::UnknownKey)));
+    }
+
+    // ========================================================================
+    // Self-revoke guard tests (C12)
+    // ========================================================================
+
+    #[test]
+    fn self_revoke_last_key_prevented() {
+        use coz::Czd;
+
+        use crate::transaction::{Transaction, TransactionKind};
+
+        let key = make_test_key(0xDD);
+        let mut principal = Principal::implicit(key.clone());
+
+        // Level 1: single key, self-revoke should fail
+        assert_eq!(principal.level(), Level::L1);
+
+        let tx = Transaction {
+            kind: TransactionKind::SelfRevoke { rvk: 2000 },
+            signer: key.tmb.clone(),
+            now: 2000,
+            czd: Czd::from_bytes(vec![0xEE; 32]),
+        };
+
+        let result = principal.apply_transaction(tx, None);
+        assert!(matches!(result, Err(Error::NoActiveKeys)));
+
+        // Key should still be active (no mutation occurred)
+        assert_eq!(principal.active_key_count(), 1);
+        assert!(principal.is_key_active(&key.tmb));
+    }
+
+    #[test]
+    fn revoke_allowed_when_multiple_keys() {
+        let key1 = make_test_key(0x11);
+        let key2 = make_test_key(0x22);
+        let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
+
+        assert_eq!(principal.active_key_count(), 2);
+
+        // Revoke key2 via other-revoke
+        use coz::Czd;
+
+        use crate::transaction::{Transaction, TransactionKind};
+
+        let tx = Transaction {
+            kind: TransactionKind::OtherRevoke {
+                pre: principal.auth_state().clone(),
+                id: key2.tmb.clone(),
+                rvk: 2000,
+            },
+            signer: key1.tmb.clone(),
+            now: 2000,
+            czd: Czd::from_bytes(vec![0xFF; 32]),
+        };
+
+        principal.apply_transaction(tx, None).unwrap();
+
+        assert_eq!(principal.active_key_count(), 1);
+        assert!(principal.is_key_active(&key1.tmb));
+        assert!(!principal.is_key_active(&key2.tmb));
     }
 }
