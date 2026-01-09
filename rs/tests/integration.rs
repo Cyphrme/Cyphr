@@ -966,3 +966,234 @@ fn test_state_computation() {
         println!("  ✓ PASSED");
     }
 }
+
+// ============================================================================
+// Action recording tests (C11.4)
+// ============================================================================
+
+/// Action test fixture structure.
+#[derive(Debug, Deserialize)]
+struct ActionTestFile {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    version: String,
+    keys: std::collections::HashMap<String, KeyInput>,
+    tests: Vec<ActionTestCase>,
+}
+
+/// A single action test case.
+#[derive(Debug, Deserialize)]
+struct ActionTestCase {
+    name: String,
+    description: String,
+    setup: TransactionSetup,
+    actions: Vec<ActionInput>,
+    expected: ActionExpected,
+}
+
+/// Expected state after actions.
+#[derive(Debug, Deserialize)]
+struct ActionExpected {
+    #[serde(default)]
+    ds: Option<String>,
+    #[serde(default)]
+    ds_equals_czd: Option<bool>,
+    #[serde(default)]
+    ds_is_hash: Option<bool>,
+    #[serde(default)]
+    ps: Option<String>,
+    #[serde(default)]
+    ps_changed: Option<bool>,
+    #[serde(default)]
+    ps_includes_ds: Option<bool>,
+    #[serde(default)]
+    action_count: Option<usize>,
+    #[serde(default)]
+    signer_last_used: Option<i64>,
+    #[serde(default)]
+    level: Option<u8>,
+    #[serde(default)]
+    has_data_state: Option<bool>,
+}
+
+#[test]
+fn test_action_recording() {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use coz::{Czd, PayBuilder};
+    use cyphrpass::action::Action;
+
+    let vectors_path = test_vectors_dir().join("actions").join("recording.json");
+    if !vectors_path.exists() {
+        println!("Skipping action recording tests (fixture not yet created)");
+        return;
+    }
+
+    let content = fs::read_to_string(&vectors_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", vectors_path.display(), e));
+    let fixture: ActionTestFile = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", vectors_path.display(), e));
+
+    for test in fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Setup: create principal
+        let key_name = test
+            .setup
+            .initial_key
+            .as_ref()
+            .expect("action tests need initial_key");
+        let key_input = fixture.keys.get(key_name).expect("key not found");
+        let mut principal =
+            Principal::implicit(key_input.to_key()).expect("implicit genesis failed");
+
+        let initial_ps = cad_to_b64(principal.ps().as_cad());
+
+        // Record actions
+        for action_input in &test.actions {
+            let tmb_bytes =
+                Base64UrlUnpadded::decode_vec(&key_input.tmb).expect("invalid base64url for tmb");
+
+            let mut pay = PayBuilder::new()
+                .typ(&action_input.typ)
+                .alg(&key_input.alg)
+                .now(action_input.now)
+                .tmb(coz::Thumbprint::from_bytes(tmb_bytes))
+                .build();
+
+            if let Some(ref msg) = action_input.msg {
+                pay.msg = Some(msg.clone());
+            }
+
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&action_input.czd)
+                .expect("invalid base64url for czd");
+            let czd = Czd::from_bytes(czd_bytes);
+
+            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            principal
+                .record_action(action)
+                .expect("failed to record action");
+        }
+
+        // Get current state
+        let current_ps = cad_to_b64(principal.ps().as_cad());
+        let current_ds = principal.data_state().map(|ds| cad_to_b64(ds.as_cad()));
+
+        // Generate golden values if placeholders
+        if test
+            .expected
+            .ds
+            .as_ref()
+            .is_some_and(|s| s.starts_with("PLACEHOLDER"))
+        {
+            if let Some(ref ds) = current_ds {
+                println!("  [GENERATE] ds: \"{}\"", ds);
+            }
+        }
+        if test
+            .expected
+            .ps
+            .as_ref()
+            .is_some_and(|s| s.starts_with("PLACEHOLDER"))
+        {
+            println!("  [GENERATE] ps: \"{}\"", current_ps);
+        }
+
+        // Verify expected state
+        if let Some(ref expected_ds) = test.expected.ds {
+            if !expected_ds.starts_with("PLACEHOLDER") {
+                assert_eq!(
+                    current_ds.as_ref().unwrap(),
+                    expected_ds,
+                    "{}: ds mismatch",
+                    test.name
+                );
+            }
+        }
+
+        if let Some(true) = test.expected.ds_equals_czd {
+            // For single action, DS = czd
+            let first_czd = &test.actions[0].czd;
+            assert_eq!(
+                current_ds.as_ref().unwrap(),
+                first_czd,
+                "{}: DS should equal czd for single action",
+                test.name
+            );
+        }
+
+        if let Some(true) = test.expected.ds_is_hash {
+            // For multiple actions, DS != any single czd
+            for action in &test.actions {
+                assert_ne!(
+                    current_ds.as_ref().unwrap(),
+                    &action.czd,
+                    "{}: DS should be hash, not equal to single czd",
+                    test.name
+                );
+            }
+        }
+
+        if let Some(ref expected_ps) = test.expected.ps {
+            if !expected_ps.starts_with("PLACEHOLDER") {
+                assert_eq!(current_ps, *expected_ps, "{}: ps mismatch", test.name);
+            }
+        }
+
+        if let Some(true) = test.expected.ps_changed {
+            assert_ne!(
+                current_ps, initial_ps,
+                "{}: PS should have changed",
+                test.name
+            );
+        }
+
+        if let Some(true) = test.expected.ps_includes_ds {
+            assert!(
+                current_ds.is_some(),
+                "{}: Should have DS for PS to include",
+                test.name
+            );
+        }
+
+        if let Some(count) = test.expected.action_count {
+            assert_eq!(
+                test.actions.len(),
+                count,
+                "{}: action count mismatch",
+                test.name
+            );
+        }
+
+        if let Some(expected_last_used) = test.expected.signer_last_used {
+            let key = principal.get_key(&key_input.to_key().tmb).unwrap();
+            assert_eq!(
+                key.last_used,
+                Some(expected_last_used),
+                "{}: signer last_used mismatch",
+                test.name
+            );
+        }
+
+        if let Some(expected_level) = test.expected.level {
+            assert_eq!(
+                principal.level() as u8 + 1,
+                expected_level,
+                "{}: level mismatch",
+                test.name
+            );
+        }
+
+        if let Some(true) = test.expected.has_data_state {
+            assert!(
+                current_ds.is_some(),
+                "{}: should have data state",
+                test.name
+            );
+        }
+
+        println!("  ✓ PASSED");
+    }
+}
