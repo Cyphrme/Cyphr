@@ -263,6 +263,9 @@ impl Principal {
             return Err(Error::UnknownKey);
         }
 
+        // Update signer's last_used timestamp
+        self.update_last_used(&action.signer, action.now);
+
         // Record action
         self.data.actions.push(action);
 
@@ -338,6 +341,9 @@ impl Principal {
                 self.revoke_key(id, *rvk, Some(tx.signer.clone()))?;
             },
         }
+
+        // Update signer's last_used timestamp
+        self.update_last_used(&tx.signer, tx.now);
 
         // Record transaction and recompute state
         self.auth.transactions.push(tx);
@@ -462,6 +468,16 @@ impl Principal {
         self.auth.revoked.insert(tmb_b64, key);
 
         Ok(())
+    }
+
+    /// Update a key's last_used timestamp.
+    ///
+    /// Called after successful transaction or action signing.
+    fn update_last_used(&mut self, tmb: &Thumbprint, timestamp: i64) {
+        let tmb_b64 = tmb.to_b64();
+        if let Some(key) = self.auth.keys.get_mut(&tmb_b64) {
+            key.last_used = Some(timestamp);
+        }
     }
 
     /// Recompute all state digests after mutation.
@@ -841,5 +857,56 @@ mod tests {
 
         // get_key still finds it (for historical verification)
         assert!(principal.get_key(&key2.tmb).is_some());
+    }
+
+    // ========================================================================
+    // Last-used tracking tests (C17)
+    // ========================================================================
+
+    #[test]
+    fn transaction_updates_signer_last_used() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
+
+        // Initially, last_used should be None
+        assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
+
+        // Apply a key/add transaction with now=5000
+        let pre = principal.auth_state().clone();
+        let key2 = make_test_key(0x22);
+
+        use coz::Czd;
+
+        use crate::transaction::{Transaction, TransactionKind};
+        let tx = Transaction {
+            kind: TransactionKind::KeyAdd {
+                pre,
+                id: key2.tmb.clone(),
+            },
+            signer: key1.tmb.clone(),
+            now: 5000,
+            czd: Czd::from_bytes(vec![0xBB; 32]),
+        };
+        principal.apply_transaction(tx, Some(key2)).unwrap();
+
+        // Signer's last_used should now be 5000
+        assert_eq!(principal.get_key(&key1.tmb).unwrap().last_used, Some(5000));
+    }
+
+    #[test]
+    fn action_updates_signer_last_used() {
+        let key = make_test_key(0xAA);
+        let mut principal = Principal::implicit(key.clone()).unwrap();
+
+        assert!(principal.get_key(&key.tmb).unwrap().last_used.is_none());
+
+        // Record action with now=7000
+        let action = make_test_action(&key.tmb);
+        // Our test helper uses now=3000, let's verify that
+        assert_eq!(action.now, 3000);
+
+        principal.record_action(action).unwrap();
+
+        assert_eq!(principal.get_key(&key.tmb).unwrap().last_used, Some(3000));
     }
 }
