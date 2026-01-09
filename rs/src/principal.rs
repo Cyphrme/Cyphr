@@ -376,7 +376,16 @@ impl Principal {
             serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
         let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
 
-        // Look up signer key
+        // Signer must be an ACTIVE key (not revoked)
+        if !self.is_key_active(signer_tmb) {
+            // Check if it's revoked vs unknown
+            if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {
+                return Err(Error::KeyRevoked);
+            }
+            return Err(Error::UnknownKey);
+        }
+
+        // Look up signer key (guaranteed active now)
         let signer_key = self.get_key(signer_tmb).ok_or(Error::UnknownKey)?;
 
         // Verify signature
@@ -793,5 +802,40 @@ mod tests {
         // New key's first_seen should be set from tx.now
         let added_key = principal.get_key(&key2.tmb).unwrap();
         assert_eq!(added_key.first_seen, 2000);
+    }
+
+    // ========================================================================
+    // Revoked key guard tests (C15)
+    // ========================================================================
+
+    #[test]
+    fn revoked_key_in_revoked_set() {
+        use coz::Czd;
+
+        use crate::transaction::{Transaction, TransactionKind};
+
+        let key1 = make_test_key(0x11);
+        let key2 = make_test_key(0x22);
+        let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
+
+        // Revoke key2
+        let tx = Transaction {
+            kind: TransactionKind::OtherRevoke {
+                pre: principal.auth_state().clone(),
+                id: key2.tmb.clone(),
+                rvk: 1500,
+            },
+            signer: key1.tmb.clone(),
+            now: 1500,
+            czd: Czd::from_bytes(vec![0xAA; 32]),
+        };
+        principal.apply_transaction(tx, None).unwrap();
+
+        // key2 should be in revoked set, not active
+        assert!(!principal.is_key_active(&key2.tmb));
+        assert!(principal.auth.revoked.contains_key(&key2.tmb.to_b64()));
+
+        // get_key still finds it (for historical verification)
+        assert!(principal.get_key(&key2.tmb).is_some());
     }
 }
