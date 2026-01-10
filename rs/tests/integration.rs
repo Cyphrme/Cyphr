@@ -751,6 +751,8 @@ struct StateExpected {
     has_data_state: Option<bool>,
     #[serde(default)]
     transaction_count: Option<usize>,
+    #[serde(default)]
+    key_count: Option<usize>,
 }
 
 #[test]
@@ -1391,5 +1393,195 @@ fn test_error_conditions() {
         }
 
         println!("  ✓ PASSED ({})", test.expected_error);
+    }
+}
+
+// ============================================================================
+// Edge case tests (C11.6)
+// ============================================================================
+
+#[test]
+fn test_edge_cases() {
+    use coz::Czd;
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphrpass::action::Action;
+
+    let vectors_path = test_vectors_dir().join("edge_cases").join("ordering.json");
+    if !vectors_path.exists() {
+        println!("Skipping edge case tests (fixture not yet created)");
+        return;
+    }
+
+    let content = fs::read_to_string(&vectors_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", vectors_path.display(), e));
+    let fixture: StateTestFile = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", vectors_path.display(), e));
+
+    println!("\n=== Edge Case Tests ===\n");
+
+    for test in &fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Setup principal
+        let mut principal = if test.setup.genesis == "implicit" {
+            let key_name = test
+                .setup
+                .initial_key
+                .as_ref()
+                .expect("implicit needs initial_key");
+            let key_input = fixture.keys.get(key_name).expect("key not found");
+            Principal::implicit(key_input.to_key()).expect("genesis failed")
+        } else {
+            let key_names = test
+                .setup
+                .initial_keys
+                .as_ref()
+                .expect("explicit needs initial_keys");
+            let keys: Vec<Key> = key_names
+                .iter()
+                .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                .collect();
+            Principal::explicit(keys).expect("genesis failed")
+        };
+
+        // Helper to apply a CozMessage
+        fn apply_edge_coz(principal: &mut Principal, coz: &CozMessage, fixture: &StateTestFile) {
+            use coz::Czd;
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            use cyphrpass::transaction::{Transaction, TransactionKind};
+
+            let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
+            let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+            let pre = if let Some(ref pre_str) = coz.pay.pre {
+                let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                cyphrpass::state::AuthState(coz::Cad::from_bytes(pre_bytes))
+            } else {
+                principal.auth_state().clone()
+            };
+
+            let kind = if coz.pay.typ.ends_with("/key/add") {
+                let id_str = coz.pay.id.as_ref().expect("key/add needs id");
+                let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
+                TransactionKind::KeyAdd {
+                    pre,
+                    id: coz::Thumbprint::from_bytes(id_bytes),
+                }
+            } else if coz.pay.typ.ends_with("/key/delete") {
+                let id_str = coz.pay.id.as_ref().expect("key/delete needs id");
+                let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
+                TransactionKind::KeyDelete {
+                    pre,
+                    id: coz::Thumbprint::from_bytes(id_bytes),
+                }
+            } else {
+                panic!("Unsupported tx type for edge tests: {}", coz.pay.typ);
+            };
+
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd");
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb,
+                now: coz.pay.now,
+                czd: Czd::from_bytes(czd_bytes),
+            };
+
+            let new_key = coz.key.as_ref().map(|k| k.to_key());
+            principal
+                .apply_transaction(tx, new_key)
+                .expect("transaction failed");
+        }
+
+        // Apply transaction(s)
+        if let Some(ref coz) = test.coz {
+            apply_edge_coz(&mut principal, coz, &fixture);
+        } else if let Some(ref coz_seq) = test.coz_sequence {
+            for coz in coz_seq {
+                apply_edge_coz(&mut principal, coz, &fixture);
+            }
+        }
+
+        // Apply action if present
+        if let Some(ref action_input) = test.action {
+            use coz::PayBuilder;
+
+            // All action fields come from the pay object directly
+            let tmb_bytes =
+                Base64UrlUnpadded::decode_vec(&action_input.pay.tmb).expect("invalid tmb");
+
+            let mut pay = PayBuilder::new()
+                .typ(&action_input.pay.typ)
+                .alg(&action_input.pay.alg)
+                .now(action_input.pay.now)
+                .tmb(coz::Thumbprint::from_bytes(tmb_bytes))
+                .build();
+
+            if let Some(ref msg_val) = action_input.pay.msg {
+                pay.msg = Some(msg_val.clone());
+            }
+
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&action_input.czd).expect("invalid czd");
+            let czd = Czd::from_bytes(czd_bytes);
+
+            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            principal
+                .record_action(action)
+                .expect("failed to record action");
+        }
+
+        // Verify expectations
+        if let Some(ref expected_ks) = test.expected.ks {
+            if !expected_ks.starts_with("PLACEHOLDER") {
+                let actual_ks = cad_to_b64(principal.key_state().as_cad());
+                assert_eq!(actual_ks, *expected_ks, "{}: ks mismatch", test.name);
+            } else {
+                // Generate mode
+                println!(
+                    "  [GENERATE] ks: \"{}\"",
+                    cad_to_b64(principal.key_state().as_cad())
+                );
+            }
+        }
+
+        if let Some(key_count) = test.expected.key_count {
+            assert_eq!(
+                principal.active_key_count(),
+                key_count,
+                "{}: key_count mismatch",
+                test.name
+            );
+        }
+
+        if let Some(true) = test.expected.has_data_state {
+            assert!(
+                principal.data_state().is_some(),
+                "{}: expected data state to exist",
+                test.name
+            );
+        }
+
+        if let Some(true) = test.expected.ps_is_hash_of_as_ds {
+            // Verify PS is computed from AS and DS
+            let ds = principal
+                .data_state()
+                .expect("no data state for PS hash check");
+            let as_cad = principal.auth_state().as_cad();
+            let ds_cad = ds.as_cad();
+
+            // PS should not equal either AS or DS alone
+            let ps_cad = principal.ps().as_cad();
+            assert_ne!(
+                ps_cad, as_cad,
+                "{}: PS should not equal AS alone",
+                test.name
+            );
+            assert_ne!(
+                ps_cad, ds_cad,
+                "{}: PS should not equal DS alone",
+                test.name
+            );
+        }
+
+        println!("  ✓ PASSED");
     }
 }
