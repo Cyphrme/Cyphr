@@ -21,33 +21,38 @@ The fixture's Tx2 `pre` value was incorrect:
 
 **Go tests now validate fixture `pre`**: The Go integration tests verify that each fixture `pre` value matches the computed AS before applying transactions. This catches fixture data errors.
 
-**TODO (Rust)**: Update Rust integration tests (`rs/tests/integration.rs`) to validate fixture `pre` values instead of computing from live state. This would make Rust tests stricter and catch fixture bugs.
+**Fixed (Rust)**: Updated Rust integration tests to validate fixture `pre` values. Tests now assert fixture `pre` matches computed AS before applying transactions.
 
 ### 3. Rust: Implement unsupported algorithm test from fixture
 
-**Status**: TODO
+**Status**: FIXED
 
-The `errors/conditions.json` fixture now includes `unsupported_key` with algorithm `RS256`. The Rust integration tests should be updated to:
+The Rust integration tests now load `unsupported_key` from the fixture and verify genesis returns `UnsupportedAlgorithm` error. This replaces the old `unsupported_alg` flag approach.
 
-1. Load and use this key from the fixture (not skip the test)
-2. Verify that genesis returns `UnsupportedAlgorithm` error
-3. Add algorithm validation to `Principal::implicit()` if not already present
+### 4. `ts_multi_tx_sorted` Tx2 had incorrect `pre` value (FIXED)
+
+**Status**: Fixed in both Go and Rust
+
+The `state/computation.json` fixture's `ts_multi_tx_sorted` test had an incorrect `pre` value for Tx2:
+
+- Wrong: `M4yNEaCQiWrNDKd6XrERMzZL9gBHXidU4wWq45xX6ms`
+- Correct: `f6-Goy9lj_fprCjDRMaGbTMNbuQ4FDRC5L1vAqJG2p8`
+
+**Root cause**: Go state tests were skipping transaction-based tests, so the incorrect value was never validated.
+
+**Fix**:
+
+1. Updated fixture with correct `pre` value
+2. Expanded Go state tests to run ALL tests (not just genesis-only)
+3. Rust tests caught this with the new fixture `pre` validation
 
 ---
 
-## Rust Integration Test Design Note
+## Integration Test Design Note (RESOLVED)
 
-The Rust integration tests (`rs/tests/integration.rs`) construct the `pre` field from the principal's **current computed auth state** rather than using the fixture's `pre` value:
+Both Go and Rust integration tests now validate fixture `pre` values per SPEC §15.6.
 
-```rust
-TransactionKind::KeyAdd {
-    pre: principal.auth_state().clone(),  // Uses live state, not fixture
-    id: ...
-}
-```
+**Previous behavior** (Rust): Used live `auth_state()` instead of fixture `pre`
+**Current behavior** (Both): Validate fixture `pre` matches computed AS, then use fixture value
 
-This means the Rust tests validate correctness of the state machine but do **not** validate that fixture `pre` values are correct. This is why missing/incorrect `pre` fields in fixtures weren't detected by Rust tests.
-
-The Go integration tests use the fixture's `pre` value directly, which is why these issues were discovered during Go implementation.
-
-**Recommendation**: Consider adding fixture `pre` validation to Rust tests to catch fixture errors.
+This catches fixture data errors during testing.

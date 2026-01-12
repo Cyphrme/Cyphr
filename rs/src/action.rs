@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn action_from_pay_with_custom_fields() {
-        let mut pay = PayBuilder::new()
+        let pay = PayBuilder::new()
             .typ("example/data")
             .alg("ES256")
             .now(2000)

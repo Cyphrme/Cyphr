@@ -43,7 +43,7 @@ impl Key {
     ///
     /// Critical for validating historical transactions.
     pub fn is_active_at(&self, timestamp: i64) -> bool {
-        self.revocation.as_ref().map_or(true, |r| timestamp < r.rvk)
+        self.revocation.as_ref().is_none_or(|r| timestamp < r.rvk)
     }
 }
 

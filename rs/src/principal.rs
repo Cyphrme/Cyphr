@@ -312,14 +312,14 @@ impl Principal {
         use crate::transaction::TransactionKind;
 
         // Verify signer is an active key (except for self-revoke which is handled specially)
-        if !matches!(&tx.kind, TransactionKind::SelfRevoke { .. }) {
-            if !self.is_key_active(&tx.signer) {
-                // Check if key exists but is revoked
-                if self.auth.revoked.contains_key(&tx.signer.to_b64()) {
-                    return Err(Error::KeyRevoked);
-                }
-                return Err(Error::UnknownKey);
+        if !matches!(&tx.kind, TransactionKind::SelfRevoke { .. })
+            && !self.is_key_active(&tx.signer)
+        {
+            // Check if key exists but is revoked
+            if self.auth.revoked.contains_key(&tx.signer.to_b64()) {
+                return Err(Error::KeyRevoked);
             }
+            return Err(Error::UnknownKey);
         }
 
         match &tx.kind {
@@ -699,7 +699,7 @@ mod tests {
     // ========================================================================
 
     fn make_test_action(signer: &Thumbprint) -> Action {
-        use coz::{Czd, Pay, PayBuilder};
+        use coz::{Czd, PayBuilder};
 
         let pay = PayBuilder::new()
             .typ("cyphr.me/comment/create")

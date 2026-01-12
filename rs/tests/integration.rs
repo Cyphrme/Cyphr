@@ -18,9 +18,6 @@ use serde::Deserialize;
 /// Root structure for test vector files.
 #[derive(Debug, Deserialize)]
 struct TestVectorFile {
-    name: String,
-    description: String,
-    version: String,
     tests: Vec<TestCase>,
 }
 
@@ -86,7 +83,6 @@ struct ExpectedState {
     ts: Option<String>,
     ds: Option<String>,
     level: u8,
-    error: Option<String>,
 }
 
 // ============================================================================
@@ -320,7 +316,6 @@ struct CozMessage {
     pay: CozPay,
     #[serde(default)]
     key: Option<KeyInput>,
-    sig: String,
     czd: String,
 }
 
@@ -350,8 +345,6 @@ struct TransactionExpected {
     level: Option<u8>,
     #[serde(default)]
     active_keys: Option<Vec<String>>,
-    #[serde(default)]
-    revoked_keys: Option<Vec<String>>,
     #[serde(default)]
     pr_changed: Option<bool>,
     #[serde(default)]
@@ -438,12 +431,8 @@ fn test_transactions() {
         let initial_as = cad_to_b64(principal.auth_state().as_cad());
         let initial_ps = cad_to_b64(principal.ps().as_cad());
 
-        // Helper to apply a CozMessage
-        fn apply_coz_message(
-            principal: &mut Principal,
-            coz: &CozMessage,
-            fixture: &TransactionTestFile,
-        ) {
+        // Helper to apply a CozMessage with fixture pre validation (per SPEC §15.6)
+        fn apply_coz_message(principal: &mut Principal, coz: &CozMessage, test_name: &str) {
             use coz::Czd;
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             use cyphrpass::transaction::{Transaction, TransactionKind};
@@ -451,26 +440,43 @@ fn test_transactions() {
             let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
             let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
 
-            // Determine transaction kind from typ
+            // Parse fixture pre and validate against computed state (SPEC §15.6)
+            let fixture_pre = coz.pay.pre.as_ref().map(|pre_str| {
+                let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                cyphrpass::AuthState(coz::Cad::from_bytes(pre_bytes))
+            });
+
+            // Validate fixture pre matches computed AS (catches fixture data errors)
+            if let Some(ref pre) = fixture_pre {
+                let computed_as = cad_to_b64(principal.auth_state().as_cad());
+                let fixture_pre_b64 = coz.pay.pre.as_ref().unwrap();
+                assert_eq!(
+                    &computed_as, fixture_pre_b64,
+                    "{}: fixture pre mismatch - fixture has {}, computed AS is {}",
+                    test_name, fixture_pre_b64, computed_as
+                );
+            }
+
+            // Determine transaction kind from typ, using fixture pre
             let kind = if coz.pay.typ.ends_with("/key/add") {
                 let id_str = coz.pay.id.as_ref().expect("key/add needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyAdd {
-                    pre: principal.auth_state().clone(),
+                    pre: fixture_pre.clone().expect("key/add needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else if coz.pay.typ.ends_with("/key/delete") {
                 let id_str = coz.pay.id.as_ref().expect("key/delete needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyDelete {
-                    pre: principal.auth_state().clone(),
+                    pre: fixture_pre.clone().expect("key/delete needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else if coz.pay.typ.ends_with("/key/replace") {
                 let id_str = coz.pay.id.as_ref().expect("key/replace needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyReplace {
-                    pre: principal.auth_state().clone(),
+                    pre: fixture_pre.clone().expect("key/replace needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else if coz.pay.typ.ends_with("/key/revoke") {
@@ -480,12 +486,12 @@ fn test_transactions() {
                     let id_str = coz.pay.id.as_ref().unwrap();
                     let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                     TransactionKind::OtherRevoke {
-                        pre: principal.auth_state().clone(),
+                        pre: fixture_pre.clone().expect("other-revoke needs pre"),
                         id: coz::Thumbprint::from_bytes(id_bytes),
                         rvk,
                     }
                 } else {
-                    // Self-revoke
+                    // Self-revoke (no pre required)
                     TransactionKind::SelfRevoke { rvk }
                 }
             } else {
@@ -510,10 +516,10 @@ fn test_transactions() {
 
         // Apply transaction(s)
         if let Some(ref coz) = test.coz {
-            apply_coz_message(&mut principal, coz, &fixture);
+            apply_coz_message(&mut principal, coz, &test.name);
         } else if let Some(ref coz_seq) = test.coz_sequence {
             for coz in coz_seq {
-                apply_coz_message(&mut principal, coz, &fixture);
+                apply_coz_message(&mut principal, coz, &test.name);
             }
         } else {
             panic!("{}: test requires coz or coz_sequence field", test.name);
@@ -718,7 +724,6 @@ struct StateTestCase {
 #[derive(Debug, Deserialize)]
 struct ActionInput {
     pay: CozPay,
-    sig: String,
     czd: String,
 }
 
@@ -731,10 +736,6 @@ struct StateExpected {
     ks_equals_tmb: Option<bool>,
     #[serde(default)]
     ks_is_hash: Option<bool>,
-    #[serde(default)]
-    ts_equals_czd: Option<bool>,
-    #[serde(default)]
-    ts_is_hash: Option<bool>,
     #[serde(rename = "as", default)]
     auth_state: Option<String>,
     #[serde(default)]
@@ -801,12 +802,8 @@ fn test_state_computation() {
 
         let initial_ks = cad_to_b64(principal.key_state().as_cad());
 
-        // Helper to apply a CozMessage (same as in transactions test)
-        fn apply_coz_msg_state(
-            principal: &mut Principal,
-            coz: &CozMessage,
-            fixture: &StateTestFile,
-        ) {
+        // Helper to apply a CozMessage with fixture pre validation (per SPEC §15.6)
+        fn apply_coz_msg_state(principal: &mut Principal, coz: &CozMessage, test_name: &str) {
             use coz::Czd;
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             use cyphrpass::transaction::{Transaction, TransactionKind};
@@ -814,18 +811,35 @@ fn test_state_computation() {
             let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
             let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
 
+            // Parse fixture pre and validate against computed state (SPEC §15.6)
+            let fixture_pre = coz.pay.pre.as_ref().map(|pre_str| {
+                let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                cyphrpass::AuthState(coz::Cad::from_bytes(pre_bytes))
+            });
+
+            // Validate fixture pre matches computed AS
+            if let Some(ref _pre) = fixture_pre {
+                let computed_as = cad_to_b64(principal.auth_state().as_cad());
+                let fixture_pre_b64 = coz.pay.pre.as_ref().unwrap();
+                assert_eq!(
+                    &computed_as, fixture_pre_b64,
+                    "{}: fixture pre mismatch - fixture has {}, computed AS is {}",
+                    test_name, fixture_pre_b64, computed_as
+                );
+            }
+
             let kind = if coz.pay.typ.ends_with("/key/add") {
                 let id_str = coz.pay.id.as_ref().expect("key/add needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyAdd {
-                    pre: principal.auth_state().clone(),
+                    pre: fixture_pre.clone().expect("key/add needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else if coz.pay.typ.ends_with("/key/delete") {
                 let id_str = coz.pay.id.as_ref().expect("key/delete needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyDelete {
-                    pre: principal.auth_state().clone(),
+                    pre: fixture_pre.clone().expect("key/delete needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else {
@@ -848,10 +862,10 @@ fn test_state_computation() {
 
         // Apply transaction(s) using coz format
         if let Some(ref coz) = test.coz {
-            apply_coz_msg_state(&mut principal, coz, &fixture);
+            apply_coz_msg_state(&mut principal, coz, &test.name);
         } else if let Some(ref coz_seq) = test.coz_sequence {
             for coz in coz_seq {
-                apply_coz_msg_state(&mut principal, coz, &fixture);
+                apply_coz_msg_state(&mut principal, coz, &test.name);
             }
         }
         // Tests without transactions just verify initial state
@@ -1241,8 +1255,6 @@ struct ErrorSetup {
     revoke_key: Option<String>,
     #[serde(default)]
     revoke_at: Option<i64>,
-    #[serde(default)]
-    unsupported_alg: Option<bool>,
 }
 
 #[test]
@@ -1266,36 +1278,12 @@ fn test_error_conditions() {
     for test in &fixture.tests {
         println!("Running: {} - {}", test.name, test.description);
 
-        // Handle unsupported algorithm test specially
-        if test.setup.unsupported_alg == Some(true) {
-            let bad_key = Key {
-                alg: "BadAlg".to_string(),
-                tmb: coz::Thumbprint::from_bytes(vec![0xAA; 32]),
-                pub_key: vec![0xBB; 32],
-                first_seen: 0,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            };
-            let result = Principal::implicit(bad_key);
-            match result {
-                Err(Error::UnsupportedAlgorithm(_)) => {
-                    println!("  ✓ PASSED (UnsupportedAlgorithm)");
-                    continue;
-                },
-                other => panic!(
-                    "{}: expected UnsupportedAlgorithm, got {:?}",
-                    test.name, other
-                ),
-            }
-        }
-
-        // Setup: create principal
-        let mut principal = match test.setup.genesis.as_str() {
+        // Setup: create principal (may fail for UnsupportedAlgorithm tests)
+        let principal_result = match test.setup.genesis.as_str() {
             "implicit" => {
                 let key_name = test.setup.initial_key.as_ref().expect("need initial_key");
                 let key_input = fixture.keys.get(key_name).expect("key not found");
-                Principal::implicit(key_input.to_key()).expect("genesis failed")
+                Principal::implicit(key_input.to_key())
             },
             "explicit" => {
                 let key_names = test.setup.initial_keys.as_ref().expect("need initial_keys");
@@ -1303,24 +1291,47 @@ fn test_error_conditions() {
                     .iter()
                     .map(|n| fixture.keys.get(n).expect("key not found").to_key())
                     .collect();
-                let mut p = Principal::explicit(keys).expect("genesis failed");
-
-                // Handle revoke_key setup
-                if let Some(ref revoke_name) = test.setup.revoke_key {
-                    let revoke_key = fixture.keys.get(revoke_name).expect("revoke key not found");
-                    let rvk = test.setup.revoke_at.unwrap_or(0);
-                    let tx = Transaction {
-                        kind: TransactionKind::SelfRevoke { rvk },
-                        signer: revoke_key.to_key().tmb,
-                        now: rvk,
-                        czd: Czd::from_bytes(vec![0xAB; 32]),
-                    };
-                    p.apply_transaction(tx, None).expect("setup revoke failed");
-                }
-                p
+                Principal::explicit(keys).map(|mut p| {
+                    // Handle revoke_key setup
+                    if let Some(ref revoke_name) = test.setup.revoke_key {
+                        let revoke_key =
+                            fixture.keys.get(revoke_name).expect("revoke key not found");
+                        let rvk = test.setup.revoke_at.unwrap_or(0);
+                        let tx = Transaction {
+                            kind: TransactionKind::SelfRevoke { rvk },
+                            signer: revoke_key.to_key().tmb,
+                            now: rvk,
+                            czd: Czd::from_bytes(vec![0xAB; 32]),
+                        };
+                        p.apply_transaction(tx, None).expect("setup revoke failed");
+                    }
+                    p
+                })
             },
             _ => panic!("Unknown genesis type"),
         };
+
+        // Handle tests expecting genesis to fail (e.g., UnsupportedAlgorithm)
+        if test.coz.is_none() {
+            match (&principal_result, test.expected_error.as_str()) {
+                (Err(Error::UnsupportedAlgorithm(_)), "UnsupportedAlgorithm") => {
+                    println!("  ✓ PASSED (UnsupportedAlgorithm)");
+                    continue;
+                },
+                (Ok(_), expected) => {
+                    panic!(
+                        "{}: expected {} error but genesis succeeded",
+                        test.name, expected
+                    );
+                },
+                (Err(e), expected) => {
+                    panic!("{}: expected {} but got {:?}", test.name, expected, e);
+                },
+            }
+        }
+
+        // For transaction-based error tests, genesis must succeed
+        let mut principal = principal_result.expect("genesis failed unexpectedly");
 
         // Apply transaction and expect error (coz format only)
         if let Some(ref coz) = test.coz {
@@ -1444,8 +1455,8 @@ fn test_edge_cases() {
             Principal::explicit(keys).expect("genesis failed")
         };
 
-        // Helper to apply a CozMessage
-        fn apply_edge_coz(principal: &mut Principal, coz: &CozMessage, fixture: &StateTestFile) {
+        // Helper to apply a CozMessage with fixture pre validation (per SPEC §15.6)
+        fn apply_edge_coz(principal: &mut Principal, coz: &CozMessage, test_name: &str) {
             use coz::Czd;
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             use cyphrpass::transaction::{Transaction, TransactionKind};
@@ -1453,25 +1464,35 @@ fn test_edge_cases() {
             let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
             let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
 
-            let pre = if let Some(ref pre_str) = coz.pay.pre {
+            // Parse fixture pre and validate against computed state (SPEC §15.6)
+            let fixture_pre = coz.pay.pre.as_ref().map(|pre_str| {
                 let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
                 cyphrpass::state::AuthState(coz::Cad::from_bytes(pre_bytes))
-            } else {
-                principal.auth_state().clone()
-            };
+            });
+
+            // Validate fixture pre matches computed AS
+            if let Some(ref _pre) = fixture_pre {
+                let computed_as = cad_to_b64(principal.auth_state().as_cad());
+                let fixture_pre_b64 = coz.pay.pre.as_ref().unwrap();
+                assert_eq!(
+                    &computed_as, fixture_pre_b64,
+                    "{}: fixture pre mismatch - fixture has {}, computed AS is {}",
+                    test_name, fixture_pre_b64, computed_as
+                );
+            }
 
             let kind = if coz.pay.typ.ends_with("/key/add") {
                 let id_str = coz.pay.id.as_ref().expect("key/add needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyAdd {
-                    pre,
+                    pre: fixture_pre.clone().expect("key/add needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else if coz.pay.typ.ends_with("/key/delete") {
                 let id_str = coz.pay.id.as_ref().expect("key/delete needs id");
                 let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
                 TransactionKind::KeyDelete {
-                    pre,
+                    pre: fixture_pre.clone().expect("key/delete needs pre"),
                     id: coz::Thumbprint::from_bytes(id_bytes),
                 }
             } else {
@@ -1494,10 +1515,10 @@ fn test_edge_cases() {
 
         // Apply transaction(s)
         if let Some(ref coz) = test.coz {
-            apply_edge_coz(&mut principal, coz, &fixture);
+            apply_edge_coz(&mut principal, coz, &test.name);
         } else if let Some(ref coz_seq) = test.coz_sequence {
             for coz in coz_seq {
-                apply_edge_coz(&mut principal, coz, &fixture);
+                apply_edge_coz(&mut principal, coz, &test.name);
             }
         }
 
