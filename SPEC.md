@@ -13,7 +13,9 @@ Cyphrpass is a self-sovereign identity and authentication protocol built on cryp
 - Password-free authentication via public key cryptography
 - Multi-device key management with revocation
 - Authenticated Atomic Actions (AAA) — individually signed, independently verifiable user actions
-- Cryptographic primitive agnosticism via the Coz specification
+- Cryptographic primitive agnosticism via the Coz JSON specification
+
+Binary encoded values in this document are in `b64ut`: "Base64 URI canonical truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 
 ---
 
@@ -122,79 +124,38 @@ The general principle of obfuscated structures becoming transparent is **reveal*
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
 
-### 3.7 Genesis (Account Creation)
-
-A principal is created (genesis) in one of two ways:
-
-**Implicit Genesis (Single Key)**
-
-- No transaction required
-- `PR = tmb` of the single key (via implicit promotion)
-- First signature by this key constitutes Proof of Possession (PoP)
-- Principal exists the moment the key exists
-
-```
-PR = PS = AS = KS = tmb
-```
-
-**Explicit Genesis (Multi-Key)**
-
-- Requires a signed genesis transaction
-- One key signs a `key/add` transaction to register additional keys
-- `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
-- The genesis transaction constitutes PoP for the signing key
-
-```json
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1628181264,
-    "tmb": "<genesis key tmb>",
-    "typ": "<authority>/key/add",
-    "id": "<second key tmb>"
-  },
-  "key": {
-    /* second key public material */
-  },
-  "sig": "<b64ut>"
-}
-```
-
-**Design Note:** The first transaction establishing multiple keys is the genesis. There is no separate "create account" operation — identity emerges from the first key or transaction.
-
----
 
 ## 4. Data Structures
 
 ### 4.1 Key
 
-A Coz key with standard fields:
+Example private Coz key with standard fields:
 
-```json
+```json5
 {
-  "alg": "ES256",
-  "pub": "<b64ut>",
-  "prv": "<b64ut>", // private, never transmitted
-  "tmb": "<b64ut>", // thumbprint
+	"tag": "User Key 0", // optional human label, non-programatic.
+	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // thumbprint
+  "alg": "ES256", // Key algorithm.
   "now": 1623132000, // creation timestamp
-  "tag": "Device name" // optional human label
-}
-```
-
-Example key:
-
-```json
-{
-  "alg": "ES256",
-  "now": 1623132000,
-  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
-  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-  "tag": "Zami's Majuscule Key.",
-  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
 }
 ```
 
 The `tmb` (thumbprint) is the digest of the canonical public key representation, using the hash algorithm associated with `alg`.
+
+Example public key:
+
+```json
+{
+	"tag": "User Key 0",
+	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "alg": "ES256",
+  "now": 1623132000,
+	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+}
+```
+
 
 ### 4.2 Transactions
 
@@ -360,6 +321,120 @@ A signed Coz message representing a user action, recorded in DS:
   "sig": "<b64ut>"
 }
 ```
+
+
+### 5. Genesis (Account Creation) // AI TODO, iterated this up to 5, subsequent sections need 
+### 5.1 Initial Transactions
+
+A principal is created (genesis) in one of two ways:
+
+**Implicit Genesis (Single Key)**
+
+- No transaction required
+- `PR = tmb` of the single key (via implicit promotion)
+- First signature by this key constitutes Proof of Possession (PoP)
+- Principal exists the moment the key exists
+- The first transaction signed with the key is the implicit genesis.
+- There is no separate "create account" operation. Identity emerges from the first key and transaction.
+
+```
+PR = PS = AS = KS = `tmb`
+```
+
+**Explicit Genesis (Single-Key)**
+
+
+- Requires a signed genesis transaction
+- Key signs a `key/add` transaction to add itself as the principal.
+- `PR = H(sort(tmb₀, nonce?))`
+- The genesis transaction constitutes PoP for the signing key.
+- Optionally, the principal root, `pr` may also be included. 
+
+**`typ`**: `<authority>/key/add`
+- `id`: `<genesis key tmb>`
+- `pr`: `<Principal Root value>`
+- `key`: `<key public material>`
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+    "typ": "cyphr.me/cyphrpass/key/add",
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+		"pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.
+  },
+	"sig": "<b64ut>",// TODO valid sig
+  "key": { // key public material
+		"alg": "ES256",
+		"now": 1623132000,
+		"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+		"tag": "User Key 0",
+		"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+	}
+}
+```
+
+**Explicit Genesis (Multi-Key)**
+- Key signs a `key/add` transaction 
+- `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
+- The genesis transaction constitutes PoP for the signing key
+- Without rules, each key has equal weight, so any initial key can sign.  
+- Keys are added to the PR, calculated beforehand. 
+
+**`typ`: `<authority>/key/add`**
+- `id`: `<genesis key tmb>`
+- `pr`: `<Principal Root value>`
+- `keys`: `<key public material>`
+
+```json5
+{
+  "cozies": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "now": 1628181264,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/cyphrpass/key/add",
+        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "pr": "<Principal Root value" // TODO insert actual value for this transaction.
+      },
+      "sig": "<b64ut>" // TODO actual sig
+    },
+    {
+      "pay": {
+        "alg": "ES256",
+        "now": 1628181264,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/cyphrpass/key/add",
+        "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+        "pr": "<Principal Root value" // TODO insert actual value for this transaction.
+      },
+      "sig": "<b64ut>" // TODO actual sig
+    }
+  ],
+  "keys": [
+    {
+			"tag": "User Key 0",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    {
+			"tag": "User Key 1",
+      "alg": "ES256",
+      "now": 1768092490,
+      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+    }
+  ]
+}
+```
+---
+
+
 
 ---
 
@@ -657,7 +732,7 @@ section "Resolve" for more detail.
 Actions are **stateless** signed messages. They are simply signed by an authorized key without chain structure:
 
 - No `prior` field required
-- DS is computed from action `czd`'s, but actions themselves don't track order
+- DS is computed from action `czd`s, but actions themselves don't track order
 - Ordering (if needed) is determined by `now` timestamps
 
 This keeps actions lightweight for common use cases (comments, posts, etc.).
@@ -688,7 +763,7 @@ At Level 5, the Rule State (RS) introduces **weighted keys**:
 Without being define, each key weight, action threshold, and transaction
 threshold is implicitly 1.
 
-For example, for 2 out of three for a "cyphrpass/key/create", two cozies need to
+For example, for 2 out of three for a `cyphrpass/key/create`, two cozies need to
 be signed by independent keys of weight 1 for the transaction to be valid.
 
 First, define the rule:
@@ -1007,10 +1082,10 @@ Services accept `now` values within an acceptable variance:
 
 ### 11.3 Revocation Timestamp Semantics
 
-When a key is revoked with `rvk = T`:
+When a key is revoked with `rvk` = T:
 
-- Signatures with `now >= T` are **invalid** (key was compromised)
-- Signatures with `now < T` are **valid** (signed before compromise)
+- Signatures with `now` >= T are **invalid** (key was compromised)
+- Signatures with `now` < T are **valid** (signed before compromise)
 - Attackers cannot forge pre-revocation signatures if services enforce PS timestamp binding
 
 ### 11.4 Oracle Tiers
@@ -1209,7 +1284,7 @@ These golden test vectors enable implementation verification. All values use B64
 {
   "alg": "ES256",
   "now": 1623132000,
-  "tag": "Zami's Majuscule Key.",
+  "tag": "User Key 0",
   "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
   "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
   "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
@@ -1223,7 +1298,7 @@ These golden test vectors enable implementation verification. All values use B64
 {
   "alg": "ES256",
   "now":1768092490,
-  "tag": "User Key A",
+  "tag": "User Key 1",
   "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
   "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
   "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"

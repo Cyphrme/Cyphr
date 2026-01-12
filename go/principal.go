@@ -14,6 +14,8 @@ const (
 	Level2                  // Key replacement
 	Level3                  // Multi-key
 	Level4                  // Actions (AAA)
+	Level5                  // Rules
+	Level6                  // Virtual Machine
 )
 
 // String returns a human-readable level description.
@@ -22,7 +24,7 @@ func (l Level) String() string {
 	case Level1:
 		return "L1 (single key)"
 	case Level2:
-		return "L2 (key replacement)"
+		return "L2 (atomic key replacement)"
 	case Level3:
 		return "L3 (multi-key)"
 	case Level4:

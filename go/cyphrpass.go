@@ -49,4 +49,4 @@ package cyphrpass
 const Authority = "cyphr.me"
 
 // Version is the protocol version implemented by this package.
-const Version = "0.1.0"
+const Version = "0.0.1"
