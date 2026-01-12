@@ -1,15 +1,3 @@
-// Package cyphrpass implements the Cyphrpass self-sovereign identity protocol.
-//
-// Cyphrpass enables password-free authentication via public key cryptography,
-// multi-device key management, and Authenticated Atomic Actions (AAA).
-//
-// Built on Coz (https://github.com/Cyphrme/Coz).
-//
-// Feature Levels:
-//   - Level 1: Single static key
-//   - Level 2: Key replacement
-//   - Level 3: Multi-key management
-//   - Level 4: Arbitrary data (AAA)
 package cyphrpass
 
 import (

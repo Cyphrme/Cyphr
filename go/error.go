@@ -1,6 +1,3 @@
-// Package cyphrpass provides error types for the Cyphrpass protocol.
-//
-// Error conditions are defined per SPEC §14.
 package cyphrpass
 
 import "errors"
