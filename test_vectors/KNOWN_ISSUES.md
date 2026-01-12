@@ -10,17 +10,18 @@ The `transactions/mutations.json` fixture for `other_revoke_by_peer` was missing
 
 **Fix**: Added `"pre": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc"` to the pay object.
 
-### 2. `transaction_sequence_replay` has incorrect chained `pre` values
+### 2. `transaction_sequence_replay` Tx2 had incorrect `pre` value (FIXED)
 
-**Status**: Open - requires signature regeneration
+**Status**: Fixed in Go implementation; Rust tests need update
 
-The `transaction_sequence_replay` test contains a sequence of three transactions. The `pre` values in the second and third transactions don't match the computed AS after applying the previous transactions. This requires:
+The fixture's Tx2 `pre` value was incorrect:
 
-1. Regenerating the signed transactions with correct `pre` values
-2. Computing new signatures with the updated pay objects
-3. Recomputing the `czd` values
+- Wrong: `SZRYo5Ecm5UfjfqAwOYpyE8YJuxOawbT2WfWDLAvfh8`
+- Correct: `f6-Goy9lj_fprCjDRMaGbTMNbuQ4FDRC5L1vAqJG2p8`
 
-**Workaround**: Test is skipped in Go integration tests.
+**Go tests now validate fixture `pre`**: The Go integration tests verify that each fixture `pre` value matches the computed AS before applying transactions. This catches fixture data errors.
+
+**TODO (Rust)**: Update Rust integration tests (`rs/tests/integration.rs`) to validate fixture `pre` values instead of computing from live state. This would make Rust tests stricter and catch fixture bugs.
 
 ---
 

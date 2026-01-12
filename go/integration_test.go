@@ -604,11 +604,11 @@ func TestTransactionFixtures(t *testing.T) {
 
 			// Apply transactions
 			if tc.Coz != nil {
-				applyTestTransaction(t, p, tc.Coz, fixture.Keys)
+				applyTestTransaction(t, p, tc.Coz)
 			}
 			for _, cozMsg := range tc.CozSequence {
 				msg := cozMsg // avoid loop variable capture
-				applyTestTransaction(t, p, &msg, fixture.Keys)
+				applyTestTransaction(t, p, &msg)
 			}
 
 			// Verify expected values
@@ -690,7 +690,7 @@ func TestTransactionFixtures(t *testing.T) {
 	}
 }
 
-func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage, keys map[string]KeyInput) {
+func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage) {
 	t.Helper()
 
 	// Parse pay to get transaction fields
@@ -711,14 +711,29 @@ func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessa
 		t.Fatalf("failed to decode tmb: %v", err)
 	}
 
-	// Build transaction - use principal's CURRENT AS for pre (like Rust tests)
-	// This tests state machine correctness without requiring fixture pre regeneration
+	// Build transaction - validate and use FIXTURE pre value
+	// This validates both state machine correctness AND fixture data correctness
 	tx := &cyphrpass.Transaction{
 		Signer: signer,
 		Now:    pay.Now,
 		Czd:    czd,
 		Rvk:    pay.Rvk,
-		Pre:    p.AS(), // Use live state, not fixture pre
+	}
+
+	// Parse and validate pre from fixture
+	if pay.Pre != "" {
+		pre, err := coz.Decode(pay.Pre)
+		if err != nil {
+			t.Fatalf("failed to decode pre: %v", err)
+		}
+		// Validate fixture pre matches current AS (catch fixture errors)
+		if p.AS().String() != pay.Pre {
+			t.Fatalf("fixture pre mismatch: fixture has %s, computed AS is %s", pay.Pre, p.AS().String())
+		}
+		tx.Pre = cyphrpass.AuthState(pre)
+	} else {
+		// For transactions like self-revoke that may not have pre, use current AS
+		tx.Pre = p.AS()
 	}
 
 	// Parse id if present
