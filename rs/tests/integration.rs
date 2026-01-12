@@ -1319,7 +1319,7 @@ fn test_error_conditions() {
             || test
                 .coz_sequence
                 .as_ref()
-                .map_or(false, |seq| !seq.is_empty());
+                .is_some_and(|seq| !seq.is_empty());
 
         if !has_transactions {
             match (&principal_result, test.expected_error.as_str()) {

@@ -355,15 +355,13 @@ func (p *Principal) ActionCount() int {
 	return len(p.data.Actions)
 }
 
-// ApplyTransaction applies a verified transaction to mutate principal state.
-//
-// Returns the new Auth State after applying the transaction.
-// The transaction must have been verified before calling this.
+// applyTransactionInternal applies a transaction to mutate principal state.
+// This is an internal method; use ApplyVerified for the public API.
 //
 // Timestamp validation (SPEC §14.1):
 //   - Rejects if tx.Now < latestTimestamp (TimestampPast)
 //   - Rejects if tx.Now > serverTime + maxClockSkew (TimestampFuture), when maxClockSkew > 0
-func (p *Principal) ApplyTransaction(tx *Transaction, newKey *coz.Key) error {
+func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) error {
 	// Validate timestamp is not in the past (SPEC §14.1)
 	if tx.Now < p.latestTimestamp {
 		return ErrTimestampPast

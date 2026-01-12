@@ -170,14 +170,73 @@ impl Transaction {
 }
 
 // ============================================================================
-// Transaction Verification
+// Verified Transaction
 // ============================================================================
 
-/// Verify a transaction signature against a key.
+/// A transaction that has been cryptographically verified.
+///
+/// This type can only be constructed through [`verify`] or the unsafe
+/// [`VerifiedTransaction::from_transaction_unsafe`], ensuring that
+/// `Principal::apply_verified` can never receive an unverified transaction.
+#[derive(Debug, Clone)]
+pub struct VerifiedTransaction {
+    /// The verified transaction (private - cannot be constructed directly).
+    tx: Transaction,
+    /// New key for add/replace operations.
+    new_key: Option<Key>,
+}
+
+impl VerifiedTransaction {
+    /// Get a reference to the underlying transaction.
+    pub fn transaction(&self) -> &Transaction {
+        &self.tx
+    }
+
+    /// Get the new key if present (for add/replace operations).
+    pub fn new_key(&self) -> Option<&Key> {
+        self.new_key.as_ref()
+    }
+
+    /// Create a VerifiedTransaction without signature verification.
+    ///
+    /// # Safety
+    ///
+    /// This method bypasses signature verification and should ONLY be used
+    /// for testing or when signatures are validated externally.
+    /// Production code should use [`verify`] instead.
+    pub fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
+        Self { tx, new_key }
+    }
+
+    /// Consume self and return the inner components.
+    pub(crate) fn into_parts(self) -> (Transaction, Option<Key>) {
+        (self.tx, self.new_key)
+    }
+}
+
+/// Verify a transaction signature and return a VerifiedTransaction.
 ///
 /// Uses coz-rs runtime verification with the key's algorithm.
-pub fn verify_signature(pay_json: &[u8], sig: &[u8], key: &Key) -> bool {
-    coz::verify_json(pay_json, sig, &key.alg, &key.pub_key).unwrap_or(false)
+pub fn verify_transaction(
+    pay_json: &[u8],
+    sig: &[u8],
+    key: &Key,
+    czd: Czd,
+    new_key: Option<Key>,
+) -> Result<VerifiedTransaction> {
+    // Verify the signature
+    let valid = coz::verify_json(pay_json, sig, &key.alg, &key.pub_key).unwrap_or(false);
+    if !valid {
+        return Err(Error::InvalidSignature);
+    }
+
+    // Parse the pay
+    let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+
+    // Parse the transaction
+    let tx = Transaction::parse(&pay, czd)?;
+
+    Ok(VerifiedTransaction { tx, new_key })
 }
 
 // ============================================================================

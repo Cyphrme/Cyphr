@@ -344,8 +344,32 @@ impl Principal {
 
     /// Apply a verified transaction to mutate principal state.
     ///
-    /// Returns the new Auth State after applying the transaction.
-    /// The transaction must have been verified before calling this.
+    /// This is the safe API for applying transactions. The transaction must have
+    /// been created through signature verification, which is enforced by the
+    /// `VerifiedTransaction` type.
+    ///
+    /// # Errors
+    ///
+    /// - `TimestampPast`: Transaction timestamp is older than latest seen
+    /// - `TimestampFuture`: Transaction timestamp is too far in the future
+    /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
+    /// - `NoActiveKeys`: Would leave principal with no active keys
+    /// - `DuplicateKey`: Adding key already in KS
+    pub fn apply_verified(
+        &mut self,
+        vtx: crate::transaction::VerifiedTransaction,
+    ) -> Result<&AuthState> {
+        let (tx, new_key) = vtx.into_parts();
+        self.apply_transaction_internal(tx, new_key)
+    }
+
+    /// Apply a transaction without prior signature verification.
+    ///
+    /// # Safety
+    ///
+    /// This method bypasses signature verification and should ONLY be used
+    /// for testing or when signatures are validated externally.
+    /// Production code should use [`apply_verified`] instead.
     ///
     /// # Errors
     ///
@@ -356,6 +380,15 @@ impl Principal {
     /// - `KeyRevoked`: Signer key has been revoked
     /// - `NoActiveKeys`: Would leave principal with no active keys
     pub fn apply_transaction(
+        &mut self,
+        tx: Transaction,
+        new_key: Option<Key>,
+    ) -> Result<&AuthState> {
+        self.apply_transaction_internal(tx, new_key)
+    }
+
+    /// Internal transaction application logic.
+    fn apply_transaction_internal(
         &mut self,
         tx: Transaction,
         new_key: Option<Key>,
@@ -467,7 +500,7 @@ impl Principal {
         czd: coz::Czd,
         new_key: Option<Key>,
     ) -> Result<&AuthState> {
-        use crate::transaction::{Transaction, verify_signature};
+        use crate::transaction::verify_transaction;
 
         // Parse Pay to get signer thumbprint
         let pay: coz::Pay =
@@ -486,16 +519,11 @@ impl Principal {
         // Look up signer key (guaranteed active now)
         let signer_key = self.get_key(signer_tmb).ok_or(Error::UnknownKey)?;
 
-        // Verify signature
-        if !verify_signature(pay_json, sig, signer_key) {
-            return Err(Error::InvalidSignature);
-        }
+        // Verify signature and parse transaction
+        let vtx = verify_transaction(pay_json, sig, signer_key, czd, new_key)?;
 
-        // Parse transaction
-        let tx = Transaction::parse(&pay, czd)?;
-
-        // Apply
-        self.apply_transaction(tx, new_key)
+        // Apply verified transaction
+        self.apply_verified(vtx)
     }
 
     /// Verify that `pre` matches current Auth State.

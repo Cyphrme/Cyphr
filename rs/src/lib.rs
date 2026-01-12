@@ -33,4 +33,4 @@ pub use state::{
     AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
     compute_as, compute_ds, compute_ks, compute_ps, compute_ts,
 };
-pub use transaction::{Transaction, TransactionKind};
+pub use transaction::{Transaction, TransactionKind, VerifiedTransaction, verify_transaction};

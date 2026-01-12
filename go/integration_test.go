@@ -494,7 +494,7 @@ func applyStateTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg CozM
 		newKey = makeKeyFromInput(t, *cozMsg.Key)
 	}
 
-	if err := p.ApplyTransaction(tx, newKey); err != nil {
+	if err := p.ApplyTransactionUnsafe(tx, newKey); err != nil {
 		t.Fatalf("ApplyTransaction failed: %v", err)
 	}
 }
@@ -874,7 +874,7 @@ func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessa
 	}
 
 	// Apply transaction
-	if err := p.ApplyTransaction(tx, newKey); err != nil {
+	if err := p.ApplyTransactionUnsafe(tx, newKey); err != nil {
 		t.Fatalf("ApplyTransaction failed: %v", err)
 	}
 }
@@ -1129,7 +1129,7 @@ func TestErrorFixtures(t *testing.T) {
 						Czd:    []byte("fake-czd-for-setup"),
 						Pre:    p.AS(),
 					}
-					if err := p.ApplyTransaction(revokeTx, nil); err != nil {
+					if err := p.ApplyTransactionUnsafe(revokeTx, nil); err != nil {
 						t.Fatalf("failed to set up revoked key: %v", err)
 					}
 				}
@@ -1274,5 +1274,5 @@ func applyTestTransactionForError(t *testing.T, p *cyphrpass.Principal, cozMsg *
 		t.Fatalf("unknown transaction type: %s", typ)
 	}
 
-	return p.ApplyTransaction(tx, newKey)
+	return p.ApplyTransactionUnsafe(tx, newKey)
 }

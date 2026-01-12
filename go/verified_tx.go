@@ -1,0 +1,116 @@
+package cyphrpass
+
+import (
+	"encoding/json"
+
+	"github.com/cyphrme/coz"
+)
+
+// VerifiedTx is a transaction that has been cryptographically verified.
+// It can only be created through Principal.VerifyTransaction.
+// This type ensures that ApplyVerified can never receive an unverified transaction.
+type VerifiedTx struct {
+	tx     *Transaction // unexported: can only be constructed via VerifyTransaction
+	signer *Key         // the key that verified this transaction
+	newKey *coz.Key     // optional: new key for add/replace operations
+}
+
+// Transaction returns a copy of the verified transaction data.
+// The returned Transaction is read-only for inspection purposes.
+func (vt *VerifiedTx) Transaction() Transaction {
+	return *vt.tx
+}
+
+// Signer returns the key that signed and verified this transaction.
+func (vt *VerifiedTx) Signer() *Key {
+	return vt.signer
+}
+
+// VerifyTransaction verifies a Coz message and returns a VerifiedTx if valid.
+//
+// The coz message must contain:
+//   - pay: JSON payload with transaction fields
+//   - sig: signature over the payload
+//
+// For key/add and key/replace, newKey must be provided.
+//
+// # Errors
+//
+//   - ErrInvalidSignature: Signature doesn't verify
+//   - ErrUnknownKey: Signer not in current KS
+//   - ErrKeyRevoked: Signer key is revoked
+//   - ErrMalformedPayload: Invalid payload structure
+func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx, error) {
+	// Parse the payload to extract signer thumbprint
+	var pay TransactionPay
+	if err := json.Unmarshal(cz.Pay, &pay); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// Look up the signing key
+	signerKey := p.Key(pay.Tmb)
+	if signerKey == nil {
+		return nil, ErrUnknownKey
+	}
+
+	// Check if key is revoked (for most transaction types)
+	// Self-revoke handled specially in apply
+	if !signerKey.IsActive() {
+		return nil, ErrKeyRevoked
+	}
+
+	// Verify the signature using the coz library
+	valid, err := signerKey.Key.VerifyCoz(cz)
+	if err != nil || !valid {
+		return nil, ErrInvalidSignature
+	}
+
+	// Compute metadata including czd
+	if err := cz.Meta(); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// Parse the transaction
+	tx, err := ParseTransaction(&pay, cz.Czd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &VerifiedTx{
+		tx:     tx,
+		signer: signerKey,
+		newKey: newKey,
+	}, nil
+}
+
+// ApplyVerified applies a verified transaction to mutate principal state.
+// This method can only be called with a VerifiedTx obtained from VerifyTransaction,
+// ensuring signature verification has already occurred.
+//
+// # Errors
+//
+//   - ErrTimestampPast: Transaction timestamp is older than latest seen
+//   - ErrTimestampFuture: Transaction timestamp is too far in the future
+//   - ErrInvalidPrior: Transaction's pre doesn't match current Auth State
+//   - ErrNoActiveKeys: Would leave principal with no active keys
+//   - ErrDuplicateKey: Adding key already in KS
+func (p *Principal) ApplyVerified(vt *VerifiedTx) error {
+	return p.applyTransactionInternal(vt.tx, vt.newKey)
+}
+
+// ApplyTransactionUnsafe applies a transaction without signature verification.
+// This method is intended ONLY for testing and internal use where signatures
+// are validated externally or cannot be generated (e.g., fixture-based tests).
+//
+// Production code should use VerifyTransaction + ApplyVerified instead.
+//
+// # Errors
+//
+//   - ErrTimestampPast: Transaction timestamp is older than latest seen
+//   - ErrTimestampFuture: Transaction timestamp is too far in the future
+//   - ErrInvalidPrior: Transaction's pre doesn't match current Auth State
+//   - ErrNoActiveKeys: Would leave principal with no active keys
+//   - ErrDuplicateKey: Adding key already in KS
+func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) error {
+	return p.applyTransactionInternal(tx, newKey)
+}
