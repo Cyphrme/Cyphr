@@ -1,0 +1,531 @@
+// Package cyphrpass implements the Cyphrpass self-sovereign identity protocol.
+//
+// Cyphrpass enables password-free authentication via public key cryptography,
+// multi-device key management, and Authenticated Atomic Actions (AAA).
+//
+// Built on Coz (https://github.com/Cyphrme/Coz).
+//
+// Feature Levels:
+//   - Level 1: Single static key
+//   - Level 2: Key replacement
+//   - Level 3: Multi-key management
+//   - Level 4: Arbitrary data (AAA)
+package cyphrpass
+
+import (
+	"bytes"
+
+	"github.com/cyphrme/coz"
+)
+
+// Level represents the feature level of a principal.
+type Level int
+
+const (
+	Level1 Level = iota + 1 // Single static key
+	Level2                  // Key replacement
+	Level3                  // Multi-key
+	Level4                  // Actions (AAA)
+)
+
+// String returns a human-readable level description.
+func (l Level) String() string {
+	switch l {
+	case Level1:
+		return "L1 (single key)"
+	case Level2:
+		return "L2 (key replacement)"
+	case Level3:
+		return "L3 (multi-key)"
+	case Level4:
+		return "L4 (actions)"
+	default:
+		return "unknown"
+	}
+}
+
+// AuthLedger holds keys and transactions.
+type AuthLedger struct {
+	// Keys maps thumbprint (b64 string) to active keys.
+	// Uses ordered map semantics via slice backing.
+	Keys   []*Key
+	keyIdx map[string]int // tmb b64 -> index in Keys
+
+	// Revoked keys for historical verification.
+	Revoked []*Key
+
+	// Transactions history.
+	Transactions []*Transaction
+}
+
+// DataLedger holds actions (Level 4+).
+type DataLedger struct {
+	Actions []*Action
+}
+
+// Principal represents a self-sovereign identity in the Cyphrpass protocol.
+//
+// A Principal has:
+//   - Permanent root (PR) set at genesis, never changes
+//   - Evolving state (PS) as keys, transactions, and actions change
+//   - Auth ledger tracking keys and transactions
+//   - Data ledger tracking actions (Level 4+)
+type Principal struct {
+	pr PrincipalRoot
+	ps PrincipalState
+	ks KeyState
+	ts TransactionState // nil if no transactions
+	as AuthState
+	ds DataState // nil if no actions
+
+	auth    AuthLedger
+	data    DataLedger
+	hashAlg HashAlg
+}
+
+// Implicit creates a principal with implicit genesis (single key).
+//
+// Per SPEC §3.2: "Identity emerges from first key possession"
+//   - PR = PS = AS = KS = tmb (fully promoted)
+//
+// This is the Level 1/2 genesis path.
+func Implicit(key *coz.Key) (*Principal, error) {
+	hashAlg := HashAlgFromSEAlg(key.Alg)
+
+	// Wrap in our Key type
+	k := &Key{
+		Key:       key,
+		FirstSeen: 0, // Will be set by caller if known
+	}
+
+	// KS = tmb (single key promotes)
+	ks, err := ComputeKS([]coz.B64{key.Tmb}, nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// AS = KS (no TS, promotes)
+	as, err := ComputeAS(ks, TransactionState(nil), nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// PS = AS (no DS, promotes)
+	ps, err := ComputePS(as, DataState(nil), nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// PR = first PS
+	pr := PrincipalRoot(ps)
+
+	p := &Principal{
+		pr:      pr,
+		ps:      ps,
+		ks:      ks,
+		as:      as,
+		hashAlg: hashAlg,
+		auth: AuthLedger{
+			Keys:   []*Key{k},
+			keyIdx: map[string]int{string(key.Tmb.String()): 0},
+		},
+	}
+
+	return p, nil
+}
+
+// Explicit creates a principal with explicit genesis (multiple keys).
+//
+// Per SPEC §3.2: Multi-key accounts require explicit genesis
+//   - PR = H(sort(tmb₀, tmb₁, ...))
+//
+// This is the Level 3+ genesis path.
+func Explicit(keys []*coz.Key) (*Principal, error) {
+	if len(keys) == 0 {
+		return nil, ErrNoActiveKeys
+	}
+
+	hashAlg := HashAlgFromSEAlg(keys[0].Alg)
+
+	// Collect thumbprints and wrap keys
+	thumbprints := make([]coz.B64, len(keys))
+	wrappedKeys := make([]*Key, len(keys))
+	keyIdx := make(map[string]int)
+
+	for i, k := range keys {
+		thumbprints[i] = k.Tmb
+		wrappedKeys[i] = &Key{Key: k}
+		keyIdx[string(k.Tmb.String())] = i
+	}
+
+	// KS = H(sort(tmb₀, tmb₁, ...)) or promoted if single
+	ks, err := ComputeKS(thumbprints, nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// AS = KS (no TS yet)
+	as, err := ComputeAS(ks, TransactionState(nil), nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// PS = AS (no DS)
+	ps, err := ComputePS(as, DataState(nil), nil, hashAlg)
+	if err != nil {
+		return nil, err
+	}
+
+	// PR frozen at genesis
+	pr := PrincipalRoot(ps)
+
+	return &Principal{
+		pr:      pr,
+		ps:      ps,
+		ks:      ks,
+		as:      as,
+		hashAlg: hashAlg,
+		auth: AuthLedger{
+			Keys:   wrappedKeys,
+			keyIdx: keyIdx,
+		},
+	}, nil
+}
+
+// PR returns the Principal Root (permanent identifier).
+func (p *Principal) PR() PrincipalRoot {
+	return p.pr
+}
+
+// PS returns the current Principal State.
+func (p *Principal) PS() PrincipalState {
+	return p.ps
+}
+
+// AS returns the current Auth State.
+func (p *Principal) AS() AuthState {
+	return p.as
+}
+
+// KS returns the current Key State.
+func (p *Principal) KS() KeyState {
+	return p.ks
+}
+
+// DS returns the current Data State (nil if no actions).
+func (p *Principal) DS() DataState {
+	return p.ds
+}
+
+// HashAlg returns the hash algorithm used by this principal.
+func (p *Principal) HashAlg() HashAlg {
+	return p.hashAlg
+}
+
+// Key returns a key by thumbprint, or nil if not found.
+// Searches both active and revoked keys.
+func (p *Principal) Key(tmb coz.B64) *Key {
+	tmbStr := string(tmb.String())
+
+	// Check active keys
+	if idx, ok := p.auth.keyIdx[tmbStr]; ok {
+		return p.auth.Keys[idx]
+	}
+
+	// Check revoked keys
+	for _, k := range p.auth.Revoked {
+		if bytes.Equal(k.Tmb, tmb) {
+			return k
+		}
+	}
+
+	return nil
+}
+
+// IsKeyActive returns true if the key is in the active set.
+func (p *Principal) IsKeyActive(tmb coz.B64) bool {
+	_, ok := p.auth.keyIdx[string(tmb.String())]
+	return ok
+}
+
+// ActiveKeys returns all active keys.
+func (p *Principal) ActiveKeys() []*Key {
+	return p.auth.Keys
+}
+
+// ActiveKeyCount returns the number of active keys.
+func (p *Principal) ActiveKeyCount() int {
+	return len(p.auth.Keys)
+}
+
+// Level determines the current feature level.
+func (p *Principal) Level() Level {
+	// Level 4: has actions
+	if len(p.data.Actions) > 0 {
+		return Level4
+	}
+	// Level 3: multiple keys or transactions
+	if len(p.auth.Keys) > 1 || len(p.auth.Transactions) > 0 {
+		return Level3
+	}
+	// Level 1: single key, no transactions
+	return Level1
+}
+
+// RecordAction records an action to the Data State (Level 4+).
+//
+// Returns the new Principal State after recording.
+// The action signature must be verified before calling this.
+func (p *Principal) RecordAction(action *Action) error {
+	// Verify signer is an active key
+	if !p.IsKeyActive(action.Signer) {
+		return ErrUnknownKey
+	}
+
+	// Update signer's last_used timestamp
+	p.updateLastUsed(action.Signer, action.Now)
+
+	// Record action
+	p.data.Actions = append(p.data.Actions, action)
+
+	// Recompute DS from all action czds
+	czds := make([]coz.B64, len(p.data.Actions))
+	for i, a := range p.data.Actions {
+		czds[i] = a.Czd
+	}
+	ds, err := ComputeDS(czds, nil, p.hashAlg)
+	if err != nil {
+		return err
+	}
+	p.ds = ds
+
+	// Recompute PS = H(sort(AS, DS?))
+	ps, err := ComputePS(p.as, p.ds, nil, p.hashAlg)
+	if err != nil {
+		return err
+	}
+	p.ps = ps
+
+	return nil
+}
+
+// ActionCount returns the number of recorded actions.
+func (p *Principal) ActionCount() int {
+	return len(p.data.Actions)
+}
+
+// ApplyTransaction applies a verified transaction to mutate principal state.
+//
+// Returns the new Auth State after applying the transaction.
+// The transaction must have been verified before calling this.
+func (p *Principal) ApplyTransaction(tx *Transaction, newKey *coz.Key) error {
+	// Verify signer is an active key (except for self-revoke)
+	if tx.Kind != TxSelfRevoke {
+		if !p.IsKeyActive(tx.Signer) {
+			// Check if key exists but is revoked
+			for _, k := range p.auth.Revoked {
+				if bytes.Equal(k.Tmb, tx.Signer) {
+					return ErrKeyRevoked
+				}
+			}
+			return ErrUnknownKey
+		}
+	}
+
+	switch tx.Kind {
+	case TxKeyAdd:
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
+		if newKey == nil {
+			return ErrMalformedPayload
+		}
+		if !bytes.Equal(newKey.Tmb, tx.ID) {
+			return ErrMalformedPayload
+		}
+		if p.IsKeyActive(tx.ID) {
+			return ErrDuplicateKey
+		}
+		p.addKey(newKey, tx.Now)
+
+	case TxKeyDelete:
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
+		if err := p.removeKey(tx.ID); err != nil {
+			return err
+		}
+
+	case TxKeyReplace:
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
+		if newKey == nil {
+			return ErrMalformedPayload
+		}
+		if !bytes.Equal(newKey.Tmb, tx.ID) {
+			return ErrMalformedPayload
+		}
+		// Atomic swap: add new key first, then remove signer
+		p.addKey(newKey, tx.Now)
+		// Remove signer directly (bypassing NoActiveKeys check since we just added)
+		p.removeKeyDirect(tx.Signer)
+
+	case TxSelfRevoke:
+		if err := p.revokeKey(tx.Signer, tx.Rvk, nil); err != nil {
+			return err
+		}
+
+	case TxOtherRevoke:
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
+		if err := p.revokeKey(tx.ID, tx.Rvk, tx.Signer); err != nil {
+			return err
+		}
+	}
+
+	// Update signer's last_used timestamp
+	p.updateLastUsed(tx.Signer, tx.Now)
+
+	// Record transaction and recompute state
+	p.auth.Transactions = append(p.auth.Transactions, tx)
+	return p.recomputeState()
+}
+
+// verifyPre checks that the transaction's pre matches current AS.
+func (p *Principal) verifyPre(pre AuthState) error {
+	if !bytes.Equal(p.as, pre) {
+		return ErrInvalidPrior
+	}
+	return nil
+}
+
+// addKey adds a key to the active set.
+func (p *Principal) addKey(key *coz.Key, firstSeen int64) {
+	k := &Key{
+		Key:       key,
+		FirstSeen: firstSeen,
+	}
+	tmbStr := string(key.Tmb.String())
+	p.auth.keyIdx[tmbStr] = len(p.auth.Keys)
+	p.auth.Keys = append(p.auth.Keys, k)
+}
+
+// removeKey removes a key from the active set (delete, not revoke).
+func (p *Principal) removeKey(tmb coz.B64) error {
+	tmbStr := string(tmb.String())
+	idx, ok := p.auth.keyIdx[tmbStr]
+	if !ok {
+		return ErrUnknownKey
+	}
+	if len(p.auth.Keys) == 1 {
+		return ErrNoActiveKeys
+	}
+	p.removeKeyAtIndex(idx)
+	return nil
+}
+
+// removeKeyDirect removes a key without checking for last key.
+func (p *Principal) removeKeyDirect(tmb coz.B64) {
+	tmbStr := string(tmb.String())
+	if idx, ok := p.auth.keyIdx[tmbStr]; ok {
+		p.removeKeyAtIndex(idx)
+	}
+}
+
+// removeKeyAtIndex removes the key at the given index.
+func (p *Principal) removeKeyAtIndex(idx int) {
+	key := p.auth.Keys[idx]
+	tmbStr := string(key.Tmb.String())
+
+	// Remove from slice (preserving order)
+	p.auth.Keys = append(p.auth.Keys[:idx], p.auth.Keys[idx+1:]...)
+
+	// Update index map
+	delete(p.auth.keyIdx, tmbStr)
+	for i := idx; i < len(p.auth.Keys); i++ {
+		p.auth.keyIdx[string(p.auth.Keys[i].Tmb.String())] = i
+	}
+}
+
+// revokeKey moves a key from active to revoked.
+func (p *Principal) revokeKey(tmb coz.B64, rvk int64, by coz.B64) error {
+	tmbStr := string(tmb.String())
+	idx, ok := p.auth.keyIdx[tmbStr]
+	if !ok {
+		return ErrUnknownKey
+	}
+
+	// Check BEFORE mutation: would this leave us with no keys?
+	if len(p.auth.Keys) == 1 {
+		return ErrNoActiveKeys
+	}
+
+	// Remove from active set
+	key := p.auth.Keys[idx]
+	p.removeKeyAtIndex(idx)
+
+	// Set revocation info
+	key.Revocation = &Revocation{
+		Rvk: rvk,
+		By:  by,
+	}
+
+	// Move to revoked set
+	p.auth.Revoked = append(p.auth.Revoked, key)
+
+	return nil
+}
+
+// updateLastUsed updates a key's last_used timestamp.
+func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
+	tmbStr := string(tmb.String())
+	if idx, ok := p.auth.keyIdx[tmbStr]; ok {
+		p.auth.Keys[idx].LastUsed = timestamp
+	}
+}
+
+// recomputeState recomputes all state digests after mutation.
+func (p *Principal) recomputeState() error {
+	// Recompute KS from active keys
+	thumbprints := make([]coz.B64, len(p.auth.Keys))
+	for i, k := range p.auth.Keys {
+		thumbprints[i] = k.Tmb
+	}
+	ks, err := ComputeKS(thumbprints, nil, p.hashAlg)
+	if err != nil {
+		return err
+	}
+	p.ks = ks
+
+	// Recompute TS from transactions
+	if len(p.auth.Transactions) > 0 {
+		czds := make([]coz.B64, len(p.auth.Transactions))
+		for i, t := range p.auth.Transactions {
+			czds[i] = t.Czd
+		}
+		ts, err := ComputeTS(czds, nil, p.hashAlg)
+		if err != nil {
+			return err
+		}
+		p.ts = ts
+	}
+
+	// Recompute AS = H(sort(KS, TS?))
+	as, err := ComputeAS(p.ks, p.ts, nil, p.hashAlg)
+	if err != nil {
+		return err
+	}
+	p.as = as
+
+	// Recompute PS = H(sort(AS, DS?))
+	ps, err := ComputePS(p.as, p.ds, nil, p.hashAlg)
+	if err != nil {
+		return err
+	}
+	p.ps = ps
+
+	// PR never changes
+	return nil
+}

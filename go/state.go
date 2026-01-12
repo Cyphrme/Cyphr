@@ -32,6 +32,14 @@ type PrincipalRoot coz.B64
 // HashAlg is a hash algorithm used for state computation (SPEC §12).
 type HashAlg coz.HshAlg
 
+// String methods for state types (return base64 encoding)
+func (s KeyState) String() string         { return coz.B64(s).String() }
+func (s TransactionState) String() string { return coz.B64(s).String() }
+func (s AuthState) String() string        { return coz.B64(s).String() }
+func (s DataState) String() string        { return coz.B64(s).String() }
+func (s PrincipalState) String() string   { return coz.B64(s).String() }
+func (s PrincipalRoot) String() string    { return coz.B64(s).String() }
+
 // HashAlgFromSEAlg returns the hash algorithm for a given signing/encryption algorithm.
 // Uses SEAlg.Hash() method per Coz API.
 func HashAlgFromSEAlg(alg coz.SEAlg) HashAlg {
