@@ -93,19 +93,6 @@ func makeKeyFromInput(t *testing.T, ki KeyInput) *coz.Key {
 	}
 }
 
-func assertStateEquals(t *testing.T, name string, expected *string, actual cyphrpass.PrincipalState) {
-	t.Helper()
-	if expected == nil {
-		if actual != nil {
-			t.Errorf("%s: expected nil, got %s", name, actual.String())
-		}
-		return
-	}
-	if actual.String() != *expected {
-		t.Errorf("%s: got %s, want %s", name, actual.String(), *expected)
-	}
-}
-
 // =========================================================================
 // Genesis Tests
 // =========================================================================
