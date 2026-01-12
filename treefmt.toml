@@ -26,3 +26,8 @@ options  = ["--write"]
 command  = "rustfmt"
 excludes = []
 includes = ["*.rs"]
+
+[formatter.go]
+command  = "gofmt"
+includes = ["*.go"]
+options  = ["-w"]
