@@ -23,6 +23,16 @@ The fixture's Tx2 `pre` value was incorrect:
 
 **TODO (Rust)**: Update Rust integration tests (`rs/tests/integration.rs`) to validate fixture `pre` values instead of computing from live state. This would make Rust tests stricter and catch fixture bugs.
 
+### 3. Rust: Implement unsupported algorithm test from fixture
+
+**Status**: TODO
+
+The `errors/conditions.json` fixture now includes `unsupported_key` with algorithm `RS256`. The Rust integration tests should be updated to:
+
+1. Load and use this key from the fixture (not skip the test)
+2. Verify that genesis returns `UnsupportedAlgorithm` error
+3. Add algorithm validation to `Principal::implicit()` if not already present
+
 ---
 
 ## Rust Integration Test Design Note

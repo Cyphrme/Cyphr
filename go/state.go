@@ -46,6 +46,17 @@ func HashAlgFromSEAlg(alg coz.SEAlg) HashAlg {
 	return HashAlg(alg.Hash())
 }
 
+// isSupportedAlg checks if the algorithm is supported by Cyphrpass.
+// Per SPEC §12: ES256, ES384, ES512, Ed25519.
+func isSupportedAlg(alg coz.SEAlg) bool {
+	switch string(alg) {
+	case "ES256", "ES384", "ES512", "Ed25519":
+		return true
+	default:
+		return false
+	}
+}
+
 // HashSortedConcat implements SPEC §7.1 canonical digest algorithm:
 // 1. Collect component digests
 // 2. Sort lexicographically (byte comparison)

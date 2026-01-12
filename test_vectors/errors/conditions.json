@@ -17,6 +17,11 @@
       "alg": "ES256",
       "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
       "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+    },
+    "unsupported_key": {
+      "alg": "RS256",
+      "pub": "dW5zdXBwb3J0ZWRfa2V5X3B1YmxpY19rZXlfZGF0YV9mb3JfdGVzdGluZw",
+      "tmb": "dW5zdXBwb3J0ZWRfa2V5X3RodW1icHJpbnQ"
     }
   },
   "tests": [
@@ -120,7 +125,7 @@
       "description": "Key with unsupported algorithm fails during genesis",
       "setup": {
         "genesis": "implicit",
-        "unsupported_alg": true
+        "initial_key": "unsupported_key"
       },
       "expected_error": "UnsupportedAlgorithm"
     },

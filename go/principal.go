@@ -90,6 +90,11 @@ type Principal struct {
 //
 // This is the Level 1/2 genesis path.
 func Implicit(key *coz.Key) (*Principal, error) {
+	// Validate algorithm is supported
+	if !isSupportedAlg(key.Alg) {
+		return nil, ErrUnsupportedAlgorithm
+	}
+
 	hashAlg := HashAlgFromSEAlg(key.Alg)
 
 	// Wrap in our Key type

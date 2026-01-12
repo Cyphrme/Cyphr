@@ -975,21 +975,33 @@ func TestErrorFixtures(t *testing.T) {
 
 	for _, tc := range fixture.Tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			// Skip unsupported_algorithm test (requires invalid key setup)
-			if tc.Setup.UnsupportedAlg {
-				t.Skip("unsupported_alg test requires invalid key")
-			}
-
 			var p *cyphrpass.Principal
+			var genesisErr error
 
 			// Setup genesis
 			switch tc.Setup.Genesis {
 			case "implicit":
 				keyInput := fixture.Keys[tc.Setup.InitialKey]
 				key := makeKeyFromInput(t, keyInput)
-				p, err = cyphrpass.Implicit(key)
-				if err != nil {
-					t.Fatalf("Implicit failed: %v", err)
+				p, genesisErr = cyphrpass.Implicit(key)
+
+				// For tests expecting genesis to fail
+				if tc.Coz == nil && tc.ExpectedError != "" {
+					if genesisErr == nil {
+						t.Fatalf("expected error %s but genesis succeeded", tc.ExpectedError)
+					}
+					switch tc.ExpectedError {
+					case "UnsupportedAlgorithm":
+						if genesisErr != cyphrpass.ErrUnsupportedAlgorithm {
+							t.Errorf("expected UnsupportedAlgorithm, got %v", genesisErr)
+						}
+					default:
+						t.Errorf("unknown expected error: %s", tc.ExpectedError)
+					}
+					return // Test complete
+				}
+				if genesisErr != nil {
+					t.Fatalf("Implicit failed: %v", genesisErr)
 				}
 
 			case "explicit":
