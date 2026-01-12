@@ -1267,6 +1267,20 @@ PS = AS (no DS)
 - Thumbprints use the hash algorithm associated with `alg`
 - State digests use the hash algorithm of the signing key
 
+### 15.6 Integration Test Requirements
+
+Language-agnostic test vectors are provided in `/test_vectors/`. Integration tests consuming these vectors SHOULD:
+
+1. **Validate fixture `pre` values**: Before applying a transaction, verify that the fixture's `pre` field matches the implementation's computed Auth State. If they differ, the test SHOULD fail immediately, indicating a fixture data error rather than an implementation bug.
+
+2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other fields from fixtures directly, not compute substitutes. This validates both implementation correctness and fixture accuracy.
+
+3. **Test all error conditions**: Error test fixtures intentionally include invalid data (wrong `pre`, unknown keys, etc.). Implementations MUST NOT skip these tests due to complexity.
+
+4. **Deterministic sorting**: All state computations involving multiple components (KS with multiple keys, AS with KS+TS, etc.) MUST use lexicographic byte-order sorting of the raw digest bytes before concatenation and hashing.
+
+**Rationale**: Multiple implementations (Go, Rust) consuming the same fixtures ensures protocol specification correctness. Fixture validation catches spec drift early.
+
 ---
 
 ## Appendix A: Coz Field Reference

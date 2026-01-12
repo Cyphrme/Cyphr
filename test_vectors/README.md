@@ -224,6 +224,40 @@ Implementations should:
 5. **Compare** computed state against `expected` values
 6. **Report** any mismatches
 
+## Integration Test Requirements
+
+Integration tests SHOULD validate fixture data integrity, not just state machine correctness.
+
+### Fixture `pre` Validation
+
+For transactions containing a `pre` field, implementations SHOULD:
+
+1. **Before** applying the transaction, verify `fixture.pre == computed_auth_state`
+2. **Fail** if they don't match (indicates fixture data error)
+3. **Then** apply the transaction using the fixture's `pre` value
+
+This two-step approach validates:
+
+- **State machine correctness**: The implementation computes state transitions correctly
+- **Fixture data integrity**: The test vector's `pre` values are accurate
+
+**Anti-pattern**: Computing `pre` from live state and ignoring the fixture's value. This tests the state machine but misses fixture data errors.
+
+### Error Condition Testing
+
+For error test cases:
+
+- Use fixture `pre` values directly (including intentionally wrong ones)
+- Verify the implementation returns the expected error type
+- Do not skip tests due to fixture complexity; this masks coverage gaps
+
+### Reference Implementations
+
+Both Go and Rust implementations are authoritative:
+
+- **Go** (`go/integration_test.go`): Validates fixture `pre` before applying
+- **Rust** (`rs/tests/integration.rs`): Uses live state (to be updated)
+
 ### Boolean Assertions
 
 Some expected values are boolean assertions:
