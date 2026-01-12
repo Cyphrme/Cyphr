@@ -788,3 +788,354 @@ func typSuffix(typ string) string {
 	}
 	return typ
 }
+
+// =========================================================================
+// Action Tests
+// =========================================================================
+
+// ActionTestFixture is the structure for action tests.
+type ActionTestFixture struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Keys        map[string]KeyInput `json:"keys"`
+	Tests       []ActionTestCase    `json:"tests"`
+}
+
+// ActionTestCase is an individual action test.
+type ActionTestCase struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Setup       StateSetup      `json:"setup"`
+	Actions     []ActionMessage `json:"actions"`
+	Expected    ActionExpected  `json:"expected"`
+}
+
+// ActionMessage represents an action Coz message.
+type ActionMessage struct {
+	Pay ActionPay `json:"pay"`
+	Sig string    `json:"sig"`
+	Czd string    `json:"czd"`
+}
+
+// ActionPay represents action pay fields.
+type ActionPay struct {
+	Alg string `json:"alg"`
+	Msg string `json:"msg"`
+	Now int64  `json:"now"`
+	Tmb string `json:"tmb"`
+	Typ string `json:"typ"`
+}
+
+// ActionExpected defines expected values for action tests.
+type ActionExpected struct {
+	DSEqualsCzd    *bool   `json:"ds_equals_czd,omitempty"`
+	DSIsHash       *bool   `json:"ds_is_hash,omitempty"`
+	ActionCount    *int    `json:"action_count,omitempty"`
+	DS             *string `json:"ds,omitempty"`
+	PSChanged      *bool   `json:"ps_changed,omitempty"`
+	PSIncludesDS   *bool   `json:"ps_includes_ds,omitempty"`
+	SignerLastUsed *int64  `json:"signer_last_used,omitempty"`
+	Level          *int    `json:"level,omitempty"`
+	HasDataState   *bool   `json:"has_data_state,omitempty"`
+}
+
+func TestActionFixtures(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "actions/recording.json"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	var fixture ActionTestFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	for _, tc := range fixture.Tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			var p *cyphrpass.Principal
+
+			// Setup genesis
+			keyInput := fixture.Keys[tc.Setup.InitialKey]
+			key := makeKeyFromInput(t, keyInput)
+			p, err = cyphrpass.Implicit(key)
+			if err != nil {
+				t.Fatalf("Implicit failed: %v", err)
+			}
+
+			psBefore := p.PS().String()
+
+			// Apply actions
+			for _, actMsg := range tc.Actions {
+				czd, err := coz.Decode(actMsg.Czd)
+				if err != nil {
+					t.Fatalf("failed to decode czd: %v", err)
+				}
+				signer, err := coz.Decode(actMsg.Pay.Tmb)
+				if err != nil {
+					t.Fatalf("failed to decode tmb: %v", err)
+				}
+
+				action := &cyphrpass.Action{
+					Typ:    actMsg.Pay.Typ,
+					Signer: signer,
+					Now:    actMsg.Pay.Now,
+					Czd:    czd,
+				}
+				if err := p.RecordAction(action); err != nil {
+					t.Fatalf("RecordAction failed: %v", err)
+				}
+			}
+
+			// Verify expected values
+			if tc.Expected.DS != nil {
+				if p.DS().String() != *tc.Expected.DS {
+					t.Errorf("DS: got %s, want %s", p.DS().String(), *tc.Expected.DS)
+				}
+			}
+			if tc.Expected.DSEqualsCzd != nil && *tc.Expected.DSEqualsCzd {
+				if len(tc.Actions) == 1 {
+					if p.DS().String() != tc.Actions[0].Czd {
+						t.Errorf("DS should equal czd: got %s, want %s", p.DS().String(), tc.Actions[0].Czd)
+					}
+				}
+			}
+			if tc.Expected.PSChanged != nil && *tc.Expected.PSChanged {
+				if p.PS().String() == psBefore {
+					t.Error("PS should have changed but didn't")
+				}
+			}
+			if tc.Expected.Level != nil {
+				expectedLevel := cyphrpass.Level(*tc.Expected.Level)
+				if p.Level() != expectedLevel {
+					t.Errorf("Level: got %v, want %v", p.Level(), expectedLevel)
+				}
+			}
+			if tc.Expected.HasDataState != nil && *tc.Expected.HasDataState {
+				if p.DS() == nil {
+					t.Error("expected has_data_state but DS is nil")
+				}
+			}
+			if tc.Expected.SignerLastUsed != nil {
+				signer, _ := coz.Decode(tc.Actions[0].Pay.Tmb)
+				key := p.Key(signer)
+				if key == nil {
+					t.Fatal("signer key not found")
+				}
+				if key.LastUsed != *tc.Expected.SignerLastUsed {
+					t.Errorf("signer LastUsed: got %d, want %d", key.LastUsed, *tc.Expected.SignerLastUsed)
+				}
+			}
+		})
+	}
+}
+
+// =========================================================================
+// Error Condition Tests
+// =========================================================================
+
+// ErrorTestFixture is the structure for error tests.
+type ErrorTestFixture struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Keys        map[string]KeyInput `json:"keys"`
+	Tests       []ErrorTestCase     `json:"tests"`
+}
+
+// ErrorTestCase is an individual error test.
+type ErrorTestCase struct {
+	Name          string      `json:"name"`
+	Description   string      `json:"description"`
+	Setup         ErrorSetup  `json:"setup"`
+	Coz           *CozMessage `json:"coz,omitempty"`
+	ExpectedError string      `json:"expected_error"`
+}
+
+// ErrorSetup defines the error test setup.
+type ErrorSetup struct {
+	Genesis        string   `json:"genesis"`
+	InitialKey     string   `json:"initial_key,omitempty"`
+	InitialKeys    []string `json:"initial_keys,omitempty"`
+	RevokeKey      string   `json:"revoke_key,omitempty"`
+	RevokeAt       int64    `json:"revoke_at,omitempty"`
+	UnsupportedAlg bool     `json:"unsupported_alg,omitempty"`
+}
+
+func TestErrorFixtures(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "errors/conditions.json"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	var fixture ErrorTestFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	for _, tc := range fixture.Tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			// Skip unsupported_algorithm test (requires invalid key setup)
+			if tc.Setup.UnsupportedAlg {
+				t.Skip("unsupported_alg test requires invalid key")
+			}
+
+			var p *cyphrpass.Principal
+
+			// Setup genesis
+			switch tc.Setup.Genesis {
+			case "implicit":
+				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				key := makeKeyFromInput(t, keyInput)
+				p, err = cyphrpass.Implicit(key)
+				if err != nil {
+					t.Fatalf("Implicit failed: %v", err)
+				}
+
+			case "explicit":
+				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
+				for i, keyName := range tc.Setup.InitialKeys {
+					keyInput := fixture.Keys[keyName]
+					keys[i] = makeKeyFromInput(t, keyInput)
+				}
+				p, err = cyphrpass.Explicit(keys)
+				if err != nil {
+					t.Fatalf("Explicit failed: %v", err)
+				}
+
+				// Handle pre-revoke setup
+				if tc.Setup.RevokeKey != "" {
+					revokeKeyInput := fixture.Keys[tc.Setup.RevokeKey]
+					revokeTmb, _ := coz.Decode(revokeKeyInput.Tmb)
+
+					// Apply self-revoke transaction to set up revoked state
+					revokeTx := &cyphrpass.Transaction{
+						Kind:   cyphrpass.TxSelfRevoke,
+						Signer: revokeTmb,
+						Now:    tc.Setup.RevokeAt,
+						Rvk:    tc.Setup.RevokeAt,
+						Czd:    []byte("fake-czd-for-setup"),
+						Pre:    p.AS(),
+					}
+					if err := p.ApplyTransaction(revokeTx, nil); err != nil {
+						t.Fatalf("failed to set up revoked key: %v", err)
+					}
+				}
+
+			default:
+				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
+			}
+
+			if tc.Coz == nil {
+				t.Skip("no coz message to test")
+			}
+
+			// Try to apply the transaction (should fail)
+			applyErr := applyTestTransactionForError(t, p, tc.Coz)
+
+			if applyErr == nil {
+				t.Fatalf("expected error %s but got nil", tc.ExpectedError)
+			}
+
+			// Check error type
+			switch tc.ExpectedError {
+			case "InvalidPrior":
+				if applyErr != cyphrpass.ErrInvalidPrior {
+					t.Errorf("expected InvalidPrior, got %v", applyErr)
+				}
+			case "UnknownKey":
+				if applyErr != cyphrpass.ErrUnknownKey {
+					t.Errorf("expected UnknownKey, got %v", applyErr)
+				}
+			case "KeyRevoked":
+				if applyErr != cyphrpass.ErrKeyRevoked {
+					t.Errorf("expected KeyRevoked, got %v", applyErr)
+				}
+			case "NoActiveKeys":
+				if applyErr != cyphrpass.ErrNoActiveKeys {
+					t.Errorf("expected NoActiveKeys, got %v", applyErr)
+				}
+			case "DuplicateKey":
+				if applyErr != cyphrpass.ErrDuplicateKey {
+					t.Errorf("expected DuplicateKey, got %v", applyErr)
+				}
+			default:
+				t.Errorf("unknown expected error: %s", tc.ExpectedError)
+			}
+		})
+	}
+}
+
+// applyTestTransactionForError is like applyTestTransaction but returns error instead of failing
+func applyTestTransactionForError(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage) error {
+	t.Helper()
+
+	var pay TxPay
+	if err := json.Unmarshal(cozMsg.Pay, &pay); err != nil {
+		t.Fatalf("failed to parse pay: %v", err)
+	}
+
+	czd, err := coz.Decode(cozMsg.Czd)
+	if err != nil {
+		t.Fatalf("failed to decode czd: %v", err)
+	}
+
+	signer, err := coz.Decode(pay.Tmb)
+	if err != nil {
+		t.Fatalf("failed to decode tmb: %v", err)
+	}
+
+	tx := &cyphrpass.Transaction{
+		Signer: signer,
+		Now:    pay.Now,
+		Czd:    czd,
+		Rvk:    pay.Rvk,
+	}
+
+	// Use fixture pre (to test invalid pre errors)
+	if pay.Pre != "" {
+		pre, err := coz.Decode(pay.Pre)
+		if err != nil {
+			t.Fatalf("failed to decode pre: %v", err)
+		}
+		tx.Pre = cyphrpass.AuthState(pre)
+	}
+
+	if pay.ID != "" {
+		id, err := coz.Decode(pay.ID)
+		if err != nil {
+			t.Fatalf("failed to decode id: %v", err)
+		}
+		tx.ID = id
+	}
+
+	typ := pay.Typ
+	suffix := typSuffix(typ)
+
+	var newKey *coz.Key
+
+	switch suffix {
+	case "key/add":
+		tx.Kind = cyphrpass.TxKeyAdd
+		if cozMsg.Key != nil {
+			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		}
+	case "key/delete":
+		tx.Kind = cyphrpass.TxKeyDelete
+	case "key/replace":
+		tx.Kind = cyphrpass.TxKeyReplace
+		if cozMsg.Key != nil {
+			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		}
+	case "key/revoke":
+		if pay.ID != "" {
+			tx.Kind = cyphrpass.TxOtherRevoke
+		} else {
+			tx.Kind = cyphrpass.TxSelfRevoke
+		}
+	default:
+		t.Fatalf("unknown transaction type: %s", typ)
+	}
+
+	return p.ApplyTransaction(tx, newKey)
+}
