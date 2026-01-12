@@ -8,6 +8,7 @@ the Cyphrpass identity protocol.
 
 ```
 test_vectors/
+├── keys/           # Shared key pool for all fixtures
 ├── genesis/        # Principal creation (implicit & explicit)
 ├── transactions/   # Key mutations (add, delete, replace, revoke)
 ├── state/          # State computation verification
@@ -36,22 +37,34 @@ Each JSON fixture follows this structure:
 
 ## Key Definitions
 
-Fixtures may include a `keys` map for reusable key references:
+The centralized key pool in `keys/pool.json` provides shared key definitions:
 
 ```json
 {
   "keys": {
-    "golden": {
-      "alg": "ES256",
-      "pub": "2nTOaFVm2QLxmUO_...",
-      "prv": "bNstg4_H3m3SlRO...", // Optional: for signing
-      "tmb": "U5XUZots-WmQYcQ..."
+    "golden": { "alg": "ES256", "pub": "...", "prv": "...", "tmb": "..." },
+    "alice": { "alg": "ES256", "pub": "...", "prv": "...", "tmb": "..." },
+    "diana_es384": { "alg": "ES384", "pub": "...", "prv": "...", "tmb": "..." },
+    "eve_ed25519": {
+      "alg": "Ed25519",
+      "pub": "...",
+      "prv": "...",
+      "tmb": "..."
+    }
+  },
+  "account_presets": {
+    "single_es256": { "genesis": "implicit", "keys": ["golden"] },
+    "multi_dual": { "genesis": "explicit", "keys": ["alice", "bob"] },
+    "multi_mixed_alg": {
+      "genesis": "explicit",
+      "keys": ["alice", "diana_es384", "eve_ed25519"]
     }
   }
 }
 ```
 
-The `prv` field is included only when needed to generate signatures.
+Individual fixtures may also define inline `keys` maps for test-specific keys.
+The `prv` field is included for test signature generation.
 
 ## Coz Message Format
 
