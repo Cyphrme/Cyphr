@@ -293,17 +293,21 @@ coz meta '{"pay":{...},"sig":"..."}'
 ```json
 {
   "alg": "ES256",
+  "now": 1623132000,
+  "tag": "Zami's Majuscule Key.",
   "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
   "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
   "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 }
 ```
 
-### Key_A (ES256)
+### Key A (ES256)
 
 ```json
 {
   "alg": "ES256",
+  "now":1768092490,
+  "tag": "User Key A",
   "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
   "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
   "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"

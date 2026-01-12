@@ -42,17 +42,21 @@ When a component of the state tree contains only **one node**, that node's diges
 - No DS present: AS is promoted to PS
 - Only KS present (no TS/RS): KS is promoted to AS
 
-This rule provides natural semantics for simple single-key principals without requiring explicit genesis transactions.
+This rule provides natural semantics for simple single-key principals without requiring explicit genesis transactions.  Also note that promotion is recursive; items deep in the tree can be promoted to the root level.
 
 ### 2.3 Nonces
 
 One or more cryptographic nonces may be included at any level of the state tree:
 
-- **Privacy**: Prevents correlation across services
-- **Key count obfuscation**: Nonces are indistinguishable from key thumbprints, so observers cannot determine the true key count
 - **Encapsulation**: Hides structure when desired
+- **Reuse Privacy**: Prevents correlation across services
+- **Count Obfuscation**: Nonces are indistinguishable from key thumbprints and other digest values, so observers cannot determine the true count
 
-**Design Note:** Multiple nonces are permitted. An attacker cannot assume "N-1 of these must be real keys" since any number could be nonces.
+Design Notes: 
+- Multiple nonces are permitted.
+- At signing, the key structure may be revealed.  
+
+The general principle of obfuscated structures becoming transparent is **reveal**.  Keys are revealed at signing, nonces and other datastructures may also be required to be revealed during transactions, actions, or operations requiring signing.
 
 ---
 
@@ -1179,12 +1183,12 @@ This section defines error conditions that implementations MUST detect. Error _r
 
 - Reject transactions with any error condition
 - Not apply partial state changes (atomic)
-- Log errors for debugging (optional but recommended)
 
 **Implementations SHOULD:**
 
 - Return meaningful error identifiers to clients
 - Distinguish between client errors (fixable) and server errors (retry)
+- Log errors for debugging (optional but recommended)
 
 **Implementations MAY:**
 
@@ -1195,7 +1199,9 @@ This section defines error conditions that implementations MUST detect. Error _r
 
 ## 15. Test Vectors
 
-These golden test vectors enable implementation verification. All values use B64ut encoding without padding.
+These golden test vectors enable implementation verification. All values use B64ut encoding.
+- `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
+- ES256 uses P-256 curve, SHA-256 for thumbprint
 
 ### 15.1 Golden Key (ES256)
 
@@ -1210,10 +1216,34 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-**Notes:**
 
-- `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
-- ES256 uses P-256 curve, SHA-256 for thumbprint
+### 15.1.1 Golden Key: "Key A" (ES256)
+
+```json5
+{
+  "alg": "ES256",
+  "now":1768092490,
+  "tag": "User Key A",
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+}
+```
+
+
+### 15.1.2 Golden Key: Cyphrpass Server Key A (ES256)
+```json5
+{
+  "alg":"ES256",
+  "now":1768092490,
+	"tag": "Cyphrpass Server Key A",
+  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
+  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
+  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
+}
+```
+
+
 
 ### 15.2 Golden Message
 
@@ -1233,11 +1263,11 @@ The canonical Coz test message with verified signature:
 ```
 
 **Computed digests:**
+`cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
 
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
 
-**Note:** `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
 
 ### 15.3 State Derivation (Level 1/2)
 
