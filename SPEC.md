@@ -44,7 +44,7 @@ When a component of the state tree contains only **one node**, that node's diges
 - No DS present: AS is promoted to PS
 - Only KS present (no TS/RS): KS is promoted to AS
 
-This rule provides natural semantics for simple single-key principals without requiring explicit genesis transactions.  Also note that promotion is recursive; items deep in the tree can be promoted to the root level.
+This rule provides natural semantics for simple single-key principals without requiring explicit genesis transactions. Also note that promotion is recursive; items deep in the tree can be promoted to the root level.
 
 ### 2.3 Nonces
 
@@ -54,11 +54,12 @@ One or more cryptographic nonces may be included at any level of the state tree:
 - **Reuse Privacy**: Prevents correlation across services
 - **Count Obfuscation**: Nonces are indistinguishable from key thumbprints and other digest values, so observers cannot determine the true count
 
-Design Notes: 
-- Multiple nonces are permitted.
-- At signing, the key structure may be revealed.  
+Design Notes:
 
-The general principle of obfuscated structures becoming transparent is **reveal**.  Keys are revealed at signing, nonces and other datastructures may also be required to be revealed during transactions, actions, or operations requiring signing.
+- Multiple nonces are permitted.
+- At signing, the key structure may be revealed.
+
+The general principle of obfuscated structures becoming transparent is **reveal**. Keys are revealed at signing, nonces and other datastructures may also be required to be revealed during transactions, actions, or operations requiring signing.
 
 ---
 
@@ -124,7 +125,6 @@ The general principle of obfuscated structures becoming transparent is **reveal*
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
 
-
 ## 4. Data Structures
 
 ### 4.1 Key
@@ -133,12 +133,12 @@ Example private Coz key with standard fields:
 
 ```json5
 {
-	"tag": "User Key 0", // optional human label, non-programatic.
-	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // thumbprint
-  "alg": "ES256", // Key algorithm.
-  "now": 1623132000, // creation timestamp
-	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
+  tag: "User Key 0", // optional human label, non-programatic.
+  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // thumbprint
+  alg: "ES256", // Key algorithm.
+  now: 1623132000, // creation timestamp
+  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
 }
 ```
 
@@ -148,14 +148,13 @@ Example public key:
 
 ```json
 {
-	"tag": "User Key 0",
-	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "tag": "User Key 0",
+  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
   "alg": "ES256",
   "now": 1623132000,
-	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
 }
 ```
-
 
 ### 4.2 Transactions
 
@@ -322,8 +321,8 @@ A signed Coz message representing a user action, recorded in DS:
 }
 ```
 
+### 5. Genesis (Account Creation) // AI TODO, iterated this up to 5, subsequent sections need
 
-### 5. Genesis (Account Creation) // AI TODO, iterated this up to 5, subsequent sections need 
 ### 5.1 Initial Transactions
 
 A principal is created (genesis) in one of two ways:
@@ -343,98 +342,100 @@ PR = PS = AS = KS = `tmb`
 
 **Explicit Genesis (Single-Key)**
 
-
 - Requires a signed genesis transaction
 - Key signs a `key/add` transaction to add itself as the principal.
 - `PR = H(sort(tmb₀, nonce?))`
 - The genesis transaction constitutes PoP for the signing key.
-- Optionally, the principal root, `pr` may also be included. 
+- Optionally, the principal root, `pr` may also be included.
 
 **`typ`**: `<authority>/key/add`
+
 - `id`: `<genesis key tmb>`
 - `pr`: `<Principal Root value>`
 - `key`: `<key public material>`
 
 ```json5
 {
-  "pay": {
-    "alg": "ES256",
-    "now": 1628181264,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-    "typ": "cyphr.me/cyphrpass/key/add",
-    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-		"pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.
+  pay: {
+    alg: "ES256",
+    now: 1628181264,
+    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+    typ: "cyphr.me/cyphrpass/key/add",
+    id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+    pr: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.
   },
-	"sig": "<b64ut>",// TODO valid sig
-  "key": { // key public material
-		"alg": "ES256",
-		"now": 1623132000,
-		"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-		"tag": "User Key 0",
-		"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-	}
+  sig: "<b64ut>", // TODO valid sig
+  key: {
+    // key public material
+    alg: "ES256",
+    now: 1623132000,
+    pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+    tag: "User Key 0",
+    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  },
 }
 ```
 
 **Explicit Genesis (Multi-Key)**
-- Key signs a `key/add` transaction 
+
+- Key signs a `key/add` transaction
 - `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
 - The genesis transaction constitutes PoP for the signing key
-- Without rules, each key has equal weight, so any initial key can sign.  
-- Keys are added to the PR, calculated beforehand. 
+- Without rules, each key has equal weight, so any initial key can sign.
+- Keys are added to the PR, calculated beforehand.
 
 **`typ`: `<authority>/key/add`**
+
 - `id`: `<genesis key tmb>`
 - `pr`: `<Principal Root value>`
 - `keys`: `<key public material>`
 
 ```json5
 {
-  "cozies": [
+  cozies: [
     {
-      "pay": {
-        "alg": "ES256",
-        "now": 1628181264,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/key/add",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "pr": "<Principal Root value" // TODO insert actual value for this transaction.
+      pay: {
+        alg: "ES256",
+        now: 1628181264,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        typ: "cyphr.me/cyphrpass/key/add",
+        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        pr: "<Principal Root value", // TODO insert actual value for this transaction.
       },
-      "sig": "<b64ut>" // TODO actual sig
+      sig: "<b64ut>", // TODO actual sig
     },
     {
-      "pay": {
-        "alg": "ES256",
-        "now": 1628181264,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/key/add",
-        "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        "pr": "<Principal Root value" // TODO insert actual value for this transaction.
+      pay: {
+        alg: "ES256",
+        now: 1628181264,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        typ: "cyphr.me/cyphrpass/key/add",
+        id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+        pr: "<Principal Root value", // TODO insert actual value for this transaction.
       },
-      "sig": "<b64ut>" // TODO actual sig
-    }
+      sig: "<b64ut>", // TODO actual sig
+    },
   ],
-  "keys": [
+  keys: [
     {
-			"tag": "User Key 0",
-      "alg": "ES256",
-      "now": 1623132000,
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+      tag: "User Key 0",
+      alg: "ES256",
+      now: 1623132000,
+      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     },
     {
-			"tag": "User Key 1",
-      "alg": "ES256",
-      "now": 1768092490,
-      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-    }
-  ]
+      tag: "User Key 1",
+      alg: "ES256",
+      now: 1768092490,
+      pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+    },
+  ],
 }
 ```
+
 ---
-
-
 
 ---
 
@@ -1275,6 +1276,7 @@ This section defines error conditions that implementations MUST detect. Error _r
 ## 15. Test Vectors
 
 These golden test vectors enable implementation verification. All values use B64ut encoding.
+
 - `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
 - ES256 uses P-256 curve, SHA-256 for thumbprint
 
@@ -1291,34 +1293,31 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-
 ### 15.1.1 Golden Key: "Key A" (ES256)
 
 ```json5
 {
-  "alg": "ES256",
-  "now":1768092490,
-  "tag": "User Key 1",
-  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-  "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
-  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+  alg: "ES256",
+  now: 1768092490,
+  tag: "User Key 1",
+  pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  prv: "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+  tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
 }
 ```
-
 
 ### 15.1.2 Golden Key: Cyphrpass Server Key A (ES256)
+
 ```json5
 {
-  "alg":"ES256",
-  "now":1768092490,
-	"tag": "Cyphrpass Server Key A",
-  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
-  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
-  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
+  alg: "ES256",
+  now: 1768092490,
+  tag: "Cyphrpass Server Key A",
+  tmb: "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
+  pub: "yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
+  prv: "WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo",
 }
 ```
-
-
 
 ### 15.2 Golden Message
 
@@ -1342,7 +1341,6 @@ The canonical Coz test message with verified signature:
 
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
-
 
 ### 15.3 State Derivation (Level 1/2)
 

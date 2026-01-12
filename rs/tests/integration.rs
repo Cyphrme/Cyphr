@@ -1240,6 +1240,8 @@ struct ErrorTestCase {
     setup: ErrorSetup,
     #[serde(default)]
     coz: Option<CozMessage>,
+    #[serde(default)]
+    coz_sequence: Option<Vec<CozMessage>>,
     expected_error: String,
 }
 
@@ -1312,7 +1314,14 @@ fn test_error_conditions() {
         };
 
         // Handle tests expecting genesis to fail (e.g., UnsupportedAlgorithm)
-        if test.coz.is_none() {
+        // Only if there's no coz or coz_sequence (genesis-only test)
+        let has_transactions = test.coz.is_some()
+            || test
+                .coz_sequence
+                .as_ref()
+                .map_or(false, |seq| !seq.is_empty());
+
+        if !has_transactions {
             match (&principal_result, test.expected_error.as_str()) {
                 (Err(Error::UnsupportedAlgorithm(_)), "UnsupportedAlgorithm") => {
                     println!("  ✓ PASSED (UnsupportedAlgorithm)");
@@ -1396,9 +1405,96 @@ fn test_error_conditions() {
                 ("KeyRevoked", Err(Error::KeyRevoked)) => {},
                 ("NoActiveKeys", Err(Error::NoActiveKeys)) => {},
                 ("DuplicateKey", Err(Error::DuplicateKey)) => {},
+                ("TimestampPast", Err(Error::TimestampPast)) => {},
+                ("TimestampFuture", Err(Error::TimestampFuture)) => {},
                 _ => panic!(
                     "{}: expected error {}, got {:?}",
                     test.name, test.expected_error, result
+                ),
+            }
+            println!("  ✓ PASSED ({})", test.expected_error);
+            continue;
+        }
+
+        // Handle coz_sequence tests
+        if let Some(ref seq) = test.coz_sequence {
+            let mut last_result: Result<_, Error> = Ok(());
+
+            for coz in seq {
+                let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
+                let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+                let pre = if let Some(ref pre_str) = coz.pay.pre {
+                    let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                    cyphrpass::state::AuthState(coz::Cad::from_bytes(pre_bytes))
+                } else {
+                    principal.auth_state().clone()
+                };
+
+                let kind = if coz.pay.typ.ends_with("/key/add") {
+                    let id_bytes = Base64UrlUnpadded::decode_vec(coz.pay.id.as_ref().unwrap())
+                        .expect("invalid id");
+                    TransactionKind::KeyAdd {
+                        pre: pre.clone(),
+                        id: coz::Thumbprint::from_bytes(id_bytes),
+                    }
+                } else if coz.pay.typ.ends_with("/key/delete") {
+                    let id_bytes = Base64UrlUnpadded::decode_vec(coz.pay.id.as_ref().unwrap())
+                        .expect("invalid id");
+                    TransactionKind::KeyDelete {
+                        pre: pre.clone(),
+                        id: coz::Thumbprint::from_bytes(id_bytes),
+                    }
+                } else if coz.pay.typ.ends_with("/key/revoke") {
+                    let rvk = coz.pay.rvk.unwrap_or(coz.pay.now);
+                    if coz.pay.id.is_some() {
+                        let id_bytes = Base64UrlUnpadded::decode_vec(coz.pay.id.as_ref().unwrap())
+                            .expect("invalid id");
+                        TransactionKind::OtherRevoke {
+                            pre: pre.clone(),
+                            id: coz::Thumbprint::from_bytes(id_bytes),
+                            rvk,
+                        }
+                    } else {
+                        TransactionKind::SelfRevoke { rvk }
+                    }
+                } else {
+                    panic!("Unknown transaction type: {}", coz.pay.typ);
+                };
+
+                let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd");
+                let tx = Transaction {
+                    kind,
+                    signer: signer_tmb.clone(),
+                    now: coz.pay.now,
+                    czd: Czd::from_bytes(czd_bytes),
+                };
+
+                let new_key = coz.key.as_ref().map(|k| k.to_key());
+                last_result = principal.apply_transaction(tx, new_key).map(|_| ());
+
+                // If we get an error, this is the expected error
+                if last_result.is_err() {
+                    break;
+                }
+            }
+
+            // Verify expected error
+            match (&test.expected_error[..], &last_result) {
+                ("InvalidPrior", Err(Error::InvalidPrior)) => {},
+                ("UnknownKey", Err(Error::UnknownKey)) => {},
+                ("KeyRevoked", Err(Error::KeyRevoked)) => {},
+                ("NoActiveKeys", Err(Error::NoActiveKeys)) => {},
+                ("DuplicateKey", Err(Error::DuplicateKey)) => {},
+                ("TimestampPast", Err(Error::TimestampPast)) => {},
+                ("TimestampFuture", Err(Error::TimestampFuture)) => {},
+                (expected, Ok(())) => panic!(
+                    "{}: expected error {} but all transactions succeeded",
+                    test.name, expected
+                ),
+                _ => panic!(
+                    "{}: expected error {}, got {:?}",
+                    test.name, test.expected_error, last_result
                 ),
             }
         }

@@ -193,6 +193,35 @@ Verify error conditions per SPEC §14:
 }
 ```
 
+For multi-transaction error tests (e.g., timestamp ordering), use `coz_sequence`:
+
+```json
+{
+  "name": "timestamp_past_fails",
+  "setup": { "genesis": "implicit", "initial_key": "golden" },
+  "coz_sequence": [
+    {
+      /* Tx1: now=1700000100 */
+    },
+    {
+      /* Tx2: now=1700000050 - older, should fail */
+    }
+  ],
+  "expected_error": "TimestampPast"
+}
+```
+
+**Supported error types:**
+
+- `InvalidPrior`: Transaction `pre` doesn't match current AS
+- `UnknownKey`: Signer not in current KS
+- `KeyRevoked`: Signer key has been revoked
+- `NoActiveKeys`: Would leave principal with no active keys
+- `DuplicateKey`: Adding key already in KS
+- `TimestampPast`: Transaction timestamp older than latest seen
+- `TimestampFuture`: Transaction timestamp exceeds clock skew tolerance
+- `UnsupportedAlgorithm`: Genesis with unsupported algorithm
+
 ### Edge Case Tests (`edge_cases/`)
 
 Verify ordering and idempotency guarantees:
@@ -306,7 +335,7 @@ coz meta '{"pay":{...},"sig":"..."}'
 ```json
 {
   "alg": "ES256",
-  "now":1768092490,
+  "now": 1768092490,
   "tag": "User Key A",
   "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
   "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",

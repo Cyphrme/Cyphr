@@ -1044,11 +1044,12 @@ type ErrorTestFixture struct {
 
 // ErrorTestCase is an individual error test.
 type ErrorTestCase struct {
-	Name          string      `json:"name"`
-	Description   string      `json:"description"`
-	Setup         ErrorSetup  `json:"setup"`
-	Coz           *CozMessage `json:"coz,omitempty"`
-	ExpectedError string      `json:"expected_error"`
+	Name          string       `json:"name"`
+	Description   string       `json:"description"`
+	Setup         ErrorSetup   `json:"setup"`
+	Coz           *CozMessage  `json:"coz,omitempty"`
+	CozSequence   []CozMessage `json:"coz_sequence,omitempty"`
+	ExpectedError string       `json:"expected_error"`
 }
 
 // ErrorSetup defines the error test setup.
@@ -1084,8 +1085,8 @@ func TestErrorFixtures(t *testing.T) {
 				key := makeKeyFromInput(t, keyInput)
 				p, genesisErr = cyphrpass.Implicit(key)
 
-				// For tests expecting genesis to fail
-				if tc.Coz == nil && tc.ExpectedError != "" {
+				// For tests expecting genesis to fail (no coz or coz_sequence provided)
+				if tc.Coz == nil && len(tc.CozSequence) == 0 && tc.ExpectedError != "" {
 					if genesisErr == nil {
 						t.Fatalf("expected error %s but genesis succeeded", tc.ExpectedError)
 					}
@@ -1137,12 +1138,29 @@ func TestErrorFixtures(t *testing.T) {
 				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
 			}
 
-			if tc.Coz == nil {
+			if tc.Coz == nil && len(tc.CozSequence) == 0 {
 				t.Skip("no coz message to test")
 			}
 
-			// Try to apply the transaction (should fail)
-			applyErr := applyTestTransactionForError(t, p, tc.Coz)
+			// For coz_sequence tests, apply transactions until one fails
+			var applyErr error
+			if len(tc.CozSequence) > 0 {
+				for i, cozMsg := range tc.CozSequence {
+					cozCopy := cozMsg // avoid closure issue
+					applyErr = applyTestTransactionForError(t, p, &cozCopy, fixture.Keys)
+					if applyErr != nil {
+						// Expected error occurred during sequence
+						break
+					}
+					// If this was the last tx and we expected an error, fail
+					if i == len(tc.CozSequence)-1 && tc.ExpectedError != "" {
+						t.Fatalf("expected error %s but all transactions succeeded", tc.ExpectedError)
+					}
+				}
+			} else {
+				// Try to apply the single transaction (should fail)
+				applyErr = applyTestTransactionForError(t, p, tc.Coz, fixture.Keys)
+			}
 
 			if applyErr == nil {
 				t.Fatalf("expected error %s but got nil", tc.ExpectedError)
@@ -1170,6 +1188,14 @@ func TestErrorFixtures(t *testing.T) {
 				if applyErr != cyphrpass.ErrDuplicateKey {
 					t.Errorf("expected DuplicateKey, got %v", applyErr)
 				}
+			case "TimestampPast":
+				if applyErr != cyphrpass.ErrTimestampPast {
+					t.Errorf("expected TimestampPast, got %v", applyErr)
+				}
+			case "TimestampFuture":
+				if applyErr != cyphrpass.ErrTimestampFuture {
+					t.Errorf("expected TimestampFuture, got %v", applyErr)
+				}
 			default:
 				t.Errorf("unknown expected error: %s", tc.ExpectedError)
 			}
@@ -1178,7 +1204,7 @@ func TestErrorFixtures(t *testing.T) {
 }
 
 // applyTestTransactionForError is like applyTestTransaction but returns error instead of failing
-func applyTestTransactionForError(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage) error {
+func applyTestTransactionForError(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage, _ map[string]KeyInput) error {
 	t.Helper()
 
 	var pay TxPay

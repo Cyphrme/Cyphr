@@ -154,6 +154,46 @@
         "czd": "G9vxyMXQsULfUiWB64y0A7aPxyrmXkITX07OzKJMNw8"
       },
       "expected_error": "DuplicateKey"
+    },
+    {
+      "name": "timestamp_past_fails",
+      "description": "Transaction with timestamp older than previous fails with TimestampPast (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "coz_sequence": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "now": 1700000100,
+            "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/add"
+          },
+          "key": {
+            "alg": "ES256",
+            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          },
+          "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "czd": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+            "now": 1700000050,
+            "pre": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/delete"
+          },
+          "sig": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "czd": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        }
+      ],
+      "expected_error": "TimestampPast"
     }
   ]
 }
