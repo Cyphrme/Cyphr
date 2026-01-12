@@ -191,6 +191,7 @@
           "alg": "ES256",
           "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
           "now": 1700000000,
+          "pre": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
           "rvk": 1700000000,
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/key/revoke"
