@@ -2,9 +2,16 @@ package cyphrpass
 
 import (
 	"bytes"
+	"time"
 
 	"github.com/cyphrme/coz"
 )
+
+// currentTime returns current unix timestamp in seconds.
+// Separated for testability.
+func currentTime() int64 {
+	return time.Now().Unix()
+}
 
 // Level represents the feature level of a principal.
 type Level int
@@ -71,6 +78,15 @@ type Principal struct {
 	auth    AuthLedger
 	data    DataLedger
 	hashAlg HashAlg
+
+	// latestTimestamp tracks the most recent `now` value seen (SPEC §14.1).
+	// Used to reject timestamps in the past.
+	latestTimestamp int64
+
+	// maxClockSkew is the maximum allowed future timestamp (seconds from server time).
+	// Set to 0 to disable future timestamp checking.
+	// Default: 300 seconds (5 minutes).
+	maxClockSkew int64
 }
 
 // Implicit creates a principal with implicit genesis (single key).
@@ -253,6 +269,14 @@ func (p *Principal) ActiveKeyCount() int {
 	return len(p.auth.Keys)
 }
 
+// SetMaxClockSkew configures the maximum allowed clock skew for future timestamps.
+// Transactions with tx.Now > serverTime + maxClockSkew will be rejected with ErrTimestampFuture.
+// Set to 0 to disable future timestamp checking (default).
+// Recommended value: 300 (5 minutes).
+func (p *Principal) SetMaxClockSkew(seconds int64) {
+	p.maxClockSkew = seconds
+}
+
 // Level determines the current feature level.
 func (p *Principal) Level() Level {
 	// Level 4: has actions
@@ -271,7 +295,24 @@ func (p *Principal) Level() Level {
 //
 // Returns the new Principal State after recording.
 // The action signature must be verified before calling this.
+//
+// Timestamp validation (SPEC §14.1):
+//   - Rejects if action.Now < latestTimestamp (TimestampPast)
+//   - Rejects if action.Now > serverTime + maxClockSkew (TimestampFuture), when maxClockSkew > 0
 func (p *Principal) RecordAction(action *Action) error {
+	// Validate timestamp is not in the past (SPEC §14.1)
+	if action.Now < p.latestTimestamp {
+		return ErrTimestampPast
+	}
+
+	// Validate timestamp is not too far in the future (SPEC §14.1)
+	if p.maxClockSkew > 0 {
+		serverTime := currentTime()
+		if action.Now > serverTime+p.maxClockSkew {
+			return ErrTimestampFuture
+		}
+	}
+
 	// Verify signer is an active key
 	if !p.IsKeyActive(action.Signer) {
 		return ErrUnknownKey
@@ -279,6 +320,11 @@ func (p *Principal) RecordAction(action *Action) error {
 
 	// Update signer's last_used timestamp
 	p.updateLastUsed(action.Signer, action.Now)
+
+	// Update latest timestamp
+	if action.Now > p.latestTimestamp {
+		p.latestTimestamp = action.Now
+	}
 
 	// Record action
 	p.data.Actions = append(p.data.Actions, action)
@@ -313,7 +359,25 @@ func (p *Principal) ActionCount() int {
 //
 // Returns the new Auth State after applying the transaction.
 // The transaction must have been verified before calling this.
+//
+// Timestamp validation (SPEC §14.1):
+//   - Rejects if tx.Now < latestTimestamp (TimestampPast)
+//   - Rejects if tx.Now > serverTime + maxClockSkew (TimestampFuture), when maxClockSkew > 0
 func (p *Principal) ApplyTransaction(tx *Transaction, newKey *coz.Key) error {
+	// Validate timestamp is not in the past (SPEC §14.1)
+	if tx.Now < p.latestTimestamp {
+		return ErrTimestampPast
+	}
+
+	// Validate timestamp is not too far in the future (SPEC §14.1)
+	// Only check if maxClockSkew is configured (> 0)
+	if p.maxClockSkew > 0 {
+		serverTime := currentTime()
+		if tx.Now > serverTime+p.maxClockSkew {
+			return ErrTimestampFuture
+		}
+	}
+
 	// Verify signer is an active key (except for self-revoke)
 	if tx.Kind != TxSelfRevoke {
 		if !p.IsKeyActive(tx.Signer) {
@@ -382,6 +446,11 @@ func (p *Principal) ApplyTransaction(tx *Transaction, newKey *coz.Key) error {
 
 	// Update signer's last_used timestamp
 	p.updateLastUsed(tx.Signer, tx.Now)
+
+	// Update latest timestamp
+	if tx.Now > p.latestTimestamp {
+		p.latestTimestamp = tx.Now
+	}
 
 	// Record transaction and recompute state
 	p.auth.Transactions = append(p.auth.Transactions, tx)

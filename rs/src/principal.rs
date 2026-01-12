@@ -14,6 +14,15 @@ use crate::state::{
 };
 use crate::transaction::Transaction;
 
+/// Get current unix timestamp in seconds.
+/// Separated for testability.
+fn current_time() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_secs() as i64
+}
+
 // ============================================================================
 // AuthLedger
 // ============================================================================
@@ -83,6 +92,12 @@ pub struct Principal {
     data: DataLedger,
     /// Primary hash algorithm (from first key's alg).
     hash_alg: HashAlg,
+    /// Latest timestamp seen (SPEC §14.1).
+    /// Used to reject timestamps in the past.
+    latest_timestamp: i64,
+    /// Maximum allowed future timestamp (seconds from server time).
+    /// Set to 0 to disable future timestamp checking.
+    max_clock_skew: i64,
 }
 
 impl Principal {
@@ -129,6 +144,8 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
+            latest_timestamp: 0,
+            max_clock_skew: 0,
         })
     }
 
@@ -174,6 +191,8 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
+            latest_timestamp: 0,
+            max_clock_skew: 0,
         })
     }
 
@@ -245,6 +264,16 @@ impl Principal {
         Level::L1
     }
 
+    /// Configure the maximum allowed clock skew for future timestamps.
+    ///
+    /// Transactions with `now > server_time + max_clock_skew` will be rejected
+    /// with `TimestampFuture` error. Set to 0 to disable future timestamp checking (default).
+    ///
+    /// Recommended value: 300 (5 minutes).
+    pub fn set_max_clock_skew(&mut self, seconds: i64) {
+        self.max_clock_skew = seconds;
+    }
+
     // ========================================================================
     // Action recording (Level 4)
     // ========================================================================
@@ -256,8 +285,23 @@ impl Principal {
     ///
     /// # Errors
     ///
+    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `TimestampFuture`: Action timestamp is too far in the future
     /// - `UnknownKey`: Signer's key not in current KS
     pub fn record_action(&mut self, action: Action) -> Result<&PrincipalState> {
+        // Validate timestamp is not in the past (SPEC §14.1)
+        if action.now < self.latest_timestamp {
+            return Err(Error::TimestampPast);
+        }
+
+        // Validate timestamp is not too far in the future (SPEC §14.1)
+        if self.max_clock_skew > 0 {
+            let server_time = current_time();
+            if action.now > server_time + self.max_clock_skew {
+                return Err(Error::TimestampFuture);
+            }
+        }
+
         // Verify signer is an active key
         if !self.is_key_active(&action.signer) {
             return Err(Error::UnknownKey);
@@ -265,6 +309,11 @@ impl Principal {
 
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
+
+        // Update latest timestamp
+        if action.now > self.latest_timestamp {
+            self.latest_timestamp = action.now;
+        }
 
         // Record action
         self.data.actions.push(action);
@@ -300,6 +349,8 @@ impl Principal {
     ///
     /// # Errors
     ///
+    /// - `TimestampPast`: Transaction timestamp is older than latest seen
+    /// - `TimestampFuture`: Transaction timestamp is too far in the future
     /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
     /// - `UnknownKey`: Signer key not in current KS
     /// - `KeyRevoked`: Signer key has been revoked
@@ -310,6 +361,19 @@ impl Principal {
         new_key: Option<Key>,
     ) -> Result<&AuthState> {
         use crate::transaction::TransactionKind;
+
+        // Validate timestamp is not in the past (SPEC §14.1)
+        if tx.now < self.latest_timestamp {
+            return Err(Error::TimestampPast);
+        }
+
+        // Validate timestamp is not too far in the future (SPEC §14.1)
+        if self.max_clock_skew > 0 {
+            let server_time = current_time();
+            if tx.now > server_time + self.max_clock_skew {
+                return Err(Error::TimestampFuture);
+            }
+        }
 
         // Verify signer is an active key (except for self-revoke which is handled specially)
         if !matches!(&tx.kind, TransactionKind::SelfRevoke { .. })
@@ -363,6 +427,11 @@ impl Principal {
 
         // Update signer's last_used timestamp
         self.update_last_used(&tx.signer, tx.now);
+
+        // Update latest timestamp
+        if tx.now > self.latest_timestamp {
+            self.latest_timestamp = tx.now;
+        }
 
         // Record transaction and recompute state
         self.auth.transactions.push(tx);

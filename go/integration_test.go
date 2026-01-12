@@ -340,10 +340,10 @@ func TestStateComputationFixtures(t *testing.T) {
 
 			// Apply transaction(s) if present
 			if tc.Coz != nil {
-				applyStateTestTransaction(t, p, *tc.Coz, fixture.Keys)
+				applyStateTestTransaction(t, p, *tc.Coz)
 			}
 			for _, cozMsg := range tc.CozSequence {
-				applyStateTestTransaction(t, p, cozMsg, fixture.Keys)
+				applyStateTestTransaction(t, p, cozMsg)
 			}
 
 			// Apply action if present
@@ -429,7 +429,7 @@ func TestStateComputationFixtures(t *testing.T) {
 }
 
 // applyStateTestTransaction applies a CozMessage as a transaction with fixture pre validation.
-func applyStateTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg CozMessage, keys map[string]KeyInput) {
+func applyStateTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg CozMessage) {
 	t.Helper()
 
 	// Parse Pay from json.RawMessage
