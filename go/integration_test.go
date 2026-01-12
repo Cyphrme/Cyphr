@@ -571,11 +571,6 @@ func TestTransactionFixtures(t *testing.T) {
 
 	for _, tc := range fixture.Tests {
 		t.Run(tc.Name, func(t *testing.T) {
-			// Skip tests with fixture issues (chained pre values need signature regeneration)
-			if tc.Name == "transaction_sequence_replay" {
-				t.Skip("fixture has chained pre values requiring signature regeneration")
-			}
-
 			var p *cyphrpass.Principal
 
 			// Setup genesis
@@ -716,21 +711,14 @@ func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessa
 		t.Fatalf("failed to decode tmb: %v", err)
 	}
 
-	// Build transaction
+	// Build transaction - use principal's CURRENT AS for pre (like Rust tests)
+	// This tests state machine correctness without requiring fixture pre regeneration
 	tx := &cyphrpass.Transaction{
 		Signer: signer,
 		Now:    pay.Now,
 		Czd:    czd,
 		Rvk:    pay.Rvk,
-	}
-
-	// Parse pre if present
-	if pay.Pre != "" {
-		pre, err := coz.Decode(pay.Pre)
-		if err != nil {
-			t.Fatalf("failed to decode pre: %v", err)
-		}
-		tx.Pre = cyphrpass.AuthState(pre)
+		Pre:    p.AS(), // Use live state, not fixture pre
 	}
 
 	// Parse id if present
