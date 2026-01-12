@@ -263,3 +263,238 @@ func TestGenesisExplicitFixtures(t *testing.T) {
 		})
 	}
 }
+
+// =========================================================================
+// State Computation Tests
+// =========================================================================
+
+// StateTestFixture is the structure for state computation tests.
+type StateTestFixture struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Keys        map[string]KeyInput `json:"keys"`
+	Tests       []StateTestCase     `json:"tests"`
+}
+
+// StateTestCase is an individual state computation test.
+type StateTestCase struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Setup       StateSetup    `json:"setup"`
+	Expected    StateExpected `json:"expected"`
+}
+
+// StateSetup defines the test setup.
+type StateSetup struct {
+	Genesis     string   `json:"genesis"`
+	InitialKey  string   `json:"initial_key,omitempty"`
+	InitialKeys []string `json:"initial_keys,omitempty"`
+}
+
+// StateExpected defines expected state values.
+type StateExpected struct {
+	KS          *string `json:"ks,omitempty"`
+	KSEqualsTmb *bool   `json:"ks_equals_tmb,omitempty"`
+	KSIsHash    *bool   `json:"ks_is_hash,omitempty"`
+	AS          *string `json:"as,omitempty"`
+	ASEqualsKS  *bool   `json:"as_equals_ks,omitempty"`
+	PS          *string `json:"ps,omitempty"`
+	PSEqualsAS  *bool   `json:"ps_equals_as,omitempty"`
+}
+
+func TestStateComputationFixtures(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "state/computation.json"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	var fixture StateTestFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	// Tests that only require genesis (no transactions)
+	genesisOnlyTests := []string{
+		"ks_single_key_promotion",
+		"ks_two_keys_sorted",
+		"as_only_ks_promotion",
+		"ps_only_as_promotion",
+	}
+
+	for _, tc := range fixture.Tests {
+		// Skip tests that require transactions/actions for now
+		isGenesisOnly := false
+		for _, name := range genesisOnlyTests {
+			if tc.Name == name {
+				isGenesisOnly = true
+				break
+			}
+		}
+		if !isGenesisOnly {
+			continue
+		}
+
+		t.Run(tc.Name, func(t *testing.T) {
+			var p *cyphrpass.Principal
+
+			switch tc.Setup.Genesis {
+			case "implicit":
+				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				key := makeKeyFromInput(t, keyInput)
+				p, err = cyphrpass.Implicit(key)
+				if err != nil {
+					t.Fatalf("Implicit failed: %v", err)
+				}
+
+			case "explicit":
+				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
+				for i, keyName := range tc.Setup.InitialKeys {
+					keyInput := fixture.Keys[keyName]
+					keys[i] = makeKeyFromInput(t, keyInput)
+				}
+				p, err = cyphrpass.Explicit(keys)
+				if err != nil {
+					t.Fatalf("Explicit failed: %v", err)
+				}
+
+			default:
+				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
+			}
+
+			// Verify expected state
+			if tc.Expected.KS != nil {
+				if p.KS().String() != *tc.Expected.KS {
+					t.Errorf("KS: got %s, want %s", p.KS().String(), *tc.Expected.KS)
+				}
+			}
+			if tc.Expected.AS != nil {
+				if p.AS().String() != *tc.Expected.AS {
+					t.Errorf("AS: got %s, want %s", p.AS().String(), *tc.Expected.AS)
+				}
+			}
+			if tc.Expected.PS != nil {
+				if p.PS().String() != *tc.Expected.PS {
+					t.Errorf("PS: got %s, want %s", p.PS().String(), *tc.Expected.PS)
+				}
+			}
+
+			// Verify boolean assertions
+			if tc.Expected.KSEqualsTmb != nil && *tc.Expected.KSEqualsTmb {
+				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				if p.KS().String() != keyInput.Tmb {
+					t.Errorf("KS should equal tmb: got %s, want %s", p.KS().String(), keyInput.Tmb)
+				}
+			}
+			if tc.Expected.ASEqualsKS != nil && *tc.Expected.ASEqualsKS {
+				if p.AS().String() != p.KS().String() {
+					t.Errorf("AS should equal KS: got %s, want %s", p.AS().String(), p.KS().String())
+				}
+			}
+			if tc.Expected.PSEqualsAS != nil && *tc.Expected.PSEqualsAS {
+				if p.PS().String() != p.AS().String() {
+					t.Errorf("PS should equal AS: got %s, want %s", p.PS().String(), p.AS().String())
+				}
+			}
+		})
+	}
+}
+
+// =========================================================================
+// Edge Case Tests
+// =========================================================================
+
+// EdgeCaseFixture is the structure for edge case tests.
+type EdgeCaseFixture struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Keys        map[string]KeyInput `json:"keys"`
+	Tests       []EdgeCaseTest      `json:"tests"`
+}
+
+// EdgeCaseTest is an individual edge case test.
+type EdgeCaseTest struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Setup       StateSetup       `json:"setup"`
+	Expected    EdgeCaseExpected `json:"expected"`
+}
+
+// EdgeCaseExpected defines expected values for edge cases.
+type EdgeCaseExpected struct {
+	KeyCount *int    `json:"key_count,omitempty"`
+	KS       *string `json:"ks,omitempty"`
+}
+
+func TestEdgeCaseFixtures(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "edge_cases/ordering.json"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	var fixture EdgeCaseFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	// Tests that only require genesis (key ordering tests)
+	genesisOnlyTests := []string{
+		"key_thumbprint_sort_order",
+		"same_keys_different_order",
+	}
+
+	for _, tc := range fixture.Tests {
+		// Skip tests that require transactions/actions
+		isGenesisOnly := false
+		for _, name := range genesisOnlyTests {
+			if tc.Name == name {
+				isGenesisOnly = true
+				break
+			}
+		}
+		if !isGenesisOnly {
+			continue
+		}
+
+		t.Run(tc.Name, func(t *testing.T) {
+			var p *cyphrpass.Principal
+
+			switch tc.Setup.Genesis {
+			case "implicit":
+				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				key := makeKeyFromInput(t, keyInput)
+				p, err = cyphrpass.Implicit(key)
+				if err != nil {
+					t.Fatalf("Implicit failed: %v", err)
+				}
+
+			case "explicit":
+				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
+				for i, keyName := range tc.Setup.InitialKeys {
+					keyInput := fixture.Keys[keyName]
+					keys[i] = makeKeyFromInput(t, keyInput)
+				}
+				p, err = cyphrpass.Explicit(keys)
+				if err != nil {
+					t.Fatalf("Explicit failed: %v", err)
+				}
+
+			default:
+				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
+			}
+
+			// Verify expected values
+			if tc.Expected.KeyCount != nil {
+				if p.ActiveKeyCount() != *tc.Expected.KeyCount {
+					t.Errorf("KeyCount: got %d, want %d", p.ActiveKeyCount(), *tc.Expected.KeyCount)
+				}
+			}
+			if tc.Expected.KS != nil {
+				if p.KS().String() != *tc.Expected.KS {
+					t.Errorf("KS: got %s, want %s", p.KS().String(), *tc.Expected.KS)
+				}
+			}
+		})
+	}
+}
