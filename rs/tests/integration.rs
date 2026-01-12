@@ -42,12 +42,16 @@ enum TestInput {
 }
 
 /// Key input from test vectors.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct KeyInput {
     alg: String,
     #[serde(rename = "pub")]
     pub_key: String,
+    #[serde(default)]
+    prv: Option<String>, // Private key for signing
     tmb: String,
+    #[serde(default)]
+    tag: Option<String>, // Human-readable label
 }
 
 impl KeyInput {
@@ -113,6 +117,46 @@ fn load_test_vectors(category: &str, name: &str) -> TestVectorFile {
 fn cad_to_b64(cad: &coz::Cad) -> String {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::encode_string(cad.as_bytes())
+}
+
+/// Key pool structure matching keys/pool.json.
+#[derive(Debug, Deserialize)]
+struct KeyPool {
+    name: String,
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    version: String,
+    keys: std::collections::HashMap<String, KeyInput>,
+    #[allow(dead_code)]
+    account_presets: std::collections::HashMap<String, AccountPreset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountPreset {
+    #[allow(dead_code)]
+    description: String,
+    #[allow(dead_code)]
+    genesis: String,
+    #[allow(dead_code)]
+    keys: Vec<String>,
+}
+
+/// Load the centralized key pool from keys/pool.json.
+fn load_key_pool() -> KeyPool {
+    let path = test_vectors_dir().join("keys/pool.json");
+    let content =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read key pool: {}", e));
+    serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse key pool: {}", e))
+}
+
+/// Get a key by name from the key pool.
+fn get_pool_key(name: &str) -> KeyInput {
+    let pool = load_key_pool();
+    pool.keys
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("key '{}' not found in pool", name))
 }
 
 // ============================================================================

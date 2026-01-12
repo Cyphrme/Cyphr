@@ -56,7 +56,9 @@ type GenesisInput struct {
 type KeyInput struct {
 	Alg string `json:"alg"`
 	Pub string `json:"pub"`
+	Prv string `json:"prv,omitempty"` // Private key for signing
 	Tmb string `json:"tmb"`
+	Tag string `json:"tag,omitempty"` // Human-readable label
 }
 
 // =========================================================================
@@ -76,6 +78,51 @@ func loadFixture(t *testing.T, path string) *TestFixture {
 	return &fixture
 }
 
+// KeyPool is the centralized key pool structure.
+type KeyPool struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Keys        map[string]KeyInput `json:"keys"`
+	Presets     map[string]struct {
+		Description string   `json:"description"`
+		Genesis     string   `json:"genesis"`
+		Keys        []string `json:"keys"`
+	} `json:"account_presets"`
+}
+
+// globalKeyPool holds the loaded key pool for tests.
+var globalKeyPool *KeyPool
+
+// loadKeyPool loads the centralized key pool from keys/pool.json.
+func loadKeyPool(t *testing.T) *KeyPool {
+	t.Helper()
+	if globalKeyPool != nil {
+		return globalKeyPool
+	}
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "keys/pool.json"))
+	if err != nil {
+		t.Fatalf("failed to read key pool: %v", err)
+	}
+	var pool KeyPool
+	if err := json.Unmarshal(data, &pool); err != nil {
+		t.Fatalf("failed to parse key pool: %v", err)
+	}
+	globalKeyPool = &pool
+	return globalKeyPool
+}
+
+// getPoolKey retrieves a key by name from the key pool.
+func getPoolKey(t *testing.T, name string) KeyInput {
+	t.Helper()
+	pool := loadKeyPool(t)
+	key, ok := pool.Keys[name]
+	if !ok {
+		t.Fatalf("key %q not found in pool", name)
+	}
+	return key
+}
+
 func makeKeyFromInput(t *testing.T, ki KeyInput) *coz.Key {
 	t.Helper()
 	pub, err := coz.Decode(ki.Pub)
@@ -89,6 +136,33 @@ func makeKeyFromInput(t *testing.T, ki KeyInput) *coz.Key {
 	return &coz.Key{
 		Alg: coz.SEAlg(ki.Alg),
 		Pub: pub,
+		Tmb: tmb,
+	}
+}
+
+// makeSigningKey creates a coz.Key with private key for signing.
+// Requires the KeyInput to have a Prv field.
+func makeSigningKey(t *testing.T, ki KeyInput) *coz.Key {
+	t.Helper()
+	if ki.Prv == "" {
+		t.Fatalf("key %q has no private key (prv) for signing", ki.Tag)
+	}
+	pub, err := coz.Decode(ki.Pub)
+	if err != nil {
+		t.Fatalf("failed to decode pub: %v", err)
+	}
+	prv, err := coz.Decode(ki.Prv)
+	if err != nil {
+		t.Fatalf("failed to decode prv: %v", err)
+	}
+	tmb, err := coz.Decode(ki.Tmb)
+	if err != nil {
+		t.Fatalf("failed to decode tmb: %v", err)
+	}
+	return &coz.Key{
+		Alg: coz.SEAlg(ki.Alg),
+		Pub: pub,
+		Prv: prv,
 		Tmb: tmb,
 	}
 }
