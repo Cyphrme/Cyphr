@@ -447,7 +447,7 @@ fn test_transactions() {
             });
 
             // Validate fixture pre matches computed AS (catches fixture data errors)
-            if let Some(ref pre) = fixture_pre {
+            if fixture_pre.is_some() {
                 let computed_as = cad_to_b64(principal.auth_state().as_cad());
                 let fixture_pre_b64 = coz.pay.pre.as_ref().unwrap();
                 assert_eq!(
