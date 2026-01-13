@@ -1127,6 +1127,7 @@ type ActionExpected struct {
 	DSIsHash       *bool   `json:"ds_is_hash,omitempty"`
 	ActionCount    *int    `json:"action_count,omitempty"`
 	DS             *string `json:"ds,omitempty"`
+	PS             *string `json:"ps,omitempty"`
 	PSChanged      *bool   `json:"ps_changed,omitempty"`
 	PSIncludesDS   *bool   `json:"ps_includes_ds,omitempty"`
 	SignerLastUsed *int64  `json:"signer_last_used,omitempty"`
@@ -1197,6 +1198,11 @@ func TestActionFixtures(t *testing.T) {
 			if tc.Expected.PSChanged != nil && *tc.Expected.PSChanged {
 				if p.PS().String() == psBefore {
 					t.Error("PS should have changed but didn't")
+				}
+			}
+			if tc.Expected.PS != nil {
+				if p.PS().String() != *tc.Expected.PS {
+					t.Errorf("PS: got %s, want %s", p.PS().String(), *tc.Expected.PS)
 				}
 			}
 			if tc.Expected.Level != nil {
