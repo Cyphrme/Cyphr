@@ -1,118 +1,153 @@
-Working spec: https://docs.google.com/document/d/11NUBTn3vD0obePboUQ74rO-32fDkaS5LsNgQqkqjJok/edit?tab=t.0
+# Cyphrpass
 
-Key 1:
+**Self-sovereign identity and authentication built on cryptographic state trees.**
 
-```json
-{
-  "alg": "ES256",
-  "iat": 1623132000,
-  "kid": "Zami's Majuscule Key.",
-  "d": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
-  "tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-  "x": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
-}
-```
-
-```json
-{
-  "alg": "ES384",
-  "iat": 1767197339,
-  "kid": "My Cyphr.me Key.",
-  "tmb": "oKirqNU6ucGqRRsYeuZhQO-VzGAxI_fS9Ih6sR60B5fJmpvwqoK2Z8OmXk33zv01",
-  "x": "piWu2-X81abA1ScSdzXPY4AghjsABCsaXfRL3WVsxepbwxHCvyToWGtzpmrih8BDNHtMKiWpC8o6WCYgLv-gEJIpMN7rNEvZ6AgosvJ8Rcpx8y0AUcM5GDHlyQp_hHuv",
-  "d": "zdDVJ8humAHjHPUoUOZ1wquv36UZAXsFMwKw_MARHA2VoBjTAOEmefkrULNQ1Fd2"
-}
-```
-
-```json
-{
-  "alg": "ES256",
-  "iat": 1623132000,
-  "kid": "Zami's Majuscule Key.",
-  "d": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
-  "tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-  "x": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
-}
-```
-
-Genesis Transaction
-
-```json
-{
-  "pay": {
-    "alg": "ES256",
-    "iat": 1628181264,
-    "tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-    "typ": "cyphr.me/cyphrpass/account/create",
-    "id": "RpMM4_lU6jCj3asZEtIFyYqPjC2L6mlucl7VGMvAuno"
-  },
-  "sig": "OigwNSWuPbzkZ6IVaK8MSw5kL61M2cdvuo7HmcfGUJMsRq9I1aD1y1tMwWFC3BmUu8x_AvFR9BoQ3DTxjNLnpw"
-}
-```
-
-Genesis with `key`
-
-```json
-{
-  "pay": {
-    "alg": "ES256",
-    "iat": 1628181264,
-    "tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-    "typ": "cyphr.me/cyphrpass/account/create",
-    "id": "RpMM4_lU6jCj3asZEtIFyYqPjC2L6mlucl7VGMvAuno"
-  },
-  "sig": "OigwNSWuPbzkZ6IVaK8MSw5kL61M2cdvuo7HmcfGUJMsRq9I1aD1y1tMwWFC3BmUu8x_AvFR9BoQ3DTxjNLnpw",
-  "key": {
-    "alg": "ES256",
-    "kid": "Zami's Majuscule Key.",
-    "tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-    "x": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
-  }
-}
-```
-
-```json
-
-
-
-
-
-{
-	"pay": {
-		"alg": "ES256",
-		"iat": 1628181264,
-		"tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-		"typ": "cyphr.me/key/upsert",
-		"id: "zxcLp3BEYYoAZxM9QlV7lS4o3Jn1T0dz9L0pWPZJnIs"
-	}
-}
-
-
-
-
-
-
-For this key:
-"key": {
-"alg": "ES256",
-"iat": 1624472390,
-"tmb": "zxcLp3BEYYoAZxM9QlV7lS4o3Jn1T0dz9L0pWPZJnIs",
-"kid": "Second Key.",
-"x": "F-uHX_..."
-}
-
-
-{
-	"pay": {
-		"alg": "ES256",
-		"iat": 1628181264,
-		"tmb": "cLj8vsYtMBwYkzoFVZHBZo6SNL8wSdCIjCKAwXNuhOk",
-		"typ": "cyphr.me/cyphrpass/key/upsert",
-		"id: "zxcLp3BEYYoAZxM9QlV7lS4o3Jn1T0dz9L0pWPZJnIs"
-	}
-}
-
-
-
+Cyphrpass replaces passwords with public key cryptography, enabling secure multi-device authentication, key rotation, and individually-signed atomic actions—all without a central authority.
 
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│                         PRINCIPAL                               │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Principal Root (PR) - Permanent identity, never changes │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              ▼                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Principal State (PS) = H(Auth State, Data State)        │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│           ▼                              ▼                      │
+│  ┌─────────────────────┐     ┌──────────────────────┐           │
+│  │    Auth State (AS)  │     │   Data State (DS)    │           │
+│  │  = H(KS, TS, RS)    │     │  = H(action czds)    │           │
+│  └─────────────────────┘     └──────────────────────┘           │
+│        ▼      ▼     ▼                                           │
+│  ┌────────┐ ┌────┐ ┌────┐                                       │
+│  │  KS    │ │ TS │ │ RS │                                       │
+│  │ (keys) │ │(tx)│ │rule│                                       │
+│  └────────┘ └────┘ └────┘                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## The Problem
+
+The internet's authentication layer is broken:
+
+- **Passwords** are inherently insecure—phished, leaked, and reused across services
+- **OAuth/SSO** centralizes identity under tech giants who control access to the digital world
+- **No non-repudiation**—users can't prove they authored content; platforms can manipulate history
+- **No portability**—your identity is fragmented across services, owned by corporations
+
+## The Solution
+
+Cyphrpass provides **self-sovereign identity** for the internet:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  YOU own your keys.  YOU control your identity.  No intermediaries.  │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Core Principles
+
+| Old World                   | Cyphrpass                                 |
+| --------------------------- | ----------------------------------------- |
+| Passwords stored on servers | Keys never leave your devices             |
+| Identity owned by platforms | Identity = cryptographic root you control |
+| Trust corporations          | Verify mathematics                        |
+| History can be rewritten    | Every action signed, immutable            |
+| Centralized authority       | Decentralized, self-sovereign             |
+
+### Use Cases
+
+**Authentication Without Passwords**
+
+- Login by proving key possession—no secrets transmitted
+- Multi-device support with cryptographic key management
+- Instant revocation when a device is compromised
+
+**Non-Repudiation & Provenance**
+
+- Journalists sign articles—readers verify authenticity
+- Whistleblowers prove authorship without revealing identity
+- Historical records with cryptographic proof of origin
+- Comments, votes, posts—all individually verifiable
+
+**Decentralized Authority**
+
+- No single point of failure or control
+- Portable identity across services
+- M-of-N key schemes for organizations
+- Recovery without trusting a third party
+
+**Cryptographic Foundation**
+
+- Built on standard algorithms (ES256, ES384, Ed25519)
+- Signing, verification, and encrypted communications
+- Algorithm-agile—upgrade without losing identity
+
+## Feature Levels
+
+| Level | Description                  | Use Case                      |
+| ----- | ---------------------------- | ----------------------------- |
+| **1** | Single static key (PR = tmb) | IoT devices, hardware tokens  |
+| **2** | Key replacement              | Single-device rotation        |
+| **3** | Multi-key management         | Multi-device users            |
+| **4** | Authenticated Atomic Actions | Signed posts, comments, votes |
+| **5** | Weighted permissions         | M-of-N signing, tiered access |
+| **6** | Programmable rules           | Smart contracts               |
+
+## How It Works
+
+1. **Genesis** — Generate a key, derive your permanent identity (PR = thumbprint)
+2. **Key Management** — Add/remove/revoke keys via signed transactions
+3. **Actions** — Sign atomic operations (posts, votes, etc.) with any authorized key
+4. **Verification** — Anyone can verify the chain back to genesis
+
+See implementation READMEs for concrete code examples.
+
+## Transaction Chain
+
+Every key mutation forms a cryptographically linked chain:
+
+```
+Genesis (tmb)  ──pre──▶  key/add  ──pre──▶  key/revoke  ──pre──▶  ...
+     │                      │                    │
+     ▼                      ▼                    ▼
+    AS₀                    AS₁                  AS₂
+```
+
+## Repository Structure
+
+```
+Cyphrpass/
+├── SPEC.md           # Full protocol specification
+├── go/               # Go implementation
+│   └── README.md     # Go-specific documentation
+├── rs/               # Rust implementation
+│   └── README.md     # Rust-specific documentation
+├── test_vectors/     # Language-agnostic test fixtures
+│   └── README.md     # Test vector documentation
+├── coz/              # Go Coz library (cryptographic JSON)
+└── coz-rust/         # Rust Coz library
+```
+
+## Implementations
+
+| Language | Status        | Package                        |
+| -------- | ------------- | ------------------------------ |
+| **Go**   | Levels 1-4 ✅ | `github.com/cyphrme/cyphrpass` |
+| **Rust** | Levels 1-4 ✅ | `cyphrpass`                    |
+
+Both implementations support Levels 1-4 (single key through authenticated actions). Levels 5-6 (weighted permissions, programmable rules) are specified but not yet implemented.
+
+All tests pass using shared language-agnostic test vectors.
+
+## Built On Coz
+
+Cyphrpass uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations—a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
+
+## Documentation
+
+- **[SPEC.md](SPEC.md)** — Full protocol specification
+- **[go/README.md](go/README.md)** — Go implementation guide
+- **[rs/README.md](rs/README.md)** — Rust implementation guide
+- **[test_vectors/README.md](test_vectors/README.md)** — Test vector documentation
