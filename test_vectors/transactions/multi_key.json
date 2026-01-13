@@ -1,27 +1,7 @@
 {
   "name": "multi_key_transactions",
-  "description": "Multi-key transaction scenarios per SPEC §4.2 - testing operations on accounts with 2+ active keys",
+  "description": "Multi-key transaction scenarios per SPEC §4.2 - testing operations on accounts with 2+ active keys. Keys resolved from keys/pool.json.",
   "version": "0.1.0",
-  "keys": {
-    "alice": {
-      "alg": "ES256",
-      "prv": "x0le6Ay7u2wrW-XI9Ster9ImOMKT92w4eHxAlM13LV0",
-      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
-      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
-    },
-    "bob": {
-      "alg": "ES256",
-      "prv": "MguhjcLPmb1uXQ6oGzEmdnJpTFDUeO7w1TKuHpoPm0s",
-      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-    },
-    "carol": {
-      "alg": "ES256",
-      "prv": "qV77EYqomxLSIyjyN8zC7HiPDh1Hf5BwBAknRwiWNOg",
-      "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-      "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-    }
-  },
   "tests": [
     {
       "name": "add_third_key_to_dual_key_account",
@@ -39,11 +19,7 @@
           "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-          "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-        },
+        "key": "carol",
         "sig": "MgHzMdITXPx3ey_Y0lWjxSaxe7sEv_vFnE8gOSqjWMAMISAkCP3NPCNFsRsDBs42oZw2fDn4u68dMWro5UYpOA",
         "czd": "Uaz5MmkBiW7WZQWCld81NT0rauYW9wB48A51xsJrbR8"
       },
@@ -69,11 +45,7 @@
           "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
           "typ": "cyphr.me/key/replace"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-          "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-        },
+        "key": "carol",
         "sig": "vFbUqVMS0hPqGveARDYLLRK9_ERckApcQW6_t1INoxFJs_sMdP1Ck3-fk4Az-UedXlgJoH6SH2BRYfl0nUUDJQ",
         "czd": "DAZLLxWiyEbQNaLUsD3WjM6a3VuU-SYdU-a9GVpR-CI"
       },
@@ -100,11 +72,7 @@
           "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-          "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-        },
+        "key": "carol",
         "sig": "uBpjiivqx99L3s_ozUBJZ5_Kwj3zdziO_f4fHW1PNc0AWgS5OyUKn5RxS-t69f7Tire70chxJIMvXUptLKrw6Q",
         "czd": "WjorcfuVJ1v1azp2K0ttnrtTgcSmxNaL7OEvMdWFbGA"
       },

@@ -42,16 +42,18 @@ enum TestInput {
 }
 
 /// Key input from test vectors.
+/// Note: Some fields (prv, tag) are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 struct KeyInput {
     alg: String,
     #[serde(rename = "pub")]
     pub_key: String,
     #[serde(default)]
-    prv: Option<String>, // Private key for signing
+    prv: Option<String>,
     tmb: String,
     #[serde(default)]
-    tag: Option<String>, // Human-readable label
+    tag: Option<String>,
 }
 
 impl KeyInput {
@@ -120,25 +122,23 @@ fn cad_to_b64(cad: &coz::Cad) -> String {
 }
 
 /// Key pool structure matching keys/pool.json.
+/// Note: Metadata fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct KeyPool {
     name: String,
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     version: String,
     keys: std::collections::HashMap<String, KeyInput>,
-    #[allow(dead_code)]
     account_presets: std::collections::HashMap<String, AccountPreset>,
 }
 
+/// Account preset from key pool.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct AccountPreset {
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     genesis: String,
-    #[allow(dead_code)]
     keys: Vec<String>,
 }
 
@@ -157,6 +157,21 @@ fn get_pool_key(name: &str) -> KeyInput {
         .get(name)
         .cloned()
         .unwrap_or_else(|| panic!("key '{}' not found in pool", name))
+}
+
+/// Resolve a key by name, checking fixture-inline keys first, then the global pool.
+fn resolve_key(
+    name: &str,
+    fixture_keys: Option<&std::collections::HashMap<String, KeyInput>>,
+) -> KeyInput {
+    // Try fixture-inline keys first
+    if let Some(keys) = fixture_keys {
+        if let Some(key) = keys.get(name) {
+            return key.clone();
+        }
+    }
+    // Fall back to global pool
+    get_pool_key(name)
 }
 
 // ============================================================================
@@ -319,14 +334,14 @@ fn test_explicit_genesis() {
 // ============================================================================
 
 /// Transaction test fixture structure.
+/// Note: Metadata fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct TransactionTestFile {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     version: String,
+    #[serde(default)]
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<TransactionTestCase>,
 }
@@ -359,8 +374,26 @@ struct TransactionSetup {
 struct CozMessage {
     pay: CozPay,
     #[serde(default)]
-    key: Option<KeyInput>,
+    key: serde_json::Value, // Either string ref or inline KeyInput
     czd: String,
+}
+
+impl CozMessage {
+    /// Resolve the key from this message, handling both string refs and inline objects.
+    fn resolve_key(
+        &self,
+        fixture_keys: Option<&std::collections::HashMap<String, KeyInput>>,
+    ) -> Option<KeyInput> {
+        if self.key.is_null() {
+            return None;
+        }
+        // Try as string first
+        if let Some(key_ref) = self.key.as_str() {
+            return Some(resolve_key(key_ref, fixture_keys));
+        }
+        // Otherwise parse as inline KeyInput
+        serde_json::from_value(self.key.clone()).ok()
+    }
 }
 
 /// Coz pay object with all transaction fields.
@@ -381,6 +414,8 @@ struct CozPay {
 }
 
 /// Expected state after transaction.
+/// Note: Some fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct TransactionExpected {
     #[serde(default)]
@@ -399,22 +434,16 @@ struct TransactionExpected {
     signer_active: Option<bool>,
     #[serde(default)]
     transaction_count: Option<usize>,
-    #[allow(dead_code)]
     #[serde(default)]
     ks: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     ts: Option<String>,
-    #[allow(dead_code)]
     #[serde(rename = "as", default)]
     auth_state: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     ps: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     pr: Option<String>,
-    #[allow(dead_code)]
     #[serde(default)]
     key_a_rvk: Option<i64>,
 }
@@ -551,7 +580,7 @@ fn test_transactions() {
             };
 
             // Get new key if present
-            let new_key = coz.key.as_ref().map(|k| k.to_key());
+            let new_key = coz.resolve_key(None).map(|k| k.to_key());
 
             principal
                 .apply_transaction(tx, new_key)
@@ -608,9 +637,8 @@ fn test_transactions() {
         }
 
         if let Some(level) = test.expected.level {
-            // Level enum: L1=0, L2=1, L3=2, L4=3; fixture uses 1-4
             assert_eq!(
-                principal.level() as u8 + 1,
+                principal.level() as u8,
                 level,
                 "{}: level mismatch",
                 test.name
@@ -732,18 +760,152 @@ fn test_transactions() {
     }
 }
 
+/// Test multi-key transactions using pool key references.
+/// This proves the key pool resolution works end-to-end.
+#[test]
+fn test_multi_key_transactions() {
+    let fixture = load_transaction_tests("multi_key");
+
+    for test in &fixture.tests {
+        println!("Running multi_key: {} - {}", test.name, test.description);
+
+        // Setup genesis - keys resolved from pool (fixture.keys is empty for multi_key.json)
+        let fixture_keys = if fixture.keys.is_empty() {
+            None
+        } else {
+            Some(&fixture.keys)
+        };
+
+        let mut principal = match test.setup.genesis.as_str() {
+            "implicit" => {
+                let key_name = test
+                    .setup
+                    .initial_key
+                    .as_ref()
+                    .expect("implicit needs initial_key");
+                let key_input = resolve_key(key_name, fixture_keys);
+                Principal::implicit(key_input.to_key()).expect("implicit genesis failed")
+            },
+            "explicit" => {
+                let key_names = test
+                    .setup
+                    .initial_keys
+                    .as_ref()
+                    .expect("explicit needs initial_keys");
+                let keys: Vec<Key> = key_names
+                    .iter()
+                    .map(|n| resolve_key(n, fixture_keys).to_key())
+                    .collect();
+                Principal::explicit(keys).expect("explicit genesis failed")
+            },
+            _ => panic!("Unknown genesis type: {}", test.setup.genesis),
+        };
+
+        // Apply transaction using the CozMessage.resolve_key method
+        if let Some(ref coz) = test.coz {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            use cyphrpass::transaction::{Transaction, TransactionKind};
+
+            // Get new key for add/replace operations
+            let new_key = coz.resolve_key(fixture_keys).map(|ki| ki.to_key());
+
+            // Build transaction
+            let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
+            let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+            // Parse pre
+            let fixture_pre = coz.pay.pre.as_ref().map(|pre_str| {
+                let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                cyphrpass::AuthState(coz::Cad::from_bytes(pre_bytes))
+            });
+
+            // Determine transaction kind
+            let kind = if coz.pay.typ.ends_with("/key/add") {
+                let id_str = coz.pay.id.as_ref().expect("key/add needs id");
+                let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
+                TransactionKind::KeyAdd {
+                    pre: fixture_pre.expect("key/add needs pre"),
+                    id: coz::Thumbprint::from_bytes(id_bytes),
+                }
+            } else if coz.pay.typ.ends_with("/key/delete") {
+                let id_str = coz.pay.id.as_ref().expect("key/delete needs id");
+                let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
+                TransactionKind::KeyDelete {
+                    pre: fixture_pre.expect("key/delete needs pre"),
+                    id: coz::Thumbprint::from_bytes(id_bytes),
+                }
+            } else if coz.pay.typ.ends_with("/key/replace") {
+                let id_str = coz.pay.id.as_ref().expect("key/replace needs id");
+                let id_bytes = Base64UrlUnpadded::decode_vec(id_str).expect("invalid id");
+                TransactionKind::KeyReplace {
+                    pre: fixture_pre.expect("key/replace needs pre"),
+                    id: coz::Thumbprint::from_bytes(id_bytes),
+                }
+            } else {
+                panic!("unsupported transaction type: {}", coz.pay.typ);
+            };
+
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd");
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb,
+                czd: coz::Czd::from_bytes(czd_bytes),
+                now: coz.pay.now,
+            };
+
+            principal
+                .apply_transaction(tx, new_key)
+                .expect("apply_transaction failed");
+        }
+
+        // Verify expected values
+        if let Some(key_count) = test.expected.key_count {
+            assert_eq!(
+                principal.active_key_count(),
+                key_count,
+                "{}: key_count mismatch",
+                test.name
+            );
+        }
+
+        if let Some(level) = test.expected.level {
+            assert_eq!(
+                principal.level() as u8,
+                level,
+                "{}: level mismatch",
+                test.name
+            );
+        }
+
+        // Verify active keys by resolving from pool
+        if let Some(ref expected_keys) = test.expected.active_keys {
+            for key_name in expected_keys {
+                let key_input = resolve_key(key_name, fixture_keys);
+                let key = key_input.to_key();
+                assert!(
+                    principal.is_key_active(&key.tmb),
+                    "{}: {} should be active",
+                    test.name,
+                    key_name
+                );
+            }
+        }
+
+        println!("  ✓ PASSED");
+    }
+}
+
 // ============================================================================
 // State computation tests (C11.3)
 // ============================================================================
 
 /// State computation test fixture structure.
+/// Note: Metadata fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct StateTestFile {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     version: String,
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<StateTestCase>,
@@ -898,7 +1060,7 @@ fn test_state_computation() {
                 czd: Czd::from_bytes(czd_bytes),
             };
 
-            let new_key = coz.key.as_ref().map(|k| k.to_key());
+            let new_key = coz.resolve_key(None).map(|k| k.to_key());
             principal
                 .apply_transaction(tx, new_key)
                 .expect("transaction failed");
@@ -1032,13 +1194,12 @@ fn test_state_computation() {
 // ============================================================================
 
 /// Action test fixture structure.
+/// Note: Metadata fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ActionTestFile {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     version: String,
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<ActionTestCase>,
@@ -1240,7 +1401,7 @@ fn test_action_recording() {
 
         if let Some(expected_level) = test.expected.level {
             assert_eq!(
-                principal.level() as u8 + 1,
+                principal.level() as u8,
                 expected_level,
                 "{}: level mismatch",
                 test.name
@@ -1264,13 +1425,12 @@ fn test_action_recording() {
 // ============================================================================
 
 /// Error test fixture structure.
+/// Note: Metadata fields are deserialized from JSON but not directly read in Rust code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ErrorTestFile {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     description: String,
-    #[allow(dead_code)]
     version: String,
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<ErrorTestCase>,
@@ -1439,7 +1599,7 @@ fn test_error_conditions() {
                 czd: Czd::from_bytes(czd_bytes),
             };
 
-            let new_key = coz.key.as_ref().map(|k| k.to_key());
+            let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
             let result = principal.apply_transaction(tx, new_key);
 
             // Verify expected error
@@ -1514,7 +1674,7 @@ fn test_error_conditions() {
                     czd: Czd::from_bytes(czd_bytes),
                 };
 
-                let new_key = coz.key.as_ref().map(|k| k.to_key());
+                let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
                 last_result = principal.apply_transaction(tx, new_key).map(|_| ());
 
                 // If we get an error, this is the expected error
@@ -1647,7 +1807,7 @@ fn test_edge_cases() {
                 czd: Czd::from_bytes(czd_bytes),
             };
 
-            let new_key = coz.key.as_ref().map(|k| k.to_key());
+            let new_key = coz.resolve_key(None).map(|k| k.to_key());
             principal
                 .apply_transaction(tx, new_key)
                 .expect("transaction failed");

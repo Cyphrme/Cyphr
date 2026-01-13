@@ -51,15 +51,16 @@ pub struct DataLedger {
 
 /// Feature level of a principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum Level {
     /// Single static key.
-    L1,
+    L1 = 1,
     /// Key replacement.
-    L2,
+    L2 = 2,
     /// Multi-key.
-    L3,
+    L3 = 3,
     /// Data layer (AAA).
-    L4,
+    L4 = 4,
 }
 
 // ============================================================================

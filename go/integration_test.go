@@ -123,6 +123,19 @@ func getPoolKey(t *testing.T, name string) KeyInput {
 	return key
 }
 
+// resolveKey looks up a key by name, first in fixture-inline keys, then in the global pool.
+func resolveKey(t *testing.T, name string, fixtureKeys map[string]KeyInput) KeyInput {
+	t.Helper()
+	// Try fixture-inline keys first
+	if fixtureKeys != nil {
+		if key, ok := fixtureKeys[name]; ok {
+			return key
+		}
+	}
+	// Fall back to global pool
+	return getPoolKey(t, name)
+}
+
 func makeKeyFromInput(t *testing.T, ki KeyInput) *coz.Key {
 	t.Helper()
 	pub, err := coz.Decode(ki.Pub)
@@ -136,33 +149,6 @@ func makeKeyFromInput(t *testing.T, ki KeyInput) *coz.Key {
 	return &coz.Key{
 		Alg: coz.SEAlg(ki.Alg),
 		Pub: pub,
-		Tmb: tmb,
-	}
-}
-
-// makeSigningKey creates a coz.Key with private key for signing.
-// Requires the KeyInput to have a Prv field.
-func makeSigningKey(t *testing.T, ki KeyInput) *coz.Key {
-	t.Helper()
-	if ki.Prv == "" {
-		t.Fatalf("key %q has no private key (prv) for signing", ki.Tag)
-	}
-	pub, err := coz.Decode(ki.Pub)
-	if err != nil {
-		t.Fatalf("failed to decode pub: %v", err)
-	}
-	prv, err := coz.Decode(ki.Prv)
-	if err != nil {
-		t.Fatalf("failed to decode prv: %v", err)
-	}
-	tmb, err := coz.Decode(ki.Tmb)
-	if err != nil {
-		t.Fatalf("failed to decode tmb: %v", err)
-	}
-	return &coz.Key{
-		Alg: coz.SEAlg(ki.Alg),
-		Pub: pub,
-		Prv: prv,
 		Tmb: tmb,
 	}
 }
@@ -564,8 +550,8 @@ func applyStateTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg CozM
 
 	// Get new key if present
 	var newKey *coz.Key
-	if cozMsg.Key != nil {
-		newKey = makeKeyFromInput(t, *cozMsg.Key)
+	if keyInput := resolveKeyFromCozMessage(t, cozMsg.Key, nil); keyInput != nil {
+		newKey = makeKeyFromInput(t, *keyInput)
 	}
 
 	if err := p.ApplyTransactionUnsafe(tx, newKey); err != nil {
@@ -698,9 +684,31 @@ type TxTestCase struct {
 // CozMessage represents a signed Coz message in tests.
 type CozMessage struct {
 	Pay json.RawMessage `json:"pay"`
-	Key *KeyInput       `json:"key,omitempty"`
+	Key json.RawMessage `json:"key,omitempty"` // Either string ref or inline KeyInput
 	Sig string          `json:"sig"`
 	Czd string          `json:"czd"`
+}
+
+// resolveKeyFromCozMessage extracts the key from a CozMessage, handling both:
+// - String reference: "carol" -> look up from fixture keys or pool
+// - Inline object: {"alg": "ES256", ...} -> parse directly
+func resolveKeyFromCozMessage(t *testing.T, keyRaw json.RawMessage, fixtureKeys map[string]KeyInput) *KeyInput {
+	t.Helper()
+	if len(keyRaw) == 0 {
+		return nil
+	}
+	// Try parsing as string first
+	var keyRef string
+	if err := json.Unmarshal(keyRaw, &keyRef); err == nil {
+		keyInput := resolveKey(t, keyRef, fixtureKeys)
+		return &keyInput
+	}
+	// Otherwise parse as inline KeyInput
+	var keyInput KeyInput
+	if err := json.Unmarshal(keyRaw, &keyInput); err != nil {
+		t.Fatalf("failed to parse key: %v", err)
+	}
+	return &keyInput
 }
 
 // TxPay represents the pay fields we need.
@@ -749,7 +757,7 @@ func TestTransactionFixtures(t *testing.T) {
 			// Setup genesis
 			switch tc.Setup.Genesis {
 			case "implicit":
-				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 				key := makeKeyFromInput(t, keyInput)
 				p, err = cyphrpass.Implicit(key)
 				if err != nil {
@@ -759,7 +767,7 @@ func TestTransactionFixtures(t *testing.T) {
 			case "explicit":
 				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
 				for i, keyName := range tc.Setup.InitialKeys {
-					keyInput := fixture.Keys[keyName]
+					keyInput := resolveKey(t, keyName, fixture.Keys)
 					keys[i] = makeKeyFromInput(t, keyInput)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -863,6 +871,78 @@ func TestTransactionFixtures(t *testing.T) {
 	}
 }
 
+// TestMultiKeyTransactions runs multi_key.json which uses pool key references.
+// This proves the key pool resolution works end-to-end.
+func TestMultiKeyTransactions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "transactions/multi_key.json"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	var fixture TxTestFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	for _, tc := range fixture.Tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			var p *cyphrpass.Principal
+
+			// Setup genesis - keys resolved from pool (fixture.Keys is nil/empty)
+			switch tc.Setup.Genesis {
+			case "implicit":
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
+				key := makeKeyFromInput(t, keyInput)
+				p, err = cyphrpass.Implicit(key)
+				if err != nil {
+					t.Fatalf("Implicit failed: %v", err)
+				}
+
+			case "explicit":
+				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
+				for i, keyName := range tc.Setup.InitialKeys {
+					keyInput := resolveKey(t, keyName, fixture.Keys)
+					keys[i] = makeKeyFromInput(t, keyInput)
+				}
+				p, err = cyphrpass.Explicit(keys)
+				if err != nil {
+					t.Fatalf("Explicit failed: %v", err)
+				}
+
+			default:
+				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
+			}
+
+			// Apply transaction
+			if tc.Coz != nil {
+				applyTestTransaction(t, p, tc.Coz)
+			}
+
+			// Verify expected values
+			if tc.Expected.KeyCount != nil {
+				if p.ActiveKeyCount() != *tc.Expected.KeyCount {
+					t.Errorf("KeyCount: got %d, want %d", p.ActiveKeyCount(), *tc.Expected.KeyCount)
+				}
+			}
+			if tc.Expected.Level != nil {
+				expectedLevel := cyphrpass.Level(*tc.Expected.Level)
+				if p.Level() != expectedLevel {
+					t.Errorf("Level: got %v, want %v", p.Level(), expectedLevel)
+				}
+			}
+
+			// Verify active keys by resolving from pool
+			for _, keyName := range tc.Expected.ActiveKeys {
+				keyInput := resolveKey(t, keyName, fixture.Keys)
+				tmb, _ := coz.Decode(keyInput.Tmb)
+				if !p.IsKeyActive(tmb) {
+					t.Errorf("expected key %s to be active", keyName)
+				}
+			}
+		})
+	}
+}
+
 func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessage) {
 	t.Helper()
 
@@ -927,15 +1007,15 @@ func applyTestTransaction(t *testing.T, p *cyphrpass.Principal, cozMsg *CozMessa
 	switch suffix {
 	case "key/add":
 		tx.Kind = cyphrpass.TxKeyAdd
-		if cozMsg.Key != nil {
-			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		if keyInput := resolveKeyFromCozMessage(t, cozMsg.Key, nil); keyInput != nil {
+			newKey = makeKeyFromInput(t, *keyInput)
 		}
 	case "key/delete":
 		tx.Kind = cyphrpass.TxKeyDelete
 	case "key/replace":
 		tx.Kind = cyphrpass.TxKeyReplace
-		if cozMsg.Key != nil {
-			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		if keyInput := resolveKeyFromCozMessage(t, cozMsg.Key, nil); keyInput != nil {
+			newKey = makeKeyFromInput(t, *keyInput)
 		}
 	case "key/revoke":
 		if pay.ID != "" {
@@ -1328,15 +1408,15 @@ func applyTestTransactionForError(t *testing.T, p *cyphrpass.Principal, cozMsg *
 	switch suffix {
 	case "key/add":
 		tx.Kind = cyphrpass.TxKeyAdd
-		if cozMsg.Key != nil {
-			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		if keyInput := resolveKeyFromCozMessage(t, cozMsg.Key, nil); keyInput != nil {
+			newKey = makeKeyFromInput(t, *keyInput)
 		}
 	case "key/delete":
 		tx.Kind = cyphrpass.TxKeyDelete
 	case "key/replace":
 		tx.Kind = cyphrpass.TxKeyReplace
-		if cozMsg.Key != nil {
-			newKey = makeKeyFromInput(t, *cozMsg.Key)
+		if keyInput := resolveKeyFromCozMessage(t, cozMsg.Key, nil); keyInput != nil {
+			newKey = makeKeyFromInput(t, *keyInput)
 		}
 	case "key/revoke":
 		if pay.ID != "" {
