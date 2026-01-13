@@ -209,6 +209,28 @@
         }
       ],
       "expected_error": "TimestampPast"
+    },
+    {
+      "name": "action_revoked_key_fails",
+      "description": "Action signed by revoked key fails with KeyRevoked (SPEC §14.1)",
+      "setup": {
+        "genesis": "explicit",
+        "initial_keys": ["golden", "key_a"],
+        "revoke_key": "key_a",
+        "revoke_at": 1699999999
+      },
+      "action": {
+        "pay": {
+          "alg": "ES256",
+          "msg": "Action from revoked key",
+          "now": 1700000001,
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "typ": "cyphr.me/action"
+        },
+        "sig": "FngvwN2jkao3LRCrfMBSFRd8-1gAUNyP8sfYtMqir8UJp4OeYC-o4DdT8GcewmwRFKW-nqZQ1-ABDAe2ZAHSrg",
+        "czd": "z_jIjsIRxGFKZ0BwqtI6wiYxGe1BEclExqE82XQC7iU"
+      },
+      "expected_error": "KeyRevoked"
     }
   ]
 }

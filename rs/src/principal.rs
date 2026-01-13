@@ -305,6 +305,10 @@ impl Principal {
 
         // Verify signer is an active key
         if !self.is_key_active(&action.signer) {
+            // Check if key exists but is revoked
+            if self.auth.revoked.values().any(|k| k.tmb == action.signer) {
+                return Err(Error::KeyRevoked);
+            }
             return Err(Error::UnknownKey);
         }
 

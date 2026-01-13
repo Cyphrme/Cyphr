@@ -315,6 +315,12 @@ func (p *Principal) RecordAction(action *Action) error {
 
 	// Verify signer is an active key
 	if !p.IsKeyActive(action.Signer) {
+		// Check if key exists but is revoked
+		for _, k := range p.auth.Revoked {
+			if bytes.Equal(k.Tmb, action.Signer) {
+				return ErrKeyRevoked
+			}
+		}
 		return ErrUnknownKey
 	}
 
