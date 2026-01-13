@@ -1,25 +1,3 @@
-
-
-// Server Key:
-
-```json5
-{
-  "alg":"ES256",
-  "now":1768092490,
-  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
-  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
-  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
-}
-```
-
-
-
-
-
-
-
-
-
 ## Bearer Authentication with Coz
 
 In addition to being Coz is well-suited for building stateless, cryptographically verifiable bearer
@@ -62,7 +40,7 @@ revoke was issues to the server, future login requests must be invalid for new
 requests, limiting the impact of replay attacks.
 
 
-Example user login request.  In this example there's no challenge :
+Example 1: user login request.  In this example there's no challenge :
 ```json
 {
   "pay": {
@@ -71,12 +49,12 @@ Example user login request.  In this example there's no challenge :
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/user/login/request"
   },
-  "sig": "..."
+  "sig": "..." //TODO valid sig
 }
 ```
 
 
-**Example 2** first time login with embedded key and server challenge.  To
+Example 2: first time login with embedded key and server challenge.  To
 ensure that the server sill has the original challenge, the challenge that the
 server signed is replayed with the client's request.
 
@@ -89,6 +67,7 @@ server signed is replayed with the client's request.
     "typ": "cyphr.me/user/login/request",
     "challenge":"0KE9JjOz7YdkPTavixp5mGFubCYCLJEYRCOQrtzhmiw"
   },
+	"sig": "...", //TODO valid sig
   "key":{
     "alg":"ES256",
     "now":1623132000,
@@ -104,23 +83,85 @@ server signed is replayed with the client's request.
       "typ": "cyphr.me/user/login/challenge/create",
       "nonce":"7TpCh6fd1WkuWJpbhckGMcVRi9naAnoXh78KvTUoeMU"
     },
-    "sig":"" // TODO
+    "sig":"" // TODO valid sig
   }
 }
-}
 ```
 
+In both cases, the server issues a signed bearer token to the client, which is
+transferred back to the server on every request. 
 
-// TODO not a valid key.
+
 ```json5
 {
-  "pay": {
+  "pay":{
     "alg": "ES256",
-    "now": 1736434800,
-    "tmb": "L0SS81e5QKSUSu-17LTQsvwKpUhBxe6ZZIEnSRV73o8",
-    "typ": "cyphr.me/login/challenge/create",
-    "nonce": "random-secure-nonce-from-server-b64"
+    "now": 1623132000,
+    "tmb": "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA", // The server's key
+    "typ": "cyphr.me/user/login/bearer/create",
+		// Example other fields like user permissions, account information, etc.
+		"user_name":"User0",
+		"user_role":"admin",
+		"user_id":"1234567890"
   },
-  "sig": "..."
+	"sig": "...", //TODO valid sig
 }
 ```
+
+
+#### Advantages of Signed Bearer Tokens over Traditional Session Authentication with Coz
+Signed bearer tokens issued by the server offer major benefits over traditional
+session authentication, which uses an entropic token given to the client and
+stored in a database. On each client request the server must query the database
+to verify the token along with other information like user permissions.
+
+In contrast, by using Coz, the server verifies each request by checking the
+cryptographic signature against its own trusted key, with no need to query a
+database, cache, or centralized session store. All identity, permissions, or
+other claims exist directly in the signed payload. This stateless design
+delivers fast authorization, easy horizontal scaling, and eliminates bottlenecks
+from per-request lookups. It also shrinks the attack surface by removing session
+stores that could be targeted, while revocation remains clean through key
+rotation or explicit key-revocation lists when required. Coz signed bearer
+tokens provide the speed and simplicity of stateless bearer authentication.
+
+
+
+
+# Test Keys
+// User Key 0:
+```json5
+{
+	"tag": "User Key 0",
+  "alg":"ES256",
+  "now":1623132000,
+  "tmb":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "pub":"2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+  "prv":"bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA"
+}
+```
+
+// User Key 1:
+```json5
+{
+  "alg": "ES256",
+  "now":1623132000,
+  "tag": "User Key 1",
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+}
+```
+
+// Server Key:
+```json5
+{
+	"tag": "Cyphrpass Server Key A",
+  "alg":"ES256",
+  "now":1623132000,
+  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
+  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
+  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
+}
+```
+

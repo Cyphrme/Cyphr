@@ -133,16 +133,16 @@ Example private Coz key with standard fields:
 
 ```json5
 {
-  tag: "User Key 0", // optional human label, non-programatic.
-  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // thumbprint
-  alg: "ES256", // Key algorithm.
-  now: 1623132000, // creation timestamp
-  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
+	"tag": "User Key 0", // optional human label, non-programatic.
+	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
+  "alg": "ES256", // Key algorithm.
+  "now": 1623132000, // creation timestamp
+	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
 }
 ```
 
-The `tmb` (thumbprint) is the digest of the canonical public key representation, using the hash algorithm associated with `alg`.
+`tmb` is the digest of the canonical public key representation using the hash algorithm associated with `alg`.
 
 Example public key:
 
@@ -164,30 +164,32 @@ Transactions are signed Coz messages that mutate Auth State. Each transaction re
 
 Adds a new key to KS.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/key/add",
-    "pre": "<previous AS>",
-    "id": "<new key tmb>"
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+    "typ": "cyphr.me/cyphrpass/key/add",
+    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
   },
   "key": {
-    "alg": "ES256",
-    "pub": "<new key pub>",
-    "tmb": "<new key tmb>"
-  },
-  "sig": "<b64ut>"
+  "alg": "ES256",
+  "now":1623132000,
+  "tag": "User Key 1",
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+},
+  "sig": "<b64ut>" // TODO actual sig
 }
 ```
 
 **Required fields:**
 
 - `tmb`: Thumbprint of the signing key (must be in current KS)
-- `pre`: Previous Auth State digest
-- `id`: Thumbprint of the key being added
+- `pre`: Previous Auth State (AS) digest
+- `id`: `tmb` of the key being added
 - `key`: Public key material (separate from `pay` for clarity)
 
 #### 4.2.2 `key/delete` — Remove a Key (Level 3+)
@@ -199,10 +201,10 @@ Removes a key from KS without marking it as compromised.
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/key/delete",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/key/delete",
     "pre": "<previous AS>",
-    "id": "<key to delete tmb>"
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
   "sig": "<b64ut>"
 }
@@ -210,7 +212,7 @@ Removes a key from KS without marking it as compromised.
 
 **Required fields:**
 
-- `id`: Thumbprint of the key being removed
+- `id`: `tmb` of the key being removed
 
 **Semantics:** Unlike `key/revoke`, `key/delete` does NOT invalidate the key itself — only removes it from KS. Use for graceful key retirement (e.g., decommissioning a device) when the key was never compromised.
 
@@ -225,10 +227,10 @@ Removes the signing key and adds a new key atomically. Maintains single-key inva
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<old key tmb>",
-    "typ": "<authority>/key/replace",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/key/replace",
     "pre": "<previous AS>",
-    "id": "<new key tmb>"
+    "id": "<new key tmb>"// TODO
   },
   "key": {
     "alg": "ES256",
@@ -245,15 +247,17 @@ Removes the signing key and adds a new key atomically. Maintains single-key inva
 
 Self-revoke is a special case of `key/revoke` where the signing key is the same
 as the key being revoked. It is used to revoke a key that has been compromised.
-Self-revoke is built into the Coz standard.
+Self-revoke is built into the Coz standard.  Note that `pre` is not required, a
+revoke is a special case mutating the user's AS without reference to prior
+states. 
 
 ```json
 {
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/key/revoke",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/key/revoke",
     "rvk": 1628181264
   },
   "sig": "<b64ut>"
@@ -278,20 +282,20 @@ Revokes a different key from the signing key. Used in multi-key accounts.
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/key/revoke",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/key/revoke",
     "pre": "<previous AS>",
-    "id": "<key to revoke tmb>",
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
     "rvk": 1628181264
   },
-  "sig": "<b64ut>"
+  "sig": "<b64ut>" // TODO
 }
 ```
 
 **Required fields:**
 
 - `pre`: Previous Auth State digest
-- `id`: Thumbprint of the key being revoked (must differ from `tmb`)
+- `id`: `tmb` of the key being revoked (must differ from `tmb`)
 - `rvk`: Revocation timestamp
 
 **Transaction Type Summary:**
@@ -313,11 +317,11 @@ A signed Coz message representing a user action, recorded in DS:
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
-    "tmb": "<signing key tmb>",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/comment/create",
     "msg": "Hello, world!"
   },
-  "sig": "<b64ut>"
+  "sig": "<b64ut>" // TODO
 }
 ```
 
@@ -329,10 +333,10 @@ A principal is created (genesis) in one of two ways:
 
 **Implicit Genesis (Single Key)**
 
-- No transaction required
-- `PR = tmb` of the single key (via implicit promotion)
-- First signature by this key constitutes Proof of Possession (PoP)
-- Principal exists the moment the key exists
+- No transaction required.
+- `PR = tmb` of the single key (via implicit promotion).
+- First signature by this key constitutes Proof of Possession (PoP).
+- Principal exists the moment the key exists.
 - The first transaction signed with the key is the implicit genesis.
 - There is no separate "create account" operation. Identity emerges from the first key and transaction.
 
@@ -341,7 +345,6 @@ PR = PS = AS = KS = `tmb`
 ```
 
 **Explicit Genesis (Single-Key)**
-
 - Requires a signed genesis transaction
 - Key signs a `key/add` transaction to add itself as the principal.
 - `PR = H(sort(tmb₀, nonce?))`
@@ -416,7 +419,7 @@ PR = PS = AS = KS = `tmb`
       sig: "<b64ut>", // TODO actual sig
     },
   ],
-  keys: [
+  "keys": [ // Public key material
     {
       tag: "User Key 0",
       alg: "ES256",
@@ -450,10 +453,10 @@ upgrading legacy password systems.
 
 Every valid signature by an authorized key constitutes a Proof of Possession:
 
-- **Genesis PoP**: First signature by a key proves possession (account creation)
-- **Transaction PoP**: Signing a key mutation proves authorization
-- **Action PoP**: Signing an action proves the principal performed it
-- **Login PoP**: Signing a challenge proves identity to a service
+- **Genesis PoP**: First signature by a key proves possession.
+- **Transaction PoP**: Signing a key mutation proves authorization.
+- **Action PoP**: Signing an action proves the principal performed it.
+- **Login PoP**: Signing a challenge proves identity to a service.
 
 ### 5.2 Login Flow
 
@@ -474,9 +477,9 @@ To authenticate to a service:
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<service>/auth/login",
-    "challenge": "<256-bit nonce from service>"
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
+    "typ": "cyphr.me/cyphrpass/auth/login",
+    "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service. 
   },
   "sig": "<b64ut>"
 }
@@ -496,8 +499,8 @@ To authenticate to a service:
   "pay": {
     "alg": "ES256",
     "now": 1628181264,
-    "tmb": "<signing key tmb>",
-    "typ": "<service>/auth/login"
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
+    "typ": "<authority>/<service>/auth/login"
   },
   "sig": "<b64ut>"
 }
@@ -936,7 +939,7 @@ For implicit (single-key) accounts, a `fallback` field MAY be included at key cr
 
 **Notes:**
 
-- The `fallback` field is NOT included in thumbprint calculation (allows changing fallback without changing identity)
+- The `fallback` field is not included in `tmb`'s calculation (allows changing fallback without changing identity)
 - Assumes a trusted initial setup
 - **Level 2 Restriction**: Level 2 accounts only support **atomic swap** (`key/replace`). The fallback functionality must adhere to this, replacing the lost key rather than complying with `key/add` like Level 3+.
 
@@ -1336,10 +1339,9 @@ This section defines error conditions that implementations MUST detect. Error _r
 These golden test vectors enable implementation verification. All values use B64ut encoding.
 
 - `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
-- ES256 uses P-256 curve, SHA-256 for thumbprint
+- ES256 uses P-256 curve, SHA-256 for `tmb`
 
-### 15.1 Golden Key (ES256)
-
+### 15.1 Golden Key "User Key 0" (ES256)
 ```json
 {
   "alg": "ES256",
@@ -1351,16 +1353,15 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-### 15.1.1 Golden Key: "Key A" (ES256)
-
+### 15.1.1 Golden Key: "User Key 1" (ES256)
 ```json5
 {
-  alg: "ES256",
-  now: 1768092490,
-  tag: "User Key 1",
-  pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-  prv: "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
-  tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+  "alg": "ES256",
+  "now":1623132000,
+  "tag": "User Key 1",
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
 }
 ```
 
@@ -1368,12 +1369,12 @@ These golden test vectors enable implementation verification. All values use B64
 
 ```json5
 {
-  alg: "ES256",
-  now: 1768092490,
-  tag: "Cyphrpass Server Key A",
-  tmb: "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
-  pub: "yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
-  prv: "WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo",
+  "alg":"ES256",
+  "now":1623132000,
+	"tag": "Cyphrpass Server Key A",
+  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
+  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
+  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
 }
 ```
 
@@ -1393,12 +1394,18 @@ The canonical Coz test message with verified signature:
   "sig": "OJ4_timgp-wxpLF3hllrbe55wdjhzGOLgRYsGO1BmIMYbo4VKAdgZHnYyIU907ZTJkVr8B81A2K8U4nQA6ONEg"
 }
 ```
-
 **Computed digests:**
 `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
 
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
+
+
+### 15.3 Golden Nonce
+
+"T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
+
+
 
 ### 15.3 State Derivation (Level 1/2)
 
@@ -1423,9 +1430,10 @@ PS = AS (no DS)
 
 ### 15.5 Implementation Notes
 
+Follow the Coz spec.
 - All signatures must be verified using the key's `alg`
 - ECDSA signatures must be low-S normalized (non-malleable)
-- Thumbprints use the hash algorithm associated with `alg`
+- `tmb`'s use the hash algorithm associated with `alg`
 - State digests use the hash algorithm of the signing key
 
 ### 15.6 Integration Test Requirements
@@ -1444,6 +1452,12 @@ Language-agnostic test vectors are provided in `/test_vectors/`. Integration tes
 
 ---
 
+
+## Cypherpass Applications
+ - Cryptogaphically verifiable web archive.
+ - Unstoppable, Internet wide user comments.
+
+
 ## Appendix A: Coz Field Reference
 
 | Field | Description                       |
@@ -1451,12 +1465,12 @@ Language-agnostic test vectors are provided in `/test_vectors/`. Integration tes
 | `alg` | Algorithm identifier              |
 | `now` | UTC Unix timestamp                |
 | `tmb` | Key thumbprint                    |
-| `pub` | Public key                        |
-| `prv` | Private key                       |
+| `pub` | Public component                  |
+| `prv` | Private component                 |
 | `sig` | Signature                         |
 | `rvk` | Revocation timestamp              |
 | `typ` | Action type URI                   |
-| `msg` | Message payload                   |
+| `msg` | Human readable message            |
 | `dig` | External content digest           |
 | `cad` | Canonical hash of payload         |
 | `czd` | Coz digest (hash of `[cad, sig]`) |
