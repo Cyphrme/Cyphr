@@ -259,3 +259,42 @@ Violation terminates free rights immediately. The copyright holder may offer cur
 For commercial licensing inquiries: [email or form link]
 
 END OF LICENSE
+
+
+
+-------------------------
+More Reasonable license:
+
+# BOOL (Business Or Opensource License) 0.0.1
+
+This license is inspired by the Apache License 2.0 and is intended to comply with the Open Source Initiative (OSI) definition of open source software. It grants permissions to use, reproduce, modify, distribute, and sublicense the software freely, subject to the conditions below. The software is provided "as is" without warranty of any kind.
+
+## Grant of Rights
+Subject to the terms of this License, the copyright holder grants you a worldwide, royalty-free, non-exclusive, perpetual license to:
+
+- Use the software for any purpose, including commercial use.
+- Reproduce and distribute copies of the software in source or binary form.
+- Modify the software and create derivative works.
+- Sublicense the software or derivatives under this License or compatible open source licenses.
+
+You must retain this License, copyright notices, and any NOTICE file in all copies or substantial portions of the software.
+
+## Key Management Services Clause
+If you use this software (or any derivative) in connection with offering, providing, or operating any form of **key management** services—including but not limited to generation, storage, distribution, rotation, escrow, recovery, or lifecycle management of cryptographic keys—to the public or to more than 100 individuals or entities, then you must either:
+
+1. **Open Source Requirement**: Release all source code related to the key management service (including any modifications, integrations, or extensions to this software) under this License or a compatible OSI-approved open source license. Additionally, make all user-generated data associated with the service (e.g., comments, metadata, or other non-personal user content) publicly accessible via a documented API for download, in a machine-readable format, without restrictions on use or redistribution (subject to applicable privacy laws). This requirement applies irrespective of whether the service is standalone, integrated, commercial, freemium, or internal (exceeding the scale threshold).
+
+   OR
+
+2. **Paid Commercial License**: Obtain a separate paid commercial license from the copyright holder, which waives the open source and data accessibility requirements above.
+
+Fully open source projects that already release their code and data under compatible terms are not affected by this clause and may use the software freely without additional obligations.
+
+## Revenue Allocation
+The copyright holder commits to allocating **10%** of all revenues received from paid commercial licenses under this BOOL to external open source projects, selected at the holder's discretion or through community input, to support the broader open source ecosystem.
+
+## Additional Terms
+- This License does not grant trademark rights.
+- Contributions to the software are licensed under this BOOL.
+- In case of conflict, this License prevails over any additional terms in NOTICE files.
+- Breach of this License terminates your rights automatically.
