@@ -26,7 +26,8 @@
       "expected": {
         "ds_equals_czd": true,
         "action_count": 1,
-        "ds": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
+        "ds": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ",
+        "ps": "QjJKZ9uikg6v7e54S5Bt5g5IYEY-w68mOmi-bEj8d_g"
       }
     },
     {
@@ -62,7 +63,9 @@
       ],
       "expected": {
         "ds_is_hash": true,
-        "action_count": 2
+        "action_count": 2,
+        "ds": "NapbWCRyDmZDqrCHq6PhDElccgNNiy-aUOaZI2nZooo",
+        "ps": "0KJqnUQvx7Ae2CP_fhwDxl9R2BTQ56_dBLQJXlJ1IlU"
       }
     },
     {
@@ -87,7 +90,9 @@
       ],
       "expected": {
         "ps_changed": true,
-        "ps_includes_ds": true
+        "ps_includes_ds": true,
+        "ds": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ",
+        "ps": "QjJKZ9uikg6v7e54S5Bt5g5IYEY-w68mOmi-bEj8d_g"
       }
     },
     {
