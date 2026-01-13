@@ -133,12 +133,12 @@ Example private Coz key with standard fields:
 
 ```json5
 {
-	"tag": "User Key 0", // optional human label, non-programatic.
-	"tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
-  "alg": "ES256", // Key algorithm.
-  "now": 1623132000, // creation timestamp
-	"pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
+  tag: "User Key 0", // optional human label, non-programatic.
+  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
+  alg: "ES256", // Key algorithm.
+  now: 1623132000, // creation timestamp
+  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
 }
 ```
 
@@ -166,22 +166,22 @@ Adds a new key to KS.
 
 ```json5
 {
-  "pay": {
-    "alg": "ES256",
-    "now": 1628181264,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-    "typ": "cyphr.me/cyphrpass/key/add",
-    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
+  pay: {
+    alg: "ES256",
+    now: 1628181264,
+    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+    typ: "cyphr.me/cyphrpass/key/add",
+    pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS
+    id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key
   },
-  "key": {
-  "alg": "ES256",
-  "now":1623132000,
-  "tag": "User Key 1",
-  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-},
-  "sig": "<b64ut>" // TODO actual sig
+  key: {
+    alg: "ES256",
+    now: 1623132000,
+    tag: "User Key 1",
+    pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+    tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+  },
+  sig: "<b64ut>", // TODO actual sig
 }
 ```
 
@@ -230,7 +230,7 @@ Removes the signing key and adds a new key atomically. Maintains single-key inva
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/replace",
     "pre": "<previous AS>",
-    "id": "<new key tmb>"// TODO
+    "id": "<new key tmb>" // TODO
   },
   "key": {
     "alg": "ES256",
@@ -247,9 +247,9 @@ Removes the signing key and adds a new key atomically. Maintains single-key inva
 
 Self-revoke is a special case of `key/revoke` where the signing key is the same
 as the key being revoked. It is used to revoke a key that has been compromised.
-Self-revoke is built into the Coz standard.  Note that `pre` is not required, a
+Self-revoke is built into the Coz standard. Note that `pre` is not required, a
 revoke is a special case mutating the user's AS without reference to prior
-states. 
+states.
 
 ```json
 {
@@ -345,6 +345,7 @@ PR = PS = AS = KS = `tmb`
 ```
 
 **Explicit Genesis (Single-Key)**
+
 - Requires a signed genesis transaction
 - Key signs a `key/add` transaction to add itself as the principal.
 - `PR = H(sort(tmb₀, nonce?))`
@@ -419,7 +420,8 @@ PR = PS = AS = KS = `tmb`
       sig: "<b64ut>", // TODO actual sig
     },
   ],
-  "keys": [ // Public key material
+  keys: [
+    // Public key material
     {
       tag: "User Key 0",
       alg: "ES256",
@@ -479,7 +481,7 @@ To authenticate to a service:
     "now": 1628181264,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
     "typ": "cyphr.me/cyphrpass/auth/login",
-    "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service. 
+    "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service.
   },
   "sig": "<b64ut>"
 }
@@ -1342,6 +1344,7 @@ These golden test vectors enable implementation verification. All values use B64
 - ES256 uses P-256 curve, SHA-256 for `tmb`
 
 ### 15.1 Golden Key "User Key 0" (ES256)
+
 ```json
 {
   "alg": "ES256",
@@ -1354,14 +1357,15 @@ These golden test vectors enable implementation verification. All values use B64
 ```
 
 ### 15.1.1 Golden Key: "User Key 1" (ES256)
+
 ```json5
 {
-  "alg": "ES256",
-  "now":1623132000,
-  "tag": "User Key 1",
-  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-  "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
-  "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+  alg: "ES256",
+  now: 1623132000,
+  tag: "User Key 1",
+  pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+  prv: "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+  tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
 }
 ```
 
@@ -1369,12 +1373,12 @@ These golden test vectors enable implementation verification. All values use B64
 
 ```json5
 {
-  "alg":"ES256",
-  "now":1623132000,
-	"tag": "Cyphrpass Server Key A",
-  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
-  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
-  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
+  alg: "ES256",
+  now: 1623132000,
+  tag: "Cyphrpass Server Key A",
+  tmb: "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
+  pub: "yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
+  prv: "WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo",
 }
 ```
 
@@ -1394,18 +1398,16 @@ The canonical Coz test message with verified signature:
   "sig": "OJ4_timgp-wxpLF3hllrbe55wdjhzGOLgRYsGO1BmIMYbo4VKAdgZHnYyIU907ZTJkVr8B81A2K8U4nQA6ONEg"
 }
 ```
+
 **Computed digests:**
 `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
 
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
 
-
 ### 15.3 Golden Nonce
 
 "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
-
-
 
 ### 15.3 State Derivation (Level 1/2)
 
@@ -1431,6 +1433,7 @@ PS = AS (no DS)
 ### 15.5 Implementation Notes
 
 Follow the Coz spec.
+
 - All signatures must be verified using the key's `alg`
 - ECDSA signatures must be low-S normalized (non-malleable)
 - `tmb`'s use the hash algorithm associated with `alg`
@@ -1452,11 +1455,10 @@ Language-agnostic test vectors are provided in `/test_vectors/`. Integration tes
 
 ---
 
-
 ## Cypherpass Applications
- - Cryptogaphically verifiable web archive.
- - Unstoppable, Internet wide user comments.
 
+- Cryptogaphically verifiable web archive.
+- Unstoppable, Internet wide user comments.
 
 ## Appendix A: Coz Field Reference
 

@@ -1,7 +1,9 @@
 DRAFT 1
+
 # BOOL (Business Or Opensource License) 0.0.1
 
 ## Purpose
+
 This license permits broad, free use by individuals, small organizations,
 researchers, non-profits, and independent developers, while requiring payment
 from large entities, affiliated big-tech players, and those offering the
@@ -10,33 +12,34 @@ ongoing development of this project and grants to other open-source initiatives
 via a transparent public fund.
 
 ## Designated Individuals
+
 The following are Designated Individuals:
 
 1. The individuals (and any group of affiliated persons including one or more of
-   them):  
-   - Larry Ellison  
-   - Steve Huffman  
-   - Alexis Ohanian  
-   - Mark Zuckerberg  
-   - Sam Altman  
-   - Larry Page  
-   - Sergey Brin  
-   - Alex Karp  
-   - Steve Ballmer  
-   - Michael Dell  
-   - Bill Gates  
+   them):
+   - Larry Ellison
+   - Steve Huffman
+   - Alexis Ohanian
+   - Mark Zuckerberg
+   - Sam Altman
+   - Larry Page
+   - Sergey Brin
+   - Alex Karp
+   - Steve Ballmer
+   - Michael Dell
+   - Bill Gates
 
 2. The following corporations (and any group of affiliated persons or entities
-   including one or more of them):  
-   - Meta Platforms, Inc. (operating as Facebook) **(META)**  
-   - Reddit, Inc. **(RDDT)**  
-   - Alphabet Inc. (operating as Google) **(GOOGL / GOOG)**  
-   - Amazon.com, Inc. **(AMZN)**  
-   - Microsoft Corporation **(MSFT)**  
-   - Apple Inc. **(AAPL)**  
-   - NVIDIA Corporation **(NVDA)**  
-   - Oracle Corporation **(ORCL)**  
-   - Palantir Technologies Inc. **(PLTR)**  
+   including one or more of them):
+   - Meta Platforms, Inc. (operating as Facebook) **(META)**
+   - Reddit, Inc. **(RDDT)**
+   - Alphabet Inc. (operating as Google) **(GOOGL / GOOG)**
+   - Amazon.com, Inc. **(AMZN)**
+   - Microsoft Corporation **(MSFT)**
+   - Apple Inc. **(AAPL)**
+   - NVIDIA Corporation **(NVDA)**
+   - Oracle Corporation **(ORCL)**
+   - Palantir Technologies Inc. **(PLTR)**
    - Tesla, Inc. **(TSLA)**
 
 3. Any institution (university, college, foundation, or similar entity) with an
@@ -44,10 +47,11 @@ The following are Designated Individuals:
    million** or more, as reported in its most recent publicly available
    financial statements or equivalent authoritative sources.
 
-4. Any entity with:  
-- > $100 million USD annual gross revenue (most recent fiscal year), OR  
-- > 250 employees or contractors, OR  
-- > $500 million in total investable assets/endowment (for non-profits/universities/foundations).  
+4. Any entity with:
+
+- > $100 million USD annual gross revenue (most recent fiscal year), OR
+- > 250 employees or contractors, OR
+- > $500 million in total investable assets/endowment (for non-profits/universities/foundations).
 
 5. Any government (federal, state, provincial, local, or national) or
    government-affiliated entity (including agencies, departments, state-owned
@@ -55,6 +59,7 @@ The following are Designated Individuals:
    funds, or entities majority-controlled/funded by a government).
 
 ## License Restriction – Ownership Threshold
+
 If any Designated Individual (or group of affiliated persons including one or
 more Designated Individuals) owns (directly or indirectly) more than **2%** of
 the equity, voting rights, or beneficial ownership in a business entity
@@ -66,6 +71,7 @@ Use by individuals or entities below this threshold remains governed by the free
 terms of this license.
 
 ## Key Management Services Restriction
+
 Any person, entity, or service provider that offers, provides, or operates any
 form of **key management** services—including but not limited to generation,
 storage, distribution, rotation, escrow, recovery, or lifecycle management of
@@ -82,6 +88,7 @@ Use of this software in connection with such key management activities without
 the required paid license is prohibited.
 
 ## Attribution Requirement
+
 All users of this software must retain the original copyright notice, license
 text (this BOOL license), and any NOTICE file (if provided) in all copies or
 substantial portions of the software, whether in source code, binary form, or
@@ -89,34 +96,37 @@ documentation.
 
 For binary distributions or integrated products, the attribution must be
 included in a reasonably accessible location, such as:
+
 - A LICENSE or NOTICE file distributed alongside the software,
 - An "About" section, credits screen, or documentation page (if the software has
   a user interface).
 
 ### Exceptions
+
 - **Individual and personal use** is exempt from any attribution display
   requirements beyond retaining notices in source code (if
   modified/redistributed). Purely personal, non-commercial, or hobbyist use by
   natural persons remains governed by the free terms of this license with no
-  additional obligations.  
+  additional obligations.
 - **Small businesses** (entities with fewer than 10 employees or contractors AND
   annual gross revenue under $1,000,000 USD in the most recent fiscal year, AND
   not associated with or controlled by any Designated Individual) are exempt
   from prominent attribution display in end-user products. They must still
   retain copyright and license notices in source code and documentation but are
-  not required to show them in UI, splash screens, or public-facing materials.  
+  not required to show them in UI, splash screens, or public-facing materials.
 
 Any other use (including by Designated Individuals, large entities, or services
 exceeding small-business thresholds) must comply fully with the attribution
 requirements above. Failure to provide attribution where required constitutes a
 breach of this license and may trigger the need for a paid commercial license.
 
-
 ## No Warranty; Limitation of Liability
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO EVENT
 SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY.
 
 ## Termination & Enforcement
+
 Violation terminates free rights immediately. The copyright holder may offer
 cure periods or negotiate commercial terms. Enforcement protects the project's
 independence and funding goals.
@@ -125,31 +135,30 @@ For commercial licensing inquiries: buy@cyphr.me
 
 END OF LICENSE
 
+## --
+
+## --
+
+## --
+
+## --
+
+## --
+
+## --
+
+## --
 
 --
---
---
---
---
---
---
---
---
---
---
---
---
---
---
-
-
-
 
 # DRAFT 2 - Second Take
+
 # BOOL – Business Or Opensource License 0.0.1
+
 Copyright (c) 2026 Cypherpunk, LLC. All rights reserved.
 
 ## Purpose
+
 This license permits broad, free use by individuals, small organizations,
 researchers, non-profits, and independent developers, while requiring payment
 from large entities, affiliated big-tech players, and those offering the
@@ -158,44 +167,47 @@ ongoing development of this project and grants to other open-source initiatives
 via a transparent public fund.
 
 ## Designated Entities (subject to commercial terms)
+
 The following are "Designated Entities" (including controlled affiliates, successors, or entities where they hold >10% equity/voting power):
 
-1. **Named Individuals & Affiliates** (and any entity they control or >10% own):  
-   - Larry Ellison  
-   - Steve Huffman  
-   - Alexis Ohanian  
-   - Mark Zuckerberg  
-   - Sam Altman  
-   - Larry Page  
-   - Sergey Brin  
-   - Alex Karp  
-   - Steve Ballmer  
-   - Michael Dell  
-   - Bill Gates  
+1. **Named Individuals & Affiliates** (and any entity they control or >10% own):
+   - Larry Ellison
+   - Steve Huffman
+   - Alexis Ohanian
+   - Mark Zuckerberg
+   - Sam Altman
+   - Larry Page
+   - Sergey Brin
+   - Alex Karp
+   - Steve Ballmer
+   - Michael Dell
+   - Bill Gates
 
-2. **Named Corporations & Affiliates**:  
-   - Meta Platforms, Inc. (META)  
-   - Reddit, Inc. (RDDT)  
-   - Alphabet Inc. / Google (GOOGL/GOOG)  
-   - Amazon.com, Inc. (AMZN)  
-   - Microsoft Corporation (MSFT)  
-   - Apple Inc. (AAPL)  
-   - NVIDIA Corporation (NVDA)  
-   - Oracle Corporation (ORCL)  
-   - Palantir Technologies Inc. (PLTR)  
-   - Tesla, Inc. (TSLA)  
+2. **Named Corporations & Affiliates**:
+   - Meta Platforms, Inc. (META)
+   - Reddit, Inc. (RDDT)
+   - Alphabet Inc. / Google (GOOGL/GOOG)
+   - Amazon.com, Inc. (AMZN)
+   - Microsoft Corporation (MSFT)
+   - Apple Inc. (AAPL)
+   - NVIDIA Corporation (NVDA)
+   - Oracle Corporation (ORCL)
+   - Palantir Technologies Inc. (PLTR)
+   - Tesla, Inc. (TSLA)
 
-3. Any entity with:  
-   - > $100 million USD annual gross revenue (most recent fiscal year), OR  
-   - > 250 employees or contractors, OR  
-   - > $500 million in total investable assets/endowment (for non-profits/universities/foundations).  
+3. Any entity with:
+   - > $100 million USD annual gross revenue (most recent fiscal year), OR
+   - > 250 employees or contractors, OR
+   - > $500 million in total investable assets/endowment (for non-profits/universities/foundations).
 
 4. Any government entity (national/federal, state/provincial, local) or majority government-controlled/owned enterprise, agency, or sovereign wealth fund.
 
 The copyright holder may update this list via public notice on the project repository/website; updates apply prospectively.
 
 ## Permissions (Free Tier)
+
 Subject to the restrictions below, you may freely:
+
 - Use, copy, modify, and distribute this software (source or binary).
 - Use it in personal, internal, research, non-profit, or commercial products/services.
 - Integrate it into larger works.
@@ -203,6 +215,7 @@ Subject to the restrictions below, you may freely:
 All copies must retain this license text, original copyright notice, and any NOTICE file.
 
 ## Restrictions & Commercial License Requirement
+
 You must obtain a **paid commercial license** from the copyright holder (or designated foundation) if ANY of the following apply:
 
 1. **Ownership/Affiliation Threshold**  
@@ -218,7 +231,9 @@ You must obtain a **paid commercial license** from the copyright holder (or desi
 Free-tier users remain unrestricted beyond standard attribution. Breach requires immediate commercial licensing or cessation of use.
 
 ## Funding Mechanism
+
 All revenue from commercial licenses or royalties must be allocated as follows (publicly reported annually):
+
 - ≥ 50% to direct development/maintenance of this project.
 - ≥ 30% to a public open-source grant fund (administered transparently, e.g., via GitHub Sponsors, Open Collective, or a 501(c)(3) foundation) supporting unrelated OSS projects in security, crypto, identity, infrastructure, or similar foundational areas.
 - Remainder for legal defense, community events, bounties.
@@ -226,6 +241,7 @@ All revenue from commercial licenses or royalties must be allocated as follows (
 The copyright holder encourages dual-licensing arrangements or separate commercial agreements for entities needing broader rights (e.g., no attribution display, patent grants, warranty).
 
 ## Attribution
+
 - **All users** must retain copyright, license, and NOTICE in source/binary distributions.
 - **Prominent display** (e.g., in UI "About", docs, credits) required for: Designated Entities, hosted services, or entities >$10M revenue / >50 employees.
 - **Exemptions**: Purely personal/hobby use; small businesses (<10 employees/contractors AND <$1M annual revenue AND no Designated affiliation) only need source-level notices.
@@ -233,9 +249,11 @@ The copyright holder encourages dual-licensing arrangements or separate commerci
 Failure to attribute where required is a breach.
 
 ## No Warranty; Limitation of Liability
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY.
 
 ## Termination & Enforcement
+
 Violation terminates free rights immediately. The copyright holder may offer cure periods or negotiate commercial terms. Enforcement protects the project's independence and funding goals.
 
 For commercial licensing inquiries: [email or form link]
