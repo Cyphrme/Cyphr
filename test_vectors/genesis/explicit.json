@@ -1,25 +1,14 @@
 {
   "name": "explicit_genesis",
-  "description": "Explicit multi-key genesis test vectors per SPEC §3.7",
-  "version": "0.1.0",
+  "description": "Explicit multi-key genesis test vectors per SPEC §3.7. Keys resolved from keys/pool.json.",
+  "version": "0.2.0",
   "tests": [
     {
       "name": "explicit_genesis_two_keys_es256",
       "description": "Level 3 explicit genesis with two ES256 keys. PR = H(sort(tmb0, tmb1)).",
       "input": {
         "type": "explicit_genesis",
-        "keys": [
-          {
-            "alg": "ES256",
-            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-          },
-          {
-            "alg": "ES256",
-            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-          }
-        ]
+        "keys": ["golden", "key_a"]
       },
       "expected": {
         "pr": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",
@@ -33,33 +22,35 @@
       }
     },
     {
-      "name": "explicit_genesis_three_keys",
-      "description": "Level 3 explicit genesis with three ES256 keys. Verifies sorting order with 3+ keys.",
+      "name": "explicit_genesis_alice_bob",
+      "description": "Level 3 explicit genesis with alice + bob. Same keys used in multi_key.json tests.",
       "input": {
         "type": "explicit_genesis",
-        "keys": [
-          {
-            "alg": "ES256",
-            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-          },
-          {
-            "alg": "ES256",
-            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-          },
-          {
-            "alg": "ES256",
-            "pub": "SkREZtbEprEhxqoazXFGG8VUMJXInC5H4Kx6b0-jx0-tToAYjGJYB63K_YhXRfLWM3XAChrg-PGYN_RY8M66kg",
-            "tmb": "-g8dQJM6IF7Ot9BV-SGiXj7mL7Lg_9wJqzTUJc6s_xU"
-          }
-        ]
+        "keys": ["alice", "bob"]
       },
       "expected": {
-        "pr": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
-        "ps": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
-        "as": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
-        "ks": "nJGTxiV_jbqUKV5tTXGkWGF8AWS2nyBCLWqjDhjySgA",
+        "pr": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+        "ps": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+        "as": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+        "ks": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+        "ts": null,
+        "ds": null,
+        "level": 3,
+        "error": null
+      }
+    },
+    {
+      "name": "explicit_genesis_three_keys",
+      "description": "Level 3 explicit genesis with three ES256 keys (alice, bob, carol).",
+      "input": {
+        "type": "explicit_genesis",
+        "keys": ["alice", "bob", "carol"]
+      },
+      "expected": {
+        "pr": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+        "ps": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+        "as": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+        "ks": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
         "ts": null,
         "ds": null,
         "level": 3,
@@ -71,18 +62,7 @@
       "description": "Idempotency: Keys in different order produce same PR (verifies sorting).",
       "input": {
         "type": "explicit_genesis",
-        "keys": [
-          {
-            "alg": "ES256",
-            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-          },
-          {
-            "alg": "ES256",
-            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-          }
-        ]
+        "keys": ["key_a", "golden"]
       },
       "expected": {
         "pr": "5fQVYENKNTg8jDH_Yf3hp74yZhToFsYeDhSK5SNGAcc",

@@ -17,6 +17,12 @@
       "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
       "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
     },
+    "key_b": {
+      "tag": "User Key B (ES256)",
+      "alg": "ES256",
+      "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
+      "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+    },
     "alice": {
       "tag": "Alice (ES256)",
       "alg": "ES256",
@@ -51,6 +57,12 @@
       "prv": "51Qwg6xeUalI_8SjPtzelQfoGBIYoYKlUAIShGxlpV4",
       "pub": "-jVKbefuCN5il8jy9HsRtp9yX4IViGncnetbRK36ff4",
       "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
+    },
+    "unsupported_key": {
+      "tag": "Unsupported Algorithm (RS256 - for error testing)",
+      "alg": "RS256",
+      "pub": "dW5zdXBwb3J0ZWRfa2V5X3B1YmxpY19rZXlfZGF0YV9mb3JfdGVzdGluZw",
+      "tmb": "dW5zdXBwb3J0ZWRfa2V5X3RodW1icHJpbnQ"
     }
   },
   "account_presets": {

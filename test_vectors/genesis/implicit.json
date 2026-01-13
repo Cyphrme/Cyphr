@@ -1,18 +1,14 @@
 {
   "name": "genesis",
-  "description": "Principal genesis test vectors per SPEC §3.7",
-  "version": "0.1.0",
+  "description": "Principal genesis test vectors per SPEC §3.7. Keys resolved from keys/pool.json.",
+  "version": "0.2.0",
   "tests": [
     {
       "name": "implicit_genesis_es256",
       "description": "Level 1 implicit genesis with single ES256 key (SPEC §15.1 golden key). PR = PS = AS = KS = tmb.",
       "input": {
         "type": "implicit_genesis",
-        "key": {
-          "alg": "ES256",
-          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-        }
+        "key": "golden"
       },
       "expected": {
         "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -30,17 +26,13 @@
       "description": "Level 1 implicit genesis with single ES384 key. PR = PS = AS = KS = tmb (48-byte SHA-384).",
       "input": {
         "type": "implicit_genesis",
-        "key": {
-          "alg": "ES384",
-          "pub": "mRPc21SrzDnlQ9owKS1cOHe8NKS-gKjHaxxf63mxRtM15Hgxem90k0QpXycH3DysjJzVTyyVM06niM5Vm1dvEJZYRvUvtvjulDGzXiKX35kV8LJDzf8n83IuQPSapzxI",
-          "tmb": "j95gBAggumSeyL_BCWPtVITjN2YeFFIsR5qJT9YL-sRKGs4VQyMmlL9Kzf_HmW7g"
-        }
+        "key": "diana_es384"
       },
       "expected": {
-        "pr": "j95gBAggumSeyL_BCWPtVITjN2YeFFIsR5qJT9YL-sRKGs4VQyMmlL9Kzf_HmW7g",
-        "ps": "j95gBAggumSeyL_BCWPtVITjN2YeFFIsR5qJT9YL-sRKGs4VQyMmlL9Kzf_HmW7g",
-        "as": "j95gBAggumSeyL_BCWPtVITjN2YeFFIsR5qJT9YL-sRKGs4VQyMmlL9Kzf_HmW7g",
-        "ks": "j95gBAggumSeyL_BCWPtVITjN2YeFFIsR5qJT9YL-sRKGs4VQyMmlL9Kzf_HmW7g",
+        "pr": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+        "ps": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+        "as": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+        "ks": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
         "ts": null,
         "ds": null,
         "level": 1,
@@ -52,17 +44,13 @@
       "description": "Level 1 implicit genesis with single Ed25519 key. PR = PS = AS = KS = tmb (64-byte SHA-512).",
       "input": {
         "type": "implicit_genesis",
-        "key": {
-          "alg": "Ed25519",
-          "pub": "oe5D9UTel5n4JSC0xwDt4VoDaUrS_6FlFyHT9xK6s-k",
-          "tmb": "cuIZB3jrLsunEDBqPjjxPiE7Ur0-0WH9DlcHt_AADjhGEK7Dd76bz0p4c3OhFUbkFFg_AYcI-abjpsbjnMU6FQ"
-        }
+        "key": "eve_ed25519"
       },
       "expected": {
-        "pr": "cuIZB3jrLsunEDBqPjjxPiE7Ur0-0WH9DlcHt_AADjhGEK7Dd76bz0p4c3OhFUbkFFg_AYcI-abjpsbjnMU6FQ",
-        "ps": "cuIZB3jrLsunEDBqPjjxPiE7Ur0-0WH9DlcHt_AADjhGEK7Dd76bz0p4c3OhFUbkFFg_AYcI-abjpsbjnMU6FQ",
-        "as": "cuIZB3jrLsunEDBqPjjxPiE7Ur0-0WH9DlcHt_AADjhGEK7Dd76bz0p4c3OhFUbkFFg_AYcI-abjpsbjnMU6FQ",
-        "ks": "cuIZB3jrLsunEDBqPjjxPiE7Ur0-0WH9DlcHt_AADjhGEK7Dd76bz0p4c3OhFUbkFFg_AYcI-abjpsbjnMU6FQ",
+        "pr": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+        "ps": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+        "as": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+        "ks": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
         "ts": null,
         "ds": null,
         "level": 1,

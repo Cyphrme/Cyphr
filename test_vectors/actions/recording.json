@@ -1,14 +1,7 @@
 {
   "name": "actions",
-  "description": "Level 4 action recording test vectors per SPEC §4.3",
-  "version": "0.2.0",
-  "keys": {
-    "golden": {
-      "alg": "ES256",
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-    }
-  },
+  "description": "Level 4 action recording test vectors per SPEC §4.3. Keys resolved from keys/pool.json.",
+  "version": "0.3.0",
   "tests": [
     {
       "name": "single_action_promotes_ds",

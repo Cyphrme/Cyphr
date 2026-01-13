@@ -1,29 +1,7 @@
 {
   "name": "errors",
-  "description": "Error condition test vectors per SPEC §14",
-  "version": "0.2.0",
-  "keys": {
-    "golden": {
-      "alg": "ES256",
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-    },
-    "key_a": {
-      "alg": "ES256",
-      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-    },
-    "unknown_key": {
-      "alg": "ES256",
-      "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
-      "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
-    },
-    "unsupported_key": {
-      "alg": "RS256",
-      "pub": "dW5zdXBwb3J0ZWRfa2V5X3B1YmxpY19rZXlfZGF0YV9mb3JfdGVzdGluZw",
-      "tmb": "dW5zdXBwb3J0ZWRfa2V5X3RodW1icHJpbnQ"
-    }
-  },
+  "description": "Error condition test vectors per SPEC §14. Keys resolved from keys/pool.json.",
+  "version": "0.3.0",
   "tests": [
     {
       "name": "pre_mismatch_fails",
@@ -41,11 +19,7 @@
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-        },
+        "key": "key_a",
         "sig": "9nJf0Wn8_mXm35LQKJxP0Ud8i_78H5i5d-Gy3xQyRMTT2g7G1kJl8bLhVcBPvdCZH8Z5q4hW5BvOl9fMxDwkOA",
         "czd": "KNtIsYzbVNwA83qKnylk0qq8AWR64PvCRNvps-v3EG8"
       },
@@ -67,11 +41,7 @@
           "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-        },
+        "key": "key_a",
         "sig": "K-5EVAMp4S6Z3xHQeofGN9_DXr5iL1qY0Kn1V4pV9EMKH69Dp9-G22lUHN4hCJhc2THHbWNe0tAMXvdfiFRc4A",
         "czd": "CczzsYbBmuPAePwpLXhNuMBiFWFi6sJyLDIEHwfyvj8"
       },
@@ -145,11 +115,7 @@
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-        },
+        "key": "golden",
         "sig": "zqK9eKT9GetRFR4CkZgYtU83jCwPVdYvu2fDUDNvSX1y3-NE_2BD1LggMA4lwi91FVp9TSfmeIZv4VubwVBxJQ",
         "czd": "G9vxyMXQsULfUiWB64y0A7aPxyrmXkITX07OzKJMNw8"
       },
@@ -172,11 +138,7 @@
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/add"
           },
-          "key": {
-            "alg": "ES256",
-            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-          },
+          "key": "key_a",
           "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
           "czd": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         },

@@ -46,10 +46,47 @@ type ExpectedState struct {
 }
 
 // GenesisInput is input for genesis tests.
+// Key and Keys can be either string refs or inline KeyInput objects.
 type GenesisInput struct {
-	Type string     `json:"type"`
-	Key  *KeyInput  `json:"key,omitempty"`
-	Keys []KeyInput `json:"keys,omitempty"`
+	Type string          `json:"type"`
+	Key  json.RawMessage `json:"key,omitempty"`
+	Keys json.RawMessage `json:"keys,omitempty"`
+}
+
+// resolveGenesisKey resolves a key from GenesisInput.Key (can be string ref or inline object).
+func resolveGenesisKey(t *testing.T, raw json.RawMessage) KeyInput {
+	t.Helper()
+	// Try as string first (pool reference)
+	var keyName string
+	if err := json.Unmarshal(raw, &keyName); err == nil {
+		return getPoolKey(t, keyName)
+	}
+	// Try as inline object
+	var ki KeyInput
+	if err := json.Unmarshal(raw, &ki); err != nil {
+		t.Fatalf("failed to parse key: %v", err)
+	}
+	return ki
+}
+
+// resolveGenesisKeys resolves GenesisInput.Keys (can be []string refs or []KeyInput objects).
+func resolveGenesisKeys(t *testing.T, raw json.RawMessage) []KeyInput {
+	t.Helper()
+	// Try as []string first (pool references)
+	var keyNames []string
+	if err := json.Unmarshal(raw, &keyNames); err == nil {
+		keys := make([]KeyInput, len(keyNames))
+		for i, name := range keyNames {
+			keys[i] = getPoolKey(t, name)
+		}
+		return keys
+	}
+	// Try as inline objects
+	var keys []KeyInput
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("failed to parse keys: %v", err)
+	}
+	return keys
 }
 
 // KeyInput is a key definition in test vectors.
@@ -172,18 +209,20 @@ func TestGenesisFixtures(t *testing.T) {
 
 			switch input.Type {
 			case "implicit_genesis":
-				if input.Key == nil {
+				if len(input.Key) == 0 {
 					t.Fatal("implicit_genesis requires key")
 				}
-				key := makeKeyFromInput(t, *input.Key)
+				ki := resolveGenesisKey(t, input.Key)
+				key := makeKeyFromInput(t, ki)
 				p, err = cyphrpass.Implicit(key)
 
 			case "explicit_genesis":
 				if len(input.Keys) == 0 {
 					t.Fatal("explicit_genesis requires keys")
 				}
-				keys := make([]*coz.Key, len(input.Keys))
-				for i, ki := range input.Keys {
+				keyInputs := resolveGenesisKeys(t, input.Keys)
+				keys := make([]*coz.Key, len(keyInputs))
+				for i, ki := range keyInputs {
 					keys[i] = makeKeyFromInput(t, ki)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -249,18 +288,20 @@ func TestGenesisExplicitFixtures(t *testing.T) {
 
 			switch input.Type {
 			case "implicit_genesis":
-				if input.Key == nil {
+				if len(input.Key) == 0 {
 					t.Fatal("implicit_genesis requires key")
 				}
-				key := makeKeyFromInput(t, *input.Key)
+				ki := resolveGenesisKey(t, input.Key)
+				key := makeKeyFromInput(t, ki)
 				p, err = cyphrpass.Implicit(key)
 
 			case "explicit_genesis":
 				if len(input.Keys) == 0 {
 					t.Fatal("explicit_genesis requires keys")
 				}
-				keys := make([]*coz.Key, len(input.Keys))
-				for i, ki := range input.Keys {
+				keyInputs := resolveGenesisKeys(t, input.Keys)
+				keys := make([]*coz.Key, len(keyInputs))
+				for i, ki := range keyInputs {
 					keys[i] = makeKeyFromInput(t, ki)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -376,7 +417,7 @@ func TestStateComputationFixtures(t *testing.T) {
 
 			switch tc.Setup.Genesis {
 			case "implicit":
-				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 				key := makeKeyFromInput(t, keyInput)
 				p, err = cyphrpass.Implicit(key)
 				if err != nil {
@@ -386,7 +427,7 @@ func TestStateComputationFixtures(t *testing.T) {
 			case "explicit":
 				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
 				for i, keyName := range tc.Setup.InitialKeys {
-					keyInput := fixture.Keys[keyName]
+					keyInput := resolveKey(t, keyName, fixture.Keys)
 					keys[i] = makeKeyFromInput(t, keyInput)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -448,7 +489,7 @@ func TestStateComputationFixtures(t *testing.T) {
 
 			// Verify boolean assertions
 			if tc.Expected.KSEqualsTmb != nil && *tc.Expected.KSEqualsTmb {
-				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 				if p.KS().String() != keyInput.Tmb {
 					t.Errorf("KS should equal tmb: got %s, want %s", p.KS().String(), keyInput.Tmb)
 				}
@@ -621,7 +662,7 @@ func TestEdgeCaseFixtures(t *testing.T) {
 
 			switch tc.Setup.Genesis {
 			case "implicit":
-				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 				key := makeKeyFromInput(t, keyInput)
 				p, err = cyphrpass.Implicit(key)
 				if err != nil {
@@ -631,7 +672,7 @@ func TestEdgeCaseFixtures(t *testing.T) {
 			case "explicit":
 				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
 				for i, keyName := range tc.Setup.InitialKeys {
-					keyInput := fixture.Keys[keyName]
+					keyInput := resolveKey(t, keyName, fixture.Keys)
 					keys[i] = makeKeyFromInput(t, keyInput)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -847,7 +888,7 @@ func TestTransactionFixtures(t *testing.T) {
 
 			// Verify active keys
 			for _, keyName := range tc.Expected.ActiveKeys {
-				keyInput := fixture.Keys[keyName]
+				keyInput := resolveKey(t, keyName, fixture.Keys)
 				tmb, _ := coz.Decode(keyInput.Tmb)
 				if !p.IsKeyActive(tmb) {
 					t.Errorf("expected key %s to be active", keyName)
@@ -856,7 +897,7 @@ func TestTransactionFixtures(t *testing.T) {
 
 			// Verify revoked keys
 			for _, keyName := range tc.Expected.RevokedKeys {
-				keyInput := fixture.Keys[keyName]
+				keyInput := resolveKey(t, keyName, fixture.Keys)
 				tmb, _ := coz.Decode(keyInput.Tmb)
 				if p.IsKeyActive(tmb) {
 					t.Errorf("expected key %s to be revoked, but it's active", keyName)
@@ -1109,7 +1150,7 @@ func TestActionFixtures(t *testing.T) {
 			var p *cyphrpass.Principal
 
 			// Setup genesis
-			keyInput := fixture.Keys[tc.Setup.InitialKey]
+			keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 			key := makeKeyFromInput(t, keyInput)
 			p, err = cyphrpass.Implicit(key)
 			if err != nil {
@@ -1235,7 +1276,7 @@ func TestErrorFixtures(t *testing.T) {
 			// Setup genesis
 			switch tc.Setup.Genesis {
 			case "implicit":
-				keyInput := fixture.Keys[tc.Setup.InitialKey]
+				keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
 				key := makeKeyFromInput(t, keyInput)
 				p, genesisErr = cyphrpass.Implicit(key)
 
@@ -1261,7 +1302,7 @@ func TestErrorFixtures(t *testing.T) {
 			case "explicit":
 				keys := make([]*coz.Key, len(tc.Setup.InitialKeys))
 				for i, keyName := range tc.Setup.InitialKeys {
-					keyInput := fixture.Keys[keyName]
+					keyInput := resolveKey(t, keyName, fixture.Keys)
 					keys[i] = makeKeyFromInput(t, keyInput)
 				}
 				p, err = cyphrpass.Explicit(keys)
@@ -1271,7 +1312,7 @@ func TestErrorFixtures(t *testing.T) {
 
 				// Handle pre-revoke setup
 				if tc.Setup.RevokeKey != "" {
-					revokeKeyInput := fixture.Keys[tc.Setup.RevokeKey]
+					revokeKeyInput := resolveKey(t, tc.Setup.RevokeKey, fixture.Keys)
 					revokeTmb, _ := coz.Decode(revokeKeyInput.Tmb)
 
 					// Apply self-revoke transaction to set up revoked state

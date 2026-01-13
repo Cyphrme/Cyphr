@@ -1,46 +1,14 @@
 {
   "name": "edge_cases",
-  "description": "Edge case test vectors per SPEC §7 (State Calculation)",
-  "version": "0.1.0",
-  "keys": {
-    "es256_alpha": {
-      "alg": "ES256",
-      "prv": "x0le6Ay7u2wrW-XI9Ster9ImOMKT92w4eHxAlM13LV0",
-      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
-      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
-    },
-    "es256_beta": {
-      "alg": "ES256",
-      "prv": "MguhjcLPmb1uXQ6oGzEmdnJpTFDUeO7w1TKuHpoPm0s",
-      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-    },
-    "es256_gamma": {
-      "alg": "ES256",
-      "prv": "qV77EYqomxLSIyjyN8zC7HiPDh1Hf5BwBAknRwiWNOg",
-      "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-      "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-    },
-    "es384_delta": {
-      "alg": "ES384",
-      "prv": "NDErd0IJTsC2YNGDIbjwf9yekdUXO-1rGS1VxHVoPvr1YIr_fKNtXybcaRkZCZ0E",
-      "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
-      "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
-    },
-    "ed25519_epsilon": {
-      "alg": "Ed25519",
-      "prv": "51Qwg6xeUalI_8SjPtzelQfoGBIYoYKlUAIShGxlpV4",
-      "pub": "-jVKbefuCN5il8jy9HsRtp9yX4IViGncnetbRK36ff4",
-      "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
-    }
-  },
+  "description": "Edge case test vectors per SPEC §7 (State Calculation). Keys resolved from keys/pool.json.",
+  "version": "0.2.0",
   "tests": [
     {
       "name": "key_thumbprint_sort_order",
       "description": "Verify KS uses lexicographic byte sort, not string sort (SPEC §7.1, §7.2)",
       "setup": {
         "genesis": "explicit",
-        "initial_keys": ["es256_alpha", "es256_beta", "es256_gamma"]
+        "initial_keys": ["alice", "bob", "carol"]
       },
       "expected": {
         "key_count": 3,
@@ -52,7 +20,7 @@
       "description": "Verify KS is idempotent regardless of key addition order (SPEC §7.2)",
       "setup": {
         "genesis": "explicit",
-        "initial_keys": ["es256_gamma", "es256_alpha", "es256_beta"]
+        "initial_keys": ["carol", "alice", "bob"]
       },
       "expected": {
         "key_count": 3,
@@ -64,7 +32,7 @@
       "description": "Verify TS depends on transaction application order (SPEC §7.3)",
       "setup": {
         "genesis": "implicit",
-        "initial_key": "es256_alpha"
+        "initial_key": "alice"
       },
       "coz_sequence": [
         {
@@ -76,11 +44,7 @@
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/add"
           },
-          "key": {
-            "alg": "ES256",
-            "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-            "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-          },
+          "key": "bob",
           "sig": "IV7S0229-6kTcCrDJtKKhE30tTDWkuqXhKMz9DKb0YhVqmKpKED6xbz8oP6RUH23vrx3D9G2OXvNvLPBg27dVw",
           "czd": "ZaYLQLe8W_pZJwGJ7SLL3Vlf9sREj0AbjEWXmf0h7dw"
         },
@@ -93,11 +57,7 @@
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/add"
           },
-          "key": {
-            "alg": "ES256",
-            "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-            "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-          },
+          "key": "carol",
           "sig": "HKPMVqBiWMSg0uLYwUwM_X3eRJpxuqZ0whv7wgn5I082D1B333mt8SlWSRwHsvSRXyKi8_DMZDYS2Izeu0tdCA",
           "czd": "haDVo_X22xp8HlmhF8DW4tICIbqXZtq-WAF5uojsYVc"
         }
@@ -112,7 +72,7 @@
       "description": "Verify combined state after transaction + action (SPEC §7.4, §7.5)",
       "setup": {
         "genesis": "implicit",
-        "initial_key": "es256_alpha"
+        "initial_key": "alice"
       },
       "coz": {
         "pay": {
@@ -123,11 +83,7 @@
           "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-          "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-        },
+        "key": "bob",
         "sig": "IV7S0229-6kTcCrDJtKKhE30tTDWkuqXhKMz9DKb0YhVqmKpKED6xbz8oP6RUH23vrx3D9G2OXvNvLPBg27dVw",
         "czd": "ZaYLQLe8W_pZJwGJ7SLL3Vlf9sREj0AbjEWXmf0h7dw"
       },

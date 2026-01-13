@@ -31,14 +31,33 @@ struct TestCase {
 }
 
 /// Test input (varies by test type).
+/// Keys can be either string refs (pool lookup) or inline KeyInput objects.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum TestInput {
     #[serde(rename = "implicit_genesis")]
-    ImplicitGenesis { key: KeyInput },
+    ImplicitGenesis { key: serde_json::Value },
 
     #[serde(rename = "explicit_genesis")]
-    ExplicitGenesis { keys: Vec<KeyInput> },
+    ExplicitGenesis { keys: serde_json::Value },
+}
+
+impl TestInput {
+    /// Resolve a single key from the input (can be string ref or inline object).
+    fn resolve_key(value: &serde_json::Value) -> KeyInput {
+        // Try as string first (pool reference)
+        if let Some(name) = value.as_str() {
+            return get_pool_key(name);
+        }
+        // Try as inline object
+        serde_json::from_value(value.clone()).expect("failed to parse key")
+    }
+
+    /// Resolve multiple keys from the input (can be []string refs or []KeyInput objects).
+    fn resolve_keys(value: &serde_json::Value) -> Vec<KeyInput> {
+        let arr = value.as_array().expect("keys must be an array");
+        arr.iter().map(Self::resolve_key).collect()
+    }
 }
 
 /// Key input from test vectors.
@@ -189,7 +208,8 @@ fn test_implicit_genesis() {
             panic!("{}: expected implicit_genesis input", test.name);
         };
 
-        let domain_key = key.to_key();
+        let key_input = TestInput::resolve_key(&key);
+        let domain_key = key_input.to_key();
         let principal = Principal::implicit(domain_key).expect("genesis should succeed");
 
         // Verify all expected states
@@ -258,7 +278,8 @@ fn test_explicit_genesis() {
             panic!("{}: expected explicit_genesis input", test.name);
         };
 
-        let domain_keys: Vec<Key> = keys.iter().map(|k| k.to_key()).collect();
+        let key_inputs = TestInput::resolve_keys(&keys);
+        let domain_keys: Vec<Key> = key_inputs.iter().map(|k| k.to_key()).collect();
         let principal = Principal::explicit(domain_keys).expect("genesis should succeed");
 
         // Print computed values for fixture generation (useful for bootstrapping)
@@ -482,7 +503,7 @@ fn test_transactions() {
                     .initial_key
                     .as_ref()
                     .expect("implicit needs initial_key");
-                let key_input = fixture.keys.get(key_name).expect("key not found");
+                let key_input = resolve_key(key_name, Some(&fixture.keys));
                 Principal::implicit(key_input.to_key()).expect("implicit genesis failed")
             },
             "explicit" => {
@@ -493,7 +514,7 @@ fn test_transactions() {
                     .expect("explicit needs initial_keys");
                 let keys: Vec<Key> = key_names
                     .iter()
-                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .map(|n| resolve_key(n, Some(&fixture.keys)).to_key())
                     .collect();
                 Principal::explicit(keys).expect("explicit genesis failed")
             },
@@ -647,7 +668,7 @@ fn test_transactions() {
 
         if let Some(ref active) = test.expected.active_keys {
             for key_name in active {
-                let key = fixture.keys.get(key_name).expect("key not found");
+                let key = resolve_key(key_name, Some(&fixture.keys));
                 assert!(
                     principal.is_key_active(&key.to_key().tmb),
                     "{}: {} should be active",
@@ -688,13 +709,15 @@ fn test_transactions() {
         }
 
         if let Some(signer_active) = test.expected.signer_active {
-            // Get the signer from the coz message
+            // Get the signer from the coz message - search pool for key with matching tmb
+            let pool = load_key_pool();
             if let Some(ref coz) = test.coz {
-                let signer_key = fixture
+                let signer_key = pool
                     .keys
                     .values()
                     .find(|k| k.tmb == coz.pay.tmb)
-                    .expect("signer not found");
+                    .or_else(|| fixture.keys.values().find(|k| k.tmb == coz.pay.tmb))
+                    .expect("signer not found in pool or fixture");
                 assert_eq!(
                     principal.is_key_active(&signer_key.to_key().tmb),
                     signer_active,
@@ -704,11 +727,12 @@ fn test_transactions() {
             } else if let Some(ref seq) = test.coz_sequence {
                 // Check last transaction's signer
                 if let Some(last) = seq.last() {
-                    let signer_key = fixture
+                    let signer_key = pool
                         .keys
                         .values()
                         .find(|k| k.tmb == last.pay.tmb)
-                        .expect("signer not found");
+                        .or_else(|| fixture.keys.values().find(|k| k.tmb == last.pay.tmb))
+                        .expect("signer not found in pool or fixture");
                     assert_eq!(
                         principal.is_key_active(&signer_key.to_key().tmb),
                         signer_active,
@@ -907,6 +931,7 @@ struct StateTestFile {
     name: String,
     description: String,
     version: String,
+    #[serde(default)]
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<StateTestCase>,
 }
@@ -988,7 +1013,7 @@ fn test_state_computation() {
                     .initial_key
                     .as_ref()
                     .expect("implicit needs initial_key");
-                let key_input = fixture.keys.get(key_name).expect("key not found");
+                let key_input = resolve_key(key_name, Some(&fixture.keys));
                 Principal::implicit(key_input.to_key()).expect("implicit genesis failed")
             },
             "explicit" => {
@@ -999,7 +1024,7 @@ fn test_state_computation() {
                     .expect("explicit needs initial_keys");
                 let keys: Vec<Key> = key_names
                     .iter()
-                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .map(|n| resolve_key(n, Some(&fixture.keys)).to_key())
                     .collect();
                 Principal::explicit(keys).expect("explicit genesis failed")
             },
@@ -1083,7 +1108,7 @@ fn test_state_computation() {
             use cyphrpass::action::Action;
 
             let signer_key = test.setup.initial_key.as_ref().unwrap();
-            let key = fixture.keys.get(signer_key).unwrap();
+            let key = resolve_key(signer_key, Some(&fixture.keys));
             let tmb_bytes =
                 Base64UrlUnpadded::decode_vec(&key.tmb).expect("invalid base64url for tmb");
 
@@ -1121,7 +1146,7 @@ fn test_state_computation() {
         if let Some(true) = test.expected.ks_equals_tmb {
             // For single key, KS = tmb (promoted, not hashed)
             let key_name = test.setup.initial_key.as_ref().unwrap();
-            let key = fixture.keys.get(key_name).unwrap();
+            let key = resolve_key(key_name, Some(&fixture.keys));
             assert_eq!(
                 current_ks, key.tmb,
                 "{}: KS should equal tmb for single key",
@@ -1201,6 +1226,7 @@ struct ActionTestFile {
     name: String,
     description: String,
     version: String,
+    #[serde(default)]
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<ActionTestCase>,
 }
@@ -1266,7 +1292,7 @@ fn test_action_recording() {
             .initial_key
             .as_ref()
             .expect("action tests need initial_key");
-        let key_input = fixture.keys.get(key_name).expect("key not found");
+        let key_input = resolve_key(key_name, Some(&fixture.keys));
         let mut principal =
             Principal::implicit(key_input.to_key()).expect("implicit genesis failed");
 
@@ -1432,6 +1458,7 @@ struct ErrorTestFile {
     name: String,
     description: String,
     version: String,
+    #[serde(default)]
     keys: std::collections::HashMap<String, KeyInput>,
     tests: Vec<ErrorTestCase>,
 }
@@ -1488,20 +1515,19 @@ fn test_error_conditions() {
         let principal_result = match test.setup.genesis.as_str() {
             "implicit" => {
                 let key_name = test.setup.initial_key.as_ref().expect("need initial_key");
-                let key_input = fixture.keys.get(key_name).expect("key not found");
+                let key_input = resolve_key(key_name, Some(&fixture.keys));
                 Principal::implicit(key_input.to_key())
             },
             "explicit" => {
                 let key_names = test.setup.initial_keys.as_ref().expect("need initial_keys");
                 let keys: Vec<Key> = key_names
                     .iter()
-                    .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                    .map(|n| resolve_key(n, Some(&fixture.keys)).to_key())
                     .collect();
                 Principal::explicit(keys).map(|mut p| {
                     // Handle revoke_key setup
                     if let Some(ref revoke_name) = test.setup.revoke_key {
-                        let revoke_key =
-                            fixture.keys.get(revoke_name).expect("revoke key not found");
+                        let revoke_key = resolve_key(revoke_name, Some(&fixture.keys));
                         let rvk = test.setup.revoke_at.unwrap_or(0);
                         let tx = Transaction {
                             kind: TransactionKind::SelfRevoke { rvk },
@@ -1740,7 +1766,7 @@ fn test_edge_cases() {
                 .initial_key
                 .as_ref()
                 .expect("implicit needs initial_key");
-            let key_input = fixture.keys.get(key_name).expect("key not found");
+            let key_input = resolve_key(key_name, Some(&fixture.keys));
             Principal::implicit(key_input.to_key()).expect("genesis failed")
         } else {
             let key_names = test
@@ -1750,7 +1776,7 @@ fn test_edge_cases() {
                 .expect("explicit needs initial_keys");
             let keys: Vec<Key> = key_names
                 .iter()
-                .map(|n| fixture.keys.get(n).expect("key not found").to_key())
+                .map(|n| resolve_key(n, Some(&fixture.keys)).to_key())
                 .collect();
             Principal::explicit(keys).expect("genesis failed")
         };

@@ -1,19 +1,7 @@
 {
   "name": "state_computation",
-  "description": "State computation test vectors per SPEC §7",
-  "version": "0.2.0",
-  "keys": {
-    "golden": {
-      "alg": "ES256",
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-    },
-    "key_a": {
-      "alg": "ES256",
-      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-    }
-  },
+  "description": "State computation test vectors per SPEC §7. Keys resolved from keys/pool.json.",
+  "version": "0.3.0",
   "tests": [
     {
       "name": "ks_single_key_promotion",
@@ -55,11 +43,7 @@
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-        },
+        "key": "key_a",
         "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
@@ -85,11 +69,7 @@
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/add"
           },
-          "key": {
-            "alg": "ES256",
-            "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-            "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-          },
+          "key": "key_a",
           "sig": "7JQErUGhd0yJXq4rg_u_VQ2gtEdhV-iiK0ZzcolggMxclAus0bM1VeJDTOqIRYLE72SbVeQYI1SSlh3P7ehuFA",
           "czd": "aLTY8tZcHjdXPUkDWyApz-gBophyOL3438bCGGHr-wo"
         },
@@ -139,11 +119,7 @@
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/key/add"
         },
-        "key": {
-          "alg": "ES256",
-          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-        },
+        "key": "key_a",
         "sig": "rg8hbU_VNMUoFFyfyCXzAscPuWaccTGOud6YpZvZ6UsudzWTX59Tanesx6obJ4YNGi-B4EhimADcrqv6icjf_Q",
         "czd": "dbHppmF2G4V2ZXSLLDxEe5Qr--RBeoWxyLk8oUoaxls"
       },
