@@ -63,7 +63,7 @@ The centralized key pool in `keys/pool.json` provides shared key definitions:
 }
 ```
 
-Individual fixtures may also define inline `keys` maps for test-specific keys.
+All fixtures reference keys by name (e.g., `"golden"`, `"alice"`), resolved from the pool.
 The `prv` field is included for test signature generation.
 
 ## Coz Message Format
