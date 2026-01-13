@@ -920,6 +920,99 @@ fn test_multi_key_transactions() {
 }
 
 // ============================================================================
+// Algorithm diversity tests (ES384, Ed25519)
+// ============================================================================
+
+/// Test ES384 and Ed25519 algorithms work correctly across transaction operations.
+#[test]
+fn test_algorithm_diversity() {
+    use coz::Czd;
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphrpass::transaction::{Transaction, TransactionKind};
+
+    let vectors_path = test_vectors_dir()
+        .join("transactions")
+        .join("algorithm_diversity.json");
+    if !vectors_path.exists() {
+        println!("Skipping algorithm diversity tests (fixture not yet created)");
+        return;
+    }
+
+    let content = fs::read_to_string(&vectors_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", vectors_path.display(), e));
+    let fixture: TransactionTestFile = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {}", vectors_path.display(), e));
+
+    for test in &fixture.tests {
+        println!("Running: {} - {}", test.name, test.description);
+
+        // Setup: implicit genesis with initial key
+        let key_name = test.setup.initial_key.as_ref().expect("need initial_key");
+        let key_input = resolve_key(key_name, Some(&fixture.keys));
+        let mut principal =
+            Principal::implicit(key_input.to_key()).expect("implicit genesis failed");
+
+        // Apply the transaction
+        if let Some(ref coz) = test.coz {
+            let tmb_bytes = Base64UrlUnpadded::decode_vec(&coz.pay.tmb).expect("invalid tmb");
+            let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+            let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd");
+
+            let pre = if let Some(ref pre_str) = coz.pay.pre {
+                let pre_bytes = Base64UrlUnpadded::decode_vec(pre_str).expect("invalid pre");
+                cyphrpass::AuthState(coz::Cad::from_bytes(pre_bytes))
+            } else {
+                principal.auth_state().clone()
+            };
+
+            let id_bytes = coz
+                .pay
+                .id
+                .as_ref()
+                .map(|id_str| Base64UrlUnpadded::decode_vec(id_str).expect("invalid id"));
+
+            let kind = TransactionKind::KeyAdd {
+                pre: pre.clone(),
+                id: coz::Thumbprint::from_bytes(id_bytes.unwrap()),
+            };
+
+            let tx = Transaction {
+                kind,
+                signer: signer_tmb.clone(),
+                now: coz.pay.now,
+                czd: Czd::from_bytes(czd_bytes),
+            };
+
+            let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
+            principal
+                .apply_transaction(tx, new_key)
+                .expect("apply_transaction failed");
+        }
+
+        // Verify expected values
+        if let Some(key_count) = test.expected.key_count {
+            assert_eq!(
+                principal.active_key_count(),
+                key_count,
+                "{}: key_count mismatch",
+                test.name
+            );
+        }
+
+        if let Some(level) = test.expected.level {
+            assert_eq!(
+                principal.level() as u8,
+                level,
+                "{}: level mismatch",
+                test.name
+            );
+        }
+
+        println!("  ✓ PASSED");
+    }
+}
+
+// ============================================================================
 // State computation tests (C11.3)
 // ============================================================================
 

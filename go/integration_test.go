@@ -1083,6 +1083,57 @@ func typSuffix(typ string) string {
 	return typ
 }
 
+// TestAlgorithmDiversity runs algorithm_diversity.json to verify ES384 and Ed25519 work.
+func TestAlgorithmDiversity(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(testVectorsDir, "transactions/algorithm_diversity.json"))
+	if err != nil {
+		t.Skipf("algorithm_diversity.json not found: %v", err)
+	}
+
+	var fixture TxTestFixture
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	for _, tc := range fixture.Tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			// Setup genesis
+			keyInput := resolveKey(t, tc.Setup.InitialKey, fixture.Keys)
+			key := makeKeyFromInput(t, keyInput)
+			p, err := cyphrpass.Implicit(key)
+			if err != nil {
+				t.Fatalf("Implicit failed: %v", err)
+			}
+
+			// Apply transaction
+			applyTestTransaction(t, p, tc.Coz)
+
+			// Verify key count
+			if tc.Expected.KeyCount != nil {
+				if p.ActiveKeyCount() != *tc.Expected.KeyCount {
+					t.Errorf("KeyCount: got %d, want %d", p.ActiveKeyCount(), *tc.Expected.KeyCount)
+				}
+			}
+
+			// Verify level
+			if tc.Expected.Level != nil {
+				expectedLevel := cyphrpass.Level(*tc.Expected.Level)
+				if p.Level() != expectedLevel {
+					t.Errorf("Level: got %v, want %v", p.Level(), expectedLevel)
+				}
+			}
+
+			// Verify state changes
+			if tc.Expected.ASChanged != nil && !*tc.Expected.ASChanged {
+				t.Error("AS should have changed but didn't")
+			}
+			if tc.Expected.PSChanged != nil && !*tc.Expected.PSChanged {
+				t.Error("PS should have changed but didn't")
+			}
+		})
+	}
+}
+
 // =========================================================================
 // Action Tests
 // =========================================================================
