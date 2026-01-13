@@ -418,7 +418,7 @@ impl CozMessage {
 }
 
 /// Coz pay object with all transaction fields.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct CozPay {
     alg: String,
     #[serde(default)]
@@ -952,7 +952,7 @@ struct StateTestCase {
 }
 
 /// Action input - Coz message format with pay/sig/czd.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ActionInput {
     pay: CozPay,
     czd: String,
@@ -1473,6 +1473,10 @@ struct ErrorTestCase {
     coz: Option<CozMessage>,
     #[serde(default)]
     coz_sequence: Option<Vec<CozMessage>>,
+    #[serde(default)]
+    action: Option<ActionInput>,
+    #[serde(default)]
+    actions: Option<Vec<ActionInput>>,
     expected_error: String,
 }
 
@@ -1544,14 +1548,19 @@ fn test_error_conditions() {
         };
 
         // Handle tests expecting genesis to fail (e.g., UnsupportedAlgorithm)
-        // Only if there's no coz or coz_sequence (genesis-only test)
+        // Only if there's no coz, coz_sequence, action, or actions (genesis-only test)
         let has_transactions = test.coz.is_some()
             || test
                 .coz_sequence
                 .as_ref()
                 .is_some_and(|seq| !seq.is_empty());
+        let has_actions = test.action.is_some()
+            || test
+                .actions
+                .as_ref()
+                .is_some_and(|a: &Vec<ActionInput>| !a.is_empty());
 
-        if !has_transactions {
+        if !has_transactions && !has_actions {
             match (&principal_result, test.expected_error.as_str()) {
                 (Err(Error::UnsupportedAlgorithm(_)), "UnsupportedAlgorithm") => {
                     println!("  ✓ PASSED (UnsupportedAlgorithm)");
@@ -1720,6 +1729,55 @@ fn test_error_conditions() {
                 ("TimestampFuture", Err(Error::TimestampFuture)) => {},
                 (expected, Ok(())) => panic!(
                     "{}: expected error {} but all transactions succeeded",
+                    test.name, expected
+                ),
+                _ => panic!(
+                    "{}: expected error {}, got {:?}",
+                    test.name, test.expected_error, last_result
+                ),
+            }
+        }
+
+        // Handle action error tests
+        if has_actions {
+            use coz::PayBuilder;
+            use cyphrpass::action::Action;
+
+            let actions_to_process: Vec<ActionInput> = if let Some(ref single) = test.action {
+                vec![single.clone()]
+            } else {
+                test.actions.clone().unwrap_or_default()
+            };
+
+            let mut last_result: Result<_, Error> = Ok(());
+            for act in actions_to_process {
+                let tmb_bytes = Base64UrlUnpadded::decode_vec(&act.pay.tmb).expect("invalid tmb");
+                let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+                let czd_bytes = Base64UrlUnpadded::decode_vec(&act.czd).expect("invalid czd");
+                let czd = Czd::from_bytes(czd_bytes);
+
+                // Build Pay from CozPay
+                let pay = PayBuilder::new()
+                    .alg(&act.pay.alg)
+                    .typ(&act.pay.typ)
+                    .now(act.pay.now)
+                    .tmb(signer_tmb.clone())
+                    .build();
+
+                let action = Action::from_pay(pay, czd).expect("failed to build action");
+                last_result = principal.record_action(action).map(|_| ());
+                if last_result.is_err() {
+                    break;
+                }
+            }
+
+            match (&test.expected_error[..], &last_result) {
+                ("UnknownKey", Err(Error::UnknownKey)) => {},
+                ("KeyRevoked", Err(Error::KeyRevoked)) => {},
+                ("TimestampPast", Err(Error::TimestampPast)) => {},
+                ("TimestampFuture", Err(Error::TimestampFuture)) => {},
+                (expected, Ok(())) => panic!(
+                    "{}: expected error {} but all actions succeeded",
                     test.name, expected
                 ),
                 _ => panic!(

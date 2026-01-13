@@ -1245,12 +1245,14 @@ type ErrorTestFixture struct {
 
 // ErrorTestCase is an individual error test.
 type ErrorTestCase struct {
-	Name          string       `json:"name"`
-	Description   string       `json:"description"`
-	Setup         ErrorSetup   `json:"setup"`
-	Coz           *CozMessage  `json:"coz,omitempty"`
-	CozSequence   []CozMessage `json:"coz_sequence,omitempty"`
-	ExpectedError string       `json:"expected_error"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Setup         ErrorSetup      `json:"setup"`
+	Coz           *CozMessage     `json:"coz,omitempty"`
+	CozSequence   []CozMessage    `json:"coz_sequence,omitempty"`
+	Action        *ActionMessage  `json:"action,omitempty"`
+	Actions       []ActionMessage `json:"actions,omitempty"`
+	ExpectedError string          `json:"expected_error"`
 }
 
 // ErrorSetup defines the error test setup.
@@ -1286,8 +1288,8 @@ func TestErrorFixtures(t *testing.T) {
 				key := makeKeyFromInput(t, keyInput)
 				p, genesisErr = cyphrpass.Implicit(key)
 
-				// For tests expecting genesis to fail (no coz or coz_sequence provided)
-				if tc.Coz == nil && len(tc.CozSequence) == 0 && tc.ExpectedError != "" {
+				// For tests expecting genesis to fail (no coz, coz_sequence, action, or actions)
+				if tc.Coz == nil && len(tc.CozSequence) == 0 && tc.Action == nil && len(tc.Actions) == 0 && tc.ExpectedError != "" {
 					if genesisErr == nil {
 						t.Fatalf("expected error %s but genesis succeeded", tc.ExpectedError)
 					}
@@ -1337,6 +1339,63 @@ func TestErrorFixtures(t *testing.T) {
 
 			default:
 				t.Fatalf("unknown genesis type: %s", tc.Setup.Genesis)
+			}
+
+			// Handle action error tests
+			if tc.Action != nil || len(tc.Actions) > 0 {
+				var actionErr error
+				actionsToProcess := tc.Actions
+				if tc.Action != nil {
+					actionsToProcess = []ActionMessage{*tc.Action}
+				}
+				for i, actMsg := range actionsToProcess {
+					signer, err := coz.Decode(actMsg.Pay.Tmb)
+					if err != nil {
+						t.Fatalf("failed to decode tmb: %v", err)
+					}
+					czd, err := coz.Decode(actMsg.Czd)
+					if err != nil {
+						t.Fatalf("failed to decode czd: %v", err)
+					}
+					action := &cyphrpass.Action{
+						Typ:    actMsg.Pay.Typ,
+						Signer: signer,
+						Now:    actMsg.Pay.Now,
+						Czd:    czd,
+					}
+					actionErr = p.RecordAction(action)
+					if actionErr != nil {
+						break
+					}
+					if i == len(actionsToProcess)-1 && tc.ExpectedError != "" {
+						t.Fatalf("expected error %s but all actions succeeded", tc.ExpectedError)
+					}
+				}
+				// Check error type for action errors
+				if actionErr == nil {
+					t.Fatalf("expected error %s but got nil", tc.ExpectedError)
+				}
+				switch tc.ExpectedError {
+				case "UnknownKey":
+					if actionErr != cyphrpass.ErrUnknownKey {
+						t.Errorf("expected UnknownKey, got %v", actionErr)
+					}
+				case "KeyRevoked":
+					if actionErr != cyphrpass.ErrKeyRevoked {
+						t.Errorf("expected KeyRevoked, got %v", actionErr)
+					}
+				case "TimestampPast":
+					if actionErr != cyphrpass.ErrTimestampPast {
+						t.Errorf("expected TimestampPast, got %v", actionErr)
+					}
+				case "TimestampFuture":
+					if actionErr != cyphrpass.ErrTimestampFuture {
+						t.Errorf("expected TimestampFuture, got %v", actionErr)
+					}
+				default:
+					t.Errorf("unknown expected error for action: %s", tc.ExpectedError)
+				}
+				return // Action error test complete
 			}
 
 			if tc.Coz == nil && len(tc.CozSequence) == 0 {

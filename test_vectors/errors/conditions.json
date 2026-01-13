@@ -156,6 +156,59 @@
         }
       ],
       "expected_error": "TimestampPast"
+    },
+    {
+      "name": "action_unknown_signer_fails",
+      "description": "Action signed by unknown key fails with UnknownKey (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "action": {
+        "pay": {
+          "alg": "ES256",
+          "msg": "Action from unknown key",
+          "now": 1700000001,
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+          "typ": "cyphr.me/action"
+        },
+        "sig": "_wYnCzeKBeyghNZgSnbgESyVD3dpGYJDB9ZrLwNNzA5TRgcz_O-kYfUFFijO8Qu9Tvkf09cRMt0xQxvGsLeK3A",
+        "czd": "_ikGrvmv7xJNf0kWqhwnc9ruTbewulot4XugXS3Xfdw"
+      },
+      "expected_error": "UnknownKey"
+    },
+    {
+      "name": "action_timestamp_past_fails",
+      "description": "Action with timestamp older than previous fails with TimestampPast (SPEC §14.1)",
+      "setup": {
+        "genesis": "implicit",
+        "initial_key": "golden"
+      },
+      "actions": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000100,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "wM2Ot72H8U-a5RH6W9xvSy1fHvMmz7YrnS4ksKrZQUFVrpJp_T6G-sVl8K0dPGOB-y0v7M-wnXNB8Qe8oqGQpg",
+          "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Second action with older timestamp",
+            "now": 1700000050,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "6166KUG-xLGpIoelQB3yuuv6kS_4bRVVgcuD04fwRN44PnUg5b1c3q2LWXFpUoICQWCOEY04EqNEWluQOgvI8Q",
+          "czd": "FDtFSUL52Uc-e9Ul6YDCYvjVA0yHTRa7H6759tWmOpg"
+        }
+      ],
+      "expected_error": "TimestampPast"
     }
   ]
 }
