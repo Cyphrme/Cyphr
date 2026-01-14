@@ -437,8 +437,6 @@ PR = PS = AS = KS = `tmb`
 
 ---
 
----
-
 ## 5. Authentication
 
 Cyphrpass replaces password-based authentication with cryptographic Proof of
@@ -618,7 +616,7 @@ signed transactions and actions:
 - **Self-verifying**: Each line is a complete, signed Coz message
 - **Order derivable**: Canonical order determined by `pre` field chaining
 
-Entry classification is by `typ` prefix: `cyphr.me/cyphrpass/*` entries are auth
+Entries with `typ` prefix `<authority>/cyphrpass/*` are authentication
 transactions; all others are data actions.
 
 #### 6.3.2 Storage Capabilities
@@ -634,15 +632,26 @@ by the Cyphrpass protocol layer, not storage.
 
 #### 6.3.3 Checkpoints
 
-Each transaction's `pre` field references the previous AS, forming a
-cryptographically verifiable chain. Any signed transaction can serve as a
-checkpoint for verification:
+**Checkpoints** are self-contained snapshots of the authentication-relevant
+state at a particular point in the chain, allowing verification from the
+checkpoint forward without needing to fetch or replay earlier parts of the
+history. Checkpoints do not rely on prior history to reconstruct AS (KS, TS, or
+RS) as all required material is included directly. Checkpoints are implicit: any
+signed transaction can serve as a checkpoint provided it contains all concrete
+components necessary to recompute the AS at that point.
 
-1. Trust transaction Tₙ (verified by signature from a trusted key)
-2. Verify all transactions after Tₙ by following `pre` chain
-3. Confirm final state matches claimed PS
+For a Cyphrpass client, the last known trusted state for a particular principal
+is the **trust anchor**, ASₐ. The ordered sequence of transactions linking two
+known Auth States ASₐ → ASₓ is called the `tx_path`. The transactions that must
+actually be fetched and verified to move from ASₐ to ASₓ form the `tx_patch`
+(Δ).
 
-This enables partial verification without full history replay.
+When `tx_patch` becomes very long (hundreds or thousands of transactions),
+verification cost can become prohibitive, especially for thin clients, new
+devices, or after long periods of being unsynced. Checkpoints are a useful
+optimization for implementations that expect long-lived principals with high
+transaction volume (e.g., automated key rotation, frequent rule changes). They
+are also a useful debugging tool.
 
 ---
 
