@@ -595,6 +595,55 @@ Services that interact with principals store:
 
 **Trust model:** Services are optional — principals can self-host or use multiple services. Full verification is always possible with transaction history.
 
+### 6.3 Storage API (Non-Normative)
+
+> [!NOTE]
+> This section is **informative only**. Implementations may use any storage
+> mechanism appropriate to their deployment context.
+
+#### 6.3.1 Export Format
+
+The recommended export format is newline-delimited JSON (JSONL) containing all
+signed transactions and actions:
+
+```jsonl
+{"typ":"cyphr.me/cyphrpass/key/add","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphrpass/key/add","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/comment/create","pay":{...},"sig":"..."}
+```
+
+**Properties:**
+
+- **Immutable history**: Past entries are never modified
+- **Self-verifying**: Each line is a complete, signed Coz message
+- **Order derivable**: Canonical order determined by `pre` field chaining
+
+Entry classification is by `typ` prefix: `cyphr.me/cyphrpass/*` entries are auth
+transactions; all others are data actions.
+
+#### 6.3.2 Storage Capabilities
+
+Storage backends provide:
+
+- **Append**: Store signed entries for a principal
+- **Retrieve**: Fetch entries (all or filtered by time range)
+- **Existence check**: Determine if a principal exists
+
+Semantic operations (verification, state computation, key validity) are handled
+by the Cyphrpass protocol layer, not storage.
+
+#### 6.3.3 Checkpoints
+
+Each transaction's `pre` field references the previous AS, forming a
+cryptographically verifiable chain. Any signed transaction can serve as a
+checkpoint for verification:
+
+1. Trust transaction Tₙ (verified by signature from a trusted key)
+2. Verify all transactions after Tₙ by following `pre` chain
+3. Confirm final state matches claimed PS
+
+This enables partial verification without full history replay.
+
 ---
 
 ## 7. State Calculation
