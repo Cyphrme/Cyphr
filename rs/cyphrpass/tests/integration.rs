@@ -11,6 +11,19 @@ use cyphrpass::Principal;
 use cyphrpass::key::Key;
 use serde::Deserialize;
 
+/// Create a dummy CozJson for test transactions.
+/// In integration tests we construct Transaction directly, bypassing verification.
+fn dummy_coz_json() -> coz::CozJson {
+    coz::CozJson {
+        pay: serde_json::json!({
+            "typ": "test",
+            "alg": "ES256",
+            "now": 0
+        }),
+        sig: vec![0; 64],
+    }
+}
+
 // ============================================================================
 // Test fixture types
 // ============================================================================
@@ -600,6 +613,7 @@ fn test_transactions() {
                 signer: signer_tmb,
                 now: coz.pay.now,
                 czd: Czd::from_bytes(czd_bytes),
+                raw: dummy_coz_json(),
             };
 
             // Get new key if present
@@ -877,6 +891,7 @@ fn test_multi_key_transactions() {
                 signer: signer_tmb,
                 czd: coz::Czd::from_bytes(czd_bytes),
                 now: coz.pay.now,
+                raw: dummy_coz_json(),
             };
 
             principal
@@ -983,6 +998,7 @@ fn test_algorithm_diversity() {
                 signer: signer_tmb.clone(),
                 now: coz.pay.now,
                 czd: Czd::from_bytes(czd_bytes),
+                raw: dummy_coz_json(),
             };
 
             let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
@@ -1178,6 +1194,7 @@ fn test_state_computation() {
                 signer: signer_tmb,
                 now: coz.pay.now,
                 czd: Czd::from_bytes(czd_bytes),
+                raw: dummy_coz_json(),
             };
 
             let new_key = coz.resolve_key(None).map(|k| k.to_key());
@@ -1223,7 +1240,11 @@ fn test_state_computation() {
                 .expect("invalid base64url for czd");
             let czd = Czd::from_bytes(czd_bytes);
 
-            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            let raw = coz::CozJson {
+                pay: serde_json::to_value(&pay).unwrap(),
+                sig: vec![0; 64],
+            };
+            let action = Action::from_pay(&pay, czd, raw).expect("failed to create action");
             principal
                 .record_action(action)
                 .expect("failed to record action");
@@ -1413,7 +1434,11 @@ fn test_action_recording() {
                 .expect("invalid base64url for czd");
             let czd = Czd::from_bytes(czd_bytes);
 
-            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            let raw = coz::CozJson {
+                pay: serde_json::to_value(&pay).unwrap(),
+                sig: vec![0; 64],
+            };
+            let action = Action::from_pay(&pay, czd, raw).expect("failed to create action");
             principal
                 .record_action(action)
                 .expect("failed to record action");
@@ -1633,6 +1658,7 @@ fn test_error_conditions() {
                             signer: revoke_key.to_key().tmb,
                             now: rvk,
                             czd: Czd::from_bytes(vec![0xAB; 32]),
+                            raw: dummy_coz_json(),
                         };
                         p.apply_transaction(tx, None).expect("setup revoke failed");
                     }
@@ -1727,6 +1753,7 @@ fn test_error_conditions() {
                 signer: signer_tmb,
                 now: coz.pay.now,
                 czd: Czd::from_bytes(czd_bytes),
+                raw: dummy_coz_json(),
             };
 
             let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
@@ -1802,6 +1829,7 @@ fn test_error_conditions() {
                     signer: signer_tmb.clone(),
                     now: coz.pay.now,
                     czd: Czd::from_bytes(czd_bytes),
+                    raw: dummy_coz_json(),
                 };
 
                 let new_key = coz.resolve_key(Some(&fixture.keys)).map(|k| k.to_key());
@@ -1859,7 +1887,11 @@ fn test_error_conditions() {
                     .tmb(signer_tmb.clone())
                     .build();
 
-                let action = Action::from_pay(pay, czd).expect("failed to build action");
+                let raw = coz::CozJson {
+                    pay: serde_json::to_value(&pay).unwrap(),
+                    sig: vec![0; 64],
+                };
+                let action = Action::from_pay(&pay, czd, raw).expect("failed to build action");
                 last_result = principal.record_action(action).map(|_| ());
                 if last_result.is_err() {
                     break;
@@ -1984,6 +2016,7 @@ fn test_edge_cases() {
                 signer: signer_tmb,
                 now: coz.pay.now,
                 czd: Czd::from_bytes(czd_bytes),
+                raw: dummy_coz_json(),
             };
 
             let new_key = coz.resolve_key(None).map(|k| k.to_key());
@@ -2023,7 +2056,11 @@ fn test_edge_cases() {
             let czd_bytes = Base64UrlUnpadded::decode_vec(&action_input.czd).expect("invalid czd");
             let czd = Czd::from_bytes(czd_bytes);
 
-            let action = Action::from_pay(pay, czd).expect("failed to create action");
+            let raw = coz::CozJson {
+                pay: serde_json::to_value(&pay).unwrap(),
+                sig: vec![0; 64],
+            };
+            let action = Action::from_pay(&pay, czd, raw).expect("failed to create action");
             principal
                 .record_action(action)
                 .expect("failed to record action");

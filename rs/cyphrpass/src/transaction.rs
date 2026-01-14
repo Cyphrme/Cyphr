@@ -87,18 +87,20 @@ pub struct Transaction {
     pub now: i64,
     /// Coz digest (unique identifier).
     pub czd: Czd,
+    /// Raw Coz message for storage/export.
+    pub raw: coz::CozJson,
 }
 
 impl Transaction {
-    /// Parse a transaction from a Coz Pay message.
+    /// Parse a transaction from an already-verified Pay message.
     ///
-    /// Extracts transaction type from `typ` field and required fields
-    /// based on transaction kind.
+    /// The `pay` must already be parsed and verified. The `raw` CozJson
+    /// is stored for export/re-verification.
     ///
     /// # Errors
     ///
     /// Returns `Error::MalformedPayload` if required fields are missing.
-    pub fn parse(pay: &Pay, czd: Czd) -> Result<Self> {
+    pub fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Result<Self> {
         let signer = pay.tmb.clone().ok_or(Error::MalformedPayload)?;
         let now = pay.now.ok_or(Error::MalformedPayload)?;
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
@@ -110,6 +112,7 @@ impl Transaction {
             signer,
             now,
             czd,
+            raw,
         })
     }
 
@@ -230,11 +233,19 @@ pub fn verify_transaction(
         return Err(Error::InvalidSignature);
     }
 
-    // Parse the pay
+    // Parse Pay from JSON bytes
     let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
 
-    // Parse the transaction
-    let tx = Transaction::parse(&pay, czd)?;
+    // Create the raw CozJson for storage
+    let pay_value: serde_json::Value =
+        serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+    let raw = coz::CozJson {
+        pay: pay_value,
+        sig: sig.to_vec(),
+    };
+
+    // Create transaction from parsed Pay
+    let tx = Transaction::from_pay(&pay, czd, raw)?;
 
     Ok(VerifiedTransaction { tx, new_key })
 }
@@ -254,34 +265,27 @@ mod tests {
     const TEST_PRE: &str = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
-    fn make_pay_with_extra(typ: &str, extra: serde_json::Value) -> Pay {
-        let mut pay = PayBuilder::new()
-            .typ(typ)
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-
-        // Merge extra fields
-        if let Some(obj) = extra.as_object() {
-            for (k, v) in obj {
-                pay.extra.insert(k.clone(), v.clone());
-            }
+    /// Helper to wrap Pay in CozJson for tests.
+    fn to_raw(pay: &Pay) -> coz::CozJson {
+        coz::CozJson {
+            pay: serde_json::to_value(pay).unwrap(),
+            sig: vec![0; 64],
         }
-        pay
     }
 
     #[test]
     fn parse_key_add() {
-        let pay = make_pay_with_extra(
-            "cyphr.me/key/add",
-            json!({
-                "pre": TEST_PRE,
-                "id": TEST_ID
-            }),
-        );
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/add")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::parse(&pay, czd).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyAdd { .. }));
         assert_eq!(tx.now, 1000);
@@ -289,30 +293,34 @@ mod tests {
 
     #[test]
     fn parse_key_delete() {
-        let pay = make_pay_with_extra(
-            "cyphr.me/key/delete",
-            json!({
-                "pre": TEST_PRE,
-                "id": TEST_ID
-            }),
-        );
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/delete")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::parse(&pay, czd).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyDelete { .. }));
     }
 
     #[test]
     fn parse_key_replace() {
-        let pay = make_pay_with_extra(
-            "cyphr.me/key/replace",
-            json!({
-                "pre": TEST_PRE,
-                "id": TEST_ID
-            }),
-        );
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/replace")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::parse(&pay, czd).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyReplace { .. }));
     }
@@ -328,24 +336,25 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::parse(&pay, czd).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::SelfRevoke { rvk: 1000 }));
     }
 
     #[test]
     fn parse_other_revoke() {
-        let mut pay = make_pay_with_extra(
-            "cyphr.me/key/revoke",
-            json!({
-                "pre": TEST_PRE,
-                "id": TEST_ID
-            }),
-        );
-        pay.rvk = Some(2000);
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/revoke")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .rvk(2000)
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::parse(&pay, czd).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(
             tx.kind,
@@ -362,30 +371,38 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::parse(&pay, czd);
+        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
 
     #[test]
     fn parse_missing_pre_fails() {
-        let pay = make_pay_with_extra(
-            "cyphr.me/key/add",
-            json!({
-                "id": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-            }),
-        );
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/add")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("id".into(), json!(TEST_ID));
+
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::parse(&pay, czd);
+        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
 
     #[test]
     fn parse_unknown_typ_fails() {
-        let pay = make_pay_with_extra("cyphr.me/unknown/action", json!({}));
+        let pay = PayBuilder::new()
+            .typ("cyphr.me/unknown/action")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::parse(&pay, czd);
+        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }

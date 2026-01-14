@@ -22,13 +22,16 @@ pub struct Action {
     pub czd: Czd,
     /// Original payload (for application-specific fields).
     pub pay: Pay,
+    /// Raw Coz message for storage/export.
+    pub raw: coz::CozJson,
 }
 
 impl Action {
-    /// Create an action from a verified Coz Pay message.
+    /// Create an action from an already-verified Pay message.
     ///
-    /// The signature must already be verified before calling this.
-    pub fn from_pay(pay: Pay, czd: Czd) -> Option<Self> {
+    /// The `pay` must already be parsed and verified. The `raw` CozJson
+    /// is stored for export/re-verification.
+    pub fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
         let signer = pay.tmb.clone()?;
         let now = pay.now?;
         let typ = pay.typ.clone()?;
@@ -38,7 +41,8 @@ impl Action {
             signer,
             now,
             czd,
-            pay,
+            pay: pay.clone(),
+            raw,
         })
     }
 
@@ -59,10 +63,18 @@ impl Action {
 
 #[cfg(test)]
 mod tests {
-    use coz::PayBuilder;
+    use coz::{PayBuilder, Thumbprint};
     use serde_json::json;
 
     use super::*;
+
+    /// Helper to wrap Pay in CozJson for tests.
+    fn to_raw(pay: &Pay) -> coz::CozJson {
+        coz::CozJson {
+            pay: serde_json::to_value(pay).unwrap(),
+            sig: vec![0; 64],
+        }
+    }
 
     #[test]
     fn action_from_pay_basic() {
@@ -73,9 +85,9 @@ mod tests {
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .msg("Hello, world!")
             .build();
-        let czd = Czd::from_bytes(vec![0xBB; 32]);
 
-        let action = Action::from_pay(pay, czd.clone()).unwrap();
+        let czd = Czd::from_bytes(vec![0xBB; 32]);
+        let action = Action::from_pay(&pay, czd.clone(), to_raw(&pay)).unwrap();
 
         assert_eq!(action.typ, "cyphr.me/comment/create");
         assert_eq!(action.now, 1000);
@@ -85,16 +97,16 @@ mod tests {
 
     #[test]
     fn action_from_pay_with_custom_fields() {
-        let pay = PayBuilder::new()
+        let mut pay = PayBuilder::new()
             .typ("example/data")
             .alg("ES256")
-            .now(2000)
-            .tmb(Thumbprint::from_bytes(vec![0xCC; 32]))
-            .field("custom", json!("value"))
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        let czd = Czd::from_bytes(vec![0xDD; 32]);
+        pay.extra.insert("custom".into(), json!("value"));
 
-        let action = Action::from_pay(pay, czd).unwrap();
+        let czd = Czd::from_bytes(vec![0xDD; 32]);
+        let action = Action::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert_eq!(action.get_field("custom"), Some(&json!("value")));
     }
@@ -106,8 +118,8 @@ mod tests {
             .alg("ES256")
             .now(1000)
             .build();
-        let czd = Czd::from_bytes(vec![0; 32]);
 
-        assert!(Action::from_pay(pay, czd).is_none());
+        let czd = Czd::from_bytes(vec![0; 32]);
+        assert!(Action::from_pay(&pay, czd, to_raw(&pay)).is_none());
     }
 }

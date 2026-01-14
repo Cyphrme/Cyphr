@@ -18,8 +18,10 @@
 //!
 //! - [`FileStore`]: File-based storage using JSONL format (one file per principal).
 
+mod export;
 mod file;
 
+pub use export::{export_entries, persist_entries};
 pub use file::FileStore;
 
 use cyphrpass::state::PrincipalRoot;

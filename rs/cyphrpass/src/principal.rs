@@ -250,6 +250,16 @@ impl Principal {
         self.auth.keys.len()
     }
 
+    /// Get all transactions.
+    pub fn transactions(&self) -> impl Iterator<Item = &Transaction> {
+        self.auth.transactions.iter()
+    }
+
+    /// Get all actions.
+    pub fn actions(&self) -> impl Iterator<Item = &Action> {
+        self.data.actions.iter()
+    }
+
     /// Determine the current feature level.
     pub fn level(&self) -> Level {
         // Level 4: has actions
@@ -646,6 +656,20 @@ mod tests {
         }
     }
 
+    /// Create a dummy CozJson for test transactions.
+    /// The payload content doesn't need to match the Transaction kind
+    /// since tests bypass signature verification.
+    fn dummy_coz_json() -> coz::CozJson {
+        coz::CozJson {
+            pay: serde_json::json!({
+                "typ": "cyphr.me/test",
+                "alg": "ES256",
+                "now": 1000
+            }),
+            sig: vec![0; 64],
+        }
+    }
+
     #[test]
     fn implicit_genesis_single_key() {
         let key = make_test_key(0xAA);
@@ -717,9 +741,25 @@ mod tests {
 
     fn make_key_add_tx(pre: &AuthState, new_key: &Key, signer: &Thumbprint) -> Transaction {
         use coz::Czd;
+        use serde_json::json;
 
         use crate::state::AuthState;
         use crate::transaction::{Transaction, TransactionKind};
+
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        // Create dummy raw CozJson for test transactions
+        let raw = coz::CozJson {
+            pay: json!({
+                "typ": "cyphr.me/key/add",
+                "alg": "ES256",
+                "now": 2000,
+                "tmb": signer.to_b64(),
+                "pre": Base64UrlUnpadded::encode_string(pre.as_cad().as_bytes()),
+                "id": new_key.tmb.to_b64()
+            }),
+            sig: vec![0; 64],
+        };
 
         Transaction {
             kind: TransactionKind::KeyAdd {
@@ -729,6 +769,7 @@ mod tests {
             signer: signer.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
+            raw,
         }
     }
 
@@ -810,9 +851,14 @@ mod tests {
             .tmb(signer.clone())
             .msg("Test action")
             .build();
+
+        let raw = coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig: vec![0; 64],
+        };
         let czd = Czd::from_bytes(vec![0xCC; 32]);
 
-        Action::from_pay(pay, czd).unwrap()
+        Action::from_pay(&pay, czd, raw).unwrap()
     }
 
     #[test]
@@ -880,6 +926,7 @@ mod tests {
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
+            raw: dummy_coz_json(),
         };
 
         let result = principal.apply_transaction(tx, None);
@@ -912,6 +959,7 @@ mod tests {
             signer: key1.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
+            raw: dummy_coz_json(),
         };
 
         principal.apply_transaction(tx, None).unwrap();
@@ -969,6 +1017,7 @@ mod tests {
             signer: key1.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
+            raw: dummy_coz_json(),
         };
         principal.apply_transaction(tx, None).unwrap();
 
@@ -1007,6 +1056,7 @@ mod tests {
             signer: key1.tmb.clone(),
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
+            raw: dummy_coz_json(),
         };
         principal.apply_transaction(tx, Some(key2)).unwrap();
 
