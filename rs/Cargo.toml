@@ -1,14 +1,13 @@
-[package]
-categories   = ["authentication", "cryptography"]
-description  = "Cyphrpass self-sovereign identity protocol"
+[workspace]
+members  = ["cyphrpass", "cyphrpass-storage"]
+resolver = "2"
+
+[workspace.package]
 edition      = "2024"
-keywords     = ["identity", "authentication", "cryptography", "self-sovereign"]
-name         = "cyphrpass"
 repository   = "https://github.com/Cyphrme/Cyphrpass"
 rust-version = "1.85"
-version      = "0.1.0"
 
-[dependencies]
+[workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)
 coz = { package = "coz-rs", path = "../coz-rust/coz-rs" }
 
@@ -19,7 +18,3 @@ serde_json = "1"
 
 # Error handling
 thiserror = "2"
-
-[dev-dependencies]
-serde      = { version = "1", features = ["derive"] }
-serde_json = "1"

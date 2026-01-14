@@ -83,6 +83,11 @@ impl PrincipalState {
 pub struct PrincipalRoot(pub Cad);
 
 impl PrincipalRoot {
+    /// Create a PrincipalRoot from raw bytes (e.g., for testing).
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(Cad::from_bytes(bytes))
+    }
+
     /// Create PR from the initial principal state (at genesis).
     pub fn from_initial(ps: &PrincipalState) -> Self {
         Self(ps.0.clone())

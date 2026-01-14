@@ -116,10 +116,12 @@ struct ExpectedState {
 
 /// Get path to test_vectors directory.
 fn test_vectors_dir() -> PathBuf {
-    // From rs/tests/integration.rs, go up to repo root
+    // From rs/cyphrpass/tests/integration.rs, go up to repo root
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("should have parent")
+        .expect("should have rs/ parent")
+        .parent()
+        .expect("should have repo root parent")
         .join("test_vectors")
 }
 

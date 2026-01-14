@@ -1,0 +1,23 @@
+[package]
+categories             = ["authentication", "cryptography", "database"]
+description            = "Storage backends for Cyphrpass identity protocol"
+edition.workspace      = true
+keywords               = ["identity", "storage", "cryptography", "self-sovereign"]
+name                   = "cyphrpass-storage"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+coz        = { workspace = true }
+cyphrpass  = { path = "../cyphrpass" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+
+# JSONL handling
+serde-jsonlines = "0.5"
+
+[dev-dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
