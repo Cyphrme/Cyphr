@@ -3,6 +3,25 @@
 In addition to being Coz is well-suited for building stateless, cryptographically verifiable bearer
 authentication systems.
 
+#### Advantages of Coz Signed Bearer Tokens over Traditional Authentication
+Signed bearer tokens issued by the server offer major benefits over traditional
+session authentication, which uses an entropic token given to the client and
+stored in a database. On each client request the server must query the database
+to verify the token along with other information like user permissions.
+
+In contrast, by using Coz, the server verifies each request by checking the
+cryptographic signature against its own trusted key, with no need to query a
+database, cache, or centralized session store. All identity, permissions, or
+other claims exist directly in the signed payload. This stateless design
+delivers fast authorization, easy horizontal scaling, and eliminates bottlenecks
+from per-request lookups. It also shrinks the attack surface by removing session
+stores that could be targeted, while revocation remains clean through key
+rotation or explicit key-revocation lists when required. Coz signed bearer
+tokens provide the speed and simplicity of stateless bearer authentication.
+
+
+### Login Flow with Coz Bearer Tokens
+
 A typical bearer login flow looks like this:
 
 0. (Optional) Server includes a signed challenge in the initial in response to client.
@@ -39,7 +58,8 @@ minimum and interface for revoked keys. If a user key is compromised, but a
 revoke was issues to the server, future login requests must be invalid for new
 requests, limiting the impact of replay attacks.
 
-Example 1: user login request. In this example there's no challenge :
+
+### Example 1: user login request. In this example there's no challenge :
 
 ```json
 {
@@ -53,9 +73,9 @@ Example 1: user login request. In this example there's no challenge :
 }
 ```
 
-Example 2: first time login with embedded key and server challenge. To
-ensure that the server sill has the original challenge, the challenge that the
-server signed is replayed with the client's request.
+### Example 2: first time login with embedded key and server challenge. 
+To ensure that the server sill has the original challenge, the challenge that
+the server signed is replayed with the client's request.
 
 ```json5
 {
@@ -106,22 +126,8 @@ transferred back to the server on every request.
 }
 ```
 
-#### Advantages of Signed Bearer Tokens over Traditional Session Authentication with Coz
+For passwordless authentication with Coz, see Cyphrpass. 
 
-Signed bearer tokens issued by the server offer major benefits over traditional
-session authentication, which uses an entropic token given to the client and
-stored in a database. On each client request the server must query the database
-to verify the token along with other information like user permissions.
-
-In contrast, by using Coz, the server verifies each request by checking the
-cryptographic signature against its own trusted key, with no need to query a
-database, cache, or centralized session store. All identity, permissions, or
-other claims exist directly in the signed payload. This stateless design
-delivers fast authorization, easy horizontal scaling, and eliminates bottlenecks
-from per-request lookups. It also shrinks the attack surface by removing session
-stores that could be targeted, while revocation remains clean through key
-rotation or explicit key-revocation lists when required. Coz signed bearer
-tokens provide the speed and simplicity of stateless bearer authentication.
 
 # Test Keys
 
