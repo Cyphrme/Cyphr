@@ -1,0 +1,15 @@
+[package]
+description            = "Test fixture types and generation for Cyphrpass integration testing"
+edition.workspace      = true
+name                   = "test-fixtures"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+coz.workspace        = true
+indexmap.workspace   = true
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+toml.workspace       = true

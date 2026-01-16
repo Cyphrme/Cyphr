@@ -1,0 +1,15 @@
+[package]
+description            = "CLI for generating Cyphrpass test fixtures"
+edition.workspace      = true
+name                   = "fixture-gen"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[[bin]]
+name = "fixture-gen"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+test-fixtures  = { path = "../test-fixtures" }
