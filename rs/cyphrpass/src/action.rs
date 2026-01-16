@@ -52,6 +52,7 @@ impl Action {
     }
 
     /// Create an action from an already-verified Pay message (internal).
+    #[cfg(test)]
     pub(crate) fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
         let signer = pay.tmb.clone()?;
         let now = pay.now?;

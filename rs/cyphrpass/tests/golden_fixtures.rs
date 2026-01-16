@@ -33,24 +33,6 @@ fn load_pool() -> Pool {
     Pool::load(&path).expect("failed to load pool.toml")
 }
 
-fn pool_key_to_domain(pk: &PoolKey) -> Key {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("invalid pub base64");
-    // Compute thumbprint using PoolKey's method
-    let tmb = pk.compute_tmb().expect("failed to compute thumbprint");
-
-    Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
-}
-
 /// Try to convert a pool key to domain key, returning None for unsupported algorithms.
 fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};

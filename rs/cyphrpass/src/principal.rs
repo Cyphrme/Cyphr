@@ -495,6 +495,7 @@ impl Principal {
     /// - `UnknownKey`: Signer key not in current KS
     /// - `KeyRevoked`: Signer key has been revoked
     /// - `NoActiveKeys`: Would leave principal with no active keys
+    #[cfg(test)]
     pub(crate) fn apply_transaction(
         &mut self,
         tx: Transaction,

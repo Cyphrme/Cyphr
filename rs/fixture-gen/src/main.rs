@@ -4,7 +4,7 @@
 //! - `generate`: Transform intent TOML → golden JSON
 //! - `pool`: Key pool management
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -137,7 +137,7 @@ fn main() {
 }
 
 /// Generate from a single intent file to a single output file (array of goldens).
-fn generate_single(intent_path: &PathBuf, output_path: &PathBuf, pool: &test_fixtures::Pool) {
+fn generate_single(intent_path: &Path, output_path: &PathBuf, pool: &test_fixtures::Pool) {
     let intent_data = match test_fixtures::Intent::load(intent_path) {
         Ok(i) => i,
         Err(e) => {
@@ -197,7 +197,7 @@ fn generate_single(intent_path: &PathBuf, output_path: &PathBuf, pool: &test_fix
 ///
 /// Structure: input_dir/genesis.toml (with test1, test2)
 ///         → output_dir/genesis/test1.json, output_dir/genesis/test2.json
-fn generate_recursive(input_dir: &PathBuf, output_dir: &PathBuf, pool: &test_fixtures::Pool) {
+fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtures::Pool) {
     if !input_dir.is_dir() {
         eprintln!(
             "✗ Input path '{}' is not a directory (use -r only with directories)",
