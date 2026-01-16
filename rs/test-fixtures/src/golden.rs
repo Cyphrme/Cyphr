@@ -108,6 +108,8 @@ pub struct Generator<'a> {
     pool: &'a Pool,
 }
 
+type SignResult = Result<(String, Vec<u8>, String, coz::Czd, Option<GoldenKey>), Error>;
+
 impl<'a> Generator<'a> {
     /// Create a new generator with the given key pool.
     pub fn new(pool: &'a Pool) -> Self {
@@ -388,7 +390,7 @@ impl<'a> Generator<'a> {
         signer: &PoolKey,
         crypto: &CryptoIntent,
         test_name: &str,
-    ) -> Result<(String, Vec<u8>, String, coz::Czd, Option<GoldenKey>), Error> {
+    ) -> SignResult {
         // Get private key bytes
         let prv_b64 = signer
             .prv
@@ -440,6 +442,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Apply a transaction to the principal.
+    #[allow(clippy::too_many_arguments)]
     fn apply_transaction_to_principal(
         &self,
         principal: &mut cyphrpass::Principal,
@@ -491,17 +494,13 @@ impl<'a> Generator<'a> {
         let ks = principal.key_state().0.to_b64();
         let auth_state = principal.auth_state().0.to_b64();
         let ps = principal.ps().0.to_b64();
-        let ts = principal
-            .transactions()
-            .last()
-            .map(|_| {
-                // Get TS if there are transactions
-                // Note: Principal doesn't expose ts() directly, compute from transactions
-                // For now, we'll leave ts as None and rely on the fact that
-                // AS = H(KS, TS) when TS exists
-                None::<String>
-            })
-            .flatten();
+        let ts = principal.transactions().last().and({
+            // Get TS if there are transactions
+            // Note: Principal doesn't expose ts() directly, compute from transactions
+            // For now, we'll leave ts as None and rely on the fact that
+            // AS = H(KS, TS) when TS exists
+            None::<String>
+        });
         let pr = principal.pr().0.to_b64();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();

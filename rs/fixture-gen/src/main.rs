@@ -25,10 +25,13 @@ struct Cli {
 enum Commands {
     /// Generate golden JSON from intent TOML
     Generate {
-        /// Intent TOML file
-        intent: PathBuf,
-        /// Output golden JSON file
+        /// Intent TOML file or directory (with -r)
+        input: PathBuf,
+        /// Output JSON file or directory (with -r)
         output: PathBuf,
+        /// Recursive mode: process all .toml files in directory
+        #[arg(short, long)]
+        recursive: bool,
     },
     /// Key pool management
     Pool {
@@ -61,7 +64,11 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { intent, output } => {
+        Commands::Generate {
+            input,
+            output,
+            recursive,
+        } => {
             // Load pool
             let pool = match test_fixtures::Pool::load(&cli.pool) {
                 Ok(p) => p,
@@ -71,58 +78,11 @@ fn main() {
                 },
             };
 
-            // Load intent
-            let intent_data = match test_fixtures::Intent::load(&intent) {
-                Ok(i) => i,
-                Err(e) => {
-                    eprintln!("✗ Failed to load intent '{}': {}", intent.display(), e);
-                    std::process::exit(1);
-                },
-            };
-
-            // Generate golden test cases
-            let goldens = match test_fixtures::generate(&intent_data, &pool) {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("✗ Generation failed: {}", e);
-                    std::process::exit(1);
-                },
-            };
-
-            // Write output as pretty JSON
-            let json = match serde_json::to_string_pretty(&goldens) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("✗ Failed to serialize output: {}", e);
-                    std::process::exit(1);
-                },
-            };
-
-            // Create parent directories if needed
-            if let Some(parent) = output.parent() {
-                if !parent.as_os_str().is_empty() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!(
-                            "✗ Failed to create output directory '{}': {}",
-                            parent.display(),
-                            e
-                        );
-                        std::process::exit(1);
-                    }
-                }
+            if recursive {
+                generate_recursive(&input, &output, &pool);
+            } else {
+                generate_single(&input, &output, &pool);
             }
-
-            // Write to file
-            if let Err(e) = std::fs::write(&output, &json) {
-                eprintln!("✗ Failed to write output '{}': {}", output.display(), e);
-                std::process::exit(1);
-            }
-
-            println!(
-                "✓ Generated {} test case(s) → {}",
-                goldens.len(),
-                output.display()
-            );
         },
         Commands::Pool { cmd } => match cmd {
             PoolCmd::Validate => {
@@ -174,4 +134,167 @@ fn main() {
             },
         },
     }
+}
+
+/// Generate from a single intent file to a single output file (array of goldens).
+fn generate_single(intent_path: &PathBuf, output_path: &PathBuf, pool: &test_fixtures::Pool) {
+    let intent_data = match test_fixtures::Intent::load(intent_path) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("✗ Failed to load intent '{}': {}", intent_path.display(), e);
+            std::process::exit(1);
+        },
+    };
+
+    let goldens = match test_fixtures::generate(&intent_data, pool) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("✗ Generation failed: {}", e);
+            std::process::exit(1);
+        },
+    };
+
+    let json = match serde_json::to_string_pretty(&goldens) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("✗ Failed to serialize output: {}", e);
+            std::process::exit(1);
+        },
+    };
+
+    // Create parent directories if needed
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "✗ Failed to create output directory '{}': {}",
+                    parent.display(),
+                    e
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Err(e) = std::fs::write(output_path, &json) {
+        eprintln!(
+            "✗ Failed to write output '{}': {}",
+            output_path.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+
+    println!(
+        "✓ Generated {} test case(s) → {}",
+        goldens.len(),
+        output_path.display()
+    );
+}
+
+/// Generate recursively: each .toml in input_dir produces a subdirectory
+/// with per-test JSON files.
+///
+/// Structure: input_dir/genesis.toml (with test1, test2)
+///         → output_dir/genesis/test1.json, output_dir/genesis/test2.json
+fn generate_recursive(input_dir: &PathBuf, output_dir: &PathBuf, pool: &test_fixtures::Pool) {
+    if !input_dir.is_dir() {
+        eprintln!(
+            "✗ Input path '{}' is not a directory (use -r only with directories)",
+            input_dir.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Collect all .toml files
+    let toml_files: Vec<_> = match std::fs::read_dir(input_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "toml"))
+            .collect(),
+        Err(e) => {
+            eprintln!(
+                "✗ Failed to read input directory '{}': {}",
+                input_dir.display(),
+                e
+            );
+            std::process::exit(1);
+        },
+    };
+
+    if toml_files.is_empty() {
+        eprintln!("✗ No .toml files found in '{}'", input_dir.display());
+        std::process::exit(1);
+    }
+
+    let mut total_tests = 0;
+    let mut total_files = 0;
+
+    for toml_path in &toml_files {
+        let intent_data = match test_fixtures::Intent::load(toml_path) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("✗ Failed to load intent '{}': {}", toml_path.display(), e);
+                std::process::exit(1);
+            },
+        };
+
+        let goldens = match test_fixtures::generate(&intent_data, pool) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("✗ Generation failed for '{}': {}", toml_path.display(), e);
+                std::process::exit(1);
+            },
+        };
+
+        // Create subdirectory based on intent file basename
+        let intent_stem = toml_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let subdir = output_dir.join(intent_stem);
+
+        if let Err(e) = std::fs::create_dir_all(&subdir) {
+            eprintln!(
+                "✗ Failed to create output directory '{}': {}",
+                subdir.display(),
+                e
+            );
+            std::process::exit(1);
+        }
+
+        // Write each test as a separate JSON file
+        for golden in &goldens {
+            let test_file = subdir.join(format!("{}.json", golden.name));
+            let json = match serde_json::to_string_pretty(&golden) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("✗ Failed to serialize '{}': {}", golden.name, e);
+                    std::process::exit(1);
+                },
+            };
+
+            if let Err(e) = std::fs::write(&test_file, &json) {
+                eprintln!("✗ Failed to write '{}': {}", test_file.display(), e);
+                std::process::exit(1);
+            }
+
+            total_tests += 1;
+        }
+
+        total_files += 1;
+        println!(
+            "  {} → {}/",
+            toml_path.file_name().unwrap_or_default().to_string_lossy(),
+            intent_stem
+        );
+    }
+
+    println!(
+        "✓ Generated {} test(s) from {} intent file(s) → {}",
+        total_tests,
+        total_files,
+        output_dir.display()
+    );
 }
