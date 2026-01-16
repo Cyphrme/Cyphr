@@ -1,0 +1,35 @@
+# Algorithm diversity tests
+
+# Test 1: ES384 account adds ES256 key
+[[test]]
+name      = "es384_account_adds_es256_key"
+principal = ["diana_es384"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "diana_es384"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Test 2: Ed25519 account adds ES256 key
+[[test]]
+name      = "ed25519_account_adds_es256_key"
+principal = ["eve_ed25519"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "eve_ed25519"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3

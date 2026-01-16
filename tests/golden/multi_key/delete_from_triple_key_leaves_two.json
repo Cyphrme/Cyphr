@@ -1,0 +1,28 @@
+{
+  "name": "delete_from_triple_key_leaves_two",
+  "coz": {
+    "pay": {
+      "alg": "ES256",
+      "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+      "now": 1700000000,
+      "pre": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+      "typ": "cyphr.me/key/delete"
+    },
+    "sig": "00zgYN4vvobJGqfSMAWUUXPY8VIYX_kVYDUVcLGxNH4lq1D08aIlMfEVfQzsKaAv7wAj6-gRYTIInXj1Fv52JA",
+    "czd": "hRFgk2o7ttn_0J04II48_UsaL-LmRjWji2Adwv0Vyg4",
+    "key": {
+      "alg": "ES256",
+      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+    }
+  },
+  "expected": {
+    "key_count": 2,
+    "level": 3,
+    "ks": "R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
+    "as": "gCV_oVkAUf7wO70tEOWReGeqJsFmWt5MkFrE13dlvAs",
+    "ps": "gCV_oVkAUf7wO70tEOWReGeqJsFmWt5MkFrE13dlvAs",
+    "pr": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s"
+  }
+}

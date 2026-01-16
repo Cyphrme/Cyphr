@@ -1,5 +1,4 @@
 # Transaction mutation tests
-# Source: test_vectors/transactions/mutations.json
 
 # Test 1: L1→L3 transition via key/add
 [[test]]

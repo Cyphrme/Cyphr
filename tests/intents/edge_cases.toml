@@ -1,0 +1,29 @@
+# Edge case tests for state ordering
+# NOTE: Tests 1-2 (genesis-only) moved to README guidance
+# NOTE: Test 4 (coz+action combo) requires action support - deferred
+
+# Test 3: Transaction replay order affects TS (multi-step)
+[[test]]
+name      = "transaction_replay_order"
+principal = ["alice"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "alice"
+target = "bob"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "alice"
+target = "carol"
+
+[test.expected]
+key_count = 3
