@@ -167,6 +167,9 @@ impl<'a> Generator<'a> {
         // Dispatch based on test type
         if test.is_genesis_only() {
             self.generate_genesis_only(test, &principal)
+        } else if test.has_tx_and_action() {
+            // Combined: transaction + action
+            self.generate_tx_and_action(test, &mut principal)
         } else if test.has_action() {
             if test.is_multi_action() {
                 self.generate_multi_action(test, &mut principal)
@@ -413,6 +416,82 @@ impl<'a> Generator<'a> {
             coz: None,
             coz_sequence: None,
             action: None,
+            action_sequence: None,
+            expected,
+        })
+    }
+
+    /// Generate a combined transaction + action test case.
+    ///
+    /// This handles tests with both `pay` (transaction) and `action` fields.
+    /// The transaction is applied first, then the action.
+    fn generate_tx_and_action(
+        &self,
+        test: &TestIntent,
+        principal: &mut cyphrpass::Principal,
+    ) -> Result<Golden, Error> {
+        // First, apply the transaction (reuse single_step logic)
+        let pay_intent = test.pay.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': tx+action test requires [pay] section",
+                test.name
+            ),
+        })?;
+
+        let crypto_intent = test.crypto.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': tx+action test requires [crypto] section",
+                test.name
+            ),
+        })?;
+
+        // Capture pre (auth state before transaction)
+        let pre = principal.auth_state().0.to_b64();
+
+        // Build and sign transaction coz message
+        let (tx_coz, tx_sig_bytes, tx_czd) =
+            self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(&pre))?;
+
+        // Apply transaction to principal
+        self.apply_transaction_to_principal(
+            principal,
+            pay_intent,
+            crypto_intent,
+            &tx_coz,
+            &tx_sig_bytes,
+            tx_czd,
+            &test.name,
+        )?;
+
+        // Now apply the action
+        let action_intent = test.action.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': tx+action test requires [action] section",
+                test.name
+            ),
+        })?;
+
+        let (action_coz, action_sig_bytes, action_czd) =
+            self.build_action_coz(action_intent, &test.name)?;
+
+        // Apply action to principal
+        self.apply_action_to_principal(
+            principal,
+            action_intent,
+            &action_sig_bytes,
+            action_czd,
+            &test.name,
+        )?;
+
+        let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
+            coz: Some(tx_coz),
+            coz_sequence: None,
+            action: Some(action_coz),
             action_sequence: None,
             expected,
         })

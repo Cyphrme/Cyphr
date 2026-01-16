@@ -41,6 +41,24 @@ principal = ["golden"]
 key_count = 1
 level     = 1
 
+# Genesis with ES384 key (SHA-384, 48-byte digests)
+[[test]]
+name      = "implicit_genesis_es384"
+principal = ["diana_es384"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+# Genesis with Ed25519 key (SHA-512, 64-byte digests)
+[[test]]
+name      = "implicit_genesis_ed25519"
+principal = ["eve_ed25519"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
 # ============================================================================
 # Transaction-based tests
 # ============================================================================

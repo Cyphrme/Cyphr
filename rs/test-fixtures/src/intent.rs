@@ -190,6 +190,12 @@ impl TestIntent {
             && self.action.is_none()
             && self.action_step.is_empty()
     }
+
+    /// Returns true if this test has both a transaction and an action.
+    /// This is a combined test: first apply tx, then apply action.
+    pub fn has_tx_and_action(&self) -> bool {
+        self.pay.is_some() && self.action.is_some()
+    }
 }
 
 #[cfg(test)]

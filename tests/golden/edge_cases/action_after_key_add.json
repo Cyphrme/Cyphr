@@ -1,0 +1,41 @@
+{
+  "name": "action_after_key_add",
+  "principal": ["alice"],
+  "coz": {
+    "pay": {
+      "alg": "ES256",
+      "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+      "now": 1700000001,
+      "pre": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+      "typ": "cyphr.me/key/add"
+    },
+    "sig": "IV7S0229-6kTcCrDJtKKhE30tTDWkuqXhKMz9DKb0YhVqmKpKED6xbz8oP6RUH23vrx3D9G2OXvNvLPBg27dVw",
+    "czd": "ZaYLQLe8W_pZJwGJ7SLL3Vlf9sREj0AbjEWXmf0h7dw",
+    "key": {
+      "alg": "ES256",
+      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+    }
+  },
+  "action": {
+    "pay": {
+      "alg": "ES256",
+      "msg": "Action signed by newly added key",
+      "now": 1700000002,
+      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+      "typ": "cyphr.me/action"
+    },
+    "sig": "dMkBTyrVaudkKooREWzGsxVVgeN-0UVzpADitJsEGVIvXJdHHzmHBEsazYNWIetvcedUzHvVOaSwI5U3ys2bIQ",
+    "czd": "_bP7uOgFmXhpnATccZAO4lWxShGgjwImHdBWOVYDjxM"
+  },
+  "expected": {
+    "key_count": 2,
+    "level": 4,
+    "ks": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+    "as": "i_3yPE3WaqZyUmwx1aT0PmFWpeseLxq0V59iQ7uIQec",
+    "ps": "oRs8sjYZLZY5O7Te3N6HnmbdSQSLTYo413pd4aJDPXQ",
+    "ds": "_bP7uOgFmXhpnATccZAO4lWxShGgjwImHdBWOVYDjxM",
+    "pr": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+  }
+}

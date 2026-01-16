@@ -46,3 +46,31 @@ pay.typ       = "cyphr.me/key/add"
 
 [test.expected]
 key_count = 3
+
+# ============================================================================
+# Combined transaction + action tests
+# ============================================================================
+
+# Test: Transaction followed by action (SPEC §7.4, §7.5)
+# Verifies combined state after key/add + action signed by newly added key
+[[test]]
+name      = "action_after_key_add"
+principal = ["alice"]
+
+[test.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "alice"
+target = "bob"
+
+[test.action]
+msg    = "Action signed by newly added key"
+now    = 1700000002
+signer = "bob"
+typ    = "cyphr.me/action"
+
+[test.expected]
+key_count = 2
+level     = 4
