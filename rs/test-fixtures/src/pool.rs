@@ -145,7 +145,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("test_vectors/keys/pool.toml");
+            .join("tests/keys/pool.toml");
 
         let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
         assert_eq!(pool.pool.version, "0.1.0");
@@ -161,7 +161,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("test_vectors/keys/pool.toml");
+            .join("tests/keys/pool.toml");
 
         let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
 
@@ -180,7 +180,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("test_vectors/keys/pool.toml");
+            .join("tests/keys/pool.toml");
 
         let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
         let golden = pool.get("golden").expect("golden key not found");

@@ -1,0 +1,71 @@
+# Cyphrpass Test Key Pool
+# Source of truth for all cryptographic material in test fixtures.
+#
+# INVARIANT: `tmb = H(canon({"alg": alg, "pub": pub}))` - computed, not stored.
+# Per SPEC.md §1.3, `prv` must derive to `pub` for the given algorithm.
+
+[pool]
+version = "0.1.0"
+
+[[pool.key]]
+alg  = "ES256"
+name = "golden"
+prv  = "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA"
+pub  = "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+tag  = "Zami's Majuscule Key (SPEC §15.1)"
+
+[[pool.key]]
+alg  = "ES256"
+name = "key_a"
+prv  = "diAOt9EWEjvRMhi8b16ZNeHQJtsCO2z3Sjv6gwslIpY"
+pub  = "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ"
+tag  = "User Key A (ES256)"
+
+[[pool.key]]
+alg  = "ES256"
+name = "key_b"
+pub  = "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q"
+tag  = "User Key B (ES256)"
+# No prv - public-only key
+
+[[pool.key]]
+alg  = "ES256"
+name = "alice"
+prv  = "x0le6Ay7u2wrW-XI9Ster9ImOMKT92w4eHxAlM13LV0"
+pub  = "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA"
+tag  = "Alice (ES256)"
+
+[[pool.key]]
+alg  = "ES256"
+name = "bob"
+prv  = "MguhjcLPmb1uXQ6oGzEmdnJpTFDUeO7w1TKuHpoPm0s"
+pub  = "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A"
+tag  = "Bob (ES256)"
+
+[[pool.key]]
+alg  = "ES256"
+name = "carol"
+prv  = "qV77EYqomxLSIyjyN8zC7HiPDh1Hf5BwBAknRwiWNOg"
+pub  = "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw"
+tag  = "Carol (ES256)"
+
+[[pool.key]]
+alg  = "ES384"
+name = "diana_es384"
+prv  = "NDErd0IJTsC2YNGDIbjwf9yekdUXO-1rGS1VxHVoPvr1YIr_fKNtXybcaRkZCZ0E"
+pub  = "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ"
+tag  = "Diana (ES384)"
+
+[[pool.key]]
+alg  = "Ed25519"
+name = "eve_ed25519"
+prv  = "51Qwg6xeUalI_8SjPtzelQfoGBIYoYKlUAIShGxlpV4"
+pub  = "-jVKbefuCN5il8jy9HsRtp9yX4IViGncnetbRK36ff4"
+tag  = "Eve (Ed25519)"
+
+[[pool.key]]
+alg  = "RS256"
+name = "unsupported_key"
+pub  = "dW5zdXBwb3J0ZWRfa2V5X3B1YmxpY19rZXlfZGF0YV9mb3JfdGVzdGluZw"
+tag  = "Unsupported Algorithm (RS256 - for error testing)"
+# No prv - error testing key

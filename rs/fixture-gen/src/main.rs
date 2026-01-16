@@ -17,7 +17,7 @@ struct Cli {
     command: Commands,
 
     /// Path to key pool file
-    #[arg(long, default_value = "test_vectors/keys/pool.toml", global = true)]
+    #[arg(long, default_value = "tests/keys/pool.toml", global = true)]
     pool: PathBuf,
 }
 
