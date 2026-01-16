@@ -75,20 +75,21 @@ pub enum TransactionKind {
 
 /// A verified transaction.
 ///
-/// This struct is created after successfully parsing and verifying a signed
-/// Coz message as a Cyphrpass transaction.
+/// This struct can only be created through `verify_transaction()` which
+/// ensures the signature is valid. Fields are crate-internal to prevent
+/// external code from constructing unverified transactions.
 #[derive(Debug, Clone)]
 pub struct Transaction {
     /// Transaction kind.
-    pub kind: TransactionKind,
+    pub(crate) kind: TransactionKind,
     /// Signer's thumbprint.
-    pub signer: Thumbprint,
+    pub(crate) signer: Thumbprint,
     /// Transaction timestamp.
-    pub now: i64,
+    pub(crate) now: i64,
     /// Coz digest (unique identifier).
-    pub czd: Czd,
+    pub(crate) czd: Czd,
     /// Raw Coz message for storage/export.
-    pub raw: coz::CozJson,
+    pub(crate) raw: coz::CozJson,
 }
 
 impl Transaction {
@@ -96,6 +97,8 @@ impl Transaction {
     ///
     /// The `pay` must already be parsed and verified. The `raw` CozJson
     /// is stored for export/re-verification.
+    ///
+    /// Note: Prefer using `verify_transaction` which ensures consistency.
     ///
     /// # Errors
     ///
@@ -114,6 +117,31 @@ impl Transaction {
             czd,
             raw,
         })
+    }
+
+    /// Get the transaction kind.
+    pub fn kind(&self) -> &TransactionKind {
+        &self.kind
+    }
+
+    /// Get the signer's thumbprint.
+    pub fn signer(&self) -> &Thumbprint {
+        &self.signer
+    }
+
+    /// Get the transaction timestamp.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
+    /// Get the Coz digest.
+    pub fn czd(&self) -> &Czd {
+        &self.czd
+    }
+
+    /// Get the raw Coz message for storage/export.
+    pub fn raw(&self) -> &coz::CozJson {
+        &self.raw
     }
 
     /// Parse the transaction kind from typ and payload fields.

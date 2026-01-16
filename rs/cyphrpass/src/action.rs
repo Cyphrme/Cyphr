@@ -10,28 +10,49 @@ use coz::{Czd, Pay, Thumbprint};
 /// Actions are arbitrary signed Coz messages that represent user actions.
 /// Unlike transactions which mutate Auth State, actions are recorded in
 /// Data State and can represent any application-specific operation.
+///
+/// This struct can only be created through verification. Fields are
+/// crate-internal to prevent external direct construction.
 #[derive(Debug, Clone)]
 pub struct Action {
     /// Action type from `typ` field (e.g., "cyphr.me/comment/create").
-    pub typ: String,
+    pub(crate) typ: String,
     /// Signer's thumbprint.
-    pub signer: Thumbprint,
+    pub(crate) signer: Thumbprint,
     /// Action timestamp.
-    pub now: i64,
+    pub(crate) now: i64,
     /// Coz digest (unique identifier).
-    pub czd: Czd,
+    pub(crate) czd: Czd,
     /// Original payload (for application-specific fields).
-    pub pay: Pay,
+    pub(crate) pay: Pay,
     /// Raw Coz message for storage/export.
-    pub raw: coz::CozJson,
+    pub(crate) raw: coz::CozJson,
 }
 
 impl Action {
-    /// Create an action from an already-verified Pay message.
+    /// Create an action from already-verified, extracted values (internal).
     ///
-    /// The `pay` must already be parsed and verified. The `raw` CozJson
-    /// is stored for export/re-verification.
-    pub fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
+    /// Used when we extract fields from raw JSON rather than parsing into coz::Pay.
+    /// The raw CozJson preserves the original message for storage/export.
+    pub(crate) fn new(
+        typ: String,
+        signer: Thumbprint,
+        now: i64,
+        czd: Czd,
+        raw: coz::CozJson,
+    ) -> Self {
+        Self {
+            typ,
+            signer,
+            now,
+            czd,
+            pay: Pay::default(), // Placeholder - use raw for actual data
+            raw,
+        }
+    }
+
+    /// Create an action from an already-verified Pay message (internal).
+    pub(crate) fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Option<Self> {
         let signer = pay.tmb.clone()?;
         let now = pay.now?;
         let typ = pay.typ.clone()?;
@@ -44,6 +65,31 @@ impl Action {
             pay: pay.clone(),
             raw,
         })
+    }
+
+    /// Get the action type.
+    pub fn typ(&self) -> &str {
+        &self.typ
+    }
+
+    /// Get the signer's thumbprint.
+    pub fn signer(&self) -> &Thumbprint {
+        &self.signer
+    }
+
+    /// Get the action timestamp.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
+    /// Get the Coz digest.
+    pub fn czd(&self) -> &Czd {
+        &self.czd
+    }
+
+    /// Get the raw Coz message for storage/export.
+    pub fn raw(&self) -> &coz::CozJson {
+        &self.raw
     }
 
     /// Get a custom field from the action payload.

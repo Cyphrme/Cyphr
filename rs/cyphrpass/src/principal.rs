@@ -291,15 +291,15 @@ impl Principal {
 
     /// Record an action to the Data State (Level 4+).
     ///
-    /// Returns the new Principal State after recording the action.
-    /// The action signature must be verified before calling this.
+    /// This is internal-only. External code must use `verify_and_record_action`
+    /// which enforces signature verification.
     ///
     /// # Errors
     ///
     /// - `TimestampPast`: Action timestamp is older than latest seen
     /// - `TimestampFuture`: Action timestamp is too far in the future
     /// - `UnknownKey`: Signer's key not in current KS
-    pub fn record_action(&mut self, action: Action) -> Result<&PrincipalState> {
+    pub(crate) fn record_action(&mut self, action: Action) -> Result<&PrincipalState> {
         // Validate timestamp is not in the past (SPEC §14.1)
         if action.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
@@ -343,6 +343,81 @@ impl Principal {
         Ok(&self.ps)
     }
 
+    /// Verify signature and record an action in one step.
+    ///
+    /// This is the primary method for processing incoming actions.
+    /// It verifies the signature, parses the action, and records it.
+    ///
+    /// # Arguments
+    ///
+    /// * `pay_json` - Raw JSON bytes of the Pay object
+    /// * `sig` - Signature bytes
+    /// * `czd` - Coz digest for this action
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: Signature doesn't verify
+    /// - `UnknownKey`: Signer not in active key set
+    /// - `KeyRevoked`: Signer key has been revoked
+    /// - `TimestampPast`: Action timestamp is older than latest seen
+    /// - `TimestampFuture`: Action timestamp is too far in the future
+    pub fn verify_and_record_action(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+    ) -> Result<&PrincipalState> {
+        use crate::action::Action;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        // Parse as Value and extract only what we need (avoids requiring all coz::Pay fields)
+        let pay_value: serde_json::Value =
+            serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
+
+        // Extract tmb for signer lookup
+        let tmb_str = pay_value["tmb"].as_str().ok_or(Error::MalformedPayload)?;
+        let tmb_bytes =
+            Base64UrlUnpadded::decode_vec(tmb_str).map_err(|_| Error::MalformedPayload)?;
+        let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+        // Extract typ and now for Action construction
+        let typ = pay_value["typ"]
+            .as_str()
+            .ok_or(Error::MalformedPayload)?
+            .to_string();
+        let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
+
+        // Signer must be an ACTIVE key
+        if !self.is_key_active(&signer_tmb) {
+            if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {
+                return Err(Error::KeyRevoked);
+            }
+            return Err(Error::UnknownKey);
+        }
+
+        // Look up signer key
+        let signer_key = self.get_key(&signer_tmb).ok_or(Error::UnknownKey)?;
+
+        // Verify signature
+        let valid =
+            coz::verify_json(pay_json, sig, &signer_key.alg, &signer_key.pub_key).unwrap_or(false);
+        if !valid {
+            return Err(Error::InvalidSignature);
+        }
+
+        // Construct CozJson for storage
+        let raw = coz::CozJson {
+            pay: pay_value,
+            sig: sig.to_vec(),
+        };
+
+        // Construct Action directly from extracted values
+        let action = Action::new(typ, signer_tmb, now, czd, raw);
+
+        // Record the action
+        self.record_action(action)
+    }
+
     /// Get the current Data State (None if no actions).
     pub fn data_state(&self) -> Option<&DataState> {
         self.ds.as_ref()
@@ -380,11 +455,8 @@ impl Principal {
 
     /// Apply a transaction without prior signature verification.
     ///
-    /// # Safety
-    ///
-    /// This method bypasses signature verification and should ONLY be used
-    /// for testing or when signatures are validated externally.
-    /// Production code should use [`apply_verified`] instead.
+    /// This is internal-only. External code must use `verify_and_apply_transaction`
+    /// or `apply_verified` which enforce signature verification.
     ///
     /// # Errors
     ///
@@ -394,7 +466,7 @@ impl Principal {
     /// - `UnknownKey`: Signer key not in current KS
     /// - `KeyRevoked`: Signer key has been revoked
     /// - `NoActiveKeys`: Would leave principal with no active keys
-    pub fn apply_transaction(
+    pub(crate) fn apply_transaction(
         &mut self,
         tx: Transaction,
         new_key: Option<Key>,
