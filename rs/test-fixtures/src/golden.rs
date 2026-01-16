@@ -36,22 +36,6 @@ pub struct Golden {
     /// Setup modifiers (e.g., pre-revoke keys).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<GoldenSetup>,
-
-    // === Legacy fields (kept for migration, will be removed) ===
-    /// Coz message(s) for transactions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coz: Option<GoldenCoz>,
-    /// Coz message sequence (for multi-step transaction tests).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coz_sequence: Option<Vec<GoldenCoz>>,
-    /// Action message (Level 4, single action).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<GoldenCoz>,
-    /// Action message sequence (Level 4, multi-action).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action_sequence: Option<Vec<GoldenCoz>>,
-
-    // === New unified format fields ===
     /// Full genesis key material (alg, pub, tmb) for storage import.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
@@ -61,7 +45,6 @@ pub struct Golden {
     /// Coz digests (czd) parallel to entries, for protocol verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digests: Option<Vec<String>>,
-
     /// Expected state after execution.
     pub expected: GoldenExpected,
 }
@@ -190,10 +173,6 @@ impl<'a> Generator<'a> {
                         name: test.name.clone(),
                         principal: test.principal.clone(),
                         setup: None,
-                        coz: None,
-                        coz_sequence: None,
-                        action: None,
-                        action_sequence: None,
                         genesis_keys: None,
                         entries: None,
                         digests: None,
@@ -417,10 +396,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: Some(coz),
-            coz_sequence: None,
-            action: None,
-            action_sequence: None,
             genesis_keys,
             entries,
             digests,
@@ -491,10 +466,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: None,
-            coz_sequence: Some(coz_sequence),
-            action: None,
-            action_sequence: None,
             genesis_keys,
             entries: Some(entries),
             digests: Some(digests),
@@ -517,10 +488,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: None,
-            coz_sequence: None,
-            action: None,
-            action_sequence: None,
             genesis_keys,
             entries: Some(vec![]),
             digests: Some(vec![]),
@@ -604,10 +571,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: Some(tx_coz),
-            coz_sequence: None,
-            action: Some(action_coz),
-            action_sequence: None,
             genesis_keys,
             entries: Some(entries),
             digests: Some(digests),
@@ -653,10 +616,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: None,
-            coz_sequence: None,
-            action: Some(action_coz),
-            action_sequence: None,
             genesis_keys,
             entries,
             digests,
@@ -722,10 +681,6 @@ impl<'a> Generator<'a> {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
-            coz: None,
-            coz_sequence: None,
-            action: None,
-            action_sequence: Some(action_sequence),
             genesis_keys,
             entries: Some(entries),
             digests: Some(digests),
@@ -1135,27 +1090,28 @@ level = 3
         let golden = &goldens[0];
         assert_eq!(golden.name, "key_add_golden_to_alice");
 
-        // Verify we have a coz message
-        let coz = golden.coz.as_ref().expect("missing coz");
+        // Verify we have entries and digests
+        let entries = golden.entries.as_ref().expect("missing entries");
+        let digests = golden.digests.as_ref().expect("missing digests");
+        assert_eq!(entries.len(), 1, "single-step should have 1 entry");
+        assert_eq!(digests.len(), 1, "single-step should have 1 digest");
 
-        // Verify pay has correct fields including pre
-        let pay = &coz.pay;
+        // Verify entry has correct structure
+        let entry = &entries[0];
+        let pay = entry.get("pay").expect("entry missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/key/add");
         assert_eq!(pay["now"], 1700000000);
         assert!(pay.get("pre").is_some(), "pre should be populated");
 
-        // Verify sig and czd are populated
-        assert!(!coz.sig.is_empty(), "sig should be populated");
-        assert!(!coz.czd.is_empty(), "czd should be populated");
+        // Verify sig and key are populated
+        assert!(entry.get("sig").is_some(), "entry should have sig");
+        let key = entry.get("key").expect("key/add entry should include key");
+        assert_eq!(key["alg"], "ES256");
+        assert!(key.get("tmb").is_some(), "key should have tmb");
 
-        // Verify embedded key for key/add
-        let key = coz
-            .key
-            .as_ref()
-            .expect("key/add should include embedded key");
-        assert_eq!(key.alg, "ES256");
-        assert!(!key.tmb.is_empty());
+        // Verify czd digest is populated
+        assert!(!digests[0].is_empty(), "czd should be populated");
 
         // Verify expected state was computed
         assert_eq!(golden.expected.key_count, Some(2));

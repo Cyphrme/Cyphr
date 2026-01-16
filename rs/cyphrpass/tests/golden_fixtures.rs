@@ -6,10 +6,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use coz::Thumbprint;
 use cyphrpass::Principal;
 use cyphrpass::key::Key;
-use test_fixtures::{Golden, GoldenCoz, GoldenExpected, Pool, PoolKey};
+use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
 
 // ============================================================================
 // Test helpers
@@ -54,57 +53,6 @@ fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
 fn cad_to_b64(cad: &coz::Cad) -> String {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::encode_string(cad.as_bytes())
-}
-
-fn golden_key_to_domain(gk: &test_fixtures::GoldenKey) -> Key {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pub_bytes = Base64UrlUnpadded::decode_vec(&gk.pub_key).expect("invalid pub base64");
-    let tmb_bytes = Base64UrlUnpadded::decode_vec(&gk.tmb).expect("invalid tmb base64");
-
-    Key {
-        alg: gk.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
-}
-
-fn try_apply_coz(
-    principal: &mut Principal,
-    coz: &GoldenCoz,
-) -> Result<(), cyphrpass::error::Error> {
-    use coz::Czd;
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pay_json = serde_json::to_vec(&coz.pay).expect("failed to serialize pay");
-    let sig = Base64UrlUnpadded::decode_vec(&coz.sig).expect("invalid sig base64");
-    let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd base64");
-    let czd = Czd::from_bytes(czd_bytes);
-
-    let new_key = coz.key.as_ref().map(golden_key_to_domain);
-
-    principal.verify_and_apply_transaction(&pay_json, &sig, czd, new_key)?;
-    Ok(())
-}
-
-fn try_apply_action(
-    principal: &mut Principal,
-    action: &GoldenCoz,
-) -> Result<(), cyphrpass::error::Error> {
-    use coz::Czd;
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pay_json = serde_json::to_vec(&action.pay).expect("failed to serialize pay");
-    let sig = Base64UrlUnpadded::decode_vec(&action.sig).expect("invalid sig base64");
-    let czd_bytes = Base64UrlUnpadded::decode_vec(&action.czd).expect("invalid czd base64");
-    let czd = Czd::from_bytes(czd_bytes);
-
-    principal.verify_and_record_action(&pay_json, &sig, czd)?;
-    Ok(())
 }
 
 /// Apply a storage-format entry {pay, sig, key?} to Principal.
@@ -384,140 +332,15 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
 
         // Verify expected state
         verify_expected(&principal, &fixture.expected, &fixture.name);
-        println!("  ✓ {} [entries]", fixture.name);
+        println!("  ✓ {}", fixture.name);
         return;
     }
 
-    // ========================================================================
-    // Legacy path: Use coz/coz_sequence/action/action_sequence
-    // ========================================================================
-
-    // Apply coz message(s) for transactions
-    if let Some(ref coz) = fixture.coz {
-        match try_apply_coz(&mut principal, coz) {
-            Ok(()) => {
-                if let Some(err) = expected_error {
-                    panic!(
-                        "{}: expected error '{}' but transaction succeeded",
-                        fixture.name, err
-                    );
-                }
-            },
-            Err(e) => {
-                if let Some(expected) = expected_error {
-                    assert_eq!(
-                        error_name(&e),
-                        expected,
-                        "{}: wrong error type",
-                        fixture.name
-                    );
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                } else {
-                    panic!("{}: unexpected error: {:?}", fixture.name, e);
-                }
-            },
-        }
-    } else if let Some(ref coz_seq) = fixture.coz_sequence {
-        let count = coz_seq.len();
-        for (i, coz) in coz_seq.iter().enumerate() {
-            let is_last = i == count - 1;
-
-            match try_apply_coz(&mut principal, coz) {
-                Ok(()) => {
-                    if is_last {
-                        if let Some(err) = expected_error {
-                            panic!(
-                                "{}: expected error '{}' but last step succeeded",
-                                fixture.name, err
-                            );
-                        }
-                    }
-                },
-                Err(e) => {
-                    if is_last {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong error type on last step",
-                                fixture.name
-                            );
-                            println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                            return;
-                        }
-                    }
-                    panic!("{}: step {} failed: {:?}", fixture.name, i + 1, e);
-                },
-            }
-        }
-    }
-
-    // Apply action(s)
-    if let Some(ref action) = fixture.action {
-        match try_apply_action(&mut principal, action) {
-            Ok(()) => {
-                if let Some(err) = expected_error {
-                    panic!(
-                        "{}: expected error '{}' but action succeeded",
-                        fixture.name, err
-                    );
-                }
-            },
-            Err(e) => {
-                if let Some(expected) = expected_error {
-                    assert_eq!(
-                        error_name(&e),
-                        expected,
-                        "{}: wrong error type",
-                        fixture.name
-                    );
-                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                    return;
-                } else {
-                    panic!("{}: unexpected error: {:?}", fixture.name, e);
-                }
-            },
-        }
-    } else if let Some(ref action_seq) = fixture.action_sequence {
-        let count = action_seq.len();
-        for (i, action) in action_seq.iter().enumerate() {
-            let is_last = i == count - 1;
-
-            match try_apply_action(&mut principal, action) {
-                Ok(()) => {
-                    if is_last {
-                        if let Some(err) = expected_error {
-                            panic!(
-                                "{}: expected error '{}' but last action succeeded",
-                                fixture.name, err
-                            );
-                        }
-                    }
-                },
-                Err(e) => {
-                    if is_last {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong error type on last action",
-                                fixture.name
-                            );
-                            println!("  ✓ {} (expected error: {})", fixture.name, expected);
-                            return;
-                        }
-                    }
-                    panic!("{}: action {} failed: {:?}", fixture.name, i + 1, e);
-                },
-            }
-        }
-    }
-
-    // Verify expected state (only for non-error tests)
-    verify_expected(&principal, &fixture.expected, &fixture.name);
-
-    println!("  ✓ {}", fixture.name);
+    // No entries - check for genesis-only test
+    panic!(
+        "{}: fixture has no entries array - regenerate with fixture-gen",
+        fixture.name
+    );
 }
 
 fn run_golden_dir(subdir: &str) {

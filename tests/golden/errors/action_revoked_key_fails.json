@@ -5,17 +5,6 @@
     "revoke_key": "key_a",
     "revoke_at": 1699999999
   },
-  "action": {
-    "pay": {
-      "alg": "ES256",
-      "msg": "Action from revoked key",
-      "now": 1700000001,
-      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-      "typ": "cyphr.me/action"
-    },
-    "sig": "TsBrFAi4S2PahYP04F20Hi3jKdyArEff2FYwUKhQmwcwhQ3Wx5L2bTIkWMRS7NlLi8oMdRSgpBapxcT5Umjj5w",
-    "czd": "WDip2tuKldlJjQKmiV4NlPITsNxxlYHDBhcZQCy0U1k"
-  },
   "genesis_keys": [
     {
       "alg": "ES256",

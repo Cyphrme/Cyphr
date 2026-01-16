@@ -1,23 +1,6 @@
 {
   "name": "replace_one_of_two_keys",
   "principal": ["alice", "bob"],
-  "coz": {
-    "pay": {
-      "alg": "ES256",
-      "id": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA",
-      "now": 1700000000,
-      "pre": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
-      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
-      "typ": "cyphr.me/key/replace"
-    },
-    "sig": "38dY4NPLCInyDFW7v747bYo5S_K9moOIWQNXEsHpRnBxLnYb0xazgX9Xi-ARVGAaJfTm4QeFgUXyM2rx4SK-_g",
-    "czd": "ZH82hZwT9Ie07BOI_RMMKpvqr4Lj49EWPNVaCwjD6pU",
-    "key": {
-      "alg": "ES256",
-      "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-      "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-    }
-  },
   "genesis_keys": [
     {
       "alg": "ES256",

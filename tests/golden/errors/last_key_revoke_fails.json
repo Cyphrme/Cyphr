@@ -1,18 +1,6 @@
 {
   "name": "last_key_revoke_fails",
   "principal": ["golden"],
-  "coz": {
-    "pay": {
-      "alg": "ES256",
-      "now": 1700000000,
-      "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "rvk": 1700000000,
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "typ": "cyphr.me/key/revoke"
-    },
-    "sig": "M31vwpsFsgJFE6Xk3eJnXAzSnr29fgzbNvpliwHaTsVUN2GKr7i7iE_gMg-9tUBdrpW0dzZ25MNbvCmCYvQzaQ",
-    "czd": "oXkj7yGgQcU-y9MNzPoPGqPns1IQPjjiPFTa1yVIcj0"
-  },
   "genesis_keys": [
     {
       "alg": "ES256",

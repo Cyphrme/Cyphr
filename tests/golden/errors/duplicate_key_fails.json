@@ -1,23 +1,6 @@
 {
   "name": "duplicate_key_fails",
   "principal": ["golden"],
-  "coz": {
-    "pay": {
-      "alg": "ES256",
-      "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "now": 1700000000,
-      "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "typ": "cyphr.me/key/add"
-    },
-    "sig": "zqK9eKT9GetRFR4CkZgYtU83jCwPVdYvu2fDUDNvSX1y3-NE_2BD1LggMA4lwi91FVp9TSfmeIZv4VubwVBxJQ",
-    "czd": "G9vxyMXQsULfUiWB64y0A7aPxyrmXkITX07OzKJMNw8",
-    "key": {
-      "alg": "ES256",
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-    }
-  },
   "genesis_keys": [
     {
       "alg": "ES256",

@@ -1,59 +1,6 @@
 {
   "name": "transaction_sequence_replay",
   "principal": ["golden"],
-  "coz_sequence": [
-    {
-      "pay": {
-        "alg": "ES256",
-        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "now": 1700000001,
-        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/add"
-      },
-      "sig": "n32QGzQhj_fOFIM5WNem8CvV0k-W8_JkQOOuo6VVmIM_gBwrx8haSCrrciPBirrtdu9HyvcTKgyR5ew4Tov5EQ",
-      "czd": "qwVbWpUQFTD097-LVq03R_0VVuwyOorm2SMH4D_Regs",
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      }
-    },
-    {
-      "pay": {
-        "alg": "ES256",
-        "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
-        "now": 1700000002,
-        "pre": "JfXZMMTKgJEQSoDZ3nxEvikc9--YqGpnt-jpZGI2wE0",
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/add"
-      },
-      "sig": "E0asHLD7heSj_rwOHB3mCm4wl6CDwqN4sIl-aWK0O5p5NcSaC6ammJG3IrxQO_-fpO6ZGhY1uul1QZs1eVnaLA",
-      "czd": "CoX2G0UO1Dd4AxnMINlSwvZAF8znV4qutcX4NOXAEuw",
-      "key": {
-        "alg": "ES256",
-        "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
-        "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
-      }
-    },
-    {
-      "pay": {
-        "alg": "ES256",
-        "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
-        "now": 1700000003,
-        "pre": "fJKXWeVG---_Hb7KhnPc6uPG4_ExMB1R5K61WUTryWU",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "typ": "cyphr.me/key/delete"
-      },
-      "sig": "Z3AMlgaEgB-QYZoVAaQ4dISpBd7E6tenB_WydzFMfXEZeafif1tVoIsgd0v2XBjQu9NIDK-mjm0pjbmTjSLSOw",
-      "czd": "7gfnqlNstDaxLaGlH_uzqmOlL_nWiY6tzMavY9BryzA",
-      "key": {
-        "alg": "ES256",
-        "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
-        "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
-      }
-    }
-  ],
   "genesis_keys": [
     {
       "alg": "ES256",
