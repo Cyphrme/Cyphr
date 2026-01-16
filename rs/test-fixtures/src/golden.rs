@@ -22,7 +22,8 @@ use serde_json::Value;
 
 use crate::Error;
 use crate::intent::{
-    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, PayIntent, TestIntent,
+    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, OverrideIntent, PayIntent, SetupIntent,
+    TestIntent,
 };
 use crate::pool::{Pool, PoolKey};
 
@@ -33,6 +34,9 @@ pub struct Golden {
     pub name: String,
     /// Genesis key set (key names from pool).
     pub principal: Vec<String>,
+    /// Setup modifiers (e.g., pre-revoke keys).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<GoldenSetup>,
     /// Coz message(s) for transactions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz: Option<GoldenCoz>,
@@ -47,6 +51,17 @@ pub struct Golden {
     pub action_sequence: Option<Vec<GoldenCoz>>,
     /// Expected state after execution.
     pub expected: GoldenExpected,
+}
+
+/// Setup modifiers for golden test.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoldenSetup {
+    /// Key name to pre-revoke before test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoke_key: Option<String>,
+    /// Timestamp for the revocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoke_at: Option<i64>,
 }
 
 /// A Coz message with computed cryptographic values.
@@ -145,6 +160,11 @@ impl<'a> Generator<'a> {
         // Create Principal from genesis keys
         let mut principal = self.create_principal(&test.principal, &test.name)?;
 
+        // Apply setup modifiers
+        if let Some(ref setup) = test.setup {
+            self.apply_setup(&mut principal, setup, &test.name)?;
+        }
+
         // Dispatch based on test type
         if test.is_genesis_only() {
             self.generate_genesis_only(test, &principal)
@@ -159,6 +179,32 @@ impl<'a> Generator<'a> {
         } else {
             self.generate_single_step(test, &mut principal)
         }
+    }
+
+    /// Apply setup modifiers to a principal (e.g., pre-revoke keys).
+    fn apply_setup(
+        &self,
+        principal: &mut cyphrpass::Principal,
+        setup: &SetupIntent,
+        _test_name: &str,
+    ) -> Result<(), Error> {
+        if let Some(ref key_name) = setup.revoke_key {
+            let rvk_time = setup.revoke_at.unwrap_or(0);
+            let pool_key = self.resolve_key(key_name)?;
+            let tmb = pool_key.compute_tmb()?;
+
+            // Pre-revoke the key (moves from active to revoked set)
+            principal.pre_revoke_key(&tmb, rvk_time);
+        }
+        Ok(())
+    }
+
+    /// Convert SetupIntent to GoldenSetup for output.
+    fn setup_to_golden(setup: &Option<SetupIntent>) -> Option<GoldenSetup> {
+        setup.as_ref().map(|s| GoldenSetup {
+            revoke_key: s.revoke_key.clone(),
+            revoke_at: s.revoke_at,
+        })
     }
 
     /// Create a Principal from genesis key names.
@@ -247,23 +293,33 @@ impl<'a> Generator<'a> {
         let (coz, sig_bytes, czd) =
             self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(&pre))?;
 
-        // Apply transaction to principal to get final state
-        self.apply_transaction_to_principal(
-            principal,
-            pay_intent,
-            crypto_intent,
-            &coz,
-            &sig_bytes,
-            czd,
-            &test.name,
-        )?;
+        // Check if this is an error test
+        let is_error_test = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .is_some();
 
-        // Build expected with computed state digests
+        if !is_error_test {
+            // Apply transaction to principal to get final state
+            self.apply_transaction_to_principal(
+                principal,
+                pay_intent,
+                crypto_intent,
+                &coz,
+                &sig_bytes,
+                czd,
+                &test.name,
+            )?;
+        }
+
+        // Build expected with computed state digests (or error)
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
             coz: Some(coz),
             coz_sequence: None,
             action: None,
@@ -314,6 +370,7 @@ impl<'a> Generator<'a> {
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
             coz: None,
             coz_sequence: Some(coz_sequence),
             action: None,
@@ -333,6 +390,7 @@ impl<'a> Generator<'a> {
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
             coz: None,
             coz_sequence: None,
             action: None,
@@ -356,14 +414,24 @@ impl<'a> Generator<'a> {
 
         let (action_coz, sig_bytes, czd) = self.build_action_coz(action_intent, &test.name)?;
 
-        // Apply action to principal
-        self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)?;
+        // Check if this is an error test
+        let is_error_test = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .is_some();
+
+        if !is_error_test {
+            // Apply action to principal
+            self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)?;
+        }
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
             coz: None,
             coz_sequence: None,
             action: Some(action_coz),
@@ -402,6 +470,7 @@ impl<'a> Generator<'a> {
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
+            setup: Self::setup_to_golden(&test.setup),
             coz: None,
             coz_sequence: None,
             action: None,

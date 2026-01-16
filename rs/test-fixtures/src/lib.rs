@@ -27,6 +27,6 @@ pub mod intent;
 pub mod pool;
 
 pub use error::Error;
-pub use golden::{Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, generate};
+pub use golden::{Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, GoldenSetup, generate};
 pub use intent::Intent;
 pub use pool::{Pool, PoolKey};

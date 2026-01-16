@@ -23,6 +23,9 @@ pub struct TestIntent {
     pub name: String,
     /// Genesis key set (key names from pool).
     pub principal: Vec<String>,
+    /// Setup modifiers (e.g., pre-revoke keys).
+    #[serde(default)]
+    pub setup: Option<SetupIntent>,
     /// Payload intent (for single-step tests).
     #[serde(default)]
     pub pay: Option<PayIntent>,
@@ -38,9 +41,34 @@ pub struct TestIntent {
     /// Action sequence (for multi-action tests).
     #[serde(default)]
     pub action_step: Vec<ActionIntent>,
+    /// Override fields (for error tests).
+    #[serde(default)]
+    pub override_: Option<OverrideIntent>,
     /// Expected assertions.
     #[serde(default)]
     pub expected: Option<ExpectedAssertions>,
+}
+
+/// Setup modifiers for test.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SetupIntent {
+    /// Key name to pre-revoke before test.
+    #[serde(default)]
+    pub revoke_key: Option<String>,
+    /// Timestamp for the revocation.
+    #[serde(default)]
+    pub revoke_at: Option<i64>,
+}
+
+/// Override fields for error tests.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OverrideIntent {
+    /// Override `pre` field value (for InvalidPrior tests).
+    #[serde(default)]
+    pub pre: Option<String>,
+    /// Override `tmb` field value (for UnknownKey tests).
+    #[serde(default)]
+    pub tmb: Option<String>,
 }
 
 /// Payload fields for a test step.

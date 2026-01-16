@@ -73,11 +73,13 @@ fn golden_key_to_domain(gk: &test_fixtures::GoldenKey) -> Key {
     }
 }
 
-fn apply_coz(principal: &mut Principal, coz: &GoldenCoz, test_name: &str) {
+fn try_apply_coz(
+    principal: &mut Principal,
+    coz: &GoldenCoz,
+) -> Result<(), cyphrpass::error::Error> {
     use coz::Czd;
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    // Get raw pay JSON bytes
     let pay_json = serde_json::to_vec(&coz.pay).expect("failed to serialize pay");
     let sig = Base64UrlUnpadded::decode_vec(&coz.sig).expect("invalid sig base64");
     let czd_bytes = Base64UrlUnpadded::decode_vec(&coz.czd).expect("invalid czd base64");
@@ -85,12 +87,14 @@ fn apply_coz(principal: &mut Principal, coz: &GoldenCoz, test_name: &str) {
 
     let new_key = coz.key.as_ref().map(golden_key_to_domain);
 
-    principal
-        .verify_and_apply_transaction(&pay_json, &sig, czd, new_key)
-        .unwrap_or_else(|e| panic!("{}: transaction failed: {:?}", test_name, e));
+    principal.verify_and_apply_transaction(&pay_json, &sig, czd, new_key)?;
+    Ok(())
 }
 
-fn apply_action(principal: &mut Principal, action: &GoldenCoz, test_name: &str) {
+fn try_apply_action(
+    principal: &mut Principal,
+    action: &GoldenCoz,
+) -> Result<(), cyphrpass::error::Error> {
     use coz::Czd;
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -99,9 +103,25 @@ fn apply_action(principal: &mut Principal, action: &GoldenCoz, test_name: &str) 
     let czd_bytes = Base64UrlUnpadded::decode_vec(&action.czd).expect("invalid czd base64");
     let czd = Czd::from_bytes(czd_bytes);
 
-    principal
-        .verify_and_record_action(&pay_json, &sig, czd)
-        .unwrap_or_else(|e| panic!("{}: action failed: {:?}", test_name, e));
+    principal.verify_and_record_action(&pay_json, &sig, czd)?;
+    Ok(())
+}
+
+fn error_name(e: &cyphrpass::error::Error) -> &'static str {
+    use cyphrpass::error::Error;
+    match e {
+        Error::InvalidPrior => "InvalidPrior",
+        Error::UnknownKey => "UnknownKey",
+        Error::KeyRevoked => "KeyRevoked",
+        Error::NoActiveKeys => "NoActiveKeys",
+        Error::DuplicateKey => "DuplicateKey",
+        Error::TimestampPast => "TimestampPast",
+        Error::TimestampFuture => "TimestampFuture",
+        Error::InvalidSignature => "InvalidSignature",
+        Error::MalformedPayload => "MalformedPayload",
+        Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+        _ => "UnknownError",
+    }
 }
 
 fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: &str) {
@@ -196,25 +216,96 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         Principal::explicit(genesis_keys).expect("explicit genesis failed")
     };
 
+    // Apply setup modifiers (e.g., pre-revoke keys)
+    if let Some(ref setup) = fixture.setup {
+        if let Some(ref key_name) = setup.revoke_key {
+            let rvk_time = setup.revoke_at.unwrap_or(0);
+            let pool_key = pool
+                .pool
+                .key
+                .iter()
+                .find(|k| k.name == *key_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: setup.revoke_key '{}' not found in pool",
+                        fixture.name, key_name
+                    )
+                });
+            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
+            principal.pre_revoke_key(&tmb, rvk_time);
+        }
+    }
+
+    // Check if this is an error test
+    let expected_error = fixture.expected.error.as_deref();
+
     // Apply coz message(s) for transactions
     if let Some(ref coz) = fixture.coz {
-        apply_coz(&mut principal, coz, &fixture.name);
+        match try_apply_coz(&mut principal, coz) {
+            Ok(()) => {
+                if let Some(err) = expected_error {
+                    panic!(
+                        "{}: expected error '{}' but transaction succeeded",
+                        fixture.name, err
+                    );
+                }
+            },
+            Err(e) => {
+                if let Some(expected) = expected_error {
+                    assert_eq!(
+                        error_name(&e),
+                        expected,
+                        "{}: wrong error type",
+                        fixture.name
+                    );
+                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                    return;
+                } else {
+                    panic!("{}: unexpected error: {:?}", fixture.name, e);
+                }
+            },
+        }
     } else if let Some(ref coz_seq) = fixture.coz_sequence {
         for coz in coz_seq {
-            apply_coz(&mut principal, coz, &fixture.name);
+            try_apply_coz(&mut principal, coz)
+                .unwrap_or_else(|e| panic!("{}: transaction failed: {:?}", fixture.name, e));
         }
     }
 
     // Apply action(s)
     if let Some(ref action) = fixture.action {
-        apply_action(&mut principal, action, &fixture.name);
+        match try_apply_action(&mut principal, action) {
+            Ok(()) => {
+                if let Some(err) = expected_error {
+                    panic!(
+                        "{}: expected error '{}' but action succeeded",
+                        fixture.name, err
+                    );
+                }
+            },
+            Err(e) => {
+                if let Some(expected) = expected_error {
+                    assert_eq!(
+                        error_name(&e),
+                        expected,
+                        "{}: wrong error type",
+                        fixture.name
+                    );
+                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                    return;
+                } else {
+                    panic!("{}: unexpected error: {:?}", fixture.name, e);
+                }
+            },
+        }
     } else if let Some(ref action_seq) = fixture.action_sequence {
         for action in action_seq {
-            apply_action(&mut principal, action, &fixture.name);
+            try_apply_action(&mut principal, action)
+                .unwrap_or_else(|e| panic!("{}: action failed: {:?}", fixture.name, e));
         }
     }
 
-    // Verify expected state
+    // Verify expected state (only for non-error tests)
     verify_expected(&principal, &fixture.expected, &fixture.name);
 
     println!("  ✓ {}", fixture.name);
@@ -272,4 +363,9 @@ fn test_golden_actions() {
 #[test]
 fn test_golden_state_computation() {
     run_golden_dir("state_computation");
+}
+
+#[test]
+fn test_golden_errors() {
+    run_golden_dir("errors");
 }

@@ -245,9 +245,38 @@ impl Principal {
         self.auth.keys.values()
     }
 
+    /// Get mutable access to all active keys.
+    ///
+    /// This is primarily for test setup (e.g., pre-revoking keys).
+    /// Use with caution - direct mutation bypasses state recomputation.
+    pub fn active_keys_mut(&mut self) -> impl Iterator<Item = &mut Key> {
+        self.auth.keys.values_mut()
+    }
+
     /// Get number of active keys.
     pub fn active_key_count(&self) -> usize {
         self.auth.keys.len()
+    }
+
+    /// Pre-revoke a key (for test setup).
+    ///
+    /// This moves the key from active to revoked set WITHOUT recomputing state.
+    /// Used for setting up error condition tests where we need a revoked key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key is not found in the active set.
+    pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) {
+        use crate::key::Revocation;
+
+        let tmb_b64 = tmb.to_b64();
+        let mut key = self
+            .auth
+            .keys
+            .shift_remove(&tmb_b64)
+            .expect("pre_revoke_key: key not found in active set");
+        key.revocation = Some(Revocation { rvk, by: None });
+        self.auth.revoked.insert(tmb_b64, key);
     }
 
     /// Get all transactions.
