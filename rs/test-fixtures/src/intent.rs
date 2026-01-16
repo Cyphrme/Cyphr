@@ -29,9 +29,15 @@ pub struct TestIntent {
     /// Crypto intent (for single-step tests).
     #[serde(default)]
     pub crypto: Option<CryptoIntent>,
-    /// Steps (for multi-step tests).
+    /// Steps (for multi-step transaction tests).
     #[serde(default)]
     pub step: Vec<StepIntent>,
+    /// Single action (for single-action tests).
+    #[serde(default)]
+    pub action: Option<ActionIntent>,
+    /// Action sequence (for multi-action tests).
+    #[serde(default)]
+    pub action_step: Vec<ActionIntent>,
     /// Expected assertions.
     #[serde(default)]
     pub expected: Option<ExpectedAssertions>,
@@ -69,6 +75,20 @@ pub struct StepIntent {
     pub pay: PayIntent,
     /// Crypto intent.
     pub crypto: CryptoIntent,
+}
+
+/// An action intent (Level 4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionIntent {
+    /// Action type (e.g., "cyphr.me/action").
+    pub typ: String,
+    /// Timestamp.
+    pub now: i64,
+    /// Signer key name (from pool).
+    pub signer: String,
+    /// Optional message content.
+    #[serde(default)]
+    pub msg: Option<String>,
 }
 
 /// Expected assertions after test execution.
@@ -120,9 +140,27 @@ impl FromStr for Intent {
 }
 
 impl TestIntent {
-    /// Returns true if this is a multi-step test.
+    /// Returns true if this is a multi-step transaction test.
     pub fn is_multi_step(&self) -> bool {
         !self.step.is_empty()
+    }
+
+    /// Returns true if this test has actions.
+    pub fn has_action(&self) -> bool {
+        self.action.is_some() || !self.action_step.is_empty()
+    }
+
+    /// Returns true if this test has multi-step actions.
+    pub fn is_multi_action(&self) -> bool {
+        !self.action_step.is_empty()
+    }
+
+    /// Returns true if this is a genesis-only test (no transactions or actions).
+    pub fn is_genesis_only(&self) -> bool {
+        self.pay.is_none()
+            && self.step.is_empty()
+            && self.action.is_none()
+            && self.action_step.is_empty()
     }
 }
 

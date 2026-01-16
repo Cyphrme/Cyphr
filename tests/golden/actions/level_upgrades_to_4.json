@@ -1,0 +1,24 @@
+{
+  "name": "level_upgrades_to_4",
+  "principal": ["golden"],
+  "action": {
+    "pay": {
+      "alg": "ES256",
+      "msg": "First action",
+      "now": 1700000001,
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "typ": "cyphr.me/action"
+    },
+    "sig": "31mIE6gcRpeb9Z5ZH0TqC3nt1bAtWqxwZ66hr2Jp2edN-swfw-KeB1UPofB10EeoRNNEyyc9AmHG4ENwhaR5jQ",
+    "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
+  },
+  "expected": {
+    "key_count": 1,
+    "level": 4,
+    "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ps": "QjJKZ9uikg6v7e54S5Bt5g5IYEY-w68mOmi-bEj8d_g",
+    "ds": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ",
+    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+  }
+}

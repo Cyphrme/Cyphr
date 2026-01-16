@@ -1,0 +1,37 @@
+{
+  "name": "multiple_actions_sorted",
+  "principal": ["golden"],
+  "action_sequence": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "First action",
+        "now": 1700000001,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "31mIE6gcRpeb9Z5ZH0TqC3nt1bAtWqxwZ66hr2Jp2edN-swfw-KeB1UPofB10EeoRNNEyyc9AmHG4ENwhaR5jQ",
+      "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
+    },
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "Second action",
+        "now": 1700000002,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "6166KUG-xLGpIoelQB3yuuv6kS_4bRVVgcuD04fwRN44PnUg5b1c3q2LWXFpUoICQWCOEY04EqNEWluQOgvI8Q",
+      "czd": "FDtFSUL52Uc-e9Ul6YDCYvjVA0yHTRa7H6759tWmOpg"
+    }
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 4,
+    "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ps": "0KJqnUQvx7Ae2CP_fhwDxl9R2BTQ56_dBLQJXlJ1IlU",
+    "ds": "NapbWCRyDmZDqrCHq6PhDElccgNNiy-aUOaZI2nZooo",
+    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+  }
+}

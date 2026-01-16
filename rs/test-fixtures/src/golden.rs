@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Error;
-use crate::intent::{CryptoIntent, ExpectedAssertions, Intent, PayIntent, TestIntent};
+use crate::intent::{
+    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, PayIntent, TestIntent,
+};
 use crate::pool::{Pool, PoolKey};
 
 /// A golden test case with real cryptographic values.
@@ -31,12 +33,18 @@ pub struct Golden {
     pub name: String,
     /// Genesis key set (key names from pool).
     pub principal: Vec<String>,
-    /// Coz message(s).
+    /// Coz message(s) for transactions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz: Option<GoldenCoz>,
-    /// Coz message sequence (for multi-step tests).
+    /// Coz message sequence (for multi-step transaction tests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz_sequence: Option<Vec<GoldenCoz>>,
+    /// Action message (Level 4, single action).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<GoldenCoz>,
+    /// Action message sequence (Level 4, multi-action).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_sequence: Option<Vec<GoldenCoz>>,
     /// Expected state after execution.
     pub expected: GoldenExpected,
 }
@@ -88,6 +96,9 @@ pub struct GoldenExpected {
     /// Expected transaction state digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,
+    /// Expected data state digest (Level 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ds: Option<String>,
     /// Expected principal root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
@@ -134,7 +145,16 @@ impl<'a> Generator<'a> {
         // Create Principal from genesis keys
         let mut principal = self.create_principal(&test.principal, &test.name)?;
 
-        if test.is_multi_step() {
+        // Dispatch based on test type
+        if test.is_genesis_only() {
+            self.generate_genesis_only(test, &principal)
+        } else if test.has_action() {
+            if test.is_multi_action() {
+                self.generate_multi_action(test, &mut principal)
+            } else {
+                self.generate_single_action(test, &mut principal)
+            }
+        } else if test.is_multi_step() {
             self.generate_multi_step(test, &mut principal)
         } else {
             self.generate_single_step(test, &mut principal)
@@ -246,6 +266,8 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             coz: Some(coz),
             coz_sequence: None,
+            action: None,
+            action_sequence: None,
             expected,
         })
     }
@@ -294,8 +316,203 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             coz: None,
             coz_sequence: Some(coz_sequence),
+            action: None,
+            action_sequence: None,
             expected,
         })
+    }
+
+    /// Generate a genesis-only test case (no transactions or actions).
+    fn generate_genesis_only(
+        &self,
+        test: &TestIntent,
+        principal: &cyphrpass::Principal,
+    ) -> Result<Golden, Error> {
+        let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            coz: None,
+            coz_sequence: None,
+            action: None,
+            action_sequence: None,
+            expected,
+        })
+    }
+
+    /// Generate a single-action test case (Level 4).
+    fn generate_single_action(
+        &self,
+        test: &TestIntent,
+        principal: &mut cyphrpass::Principal,
+    ) -> Result<Golden, Error> {
+        let action_intent = test.action.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': single-action test requires [action] section",
+                test.name
+            ),
+        })?;
+
+        let (action_coz, sig_bytes, czd) = self.build_action_coz(action_intent, &test.name)?;
+
+        // Apply action to principal
+        self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)?;
+
+        let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            coz: None,
+            coz_sequence: None,
+            action: Some(action_coz),
+            action_sequence: None,
+            expected,
+        })
+    }
+
+    /// Generate a multi-action test case (Level 4).
+    fn generate_multi_action(
+        &self,
+        test: &TestIntent,
+        principal: &mut cyphrpass::Principal,
+    ) -> Result<Golden, Error> {
+        let mut action_sequence = Vec::with_capacity(test.action_step.len());
+
+        for (i, action_intent) in test.action_step.iter().enumerate() {
+            let (action_coz, sig_bytes, czd) = self
+                .build_action_coz(action_intent, &test.name)
+                .map_err(|e| Error::Generation {
+                    name: test.name.clone(),
+                    reason: format!("action {}: {}", i + 1, e),
+                })?;
+
+            self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)
+                .map_err(|e| Error::Generation {
+                    name: test.name.clone(),
+                    reason: format!("action {}: {}", i + 1, e),
+                })?;
+
+            action_sequence.push(action_coz);
+        }
+
+        let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            principal: test.principal.clone(),
+            coz: None,
+            coz_sequence: None,
+            action: None,
+            action_sequence: Some(action_sequence),
+            expected,
+        })
+    }
+
+    /// Build a GoldenCoz for an action.
+    fn build_action_coz(
+        &self,
+        action: &ActionIntent,
+        test_name: &str,
+    ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
+        // Resolve signer key
+        let signer = self.resolve_key(&action.signer)?;
+        let signer_tmb = signer.compute_tmb_b64()?;
+
+        // Build pay JSON for action (canonical order)
+        let mut pay_map: IndexMap<String, Value> = IndexMap::new();
+        pay_map.insert("alg".to_string(), Value::String(signer.alg.clone()));
+        if let Some(ref msg) = action.msg {
+            pay_map.insert("msg".to_string(), Value::String(msg.clone()));
+        }
+        pay_map.insert("now".to_string(), Value::Number(action.now.into()));
+        pay_map.insert("tmb".to_string(), Value::String(signer_tmb));
+        pay_map.insert("typ".to_string(), Value::String(action.typ.clone()));
+
+        let pay_json = serde_json::to_vec(&pay_map).map_err(|e| Error::Generation {
+            name: test_name.to_string(),
+            reason: format!("failed to serialize action pay: {}", e),
+        })?;
+
+        // Get private and public key bytes
+        let prv = signer
+            .prv
+            .as_ref()
+            .ok_or_else(|| Error::MissingPrivateKey {
+                name: signer.name.clone(),
+            })?;
+        let prv_bytes = Base64UrlUnpadded::decode_vec(prv).map_err(|e| Error::Generation {
+            name: test_name.to_string(),
+            reason: format!("invalid prv base64: {}", e),
+        })?;
+        let pub_bytes =
+            Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("invalid pub base64: {}", e),
+            })?;
+
+        // Sign using coz
+        let (sig_bytes, cad) = coz::sign_json(&pay_json, &signer.alg, &prv_bytes, &pub_bytes)
+            .ok_or_else(|| Error::UnsupportedAlgorithm {
+                alg: signer.alg.clone(),
+            })?;
+
+        // Compute czd = H(cad || sig)
+        let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).ok_or_else(|| {
+            Error::UnsupportedAlgorithm {
+                alg: signer.alg.clone(),
+            }
+        })?;
+
+        let sig_b64 = Base64UrlUnpadded::encode_string(&sig_bytes);
+        let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
+
+        let coz = GoldenCoz {
+            pay: serde_json::to_value(&pay_map).unwrap(),
+            sig: sig_b64,
+            czd: czd_b64,
+            key: None,
+        };
+
+        Ok((coz, sig_bytes, czd))
+    }
+
+    /// Apply an action to a principal.
+    fn apply_action_to_principal(
+        &self,
+        principal: &mut cyphrpass::Principal,
+        action: &ActionIntent,
+        sig_bytes: &[u8],
+        czd: coz::Czd,
+        test_name: &str,
+    ) -> Result<(), Error> {
+        // Rebuild pay JSON (same as build_action_coz)
+        let signer = self.resolve_key(&action.signer)?;
+        let signer_tmb = signer.compute_tmb_b64()?;
+
+        let mut pay_map: IndexMap<String, Value> = IndexMap::new();
+        pay_map.insert("alg".to_string(), Value::String(signer.alg.clone()));
+        if let Some(ref msg) = action.msg {
+            pay_map.insert("msg".to_string(), Value::String(msg.clone()));
+        }
+        pay_map.insert("now".to_string(), Value::Number(action.now.into()));
+        pay_map.insert("tmb".to_string(), Value::String(signer_tmb));
+        pay_map.insert("typ".to_string(), Value::String(action.typ.clone()));
+
+        let pay_json = serde_json::to_vec(&pay_map).map_err(|e| Error::Generation {
+            name: test_name.to_string(),
+            reason: format!("failed to serialize action pay: {}", e),
+        })?;
+
+        principal
+            .verify_and_record_action(&pay_json, sig_bytes, czd)
+            .map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("failed to apply action: {}", e),
+            })?;
+
+        Ok(())
     }
 
     /// Build a GoldenCoz from pay and crypto intents.
@@ -505,6 +722,7 @@ impl<'a> Generator<'a> {
             // AS = H(KS, TS) when TS exists
             None::<String>
         });
+        let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal.pr().0.to_b64();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();
@@ -518,7 +736,8 @@ impl<'a> Generator<'a> {
                 auth_state: e.auth_state.clone().or(Some(auth_state)),
                 ps: e.ps.clone().or(Some(ps)),
                 ts: e.ts.clone().or(ts),
-                pr: Some(pr),
+                ds: ds.clone(),
+                pr: Some(pr.clone()),
                 error: e.error.clone(),
             },
             None => GoldenExpected {
@@ -528,6 +747,7 @@ impl<'a> Generator<'a> {
                 auth_state: Some(auth_state),
                 ps: Some(ps),
                 ts,
+                ds,
                 pr: Some(pr),
                 error: None,
             },

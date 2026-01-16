@@ -1,0 +1,83 @@
+# Level 4 Action Test Vectors
+# Per SPEC §4.3 - Action recording and Data State computation
+
+# Test 1: Single action direct promotion
+# DS = czd for single action (no hash per SPEC §7.4)
+[[test]]
+name      = "single_action_promotes_ds"
+principal = ["golden"]
+
+[test.action]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4
+
+# Test 2: Multiple actions sorted
+# DS = H(sort(czd₀, czd₁...)) per SPEC §7.4
+[[test]]
+name      = "multiple_actions_sorted"
+principal = ["golden"]
+
+[[test.action_step]]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.action_step]]
+msg    = "Second action"
+now    = 1700000002
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4
+
+# Test 3: Action changes PS
+# PS includes DS after action recording
+[[test]]
+name      = "action_changes_ps"
+principal = ["golden"]
+
+[test.action]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4
+
+# Test 4: Action updates last_used
+# Recording action updates signer key's last_used timestamp
+[[test]]
+name      = "action_updates_last_used"
+principal = ["golden"]
+
+[test.action]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4
+
+# Test 5: Level upgrades to 4
+# Principal upgrades to Level 4 after recording first action
+[[test]]
+name      = "level_upgrades_to_4"
+principal = ["golden"]
+
+[test.action]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4

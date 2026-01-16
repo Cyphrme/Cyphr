@@ -90,6 +90,20 @@ fn apply_coz(principal: &mut Principal, coz: &GoldenCoz, test_name: &str) {
         .unwrap_or_else(|e| panic!("{}: transaction failed: {:?}", test_name, e));
 }
 
+fn apply_action(principal: &mut Principal, action: &GoldenCoz, test_name: &str) {
+    use coz::Czd;
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pay_json = serde_json::to_vec(&action.pay).expect("failed to serialize pay");
+    let sig = Base64UrlUnpadded::decode_vec(&action.sig).expect("invalid sig base64");
+    let czd_bytes = Base64UrlUnpadded::decode_vec(&action.czd).expect("invalid czd base64");
+    let czd = Czd::from_bytes(czd_bytes);
+
+    principal
+        .verify_and_record_action(&pay_json, &sig, czd)
+        .unwrap_or_else(|e| panic!("{}: action failed: {:?}", test_name, e));
+}
+
 fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: &str) {
     if let Some(count) = expected.key_count {
         assert_eq!(
@@ -144,6 +158,14 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
             test_name
         );
     }
+
+    if let Some(ref ds) = expected.ds {
+        let principal_ds = principal
+            .data_state()
+            .map(|d| cad_to_b64(&d.0))
+            .unwrap_or_else(|| "<no ds>".to_string());
+        assert_eq!(principal_ds, *ds, "{}: ds mismatch", test_name);
+    }
 }
 
 fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
@@ -174,12 +196,21 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         Principal::explicit(genesis_keys).expect("explicit genesis failed")
     };
 
-    // Apply coz message(s)
+    // Apply coz message(s) for transactions
     if let Some(ref coz) = fixture.coz {
         apply_coz(&mut principal, coz, &fixture.name);
     } else if let Some(ref coz_seq) = fixture.coz_sequence {
         for coz in coz_seq {
             apply_coz(&mut principal, coz, &fixture.name);
+        }
+    }
+
+    // Apply action(s)
+    if let Some(ref action) = fixture.action {
+        apply_action(&mut principal, action, &fixture.name);
+    } else if let Some(ref action_seq) = fixture.action_sequence {
+        for action in action_seq {
+            apply_action(&mut principal, action, &fixture.name);
         }
     }
 
@@ -231,4 +262,9 @@ fn test_golden_algorithm_diversity() {
 #[test]
 fn test_golden_edge_cases() {
     run_golden_dir("edge_cases");
+}
+
+#[test]
+fn test_golden_actions() {
+    run_golden_dir("actions");
 }
