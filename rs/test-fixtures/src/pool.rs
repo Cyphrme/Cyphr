@@ -45,6 +45,37 @@ pub struct PoolKey {
     pub tag: Option<String>,
 }
 
+impl PoolKey {
+    /// Compute the thumbprint for this key.
+    ///
+    /// Per Coz spec: `tmb = H(canon({"alg": alg, "pub": pub}))`
+    pub fn compute_tmb(&self) -> Result<coz::Thumbprint, Error> {
+        use coz::base64ct::Encoding;
+
+        let pub_bytes =
+            coz::base64ct::Base64UrlUnpadded::decode_vec(&self.pub_key).map_err(|e| {
+                Error::PoolValidation {
+                    message: format!("key '{}': invalid base64url pub: {e}", self.name),
+                }
+            })?;
+
+        coz::compute_thumbprint_for_alg(&self.alg, &pub_bytes).ok_or_else(|| {
+            Error::PoolValidation {
+                message: format!("key '{}': unsupported algorithm '{}'", self.name, self.alg),
+            }
+        })
+    }
+
+    /// Compute thumbprint as base64url string.
+    pub fn compute_tmb_b64(&self) -> Result<String, Error> {
+        use coz::base64ct::Encoding;
+        let tmb = self.compute_tmb()?;
+        Ok(coz::base64ct::Base64UrlUnpadded::encode_string(
+            tmb.as_bytes(),
+        ))
+    }
+}
+
 impl Pool {
     /// Load a pool from a TOML file.
     pub fn load(path: &Path) -> Result<Self, Error> {
@@ -71,9 +102,10 @@ impl Pool {
     /// Validate all keys in the pool.
     ///
     /// Checks:
-    /// - Thumbprint derivation matches
-    /// - Private key derives to public key
     /// - Names are unique
+    /// - Algorithm is supported
+    /// - Thumbprint can be computed
+    /// - (Future) Private key derives to public key
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
 
@@ -85,14 +117,78 @@ impl Pool {
             }
         }
 
-        // TODO: Add cryptographic validation
-        // - Verify tmb = H(canon({"alg": alg, "pub": pub}))
-        // - Verify prv derives to pub
+        // Validate each key's thumbprint computation
+        for key in &self.pool.key {
+            if let Err(e) = key.compute_tmb() {
+                errors.push(e.to_string());
+            }
+        }
+
+        // TODO: Verify prv derives to pub when coz exposes public key derivation
 
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_load() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("test_vectors/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
+        assert_eq!(pool.pool.version, "0.1.0");
+        assert!(pool.get("golden").is_some());
+        assert!(pool.get("alice").is_some());
+        assert!(pool.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_pool_validate() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("test_vectors/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
+
+        // Validation should pass for supported keys, fail for unsupported
+        let result = pool.validate();
+        // RS256 (unsupported_key) should cause a validation error
+        assert!(result.is_err(), "should fail with unsupported RS256 key");
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("unsupported_key")));
+    }
+
+    #[test]
+    fn test_golden_key_thumbprint() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("test_vectors/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool.toml");
+        let golden = pool.get("golden").expect("golden key not found");
+
+        // Expected thumbprint from pool.json reference
+        let expected_tmb = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let computed_tmb = golden.compute_tmb_b64().expect("failed to compute tmb");
+
+        assert_eq!(computed_tmb, expected_tmb, "golden key thumbprint mismatch");
     }
 }
