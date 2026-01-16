@@ -268,3 +268,8 @@ fn test_golden_edge_cases() {
 fn test_golden_actions() {
     run_golden_dir("actions");
 }
+
+#[test]
+fn test_golden_state_computation() {
+    run_golden_dir("state_computation");
+}

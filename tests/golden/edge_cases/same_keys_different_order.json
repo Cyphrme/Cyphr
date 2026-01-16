@@ -1,0 +1,12 @@
+{
+  "name": "same_keys_different_order",
+  "principal": ["carol", "alice", "bob"],
+  "expected": {
+    "key_count": 3,
+    "level": 3,
+    "ks": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "as": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "ps": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "pr": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s"
+  }
+}

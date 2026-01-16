@@ -1,29 +1,48 @@
 # Edge case tests for state ordering
-# NOTE: Tests 1-2 (genesis-only) moved to README guidance
-# NOTE: Test 4 (coz+action combo) requires action support - deferred
+# Per SPEC §7 (State Calculation)
 
-# Test 3: Transaction replay order affects TS (multi-step)
+# ============================================================================
+# Genesis-only tests
+# ============================================================================
+
+# Test: Verify KS uses lexicographic byte sort, not string sort (SPEC §7.1)
+[[test]]
+name      = "key_thumbprint_sort_order"
+principal = ["alice", "bob", "carol"]
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# Test: Verify KS is idempotent regardless of key addition order (SPEC §7.2)
+[[test]]
+name      = "same_keys_different_order"
+principal = ["carol", "alice", "bob"]
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# ============================================================================
+# Transaction tests
+# ============================================================================
+
+# Test: Transaction replay order affects TS (multi-step)
 [[test]]
 name      = "transaction_replay_order"
 principal = ["alice"]
 
 [[test.step]]
-[test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/add"
-
-[test.step.crypto]
-signer = "alice"
-target = "bob"
+crypto.signer = "alice"
+crypto.target = "bob"
+pay.now       = 1700000001
+pay.typ       = "cyphr.me/key/add"
 
 [[test.step]]
-[test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/add"
-
-[test.step.crypto]
-signer = "alice"
-target = "carol"
+crypto.signer = "alice"
+crypto.target = "carol"
+pay.now       = 1700000002
+pay.typ       = "cyphr.me/key/add"
 
 [test.expected]
 key_count = 3

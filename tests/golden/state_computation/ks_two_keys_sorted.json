@@ -1,0 +1,12 @@
+{
+  "name": "ks_two_keys_sorted",
+  "principal": ["golden", "key_a"],
+  "expected": {
+    "key_count": 2,
+    "level": 3,
+    "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "as": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "ps": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pr": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
+  }
+}
