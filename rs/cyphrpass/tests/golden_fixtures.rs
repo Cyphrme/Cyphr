@@ -107,6 +107,84 @@ fn try_apply_action(
     Ok(())
 }
 
+/// Apply a storage-format entry {pay, sig, key?} to Principal.
+/// Verifies that computed czd matches expected_czd.
+fn try_apply_entry(
+    principal: &mut Principal,
+    entry: &serde_json::Value,
+    expected_czd: &str,
+    test_name: &str,
+) -> Result<(), cyphrpass::error::Error> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pay = entry.get("pay").expect("entry missing pay");
+    let sig_b64 = entry
+        .get("sig")
+        .and_then(|v| v.as_str())
+        .expect("entry missing sig");
+    let sig = Base64UrlUnpadded::decode_vec(sig_b64).expect("invalid sig base64");
+
+    let pay_json = serde_json::to_vec(pay).expect("failed to serialize pay");
+
+    // Compute czd from pay+sig
+    let alg = pay
+        .get("alg")
+        .and_then(|v| v.as_str())
+        .expect("entry pay missing alg");
+    let cad =
+        coz::canonical_hash_for_alg(&pay_json, alg, None).expect("unsupported algorithm for cad");
+    let computed_czd = coz::czd_for_alg(&cad, &sig, alg).expect("unsupported algorithm for czd");
+    let computed_czd_b64 = Base64UrlUnpadded::encode_string(computed_czd.as_bytes());
+
+    // Verify czd matches expected
+    assert_eq!(
+        computed_czd_b64, expected_czd,
+        "{}: czd mismatch for entry",
+        test_name
+    );
+
+    // Extract key if present
+    let new_key = entry.get("key").map(|key_val| {
+        let alg = key_val
+            .get("alg")
+            .and_then(|v| v.as_str())
+            .expect("key missing alg");
+        let pub_b64 = key_val
+            .get("pub")
+            .and_then(|v| v.as_str())
+            .expect("key missing pub");
+        let tmb_b64 = key_val
+            .get("tmb")
+            .and_then(|v| v.as_str())
+            .expect("key missing tmb");
+
+        let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).expect("invalid key pub base64");
+        let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).expect("invalid key tmb base64");
+
+        Key {
+            alg: alg.to_string(),
+            tmb: coz::Thumbprint::from_bytes(tmb_bytes),
+            pub_key: pub_bytes,
+            first_seen: 0,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        }
+    });
+
+    // Determine if this is a transaction or action based on typ field
+    let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
+    if typ.starts_with("cyphr.me/key/") {
+        // Transaction
+        principal.verify_and_apply_transaction(&pay_json, &sig, computed_czd, new_key)?;
+    } else {
+        // Action
+        principal.verify_and_record_action(&pay_json, &sig, computed_czd)?;
+    }
+
+    Ok(())
+}
+
 fn error_name(e: &cyphrpass::error::Error) -> &'static str {
     use cyphrpass::error::Error;
     match e {
@@ -261,6 +339,58 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             principal.pre_revoke_key(&tmb, rvk_time);
         }
     }
+
+    // ========================================================================
+    // New path: Use entries + digests when available
+    // ========================================================================
+    if let (Some(entries), Some(digests)) = (&fixture.entries, &fixture.digests) {
+        // Apply entries using new format
+        let entry_count = entries.len();
+        for (i, entry) in entries.iter().enumerate() {
+            let is_last = i == entry_count - 1;
+            let czd = &digests[i];
+
+            match try_apply_entry(&mut principal, entry, czd, &fixture.name) {
+                Ok(()) => {
+                    if is_last {
+                        if let Some(err) = expected_error {
+                            panic!(
+                                "{}: expected error '{}' but last entry succeeded",
+                                fixture.name, err
+                            );
+                        }
+                    }
+                },
+                Err(e) => {
+                    if is_last {
+                        if let Some(expected) = expected_error {
+                            assert_eq!(
+                                error_name(&e),
+                                expected,
+                                "{}: wrong error type on last entry",
+                                fixture.name
+                            );
+                            println!(
+                                "  ✓ {} (expected error: {}) [entries]",
+                                fixture.name, expected
+                            );
+                            return;
+                        }
+                    }
+                    panic!("{}: entry {} failed: {:?}", fixture.name, i + 1, e);
+                },
+            }
+        }
+
+        // Verify expected state
+        verify_expected(&principal, &fixture.expected, &fixture.name);
+        println!("  ✓ {} [entries]", fixture.name);
+        return;
+    }
+
+    // ========================================================================
+    // Legacy path: Use coz/coz_sequence/action/action_sequence
+    // ========================================================================
 
     // Apply coz message(s) for transactions
     if let Some(ref coz) = fixture.coz {
