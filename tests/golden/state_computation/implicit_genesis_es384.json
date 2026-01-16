@@ -1,6 +1,15 @@
 {
   "name": "implicit_genesis_es384",
   "principal": ["diana_es384"],
+  "genesis_keys": [
+    {
+      "alg": "ES384",
+      "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
+      "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    }
+  ],
+  "entries": [],
+  "digests": [],
   "expected": {
     "key_count": 1,
     "level": 1,

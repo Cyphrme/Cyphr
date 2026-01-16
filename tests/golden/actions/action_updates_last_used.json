@@ -12,6 +12,26 @@
     "sig": "31mIE6gcRpeb9Z5ZH0TqC3nt1bAtWqxwZ66hr2Jp2edN-swfw-KeB1UPofB10EeoRNNEyyc9AmHG4ENwhaR5jQ",
     "czd": "YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"
   },
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "entries": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "First action",
+        "now": 1700000001,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "31mIE6gcRpeb9Z5ZH0TqC3nt1bAtWqxwZ66hr2Jp2edN-swfw-KeB1UPofB10EeoRNNEyyc9AmHG4ENwhaR5jQ"
+    }
+  ],
+  "digests": ["YB2-pTZdR-JkkzJt46z7dyJ3NIq7kxRPbuIX3JljYoQ"],
   "expected": {
     "key_count": 1,
     "level": 4,

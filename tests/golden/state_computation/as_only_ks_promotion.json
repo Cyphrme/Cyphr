@@ -1,6 +1,15 @@
 {
   "name": "as_only_ks_promotion",
   "principal": ["golden"],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "entries": [],
+  "digests": [],
   "expected": {
     "key_count": 1,
     "level": 1,

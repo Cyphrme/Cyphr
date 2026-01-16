@@ -16,6 +16,31 @@
     "sig": "TsBrFAi4S2PahYP04F20Hi3jKdyArEff2FYwUKhQmwcwhQ3Wx5L2bTIkWMRS7NlLi8oMdRSgpBapxcT5Umjj5w",
     "czd": "WDip2tuKldlJjQKmiV4NlPITsNxxlYHDBhcZQCy0U1k"
   },
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    {
+      "alg": "ES256",
+      "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+    }
+  ],
+  "entries": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "Action from revoked key",
+        "now": 1700000001,
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "TsBrFAi4S2PahYP04F20Hi3jKdyArEff2FYwUKhQmwcwhQ3Wx5L2bTIkWMRS7NlLi8oMdRSgpBapxcT5Umjj5w"
+    }
+  ],
+  "digests": ["WDip2tuKldlJjQKmiV4NlPITsNxxlYHDBhcZQCy0U1k"],
   "expected": {
     "key_count": 1,
     "level": 1,

@@ -18,6 +18,32 @@
       "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
     }
   },
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "entries": [
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
+        "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+      },
+      "pay": {
+        "alg": "ES256",
+        "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
+        "now": 1700000000,
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+        "typ": "cyphr.me/key/add"
+      },
+      "sig": "ns-zykzJnQA2RuXjx3dRFLuG3z64YPshdYX-6XwI7kxpFtQW4lg9aOvcnoZ01upVQisCYQRkvaKI6wk7UBug8w"
+    }
+  ],
+  "digests": ["Uy2TuVx5RFPcSYMftDKtipRPzrzMn9irqh5itHyZg4c"],
   "expected": {
     "key_count": 1,
     "level": 1,

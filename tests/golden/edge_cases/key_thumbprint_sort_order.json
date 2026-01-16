@@ -1,6 +1,25 @@
 {
   "name": "key_thumbprint_sort_order",
   "principal": ["alice", "bob", "carol"],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+    },
+    {
+      "alg": "ES256",
+      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+    },
+    {
+      "alg": "ES256",
+      "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
+      "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
+    }
+  ],
+  "entries": [],
+  "digests": [],
   "expected": {
     "key_count": 3,
     "level": 3,

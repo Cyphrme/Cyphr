@@ -18,6 +18,37 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   },
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },
+    {
+      "alg": "ES256",
+      "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+    }
+  ],
+  "entries": [
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      },
+      "pay": {
+        "alg": "ES256",
+        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+        "now": 1700000000,
+        "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/key/delete"
+      },
+      "sig": "pZRFp6htW4awaxU6YXq53ZXXUSnHXoVov7svJ7ArUykY-1h2JJkJ3L01CdohgPQM45J728w9i0A-0zxWN0xhiQ"
+    }
+  ],
+  "digests": ["DQnIlkRLAJuSDWdElaP5iR5Bt1GZcEOx1mKi8InGDbE"],
   "expected": {
     "key_count": 1,
     "level": 3,

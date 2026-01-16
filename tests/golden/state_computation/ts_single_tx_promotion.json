@@ -18,6 +18,32 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   },
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "entries": [
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      },
+      "pay": {
+        "alg": "ES256",
+        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+        "now": 1700000000,
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/key/add"
+      },
+      "sig": "Hc14-rolcByouvXZrSa2-Kp7369o7UOTZsU8vMoCiyhWhb1abv-Aq-CSpfFTreJPZFMIFHFM-QpLlPE_qNoO9g"
+    }
+  ],
+  "digests": ["ufRkabJSV2GSfHsdcGrgRv7FFig5HxZ8TD5YTJ7TPnk"],
   "expected": {
     "key_count": 2,
     "level": 3,

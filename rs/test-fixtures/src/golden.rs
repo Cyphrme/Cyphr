@@ -36,6 +36,8 @@ pub struct Golden {
     /// Setup modifiers (e.g., pre-revoke keys).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<GoldenSetup>,
+
+    // === Legacy fields (kept for migration, will be removed) ===
     /// Coz message(s) for transactions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz: Option<GoldenCoz>,
@@ -48,6 +50,18 @@ pub struct Golden {
     /// Action message sequence (Level 4, multi-action).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_sequence: Option<Vec<GoldenCoz>>,
+
+    // === New unified format fields ===
+    /// Full genesis key material (alg, pub, tmb) for storage import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_keys: Option<Vec<GoldenKey>>,
+    /// Storage-format entries: [{pay, sig, key?}, ...] in application order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<Value>>,
+    /// Coz digests (czd) parallel to entries, for protocol verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digests: Option<Vec<String>>,
+
     /// Expected state after execution.
     pub expected: GoldenExpected,
 }
@@ -180,6 +194,9 @@ impl<'a> Generator<'a> {
                         coz_sequence: None,
                         action: None,
                         action_sequence: None,
+                        genesis_keys: None,
+                        entries: None,
+                        digests: None,
                         expected: GoldenExpected {
                             error: expected_error,
                             ..Default::default()
@@ -239,6 +256,39 @@ impl<'a> Generator<'a> {
             revoke_key: s.revoke_key.clone(),
             revoke_at: s.revoke_at,
         })
+    }
+
+    /// Build genesis_keys from pool key names.
+    fn build_genesis_keys(&self, key_names: &[String]) -> Result<Vec<GoldenKey>, Error> {
+        key_names
+            .iter()
+            .map(|name| {
+                let pool_key = self.resolve_key(name)?;
+                Ok(GoldenKey {
+                    alg: pool_key.alg.clone(),
+                    pub_key: pool_key.pub_key.clone(),
+                    tmb: pool_key.compute_tmb_b64()?,
+                })
+            })
+            .collect()
+    }
+
+    /// Convert a GoldenCoz to storage entry format {pay, sig, key?}.
+    fn coz_to_storage_entry(coz: &GoldenCoz) -> Value {
+        let mut entry = serde_json::Map::new();
+        entry.insert("pay".to_string(), coz.pay.clone());
+        entry.insert("sig".to_string(), Value::String(coz.sig.clone()));
+        if let Some(ref key) = coz.key {
+            entry.insert(
+                "key".to_string(),
+                serde_json::json!({
+                    "alg": key.alg,
+                    "pub": key.pub_key,
+                    "tmb": key.tmb
+                }),
+            );
+        }
+        Value::Object(entry)
     }
 
     /// Create a Principal from genesis key names.
@@ -358,6 +408,11 @@ impl<'a> Generator<'a> {
         // Build expected with computed state digests (or error)
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Build genesis_keys, entries, and digests for new format
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let entries = Some(vec![Self::coz_to_storage_entry(&coz)]);
+        let digests = Some(vec![coz.czd.clone()]);
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -366,6 +421,9 @@ impl<'a> Generator<'a> {
             coz_sequence: None,
             action: None,
             action_sequence: None,
+            genesis_keys,
+            entries,
+            digests,
             expected,
         })
     }
@@ -421,6 +479,14 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Build genesis_keys, entries, and digests for new format
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let entries: Vec<Value> = coz_sequence
+            .iter()
+            .map(Self::coz_to_storage_entry)
+            .collect();
+        let digests: Vec<String> = coz_sequence.iter().map(|c| c.czd.clone()).collect();
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -429,6 +495,9 @@ impl<'a> Generator<'a> {
             coz_sequence: Some(coz_sequence),
             action: None,
             action_sequence: None,
+            genesis_keys,
+            entries: Some(entries),
+            digests: Some(digests),
             expected,
         })
     }
@@ -441,6 +510,9 @@ impl<'a> Generator<'a> {
     ) -> Result<Golden, Error> {
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Genesis-only: no entries or digests
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -449,6 +521,9 @@ impl<'a> Generator<'a> {
             coz_sequence: None,
             action: None,
             action_sequence: None,
+            genesis_keys,
+            entries: Some(vec![]),
+            digests: Some(vec![]),
             expected,
         })
     }
@@ -517,6 +592,14 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Build genesis_keys, entries, and digests for new format
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let entries = vec![
+            Self::coz_to_storage_entry(&tx_coz),
+            Self::coz_to_storage_entry(&action_coz),
+        ];
+        let digests = vec![tx_coz.czd.clone(), action_coz.czd.clone()];
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -525,6 +608,9 @@ impl<'a> Generator<'a> {
             coz_sequence: None,
             action: Some(action_coz),
             action_sequence: None,
+            genesis_keys,
+            entries: Some(entries),
+            digests: Some(digests),
             expected,
         })
     }
@@ -558,6 +644,11 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Build genesis_keys, entries, and digests for new format
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let entries = Some(vec![Self::coz_to_storage_entry(&action_coz)]);
+        let digests = Some(vec![action_coz.czd.clone()]);
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -566,6 +657,9 @@ impl<'a> Generator<'a> {
             coz_sequence: None,
             action: Some(action_coz),
             action_sequence: None,
+            genesis_keys,
+            entries,
+            digests,
             expected,
         })
     }
@@ -616,6 +710,14 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
+        // Build genesis_keys, entries, and digests for new format
+        let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+        let entries: Vec<Value> = action_sequence
+            .iter()
+            .map(Self::coz_to_storage_entry)
+            .collect();
+        let digests: Vec<String> = action_sequence.iter().map(|c| c.czd.clone()).collect();
+
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
@@ -624,6 +726,9 @@ impl<'a> Generator<'a> {
             coz_sequence: None,
             action: None,
             action_sequence: Some(action_sequence),
+            genesis_keys,
+            entries: Some(entries),
+            digests: Some(digests),
             expected,
         })
     }

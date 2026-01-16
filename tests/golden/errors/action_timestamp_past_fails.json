@@ -25,6 +25,39 @@
       "czd": "R9lO_ets6z7ySG4YUBue3mt9_kqTbm-YMOhvbcs_0nA"
     }
   ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "entries": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "First action",
+        "now": 1700000100,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "RNnQTQjZJcqpzu0LvT6yJr7eMOCPm2J4i8xm9rNWGslYSoCgS31jywNGLfXKWqO7WFFne4F7foYns1nFH5djBw"
+    },
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "Second action with older timestamp",
+        "now": 1700000050,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "nBO8GzL-aGsbSHqxGxVJzPTmu49rB2CKsPn9hEQ68Npih35kxZnUSWNKszVUJHmA4wrhZ_HTVSj6foqXpHVN0w"
+    }
+  ],
+  "digests": [
+    "7LqZ9cNeRrnVchrG1WOgaKAfIwBj0GDp8VGgwuOG6AE",
+    "R9lO_ets6z7ySG4YUBue3mt9_kqTbm-YMOhvbcs_0nA"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,

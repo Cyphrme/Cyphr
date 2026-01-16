@@ -37,6 +37,51 @@
       }
     }
   ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+    }
+  ],
+  "entries": [
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+        "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+      },
+      "pay": {
+        "alg": "ES256",
+        "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+        "now": 1700000001,
+        "pre": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+        "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+        "typ": "cyphr.me/key/add"
+      },
+      "sig": "IV7S0229-6kTcCrDJtKKhE30tTDWkuqXhKMz9DKb0YhVqmKpKED6xbz8oP6RUH23vrx3D9G2OXvNvLPBg27dVw"
+    },
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
+        "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
+      },
+      "pay": {
+        "alg": "ES256",
+        "id": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA",
+        "now": 1700000002,
+        "pre": "i_3yPE3WaqZyUmwx1aT0PmFWpeseLxq0V59iQ7uIQec",
+        "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+        "typ": "cyphr.me/key/add"
+      },
+      "sig": "HKPMVqBiWMSg0uLYwUwM_X3eRJpxuqZ0whv7wgn5I082D1B333mt8SlWSRwHsvSRXyKi8_DMZDYS2Izeu0tdCA"
+    }
+  ],
+  "digests": [
+    "ZaYLQLe8W_pZJwGJ7SLL3Vlf9sREj0AbjEWXmf0h7dw",
+    "haDVo_X22xp8HlmhF8DW4tICIbqXZtq-WAF5uojsYVc"
+  ],
   "expected": {
     "key_count": 3,
     "level": 3,

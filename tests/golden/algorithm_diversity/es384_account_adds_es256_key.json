@@ -18,6 +18,34 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   },
+  "genesis_keys": [
+    {
+      "alg": "ES384",
+      "pub": "KlAhe18aYeJTHUKYBUgtSkiK4i678CmCUlXdgBJByRzshuErEo2zum-j1DEz8KxEf4bA0dKwqo2cfhBqxmVwnT0Nnaak1VQJ2KiWsiqNTpc_4YBAW8gOVZ1xgZXqpkDJ",
+      "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    }
+  ],
+  "entries": [
+    {
+      "key": {
+        "alg": "ES256",
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      },
+      "pay": {
+        "alg": "ES384",
+        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+        "now": 1700000000,
+        "pre": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+        "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+        "typ": "cyphr.me/key/add"
+      },
+      "sig": "IFVdVQTChGQ5ob_dri3Z4ffRQcGAz38pqJW8PEAhAylw4CKMVYeRM1zKGAYqrfSKI8oO1X0RspezyJm6TqVsCdSV14If4yv7I0ZPhyZPeMcJNymhMNEZ3gwGROvhgbVY"
+    }
+  ],
+  "digests": [
+    "C_W3KIM10hPrsqgAFTu5T3XXjBSlFQPFTXN9P9AFC0YJgKGKXyPh-wJxhLHmRv_K"
+  ],
   "expected": {
     "key_count": 2,
     "level": 3,

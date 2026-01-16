@@ -1,6 +1,15 @@
 {
   "name": "implicit_genesis_ed25519",
   "principal": ["eve_ed25519"],
+  "genesis_keys": [
+    {
+      "alg": "Ed25519",
+      "pub": "-jVKbefuCN5il8jy9HsRtp9yX4IViGncnetbRK36ff4",
+      "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
+    }
+  ],
+  "entries": [],
+  "digests": [],
   "expected": {
     "key_count": 1,
     "level": 1,
