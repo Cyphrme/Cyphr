@@ -8,6 +8,7 @@ version                = "0.1.0"
 
 [dependencies]
 coz.workspace        = true
+cyphrpass            = { path = "../cyphrpass" }
 indexmap.workspace   = true
 serde.workspace      = true
 serde_json.workspace = true
