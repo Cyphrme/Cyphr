@@ -1,0 +1,24 @@
+{
+  "name": "action_unknown_signer_fails",
+  "principal": ["golden"],
+  "action": {
+    "pay": {
+      "alg": "ES256",
+      "msg": "Action from unknown key",
+      "now": 1700000001,
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+      "typ": "cyphr.me/action"
+    },
+    "sig": "JLXmvVz7DM-mTdFQQLx2s3oARVzM5JkFd-c0dzHaVfVphiFTxKcU0pncpEgA7veixPvlAvGj2qkMcNt8bj03nw",
+    "czd": "P0K91JsRBCgXEyuylvlvN91yV4QD64mSw_0ZQ_OkLJs"
+  },
+  "expected": {
+    "key_count": 1,
+    "level": 1,
+    "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ps": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "error": "UnknownKey"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "revoked_key_fails",
+  "principal": ["golden", "key_a"],
+  "setup": {
+    "revoke_key": "key_a",
+    "revoke_at": 1699999999
+  },
+  "coz": {
+    "pay": {
+      "alg": "ES256",
+      "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "now": 1700000000,
+      "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+      "typ": "cyphr.me/key/delete"
+    },
+    "sig": "NTMVEk78dIagnqpCdmKRdk9YnDqBmA7Irul9EYxPvCx-zqi7ylvoaIQmcG6vtzq3Q9LYm_EWdhdmSgVeUKOIRg",
+    "czd": "yOksX69MCOSevdZpkDMJL69wta2eLCg5L2_c24LYtG8",
+    "key": {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  },
+  "expected": {
+    "key_count": 1,
+    "level": 1,
+    "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "as": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "ps": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pr": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "error": "KeyRevoked"
+  }
+}

@@ -22,8 +22,7 @@ use serde_json::Value;
 
 use crate::Error;
 use crate::intent::{
-    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, OverrideIntent, PayIntent, SetupIntent,
-    TestIntent,
+    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, PayIntent, SetupIntent, TestIntent,
 };
 use crate::pool::{Pool, PoolKey};
 
@@ -287,11 +286,19 @@ impl<'a> Generator<'a> {
         })?;
 
         // Capture pre (auth state before transaction)
-        let pre = principal.auth_state().0.to_b64();
+        // Use override.pre if specified (for InvalidPrior tests)
+        let computed_pre;
+        let pre: &str =
+            if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
+                override_pre
+            } else {
+                computed_pre = principal.auth_state().0.to_b64();
+                &computed_pre
+            };
 
         // Build and sign coz message
         let (coz, sig_bytes, czd) =
-            self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(&pre))?;
+            self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(pre))?;
 
         // Check if this is an error test
         let is_error_test = test
@@ -336,7 +343,17 @@ impl<'a> Generator<'a> {
     ) -> Result<Golden, Error> {
         let mut coz_sequence = Vec::with_capacity(test.step.len());
 
+        // Check if this is an error test (applies to last step)
+        let is_error_test = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .is_some();
+
+        let step_count = test.step.len();
         for (i, step) in test.step.iter().enumerate() {
+            let is_last_step = i == step_count - 1;
+
             // Capture pre before this step
             let pre = principal.auth_state().0.to_b64();
 
@@ -347,20 +364,22 @@ impl<'a> Generator<'a> {
                     reason: format!("step {}: {}", i + 1, e),
                 })?;
 
-            // Apply transaction
-            self.apply_transaction_to_principal(
-                principal,
-                &step.pay,
-                &step.crypto,
-                &coz,
-                &sig_bytes,
-                czd,
-                &test.name,
-            )
-            .map_err(|e| Error::Generation {
-                name: test.name.clone(),
-                reason: format!("step {}: {}", i + 1, e),
-            })?;
+            // Apply transaction (skip last step for error tests)
+            if !(is_last_step && is_error_test) {
+                self.apply_transaction_to_principal(
+                    principal,
+                    &step.pay,
+                    &step.crypto,
+                    &coz,
+                    &sig_bytes,
+                    czd,
+                    &test.name,
+                )
+                .map_err(|e| Error::Generation {
+                    name: test.name.clone(),
+                    reason: format!("step {}: {}", i + 1, e),
+                })?;
+            }
 
             coz_sequence.push(coz);
         }
@@ -448,7 +467,17 @@ impl<'a> Generator<'a> {
     ) -> Result<Golden, Error> {
         let mut action_sequence = Vec::with_capacity(test.action_step.len());
 
+        // Check if this is an error test (applies to last action)
+        let is_error_test = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .is_some();
+
+        let action_count = test.action_step.len();
         for (i, action_intent) in test.action_step.iter().enumerate() {
+            let is_last_action = i == action_count - 1;
+
             let (action_coz, sig_bytes, czd) = self
                 .build_action_coz(action_intent, &test.name)
                 .map_err(|e| Error::Generation {
@@ -456,11 +485,20 @@ impl<'a> Generator<'a> {
                     reason: format!("action {}: {}", i + 1, e),
                 })?;
 
-            self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)
+            // Apply action (skip last action for error tests)
+            if !(is_last_action && is_error_test) {
+                self.apply_action_to_principal(
+                    principal,
+                    action_intent,
+                    &sig_bytes,
+                    czd,
+                    &test.name,
+                )
                 .map_err(|e| Error::Generation {
                     name: test.name.clone(),
                     reason: format!("action {}: {}", i + 1, e),
                 })?;
+            }
 
             action_sequence.push(action_coz);
         }

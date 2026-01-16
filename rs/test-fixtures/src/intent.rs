@@ -42,7 +42,7 @@ pub struct TestIntent {
     #[serde(default)]
     pub action_step: Vec<ActionIntent>,
     /// Override fields (for error tests).
-    #[serde(default)]
+    #[serde(default, rename = "override")]
     pub override_: Option<OverrideIntent>,
     /// Expected assertions.
     #[serde(default)]

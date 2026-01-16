@@ -1,0 +1,38 @@
+{
+  "name": "action_timestamp_past_fails",
+  "principal": ["golden"],
+  "action_sequence": [
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "First action",
+        "now": 1700000100,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "RNnQTQjZJcqpzu0LvT6yJr7eMOCPm2J4i8xm9rNWGslYSoCgS31jywNGLfXKWqO7WFFne4F7foYns1nFH5djBw",
+      "czd": "7LqZ9cNeRrnVchrG1WOgaKAfIwBj0GDp8VGgwuOG6AE"
+    },
+    {
+      "pay": {
+        "alg": "ES256",
+        "msg": "Second action with older timestamp",
+        "now": 1700000050,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/action"
+      },
+      "sig": "nBO8GzL-aGsbSHqxGxVJzPTmu49rB2CKsPn9hEQ68Npih35kxZnUSWNKszVUJHmA4wrhZ_HTVSj6foqXpHVN0w",
+      "czd": "R9lO_ets6z7ySG4YUBue3mt9_kqTbm-YMOhvbcs_0nA"
+    }
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 4,
+    "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ps": "FQMxSHZB7fDvpEcDHHlPuHzv8Adj2ox31GhmpHGvROM",
+    "ds": "7LqZ9cNeRrnVchrG1WOgaKAfIwBj0GDp8VGgwuOG6AE",
+    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "error": "TimestampPast"
+  }
+}

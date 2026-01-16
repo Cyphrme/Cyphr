@@ -266,9 +266,37 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             },
         }
     } else if let Some(ref coz_seq) = fixture.coz_sequence {
-        for coz in coz_seq {
-            try_apply_coz(&mut principal, coz)
-                .unwrap_or_else(|e| panic!("{}: transaction failed: {:?}", fixture.name, e));
+        let count = coz_seq.len();
+        for (i, coz) in coz_seq.iter().enumerate() {
+            let is_last = i == count - 1;
+
+            match try_apply_coz(&mut principal, coz) {
+                Ok(()) => {
+                    if is_last {
+                        if let Some(err) = expected_error {
+                            panic!(
+                                "{}: expected error '{}' but last step succeeded",
+                                fixture.name, err
+                            );
+                        }
+                    }
+                },
+                Err(e) => {
+                    if is_last {
+                        if let Some(expected) = expected_error {
+                            assert_eq!(
+                                error_name(&e),
+                                expected,
+                                "{}: wrong error type on last step",
+                                fixture.name
+                            );
+                            println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                            return;
+                        }
+                    }
+                    panic!("{}: step {} failed: {:?}", fixture.name, i + 1, e);
+                },
+            }
         }
     }
 
@@ -299,9 +327,37 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             },
         }
     } else if let Some(ref action_seq) = fixture.action_sequence {
-        for action in action_seq {
-            try_apply_action(&mut principal, action)
-                .unwrap_or_else(|e| panic!("{}: action failed: {:?}", fixture.name, e));
+        let count = action_seq.len();
+        for (i, action) in action_seq.iter().enumerate() {
+            let is_last = i == count - 1;
+
+            match try_apply_action(&mut principal, action) {
+                Ok(()) => {
+                    if is_last {
+                        if let Some(err) = expected_error {
+                            panic!(
+                                "{}: expected error '{}' but last action succeeded",
+                                fixture.name, err
+                            );
+                        }
+                    }
+                },
+                Err(e) => {
+                    if is_last {
+                        if let Some(expected) = expected_error {
+                            assert_eq!(
+                                error_name(&e),
+                                expected,
+                                "{}: wrong error type on last action",
+                                fixture.name
+                            );
+                            println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                            return;
+                        }
+                    }
+                    panic!("{}: action {} failed: {:?}", fixture.name, i + 1, e);
+                },
+            }
         }
     }
 
