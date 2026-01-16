@@ -197,6 +197,61 @@ impl Principal {
         })
     }
 
+    /// Create a principal from a trusted checkpoint.
+    ///
+    /// This is used by storage import when loading from a checkpoint
+    /// rather than replaying full history from genesis.
+    ///
+    /// # Security
+    ///
+    /// The caller must establish trust in the checkpoint before calling this.
+    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    ///
+    /// # Errors
+    ///
+    /// Returns `NoActiveKeys` if `keys` is empty.
+    /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
+    pub fn from_checkpoint(
+        pr: PrincipalRoot,
+        auth_state: AuthState,
+        keys: Vec<Key>,
+    ) -> Result<Self> {
+        if keys.is_empty() {
+            return Err(Error::NoActiveKeys);
+        }
+
+        let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
+
+        // Compute KS from provided keys
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let ks = compute_ks(&thumbprints, None, hash_alg);
+
+        // PS = AS (no DS at checkpoint load)
+        let ps = compute_ps(&auth_state, None, None, hash_alg);
+
+        let mut key_map = IndexMap::new();
+        for k in keys {
+            key_map.insert(k.tmb.to_b64(), k);
+        }
+
+        Ok(Self {
+            pr,
+            ps,
+            ks,
+            ts: None, // TS is implicit in checkpoint's AS
+            auth_state,
+            ds: None,
+            auth: AuthLedger {
+                keys: key_map,
+                ..Default::default()
+            },
+            data: DataLedger::default(),
+            hash_alg,
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+        })
+    }
+
     // ========================================================================
     // Accessors
     // ========================================================================

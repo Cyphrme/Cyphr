@@ -20,9 +20,11 @@
 
 mod export;
 mod file;
+mod import;
 
 pub use export::{export_entries, persist_entries};
 pub use file::FileStore;
+pub use import::{Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal};
 
 use cyphrpass::state::PrincipalRoot;
 
