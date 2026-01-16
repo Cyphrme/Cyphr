@@ -2,6 +2,18 @@
 # Per SPEC §14 - tests for error conditions
 
 # ============================================================================
+# Unsupported algorithm test (genesis-only error)
+# ============================================================================
+
+# Genesis with unsupported algorithm fails during principal creation
+[[test]]
+name      = "unsupported_algorithm_fails"
+principal = ["unsupported_key"]
+
+[test.expected]
+error = "UnsupportedAlgorithm"
+
+# ============================================================================
 # Revoked key tests
 # Need setup.revoke_key to pre-revoke a key before the test
 # ============================================================================

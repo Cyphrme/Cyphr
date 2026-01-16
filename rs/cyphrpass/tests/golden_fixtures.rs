@@ -51,6 +51,24 @@ fn pool_key_to_domain(pk: &PoolKey) -> Key {
     }
 }
 
+/// Try to convert a pool key to domain key, returning None for unsupported algorithms.
+fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).ok()?;
+    let tmb = pk.compute_tmb().ok()?;
+
+    Some(Key {
+        alg: pk.alg.clone(),
+        tmb,
+        pub_key: pub_bytes,
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    })
+}
+
 fn cad_to_b64(cad: &coz::Cad) -> String {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::encode_string(cad.as_bytes())
@@ -194,8 +212,11 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     let fixture: Golden = serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("failed to parse {:?}: {}", fixture_path, e));
 
-    // Resolve genesis keys from pool
-    let genesis_keys: Vec<Key> = fixture
+    // Check if this is an error test
+    let expected_error = fixture.expected.error.as_deref();
+
+    // Resolve genesis keys from pool (fallibly for unsupported algorithms)
+    let pool_keys: Vec<&PoolKey> = fixture
         .principal
         .iter()
         .map(|name| {
@@ -205,8 +226,31 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 .find(|k| k.name == *name)
                 .unwrap_or_else(|| panic!("{}: key '{}' not found in pool", fixture.name, name))
         })
-        .map(pool_key_to_domain)
         .collect();
+
+    // Try to convert pool keys to domain keys (may fail for unsupported algs)
+    let genesis_keys: Result<Vec<Key>, &str> = pool_keys
+        .iter()
+        .map(|pk| try_pool_key_to_domain(pk).ok_or("UnsupportedAlgorithm"))
+        .collect();
+
+    // Handle genesis-time errors (e.g., unsupported algorithm)
+    let genesis_keys = match genesis_keys {
+        Ok(keys) => keys,
+        Err(_) => {
+            // Genesis failed (unsupported algorithm)
+            if let Some(expected) = expected_error {
+                if expected == "UnsupportedAlgorithm" {
+                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                    return;
+                }
+            }
+            panic!(
+                "{}: genesis failed due to unsupported algorithm, but expected error was {:?}",
+                fixture.name, expected_error
+            );
+        },
+    };
 
     // Create principal
     let mut principal = if genesis_keys.len() == 1 {
@@ -235,9 +279,6 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
             principal.pre_revoke_key(&tmb, rvk_time);
         }
     }
-
-    // Check if this is an error test
-    let expected_error = fixture.expected.error.as_deref();
 
     // Apply coz message(s) for transactions
     if let Some(ref coz) = fixture.coz {

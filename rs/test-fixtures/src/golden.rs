@@ -156,8 +156,40 @@ impl<'a> Generator<'a> {
 
     /// Generate a single golden test case.
     fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
+        // Check if this is an error test expecting genesis-time failure
+        let expected_error = test
+            .expected
+            .as_ref()
+            .and_then(|e| e.error.as_ref())
+            .cloned();
+
         // Create Principal from genesis keys
-        let mut principal = self.create_principal(&test.principal, &test.name)?;
+        let principal_result = self.create_principal(&test.principal, &test.name);
+
+        // Handle genesis-time errors (e.g., UnsupportedAlgorithm)
+        let mut principal = match principal_result {
+            Ok(p) => p,
+            Err(e) => {
+                // If we expected an error and got one during genesis, generate error golden
+                if expected_error.is_some() {
+                    return Ok(Golden {
+                        name: test.name.clone(),
+                        principal: test.principal.clone(),
+                        setup: None,
+                        coz: None,
+                        coz_sequence: None,
+                        action: None,
+                        action_sequence: None,
+                        expected: GoldenExpected {
+                            error: expected_error,
+                            ..Default::default()
+                        },
+                    });
+                }
+                // Otherwise, propagate the error
+                return Err(e);
+            },
+        };
 
         // Apply setup modifiers
         if let Some(ref setup) = test.setup {

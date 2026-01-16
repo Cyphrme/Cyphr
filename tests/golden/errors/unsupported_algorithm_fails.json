@@ -1,0 +1,7 @@
+{
+  "name": "unsupported_algorithm_fails",
+  "principal": ["unsupported_key"],
+  "expected": {
+    "error": "UnsupportedAlgorithm"
+  }
+}
