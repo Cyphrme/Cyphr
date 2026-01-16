@@ -32,11 +32,11 @@ tests/
 
 For each JSON file in `golden/`:
 
-1. **Parse the fixture** — Load the JSON and extract `principal`, `coz`/`coz_sequence`, `action`, `expected`
-2. **Create Principal** — Use keys from `principal` array to create genesis
-3. **Apply operations** — Apply `coz` (transactions) and/or `action` messages
+1. **Parse the fixture** — Load the JSON and extract `principal`, `genesis_keys`, `entries`, `digests`, `expected`
+2. **Create Principal** — Use `genesis_keys` to create genesis (full key material provided)
+3. **Apply entries** — For each entry in `entries`, verify czd matches `digests[i]`, then apply
 4. **Verify state** — Assert computed state matches `expected`
-5. **Handle errors** — If `expected.error` is set, verify the operation fails with that error
+5. **Handle errors** — If `expected.error` is set, verify the last entry fails with that error
 
 ### Golden File Format
 
@@ -44,19 +44,21 @@ For each JSON file in `golden/`:
 {
   "name": "test_name",
   "principal": ["key_name_1", "key_name_2"],
-  "setup": {                          // Optional
+  "setup": {
     "revoke_key": "key_name",
     "revoke_at": 1699999999
   },
-  "coz": {                            // Single transaction (or use coz_sequence)
-    "pay": { ... },
-    "sig": "<base64url>",
-    "czd": "<base64url>",
-    "key": { "alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>" }
-  },
-  "coz_sequence": [ ... ],            // Multi-step transactions
-  "action": { ... },                  // Single action (Level 4)
-  "action_sequence": [ ... ],         // Multi-step actions
+  "genesis_keys": [
+    {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
+  ],
+  "entries": [
+    {
+      "pay": {"typ": "cyphr.me/key/add", "now": 1700000000, ...},
+      "sig": "<base64url>",
+      "key": {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
+    }
+  ],
+  "digests": ["<czd_base64url>"],
   "expected": {
     "key_count": 2,
     "level": 3,
@@ -64,11 +66,21 @@ For each JSON file in `golden/`:
     "as": "<base64url>",
     "ps": "<base64url>",
     "pr": "<base64url>",
-    "ds": "<base64url>",              // Level 4 only
-    "error": "ErrorName"              // For error tests
+    "ds": "<base64url>",
+    "error": "ErrorName"
   }
 }
 ```
+
+#### Field Descriptions
+
+| Field          | Description                                                     |
+| -------------- | --------------------------------------------------------------- |
+| `principal`    | Key names from pool (for reference)                             |
+| `genesis_keys` | Full key material for genesis creation                          |
+| `entries`      | Storage-format entries: `{pay, sig, key?}` in application order |
+| `digests`      | Coz digests (czd) parallel to entries, for verification         |
+| `expected`     | Expected state after all entries applied                        |
 
 ### Test Categories
 
