@@ -1,5 +1,6 @@
 {
   "name": "key_add_increases_count",
+  "principal": ["golden"],
   "coz": {
     "pay": {
       "alg": "ES256",

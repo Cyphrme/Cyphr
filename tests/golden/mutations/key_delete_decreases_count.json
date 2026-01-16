@@ -1,5 +1,6 @@
 {
   "name": "key_delete_decreases_count",
+  "principal": ["golden", "key_a"],
   "coz": {
     "pay": {
       "alg": "ES256",

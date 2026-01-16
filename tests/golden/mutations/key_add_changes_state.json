@@ -1,5 +1,6 @@
 {
   "name": "key_add_changes_state",
+  "principal": ["golden"],
   "coz": {
     "pay": {
       "alg": "ES256",

@@ -1,5 +1,6 @@
 {
   "name": "transaction_replay_order",
+  "principal": ["alice"],
   "coz_sequence": [
     {
       "pay": {

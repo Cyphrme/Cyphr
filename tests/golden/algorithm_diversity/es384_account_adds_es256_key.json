@@ -1,5 +1,6 @@
 {
   "name": "es384_account_adds_es256_key",
+  "principal": ["diana_es384"],
   "coz": {
     "pay": {
       "alg": "ES384",

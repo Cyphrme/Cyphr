@@ -1,5 +1,6 @@
 {
   "name": "self_revoke_moves_to_revoked",
+  "principal": ["golden", "key_a"],
   "coz": {
     "pay": {
       "alg": "ES256",

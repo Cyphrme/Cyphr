@@ -1,5 +1,6 @@
 {
   "name": "delete_from_triple_key_leaves_two",
+  "principal": ["alice", "bob", "carol"],
   "coz": {
     "pay": {
       "alg": "ES256",

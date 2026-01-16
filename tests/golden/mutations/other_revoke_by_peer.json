@@ -1,5 +1,6 @@
 {
   "name": "other_revoke_by_peer",
+  "principal": ["golden", "key_a"],
   "coz": {
     "pay": {
       "alg": "ES256",

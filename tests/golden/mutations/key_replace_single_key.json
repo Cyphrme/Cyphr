@@ -1,5 +1,6 @@
 {
   "name": "key_replace_single_key",
+  "principal": ["golden"],
   "coz": {
     "pay": {
       "alg": "ES256",

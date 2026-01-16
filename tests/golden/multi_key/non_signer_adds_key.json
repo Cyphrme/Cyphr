@@ -1,5 +1,6 @@
 {
   "name": "non_signer_adds_key",
+  "principal": ["alice", "bob"],
   "coz": {
     "pay": {
       "alg": "ES256",

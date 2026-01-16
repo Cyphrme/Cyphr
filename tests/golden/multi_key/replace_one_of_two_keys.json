@@ -1,5 +1,6 @@
 {
   "name": "replace_one_of_two_keys",
+  "principal": ["alice", "bob"],
   "coz": {
     "pay": {
       "alg": "ES256",

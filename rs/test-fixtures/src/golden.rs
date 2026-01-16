@@ -29,6 +29,8 @@ use crate::pool::{Pool, PoolKey};
 pub struct Golden {
     /// Test name.
     pub name: String,
+    /// Genesis key set (key names from pool).
+    pub principal: Vec<String>,
     /// Coz message(s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz: Option<GoldenCoz>,
@@ -241,6 +243,7 @@ impl<'a> Generator<'a> {
 
         Ok(Golden {
             name: test.name.clone(),
+            principal: test.principal.clone(),
             coz: Some(coz),
             coz_sequence: None,
             expected,
@@ -288,6 +291,7 @@ impl<'a> Generator<'a> {
 
         Ok(Golden {
             name: test.name.clone(),
+            principal: test.principal.clone(),
             coz: None,
             coz_sequence: Some(coz_sequence),
             expected,

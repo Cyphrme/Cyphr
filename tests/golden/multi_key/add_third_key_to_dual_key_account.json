@@ -1,5 +1,6 @@
 {
   "name": "add_third_key_to_dual_key_account",
+  "principal": ["alice", "bob"],
   "coz": {
     "pay": {
       "alg": "ES256",
