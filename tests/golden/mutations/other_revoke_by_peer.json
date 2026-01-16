@@ -1,0 +1,29 @@
+{
+  "name": "other_revoke_by_peer",
+  "coz": {
+    "pay": {
+      "alg": "ES256",
+      "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+      "now": 1700000000,
+      "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "rvk": 1700000000,
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "typ": "cyphr.me/key/revoke"
+    },
+    "sig": "skx145r_Az-mYv3h0DNsZunWcfOXMhZpLAjstj0zN5d7tuXEjwQ8yrtBwrO0wAcawXl3Iv_4pqWUjk8mCUDhuA",
+    "czd": "Vgr2iGx8kzvZlPf0M77jFSYINQRJnnYOpsP544vHHiM",
+    "key": {
+      "alg": "ES256",
+      "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+      "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+    }
+  },
+  "expected": {
+    "key_count": 1,
+    "level": 3,
+    "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "as": "lEknrXDUOqg6qVKy520KOMHQRIZFSyBJ4A7MU1NM_14",
+    "ps": "lEknrXDUOqg6qVKy520KOMHQRIZFSyBJ4A7MU1NM_14",
+    "pr": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
+  }
+}

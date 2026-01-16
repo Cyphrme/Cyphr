@@ -1,0 +1,137 @@
+# Transaction mutation tests
+# Source: test_vectors/transactions/mutations.json
+
+# Test 1: L1→L3 transition via key/add
+[[test]]
+name      = "key_add_increases_count"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Test 2: key/add changes AS/PS but not PR
+[[test]]
+name      = "key_add_changes_state"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Test 3: key/delete removes a key from L3 account
+[[test]]
+name      = "key_delete_decreases_count"
+principal = ["golden", "key_a"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/delete"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 1
+level     = 3
+
+# Test 4: L2 atomic key replacement
+[[test]]
+name      = "key_replace_single_key"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/replace"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 1
+
+# Test 5: Self-revoke (key revokes itself)
+[[test]]
+name      = "self_revoke_moves_to_revoked"
+principal = ["golden", "key_a"]
+
+[test.pay]
+now = 1700000000
+rvk = 1700000000
+typ = "cyphr.me/key/revoke"
+
+[test.crypto]
+signer = "key_a"
+
+[test.expected]
+key_count = 1
+
+# Test 6: Cross-key revocation (one key revokes another)
+[[test]]
+name      = "other_revoke_by_peer"
+principal = ["golden", "key_a"]
+
+[test.pay]
+now = 1700000000
+rvk = 1700000000
+typ = "cyphr.me/key/revoke"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 1
+
+# Test 7: Multi-step transaction sequence
+[[test]]
+name      = "transaction_sequence_replay"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000003
+typ = "cyphr.me/key/delete"
+
+[test.step.crypto]
+signer = "key_a"
+target = "key_b"
+
+[test.expected]
+key_count = 2
