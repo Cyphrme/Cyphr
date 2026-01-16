@@ -2,7 +2,7 @@
 //!
 //! Intent files define test cases in human-editable TOML format.
 
-use std::path::Path;
+use std::{path::Path, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -109,9 +109,12 @@ impl Intent {
             source: e,
         })
     }
+}
 
-    /// Parse an intent from a TOML string.
-    pub fn from_str(s: &str) -> Result<Self, toml::de::Error> {
+impl FromStr for Intent {
+    type Err = toml::de::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         toml::from_str(s)
     }
 }

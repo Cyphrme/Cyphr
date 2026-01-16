@@ -1,8 +1,28 @@
 //! Golden output types and generation.
 //!
 //! Golden files contain real Coz messages with hardcoded cryptographic values.
+//!
+//! ## Generation Flow
+//!
+//! ```text
+//! Intent + Pool → Generator::generate() → Vec<Golden>
+//! ```
+//!
+//! The generator:
+//! 1. Resolves key references to pool keys
+//! 2. Derives fields (alg, tmb, id) from resolved keys
+//! 3. Builds canonical pay JSON with correct field order
+//! 4. Signs with coz::sign_json
+//! 5. Computes czd from cad + sig
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::Error;
+use crate::intent::{CryptoIntent, ExpectedAssertions, Intent, PayIntent, TestIntent};
+use crate::pool::{Pool, PoolKey};
 
 /// A golden test case with real cryptographic values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,10 +30,10 @@ pub struct Golden {
     /// Test name.
     pub name: String,
     /// Coz message(s).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz: Option<GoldenCoz>,
     /// Coz message sequence (for multi-step tests).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coz_sequence: Option<Vec<GoldenCoz>>,
     /// Expected state after execution.
     pub expected: GoldenExpected,
@@ -23,7 +43,7 @@ pub struct Golden {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldenCoz {
     /// Pay object (preserved as raw JSON for bit-perfect signing).
-    pub pay: serde_json::Value,
+    pub pay: Value,
     /// Signature (base64url).
     pub sig: String,
     /// Coz digest (base64url).
@@ -69,4 +89,370 @@ pub struct GoldenExpected {
     /// Expected error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+// ============================================================================
+// Generator
+// ============================================================================
+
+/// Generates golden test cases from intent definitions.
+///
+/// The generator transforms human-readable intent files into
+/// golden JSON files containing real Coz messages with cryptographic
+/// signatures.
+#[derive(Debug)]
+pub struct Generator<'a> {
+    pool: &'a Pool,
+}
+
+impl<'a> Generator<'a> {
+    /// Create a new generator with the given key pool.
+    pub fn new(pool: &'a Pool) -> Self {
+        Self { pool }
+    }
+
+    /// Generate golden test cases from an intent file.
+    ///
+    /// Each test in the intent becomes a golden test case.
+    pub fn generate(&self, intent: &Intent) -> Result<Vec<Golden>, Error> {
+        intent
+            .test
+            .iter()
+            .map(|test| self.generate_test(test))
+            .collect()
+    }
+
+    /// Generate a single golden test case.
+    fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
+        if test.is_multi_step() {
+            self.generate_multi_step(test)
+        } else {
+            self.generate_single_step(test)
+        }
+    }
+
+    /// Generate a single-step golden test case.
+    fn generate_single_step(&self, test: &TestIntent) -> Result<Golden, Error> {
+        let pay_intent = test.pay.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': single-step test requires [pay] section",
+                test.name
+            ),
+        })?;
+
+        let crypto_intent = test.crypto.as_ref().ok_or_else(|| Error::InvalidIntent {
+            message: format!(
+                "test '{}': single-step test requires [crypto] section",
+                test.name
+            ),
+        })?;
+
+        let coz = self.build_golden_coz(pay_intent, crypto_intent, &test.name)?;
+        let expected = self.build_expected(test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            coz: Some(coz),
+            coz_sequence: None,
+            expected,
+        })
+    }
+
+    /// Generate a multi-step golden test case.
+    fn generate_multi_step(&self, test: &TestIntent) -> Result<Golden, Error> {
+        let mut coz_sequence = Vec::with_capacity(test.step.len());
+
+        for (i, step) in test.step.iter().enumerate() {
+            let coz = self
+                .build_golden_coz(&step.pay, &step.crypto, &test.name)
+                .map_err(|e| Error::Generation {
+                    name: test.name.clone(),
+                    reason: format!("step {}: {}", i + 1, e),
+                })?;
+            coz_sequence.push(coz);
+        }
+
+        let expected = self.build_expected(test.expected.as_ref());
+
+        Ok(Golden {
+            name: test.name.clone(),
+            coz: None,
+            coz_sequence: Some(coz_sequence),
+            expected,
+        })
+    }
+
+    /// Build a GoldenCoz from pay and crypto intents.
+    fn build_golden_coz(
+        &self,
+        pay: &PayIntent,
+        crypto: &CryptoIntent,
+        test_name: &str,
+    ) -> Result<GoldenCoz, Error> {
+        // Resolve signer key
+        let signer = self.resolve_key(&crypto.signer)?;
+        let signer_tmb = signer.compute_tmb_b64()?;
+
+        // Build pay JSON with derived fields
+        let pay_json = self.build_pay_json(pay, &signer.alg, &signer_tmb, crypto)?;
+
+        // Sign the message
+        let (sig, czd, key) = self.sign_pay(&pay_json, signer, crypto, test_name)?;
+
+        Ok(GoldenCoz {
+            pay: serde_json::from_slice(&pay_json).map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("invalid pay JSON: {}", e),
+            })?,
+            sig,
+            czd,
+            key,
+        })
+    }
+
+    /// Build the pay JSON with correct field ordering.
+    ///
+    /// Per Coz spec, standard fields appear in canonical order:
+    /// alg, dig, now, msg, typ, tmb, ...custom fields...
+    fn build_pay_json(
+        &self,
+        pay: &PayIntent,
+        alg: &str,
+        tmb: &str,
+        crypto: &CryptoIntent,
+    ) -> Result<Vec<u8>, Error> {
+        let mut fields: IndexMap<String, Value> = IndexMap::new();
+
+        // Standard fields in canonical order
+        fields.insert("alg".to_string(), Value::String(alg.to_string()));
+
+        // id field for key/add (target key thumbprint)
+        if let Some(target_name) = &crypto.target {
+            let target = self.resolve_key(target_name)?;
+            let target_tmb = target.compute_tmb_b64()?;
+            fields.insert("id".to_string(), Value::String(target_tmb));
+        }
+
+        // msg if present
+        if let Some(msg) = &pay.msg {
+            fields.insert("msg".to_string(), Value::String(msg.clone()));
+        }
+
+        // now (timestamp)
+        fields.insert("now".to_string(), Value::Number(pay.now.into()));
+
+        // rvk if present
+        if let Some(rvk) = pay.rvk {
+            fields.insert("rvk".to_string(), Value::Number(rvk.into()));
+        }
+
+        // tmb (signer thumbprint)
+        fields.insert("tmb".to_string(), Value::String(tmb.to_string()));
+
+        // typ (transaction/action type)
+        fields.insert("typ".to_string(), Value::String(pay.typ.clone()));
+
+        // Serialize with preserved order
+        serde_json::to_vec(&fields).map_err(|e| Error::Signing {
+            message: format!("failed to serialize pay: {}", e),
+        })
+    }
+
+    /// Sign the pay JSON and compute czd.
+    fn sign_pay(
+        &self,
+        pay_json: &[u8],
+        signer: &PoolKey,
+        crypto: &CryptoIntent,
+        test_name: &str,
+    ) -> Result<(String, String, Option<GoldenKey>), Error> {
+        // Get private key bytes
+        let prv_b64 = signer
+            .prv
+            .as_ref()
+            .ok_or_else(|| Error::MissingPrivateKey {
+                name: signer.name.clone(),
+            })?;
+
+        let prv_bytes = Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::Generation {
+            name: test_name.to_string(),
+            reason: format!("invalid prv base64: {}", e),
+        })?;
+
+        let pub_bytes =
+            Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("invalid pub base64: {}", e),
+            })?;
+
+        // Sign using coz
+        let (sig_bytes, cad) = coz::sign_json(pay_json, &signer.alg, &prv_bytes, &pub_bytes)
+            .ok_or_else(|| Error::UnsupportedAlgorithm {
+                alg: signer.alg.clone(),
+            })?;
+
+        // Compute czd = H(cad || sig)
+        let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).ok_or_else(|| {
+            Error::UnsupportedAlgorithm {
+                alg: signer.alg.clone(),
+            }
+        })?;
+
+        let sig_b64 = Base64UrlUnpadded::encode_string(&sig_bytes);
+        let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
+
+        // Build embedded key for key/add operations
+        let key = if let Some(target_name) = &crypto.target {
+            let target = self.resolve_key(target_name)?;
+            Some(GoldenKey {
+                alg: target.alg.clone(),
+                pub_key: target.pub_key.clone(),
+                tmb: target.compute_tmb_b64()?,
+            })
+        } else {
+            None
+        };
+
+        Ok((sig_b64, czd_b64, key))
+    }
+
+    /// Resolve a key reference to a pool key.
+    fn resolve_key(&self, name: &str) -> Result<&PoolKey, Error> {
+        self.pool.get(name).ok_or_else(|| Error::KeyRef {
+            name: name.to_string(),
+        })
+    }
+
+    /// Build expected assertions from intent.
+    fn build_expected(&self, expected: Option<&ExpectedAssertions>) -> GoldenExpected {
+        match expected {
+            Some(e) => GoldenExpected {
+                key_count: e.key_count,
+                level: e.level,
+                ks: e.ks.clone(),
+                auth_state: e.auth_state.clone(),
+                ps: e.ps.clone(),
+                ts: e.ts.clone(),
+                error: e.error.clone(),
+            },
+            None => GoldenExpected::default(),
+        }
+    }
+}
+
+/// Generate golden test cases from an intent file.
+///
+/// This is the main entry point for golden generation.
+///
+/// # Example
+///
+/// ```ignore
+/// let pool = Pool::load(Path::new("tests/keys/pool.toml"))?;
+/// let intent = Intent::load(Path::new("tests/intents/genesis.toml"))?;
+/// let goldens = generate(&intent, &pool)?;
+/// ```
+pub fn generate(intent: &Intent, pool: &Pool) -> Result<Vec<Golden>, Error> {
+    Generator::new(pool).generate(intent)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    const SINGLE_STEP_INTENT: &str = r#"
+[[test]]
+name = "key_add_golden_to_alice"
+principal = ["golden"]
+
+[test.pay]
+typ = "cyphr.me/key/add"
+now = 1700000000
+
+[test.crypto]
+signer = "golden"
+target = "alice"
+
+[test.expected]
+key_count = 2
+level = 3
+"#;
+
+    #[test]
+    fn test_generate_single_step() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+        let intent = crate::Intent::from_str(SINGLE_STEP_INTENT).expect("failed to parse intent");
+
+        let goldens = generate(&intent, &pool).expect("generation failed");
+
+        assert_eq!(goldens.len(), 1);
+        let golden = &goldens[0];
+        assert_eq!(golden.name, "key_add_golden_to_alice");
+
+        // Verify we have a coz message
+        let coz = golden.coz.as_ref().expect("missing coz");
+
+        // Verify pay has correct fields
+        let pay = &coz.pay;
+        assert_eq!(pay["alg"], "ES256");
+        assert_eq!(pay["typ"], "cyphr.me/key/add");
+        assert_eq!(pay["now"], 1700000000);
+
+        // Verify sig and czd are populated and base64url
+        assert!(!coz.sig.is_empty(), "sig should be populated");
+        assert!(!coz.czd.is_empty(), "czd should be populated");
+
+        // Verify embedded key for key/add
+        let key = coz
+            .key
+            .as_ref()
+            .expect("key/add should include embedded key");
+        assert_eq!(key.alg, "ES256");
+        assert!(!key.tmb.is_empty());
+
+        // Verify expected assertions passed through
+        assert_eq!(golden.expected.key_count, Some(2));
+        assert_eq!(golden.expected.level, Some(3));
+    }
+
+    #[test]
+    fn test_missing_signer_key() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+
+        let intent_str = r#"
+[[test]]
+name = "bad_signer"
+principal = ["golden"]
+
+[test.pay]
+typ = "cyphr.me/key/add"
+now = 1700000000
+
+[test.crypto]
+signer = "nonexistent_key"
+target = "alice"
+"#;
+
+        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
+        let result = generate(&intent, &pool);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("nonexistent_key"));
+    }
 }

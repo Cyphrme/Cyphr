@@ -55,4 +55,41 @@ pub enum Error {
         /// Error message.
         message: String,
     },
+
+    /// Key reference not found in pool.
+    #[error("key '{name}' not found in pool")]
+    KeyRef {
+        /// Key name that was not found.
+        name: String,
+    },
+
+    /// Private key required but not present.
+    #[error("key '{name}' requires private key for signing")]
+    MissingPrivateKey {
+        /// Key name.
+        name: String,
+    },
+
+    /// Algorithm not supported.
+    #[error("unsupported algorithm '{alg}'")]
+    UnsupportedAlgorithm {
+        /// Algorithm name.
+        alg: String,
+    },
+
+    /// Generation failed.
+    #[error("generation failed for test '{name}': {reason}")]
+    Generation {
+        /// Test name.
+        name: String,
+        /// Failure reason.
+        reason: String,
+    },
+
+    /// Invalid intent structure.
+    #[error("invalid intent: {message}")]
+    InvalidIntent {
+        /// Error message.
+        message: String,
+    },
 }
