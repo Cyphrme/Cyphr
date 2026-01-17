@@ -12,7 +12,7 @@ use crate::state::{
     AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
     compute_as, compute_ds, compute_ks, compute_ps,
 };
-use crate::transaction::Transaction;
+use crate::transaction::VerifiedTransaction;
 
 /// Get current unix timestamp in seconds.
 /// Separated for testability.
@@ -34,8 +34,8 @@ pub struct AuthLedger {
     pub keys: IndexMap<String, Key>,
     /// Revoked keys for historical verification.
     pub revoked: IndexMap<String, Key>,
-    /// Signed transactions.
-    pub transactions: Vec<Transaction>,
+    /// Signed and verified transactions.
+    pub transactions: Vec<VerifiedTransaction>,
 }
 
 /// Data ledger holding actions (Level 4+).
@@ -335,7 +335,7 @@ impl Principal {
     }
 
     /// Get all transactions.
-    pub fn transactions(&self) -> impl Iterator<Item = &Transaction> {
+    pub fn transactions(&self) -> impl Iterator<Item = &VerifiedTransaction> {
         self.auth.transactions.iter()
     }
 
@@ -533,8 +533,7 @@ impl Principal {
         &mut self,
         vtx: crate::transaction::VerifiedTransaction,
     ) -> Result<&AuthState> {
-        let (tx, new_key) = vtx.into_parts();
-        self.apply_transaction_internal(tx, new_key)
+        self.apply_transaction_internal(vtx)
     }
 
     /// Apply a transaction without prior signature verification.
@@ -553,19 +552,23 @@ impl Principal {
     #[cfg(test)]
     pub(crate) fn apply_transaction(
         &mut self,
-        tx: Transaction,
+        tx: crate::transaction::Transaction,
         new_key: Option<Key>,
     ) -> Result<&AuthState> {
-        self.apply_transaction_internal(tx, new_key)
+        use crate::transaction::VerifiedTransaction;
+        let vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
+        self.apply_transaction_internal(vtx)
     }
 
     /// Internal transaction application logic.
     fn apply_transaction_internal(
         &mut self,
-        tx: Transaction,
-        new_key: Option<Key>,
+        vtx: crate::transaction::VerifiedTransaction,
     ) -> Result<&AuthState> {
         use crate::transaction::TransactionKind;
+
+        // Access the underlying Transaction via Deref
+        let tx = &*vtx;
 
         // Validate timestamp is not in the past (SPEC §14.1)
         if tx.now < self.latest_timestamp {
@@ -594,7 +597,7 @@ impl Principal {
         match &tx.kind {
             TransactionKind::KeyAdd { pre, id } => {
                 self.verify_pre(pre)?;
-                let key = new_key.ok_or(Error::MalformedPayload)?;
+                let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
@@ -610,7 +613,7 @@ impl Principal {
             },
             TransactionKind::KeyReplace { pre, id } => {
                 self.verify_pre(pre)?;
-                let key = new_key.ok_or(Error::MalformedPayload)?;
+                let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
@@ -639,7 +642,7 @@ impl Principal {
         }
 
         // Record transaction and recompute state
-        self.auth.transactions.push(tx);
+        self.auth.transactions.push(vtx);
         self.recompute_state();
 
         Ok(&self.auth_state)
@@ -896,7 +899,11 @@ mod tests {
     // Transaction application tests
     // ========================================================================
 
-    fn make_key_add_tx(pre: &AuthState, new_key: &Key, signer: &Thumbprint) -> Transaction {
+    fn make_key_add_tx(
+        pre: &AuthState,
+        new_key: &Key,
+        signer: &Thumbprint,
+    ) -> crate::transaction::Transaction {
         use coz::Czd;
         use serde_json::json;
 

@@ -5,7 +5,6 @@
 
 use crate::{Entry, Store};
 use cyphrpass::Principal;
-use cyphrpass::transaction::TransactionKind;
 use serde_json::json;
 
 /// Export all entries from a Principal for storage.
@@ -25,14 +24,21 @@ use serde_json::json;
 /// }
 /// ```
 pub fn export_entries(principal: &Principal) -> Vec<Entry> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
     let mut entries = Vec::new();
 
     for tx in principal.transactions() {
         // Serialize complete CozJson {pay, sig}
         let mut raw = serde_json::to_value(tx.raw()).expect("CozJson serialization cannot fail");
 
-        // For key/add and key/replace, include the key material
-        if let Some(key_json) = get_key_for_transaction(principal, tx.kind()) {
+        // For key/add and key/replace, include the key material from the transaction
+        if let Some(key) = tx.new_key() {
+            let key_json = json!({
+                "alg": key.alg,
+                "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
+                "tmb": key.tmb.to_b64()
+            });
             raw.as_object_mut()
                 .expect("CozJson is always an object")
                 .insert("key".to_string(), key_json);
@@ -50,29 +56,6 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
     }
 
     entries
-}
-
-/// Get key JSON for transactions that add keys.
-fn get_key_for_transaction(
-    principal: &Principal,
-    kind: &TransactionKind,
-) -> Option<serde_json::Value> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let id = match kind {
-        TransactionKind::KeyAdd { id, .. } | TransactionKind::KeyReplace { id, .. } => id,
-        _ => return None,
-    };
-
-    // Look up the key in principal (could be active or revoked for key/replace)
-    let key = principal.get_key(id)?;
-
-    // Serialize key material per SPEC format
-    Some(json!({
-        "alg": key.alg,
-        "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-        "tmb": id.to_b64()
-    }))
 }
 
 /// Export entries and persist them to storage.

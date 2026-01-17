@@ -36,10 +36,9 @@ fn load_pool() -> Pool {
 /// Load a single golden fixture by category and name.
 fn load_fixture(category: &str, name: &str) -> Golden {
     let path = golden_dir().join(category).join(format!("{}.json", name));
-    let content = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {:?}: {}", path, e));
-    serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("failed to parse {:?}: {}", path, e))
+    let content =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {:?}: {}", path, e));
+    serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse {:?}: {}", path, e))
 }
 
 /// Convert GoldenKey to cyphrpass::Key.

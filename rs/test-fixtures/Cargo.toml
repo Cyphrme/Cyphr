@@ -9,6 +9,7 @@ version                = "0.1.0"
 [dependencies]
 coz.workspace        = true
 cyphrpass            = { path = "../cyphrpass" }
+cyphrpass-storage    = { path = "../cyphrpass-storage" }
 indexmap.workspace   = true
 serde.workspace      = true
 serde_json.workspace = true

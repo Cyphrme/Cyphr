@@ -238,10 +238,13 @@ impl VerifiedTransaction {
     pub fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
         Self { tx, new_key }
     }
+}
 
-    /// Consume self and return the inner components.
-    pub(crate) fn into_parts(self) -> (Transaction, Option<Key>) {
-        (self.tx, self.new_key)
+impl std::ops::Deref for VerifiedTransaction {
+    type Target = Transaction;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tx
     }
 }
 

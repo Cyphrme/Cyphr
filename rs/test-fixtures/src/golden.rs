@@ -252,8 +252,29 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
+    /// Export entries from Principal using cyphrpass-storage export logic.
+    /// Returns entries as Vec<Value> and digests as Vec<String>.
+    fn export_principal_entries(principal: &cyphrpass::Principal) -> (Vec<Value>, Vec<String>) {
+        use cyphrpass_storage::export_entries;
+
+        let entries = export_entries(principal);
+        let entry_values: Vec<Value> = entries.iter().map(|e| e.raw.clone()).collect();
+
+        // Compute digests from transactions and actions
+        let mut digests = Vec::new();
+        for tx in principal.transactions() {
+            digests.push(tx.czd().to_b64());
+        }
+        for action in principal.actions() {
+            digests.push(action.czd().to_b64());
+        }
+
+        (entry_values, digests)
+    }
+
     /// Convert a GoldenCoz to storage entry format {pay, sig, key?}.
-    fn coz_to_storage_entry(coz: &GoldenCoz) -> Value {
+    /// Used for error tests where the failing entry is not in Principal.
+    fn coz_to_entry_value(coz: &GoldenCoz) -> Value {
         let mut entry = serde_json::Map::new();
         entry.insert("pay".to_string(), coz.pay.clone());
         entry.insert("sig".to_string(), Value::String(coz.sig.clone()));
@@ -387,18 +408,23 @@ impl<'a> Generator<'a> {
         // Build expected with computed state digests (or error)
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Build genesis_keys, entries, and digests for new format
+        // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let entries = Some(vec![Self::coz_to_storage_entry(&coz)]);
-        let digests = Some(vec![coz.czd.clone()]);
+
+        // For error tests, the transaction was not applied - add it manually
+        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        if is_error_test {
+            entries.push(Self::coz_to_entry_value(&coz));
+            digests.push(coz.czd.clone());
+        }
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries,
-            digests,
+            entries: Some(entries),
+            digests: Some(digests),
             expected,
         })
     }
@@ -454,13 +480,17 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Build genesis_keys, entries, and digests for new format
+        // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let entries: Vec<Value> = coz_sequence
-            .iter()
-            .map(Self::coz_to_storage_entry)
-            .collect();
-        let digests: Vec<String> = coz_sequence.iter().map(|c| c.czd.clone()).collect();
+
+        // For error tests, we need to combine exported entries with the failing entry
+        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        if is_error_test && !coz_sequence.is_empty() {
+            // The last step was not applied - add it from coz_sequence
+            let failing_coz = coz_sequence.last().unwrap();
+            entries.push(Self::coz_to_entry_value(failing_coz));
+            digests.push(failing_coz.czd.clone());
+        }
 
         Ok(Golden {
             name: test.name.clone(),
@@ -545,8 +575,7 @@ impl<'a> Generator<'a> {
             ),
         })?;
 
-        let (action_coz, action_sig_bytes, action_czd) =
-            self.build_action_coz(action_intent, &test.name)?;
+        let (_, action_sig_bytes, action_czd) = self.build_action_coz(action_intent, &test.name)?;
 
         // Apply action to principal
         self.apply_action_to_principal(
@@ -559,13 +588,9 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Build genesis_keys, entries, and digests for new format
+        // Build genesis_keys, entries, and digests using storage export logic
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let entries = vec![
-            Self::coz_to_storage_entry(&tx_coz),
-            Self::coz_to_storage_entry(&action_coz),
-        ];
-        let digests = vec![tx_coz.czd.clone(), action_coz.czd.clone()];
+        let (entries, digests) = Self::export_principal_entries(principal);
 
         Ok(Golden {
             name: test.name.clone(),
@@ -607,18 +632,23 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Build genesis_keys, entries, and digests for new format
+        // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let entries = Some(vec![Self::coz_to_storage_entry(&action_coz)]);
-        let digests = Some(vec![action_coz.czd.clone()]);
+
+        // For error tests, the action was not applied - add it manually
+        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        if is_error_test {
+            entries.push(Self::coz_to_entry_value(&action_coz));
+            digests.push(action_coz.czd.clone());
+        }
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries,
-            digests,
+            entries: Some(entries),
+            digests: Some(digests),
             expected,
         })
     }
@@ -669,13 +699,17 @@ impl<'a> Generator<'a> {
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
-        // Build genesis_keys, entries, and digests for new format
+        // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let entries: Vec<Value> = action_sequence
-            .iter()
-            .map(Self::coz_to_storage_entry)
-            .collect();
-        let digests: Vec<String> = action_sequence.iter().map(|c| c.czd.clone()).collect();
+
+        // For error tests, we need to combine exported entries with the failing entry
+        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        if is_error_test && !action_sequence.is_empty() {
+            // The last action was not applied - add it from action_sequence
+            let failing_coz = action_sequence.last().unwrap();
+            entries.push(Self::coz_to_entry_value(failing_coz));
+            digests.push(failing_coz.czd.clone());
+        }
 
         Ok(Golden {
             name: test.name.clone(),
