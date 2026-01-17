@@ -19,5 +19,6 @@ thiserror  = { workspace = true }
 serde-jsonlines = "0.5"
 
 [dev-dependencies]
-serde      = { workspace = true }
-serde_json = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+test-fixtures = { path = "../test-fixtures" }
