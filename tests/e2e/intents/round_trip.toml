@@ -1,0 +1,70 @@
+# Round-Trip E2E Tests
+#
+# These tests verify export → storage → import produces identical state.
+# Each test references an existing golden fixture and runs the round-trip cycle.
+
+# =============================================================================
+# Basic Round-Trip (Single Transaction)
+# =============================================================================
+
+[[test]]
+name   = "rt_single_tx"
+source = "mutations/key_add_increases_count"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_key_delete"
+source = "mutations/key_delete_decreases_count"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_key_replace"
+source = "mutations/key_replace_single_key"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_self_revoke"
+source = "mutations/self_revoke_moves_to_revoked"
+verify = "round_trip"
+
+# =============================================================================
+# Multi-Transaction Round-Trip
+# =============================================================================
+
+[[test]]
+name   = "rt_multi_tx"
+source = "mutations/transaction_sequence_replay"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_multi_key"
+source = "multi_key/add_third_key_to_dual_key_account"
+verify = "round_trip"
+
+# =============================================================================
+# Actions (Level 4)
+# =============================================================================
+
+[[test]]
+name   = "rt_single_action"
+source = "actions/single_action_promotes_ds"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_multi_action"
+source = "actions/dual_action_sorts_digests"
+verify = "round_trip"
+
+# =============================================================================
+# Algorithm Diversity
+# =============================================================================
+
+[[test]]
+name   = "rt_es384"
+source = "algorithm_diversity/es384_key_add"
+verify = "round_trip"
+
+[[test]]
+name   = "rt_ed25519"
+source = "algorithm_diversity/ed25519_key_add"
+verify = "round_trip"
