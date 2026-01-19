@@ -92,6 +92,10 @@ pub enum LoadError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// Unsupported cryptographic algorithm.
+    #[error("unsupported algorithm")]
+    UnsupportedAlgorithm,
 }
 
 // ============================================================================
@@ -132,6 +136,15 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
             Principal::explicit(keys)?
         },
     };
+
+    // Debug: show initial Principal state
+    eprintln!(
+        "  [load_principal] initial AS={}",
+        principal.auth_state().0.to_b64()
+    );
+    for k in principal.active_keys() {
+        eprintln!("  [load_principal] genesis_key tmb={}", k.tmb.to_b64());
+    }
 
     // Replay entries
     replay_entries(&mut principal, entries)?;
@@ -191,14 +204,16 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (index, entry) in entries.iter().enumerate() {
-        // Extract required fields from entry
-        let pay = entry
-            .raw
+        // Parse entry for field access (NOT for czd computation)
+        let raw = entry
+            .as_value()
+            .map_err(|_| LoadError::MissingTimestamp { index })?;
+
+        let pay = raw
             .get("pay")
             .ok_or(LoadError::MissingTimestamp { index })?;
 
-        let sig_b64 = entry
-            .raw
+        let sig_b64 = raw
             .get("sig")
             .and_then(|s| s.as_str())
             .ok_or(LoadError::MissingSig { index })?;
@@ -209,17 +224,28 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                 message: "invalid base64 signature".into(),
             })?;
 
-        let pay_json = serde_json::to_vec(pay).map_err(|e| LoadError::Json { index, source: e })?;
+        // CRITICAL: Use pay_bytes() for bit-perfect JSON, NOT re-serialization
+        let pay_json = entry
+            .pay_bytes()
+            .map_err(|_| LoadError::MissingTimestamp { index })?;
 
         // Determine if this is a transaction or action by typ prefix
         let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
         if typ.contains("/key/") {
             // Transaction: extract key material if present
-            let new_key = extract_key_from_entry(&entry.raw);
+            let new_key = extract_key_from_entry(&raw);
 
             // Compute czd for this entry
             let czd = compute_czd(&pay_json, &sig, principal)?;
+
+            // Debug: print current AS before applying
+            eprintln!(
+                "  [load_principal] index={} current_AS={} czd={}",
+                index,
+                principal.auth_state().0.to_b64(),
+                czd.to_b64()
+            );
 
             // Apply transaction
             principal
@@ -291,55 +317,27 @@ fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 }
 
 /// Compute Coz digest for an entry.
+///
+/// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
+/// consistent hash computation matching the signing path.
 fn compute_czd(pay_json: &[u8], sig: &[u8], principal: &Principal) -> Result<coz::Czd, LoadError> {
-    use coz::Czd;
     use cyphrpass::state::HashAlg;
 
-    // Use principal's hash algorithm
-    let hash_alg = principal.hash_alg();
-
-    // Compute cad (canonical hash of pay)
-    let cad_bytes = match hash_alg {
-        HashAlg::Sha256 => {
-            use coz::sha2::{Digest, Sha256};
-            Sha256::digest(pay_json).to_vec()
-        },
-        HashAlg::Sha384 => {
-            use coz::sha2::{Digest, Sha384};
-            Sha384::digest(pay_json).to_vec()
-        },
-        HashAlg::Sha512 => {
-            use coz::sha2::{Digest, Sha512};
-            Sha512::digest(pay_json).to_vec()
-        },
+    // Map principal's hash algorithm to coz algorithm name
+    let alg = match principal.hash_alg() {
+        HashAlg::Sha256 => "ES256",
+        HashAlg::Sha384 => "ES384",
+        HashAlg::Sha512 => "ES512",
     };
 
-    // Compute czd = H(cad || sig)
-    let czd_bytes = match hash_alg {
-        HashAlg::Sha256 => {
-            use coz::sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(&cad_bytes);
-            hasher.update(sig);
-            hasher.finalize().to_vec()
-        },
-        HashAlg::Sha384 => {
-            use coz::sha2::{Digest, Sha384};
-            let mut hasher = Sha384::new();
-            hasher.update(&cad_bytes);
-            hasher.update(sig);
-            hasher.finalize().to_vec()
-        },
-        HashAlg::Sha512 => {
-            use coz::sha2::{Digest, Sha512};
-            let mut hasher = Sha512::new();
-            hasher.update(&cad_bytes);
-            hasher.update(sig);
-            hasher.finalize().to_vec()
-        },
-    };
+    // Compute cad using canonical hash (compacts JSON first)
+    let cad =
+        coz::canonical_hash_for_alg(pay_json, alg, None).ok_or(LoadError::UnsupportedAlgorithm)?;
 
-    Ok(Czd::from_bytes(czd_bytes))
+    // Compute czd using canonical {"cad":"...","sig":"..."} format
+    let czd = coz::czd_for_alg(&cad, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
+
+    Ok(czd)
 }
 
 // ============================================================================

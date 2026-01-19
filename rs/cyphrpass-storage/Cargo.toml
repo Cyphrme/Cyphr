@@ -12,7 +12,7 @@ version                = "0.1.0"
 coz        = { workspace = true }
 cyphrpass  = { path = "../cyphrpass" }
 serde      = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror  = { workspace = true }
 
 # JSONL handling

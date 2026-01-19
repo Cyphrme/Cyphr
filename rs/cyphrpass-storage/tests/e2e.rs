@@ -1,14 +1,17 @@
 //! End-to-end tests for cyphrpass-storage.
 //!
-//! These tests consume golden fixtures to verify round-trip correctness:
-//! genesis + entries → load_principal → export_entries → compare.
+//! These tests verify round-trip correctness by dynamically generating fixtures:
+//! intent → generate → export → import → compare state.
+//!
+//! Unlike integration tests which use pre-generated golden files, e2e tests
+//! generate fixtures at runtime, testing the full generation pipeline.
 
 use std::fs;
 use std::path::PathBuf;
 
 use cyphrpass_storage::{Entry, Genesis, export_entries, load_principal};
 use serde_json::Value;
-use test_fixtures::{Golden, GoldenKey, Pool};
+use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
 // ============================================================================
 // Test Helpers
@@ -27,6 +30,10 @@ fn golden_dir() -> PathBuf {
     tests_dir().join("golden")
 }
 
+fn e2e_intents_dir() -> PathBuf {
+    tests_dir().join("e2e").join("intents")
+}
+
 #[allow(dead_code)]
 fn load_pool() -> Pool {
     let path = tests_dir().join("keys").join("pool.toml");
@@ -39,6 +46,12 @@ fn load_fixture(category: &str, name: &str) -> Golden {
     let content =
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {:?}: {}", path, e));
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse {:?}: {}", path, e))
+}
+
+/// Load e2e intents from a TOML file.
+fn load_e2e_intents(filename: &str) -> Intent {
+    let path = e2e_intents_dir().join(filename);
+    Intent::load(&path).unwrap_or_else(|e| panic!("failed to load {:?}: {}", path, e))
 }
 
 /// Convert GoldenKey to cyphrpass::Key.
@@ -75,7 +88,7 @@ fn make_genesis(genesis_keys: &[GoldenKey]) -> Genesis {
 fn make_entries(entries: &[Value]) -> Vec<Entry> {
     entries
         .iter()
-        .map(|v| Entry::from_value(v.clone()).expect("invalid entry"))
+        .map(|v| Entry::from_value(v).expect("invalid entry"))
         .collect()
 }
 
@@ -91,7 +104,10 @@ fn compare_entries(exported: &[Entry], expected: &[Value]) -> Result<(), String>
     }
 
     for (i, (exp, exp_val)) in exported.iter().zip(expected.iter()).enumerate() {
-        let exp_raw = &exp.raw;
+        // Parse exported entry for comparison
+        let exp_raw = exp
+            .as_value()
+            .map_err(|_| format!("entry {}: failed to parse exported entry", i))?;
 
         // Compare pay fields
         let exp_pay = exp_raw.get("pay");
@@ -210,5 +226,113 @@ fn rt_with_actions() {
     // Verify Level 4 promotion
     if let Some(expected_level) = fixture.expected.level {
         assert_eq!(principal.level() as u8, expected_level, "level mismatch");
+    }
+}
+
+// ============================================================================
+// Dynamic E2E Tests (Intent-Driven)
+// ============================================================================
+
+/// Runner for a single e2e round-trip test.
+fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+    // Create generator with pool
+    let generator = Generator::new(&pool);
+
+    // Generate fixture at runtime
+    let golden = generator
+        .generate_test(test)
+        .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
+
+    let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
+    let entries = golden.entries.as_ref().expect("missing entries");
+    let digests = golden.digests.as_ref();
+
+    // Debug: dump digests from golden
+    if let Some(ds) = digests {
+        for (i, d) in ds.iter().enumerate() {
+            eprintln!("  [golden] digest[{}]={}", i, d);
+        }
+    }
+
+    // Skip if no entries (genesis-only test)
+    if entries.is_empty() {
+        return;
+    }
+
+    let genesis = make_genesis(genesis_keys);
+    let entry_vec = make_entries(entries);
+
+    // Debug: dump pre values from entries
+    for (i, e) in entries.iter().enumerate() {
+        if let Some(pay) = e.get("pay") {
+            if let Some(pre) = pay.get("pre") {
+                eprintln!("  [{}] pre: {}", i, pre);
+            }
+        }
+        if let Some(key) = e.get("key") {
+            eprintln!("  [{}] key.tmb: {:?}", i, key.get("tmb"));
+        } else {
+            eprintln!("  [{}] key: MISSING", i);
+        }
+    }
+
+    // Debug: show raw JSON bytes for entry 0
+    if !entry_vec.is_empty() {
+        let entry0 = &entry_vec[0];
+        eprintln!("  [0] entry.raw_json(): {}", entry0.raw_json());
+        if let Ok(pay_bytes) = entry0.pay_bytes() {
+            eprintln!("  [0] pay_bytes: {}", String::from_utf8_lossy(&pay_bytes));
+        }
+    }
+
+    // Debug: compute AS step by step to see divergence
+    eprintln!(
+        "  genesis AS: {}",
+        genesis_keys
+            .iter()
+            .map(|k| k.tmb.clone())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    // Load principal from generated entries
+    let principal = load_principal(genesis, &entry_vec)
+        .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
+
+    // Export and compare
+    let exported = export_entries(&principal);
+    compare_entries(&exported, entries)
+        .unwrap_or_else(|e| panic!("{}: round-trip mismatch: {}", test.name, e));
+
+    // Verify expected state
+    if let Some(expected_count) = golden.expected.key_count {
+        assert_eq!(
+            principal.active_key_count(),
+            expected_count,
+            "{}: key_count mismatch",
+            test.name
+        );
+    }
+
+    if let Some(expected_level) = golden.expected.level {
+        assert_eq!(
+            principal.level() as u8,
+            expected_level,
+            "{}: level mismatch",
+            test.name
+        );
+    }
+
+    eprintln!("  ✓ {}", test.name);
+}
+
+/// Data-driven e2e test: loads intents, generates at runtime, verifies round-trip.
+#[test]
+fn e2e_dynamic_round_trip() {
+    let pool = load_pool();
+    let intent = load_e2e_intents("round_trip.toml");
+
+    for test in &intent.test {
+        run_e2e_round_trip(&pool, test);
     }
 }

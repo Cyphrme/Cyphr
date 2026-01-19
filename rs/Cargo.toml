@@ -14,7 +14,7 @@ coz = { package = "coz-rs", path = "../coz-rust/coz-rs" }
 # Serialization
 indexmap   = { version = "2", features = ["serde"] }
 serde      = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 toml       = "0.8"
 
 # CLI

@@ -9,7 +9,7 @@ use serde_json::json;
 
 /// Export all entries from a Principal for storage.
 ///
-/// Returns an iterator of `Entry` that can be persisted to any `Store`.
+/// Returns a vector of `Entry` that can be persisted to any `Store`.
 /// The order is: transactions first (in apply order), then actions.
 ///
 /// For `key/add` and `key/replace` transactions, the associated key material
@@ -18,7 +18,7 @@ use serde_json::json;
 /// # Example
 ///
 /// ```ignore
-/// let entries: Vec<Entry> = export_entries(&principal).collect();
+/// let entries = export_entries(&principal);
 /// for entry in entries {
 ///     store.append_entry(principal.pr(), &entry)?;
 /// }
@@ -44,15 +44,13 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
                 .insert("key".to_string(), key_json);
         }
 
-        entries.push(Entry { raw, now: tx.now() });
+        // Note: from_value serializes, which is fine for export (creating new entries)
+        entries.push(Entry::from_value(&raw).expect("valid entry"));
     }
 
     for action in principal.actions() {
         let raw = serde_json::to_value(action.raw()).expect("CozJson serialization cannot fail");
-        entries.push(Entry {
-            raw,
-            now: action.now(),
-        });
+        entries.push(Entry::from_value(&raw).expect("valid entry"));
     }
 
     entries
@@ -107,7 +105,7 @@ mod tests {
             "sig": "AAAA"
         });
 
-        let entry = Entry::from_value(raw).unwrap();
+        let entry = Entry::from_value(&raw).unwrap();
         assert_eq!(entry.now, 12345);
     }
 

@@ -1,70 +1,64 @@
-# Round-Trip E2E Tests
+# E2E Round-Trip Tests
 #
-# These tests verify export → storage → import produces identical state.
-# Each test references an existing golden fixture and runs the round-trip cycle.
+# These tests verify generate → export → import → compare.
+# Unlike integration tests, these are NOT pre-generated to golden files.
+# The test runner generates dynamically at test time.
 
-# =============================================================================
-# Basic Round-Trip (Single Transaction)
-# =============================================================================
-
+# Basic single-step round-trip
 [[test]]
-name   = "rt_single_tx"
-source = "mutations/key_add_increases_count"
-verify = "round_trip"
+name      = "e2e_key_add"
+principal = ["golden"]
 
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Multi-step transaction round-trip
 [[test]]
-name   = "rt_key_delete"
-source = "mutations/key_delete_decreases_count"
-verify = "round_trip"
+name      = "e2e_multi_tx"
+principal = ["golden"]
 
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# Action round-trip (Level 4)
 [[test]]
-name   = "rt_key_replace"
-source = "mutations/key_replace_single_key"
-verify = "round_trip"
+name      = "e2e_single_action"
+principal = ["golden"]
 
-[[test]]
-name   = "rt_self_revoke"
-source = "mutations/self_revoke_moves_to_revoked"
-verify = "round_trip"
+[test.action]
+msg    = "E2E test action"
+now    = 1700000000
+signer = "golden"
+typ    = "cyphr.me/action"
 
-# =============================================================================
-# Multi-Transaction Round-Trip
-# =============================================================================
-
-[[test]]
-name   = "rt_multi_tx"
-source = "mutations/transaction_sequence_replay"
-verify = "round_trip"
-
-[[test]]
-name   = "rt_multi_key"
-source = "multi_key/add_third_key_to_dual_key_account"
-verify = "round_trip"
-
-# =============================================================================
-# Actions (Level 4)
-# =============================================================================
-
-[[test]]
-name   = "rt_single_action"
-source = "actions/single_action_promotes_ds"
-verify = "round_trip"
-
-[[test]]
-name   = "rt_multi_action"
-source = "actions/dual_action_sorts_digests"
-verify = "round_trip"
-
-# =============================================================================
-# Algorithm Diversity
-# =============================================================================
-
-[[test]]
-name   = "rt_es384"
-source = "algorithm_diversity/es384_key_add"
-verify = "round_trip"
-
-[[test]]
-name   = "rt_ed25519"
-source = "algorithm_diversity/ed25519_key_add"
-verify = "round_trip"
+[test.expected]
+key_count = 1
+level     = 4

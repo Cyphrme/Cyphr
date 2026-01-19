@@ -152,7 +152,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Generate a single golden test case.
-    fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
+    pub fn generate_test(&self, test: &TestIntent) -> Result<Golden, Error> {
         // Check if this is an error test expecting genesis-time failure
         let expected_error = test
             .expected
@@ -254,11 +254,21 @@ impl<'a> Generator<'a> {
 
     /// Export entries from Principal using cyphrpass-storage export logic.
     /// Returns entries as Vec<Value> and digests as Vec<String>.
+    ///
+    /// IMPORTANT: Uses Entry::raw_json() to get the exact bytes that were
+    /// used for czd computation, then parses to Value for JSON storage.
+    /// This preserves byte-perfect fidelity through the serialization chain.
     fn export_principal_entries(principal: &cyphrpass::Principal) -> (Vec<Value>, Vec<String>) {
         use cyphrpass_storage::export_entries;
 
         let entries = export_entries(principal);
-        let entry_values: Vec<Value> = entries.iter().map(|e| e.raw.clone()).collect();
+
+        // Convert entries to Values by parsing their raw_json strings
+        // This preserves the exact byte ordering used during export
+        let entry_values: Vec<Value> = entries
+            .iter()
+            .map(|e| serde_json::from_str(e.raw_json()).expect("entry raw_json is valid JSON"))
+            .collect();
 
         // Compute digests from transactions and actions
         let mut digests = Vec::new();

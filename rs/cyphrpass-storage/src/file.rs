@@ -67,8 +67,8 @@ impl Store for FileStore {
             .open(&path)
             .map_err(FileStoreError::Io)?;
 
-        let json = serde_json::to_string(&entry.raw).map_err(FileStoreError::Json)?;
-        writeln!(file, "{}", json).map_err(FileStoreError::Io)?;
+        // Write the original JSON bytes (no re-serialization)
+        writeln!(file, "{}", entry.raw_json()).map_err(FileStoreError::Io)?;
 
         Ok(())
     }
@@ -90,13 +90,8 @@ impl Store for FileStore {
                 continue;
             }
 
-            let raw: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| FileStoreError::ParseLine {
-                    line: line_num + 1,
-                    source: e,
-                })?;
-
-            let entry = Entry::from_value(raw).map_err(|e| FileStoreError::Entry {
+            // CRITICAL: Use from_json to preserve original bytes for czd computation
+            let entry = Entry::from_json(line).map_err(|e| FileStoreError::Entry {
                 line: line_num + 1,
                 source: e,
             })?;
@@ -199,16 +194,10 @@ mod tests {
         let (store, dir) = temp_store("append_and_get");
         let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4]);
 
-        let entry = Entry {
-            raw: serde_json::json!({
-                "pay": {
-                    "now": 1234567890,
-                    "typ": "test/action"
-                },
-                "sig": "test"
-            }),
-            now: 1234567890,
-        };
+        let entry = Entry::from_json(
+            r#"{"pay":{"now":1234567890,"typ":"test/action"},"sig":"test"}"#.to_string(),
+        )
+        .unwrap();
 
         store.append_entry(&pr, &entry).unwrap();
         assert!(store.exists(&pr).unwrap());
@@ -228,13 +217,11 @@ mod tests {
 
         // Add entries with different timestamps: 100, 200, 300, 400, 500
         for i in 1..=5 {
-            let entry = Entry {
-                raw: serde_json::json!({
-                    "pay": { "now": i * 100, "typ": "test" },
-                    "sig": "test"
-                }),
-                now: i * 100,
-            };
+            let json = format!(
+                r#"{{"pay":{{"now":{},"typ":"test"}},"sig":"test"}}"#,
+                i * 100
+            );
+            let entry = Entry::from_json(json).unwrap();
             store.append_entry(&pr, &entry).unwrap();
         }
 
