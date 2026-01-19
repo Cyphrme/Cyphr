@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphrpass"
+	"github.com/cyphrme/cyphrpass/cyphrpass"
 )
 
 // testVectorsDir is the relative path to test vectors from the go/ directory.
