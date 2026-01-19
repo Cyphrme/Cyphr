@@ -62,3 +62,48 @@ typ    = "cyphr.me/action"
 [test.expected]
 key_count = 1
 level     = 4
+
+# Multi-key genesis round-trip (explicit genesis with 2 keys)
+[[test]]
+name      = "rt_multi_key_genesis"
+principal = ["alice", "bob"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "alice"
+target = "key_a"
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# Key revoke cycle round-trip (add key, then revoke it)
+[[test]]
+name      = "rt_key_revoke_cycle"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+rvk = 1700000002
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 1
+level     = 3

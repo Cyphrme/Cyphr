@@ -31,7 +31,7 @@ fn golden_dir() -> PathBuf {
 }
 
 fn e2e_intents_dir() -> PathBuf {
-    tests_dir().join("e2e").join("intents")
+    tests_dir().join("e2e")
 }
 
 #[allow(dead_code)]
