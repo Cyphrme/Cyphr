@@ -568,3 +568,189 @@ fn e2e_checkpoint_load() {
     // that load entries after genesis - the load_principal path is the same
     eprintln!("  ✓ checkpoint_with_suffix (covered by load_with_transactions)");
 }
+
+// ============================================================================
+// FileStore Operations Tests
+// ============================================================================
+
+/// Helper to create a temp FileStore.
+fn temp_filestore(test_name: &str) -> (cyphrpass_storage::FileStore, std::path::PathBuf) {
+    use std::env::temp_dir;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let dir = temp_dir().join(format!(
+        "cyphrpass_e2e_{}_{}_{}",
+        std::process::id(),
+        test_name,
+        nanos
+    ));
+    (cyphrpass_storage::FileStore::new(&dir), dir)
+}
+
+/// Create test entries with specific timestamps.
+fn make_test_entries_with_timestamps(timestamps: &[i64]) -> Vec<Entry> {
+    timestamps
+        .iter()
+        .map(|ts| {
+            let json = format!(
+                r#"{{"pay":{{"now":{},"typ":"test/action","alg":"ES256"}},"sig":"test_sig"}}"#,
+                ts
+            );
+            Entry::from_json(json).expect("test entry JSON invalid")
+        })
+        .collect()
+}
+
+/// FileStore: append entry and read it back.
+#[test]
+fn e2e_file_append_read() {
+    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass_storage::Store;
+
+    let (store, dir) = temp_filestore("append_read");
+    let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4, 5]);
+
+    // Create and append an entry
+    let entries = make_test_entries_with_timestamps(&[1700000000]);
+    store.append_entry(&pr, &entries[0]).unwrap();
+
+    // Read back
+    let loaded = store.get_entries(&pr).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].now, 1700000000);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("  ✓ file_append_read");
+}
+
+/// FileStore: query entries after a timestamp.
+#[test]
+fn e2e_file_query_after() {
+    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass_storage::{QueryOpts, Store};
+
+    let (store, dir) = temp_filestore("query_after");
+    let pr = PrincipalRoot::from_bytes(vec![2, 3, 4, 5, 6]);
+
+    // Append entries: 100, 200, 300, 400, 500
+    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
+    for e in &entries {
+        store.append_entry(&pr, e).unwrap();
+    }
+
+    // Query after 250 -> expect 300, 400, 500
+    let opts = QueryOpts {
+        after: Some(250),
+        before: None,
+        limit: None,
+    };
+    let result = store.get_entries_range(&pr, &opts).unwrap();
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].now, 300);
+    assert_eq!(result[1].now, 400);
+    assert_eq!(result[2].now, 500);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("  ✓ file_query_after");
+}
+
+/// FileStore: query entries before a timestamp.
+#[test]
+fn e2e_file_query_before() {
+    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass_storage::{QueryOpts, Store};
+
+    let (store, dir) = temp_filestore("query_before");
+    let pr = PrincipalRoot::from_bytes(vec![3, 4, 5, 6, 7]);
+
+    // Append entries: 100, 200, 300, 400, 500
+    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
+    for e in &entries {
+        store.append_entry(&pr, e).unwrap();
+    }
+
+    // Query before 350 -> expect 100, 200, 300
+    let opts = QueryOpts {
+        after: None,
+        before: Some(350),
+        limit: None,
+    };
+    let result = store.get_entries_range(&pr, &opts).unwrap();
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].now, 100);
+    assert_eq!(result[1].now, 200);
+    assert_eq!(result[2].now, 300);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("  ✓ file_query_before");
+}
+
+/// FileStore: query entries in a time range.
+#[test]
+fn e2e_file_query_range() {
+    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass_storage::{QueryOpts, Store};
+
+    let (store, dir) = temp_filestore("query_range");
+    let pr = PrincipalRoot::from_bytes(vec![4, 5, 6, 7, 8]);
+
+    // Append entries: 100, 200, 300, 400, 500
+    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
+    for e in &entries {
+        store.append_entry(&pr, e).unwrap();
+    }
+
+    // Query after 150, before 450 -> expect 200, 300, 400
+    let opts = QueryOpts {
+        after: Some(150),
+        before: Some(450),
+        limit: None,
+    };
+    let result = store.get_entries_range(&pr, &opts).unwrap();
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].now, 200);
+    assert_eq!(result[1].now, 300);
+    assert_eq!(result[2].now, 400);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("  ✓ file_query_range");
+}
+
+/// FileStore: query with limit.
+#[test]
+fn e2e_file_query_limit() {
+    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass_storage::{QueryOpts, Store};
+
+    let (store, dir) = temp_filestore("query_limit");
+    let pr = PrincipalRoot::from_bytes(vec![5, 6, 7, 8, 9]);
+
+    // Append entries: 100, 200, 300, 400, 500
+    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
+    for e in &entries {
+        store.append_entry(&pr, e).unwrap();
+    }
+
+    // Query with limit 2 -> expect first 2
+    let opts = QueryOpts {
+        after: None,
+        before: None,
+        limit: Some(2),
+    };
+    let result = store.get_entries_range(&pr, &opts).unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].now, 100);
+    assert_eq!(result[1].now, 200);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("  ✓ file_query_limit");
+}
