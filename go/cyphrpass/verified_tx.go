@@ -76,11 +76,38 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 		return nil, err
 	}
 
+	// Store raw bytes for bit-perfect export
+	// Build the complete entry: {pay, sig, key?}
+	rawEntry := buildRawEntry(cz, newKey)
+	tx.Raw = rawEntry
+
 	return &VerifiedTx{
 		tx:     tx,
 		signer: signerKey,
 		newKey: newKey,
 	}, nil
+}
+
+// buildRawEntry constructs the raw JSON entry from a verified Coz message.
+// This includes pay, sig, and optionally key for key/add and key/replace.
+func buildRawEntry(cz *coz.Coz, newKey *coz.Key) json.RawMessage {
+	// Build entry map with preserved pay bytes
+	entry := map[string]any{
+		"pay": json.RawMessage(cz.Pay),
+		"sig": cz.Sig.String(), // base64url encoded
+	}
+
+	// Include key material for key/add and key/replace
+	if newKey != nil {
+		entry["key"] = map[string]any{
+			"alg": string(newKey.Alg),
+			"pub": newKey.Pub.String(),
+			"tmb": newKey.Tmb.String(),
+		}
+	}
+
+	raw, _ := json.Marshal(entry)
+	return raw
 }
 
 // ApplyVerified applies a verified transaction to mutate principal state.

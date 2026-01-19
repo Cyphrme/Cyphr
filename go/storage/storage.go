@@ -1,20 +1,29 @@
-// Package storage provides storage backends for the Cyphrpass identity protocol.
+// Package storage provides a backend-agnostic storage API for Cyphrpass.
 //
-// This package implements the storage layer for persisting Cyphrpass principals,
-// transactions, and actions. The core types are:
+// This package follows the "Dumb Storage, Smart Principal" design principle:
+// storage stores and retrieves bytes, while all semantic operations (verification,
+// state computation, key validity) belong in the cyphrpass.Principal type.
 //
-//   - [Entry]: A stored entry preserving bit-perfect JSON bytes
-//   - [Genesis]: Genesis type for principal creation (implicit or explicit)
+// # Core Types
 //
-// # Import/Export
+//   - Entry: Raw JSON bytes preserving bit-perfect fidelity
+//   - Store: Backend-agnostic interface for append-only storage
+//   - Genesis: Enum representing implicit vs explicit genesis
 //
-// The primary functions are:
+// # Export/Import
 //
-//   - [ExportEntries]: Export transactions and actions from a Principal
-//   - [LoadPrincipal]: Reconstruct a Principal by replaying entries from genesis
+// ExportEntries extracts entries from a Principal for storage.
+// LoadPrincipal replays entries to reconstruct a Principal with full verification.
 //
-// # Bit-Perfect Preservation
+// # Backend Implementations
 //
-// Entries preserve the exact JSON bytes as received. This is critical for
-// correct [coz.Czd] computation, which hashes the exact bytes of the `pay` field.
+// This package defines the interface; implementations are in subpackages:
+//
+//   - storage/file: File-based JSONL storage for development/testing
+//   - (future) storage/sqlite: SQLite-based storage
+//   - (future) storage/postgres: PostgreSQL-based storage
+//
+// # Reference
+//
+// See docs/storage_api_design.md for the full design specification.
 package storage

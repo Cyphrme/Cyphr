@@ -361,6 +361,22 @@ func (p *Principal) ActionCount() int {
 	return len(p.data.Actions)
 }
 
+// Transactions returns all transactions in applied order.
+//
+// This accessor is used by storage.ExportEntries to serialize transaction history.
+// The returned slice is read-only; modifications will not affect the principal.
+func (p *Principal) Transactions() []*Transaction {
+	return p.auth.Transactions
+}
+
+// Actions returns all actions in recorded order.
+//
+// This accessor is used by storage.ExportEntries to serialize action history.
+// The returned slice is read-only; modifications will not affect the principal.
+func (p *Principal) Actions() []*Action {
+	return p.data.Actions
+}
+
 // applyTransactionInternal applies a transaction to mutate principal state.
 // This is an internal method; use ApplyVerified for the public API.
 //

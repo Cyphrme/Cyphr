@@ -1,13 +1,14 @@
 package storage
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
 
 // Entry is a stored entry preserving bit-perfect JSON bytes.
 //
-// CRITICAL INVARIANT: The original JSON string is preserved exactly as received.
+// CRITICAL INVARIANT: The original JSON bytes are preserved exactly as received.
 // This ensures correct czd computation, which hashes the exact bytes of `pay`.
 //
 // Re-serialization can alter:
@@ -15,31 +16,56 @@ import (
 //   - Whitespace
 //   - Number representation (e.g., 1.0 → 1)
 //
-// By storing json.RawMessage, we preserve the original bytes and extract `pay`
+// By storing the raw bytes, we preserve the original and extract `pay`
 // from the same source, ensuring bit-perfect fidelity.
 type Entry struct {
 	// Raw is the complete JSON entry as received.
+	// This is the immutable source of truth for this entry.
 	Raw json.RawMessage
 
-	// Now is the pay.now timestamp, extracted for ordering.
+	// Now is the pay.now timestamp, extracted for ordering and filtering.
 	Now int64
 }
 
-// EntryFromJSON creates an Entry from a raw JSON string.
+// NewEntry creates an Entry from raw JSON bytes.
 //
 // This is the primary constructor for entries loaded from storage.
 // The original bytes are preserved exactly.
-func EntryFromJSON(data []byte) (*Entry, error) {
-	// Extract pay.now for ordering
+func NewEntry(data []byte) (*Entry, error) {
+	// Validate JSON and extract pay.now for ordering
 	now, err := extractNow(data)
 	if err != nil {
 		return nil, err
 	}
 
+	// Make a copy to ensure immutability
+	raw := make(json.RawMessage, len(data))
+	copy(raw, data)
+
 	return &Entry{
-		Raw: json.RawMessage(data),
+		Raw: raw,
 		Now: now,
 	}, nil
+}
+
+// NewEntryFromValue creates an Entry by serializing a value.
+//
+// WARNING: This serializes the value, which may not preserve original
+// byte ordering. Use only when creating new entries (e.g., during export),
+// not when loading from storage.
+func NewEntryFromValue(v any) (*Entry, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal entry: %w", err)
+	}
+	return NewEntry(data)
+}
+
+// Bytes returns the raw JSON bytes.
+//
+// This returns the exact bytes stored, suitable for I/O operations.
+func (e *Entry) Bytes() []byte {
+	return e.Raw
 }
 
 // PayBytes extracts the `pay` field as raw bytes, preserving exact byte sequence.
@@ -58,10 +84,78 @@ func (e *Entry) PayBytes() ([]byte, error) {
 	}
 
 	if extractor.Pay == nil {
-		return nil, fmt.Errorf("entry missing pay field")
+		return nil, ErrMissingPay
 	}
 
 	return extractor.Pay, nil
+}
+
+// SigBytes extracts the `sig` field as decoded bytes.
+func (e *Entry) SigBytes() ([]byte, error) {
+	var extractor struct {
+		Sig string `json:"sig"`
+	}
+
+	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	if extractor.Sig == "" {
+		return nil, ErrMissingSig
+	}
+
+	// Decode base64url (no padding)
+	return base64.RawURLEncoding.DecodeString(extractor.Sig)
+}
+
+// KeyJSON extracts the optional `key` field as raw JSON bytes.
+// Returns nil if no key field is present (e.g., for actions or non-key-add transactions).
+func (e *Entry) KeyJSON() (json.RawMessage, error) {
+	var extractor struct {
+		Key json.RawMessage `json:"key"`
+	}
+
+	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	return extractor.Key, nil // nil is valid (no key)
+}
+
+// Typ extracts the pay.typ field.
+func (e *Entry) Typ() (string, error) {
+	var extractor struct {
+		Pay struct {
+			Typ string `json:"typ"`
+		} `json:"pay"`
+	}
+
+	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+		return "", fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	return extractor.Pay.Typ, nil
+}
+
+// IsTransaction returns true if this entry is a transaction (key mutation).
+// Per SPEC: transactions have typ containing "/key/".
+func (e *Entry) IsTransaction() bool {
+	typ, err := e.Typ()
+	if err != nil {
+		return false
+	}
+	return containsKeyPrefix(typ)
+}
+
+// containsKeyPrefix checks if typ indicates a transaction.
+func containsKeyPrefix(typ string) bool {
+	// Look for "/key/" in the typ string
+	for i := 0; i+5 <= len(typ); i++ {
+		if typ[i:i+5] == "/key/" {
+			return true
+		}
+	}
+	return false
 }
 
 // extractNow extracts the pay.now timestamp from JSON.
@@ -73,11 +167,11 @@ func extractNow(data []byte) (int64, error) {
 	}
 
 	if err := json.Unmarshal(data, &extractor); err != nil {
-		return 0, fmt.Errorf("invalid JSON: %w", err)
+		return 0, ErrInvalidJSON
 	}
 
 	if extractor.Pay.Now == 0 {
-		return 0, fmt.Errorf("entry missing pay.now field")
+		return 0, ErrMissingNow
 	}
 
 	return extractor.Pay.Now, nil

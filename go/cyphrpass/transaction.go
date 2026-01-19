@@ -1,6 +1,10 @@
 package cyphrpass
 
-import "github.com/cyphrme/coz"
+import (
+	"encoding/json"
+
+	"github.com/cyphrme/coz"
+)
 
 // Transaction type constants per SPEC §4.2.
 // These are typ suffixes; full typ is "<authority>/<suffix>".
@@ -64,6 +68,11 @@ type Transaction struct {
 
 	// Rvk is the revocation timestamp (for revoke transactions).
 	Rvk int64
+
+	// Raw is the original CozJson bytes for this transaction.
+	// This field enables bit-perfect export for storage round-trips.
+	// It includes the complete {pay, sig, key?} structure.
+	Raw json.RawMessage
 }
 
 // TransactionPay represents the payload fields for a Cyphrpass transaction.

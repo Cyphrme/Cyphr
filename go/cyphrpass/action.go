@@ -1,6 +1,10 @@
 package cyphrpass
 
-import "github.com/cyphrme/coz"
+import (
+	"encoding/json"
+
+	"github.com/cyphrme/coz"
+)
 
 // Action represents a signed user action (Level 4 AAA).
 //
@@ -18,6 +22,10 @@ type Action struct {
 
 	// Czd is the Coz digest of this action.
 	Czd coz.B64
+
+	// Raw is the original CozJson bytes for this action.
+	// This field enables bit-perfect export for storage round-trips.
+	Raw json.RawMessage
 }
 
 // ParseAction creates an Action from a Coz pay object.
