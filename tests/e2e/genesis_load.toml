@@ -1,0 +1,56 @@
+# E2E Genesis/Checkpoint Load Tests
+#
+# These tests verify load_principal correctness by checking final state.
+# Tests verify PR, AS, KS match expected values after loading.
+
+# Implicit genesis: single key, PR = tmb
+[[test]]
+name      = "load_implicit_genesis"
+principal = ["golden"]
+
+[test.expected]
+key_count = 1
+level     = 1
+# PR should equal the genesis key thumbprint for implicit genesis
+
+# Explicit genesis: multiple keys, PR = H(sort(tmbs))
+[[test]]
+name      = "load_explicit_genesis"
+principal = ["alice", "bob"]
+
+[test.expected]
+key_count = 2
+level     = 3
+# PR should equal hash of sorted key thumbprints
+
+# Load with transactions: genesis + key add
+[[test]]
+name      = "load_with_transactions"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Load with actions: genesis + action
+[[test]]
+name      = "load_with_actions"
+principal = ["golden"]
+
+[test.action]
+msg    = "Test action for load verification"
+now    = 1700000000
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+key_count = 1
+level     = 4
