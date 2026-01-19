@@ -1,0 +1,181 @@
+# E2E Edge Case Tests
+#
+# These tests verify unusual but valid protocol scenarios.
+# Cross-implementation reusable.
+
+# Algorithm diversity: mixed ES256/ES384 keys in genesis
+[[test]]
+name      = "edge_algorithm_diversity"
+principal = ["alice", "bob"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "alice"
+target = "key_a"
+
+[test.expected]
+key_count = 3
+level     = 3
+
+# Large history: 10+ sequential transactions using available keys
+# Uses add/revoke cycles with key_a and key_b
+[[test]]
+name      = "edge_large_history"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000003
+rvk = 1700000003
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000004
+rvk = 1700000004
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000005
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "alice"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000006
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "bob"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000007
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "carol"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000008
+rvk = 1700000008
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "alice"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000009
+rvk = 1700000009
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "bob"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000010
+rvk = 1700000010
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "golden"
+target = "carol"
+
+[test.expected]
+key_count = 1
+level     = 3
+
+# Action-only: Level 4 account with no transactions
+[[test]]
+name      = "edge_action_only_no_tx"
+principal = ["golden"]
+
+[[test.action_step]]
+msg    = "First action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.action_step]]
+msg    = "Second action"
+now    = 1700000002
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.action_step]]
+msg    = "Third action"
+now    = 1700000003
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+key_count = 1
+level     = 4
+
+# Same timestamp: multiple entries at identical timestamp
+# Per spec, this is allowed as long as chain is valid
+[[test]]
+name      = "edge_same_timestamp"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[test.expected]
+key_count = 3
+level     = 3

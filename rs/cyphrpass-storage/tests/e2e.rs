@@ -754,3 +754,18 @@ fn e2e_file_query_limit() {
     let _ = std::fs::remove_dir_all(&dir);
     eprintln!("  ✓ file_query_limit");
 }
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+/// Data-driven e2e test: loads edge case intents and verifies round-trip.
+#[test]
+fn e2e_dynamic_edge_cases() {
+    let pool = load_pool();
+    let intent = load_e2e_intents("edge_cases.toml");
+
+    for test in &intent.test {
+        run_e2e_round_trip(&pool, test);
+    }
+}
