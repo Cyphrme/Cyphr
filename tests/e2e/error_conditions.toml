@@ -1,0 +1,126 @@
+# E2E Error Condition Tests
+#
+# These tests verify that invalid entries are rejected with correct errors.
+# Each test generates entries at runtime and expects load_principal to fail.
+
+# Broken chain: pre field doesn't match current AS
+[[test]]
+name      = "err_broken_chain"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.override]
+pre = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error = "BrokenChain"
+
+# Unknown signer: signer key not in genesis
+[[test]]
+name      = "err_unknown_signer"
+principal = ["golden"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/add"
+
+[test.crypto]
+signer = "alice"
+target = "key_a"
+
+[test.expected]
+error = "UnknownSigner"
+
+# Timestamp past: timestamp older than previous entry
+[[test]]
+name      = "err_timestamp_past"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_b"
+
+[test.expected]
+error = "TimestampPast"
+
+# Duplicate key: adding a key that already exists
+[[test]]
+name      = "err_duplicate_key"
+principal = ["golden"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[test.expected]
+error = "DuplicateKey"
+
+# Revoked signer: signer key has been revoked by a previous transaction
+[[test]]
+name      = "err_revoked_signer"
+principal = ["alice", "bob"]
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+rvk = 1700000001
+typ = "cyphr.me/key/revoke"
+
+[test.step.crypto]
+signer = "bob"
+target = "alice"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000002
+typ = "cyphr.me/key/add"
+
+[test.step.crypto]
+signer = "alice"
+target = "key_a"
+
+[test.expected]
+error = "KeyRevoked"
+
+# No genesis keys: empty principal (should fail at genesis)
+[[test]]
+name      = "err_no_genesis_keys"
+principal = []
+
+[test.expected]
+error = "NoGenesisKeys"

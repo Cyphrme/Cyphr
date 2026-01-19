@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cyphrpass_storage::{Entry, Genesis, export_entries, load_principal};
+use cyphrpass_storage::{Entry, Genesis, LoadError, export_entries, load_principal};
 use serde_json::Value;
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
@@ -334,5 +334,127 @@ fn e2e_dynamic_round_trip() {
 
     for test in &intent.test {
         run_e2e_round_trip(&pool, test);
+    }
+}
+
+// ============================================================================
+// Error Condition Tests
+// ============================================================================
+
+/// Map LoadError to error name string for assertion matching.
+fn load_error_name(e: &LoadError) -> &'static str {
+    match e {
+        LoadError::NoGenesisKeys => "NoGenesisKeys",
+        LoadError::MissingTimestamp { .. } => "MissingTimestamp",
+        LoadError::MissingSig { .. } => "MissingSig",
+        LoadError::InvalidSignature { .. } => "InvalidSignature",
+        LoadError::BrokenChain { .. } => "BrokenChain",
+        LoadError::UnknownSigner { .. } => "UnknownSigner",
+        LoadError::Protocol(e) => match e {
+            cyphrpass::Error::InvalidPrior => "InvalidPrior",
+            cyphrpass::Error::UnknownKey => "UnknownKey",
+            cyphrpass::Error::KeyRevoked => "KeyRevoked",
+            cyphrpass::Error::NoActiveKeys => "NoActiveKeys",
+            cyphrpass::Error::DuplicateKey => "DuplicateKey",
+            cyphrpass::Error::TimestampPast => "TimestampPast",
+            cyphrpass::Error::TimestampFuture => "TimestampFuture",
+            cyphrpass::Error::InvalidSignature => "InvalidSignature",
+            cyphrpass::Error::MalformedPayload => "MalformedPayload",
+            cyphrpass::Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+            _ => "UnknownProtocolError",
+        },
+        LoadError::Json { .. } => "JsonError",
+        LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
+    }
+}
+
+/// Runner for a single e2e error test.
+fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
+    let expected_error = test
+        .expected
+        .as_ref()
+        .and_then(|e| e.error.as_deref())
+        .expect("error test must have expected.error");
+
+    // Handle NoGenesisKeys special case - error happens at genesis creation
+    if expected_error == "NoGenesisKeys" {
+        if test.principal.is_empty() {
+            eprintln!("  ✓ {} (expected error: NoGenesisKeys)", test.name);
+            return;
+        }
+        panic!(
+            "{}: expected NoGenesisKeys but principal is not empty",
+            test.name
+        );
+    }
+
+    // Create generator with pool
+    let generator = Generator::new(pool);
+
+    // Generate fixture at runtime
+    let golden = generator
+        .generate_test(test)
+        .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
+
+    let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
+    let entries = golden.entries.as_ref().expect("missing entries");
+
+    let genesis = make_genesis(genesis_keys);
+    let mut entry_vec = make_entries(entries);
+
+    // Apply setup modifiers (e.g., pre-revoke keys)
+    let mut principal = match &genesis {
+        Genesis::Implicit(key) => {
+            cyphrpass::Principal::implicit(key.clone()).expect("implicit genesis failed")
+        },
+        Genesis::Explicit(keys) => {
+            cyphrpass::Principal::explicit(keys.clone()).expect("explicit genesis failed")
+        },
+    };
+
+    if let Some(setup) = &test.setup {
+        if let Some(key_name) = &setup.revoke_key {
+            let rvk_time = setup.revoke_at.unwrap_or(0);
+            let pool_key = pool
+                .pool
+                .key
+                .iter()
+                .find(|k| k.name == *key_name)
+                .unwrap_or_else(|| {
+                    panic!("{}: setup.revoke_key '{}' not found", test.name, key_name)
+                });
+            let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
+            principal.pre_revoke_key(&tmb, rvk_time);
+        }
+    }
+
+    // Try to load principal - expect failure
+    match load_principal(genesis.clone(), &entry_vec) {
+        Ok(_) => {
+            panic!(
+                "{}: expected error '{}' but load_principal succeeded",
+                test.name, expected_error
+            );
+        },
+        Err(e) => {
+            let actual_error = load_error_name(&e);
+            assert_eq!(
+                actual_error, expected_error,
+                "{}: wrong error type. Got '{}', expected '{}'",
+                test.name, actual_error, expected_error
+            );
+            eprintln!("  ✓ {} (expected error: {})", test.name, expected_error);
+        },
+    }
+}
+
+/// Data-driven e2e test: loads error intents and verifies expected errors.
+#[test]
+fn e2e_dynamic_error_conditions() {
+    let pool = load_pool();
+    let intent = load_e2e_intents("error_conditions.toml");
+
+    for test in &intent.test {
+        run_e2e_error_test(&pool, test);
     }
 }
