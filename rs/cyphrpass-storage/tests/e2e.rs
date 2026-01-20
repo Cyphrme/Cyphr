@@ -245,7 +245,7 @@ fn rt_with_actions() {
 /// Runner for a single e2e round-trip test.
 fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     // Create generator with pool
-    let generator = Generator::new(&pool);
+    let generator = Generator::new(pool);
 
     // Generate fixture at runtime
     let golden = generator
@@ -547,7 +547,7 @@ fn e2e_checkpoint_load() {
     let key = golden_key_to_domain(&test_fixtures::GoldenKey {
         alg: golden_key.alg.clone(),
         pub_key: golden_key.pub_key.clone(),
-        tmb: Base64UrlUnpadded::encode_string(&golden_key.compute_tmb().unwrap().as_bytes()),
+        tmb: Base64UrlUnpadded::encode_string(golden_key.compute_tmb().unwrap().as_bytes()),
     });
 
     // Create principal with single key (implicit genesis)

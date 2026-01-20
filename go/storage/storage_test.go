@@ -210,8 +210,7 @@ func BenchmarkEntry_PayBytes(b *testing.B) {
 	raw := []byte(`{"pay":{"now":1000,"typ":"cyphr.me/comment/create","data":"some payload"},"sig":"AAAA"}`)
 	entry, _ := storage.NewEntry(raw)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = entry.PayBytes()
 	}
 }

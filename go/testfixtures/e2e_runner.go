@@ -227,7 +227,7 @@ func applySingleAction(pool *Pool, principal *cyphrpass.Principal, test *TestInt
 	}
 
 	// Build action pay
-	payObj := map[string]interface{}{
+	payObj := map[string]any{
 		"alg": string(signerKey.Alg),
 		"tmb": signerKey.Tmb.String(),
 		"typ": action.Typ,
@@ -255,8 +255,8 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.AuthState) map[string]interface{} {
-	payObj := map[string]interface{}{
+func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.AuthState) map[string]any {
+	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
 		"typ": pay.Typ,
@@ -285,7 +285,7 @@ func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.
 }
 
 // signAndApplyTransaction signs a pay object and applies it to principal.
-func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]interface{}, newKey *coz.Key, principal *cyphrpass.Principal) error {
+func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]any, newKey *coz.Key, principal *cyphrpass.Principal) error {
 	// Set correct alg from signer
 	payObj["alg"] = string(signerKey.Alg)
 
@@ -323,7 +323,7 @@ func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]interface{}, 
 }
 
 // signAndApplyAction signs an action and records it.
-func signAndApplyAction(signerKey *coz.Key, payObj map[string]interface{}, principal *cyphrpass.Principal) error {
+func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cyphrpass.Principal) error {
 	// Serialize pay to JSON - this is the exact bytes that will be signed
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
@@ -366,7 +366,7 @@ func signAndApplyAction(signerKey *coz.Key, payObj map[string]interface{}, princ
 	}
 
 	// Store raw bytes for export
-	cozJSON := map[string]interface{}{
+	cozJSON := map[string]any{
 		"pay": payObj,
 		"sig": signedCoz.Sig.String(),
 	}
