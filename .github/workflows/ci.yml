@@ -54,6 +54,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: numtide/treefmt-action@v1
-        with:
-          fail-on-change: true
+      - uses: nixbuild/nix-quick-install-action@v34
+      - name: Check formatting
+        run: nix-shell --run "treefmt --fail-on-change"
