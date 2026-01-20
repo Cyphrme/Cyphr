@@ -78,7 +78,10 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 
 	// Store raw bytes for bit-perfect export
 	// Build the complete entry: {pay, sig, key?}
-	rawEntry := buildRawEntry(cz, newKey)
+	rawEntry, err := buildRawEntry(cz, newKey)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
 	tx.Raw = rawEntry
 
 	return &VerifiedTx{
@@ -90,7 +93,7 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 
 // buildRawEntry constructs the raw JSON entry from a verified Coz message.
 // This includes pay, sig, and optionally key for key/add and key/replace.
-func buildRawEntry(cz *coz.Coz, newKey *coz.Key) json.RawMessage {
+func buildRawEntry(cz *coz.Coz, newKey *coz.Key) (json.RawMessage, error) {
 	// Build entry map with preserved pay bytes
 	entry := map[string]any{
 		"pay": json.RawMessage(cz.Pay),
@@ -106,8 +109,7 @@ func buildRawEntry(cz *coz.Coz, newKey *coz.Key) json.RawMessage {
 		}
 	}
 
-	raw, _ := json.Marshal(entry)
-	return raw
+	return json.Marshal(entry)
 }
 
 // ApplyVerified applies a verified transaction to mutate principal state.
@@ -123,21 +125,4 @@ func buildRawEntry(cz *coz.Coz, newKey *coz.Key) json.RawMessage {
 //   - ErrDuplicateKey: Adding key already in KS
 func (p *Principal) ApplyVerified(vt *VerifiedTx) error {
 	return p.applyTransactionInternal(vt.tx, vt.newKey)
-}
-
-// ApplyTransactionUnsafe applies a transaction without signature verification.
-// This method is intended ONLY for testing and internal use where signatures
-// are validated externally or cannot be generated (e.g., fixture-based tests).
-//
-// Production code should use VerifyTransaction + ApplyVerified instead.
-//
-// # Errors
-//
-//   - ErrTimestampPast: Transaction timestamp is older than latest seen
-//   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current Auth State
-//   - ErrNoActiveKeys: Would leave principal with no active keys
-//   - ErrDuplicateKey: Adding key already in KS
-func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) error {
-	return p.applyTransactionInternal(tx, newKey)
 }

@@ -20,6 +20,8 @@
 //!
 //! - [`FileStore`]: File-based storage using JSONL format (one file per principal).
 
+#![forbid(unsafe_code)]
+
 mod export;
 mod file;
 mod import;
