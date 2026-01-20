@@ -1,7 +1,6 @@
 package storage_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/cyphrme/cyphrpass/storage"
@@ -215,13 +214,4 @@ func BenchmarkEntry_PayBytes(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = entry.PayBytes()
 	}
-}
-
-// Helper to verify JSON structure (not exported, just for tests)
-func mustUnmarshal(data []byte) map[string]any {
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		panic(err)
-	}
-	return result
 }
