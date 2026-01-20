@@ -128,8 +128,6 @@ Cyphrpass/
 │   ├── golden/       # Pre-computed golden fixtures (41 tests)
 │   ├── e2e/          # E2E intent files (19 tests)
 │   └── README.md     # Test fixture documentation
-├── coz/              # Go Coz library (cryptographic JSON)
-└── coz-rust/         # Rust Coz library
 ```
 
 ## Implementations
