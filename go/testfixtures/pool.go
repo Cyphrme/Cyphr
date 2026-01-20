@@ -98,3 +98,33 @@ func (k *PoolKey) ToCozKey() (*coz.Key, error) {
 func (k *PoolKey) HasPrivateKey() bool {
 	return k.Prv != ""
 }
+
+// ToSigningKey converts a PoolKey to a coz.Key with private key for signing.
+// Returns error if no private key is available.
+func (k *PoolKey) ToSigningKey() (*coz.Key, error) {
+	if !k.HasPrivateKey() {
+		return nil, fmt.Errorf("key %q has no private key", k.Name)
+	}
+
+	pub, err := coz.Decode(k.Pub)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pub base64: %w", err)
+	}
+
+	prv, err := coz.Decode(k.Prv)
+	if err != nil {
+		return nil, fmt.Errorf("invalid prv base64: %w", err)
+	}
+
+	key := &coz.Key{
+		Alg: coz.SEAlg(k.Alg),
+		Pub: pub,
+		Prv: prv,
+	}
+
+	if err := key.Thumbprint(); err != nil {
+		return nil, fmt.Errorf("failed to compute tmb: %w", err)
+	}
+
+	return key, nil
+}
