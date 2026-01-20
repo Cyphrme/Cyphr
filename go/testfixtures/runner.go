@@ -210,10 +210,13 @@ func matchesExpectedError(actual, expected string) bool {
 	codePatterns := map[string][]string{
 		"KeyRevoked":           {"key revoked", "keyrevoked"},
 		"UnknownKey":           {"unknown key", "unknown signer", "unknownkey"},
+		"UnknownSigner":        {"unknown key", "unknown signer"}, // alias for UnknownKey
 		"TimestampPast":        {"timestamp in past", "timestampinpast"},
 		"DuplicateKey":         {"duplicate key", "duplicatekey"},
 		"NoActiveKeys":         {"no active keys", "noactivekeys"},
+		"NoGenesisKeys":        {"no active keys", "noactivekeys", "no genesis keys"}, // maps to same error
 		"InvalidPrior":         {"invalid prior", "invalidprior"},
+		"BrokenChain":          {"invalid prior", "invalidprior"}, // alias for InvalidPrior
 		"UnsupportedAlgorithm": {"unsupported", "rs256", "unsupportedalgorithm"},
 	}
 

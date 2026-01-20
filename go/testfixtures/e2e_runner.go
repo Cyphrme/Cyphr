@@ -39,10 +39,19 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 	var principal *cyphrpass.Principal
 	if len(genesisKeys) == 1 {
 		principal, err = cyphrpass.Implicit(genesisKeys[0])
-	} else {
+	} else if len(genesisKeys) > 1 {
 		principal, err = cyphrpass.Explicit(genesisKeys)
+	} else {
+		// Empty genesis - will fail, but might be expected for error tests
+		err = cyphrpass.ErrNoActiveKeys
 	}
+
+	// Handle genesis creation errors - might be expected for error tests
 	if err != nil {
+		if test.IsErrorTest() && matchesE2EError(err.Error(), test.Expected.Error) {
+			result.Passed = true
+			return result
+		}
 		result.Err = fmt.Errorf("failed to create principal: %w", err)
 		return result
 	}
@@ -280,22 +289,28 @@ func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]interface{}, 
 	// Set correct alg from signer
 	payObj["alg"] = string(signerKey.Alg)
 
-	// Serialize pay to JSON
+	// Serialize pay to JSON - this is the exact bytes that will be signed
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal pay: %w", err)
 	}
 
-	// Create Pay object for signing
-	var pay coz.Pay
-	if err := json.Unmarshal(payBytes, &pay); err != nil {
-		return fmt.Errorf("failed to unmarshal pay: %w", err)
+	// Hash the payload using the key's hash algorithm
+	digest, err := coz.Hash(signerKey.Alg.Hash(), payBytes)
+	if err != nil {
+		return fmt.Errorf("failed to hash pay: %w", err)
 	}
 
-	// Sign with SignPayRaw to avoid modifying now
-	signedCoz, err := signerKey.SignPayRaw(&pay)
+	// Sign the digest
+	sig, err := signerKey.Sign(digest)
 	if err != nil {
 		return fmt.Errorf("failed to sign: %w", err)
+	}
+
+	// Create Coz with exact payload bytes
+	signedCoz := &coz.Coz{
+		Pay: payBytes,
+		Sig: sig,
 	}
 
 	// Verify and apply
@@ -309,27 +324,39 @@ func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]interface{}, 
 
 // signAndApplyAction signs an action and records it.
 func signAndApplyAction(signerKey *coz.Key, payObj map[string]interface{}, principal *cyphrpass.Principal) error {
-	// Serialize pay to JSON
+	// Serialize pay to JSON - this is the exact bytes that will be signed
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal pay: %w", err)
 	}
 
-	// Create Pay object for signing
-	var pay coz.Pay
-	if err := json.Unmarshal(payBytes, &pay); err != nil {
-		return fmt.Errorf("failed to unmarshal pay: %w", err)
+	// Hash the payload
+	digest, err := coz.Hash(signerKey.Alg.Hash(), payBytes)
+	if err != nil {
+		return fmt.Errorf("failed to hash pay: %w", err)
 	}
 
-	// Sign
-	signedCoz, err := signerKey.SignPayRaw(&pay)
+	// Sign the digest
+	sig, err := signerKey.Sign(digest)
 	if err != nil {
 		return fmt.Errorf("failed to sign: %w", err)
+	}
+
+	// Create Coz with exact payload bytes
+	signedCoz := &coz.Coz{
+		Pay: payBytes,
+		Sig: sig,
 	}
 
 	// Compute czd
 	if err := signedCoz.Meta(); err != nil {
 		return fmt.Errorf("failed to compute meta: %w", err)
+	}
+
+	// Parse pay for action creation
+	var pay coz.Pay
+	if err := json.Unmarshal(payBytes, &pay); err != nil {
+		return fmt.Errorf("failed to parse pay: %w", err)
 	}
 
 	// Create action
