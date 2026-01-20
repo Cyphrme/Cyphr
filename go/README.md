@@ -125,12 +125,23 @@ case errors.Is(err, cyphrpass.ErrNoActiveKeys):
 
 ```bash
 cd go
-go test -v
+go test ./...
 ```
 
-The test suite uses shared fixtures from `../test_vectors/`.
+### Test Suites
+
+| Suite          | Tests | Description                          |
+| -------------- | ----- | ------------------------------------ |
+| `TestGolden_*` | 41    | Pre-computed fixtures (golden tests) |
+| `TestE2E_*`    | 19    | Dynamic intent-driven tests          |
+| Unit tests     | ~15   | Package-level unit tests             |
+
+**Golden tests** consume pre-computed JSON fixtures from `../tests/golden/`.
+
+**E2E tests** parse TOML intent files from `../tests/e2e/` and dynamically
+generate transactions at runtime, providing round-trip verification.
 
 ## See Also
 
 - [SPEC.md](../SPEC.md) — Full protocol specification
-- [test_vectors/README.md](../test_vectors/README.md) — Test vector documentation
+- [tests/README.md](../tests/README.md) — Test fixture documentation

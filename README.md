@@ -124,8 +124,10 @@ Cyphrpass/
 │   └── README.md     # Go-specific documentation
 ├── rs/               # Rust implementation
 │   └── README.md     # Rust-specific documentation
-├── test_vectors/     # Language-agnostic test fixtures
-│   └── README.md     # Test vector documentation
+├── tests/            # Language-agnostic test fixtures
+│   ├── golden/       # Pre-computed golden fixtures (41 tests)
+│   ├── e2e/          # E2E intent files (19 tests)
+│   └── README.md     # Test fixture documentation
 ├── coz/              # Go Coz library (cryptographic JSON)
 └── coz-rust/         # Rust Coz library
 ```
@@ -150,4 +152,4 @@ Cyphrpass uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic opera
 - **[SPEC.md](SPEC.md)** — Full protocol specification
 - **[go/README.md](go/README.md)** — Go implementation guide
 - **[rs/README.md](rs/README.md)** — Rust implementation guide
-- **[test_vectors/README.md](test_vectors/README.md)** — Test vector documentation
+- **[tests/README.md](tests/README.md)** — Test fixture documentation

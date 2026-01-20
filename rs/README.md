@@ -123,9 +123,20 @@ cd rs
 cargo test
 ```
 
-The test suite uses shared fixtures from `../test_vectors/`.
+### Test Suites
+
+| Suite             | Tests | Description                          |
+| ----------------- | ----- | ------------------------------------ |
+| `golden_fixtures` | 41    | Pre-computed fixtures (golden tests) |
+| `e2e.rs`          | 19    | Dynamic intent-driven tests          |
+| Unit tests        | ~20   | Crate-level unit tests               |
+
+**Golden tests** consume pre-computed JSON fixtures from `../tests/golden/`.
+
+**E2E tests** parse TOML intent files from `../tests/e2e/` and dynamically
+generate transactions at runtime using the `test-fixtures` crate.
 
 ## See Also
 
 - [SPEC.md](../SPEC.md) — Full protocol specification
-- [test_vectors/README.md](../test_vectors/README.md) — Test vector documentation
+- [tests/README.md](../tests/README.md) — Test fixture documentation

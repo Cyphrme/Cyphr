@@ -359,6 +359,8 @@ cargo run -p fixture-gen -- \
 
 ## Current Test Coverage
 
+### Golden Tests (Pre-Computed Fixtures)
+
 | Category            | Tests  |
 | ------------------- | ------ |
 | mutations           | 7      |
@@ -369,3 +371,49 @@ cargo run -p fixture-gen -- \
 | actions             | 5      |
 | errors              | 10     |
 | **Total**           | **41** |
+
+---
+
+## E2E Tests (Dynamic Intent-Driven)
+
+In addition to golden tests, `tests/e2e/` contains **intent files** that are parsed at runtime to generate and verify tests dynamically. These provide round-trip verification:
+
+1. Parse TOML intent
+2. Generate transactions with real signatures
+3. Apply to Principal
+4. Export entries
+5. Re-import and verify state matches
+
+### E2E Intent Files
+
+| File                    | Tests  | Description                                |
+| ----------------------- | ------ | ------------------------------------------ |
+| `round_trip.toml`       | 5      | Export/import round-trip verification      |
+| `genesis_load.toml`     | 4      | Genesis creation and initial state         |
+| `edge_cases.toml`       | 4      | Algorithm diversity, large history, timing |
+| `error_conditions.toml` | 6      | Error rejection (broken chain, revoked)    |
+| **Total**               | **19** |                                            |
+
+### Running E2E Tests
+
+**Go:**
+
+```bash
+cd go && go test ./cyphrpass/... -run TestE2E
+```
+
+**Rust:**
+
+```bash
+cd rs && cargo test -p cyphrpass-storage --test e2e
+```
+
+---
+
+## Grand Total: 60 Integration Tests
+
+| Type         | Tests  |
+| ------------ | ------ |
+| Golden       | 41     |
+| E2E          | 19     |
+| **Combined** | **60** |
