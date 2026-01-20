@@ -79,7 +79,7 @@ principal.record_action(action)?;
 | -------------- | -------------------- | ---------------------------------- |
 | `pr()`         | `&PrincipalRoot`     | Permanent identity (never changes) |
 | `ps()`         | `&PrincipalState`    | Current state (evolves)            |
-| `auth_state()` | `&AuthState`         | Auth state = H(KS, TS)             |
+| `auth_state()` | `&AuthState`         | Auth state = H(KS, TS?, RS?)       |
 | `key_state()`  | `&KeyState`          | Key state = H(thumbprints)         |
 | `data_state()` | `Option<&DataState>` | Data state = H(action czds)        |
 | `level()`      | `Level`              | Current feature level              |

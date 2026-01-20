@@ -81,7 +81,7 @@ err := principal.RecordAction(action)
 | --------- | ---------------- | ---------------------------------- |
 | `PR()`    | `PrincipalRoot`  | Permanent identity (never changes) |
 | `PS()`    | `PrincipalState` | Current state (evolves)            |
-| `AS()`    | `AuthState`      | Auth state = H(KS, TS)             |
+| `AS()`    | `AuthState`      | Auth state = H(KS, TS?, RS?)       |
 | `KS()`    | `KeyState`       | Key state = H(thumbprints)         |
 | `DS()`    | `DataState`      | Data state = H(action czds)        |
 | `Level()` | `Level`          | Current feature level (1-6)        |
