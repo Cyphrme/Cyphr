@@ -294,11 +294,15 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     if let (Some(entries), Some(digests)) = (&fixture.entries, &fixture.digests) {
         // Apply entries using new format
         let entry_count = entries.len();
-        for (i, entry) in entries.iter().enumerate() {
+        for (i, entry_raw) in entries.iter().enumerate() {
             let is_last = i == entry_count - 1;
             let czd = &digests[i];
 
-            match try_apply_entry(&mut principal, entry, czd, &fixture.name) {
+            // Parse RawValue to Value for entry processing
+            let entry: serde_json::Value = serde_json::from_str(entry_raw.get())
+                .expect("failed to parse entry RawValue as Value");
+
+            match try_apply_entry(&mut principal, &entry, czd, &fixture.name) {
                 Ok(()) => {
                     if is_last {
                         if let Some(err) = expected_error {

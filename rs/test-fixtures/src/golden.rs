@@ -19,6 +19,7 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::Error;
 use crate::intent::{
@@ -40,8 +41,9 @@ pub struct Golden {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
     /// Storage-format entries: [{pay, sig, key?}, ...] in application order.
+    /// Uses Box<RawValue> to preserve exact bytes for signature verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entries: Option<Vec<Value>>,
+    pub entries: Option<Vec<Box<RawValue>>>,
     /// Coz digests (czd) parallel to entries, for protocol verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digests: Option<Vec<String>>,
@@ -63,8 +65,9 @@ pub struct GoldenSetup {
 /// A Coz message with computed cryptographic values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldenCoz {
-    /// Pay object (preserved as raw JSON for bit-perfect signing).
-    pub pay: Value,
+    /// Pay object as RawValue to preserve exact signed bytes.
+    /// This is critical: signatures are computed over these exact bytes.
+    pub pay: Box<RawValue>,
     /// Signature (base64url).
     pub sig: String,
     /// Coz digest (base64url).
@@ -253,19 +256,21 @@ impl<'a> Generator<'a> {
     }
 
     /// Export entries from Principal using cyphrpass-storage export logic.
-    /// Returns entries as Vec<Value> and digests as Vec<String>.
+    /// Returns entries as Vec<Box<RawValue>> and digests as Vec<String>.
     ///
     /// IMPORTANT: Uses Entry::raw_json() to get the exact bytes that were
-    /// used for czd computation, then parses to Value for JSON storage.
-    /// This preserves byte-perfect fidelity through the serialization chain.
-    fn export_principal_entries(principal: &cyphrpass::Principal) -> (Vec<Value>, Vec<String>) {
+    /// used for czd computation. Box<RawValue> preserves these bytes through
+    /// serde serialization to the golden file, avoiding re-serialization.
+    fn export_principal_entries(
+        principal: &cyphrpass::Principal,
+    ) -> (Vec<Box<RawValue>>, Vec<String>) {
         use cyphrpass_storage::export_entries;
 
         let entries = export_entries(principal);
 
-        // Convert entries to Values by parsing their raw_json strings
-        // This preserves the exact byte ordering used during export
-        let entry_values: Vec<Value> = entries
+        // Convert entries to RawValue to preserve exact bytes through serialization.
+        // This is critical: serializing to Value and back would lose byte ordering.
+        let entry_values: Vec<Box<RawValue>> = entries
             .iter()
             .map(|e| serde_json::from_str(e.raw_json()).expect("entry raw_json is valid JSON"))
             .collect();
@@ -284,21 +289,32 @@ impl<'a> Generator<'a> {
 
     /// Convert a GoldenCoz to storage entry format {pay, sig, key?}.
     /// Used for error tests where the failing entry is not in Principal.
-    fn coz_to_entry_value(coz: &GoldenCoz) -> Value {
-        let mut entry = serde_json::Map::new();
-        entry.insert("pay".to_string(), coz.pay.clone());
-        entry.insert("sig".to_string(), Value::String(coz.sig.clone()));
+    /// Returns Box<RawValue> to preserve bytes through golden file serialization.
+    ///
+    /// CRITICAL: Pay must be embedded as raw bytes, NOT re-serialized through Value.
+    /// This preserves the exact bytes that were signed.
+    fn coz_to_entry_value(coz: &GoldenCoz) -> Box<RawValue> {
+        // Build JSON string manually to preserve exact pay bytes
+        let mut json = String::from("{\"pay\":");
+        json.push_str(coz.pay.get());
+        json.push_str(",\"sig\":\"");
+        json.push_str(&coz.sig);
+        json.push('"');
+
         if let Some(ref key) = coz.key {
-            entry.insert(
-                "key".to_string(),
-                serde_json::json!({
-                    "alg": key.alg,
-                    "pub": key.pub_key,
-                    "tmb": key.tmb
-                }),
-            );
+            // Key can be serialized normally since it wasn't signed
+            let key_json = serde_json::json!({
+                "alg": key.alg,
+                "pub": key.pub_key,
+                "tmb": key.tmb
+            });
+            json.push_str(",\"key\":");
+            json.push_str(&serde_json::to_string(&key_json).expect("key serialization"));
         }
-        Value::Object(entry)
+
+        json.push('}');
+
+        serde_json::from_str(&json).expect("valid JSON")
     }
 
     /// Create a Principal from genesis key names.
@@ -791,7 +807,11 @@ impl<'a> Generator<'a> {
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
         let coz = GoldenCoz {
-            pay: serde_json::to_value(&pay_map).unwrap(),
+            // CRITICAL: Use pay_json bytes directly - these are the exact bytes that were signed
+            pay: RawValue::from_string(
+                String::from_utf8(pay_json).expect("pay_json is valid UTF-8"),
+            )
+            .unwrap(),
             sig: sig_b64,
             czd: czd_b64,
             key: None,
@@ -1140,8 +1160,9 @@ level = 3
         assert_eq!(entries.len(), 1, "single-step should have 1 entry");
         assert_eq!(digests.len(), 1, "single-step should have 1 digest");
 
-        // Verify entry has correct structure
-        let entry = &entries[0];
+        // Verify entry has correct structure (parse RawValue to Value first)
+        let entry_raw = &entries[0];
+        let entry: Value = serde_json::from_str(entry_raw.get()).expect("entry parse");
         let pay = entry.get("pay").expect("entry missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/key/add");

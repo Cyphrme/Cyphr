@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use cyphrpass_storage::{Entry, Genesis, LoadError, export_entries, load_principal};
 use serde_json::Value;
+use serde_json::value::RawValue;
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
 // ============================================================================
@@ -84,17 +85,22 @@ fn make_genesis(genesis_keys: &[GoldenKey]) -> Genesis {
     }
 }
 
-/// Convert Golden.entries to Vec<Entry>.
-fn make_entries(entries: &[Value]) -> Vec<Entry> {
+/// Convert Golden.entries (Box<RawValue>) to Vec<Entry>.
+/// Parses RawValue to Value first, then creates Entry.
+fn make_entries(entries: &[Box<RawValue>]) -> Vec<Entry> {
     entries
         .iter()
-        .map(|v| Entry::from_value(v).expect("invalid entry"))
+        .map(|raw| {
+            let v: Value = serde_json::from_str(raw.get()).expect("invalid entry JSON");
+            Entry::from_value(&v).expect("invalid entry")
+        })
         .collect()
 }
 
 /// Compare exported entries against expected entries.
 /// Returns true if semantically equivalent (pay, sig, key fields match).
-fn compare_entries(exported: &[Entry], expected: &[Value]) -> Result<(), String> {
+/// Parses Box<RawValue> to Value for comparison.
+fn compare_entries(exported: &[Entry], expected: &[Box<RawValue>]) -> Result<(), String> {
     if exported.len() != expected.len() {
         return Err(format!(
             "entry count mismatch: exported {} vs expected {}",
@@ -103,39 +109,42 @@ fn compare_entries(exported: &[Entry], expected: &[Value]) -> Result<(), String>
         ));
     }
 
-    for (i, (exp, exp_val)) in exported.iter().zip(expected.iter()).enumerate() {
+    for (i, (exp, expected_raw)) in exported.iter().zip(expected.iter()).enumerate() {
+        // Parse RawValue to Value for comparison
+        let exp_val: Value = serde_json::from_str(expected_raw.get())
+            .map_err(|e| format!("entry {}: failed to parse expected: {}", i, e))?;
         // Parse exported entry for comparison
-        let exp_raw = exp
+        let exported_val = exp
             .as_value()
             .map_err(|_| format!("entry {}: failed to parse exported entry", i))?;
 
         // Compare pay fields
-        let exp_pay = exp_raw.get("pay");
+        let exported_pay = exported_val.get("pay");
         let expected_pay = exp_val.get("pay");
-        if exp_pay != expected_pay {
+        if exported_pay != expected_pay {
             return Err(format!(
                 "entry {}: pay mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp_pay, expected_pay
+                i, exported_pay, expected_pay
             ));
         }
 
         // Compare sig fields
-        let exp_sig = exp_raw.get("sig");
+        let exported_sig = exported_val.get("sig");
         let expected_sig = exp_val.get("sig");
-        if exp_sig != expected_sig {
+        if exported_sig != expected_sig {
             return Err(format!(
                 "entry {}: sig mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp_sig, expected_sig
+                i, exported_sig, expected_sig
             ));
         }
 
         // Compare key fields (if present)
-        let exp_key = exp_raw.get("key");
+        let exported_key = exported_val.get("key");
         let expected_key = exp_val.get("key");
-        if exp_key != expected_key {
+        if exported_key != expected_key {
             return Err(format!(
                 "entry {}: key mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp_key, expected_key
+                i, exported_key, expected_key
             ));
         }
     }
@@ -262,8 +271,9 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let genesis = make_genesis(genesis_keys);
     let entry_vec = make_entries(entries);
 
-    // Debug: dump pre values from entries
-    for (i, e) in entries.iter().enumerate() {
+    // Debug: dump pre values from entries (parse RawValue to Value first)
+    for (i, e_raw) in entries.iter().enumerate() {
+        let e: Value = serde_json::from_str(e_raw.get()).expect("entry parse");
         if let Some(pay) = e.get("pay") {
             if let Some(pre) = pay.get("pre") {
                 eprintln!("  [{}] pre: {}", i, pre);
