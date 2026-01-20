@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - run: cargo build --verbose
+      - run: cargo test --verbose
+      - run: cargo clippy -- -D warnings
+
+  go:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: go/go.sum
+      - run: go build ./...
+      - run: go test ./...
+      - run: go vet ./...
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+          components: rustfmt
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Rust fmt check
+        run: cargo fmt --manifest-path rs/Cargo.toml -- --check
+      - name: Go fmt check
+        run: |
+          UNFMT=$(gofmt -l go/)
+          if [ -n "$UNFMT" ]; then
+            echo "Unformatted files:"
+            echo "$UNFMT"
+            exit 1
+          fi
