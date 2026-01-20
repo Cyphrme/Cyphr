@@ -235,7 +235,8 @@ impl VerifiedTransaction {
     /// This method bypasses signature verification and should ONLY be used
     /// for testing or when signatures are validated externally.
     /// Production code should use [`verify`] instead.
-    pub fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
         Self { tx, new_key }
     }
 }
