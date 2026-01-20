@@ -6,7 +6,7 @@ toolchain go1.24.11
 
 require github.com/cyphrme/coz v1.0.0
 
-require github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+require github.com/pelletier/go-toml/v2 v2.2.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
