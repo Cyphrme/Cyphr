@@ -20,11 +20,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-        "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-      },
       "pay": {
         "alg": "ES256",
         "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
@@ -33,16 +28,21 @@
         "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
         "typ": "cyphr.me/key/delete"
       },
-      "sig": "00zgYN4vvobJGqfSMAWUUXPY8VIYX_kVYDUVcLGxNH4lq1D08aIlMfEVfQzsKaAv7wAj6-gRYTIInXj1Fv52JA"
+      "sig": "N-SSqmkKaaWya-iqbWUHLvWEzemC_UNi7rSX_kupFSho42hYjX0Xh4U9TiqXUnLNBz6Q9RkuARUM-FmNjvyrjw",
+      "key": {
+        "alg": "ES256",
+        "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+        "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+      }
     }
   ],
-  "digests": ["hRFgk2o7ttn_0J04II48_UsaL-LmRjWji2Adwv0Vyg4"],
+  "digests": ["9e5MYmaY5iWfGqu3iw4af8fAPU7piel8X7H7oK6ljSE"],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
-    "as": "gCV_oVkAUf7wO70tEOWReGeqJsFmWt5MkFrE13dlvAs",
-    "ps": "gCV_oVkAUf7wO70tEOWReGeqJsFmWt5MkFrE13dlvAs",
+    "as": "cTmM0REPxvVBZZOoGBSZHLEAX6e7lIWuwKdRa_QDl6E",
+    "ps": "cTmM0REPxvVBZZOoGBSZHLEAX6e7lIWuwKdRa_QDl6E",
     "pr": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s"
   }
 }

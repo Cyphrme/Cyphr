@@ -96,15 +96,16 @@ func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, err
 // replayEntries replays entries onto a principal (shared logic).
 func replayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
 	for i, entry := range entries {
-		if err := replayEntry(principal, entry, i); err != nil {
+		if err := ReplayEntry(principal, entry, i); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// replayEntry replays a single entry onto a principal.
-func replayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error {
+// ReplayEntry replays a single entry onto a principal.
+// This is exported for use by testfixtures package for setup-aware loading.
+func ReplayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error {
 	// Determine if transaction or action
 	if entry.IsTransaction() {
 		return replayTransaction(principal, entry, index)

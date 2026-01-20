@@ -18,10 +18,10 @@
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/revoke"
       },
-      "sig": "M31vwpsFsgJFE6Xk3eJnXAzSnr29fgzbNvpliwHaTsVUN2GKr7i7iE_gMg-9tUBdrpW0dzZ25MNbvCmCYvQzaQ"
+      "sig": "F5F_L9PXMV0Le6XMh-RG1QWm40nLlZ-Zrc1lt6LvuVFDNGHJX-VcjxPYbpKA-ac4qogJSmdHm9PAOKr-dgkFHg"
     }
   ],
-  "digests": ["oXkj7yGgQcU-y9MNzPoPGqPns1IQPjjiPFTa1yVIcj0"],
+  "digests": ["1-bXIe69KApv4msX0GvVgzK-Ce0bL3y-s64SEeTKvkI"],
   "expected": {
     "key_count": 1,
     "level": 1,

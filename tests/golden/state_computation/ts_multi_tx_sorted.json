@@ -10,11 +10,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      },
       "pay": {
         "alg": "ES256",
         "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
@@ -23,35 +18,40 @@
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/add"
       },
-      "sig": "n32QGzQhj_fOFIM5WNem8CvV0k-W8_JkQOOuo6VVmIM_gBwrx8haSCrrciPBirrtdu9HyvcTKgyR5ew4Tov5EQ"
-    },
-    {
+      "sig": "JG9cSWijcuzvm0x-xFtaV7mukA3kXbDRdclEOfSf5oIje4jqFk_aM2dgwW42uFXq-98tqstblWR_j3zzbMW01w",
       "key": {
         "alg": "ES256",
         "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
         "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      },
+      }
+    },
+    {
       "pay": {
         "alg": "ES256",
         "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
         "now": 1700000002,
-        "pre": "JfXZMMTKgJEQSoDZ3nxEvikc9--YqGpnt-jpZGI2wE0",
+        "pre": "UpbX4x-KRN7jf4FSM4j0YCT-l3pO4lTQqnaosVJG8LI",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/delete"
       },
-      "sig": "cKouFIQ9otXAUxByVLtl05K92Ap5jF3yycBuXENCH-ILwf3KYyDqzSGR1xWVGk_i6eeTy8Ctae6FvPgA4YWfFg"
+      "sig": "mbu7HjT11e2H6MTsZjX_TyDjY9ut0R_akc1ovQDehxwV8jx4QNi8NIAsUYzz3DoWWlN9Osj26riFh8Fg809qwQ",
+      "key": {
+        "alg": "ES256",
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      }
     }
   ],
   "digests": [
-    "qwVbWpUQFTD097-LVq03R_0VVuwyOorm2SMH4D_Regs",
-    "h8iWy17COQKGPxCN--lX5CDMKDuHs0oeHHHrIVC7wK8"
+    "AC87RO-88ligU3uAu5iSx3pBImfVDnRGrxBSql2MH3E",
+    "1mmTlXKZOqNQz3yWWYmNpF9hVYABLPhKpajqJNFvem0"
   ],
   "expected": {
     "key_count": 1,
     "level": 3,
     "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "BUbeElxMbOpty4z-9z9Sc8n3f6Cvioc7G3W8QxNjGHk",
-    "ps": "BUbeElxMbOpty4z-9z9Sc8n3f6Cvioc7G3W8QxNjGHk",
+    "as": "B-YdFonG6hI2wt-egax83sd4tjkXP8J3hMoM_n47xLo",
+    "ps": "B-YdFonG6hI2wt-egax83sd4tjkXP8J3hMoM_n47xLo",
     "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   }
 }

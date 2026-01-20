@@ -10,11 +10,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      },
       "pay": {
         "alg": "ES256",
         "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
@@ -23,35 +18,40 @@
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/add"
       },
-      "sig": "0nlSUMS7fU1IL2YLobUepqOSbwPhuvNIGXC2QJ6drDtipO7I0n0abaQdjavcYhUzuBWb3EPF5rWRbj0DDNVRQQ"
-    },
-    {
+      "sig": "NeIPdPnuEBr73D_ax5mGnHcRX0vRxdbWpYcRIf_xU3oiF1n9XEoraqzW6nh9TrjkgTBDPr7Qakx3ptFPYzaQcg",
       "key": {
         "alg": "ES256",
-        "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
-        "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
-      },
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      }
+    },
+    {
       "pay": {
         "alg": "ES256",
         "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
         "now": 1700000050,
-        "pre": "8ZveB6rXt6K6AJEatsJ2AzH1c06yqGr1o-1xqXXC16g",
+        "pre": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/add"
       },
-      "sig": "q-jRsR7l8LP5nUWEdvP2VyTbDwCqABich4YvZqShTahs1VrPbMYxdiM7LfVOciUJqzd1FXH8b5Mi80OgioN9wg"
+      "sig": "CvjXlV4az1oNKw5xzf2l_529ZvXefz-UfSZ-cTkCdJksCchP4GwGSzFnTHAqnEqDgCPT_tW9sUY8acquUeDPXQ",
+      "key": {
+        "alg": "ES256",
+        "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
+        "tmb": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E"
+      }
     }
   ],
   "digests": [
-    "224a-b97wOtmG8J7ZECnwK7HtFMFIfSv-dniNdncQRQ",
-    "Ua5hbTy4tMd_A31WaHVBkH201WjXQ1y7cvzPxLO8hj8"
+    "rsSDO-dnkg2Qk4ZZq_tNzPArqirmfDeZ6Cki3ssYPtk",
+    "cnKLQwMBEJ9A9eI9noKYbhc5Gvhkr_vamBRoo-87PMg"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "8ZveB6rXt6K6AJEatsJ2AzH1c06yqGr1o-1xqXXC16g",
-    "ps": "8ZveB6rXt6K6AJEatsJ2AzH1c06yqGr1o-1xqXXC16g",
+    "as": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
+    "ps": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
     "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "error": "TimestampPast"
   }

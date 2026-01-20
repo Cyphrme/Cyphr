@@ -10,11 +10,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      },
       "pay": {
         "alg": "Ed25519",
         "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
@@ -23,7 +18,12 @@
         "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
         "typ": "cyphr.me/key/add"
       },
-      "sig": "gsIIXblUEKMgJ1tyX1FhXTUApRuAv_pZwm_05kP42EckFYiiIQWehKwbrdHokdnVllrftS-8Za7ZOUpQ5Vd3Dw"
+      "sig": "gsIIXblUEKMgJ1tyX1FhXTUApRuAv_pZwm_05kP42EckFYiiIQWehKwbrdHokdnVllrftS-8Za7ZOUpQ5Vd3Dw",
+      "key": {
+        "alg": "ES256",
+        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+      }
     }
   ],
   "digests": [

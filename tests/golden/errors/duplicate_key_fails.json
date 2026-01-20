@@ -10,11 +10,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-      },
       "pay": {
         "alg": "ES256",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -23,10 +18,15 @@
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/key/add"
       },
-      "sig": "zqK9eKT9GetRFR4CkZgYtU83jCwPVdYvu2fDUDNvSX1y3-NE_2BD1LggMA4lwi91FVp9TSfmeIZv4VubwVBxJQ"
+      "sig": "5tFepV_sP26THPApopxirfucZhHuogv1srhh7sW48LBO4lOj-ZAiomR6al0fKKA1QtMKvnlbv9kbsxB0LRRLuA",
+      "key": {
+        "alg": "ES256",
+        "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+      }
     }
   ],
-  "digests": ["G9vxyMXQsULfUiWB64y0A7aPxyrmXkITX07OzKJMNw8"],
+  "digests": ["i77z-pNL_iw8VikSnPJKQmYWfpRDgiDDmsVDbiYuFYs"],
   "expected": {
     "key_count": 1,
     "level": 1,

@@ -37,6 +37,11 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 	// Resolve genesis keys from golden.GenesisKeys (preferred) or pool
 	genesisKeys, err := resolveGenesisKeys(pool, golden)
 	if err != nil {
+		// For error tests, genesis resolution failures may be the expected error
+		if golden.IsErrorTest() && matchesExpectedError(err.Error(), golden.Expected.Error) {
+			result.Passed = true
+			return result
+		}
 		result.Err = fmt.Errorf("failed to resolve genesis keys: %w", err)
 		return result
 	}
@@ -56,8 +61,17 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 		genesis = storage.ExplicitGenesis{Keys: genesisKeys}
 	}
 
-	// Load principal (full verification)
-	principal, loadErr := storage.LoadPrincipal(genesis, entries)
+	// Load principal with optional setup
+	var principal *cyphrpass.Principal
+	var loadErr error
+
+	if golden.Setup != nil && golden.Setup.RevokeKey != "" {
+		// Need to apply setup between genesis and replay
+		principal, loadErr = loadPrincipalWithSetup(pool, genesis, entries, golden.Setup)
+	} else {
+		// Standard load path
+		principal, loadErr = storage.LoadPrincipal(genesis, entries)
+	}
 
 	// Handle error tests
 	if golden.IsErrorTest() {
@@ -97,17 +111,18 @@ func resolveGenesisKeys(pool *Pool, golden *Golden) ([]*coz.Key, error) {
 		for i, gk := range golden.GenesisKeys {
 			pub, err := coz.Decode(gk.Pub)
 			if err != nil {
-				return nil, fmt.Errorf("key %d: invalid pub: %w", i, err)
+				return nil, fmt.Errorf("key %q: invalid pub: %w", gk.Alg, err)
 			}
-			tmb, err := coz.Decode(gk.Tmb)
-			if err != nil {
-				return nil, fmt.Errorf("key %d: invalid tmb: %w", i, err)
-			}
-			keys[i] = &coz.Key{
+			// Create key with Alg and Pub only - let Thumbprint() compute Tmb
+			key := &coz.Key{
 				Alg: coz.SEAlg(gk.Alg),
 				Pub: pub,
-				Tmb: tmb,
 			}
+			// Compute thumbprint (required for verification)
+			if err := key.Thumbprint(); err != nil {
+				return nil, fmt.Errorf("key %q: failed to compute tmb: %w", gk.Alg, err)
+			}
+			keys[i] = key
 		}
 		return keys, nil
 	}
@@ -188,11 +203,83 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 }
 
 // matchesExpectedError checks if the actual error matches the expected error pattern.
+// Maps Rust error codes to Go error message patterns.
 func matchesExpectedError(actual, expected string) bool {
-	// Normalize: lowercase comparison
-	actualLower := strings.ToLower(actual)
-	expectedLower := strings.ToLower(expected)
+	// Error code to Go message pattern mapping
+	// Rust uses camelCase error codes, Go uses plain English messages
+	codePatterns := map[string][]string{
+		"KeyRevoked":           {"key revoked", "keyrevoked"},
+		"UnknownKey":           {"unknown key", "unknown signer", "unknownkey"},
+		"TimestampPast":        {"timestamp in past", "timestampinpast"},
+		"DuplicateKey":         {"duplicate key", "duplicatekey"},
+		"NoActiveKeys":         {"no active keys", "noactivekeys"},
+		"InvalidPrior":         {"invalid prior", "invalidprior"},
+		"UnsupportedAlgorithm": {"unsupported", "rs256", "unsupportedalgorithm"},
+	}
 
-	// Check for substring match
-	return strings.Contains(actualLower, expectedLower)
+	actualLower := strings.ToLower(actual)
+
+	// Check if expected is a known error code with pattern mapping
+	if patterns, ok := codePatterns[expected]; ok {
+		for _, pattern := range patterns {
+			if strings.Contains(actualLower, pattern) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Fallback: normalized substring match
+	normalize := func(s string) string {
+		return strings.ToLower(strings.ReplaceAll(s, " ", ""))
+	}
+	return strings.Contains(normalize(actual), normalize(expected))
+}
+
+// loadPrincipalWithSetup creates a Principal from genesis, applies setup modifiers,
+// then replays entries. This allows tests to set up state (like pre-revoked keys)
+// before entry replay.
+func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*storage.Entry, setup *GoldenSetup) (*cyphrpass.Principal, error) {
+	// Create principal from genesis (without entries)
+	var principal *cyphrpass.Principal
+	var err error
+
+	switch g := genesis.(type) {
+	case storage.ImplicitGenesis:
+		principal, err = cyphrpass.Implicit(g.Key)
+	case storage.ExplicitGenesis:
+		if len(g.Keys) == 0 {
+			return nil, fmt.Errorf("no genesis keys")
+		}
+		principal, err = cyphrpass.Explicit(g.Keys)
+	default:
+		return nil, fmt.Errorf("unknown genesis type: %T", genesis)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create principal from genesis: %w", err)
+	}
+
+	// Apply setup: pre-revoke key
+	if setup != nil && setup.RevokeKey != "" {
+		poolKey := pool.Get(setup.RevokeKey)
+		if poolKey == nil {
+			return nil, fmt.Errorf("setup.revoke_key %q not found in pool", setup.RevokeKey)
+		}
+		cozKey, err := poolKey.ToCozKey()
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert pool key %q: %w", setup.RevokeKey, err)
+		}
+		principal.PreRevokeKey(cozKey.Tmb, setup.RevokeAt)
+	}
+
+	// Replay entries (we need to use storage package internals)
+	// Use storage.LoadPrincipalWithEntries if available, or replay manually
+	for i, entry := range entries {
+		if err := storage.ReplayEntry(principal, entry, i); err != nil {
+			return nil, err
+		}
+	}
+
+	return principal, nil
 }

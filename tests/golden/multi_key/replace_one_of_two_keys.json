@@ -15,11 +15,6 @@
   ],
   "entries": [
     {
-      "key": {
-        "alg": "ES256",
-        "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
-        "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
-      },
       "pay": {
         "alg": "ES256",
         "id": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA",
@@ -28,16 +23,21 @@
         "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
         "typ": "cyphr.me/key/replace"
       },
-      "sig": "38dY4NPLCInyDFW7v747bYo5S_K9moOIWQNXEsHpRnBxLnYb0xazgX9Xi-ARVGAaJfTm4QeFgUXyM2rx4SK-_g"
+      "sig": "20Lsryy3kUlgkM-gB7oWTooHzYftcNSNGIAkkLL7ZFhkZ7W9P4TBP3U0zBxfUUxeyyRhmCepVGkYNntbdp6uBw",
+      "key": {
+        "alg": "ES256",
+        "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
+        "tmb": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA"
+      }
     }
   ],
-  "digests": ["ZH82hZwT9Ie07BOI_RMMKpvqr4Lj49EWPNVaCwjD6pU"],
+  "digests": ["0lnLWLzAoLJhVEFSauo9vY5iTSkDGLJ2Rqs9oojkk8o"],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
-    "as": "72g0el9TgUmEQPlLPoLB9Ldsg9rrCj9UU0qBUfSXeD8",
-    "ps": "72g0el9TgUmEQPlLPoLB9Ldsg9rrCj9UU0qBUfSXeD8",
+    "as": "pbgCk2-slvTYougHveihnwdFkZSjVjAJyrkI-X0n2ac",
+    "ps": "pbgCk2-slvTYougHveihnwdFkZSjVjAJyrkI-X0n2ac",
     "pr": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc"
   }
 }

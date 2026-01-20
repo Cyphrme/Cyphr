@@ -269,6 +269,34 @@ func (p *Principal) ActiveKeyCount() int {
 	return len(p.auth.Keys)
 }
 
+// PreRevokeKey moves a key from active to revoked set.
+// This is used for test setup to simulate a key that was revoked before test entries.
+// Panics if the key is not found in the active set.
+func (p *Principal) PreRevokeKey(tmb coz.B64, rvk int64) {
+	tmbStr := string(tmb.String())
+
+	// Find and remove from active set
+	idx, ok := p.auth.keyIdx[tmbStr]
+	if !ok {
+		panic("PreRevokeKey: key not found in active set")
+	}
+
+	key := p.auth.Keys[idx]
+	key.Rvk = rvk // Set revocation timestamp
+
+	// Remove from active set
+	p.auth.Keys = append(p.auth.Keys[:idx], p.auth.Keys[idx+1:]...)
+	delete(p.auth.keyIdx, tmbStr)
+
+	// Rebuild keyIdx for remaining keys
+	for i, k := range p.auth.Keys {
+		p.auth.keyIdx[string(k.Tmb.String())] = i
+	}
+
+	// Add to revoked set
+	p.auth.Revoked = append(p.auth.Revoked, key)
+}
+
 // SetMaxClockSkew configures the maximum allowed clock skew for future timestamps.
 // Transactions with tx.Now > serverTime + maxClockSkew will be rejected with ErrTimestampFuture.
 // Set to 0 to disable future timestamp checking (default).
