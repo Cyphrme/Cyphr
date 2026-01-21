@@ -8,14 +8,14 @@
 
 ## 1. Introduction
 
-Cyphrpass is a self-sovereign identity and authentication protocol built on cryptographic Merkle trees. It enables:
+Cyphrpass is a self-sovereign, decentralized identity and authentication
+protocol built on cryptographic Merkle trees. It enables:
 
-- Password-free authentication via public key cryptography
-- Multi-device key management with revocation
-- Authenticated Atomic Actions (AAA) — individually signed, independently verifiable user actions
-- Cryptographic primitive agnosticism via the Coz JSON specification
-
-Binary encoded values in this document are in `b64ut`: "Base64 URI canonical truncated" (URL alphabet, errors on non-canonical encodings, no padding).
+- Password-free and email-free authentication via public key cryptography
+- Multi-device key management with revocation.
+- Authenticated Atomic Actions (AAA) — individually signed, independently
+  verifiable user actions.
+- Cryptographic primitive agnosticism via the Coz JSON specification.
 
 ---
 
@@ -23,43 +23,94 @@ Binary encoded values in this document are in `b64ut`: "Base64 URI canonical tru
 
 ### 2.1 Core Concepts
 
+Binary encoded values in this document are in `b64ut`: "Base64 URI canonical
+truncated" (URL alphabet, errors on non-canonical encodings, no padding).
+
 | Term                  | Abbrev | Definition                                             |
 | --------------------- | ------ | ------------------------------------------------------ |
 | **Principal**         | —      | An identity in Cyphrpass. Replaces "account".          |
 | **Principal Root**    | PR     | The initial, permanent digest identifying a principal. |
-| **Principal State**   | PS     | Current top-level digest: `H(AS, DS)` or promoted.     |
+| **Principal State**   | PS     | Specific top-level digest: `H(AS, DS)` or promoted.    |
+| **Tip**               | Tip    | The digest of the latest PS.                           |
 | **Auth State**        | AS     | Authentication state: `H(KS, TS, RS)` or promoted.     |
 | **Data State**        | DS     | State of user data/actions (Level 4+).                 |
 | **Key State**         | KS     | Digest of active key thumbprints (`tmb`s).             |
 | **Transaction State** | TS     | Digest of transaction `czd`s (key mutations).          |
 | **Rule State**        | RS     | State of rules (Level 5: weighted keys, timelocks).    |
+| **Action**            | Act    | A signed coz.  Denoted by `typ`. Foundation of AAA.    |
+| **trust anchor**      |        | Last known trusted state for a principal               |
+
+"Action" is the hypernym of authentication transaction (transaction in this
+document) and data action, which mutate data state.
+
 
 ### 2.2 Implicit Promotion
 
-When a component of the state tree contains only **one node**, that node's digest is **promoted** to the parent level without additional hashing.
+When a component of the state tree contains only **one node**, that node's
+digest is **promoted** to the parent level without additional hashing.
 
 **Examples:**
 
-- Single key: `tmb` is promoted to KS, then to AS, then to PS (which equals PR)
+- Single key: `tmb` is promoted to KS, then to AS, then to PS (which equals PR on genesis)
 - No DS present: AS is promoted to PS
 - Only KS present (no TS/RS): KS is promoted to AS
 
-This rule provides natural semantics for simple single-key principals without requiring explicit genesis transactions. Also note that promotion is recursive; items deep in the tree can be promoted to the root level.
+This rule provides natural semantics for simple single-key principals without
+requiring explicit genesis transactions. Also note that promotion is recursive;
+items deep in the tree can be promoted to the root level.
+
+
+### Unrecoverable Principal 
+
+A principal with no active keys and no viable recovery path within the protocol.
+Authentication, mutations, and recovery transactions are impossible without
+out-of-band intervention. See Section Recovery.
+
+
+### Authenticated Atomic Action (AAA) // TODO AI number this correctly.
+Authenticated Atomic Actions are when a principal performs individually
+verifiable operations using Cyphrpass which supersedes trust traditionally
+delegated to centralized session state or bearer tokens.
+
+An AAA is simply a signed coz whose `typ` corresponds to a meaningful
+application-level action (comment, post, vote, save, like, etc.) and whose
+signature is produced by one or more keys currently authorized in the
+principal's Key State (KS).
+
+Instead of authenticating to a centralized login service which provides a bearer
+token for user action, users may sign individual actions directly. Each atomic
+action may be trustlessly authenticated by anyone, irrespective of centralized
+services.  For example, instead of logging in to make a comment, a user signs a
+comment directly which is then verifiable by anyone.  In this model, centralized
+services that maintain user identity are irrelevant and should be actively
+deprecated.
+
+Historically, nearly all services depended upon bearer tokens where trusting
+centralized services is required.  Third parties, such as users, have no way to
+verify actions without trusting the integrity of the centralized service despite
+countless examples of that trust being abused.  AAA defends user against such
+abuse.
+
 
 ### 2.3 Nonces
 
 One or more cryptographic nonces may be included at any level of the state tree:
 
 - **Encapsulation**: Hides structure when desired
-- **Reuse Privacy**: Prevents correlation across services
-- **Count Obfuscation**: Nonces are indistinguishable from key thumbprints and other digest values, so observers cannot determine the true count
+- **Reuse**: Allows one identity to be used by many accounts
+- **Privacy**: Prevents correlation across services
+- **Obfuscation**: Nonces are indistinguishable from key thumbprints and
+  other digest values, so observers cannot determine the true count
 
 Design Notes:
 
 - Multiple nonces are permitted.
 - At signing, the key structure may be revealed.
 
-The general principle of obfuscated structures becoming transparent is **reveal**. Keys are revealed at signing, nonces and other datastructures may also be required to be revealed during transactions, actions, or operations requiring signing.
+The general principle of obfuscated structures becoming transparent is
+**reveal**. Keys are revealed at signing, nonces and other data structures may
+also be required to be revealed during transactions, actions, or operations
+requiring signing.
 
 ---
 
@@ -142,7 +193,8 @@ Example private Coz key with standard fields:
 }
 ```
 
-`tmb` is the digest of the canonical public key representation using the hash algorithm associated with `alg`.
+`tmb` is the digest of the canonical public key representation using the hash
+algorithm associated with `alg`.
 
 Example public key:
 
@@ -158,7 +210,8 @@ Example public key:
 
 ### 4.2 Transactions
 
-Transactions are signed Coz messages that mutate Auth State. Each transaction references the prior AS via the `pre` field.
+Transactions are signed Coz messages that mutate Auth State (AS). Each
+transaction references the prior AS via the `pre` field.
 
 #### 4.2.1 `key/add` — Add a Key (Level 3+)
 
@@ -194,7 +247,10 @@ Adds a new key to KS.
 
 #### 4.2.2 `key/delete` — Remove a Key (Level 3+)
 
-Removes a key from KS without marking it as compromised.
+Removes a key from KS without marking it as compromised. Unlike `key/revoke`,
+`key/delete` does not invalidate the key itself, it only removes it from KS,
+which is useful for graceful key retirement (e.g., decommissioning a device)
+when the key was never compromised.
 
 ```json
 {
@@ -214,9 +270,6 @@ Removes a key from KS without marking it as compromised.
 
 - `id`: `tmb` of the key being removed
 
-**Semantics:** Unlike `key/revoke`, `key/delete` does NOT invalidate the key itself — only removes it from KS. Use for graceful key retirement (e.g., decommissioning a device) when the key was never compromised.
-
-**TODO:** Define retrospection semantics — how past signatures are validated after key removal/revocation needs further specification.
 
 #### 4.2.3 `key/replace` — Atomic Key Swap (Level 2+)
 
@@ -306,7 +359,7 @@ Revokes a different key from the signing key. Used in multi-key accounts.
 | `key/delete`         | 3+    | —        | ✓           | No revocation timestamp |
 | `key/replace`        | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
 | `key/revoke` (self)  | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
-| `key/revoke` (other) | 3+    | —        | ✓           | Revoke another key      |
+| `key/revoke-other`   | 3+    | —        | ✓           | Revoke another key      |
 
 ### 4.3 Action (Level 4)
 
@@ -325,7 +378,7 @@ A signed Coz message representing a user action, recorded in DS:
 }
 ```
 
-### 5. Genesis (Account Creation) // AI TODO, iterated this up to 5, subsequent sections need
+### 5. Genesis (Account Creation) 
 
 ### 5.1 Initial Transactions
 
@@ -333,12 +386,9 @@ A principal is created (genesis) in one of two ways:
 
 **Implicit Genesis (Single Key)**
 
-- No transaction required.
+- Principal exists the moment the key exists. No transaction required.
 - `PR = tmb` of the single key (via implicit promotion).
-- First signature by this key constitutes Proof of Possession (PoP).
-- Principal exists the moment the key exists.
-- The first transaction signed with the key is the implicit genesis.
-- There is no separate "create account" operation. Identity emerges from the first key and transaction.
+- The first signature by this key constitutes the implicit genesis.
 
 ```
 PR = PS = AS = KS = `tmb`
@@ -349,8 +399,8 @@ PR = PS = AS = KS = `tmb`
 - Requires a signed genesis transaction
 - Key signs a `key/add` transaction to add itself as the principal.
 - `PR = H(sort(tmb₀, nonce?))`
-- The genesis transaction constitutes PoP for the signing key.
-- Optionally, the principal root, `pr` may also be included.
+
+Optionally, the principal root, `pr` may also be included.
 
 **`typ`**: `<authority>/key/add`
 
@@ -384,7 +434,6 @@ PR = PS = AS = KS = `tmb`
 
 - Key signs a `key/add` transaction
 - `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
-- The genesis transaction constitutes PoP for the signing key
 - Without rules, each key has equal weight, so any initial key can sign.
 - Keys are added to the PR, calculated beforehand.
 
@@ -442,14 +491,13 @@ PR = PS = AS = KS = `tmb`
 
 ---
 
-## 5. Authentication
-
+## 6. Authentication (TODO AI increment this appropriately)
 Cyphrpass replaces password-based authentication with cryptographic Proof of
 Possession (PoP).
 
 Cyphrpass suggests AAA (Authenticated Atomic Action) over bearer tokens when
 possible, but bearer tokens are still useful for access control and quickly
-upgrading legacy password systems.
+upgrading legacy password systems to Cyphrpass.
 
 ### 5.1 Proof of Possession (PoP)
 
@@ -517,7 +565,9 @@ Two mechanisms prevent signature replay:
 | **Challenge nonce**  | Service issues unique 256-bit nonce per login attempt | Requires round-trip |
 | **Timestamp window** | `now` must be within ±N seconds of server time        | Clock sync required |
 
-**Recommendation:** Use challenge-response for high-security contexts. Timestamp-based is acceptable for low-friction flows with trusted time sources.
+Challenge-response is available for some security contexts such as when where
+time isn't trusted, while timestamp-based is acceptable for low-friction flows
+with reasonably accurate time sources.
 
 ### 5.4 Bearer Tokens
 
@@ -545,38 +595,59 @@ After successful PoP, the service issues a bearer token:
 
 **Note:** The service signs the token with its own key. The principal verifies the token came from the expected service.
 
+
+
+### Single Sign-on (SSO)
+Cyphrpass is a Single Sign on- system.  Cyphrpass, however, differs radically
+from historic system which depend on passwords and email, which is a point of
+centralization. 
+
+// TODO write this out more.
+
+
+
+
+
 ## 6. Storage Models
 
-Cyphrpass distinguishes between two storage contexts:
 
 ### 6.1 Client/Principal Storage
 
-Clients are categorized as **thin** or **fat** based on storage capacity:
+Cyphrpass distinguishes between several storage contexts. Clients are
+categorized as **thin**, **fat**, or **full**, based on storage capacity:
+
+**Thin clients** rely on services for state resolution and only the private key
+is essential.  **Fat clients** store exhaustive auth history. **Full clients**
+store exhaustive auth history and action data for offline verification and
+maximum sovereignty.
+
+Storing PR, public keys, and Tip is good practice to store locally,
+but could be retrieved from a service.
 
 **Thin Client** (browser, IoT):
 
-| Data         | Required | Notes                             |
-| ------------ | -------- | --------------------------------- |
-| Private keys | ✓        | Never transmitted                 |
-| PR           | Optional | Can derive from key if single-key |
-| Public keys  | Optional | Retrieve from service             |
-| Current PS   | Optional | Retrieve from service             |
-| Transactions | Optional | Delegate to service               |
-
-Thin clients rely on services for state resolution. Only the private key is essential.
+| Data         | Required | Notes                  |
+| ------------ | -------- | ---------------------- |
+| Private keys | ✓        | Never transmitted      |
+| Transactions | Optional | Full audit trail       |
+| Actions      | Optional | Application-specific   |
 
 **Fat Client** (desktop app, trusted device):
 
 | Data         | Required | Notes                  |
 | ------------ | -------- | ---------------------- |
 | Private keys | ✓        | Never transmitted      |
-| Public keys  | ✓        | With `tmb`, `alg`      |
-| PR           | ✓        | Permanent identity     |
-| Current PS   | ✓        | For state verification |
 | Transactions | ✓        | Full audit trail       |
 | Actions      | Optional | Application-specific   |
 
-Fat clients store exhaustive history for offline verification and maximum sovereignty.
+**Full Client** (desktop app, trusted device):
+
+| Data         | Required | Notes                  |
+| ------------ | -------- | ---------------------- |
+| Private keys | ✓        | Never transmitted      |
+| Transactions | ✓        | Full audit trail       |
+| Actions      | ✓        | Application-specific   |
+
 
 ### 6.2 Third-Party Service Storage
 
@@ -585,7 +656,7 @@ Services that interact with principals store:
 | Data                | Purpose                |
 | ------------------- | ---------------------- |
 | PR                  | Principal identity     |
-| Current PS          | State verification     |
+| Current PS (Tip)    | State verification     |
 | Active public keys  | Signature verification |
 | Transaction history | Full audit trail       |
 | Actions (DS)        | Application data       |
@@ -600,8 +671,7 @@ Services that interact with principals store:
 
 ### 6.3 Storage API (Non-Normative)
 
-> [!NOTE]
-> This section is **informative only**. Implementations may use any storage
+> Note: This section is informative only. Implementations may use any storage
 > mechanism appropriate to their deployment context.
 
 #### 6.3.1 Export Format
@@ -658,6 +728,7 @@ optimization for implementations that expect long-lived principals with high
 transaction volume (e.g., automated key rotation, frequent rule changes). They
 are also a useful debugging tool.
 
+See also State Jumping
 ---
 
 ## 7. State Calculation
@@ -880,8 +951,8 @@ total transaction:
 
 To verify a principal's current state:
 
-1. **Obtain PR or PS** — the claimed principal root or transitive state (PS)
-2. **Obtain transaction history** — ordered list of transactions from genesis or prior PS
+1. **Obtain PR or PS** — the claimed root or transitive state (PS)
+2. **Obtain transaction history** — ordered list of transactions from genesis or prior PS trust anchor.
 3. **Replay transactions**:
    - Start with genesis KS (initial keys)
    - For each transaction, verify:
@@ -892,10 +963,194 @@ To verify a principal's current state:
    - Apply mutation to derive new KS
 4. **Compare** — final computed KS/AS/PS should match claimed current state
 
+
+# 9.1 Mutual State Synchronization (MSS)
+Cyphrpass enables symmetric, bidirectional state awareness between principals
+and services, eliminating the one-sided dependency inherent in traditional
+password-based or federated authentication models. Outside of an authority,
+Cyphrpass's distributed does not make a distinction between users and services
+as both are represented by a Cyphrpass account.In addition to users representing
+themselves as Cyphrpass accounts, services themselves may be represented by a
+Cyphrpass account.   This allows users to track services outside of the
+certificate authority (CA) system, and subsequently email, a long standing
+source of centralization.
+
+In legacy systems, only the service tracks user authentication state (first
+established by passwords and then tracked by sessions), while users have no
+independent view of the service's view of their account. Recovery is manual,
+service-specific, and often funneled through email, creating a central point of
+failure and control. Programmatic key rotation or bulk recovery is typically
+impossible without service cooperation.
+
+MSS makes authentication quicker by allowing clients to push state to services
+before authentication.  When a client mutates their own state, they may push the
+mutations to all registered third parties.
+
+
+Cyphrpass inverts and symmetrizes this relationship through Mutual State
+Synchronization (MSS):
+
+ - Services should be represented as Cyphrpass principals themselves.
+ - Principals (users) and services maintain independent, cryptographically
+   verifiable views of each other's state.
+ - Cyphrpass clients push state mutations (new transactions that advance PS) to
+   registered services immediately after local application.
+ - Services accept and verify these pushes against the principal's current
+   chain, reducing round-trips during authentication.
+
+MSS directly addresses concerns about stale distributed state, helping clients
+to keep in sync. This practice is similar to double entry accounting, where
+instead of one entry in a ledger being depended upon as a single source of
+truth, two entries are best practice.  
+
+
+#### Core Properties of MSS
+
+| Property                     | Description                                                                 | Benefit vs. Legacy Systems                                 |
+|------------------------------|-----------------------------------------------------------------------------|------------------------------------------------------------|
+| **Bidirectional tracking**   | Both user and service hold and verify the other's transaction chain/PS.     | No single source of truth; reduces trust in service logs.  |
+| **Push-based updates**       | Client proactively pushes mutations.                                        | Faster auth (pre-synced state); no polling required.       |
+| **Independent verification** | Each party resolves the other's state from trust anchor.                    | Censorship-resistant; survives service outage.             |
+| **Service as principal**     | Service exposes its own state via API or public chain.                      | Bypasses CA/email dependency for service identity.         |
+| **Double-entry analogy**     | Not a single ledger, parties may track each other's state                   | Stronger auditability and Fraud/spoofing/evasion detection.|
+
+
+#### MSS API Operations (Non-Normative)
+Typically, Cyphrpass's `typ` system builds a ready to use API.  However, there
+are a few endpoints not enumerated by `typ`, such as synchronization. Services
+should expose an interface for MSS (like HTTP API).  Services may of course
+limit depth and have other rate limits. A gossip communication layer may be used
+to keep clients in sync.
+
+**tip**
+- `GET /tip?pr=<principal-root>`  
+  Returns the service's view of the tip (or latest known AS/PS digest) for the principal.
+
+**`patch`** - Returns the service's view for the principal.  
+- `GET /patch?pr=<principal-root>&from=<ps>&to=<target-ps>` - Full form
+- `GET /patch?from=<ps>` - From PS to current
+- `GET /patch?pr=<principal-root>` from PR to current
+- `GET /patch?pr=<principal-root>from=<ps>` from PS, for particular PR, to current
+- `GET /patch?from=<ps>&to=<target-ps-or-empty>` - Range
+
+`to` is optional and on omission is `tip`.
+`pr` is optional since it should be included in patch.  May be explicit for debugging.
+`from` is optional if pr is given.
+
+- `POST /push`  
+  Accepts one or more signed transactions (`tx_patch`). Service verifies chain validity and applies update.
+
+**Synchronization check:**
+ - If service-reported tip is equal to client's local PS, the the state is synced.  
+ - On mismatch, client pushes delta or service requests missing patch.
+
+#### Recommended Usage Patterns
+
+- **Proactive push on mutation** — After transaction (`key/add`,
+  `key/revoke`, etc.), client pushes to all registered services (stored locally
+  or via prior `recovery/designate`-style registration).
+- **On-demand sync** — Before high-value actions, client queries service tip and
+  reconciles if needed.
+- **Service identity anchoring** — Users track service PR/PS directly (instead
+  of DNS + CA certs), enabling trust outside email/CAs.
+- **Recovery acceleration** — Pre-synced state allows new devices to bootstrap
+  faster via push to known services.
+
+#### Why MSS Alone Justifies Adoption
+
+MSS fundamentally addresses centralization risks in legacy SSO (passwords +
+email as de facto recovery root) and bearer-token models (service as sole state
+oracle). By making state mutual, verifiable, and push-capable, Cyphrpass
+enables:
+
+- Faster, lower-latency authentication flows.
+- True independence from email/CA choke points.
+- Robust, auditable recovery without manual per-service intervention.
+- A path to programmable, symmetric trust between users and services.
+
+Although Cyphrpass provides single-sign-on semantics, it radically departs from
+historic systems by eliminating passwords, email dependency, and unidirectional
+state tracking.
+
+---
+
+
+
+### MSS Registration
+TODO semantics for MSS Registration
+
+
 ---
 
 ## 10. Recovery
 
+### 10.1 Unrecoverable, Dead, and Zombie Accounts
+
+There are three concerning states:
+
+1. Unrecoverable:  Protocol-level inability to mutate AS. No new transactions
+   are possible. (Level 1+)
+2. Dead: No new transactions or actions (including data actions) are possible.
+   Total immutability (Level 1+)
+3. Zombie: No new transactions, but some data actions may still be possible.
+   (Partial functionality remains) (Level 3+)
+
+# Unrecoverable
+Unrecoverable: An **unrecoverable principal** is the technical term for the
+state of a Cyphrpass principal where:
+
+ - No active keys remain (all revoked or otherwise inaccessible),
+ - No designated recovery agents or fallback mechanisms are present or able to
+   act,
+ - The principal AS cannot be mutated. No new transactions are possible via the
+   protocol (although some data actions may be possible),
+ - And recovery is impossible within the Cyphrpass protocol rules (i.e.,
+   requires sideband intervention).
+
+None of the self-recovery mechanisms listed can prevent or reverse an
+unrecoverable principal state once it has occurred, they must be established
+before key loss/revocation.
+
+**Level 1 and Unrecoverable**
+A Level 1 key can self-revoke, but this results in DEAD (permanent lockout).
+Recovery requires sideband  intervention defined by the implementor
+or service (see Section 10.1).
+
+Level 1 implementors have two options: 
+
+1. The proper option is sideband recovery. Devices and services should define
+   sideband recovery method. 
+2. Ignore the revoke.  This is bad practice, but some simple services may not
+    define an sideband method.  There's nothing Cyphrpass can do about that. 
+
+Simple devices and services using Level 1 should define sideband recovery,
+however, there's nothing Cyphrpass can do if these services fail to define
+sideband recovery.  Although it's recommended against, such services may want to
+ignore revokes so that an unrecoverable state isn't possible.
+
+**Sideband Recovery Examples**
+An example of sideband recovery would be having physical access or SSH access to
+the device with the unrecoverable principal, deleting the old key replacing it
+with a new key, and updating the public key on services that communicate to that
+device.
+
+### Dead and Zombie
+Unrecoverable principals may also be Dead or Zombie:
+1. **Dead**: An unrecoverable is dead if not actions are possible (No
+   transactions or data actions)
+2. **Zombie**: An unrecoverable is a zombie if transactions are not possible but
+   some data actions are still possible. 
+
+**Zombie example** (level 4) `key/add` requires 2 points, but there's only one
+key with weight 1. `comment/create` requires default 1, so comments are still
+possible but AS mutation is impossible.
+
+**Dead example**: (level 1) The only key is revoked.  The account is
+unrecoverable and dead.
+
+
+
+### 10.2 Recovery
 When a principal loses access to all active keys, or the account is otherwise in
 an **unrecoverable state** recovery mechanisms allow regaining control.
 
@@ -1115,6 +1370,194 @@ To unfreeze an account:
 - **Multiple agents:** A principal MAY designate multiple fallback mechanisms, including M-of-N threshold requirements
 - **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
+
+### 10.9  Retrospection
+
+**TODO:** Define retrospection semantics — how past signatures are validated
+after key removal/revocation needs further specification.  Stub:
+
+Retrospection is undoing actions to a timestamp.  This is a complex issue for
+services.
+
+As a best practice Level 3 plus should define more than one key being required
+for retrospection, since if only one key set, a single
+
+retrospection attack: Backdating actions to "undo" actions since a time period.
+
+
+
+Instead of removing a record, the record can be marked as "rescinded"
+
+
+
+
+
+## 11 Close, Merge, Fork
+
+
+11.1 Closing an Account (Principal Delete, Level 3+)
+
+Closing an account is performed via a `principal/delete` transaction. Closed
+accounts are permanently closed and cannot be recovered. No transactions or
+actions are possible on a closed account. However, there's nothing in the
+protocol prevents a user from creating a new principal reusing the same keys,
+unless those keys were revoked.
+
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1736893000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphrpass/principal/delete",
+    "pre": "<current AS>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+
+### 11.2 Account Merging (Principal Merge, Level 3+)
+
+Merging allows one principal (the **source**) to adopt the state of another
+principal (the **target**), consolidating identities while preserving the
+targets's original **Principal Root** (PR).
+
+There are two ways to merge:
+
+1. Implicit merge: The source account deletes all keys and adds the PS of the
+   target.  The target accepts by adding the PS of the source. 
+2. Explicit merge: The source signs a `principal/merge` transaction with the PS
+   of the target.  The target account must accept the merge by signing a
+`principal/ack-merge` transaction with the PS of the source.   (Optionally, the
+source can still delete all keys and/or sign a `principal/delete`.)
+
+It is important that in both cases the target accepts the merge.  Without
+acknowledgement external accounts could attack an account by merging in their
+state (merge attack).
+
+Further, to ensure that no future transactions are possible on the source
+account, the source may sign a `principal/delete` transaction.
+
+**`principal/merge` — Merge into Target Principal (Level 3+)**
+
+Explicit merging is performed via a special transaction type:
+
+- References the source's current AS via `pre`
+- Declares the target's PS as the next state via a new field `merge_to_ps`
+- Includes proof that the signer is authorized on the **source** (not the target)
+- Note that if the target account wants to reuse keys from the source account, it
+  must explicitly add keys from the source account (if the keys are not already
+  present).
+
+
+Example source principal merge transaction:
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1736893000,
+    "tmb": "<source signing key tmb>",
+    "typ": "cyphr.me/cyphrpass/principal/merge",
+    "pre": "<source current AS>",
+    "merge_to_ps": "<target Principal State>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+And the acknowledgement by the target principal:
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1736893000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphrpass/principal/ack-merge",
+    "pre": "<target current AS>",
+    "merge_from_ps": "<source Principal State>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+
+### 10.3 Account Forking (Principal Fork, Level 3+)
+
+Forking allows one principal (the **source**) to create a new principal (the
+**target**), effectively splitting identities while preserving the source's
+original **Principal Root** (PR).
+
+Typically, this is straightforward.  Any set of keys that has not been revoked
+may be used to create a new PR. 
+
+However, the fork may want to preserve prior identity and history.  Since PR
+must resolve to one and only one principal account, PR itself cannot be used as
+the identity for multiple account. 
+
+
+
+## 10.12 Self-Sovereign Philosophy
+
+#### Self-Ownership Philosophy in a Cryptographic System
+There are three main categories of ownership:
+
+1. Posses the private keys. (Private Key Possession)
+2. Posses the data.          (Data Possession)
+3. Right to mutate state.  (`create`, `delete`, `update`) (Right)
+
+These three can be summarized as three points: **Keys, Data, Right**
+
+#### Cyphrpass Goal
+The protocol seeks to maximize user ownership across all three dimensions:  
+
+Keys → Self-custody, multi-device, revocation, recovery paths.  
+Data → Portable exports, optional self-hosting, minimal service lock-in (via MSS).  
+Rights → AAA replaces bearer tokens; verifiable authorship/actions without centralized session state.
+
+
+**Private Key Possession** is important in cryptography.  Cryptographic systems
+are implemented using key possession. (Not your keys, not your crypto.) 
+
+**Data Possession** - For non-encrypted data: Possession generally equates to
+ownership, as anyone with access can read/copy/use it.  
+For encrypted data: Ownership is tied to possession of decryption keys (which
+may overlap with Private Key Possession). Encrypted data hosted by third parties
+(e.g., for availability/security) does not imply loss of ownership if keys
+remain user-controlled.  
+
+**Right** is relevant for authorship like comments, user history, but also where
+ownership is tracked on a ledger, such as owning a bitcoin. Right may be proved
+in a cryptoraphic system using private keys and PoP. 
+
+Cyphrpass's seeks to assist users is owning keys, data, and rights.
+
+### Ownership Right Semantics
+// TODO talk with Tim about Ownership of NTF like things.
+
+Perhaps: 
+ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
+
+`typ`s:
+```
+cyphr.me/ownership/claim/create
+cyphr.me/ownership/transfer
+ownership/ack-transfer
+```
+
+Perhaps an item itself can be represented as a Principal.  Abstract things themselves have a chain.
+
+"smart contracts" are supported by level 5+
+Verifiable without full blockchain, Off-chain data friendly
+No native "minting fee" or gas
+Revocable/revocable keys
+Soulbound-like — Set transferable=false
+
+
+
+
+
+
 ---
 
 ## 11. Timestamp Verification
@@ -1181,7 +1624,13 @@ When a key is revoked with `rvk` = T:
 
 ## 12. Derivations
 
-A **derivation** is the digest of a state computed using a specific hash algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple derivations.
+A **derivation** is the digest of a state computed using a specific hash
+algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple
+derivations.  
+
+When there are multiple algorithms, no single algorithm is canonical.  All
+derivations are considered equivalent by Cyphrpass and security judgements are
+out-of-scope.
 
 ### 12.1 Algorithm Mapping
 
@@ -1217,6 +1666,14 @@ PS_sha384 = SHA384(sort(AS, DS?, nonce?))
 
 If the ES384 key is removed, only `PS_sha256` is computed going forward.
 
+What happens on algorithm transition? Only the algorithms at each block are
+computed.  Any other algorithms are not.
+
+What happens for clients that do not support given algorithms?  Those clients
+are incompatible with the given principal. (error `UNKNOWN_ALG`)  (Strategies
+such as state jumping may be able to resolve issues, out-of-scope for this
+section.)
+
 ### 12.3 Verification Context
 
 When verifying a signature:
@@ -1234,8 +1691,14 @@ When verifying a signature:
 ```
 <typ> = <authority>/<action>
 <action> = <noun>[/<noun>...]/<verb>
-<verb> = create | read | update | upsert | delete | revoke
+<verb> = create | read | update | upsert | delete 
 ```
+
+Special verbs:
+
+- revoke
+- merge (ack-merge)
+
 
 **Terminology note:** "Action" is used in three contexts:
 
@@ -1276,31 +1739,50 @@ The authority may be a domain or a Principal Root.
 
 ---
 
+## State Jumping
+For circumstances like high volume principals and unsupported algs, state
+jumping may be useful. 
+
+State jump example: Trust anchor is at block 2, but tip is at block 100,000. As
+long as keys have not been revoked from block 2, and the principal still has
+those keys, they can sign a transaction going from 2 _> 100,000 which avoids
+having to download each intermediary checkpoints. (Considered "state warping")
+
+Other future related designs are zero knowledge proofs, trusted 3rd parties
+(Ethereum uses Infura, such trusted third party infrastructure may be useful for
+some client situations. although the authors design Cyphrpass for
+decentralization.)
+
+See also Section Checkpoints.
+
+
+
 ## 14. Error Conditions
 
 This section defines error conditions that implementations MUST detect. Error _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 ### 14.1 Transaction Errors
 
-| Error               | Condition                                        | Level |
-| ------------------- | ------------------------------------------------ | ----- |
-| `INVALID_SIGNATURE` | Signature does not verify against claimed key    | All   |
-| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KS | All   |
-| `INVALID_PRIOR`     | `pre` does not match current AS                  | 2+    |
-| `TIMESTAMP_PAST`    | `now` < latest known PS timestamp                | All   |
-| `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                  | All   |
-| `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                    | 2+    |
-| `MALFORMED_PAYLOAD` | Missing required fields for transaction type     | All   |
-| `DUPLICATE_KEY`     | `key/add` for key already in KS                  | 3+    |
-| `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
+| Error               | Condition                                         | Level |
+| ------------------- | ------------------------------------------------ -| ----- |
+| `INVALID_SIGNATURE` | Signature does not verify against claimed key     | All   |
+| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KS  | All   |
+| `UNKNOWN_ALG`       | Clients doesn't know or doesn't support given alg | All   |
+| `TIMESTAMP_PAST`    | `now` < latest known PS timestamp                 | All   |
+| `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                   | All   |
+| `MALFORMED_PAYLOAD` | Missing required fields for transaction type      | All   |
+| `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                     | All   |
+| `INVALID_PRIOR`     | `pre` does not match current AS                   | 2+    |
+| `DUPLICATE_KEY`     | `key/add` for key already in KS                   | 3+    |
+| `THRESHOLD_NOT_MET` | Signing keys do not meet required weight          | 5+    |
 
 ### 14.2 Recovery Errors
 
 | Error                     | Condition                                        | Level |
 | ------------------------- | ------------------------------------------------ | ----- |
-| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `recovery/designate`    | 3+    |
-| `ACCOUNT_RECOVERABLE`     | Recovery attempted while regular keys are active | 3+    |
-| `ACCOUNT_UNRECOVERABLE`   | No active keys AND no designated recovery agents | All   |
+| `UNRECOVERABLE_PRINCIPAL` | No keys capable of transaction AND no designated recovery agents | All   |
+| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `recovery/designate`                    | 3+    |
+
 
 ### 14.3 State Errors
 
@@ -1441,17 +1923,30 @@ Follow the Coz spec.
 
 ### 15.6 Integration Test Requirements
 
-Language-agnostic test vectors are provided in `/test_vectors/`. Integration tests consuming these vectors SHOULD:
+Language-agnostic test vectors are provided in `/test_vectors/`. Integration
+tests consuming these vectors SHOULD:
 
-1. **Validate fixture `pre` values**: Before applying a transaction, verify that the fixture's `pre` field matches the implementation's computed Auth State. If they differ, the test SHOULD fail immediately, indicating a fixture data error rather than an implementation bug.
+1. **Validate fixture `pre` values**: Before applying a transaction, verify that
+   the fixture's `pre` field matches the implementation's computed Auth State.
+   If they differ, the test SHOULD fail immediately, indicating a fixture data
+   error rather than an implementation bug.
 
-2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other fields from fixtures directly, not compute substitutes. This validates both implementation correctness and fixture accuracy.
+2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other
+   fields from fixtures directly, not compute substitutes. This validates both
+   implementation correctness and fixture accuracy.
 
-3. **Test all error conditions**: Error test fixtures intentionally include invalid data (wrong `pre`, unknown keys, etc.). Implementations MUST NOT skip these tests due to complexity.
+3. **Test all error conditions**: Error test fixtures intentionally include
+   invalid data (wrong `pre`, unknown keys, etc.). Implementations MUST NOT skip
+   these tests due to complexity.
 
-4. **Deterministic sorting**: All state computations involving multiple components (KS with multiple keys, AS with KS+TS, etc.) MUST use lexicographic byte-order sorting of the raw digest bytes before concatenation and hashing.
+4. **Deterministic sorting**: All state computations involving multiple
+   components (KS with multiple keys, AS with KS+TS, etc.) MUST use
+   lexicographic byte-order sorting of the raw digest bytes before concatenation
+   and hashing.
 
-**Rationale**: Multiple implementations (Go, Rust) consuming the same fixtures ensures protocol specification correctness. Fixture validation catches spec drift early.
+**Rationale**: Multiple implementations (Go, Rust) consuming the same fixtures
+ensures protocol specification correctness. Fixture validation catches spec
+drift early.
 
 ---
 
