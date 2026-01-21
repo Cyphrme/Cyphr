@@ -1,4 +1,4 @@
-package cyphrpass_test
+package tests
 
 import (
 	"path/filepath"

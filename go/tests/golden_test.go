@@ -1,4 +1,4 @@
-package cyphrpass_test
+package tests
 
 import (
 	"path/filepath"
@@ -11,7 +11,7 @@ import (
 // getTestsDir returns the path to the tests directory.
 func getTestsDir() string {
 	_, file, _, _ := runtime.Caller(0)
-	// go/cyphrpass/golden_test.go -> go/ -> ../tests
+	// go/tests/golden_test.go -> go/ -> repo root -> tests/
 	return filepath.Join(filepath.Dir(file), "..", "..", "tests")
 }
 
