@@ -106,6 +106,8 @@ Design Notes:
 
 - Multiple nonces are permitted.
 - At signing, the key structure may be revealed.
+- Nonces may be implicitly promoted in the Merkle tree just like any other
+  digest value.
 
 The general principle of obfuscated structures becoming transparent is
 **reveal**. Keys are revealed at signing, nonces and other data structures may
@@ -251,6 +253,18 @@ Removes a key from KS without marking it as compromised. Unlike `key/revoke`,
 `key/delete` does not invalidate the key itself, it only removes it from KS,
 which is useful for graceful key retirement (e.g., decommissioning a device)
 when the key was never compromised.
+
+If a key is deleted, any action signed with that key *after* it has been removed
+from the principal is ignored. Only actions that were signed while the key was
+still active in the Key State (KS) are respected.  
+
+There is effectively no cryptographic difference between a key that was deleted
+and one that was never added except that a deleted key may have a history of
+legitimate past signatures that remain valid, whereas a never-added key never
+had (and never will have) any legitimate signatures under this principal.  
+
+Deleted keys can be re-added later (via `key/add`), and, if desired, deleted
+again afterward.
 
 ```json
 {
@@ -1072,12 +1086,24 @@ Although Cyphrpass provides single-sign-on semantics, it radically departs from
 historic systems by eliminating passwords, email dependency, and unidirectional
 state tracking.
 
----
 
+### MSS Registration Example
+Example ledger displaying remote state synchronization. Local Principal `X` is
+at tip `State3`.
 
+| Principal               | Trust Anchor            | Synced?           |
+| ----------------------- | ----------------------- | ----------------- |
+| A                       | State0                  | N                 |
+| B                       | State2                  | N                 |
+| C                       | State3                  | Y                 |
 
-### MSS Registration
-TODO semantics for MSS Registration
+After successful syncing:
+
+| Principal               | Trust Anchor            | Synced?           |
+| ----------------------- | ----------------------- | ----------------- |
+| A                       | State3                  | Y                 |
+| B                       | State3                  | Y                 |
+| C                       | State3                  | Y                 |
 
 
 ---
@@ -1497,7 +1523,7 @@ the identity for multiple account.
 
 
 
-## 10.12 Self-Sovereign Philosophy
+### 10.12 Self-Sovereign Philosophy
 
 #### Self-Ownership Philosophy in a Cryptographic System
 There are three main categories of ownership:
@@ -1508,16 +1534,16 @@ There are three main categories of ownership:
 
 These three can be summarized as three points: **Keys, Data, Right**
 
-#### Cyphrpass Goal
+#### Cyphrpass Ownership Goal
 The protocol seeks to maximize user ownership across all three dimensions:  
 
 Keys → Self-custody, multi-device, revocation, recovery paths.  
 Data → Portable exports, optional self-hosting, minimal service lock-in (via MSS).  
 Rights → AAA replaces bearer tokens; verifiable authorship/actions without centralized session state.
 
-
-**Private Key Possession** is important in cryptography.  Cryptographic systems
-are implemented using key possession. (Not your keys, not your crypto.) 
+**Private Key Possession** is foundational for cryptographic operations.
+Cryptographic systems are implemented using key possession. (Not your keys, not
+your crypto.) 
 
 **Data Possession** - For non-encrypted data: Possession generally equates to
 ownership, as anyone with access can read/copy/use it.  
@@ -1531,6 +1557,16 @@ ownership is tracked on a ledger, such as owning a bitcoin. Right may be proved
 in a cryptoraphic system using private keys and PoP. 
 
 Cyphrpass's seeks to assist users is owning keys, data, and rights.
+
+### Natural Ownership
+
+The originating Principal is the **natural owner** of its actions.  For example,
+the principal that creates a comment `comment/create` is the natural owner of
+that comment, and has exclusive rights for future mutations, `comment/update`,
+`comment/delete`, and `comment/upsert`.  Systems implementing AAA must give
+special attention to items with natural ownership properties. 
+
+
 
 ### Ownership Right Semantics
 // TODO talk with Tim about Ownership of NTF like things.
@@ -1552,6 +1588,9 @@ Verifiable without full blockchain, Off-chain data friendly
 No native "minting fee" or gas
 Revocable/revocable keys
 Soulbound-like — Set transferable=false
+
+
+
 
 
 
@@ -1740,21 +1779,144 @@ The authority may be a domain or a Principal Root.
 ---
 
 ## State Jumping
-For circumstances like high volume principals and unsupported algs, state
-jumping may be useful. 
+For high-volume principals (e.g., those with tens of thousands of transactions)
+or thin clients with limited bandwidth/storage, full chain replay from a distant
+trust anchor to the current tip can become prohibitively expensive in time, data
+transfer, or computation.
 
-State jump example: Trust anchor is at block 2, but tip is at block 100,000. As
-long as keys have not been revoked from block 2, and the principal still has
-those keys, they can sign a transaction going from 2 _> 100,000 which avoids
-having to download each intermediary checkpoints. (Considered "state warping")
+State jumping provides an optimization allowing a client to advance directly
+from a known trust anchor (e.g., an old AS or PS at "block" N) to a much later
+state (e.g., current tip at "block" M >> N), without fetching or verifying every
+intermediate transaction.
 
-Other future related designs are zero knowledge proofs, trusted 3rd parties
-(Ethereum uses Infura, such trusted third party infrastructure may be useful for
-some client situations. although the authors design Cyphrpass for
-decentralization.)
+Multiple jumps may be required to traverse from the trust anchor to the target
+PS, for example in circumstances where keys have been revoked. In anticipation
+of a state jump, clients may pre-sign jumps.
+
+Clients may also reject state jumps as state jumps are an optimization that
+delegates some trust to third party services.  By default, the Cyphrpass
+reference client rejects state jumps and preserving a conservative security
+baseline.
+
+#### Core Mechanism
+A principal with access to one or more still-active keys from the trust anchor
+can sign a special **state-jump transaction** that:
+
+- References the old trust anchor via `pre`,
+- Declares the new target PS in a new field (e.g., `jump_to_ps`),
+- Is signed by one or more keys authorized at the anchor (and still valid at the
+  tip).
+
+Verification rules for the jump transaction:
+- The signing key(s) must be present in KS at the anchor.
+- The claimed `jump_to_ps` must match the service-reported or
+  independently-obtained current tip.
+- No intermediate revocations or key mutations are permitted that would
+  invalidate the signing key(s) — this is enforced by requiring the jump
+  transaction to be accepted only if the KS derivation at the tip still includes
+  the signing `tmb`(s).
+- Services MAY require additional proofs (e.g., Merkle inclusion of unchanged KS
+  components) or restrict jumps to trusted checkpoints.
+
+**Typical Processing Flow**  
+1. Client queries service for current tip (via MSS `/tip` endpoint, Section
+   MSS). Client notes that chain is larger than optimization (> 1,000) and
+   triggers state jump process.  
+2. Client verifies tip KS includes the signing key (fetch minimal tx_patch if
+   needed).  
+3. Client signs and pushes the jump transaction to services.  
+4. Services validate: signature, `pre` matches known history, `jump_to_ps` =
+   current tip, no invalidating mutations.  
+5. If valid, client updates local trust anchor to `jump_to_ps`; future
+   resolutions start from there.
+
+**Swim Lane Chart**  
+```
+ Local Principal Client                Remote Principal
+  |                                            |
+  |---1. Query current tip (MSS /tip)--------->|
+  |<-- Return current PS (tip @100,000)--------|
+  |                                            |
+  | (Detect long chain → trigger jump)         |
+  |                                            |
+  | Verify signing key still in KS @ tip       |
+  | (minimal tx_patch fetch if needed)         |
+  |                                            |
+  | Sign jump tx: pre=AS@2, jump_to_ps=tip     |
+  |                                            |
+  |---3. Push signed jump transaction--------->|
+  |                                            |
+  |                  Remote validates:         |
+  |                  • Signature               |
+  |                  • pre matches history     |
+  |                  • jump_to_ps == current   |
+  |                  • No revokes on key path  |
+  |                                            |
+  |<-- Accept (or reject if invalid)-----------|
+  |                                            |
+  | Update local trust anchor to new PS        |
+  | Future resolutions start from here         |
+  |                                            |
+```
+
+#### Example State Jump Transaction
+A state jump transaction:
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "<active key tmb from anchor>",
+    "typ": "cyphr.me/cyphrpass/principal/state_jump/create",
+    "pre": "<old trust anchor AS>", // e.g., PS at previous trust anchor
+    "jump_to_ps": "<current tip PS>", // e.g., PS at transaction 100,000
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Security Considerations**  
+- Jumping must not bypass revocation semantics: if a key was revoked between
+  anchor and tip, the jump fails.  
+- Clients should verify the jump against multiple services or via full chain
+  replay periodically to detect malicious jumps.  
+- Services may enforce maximum jump distance or require multi-signature for
+  large jumps to mitigate abuse.
+
+State jumping preserves Cyphrpass's core properties (verifiable history, no
+trusted central oracle) while enabling scalable operation for long-lived
+principals.
+
+### State Jump Examples
+
+**Example 1: Single large jump (no revokes)**  
+Trust anchor is at block 2, but tip is at block 100,000. As long as keys have
+not been revoked from block 2, and the principal still has those keys, they can
+sign a transaction going from 2 → 100,000 which avoids having to download each
+intermediary checkpoint. (Sometimes called "state warping".)
+
+**Example 2: Multi-jump required (revokes in the middle)**  
+Trust anchor is at block 2, but tip is at block 100,000. All keys active at
+block 2 were revoked sometime between block 2 and block 50,000.  
+
+To reach the tip:  
+- First jump: from block 2 → block 45,000 (using a key still active at 45,000
+  but revoked later)  
+- Second jump: from block 45,000 → block 100,000 (using a key that became active
+  after the revoke window and is still valid at the tip)  
+
+The client must discover or know an intermediate safe anchor where a valid
+signing key exists. Services can help by returning recent checkpoints or
+suggesting viable jump points when the direct jump fails due to revocation.
+
+### Other High Volume Strategies
+In addition to state jumping, other future related designs are zero knowledge
+proofs, trusted 3rd parties (Ethereum uses Infura, such trusted third party
+infrastructure may be useful for some client situations, although the authors
+design Cyphrpass for decentralization.)
 
 See also Section Checkpoints.
-
 
 
 ## 14. Error Conditions
