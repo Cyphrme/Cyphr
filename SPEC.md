@@ -258,10 +258,10 @@ If a key is deleted, any action signed with that key *after* it has been removed
 from the principal is ignored. Only actions that were signed while the key was
 still active in the Key State (KS) are respected.  
 
-There is effectively no cryptographic difference between a key that was deleted
-and one that was never added except that a deleted key may have a history of
+There is no effective cryptographic difference between a key that was deleted
+and one that was never added except that a deleted key may have a duration of
 legitimate past signatures that remain valid, whereas a never-added key never
-had (and never will have) any legitimate signatures under this principal.  
+had any legitimate signatures for this principal.  
 
 Deleted keys can be re-added later (via `key/add`), and, if desired, deleted
 again afterward.
