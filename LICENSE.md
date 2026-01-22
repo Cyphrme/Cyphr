@@ -260,9 +260,8 @@ For commercial licensing inquiries: buy@cyphr.me
 
 END OF LICENSE
 
+---
 
-
--------------------------
 More Reasonable license:
 
 # BOOL (Business Or Opensource License) 0.0.1
@@ -274,6 +273,7 @@ software freely, subject to the conditions below. The software is provided "as
 is" without warranty of any kind.
 
 ## Grant of Rights
+
 Subject to the terms of this License, the copyright holder grants you a
 worldwide, royalty-free, non-exclusive, perpetual license to:
 
@@ -287,6 +287,7 @@ You must retain this License, copyright notices, and any NOTICE file in all
 copies or substantial portions of the software.
 
 ## Key Management Services Clause
+
 If you use this software (or any derivative) in connection with offering,
 providing, or operating any form of **key management** services—including but
 not limited to generation, storage, distribution, rotation, escrow, recovery, or
@@ -315,24 +316,25 @@ compatible terms are not affected by this clause and may use the software freely
 without additional obligations.
 
 ## Revenue Allocation
+
 The copyright holder commits to allocating **10%** of all revenues received from
 paid commercial licenses under this BOOL to external open source projects,
 selected at the holder's discretion or through community input, to support the
 broader open source ecosystem.
 
 ## Additional Terms
+
 - This License does not grant trademark rights.
 - Contributions to the software are licensed under this BOOL.
 - In case of conflict, this License prevails over any additional terms in NOTICE
   files.
 - Breach of this License terminates your rights automatically.
 
+---
 
-
-
-------------
 Thinking other angles:
+
 1. User data that has the intent of being public must be public. This addresses AI training.
-2. The server that's hosting Cyphrpass has to be fully open source. 
+2. The server that's hosting Cyphrpass has to be fully open source.
 
 AAA
