@@ -125,7 +125,8 @@ requiring signing.
 | **3** | Multi-key         | KS (n keys) + TS             |
 | **4** | Arbitrary data    | AS + TS + DS → PS            |
 | **5** | Rules             | AS (with RS) + DS            |
-| **6** | Turing complete   | VM execution                 |
+| **6** | Programmable      | VM execution                 |
+
 
 ### 3.1 Level 1: Static Key
 
@@ -256,7 +257,9 @@ when the key was never compromised.
 
 If a key is deleted, any action signed with that key *after* it has been removed
 from the principal is ignored. Only actions that were signed while the key was
-still active in the Key State (KS) are respected.  
+still active in the Key State (KS) are respected.  Past signatures from previous
+active periods remain valid even after the key is no longer active, provided
+they were created while the key was in KS.
 
 There is no effective cryptographic difference between a key that was deleted
 and one that was never added except that a deleted key may have a duration of
@@ -264,7 +267,15 @@ legitimate past signatures that remain valid, whereas a never-added key never
 had any legitimate signatures for this principal.  
 
 Deleted keys can be re-added later (via `key/add`), and, if desired, deleted
-again afterward.
+again afterward. Implementations should store the public key of deleted keys
+that signed at least one action so that the client can cryptographically verify
+its own chain.
+
+**Key Active Period**: The time span during which a key is present and active in
+the Key State (KS), and therefore authorized to sign new actions, for the
+principal.  A key may have multiple successive active periods if it is deleted
+and later re-added (each re-addition starts a new active period). 
+
 
 ```json
 {
@@ -369,15 +380,16 @@ Revokes a different key from the signing key. Used in multi-key accounts.
 
 | Type                 | Level | Adds Key | Removes Key | Notes                   |
 | -------------------- | ----- | -------- | ----------- | ----------------------- |
+| `key/revoke` (self)  | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
+| `key/replace`        | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
 | `key/add`            | 3+    | ✓        | —           | —                       |
 | `key/delete`         | 3+    | —        | ✓           | No revocation timestamp |
-| `key/replace`        | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
-| `key/revoke` (self)  | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
 | `key/revoke-other`   | 3+    | —        | ✓           | Revoke another key      |
 
-### 4.3 Action (Level 4)
 
-A signed Coz message representing a user action, recorded in DS:
+### 4.3 Data Action
+
+A data action is a signed Coz message representing a user action, recorded in DS:
 
 ```json
 {
@@ -391,6 +403,7 @@ A signed Coz message representing a user action, recorded in DS:
   "sig": "<b64ut>" // TODO
 }
 ```
+Data actions are ordered by `now` in the Merkle tree.
 
 ### 5. Genesis (Account Creation) 
 
@@ -899,7 +912,7 @@ Trust is optional — full independent verification is always possible.
 
 ### 8.3.1 Checkpoints
 
-Each state digest (AS, PS) encapsulates the full state at that point. Verifiers only need the current state plus the transaction chain back to a known-good checkpoint. The genesis state is the ultimate checkpoint; services MAY cache intermediate checkpoints to reduce chain length for verification.
+Each state digest (AS, PS) encapsulates the full state at that point. Verifiers only need the current state plus the transaction chain back to a known-good checkpoint. The genesis state is the ultimate checkpoint; services may cache intermediate checkpoints to reduce chain length for verification.
 
 ### 8.4 Level 5 Preview: Weighted Permissions
 
@@ -1058,11 +1071,13 @@ to keep clients in sync.
  - If service-reported tip is equal to client's local PS, the the state is synced.  
  - On mismatch, client pushes delta or service requests missing patch.
 
+ // TODO suggest a way to do local client registration.
+
 #### Recommended Usage Patterns
 
-- **Proactive push on mutation** — After transaction (`key/add`,
-  `key/revoke`, etc.), client pushes to all registered services (stored locally
-  or via prior `recovery/designate`-style registration).
+- **Proactive push on mutation** — After transaction (`key/add`, `key/revoke`,
+  etc.), client pushes to all registered services (stored locally through
+  previous registration).
 - **On-demand sync** — Before high-value actions, client queries service tip and
   reconciles if needed.
 - **Service identity anchoring** — Users track service PR/PS directly (instead
@@ -1201,7 +1216,7 @@ Level 3+ supports recovery and can add new keys.
 
 ### 10.2 Implicit Fallback (Single-Key Accounts)
 
-For implicit (single-key) accounts, a `fallback` field MAY be included at key creation:
+For implicit (single-key) accounts, a `fallback` field may be included at key creation:
 
 ```json
 {
@@ -1238,7 +1253,7 @@ Recovery agents can ONLY act when the account is in an **unrecoverable state**:
 
 ### 10.3 Recovery Transactions
 
-#### 10.3.1 `recovery/designate` — Register Fallback
+#### 10.3.1 `cyphrpass/recovery/create` — Register Fallback
 
 Registers a recovery agent (backup key, service, or social contacts).
 
@@ -1248,7 +1263,7 @@ Registers a recovery agent (backup key, service, or social contacts).
     "alg": "ES256",
     "now": 1628181264,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/recovery/designate",
+    "typ": "<authority>/cyphrpass/recovery/create",
     "pre": "<previous AS>",
     "recovery": {
       "agent": "<recovery agent PR or tmb>",
@@ -1312,7 +1327,7 @@ When a principal is locked out:
 }
 ```
 
-Because the agent was designated via `recovery/designate`, their `key/add` is valid even though no regular user key signed it.
+Because the agent was designated via `cyphrpass/recovery/create`, their `key/add` is valid even though no regular user key signed it.
 
 ### 10.5 External Recovery
 
@@ -1335,15 +1350,19 @@ For social recovery, multiple contacts sign:
 
 ### 10.7 Account Freeze
 
-A **freeze** is a global protocol state where valid transactions are temporarily rejected to prevent unauthorized changes during a potential compromise. A freeze halts all key mutations (`key/*`) and may restrict other actions depending on service policy.
+A **freeze** is a global protocol state where valid transactions are temporarily
+rejected to prevent unauthorized changes during a potential compromise. A freeze
+halts all key mutations (`key/*`) and may restrict other actions depending on
+service policy.
 
-Freezes are **global** — they apply to the principal across all services that observe the freeze state.
+Freezes are global. They apply to the principal across all services that
+observe the freeze state.
 
 #### 10.7.1 Self-Freeze
 
 A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
 
-- **Mechanism**: User signs a `freeze/init` transaction with an active key.
+- **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
 - **Effect**: Stops all mutations until unfrozen.
 
 ```json
@@ -1352,7 +1371,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
     "alg": "ES256",
     "now": 1628181264,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/freeze/init",
+    "typ": "<authority>/cyphrpass/freeze/create",
     "pre": "<previous AS>"
   },
   "sig": "<b64ut>"
@@ -1361,15 +1380,17 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 
 #### 10.7.2 External Freeze
 
-A designated **Recovery Authority** may initiate a freeze based on heuristics (irregular activity) or out-of-band communication (user phone call).
+A designated **Recovery Authority** may initiate a freeze based on heuristics
+(irregular activity) or out-of-band communication (user phone call).
 
-- **Mechanism**: Recovery agent signs `freeze/init`.
+- **Mechanism**: Recovery agent signs `cyphrpass/freeze/create`, 
 - **Effect**: Same as self-freeze.
-- **Trust**: The principal explicitly delegates this power to the authority via `recovery/designate`.
+- **Trust**: The principal explicitly delegates this power to the authority via
+  `cyphrpass/recovery/create`.
 
 #### 10.7.3 Thaw (Unfreeze)
 
-To unfreeze an account:
+To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 
 ```json
 {
@@ -1377,7 +1398,7 @@ To unfreeze an account:
     "alg": "ES256",
     "now": 1628181264,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/freeze/thaw",
+    "typ": "<authority>/cyphrpass/freeze/delete",
     "pre": "<previous AS>"
   },
   "sig": "<b64ut>"
@@ -1386,14 +1407,14 @@ To unfreeze an account:
 
 **Rules:**
 
-- Self-freeze can be thawed by any active key
+- Self-freeze can be thawed by active keys.
 - External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
 
 ### 10.8 Security Considerations
 
-- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period
-- **Revocation:** Backup keys can be revoked if compromised
-- **Multiple agents:** A principal MAY designate multiple fallback mechanisms, including M-of-N threshold requirements
+- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period.
+- **Revocation:** Backup keys can be revoked if compromised.
+- **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
 - **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
 
@@ -1610,7 +1631,7 @@ The **latest known timestamp** for a principal is:
 - The `now` field of the most recent transaction (if any)
 - Otherwise, the key creation `now` (implicit accounts)
 
-**Rule:** Services SHOULD reject actions where:
+**Rule:** Services should reject actions where:
 
 - `now` < latest known PS timestamp (too far in the past)
 - `now` > server time + tolerance (too far in the future)
@@ -1725,56 +1746,60 @@ When verifying a signature:
 
 ---
 
-## 13. Transaction Type Grammar
+## 13. `typ` Action Grammar
+
+Cyphrpass follows a grammar system developed by Cyphr.me. The `typ` grammar
+consists of these core components: `auth`, `act`, `noun`, and `verb`.
 
 ```
 <typ> = <authority>/<action>
 <action> = <noun>[/<noun>...]/<verb>
-<verb> = create | read | update | upsert | delete 
+<verb>   = create | read | update | upsert | delete
 ```
 
-Special verbs:
+- **authority** (auth): The first unit — typically a domain name or a Principal
+  Root.
+- **action** (act): Everything after the authority.
+- **noun**: One or more path units between authority and verb, representing the
+  resource or subject of the action. Multiple units form a **compound noun**
+  (e.g., `user/image`).
+- **verb**: The final unit, the operation to perform.
 
-- revoke
-- merge (ack-merge)
+Cyphrpass recommends that the authority be either a domain or a Principal Root.
+When a domain is used as authority, that domain should ideally provide (or be
+associated with) a Cyphrpass identity.
 
+Example: `"cyphr.me/user/image/create"`
 
-**Terminology note:** "Action" is used in three contexts:
+- Authority: `cyphr.me`
+- Action: `user/image/create`
+- Noun: `user/image` (compound noun)
+- Verb: `create`
 
-1. **DS Action**: A signed user message recorded in Data State (Level 4+)
-2. **Type Action**: The path after authority in a `typ` field
-3. **Grammar verb**: The final component of a type (create, delete, etc.)
+#### Special verbs
+In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
+`upsert`, `delete`), Cyphrpass defines these special verbs for protocol-level
+operations:
 
-Context disambiguates usage.
+- `add` (`key/add`)     // TODO consider changing to `create` for consistency
+- `key/revoke` - Key revoke.
+- `key/replace` - Key atomic swap
+- `merge` (`principal/merge`)
+- `ack-merge` (`principal/ack-merge`)
 
-Example type: "cyphr.me/ac/image/create"
+**Terminology note:** "Action" is used in three distinct contexts by Cyphrpass. Context
+disambiguates:
 
-The first unit is the authority. (auth)
-Everything after authority is action (act)
-The last unit is the verb. (verb)
-The second unit is the root. (root)
-Middle units are the noun (noun)
-Trailing nouns are adjectives. (adj)
-The last noun unit is the child. (child)
-
-In cases where there is only one noun, that noun is the noun, root, and child. When a noun has two or more components (such as /ac/image), it is called a compound noun.
-
-Example 1: "cyphr.me/ac/image/create"
-
-Authority: cyphr.me
-Action: ac/image/create
-Root: ac
-Noun: ac/image
-Verb: create
-Child: image
+1. **Data Action** — A signed user message recorded in Data State (Level 4+).
+2. **Type Action** — The path after the authority in a `typ` field.
+3. **Grammar Verb** — The final component of a `typ` (create, delete, etc.).
 
 **Examples:**
 
 - `cyphr.me/key/upsert`
 - `cyphr.me/key/revoke`
 - `cyphr.me/comment/create`
-
-The authority may be a domain or a Principal Root.
+- `cyphr.me/principal/merge`
 
 ---
 
@@ -1815,7 +1840,7 @@ Verification rules for the jump transaction:
   invalidate the signing key(s) — this is enforced by requiring the jump
   transaction to be accepted only if the KS derivation at the tip still includes
   the signing `tmb`(s).
-- Services MAY require additional proofs (e.g., Merkle inclusion of unchanged KS
+- Services may require additional proofs (e.g., Merkle inclusion of unchanged KS
   components) or restrict jumps to trusted checkpoints.
 
 **Typical Processing Flow**  
@@ -1921,7 +1946,8 @@ See also Section Checkpoints.
 
 ## 14. Error Conditions
 
-This section defines error conditions that implementations MUST detect. Error _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
+This section defines error conditions that implementations must detect. Error
+_responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 ### 14.1 Transaction Errors
 
@@ -1943,7 +1969,7 @@ This section defines error conditions that implementations MUST detect. Error _r
 | Error                     | Condition                                        | Level |
 | ------------------------- | ------------------------------------------------ | ----- |
 | `UNRECOVERABLE_PRINCIPAL` | No keys capable of transaction AND no designated recovery agents | All   |
-| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `recovery/designate`                    | 3+    |
+| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `cyphrpass/recovery/create`              | 3+    |
 
 
 ### 14.3 State Errors
@@ -1962,18 +1988,18 @@ This section defines error conditions that implementations MUST detect. Error _r
 
 ### 14.5 Error Handling Guidance
 
-**Implementations MUST:**
+**Implementations must:**
 
 - Reject transactions with any error condition
 - Not apply partial state changes (atomic)
 
-**Implementations SHOULD:**
+**Implementations should:**
 
 - Return meaningful error identifiers to clients
 - Distinguish between client errors (fixable) and server errors (retry)
 - Log errors for debugging (optional but recommended)
 
-**Implementations MAY:**
+**Implementations may:**
 
 - Define additional application-specific error conditions
 - Implement rate limiting for repeated errors
@@ -2086,11 +2112,11 @@ Follow the Coz spec.
 ### 15.6 Integration Test Requirements
 
 Language-agnostic test vectors are provided in `/test_vectors/`. Integration
-tests consuming these vectors SHOULD:
+tests consuming these vectors should:
 
 1. **Validate fixture `pre` values**: Before applying a transaction, verify that
    the fixture's `pre` field matches the implementation's computed Auth State.
-   If they differ, the test SHOULD fail immediately, indicating a fixture data
+   If they differ, the test should fail immediately, indicating a fixture data
    error rather than an implementation bug.
 
 2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other
@@ -2098,11 +2124,11 @@ tests consuming these vectors SHOULD:
    implementation correctness and fixture accuracy.
 
 3. **Test all error conditions**: Error test fixtures intentionally include
-   invalid data (wrong `pre`, unknown keys, etc.). Implementations MUST NOT skip
+   invalid data (wrong `pre`, unknown keys, etc.). Implementations must NOT skip
    these tests due to complexity.
 
 4. **Deterministic sorting**: All state computations involving multiple
-   components (KS with multiple keys, AS with KS+TS, etc.) MUST use
+   components (KS with multiple keys, AS with KS+TS, etc.) must use
    lexicographic byte-order sorting of the raw digest bytes before concatenation
    and hashing.
 
@@ -2114,7 +2140,7 @@ drift early.
 
 ## Cypherpass Applications
 
-- Cryptogaphically verifiable web archive.
+- Cryptographically verifiable web archive.
 - Unstoppable, Internet wide user comments.
 
 ## Appendix A: Coz Field Reference
