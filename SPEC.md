@@ -116,6 +116,16 @@ follow the same promotion rules. A principal with 1 key + 1 nonce has
 `KS = H(sort(tmb, nonce))`, not implicit promotion. The presence of any
 additional component—whether key or nonce—blocks promotion.
 
+
+#### Identifier
+All identifiers are Merkel roots (PS, KS, TS, AS, RS, DS).  If order is not
+otherwise given, lexical order is used. 
+
+All identifiers are digest values or cryptographically random in the case of a
+nonce. These values are opaque bytes, meaning a sequence of bytes that should be
+treated as a whole unit, without any attempt by the consuming software to
+interpret their internal structure or meaning
+
 ---
 
 ## 3. Feature Levels
@@ -147,7 +157,7 @@ additional component—whether key or nonce—blocks promotion.
 ### 3.3 Level 3: Multi-Key
 
 - Multiple concurrent keys with equal authority
-- Any key can `key/add`, `key/delete`, or `key/revoke` any other key
+- Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
 - Recommended minimum for services
 
@@ -212,33 +222,125 @@ Example public key:
 }
 ```
 
-### 4.2 Transactions
+### 4.2 Block (commit)
+A **block** is an atomic unit, denoted by principal state (PS), at a particular
+point.  The principal fully controls the grouping, ordering, and intent of the
+block.
 
-Transactions are signed Coz messages that mutate Auth State (AS). Each
-transaction references the prior AS via the `pre` field.
+A block consists of an ordered collection of one or more transactions bundled
+together by the principal in a single submission, rule state, auth state, nonce,
+and recursively other principal states.
 
-#### 4.2.1 `key/add` — Add a Key (Level 3+)
+A block also allows atomicity by services.  Many mutations may occur per block,
+as dictated by the principal.
+
+For Cyphrpass, unlike other systems, there are no minting fees or gas, and no
+need for a global ledger.
+
+
+### 4.2.1 Transactions and Transaction Bundles
+
+Transactions are signed Coz messages that mutate Auth State (AS).  A transaction
+may be one coz, or multiple cozies, that results in a mutation.  The transaction
+identifier is the Merkle root of the transactions (unless there's only one and
+implicit promotion then applies.)
+
+Many transactions may be included per block.  All transactions for a block are
+grouped into a **transaction bundle**.  The transaction state is the identifier
+for transaction bundle, representing all transaction for a block. For example, a
+transaction bundle may have one transaction for `key/update`, signed by two keys
+and containing two cozies, and one for `key/create`, signed by one key and
+consisting of one coz. 
+
+#### Transaction Order
+Transactions are processed linearly in order as given by the client through
+`pre`. The first transaction refers to `ps`, the state of the principal at the
+previous block.  Subsequent transactions refer to the previous transaction in
+`pre`, and the last transaction must include the value `block_finalize:true` in
+`pay`.
+
+Transaction order allows action repetition. or example, two key updates on a
+single key are permitted, and the transactions must be processed in order.
+Transaction bundles allows atomicity where multiple mutations may be performed
+in sequence to produce a desired result.
+
+The Merkle Root of all transactions for a block is the Transaction State, which
+is then used to compute AS (along with KS, RS, nonce, and potentially PS
+recursively)
+
+Instead of each block containing all transactions associated with the principal,
+each block refers to the prior `pre` and includes only transactions required to
+generate the last block. For the full list of transactions, all transactions
+from all block need to be parsed. 
+
+### Transaction Identifier and Ordering
+All coz messages in a single transaction are Merkle rooted together to create
+the identifier for the transaction.  (On a single transaction, the czd is
+implicitly promoted and becomes the identifier.) If a transaction requires
+multiple cozies, all cozies refer to the same `pre` 
+
+The first transaction refers to the previous block via `pre`.  Subsequent
+transactions refer to the identifier of the previous transaction in `pre`,
+giving order to the transactions.
+
+
+
+### Block finality
+Blocks must be explicitly finalized, where the last transaction includes a
+`block_finalize:true` in `pay`.
+
+Blocks that are not yet finalized are in a **transitory state**.  These blocks
+are **transitory blocks**, where it should be assumed that the finalized state
+is still being processes. Since messages may be coming from many different
+clients, geographically separated, third party clients, witnesses, may have
+timeouts on transitory states, dropping previously received transactions and
+requiring a full replay before accepting mutations. 
+
+Any transaction that refers to a transitory block that is not finalized must be rejected.  
+
+
+Example:
+```json
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    typ: "cyphr.me/cyphrpass/key/create",
+    "pre": "<on gensis, MR of keys, PS of last block, or czd of last tx in bundle>",
+    "block_finalize":true
+  },
+  "sig": "<b64ut>"
+}
+```
+
+//TODO nonce transaction, useful for obscuring transactions
+
+
+
+#### 4.2.1 `key/create` — Add a Key (Level 3+)
 
 Adds a new key to KS.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1628181264,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-    typ: "cyphr.me/cyphrpass/key/add",
-    pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS
-    id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key
+  "pay": {
+    "alg": "ES256",
+    "now": 1628181264,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+    "typ": "cyphr.me/cyphrpass/key/create",
+    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key
+    "block_finalize":true
   },
-  key: {
-    alg: "ES256",
-    now: 1623132000,
-    tag: "User Key 1",
-    pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-    tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+  "key": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tag": "User Key 1",
+    "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+    "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
   },
-  sig: "<b64ut>", // TODO actual sig
+  "sig": "<b64ut>", // TODO actual sig
 }
 ```
 
@@ -267,7 +369,7 @@ and one that was never added except that a deleted key may have a duration of
 legitimate past signatures that remain valid, whereas a never-added key never
 had any legitimate signatures for this principal.
 
-Deleted keys can be re-added later (via `key/add`), and, if desired, deleted
+Deleted keys can be re-added later (via `key/create`), and, if desired, deleted
 again afterward. Implementations should store the public key of deleted keys
 that signed at least one action so that the client can cryptographically verify
 its own chain.
@@ -285,7 +387,8 @@ and later re-added (each re-addition starts a new active period).
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/delete",
     "pre": "<previous AS>",
-    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "block_finalize":true
   },
   "sig": "<b64ut>"
 }
@@ -382,7 +485,7 @@ Revokes a different key from the signing key. Used in multi-key accounts.
 | ------------------- | ----- | -------- | ----------- | ----------------------- |
 | `key/revoke` (self) | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
 | `key/replace`       | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
-| `key/add`           | 3+    | ✓        | —           | —                       |
+| `key/create`        | 3+    | ✓        | —           | —                       |
 | `key/delete`        | 3+    | —        | ✓           | No revocation timestamp |
 | `key/revoke-other`  | 3+    | —        | ✓           | Revoke another key      |
 
@@ -424,12 +527,14 @@ PR = PS = AS = KS = `tmb`
 **Explicit Genesis (Single-Key)**
 
 - Requires a signed genesis transaction
-- Key signs a `key/add` transaction to add itself as the principal.
+- Key signs a `key/create` transaction to add itself as the principal.
 - `PR = H(sort(tmb₀, nonce?))`
+- For genesis, `pre` is the value of the first key bundle, which in the case of
+  a single key is just the value of that one key.
 
 Optionally, the principal root, `pr` may also be included.
 
-**`typ`**: `<authority>/key/add`
+**`typ`**: `<authority>/key/create`
 
 - `id`: `<genesis key tmb>`
 - `pr`: `<Principal Root value>`
@@ -441,9 +546,9 @@ Optionally, the principal root, `pr` may also be included.
     alg: "ES256",
     now: 1628181264,
     tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-    typ: "cyphr.me/cyphrpass/key/add",
+    typ: "cyphr.me/cyphrpass/key/create",
     id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-    pr: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.
+    pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.  
   },
   sig: "<b64ut>", // TODO valid sig
   key: {
@@ -459,12 +564,12 @@ Optionally, the principal root, `pr` may also be included.
 
 **Explicit Genesis (Multi-Key)**
 
-- Key signs a `key/add` transaction
+- Key signs a `key/create` transaction
 - `PR = H(sort(tmb₀, tmb₁, ..., nonce?))`
 - Without rules, each key has equal weight, so any initial key can sign.
 - Keys are added to the PR, calculated beforehand.
 
-**`typ`: `<authority>/key/add`**
+**`typ`: `<authority>/key/create`**
 
 - `id`: `<genesis key tmb>`
 - `pr`: `<Principal Root value>`
@@ -478,7 +583,7 @@ Optionally, the principal root, `pr` may also be included.
         alg: "ES256",
         now: 1628181264,
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        typ: "cyphr.me/cyphrpass/key/add",
+        typ: "cyphr.me/cyphrpass/key/create",
         id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         pr: "<Principal Root value", // TODO insert actual value for this transaction.
       },
@@ -489,7 +594,7 @@ Optionally, the principal root, `pr` may also be included.
         alg: "ES256",
         now: 1628181264,
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        typ: "cyphr.me/cyphrpass/key/add",
+        typ: "cyphr.me/cyphrpass/key/create",
         id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
         pr: "<Principal Root value", // TODO insert actual value for this transaction.
       },
@@ -702,8 +807,8 @@ The recommended export format is newline-delimited JSON (JSONL) containing all
 signed transactions and actions:
 
 ```jsonl
-{"typ":"cyphr.me/cyphrpass/key/add","pay":{...},"sig":"...","key":{...}}
-{"typ":"cyphr.me/cyphrpass/key/add","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
 {"typ":"cyphr.me/comment/create","pay":{...},"sig":"..."}
 ```
 
@@ -862,7 +967,7 @@ The **Auth State (AS) chain** is the core of Cyphrpass — it provides the authe
 
 Transactions mutate the AS and form a chain via the `pre` field:
 
-`typ` may be `<authority>/key/add` or similar key mutation type.
+`typ` may be `<authority>/key/create` or similar key mutation type.
 
 ```json5
 {
@@ -870,7 +975,7 @@ Transactions mutate the AS and form a chain via the `pre` field:
     alg: "ES256",
     now: 1628181264,
     tmb: "<signing key tmb>", // Existing key
-    typ: "<authority>/key/add",
+    typ: "<authority>/key/create",
     pre: "<previous AS>",
     id: "<new keys tmb>",
   },
@@ -931,7 +1036,7 @@ First, define the rule:
 
 ```json5
 {
-  "cyphrpass/key/add": 2,
+  "cyphrpass/key/create": 2,
   "cyphrpass/key/upsert": 2,
 }
 ```
@@ -947,7 +1052,7 @@ total transaction:
         alg: "ES256",
         now: 1628181264,
         tmb: "<signing key tmb>", // First Existing key
-        typ: "<authority>/cyphrpass/key/add",
+        typ: "<authority>/cyphrpass/key/create",
         pre: "<previous AS>",
         id: "<new keys tmb>",
       },
@@ -958,7 +1063,7 @@ total transaction:
         alg: "ES256",
         now: 1628181264,
         tmb: "<signing key tmb>", // Second Existing key
-        typ: "<authority>/cyphrpass/key/add",
+        typ: "<authority>/cyphrpass/key/create",
         pre: "<previous AS>",
         id: "<new keys tmb>",
       },
@@ -1073,7 +1178,7 @@ to keep clients in sync.
 
 #### Recommended Usage Patterns
 
-- **Proactive push on mutation** — After transaction (`key/add`, `key/revoke`,
+- **Proactive push on mutation** — After transaction (`key/create`, `key/revoke`,
   etc.), client pushes to all registered services (stored locally through
   previous registration).
 - **On-demand sync** — Before high-value actions, client queries service tip and
@@ -1179,9 +1284,9 @@ Unrecoverable principals may also be Dead or Zombie:
 2. **Zombie**: An unrecoverable is a zombie if transactions are not possible but
    some data actions are still possible.
 
-**Zombie example** (level 4) `key/add` requires 2 points, but there's only one
-key with weight 1. `comment/create` requires default 1, so comments are still
-possible but AS mutation is impossible.
+**Zombie example** (level 4) `key/create` requires 2 points, but there's only
+one key with weight 1. `comment/create` requires default 1, so comments are
+still possible but AS mutation is impossible.
 
 **Dead example**: (level 1) The only key is revoked. The account is
 unrecoverable and dead.
@@ -1207,7 +1312,7 @@ Level 3+ supports recovery and can add new keys.
 | ----------------- | -------------------------------------- | ------------ |
 | **Backup Key**    | Backup key stored in a secure location | User custody |
 | **Paper wallet**  | Backup key printed/stored offline      | User custody |
-| **Hardware key**  | Yubikey or similar device              | User custody |
+| **Hardware key**  | Hardware key device (U2F-Zero, solo1)  | User custody |
 | **Airgapped key** | Cold storage, never online             | User custody |
 
 ### 11.4 Implicit Fallback (Single-Key Accounts)
@@ -1233,19 +1338,22 @@ For implicit (single-key) accounts, a `fallback` field may be included at key cr
 
 **Notes:**
 
-- The `fallback` field is not included in `tmb`'s calculation (allows changing fallback without changing identity)
+- The `fallback` field is not included in `tmb`'s calculation (allows changing
+  fallback without changing identity)
 - Assumes a trusted initial setup
-- **Level 2 Restriction**: Level 2 accounts only support **atomic swap** (`key/replace`). The fallback functionality must adhere to this, replacing the lost key rather than complying with `key/add` like Level 3+.
+- **Level 2 Restriction**: Level 2 accounts only support **atomic swap**
+  (`key/replace`). The fallback functionality must adhere to this, replacing the
+  lost key rather than complying with `key/create` like Level 3+.
 
-#### 11.4.1 Recovery Validity
+#### 11.4.1 Recovery Validity // TODO needs some work
 
-Recovery agents can ONLY act when the account is in an **unrecoverable state**:
+Recovery agents can only act when the account is in an **unrecoverable state**:
 
-- All regular keys have been revoked or are inaccessible
-- Insufficient keys remain to meet threshold for mutations (Level 5+)
-- Signatures from recovery agents are invalid while account is recoverable
-- This prevents recovery from being used as a backdoor
-- The rule for key/add is of a higher weight than keys on the account
+- All regular keys have been revoked or are inaccessible.
+- Insufficient keys remain to meet threshold for mutations (Level 5+).
+- Signatures from recovery agents are invalid while account is recoverable.
+- This prevents recovery from being used as a backdoor.
+- The rule for `key/create` is of a higher weight than keys on the account.
 
 ### 11.5 Recovery Transactions
 
@@ -1312,7 +1420,7 @@ When a principal is locked out:
     "alg": "ES256",
     "now": 1628181264,
     "tmb": "<recovery agent tmb>",
-    "typ": "<authority>/key/add",
+    "typ": "<authority>/key/create",
     "pre": "<previous AS>",
     "id": "<new user key tmb>"
   },
@@ -1323,7 +1431,7 @@ When a principal is locked out:
 }
 ```
 
-Because the agent was designated via `cyphrpass/recovery/create`, their `key/add` is valid even though no regular user key signed it.
+Because the agent was designated via `cyphrpass/recovery/create`, their `key/create` is valid even though no regular user key signed it.
 
 ### 11.7 External Recovery
 
@@ -1338,11 +1446,11 @@ External recovery delegates recovery authority to an external principal. The rec
 
 For social recovery, multiple contacts sign:
 
-- Each contact signs the same `key/add` transaction
+- Each contact signs the same `key/create` transaction
 - When `threshold` signatures are collected, the transaction is valid
 - Contacts are identified by their PR
 
-**Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/add`.
+**Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
 
 ### 11.9 Account Freeze
 
@@ -1523,72 +1631,6 @@ However, the fork may want to preserve prior identity and history. Since PR
 must resolve to one and only one principal account, PR itself cannot be used as
 the identity for multiple accounts.
 
-### 12.4 Self-Sovereign Philosophy
-
-#### Self-Ownership Philosophy in a Cryptographic System
-
-There are three main categories of ownership:
-
-1. Possess the private keys (Private Key Possession)
-2. Possess the data (Data Possession)
-3. Right to mutate state: `create`, `delete`, `update` (Right)
-
-These three can be summarized as three points: **Keys, Data, Right**
-
-#### Cyphrpass Goal
-
-The protocol seeks to maximize user ownership across all three dimensions:
-
-Keys → Self-custody, multi-device, revocation, recovery paths.
-Data → Portable exports, optional self-hosting, minimal service lock-in (via MSS).
-Rights → AAA replaces bearer tokens; verifiable authorship/actions without centralized session state.
-
-**Private Key Possession** is important in cryptography. Cryptographic systems
-are implemented using key possession. (Not your keys, not your crypto.)
-
-**Data Possession** - For non-encrypted data: Possession generally equates to
-ownership, as anyone with access can read/copy/use it.
-For encrypted data: Ownership is tied to possession of decryption keys (which
-may overlap with Private Key Possession). Encrypted data hosted by third parties
-(e.g., for availability/security) does not imply loss of ownership if keys
-remain user-controlled.
-
-**Right** is relevant for authorship (comments, user history) and where
-ownership is tracked on a ledger (e.g., bitcoin). Right is proven in a
-cryptographic system using private keys and PoP.
-
-Cyphrpass seeks to help users own their keys, data, and rights.
-
-### 12.5 Natural Ownership
-
-The originating Principal is the **natural owner** of its actions. For example,
-the principal that creates a comment `comment/create` is the natural owner of
-that comment, and has exclusive rights for future mutations: `comment/update`,
-`comment/delete`, and `comment/upsert`. Systems implementing AAA must give
-special attention to items with natural ownership properties.
-
-#### 12.5.1 Ownership Right Semantics
-
-_TODO: Discuss ownership semantics with Tim._
-
-Perhaps:
-ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
-
-`typ`s:
-
-```
-cyphr.me/ownership/claim/create
-cyphr.me/ownership/transfer
-ownership/ack-transfer
-```
-
-Perhaps an item itself can be represented as a Principal. Abstract things themselves have a chain.
-
-"smart contracts" are supported by level 5+
-Verifiable without full blockchain, Off-chain data friendly
-No native "minting fee" or gas
-Revocable/revocable keys
-Soulbound-like — Set transferable=false
 
 ---
 
@@ -1662,7 +1704,7 @@ derivations.
 
 When there are multiple algorithms, no single algorithm is canonical. All
 derivations are considered equivalent by Cyphrpass and security judgements are
-out-of-scope.
+out-of-scope.  
 
 ### 14.1 Algorithm Mapping
 
@@ -1716,9 +1758,24 @@ When verifying a signature:
 
 **Rule:** The derivation used for verification matches the signing key's algorithm.
 
+#### 14.4 Algorithm Incompatibility
+A service and a client are deemed **incompatible** if the service cannot support
+the specific algorithm (alg) used in a client's message.
+
+However, due to Cyphrpass’s use of encapsulation, implicit promotion, and other
+Cyphrpass features, a service does not always require full algorithm support.
+For example, if a service can process the top-level digests, it may remain
+compatible even if it cannot verify the underlying primitives of nested
+components.
+
+Compatibility is strictly required only for operations where the service must
+ verify or interpret the cryptographic material. If such an operation is
+attempted using an unsupported algorithm, the services are incompatible.
 ---
 
-## 15. `typ` Action Grammar
+
+
+### 15 `typ` Action Grammar
 
 Cyphrpass follows a grammar system developed by Cyphr.me. The `typ` grammar
 consists of these core components: `auth`, `act`, `noun`, and `verb`.
@@ -1748,31 +1805,224 @@ Example: `"cyphr.me/user/image/create"`
 - Noun: `user/image` (compound noun)
 - Verb: `create`
 
-#### Special verbs
 
-In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
-`upsert`, `delete`), Cyphrpass defines these special verbs for protocol-level
-operations:
-
-- `add` (`key/add`) // TODO consider changing to `create` for consistency
-- `key/revoke` - Key revoke.
-- `key/replace` - Key atomic swap
-- `merge` (`principal/merge`)
-- `ack-merge` (`principal/ack-merge`)
-
-**Terminology note:** "Action" is used in three distinct contexts by Cyphrpass. Context
-disambiguates:
-
-1. **Data Action** — A signed user message recorded in Data State (Level 4+).
-2. **Type Action** — The path after the authority in a `typ` field.
-3. **Grammar Verb** — The final component of a `typ` (create, delete, etc.).
-
-**Examples:**
+**Other Examples:**
 
 - `cyphr.me/key/upsert`
 - `cyphr.me/key/revoke`
 - `cyphr.me/comment/create`
 - `cyphr.me/principal/merge`
+
+
+#### Special verbs
+In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
+`upsert`, `delete`), Cyphrpass defines these special verbs for protocol-level
+operations:
+
+- `key/revoke`
+- `key/replace`
+- `principal/merge`
+- `principal/ack-merge`
+
+**Terminology note:** "Action" is used in three distinct contexts by Cyphrpass.
+Context disambiguates:
+
+1. **User Action** — A signed Coz.  The hypernym of transactions and data action
+   is "action".  The action type is denoted by `typ`.
+2. **Data Action** — A signed user message, ideally recorded in Data State
+   (Level 4+).
+3. **Type Action** — The path after the authority in a `typ` field. `typ` itself
+   denotes the action of the message.  This is why a "user action" is just
+   simply an action.
+
+
+## 16 Cyphrpass Type System and Ownership
+
+Cyphrpass's `typ` as an alternative to HTTP semantics. 
+
+Cyphrpass's `typ` naming convention is not just a naming convention, it's a
+deliberate design choice that shifts how we think about invoking actions,
+addressing resources, and expressing intent in a cryptographically native,
+decentralized way which is realized in Authenticated Atomic Action.
+
+### `typ` as a Unified Intent + Resource + Verb Descriptor
+
+In 1968 there was the "Mother of all demos", demonstrating the GUI, mouse, and other computer
+basics.  In 1988 was HTTP, which with other components was the creation of the
+Web. 
+
+Unlike most Internet systems, Cyphrpass is designed to work in parallel to HTTP,
+not on top of it. Where HTTP has Method (GET/POST/PUT/DELETE/PATCH...),
+Path (/users/123/profile/photo), Headers (Accept, Content-Type, Authorization...)
+Cyphrpass collapses almost all of that expressive into one field: `typ`.
+
+For example, `cyphr.me/cyphrpass/key/create`
+
+This is close to a RESTful path plus method, but:
+- It's self-describing and self-authenticating.
+- No separate "method" field needed. The verb is included.
+- No separate path vs. body distinction for intent. Everything meaningful is
+  inside the pay payload.
+- Authority prefix acts like a namespace / origin (replacing domain + scheme in
+  a decentralized setting).
+ - Cryptographic digests, especially in combination with public key
+cryptography, naturally provides addressing.  
+
+Cyphrpass Advantages Over HTTP (in Cyphrpass's World)
+- No trusted third-party sessions (like cookies/tokens). Every request carries
+  its own PoP.
+- Replay resistance built-in via `now` (timestamp window).
+- Intermediaries can cryptographically audit actions without trusting the
+  service.
+- Decentralized addressing. The Principal root is outside DNS/CA entirely.
+- Append-only mutable state via transactions. Instead of PUT/PATCH fighting over
+  eventual consistency, Cyphrpass provides a verifiable chain of mutations.
+
+Actions are first-class and atomic. AAA means the "API call" is individually
+verifiable forever, not just during a session.
+
+
+#### Authority and `typ`
+The authority defines the acceptance rules allowable for various types. These
+rules may be enforced by a consensus mechanism like a blockchain, a VM, a
+centralized service, or other processes. Although Cyphrpass itself agnosticly
+does not set permissions outside of the core authentication rules, Cyphrpass
+acknowledges that rules must be implemented by an authority.  (In the case of
+this document, `Cyphr.me` is typically that authority)
+
+### Noun Properties
+
+The `typ` denotes a noun, which may have properties as set by an authority.
+Properties
+ - Creatable
+ - Ownable
+ - Updatable
+ - Transferable
+
+Create: Nouns that are able to be created, like `comment/create`
+Owned: Things that are owned can only be mutated by owner. `comment`
+Updatable: Nouns that are able to be mutated after the fact. `comment`
+Transferable: Things that are able to be transferred.
+
+In Cyphrpass, transferable is cryptographically implementable via key change,
+but recording such changes in a ledger potentially results in human unreadable
+transactions. Also, authorities may prohibit key updates to keys outside of the
+principal, making transfer impossible. 
+
+Transfer ambiguity: For example, a comment could be updated to be signed by a
+new key, but that would be ambiguous: was is a transfer or just as a result of a
+key update?  For that reason, updates with new keys outside of principal should
+fail and transfer explicitly used for transfer. 
+
+
+### Where Cyphrpass Diverges from Being a Full HTTP Replacement
+
+Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers an **alternative interaction model**:
+
+| Aspect                  | HTTP                                       | Cyphrpass `typ` + Coz Model                              |
+|-------------------------|--------------------------------------------|----------------------------------------------------------|
+| Addressing              | URL + method                               | `typ` string (authority + noun/verb)                     |
+| Authentication          | Headers / tokens / cookies                 | Embedded PoP (signature over the whole intent)           |
+| State management        | Server-side sessions                       | Client + service mutual sync of auth chain               |
+| Mutability model        | CRUD on resources                          | Append-only transactions + signed actions                |
+| Verifiability           | Mostly server-trusted                      | Anyone can verify any action historically                |
+| Transport               | Usually TLS + HTTP                         | Can be sent any way (TLS, HTTP, IPFS, email, gossip...)  |
+| Response model          | Status + body                              | Tip, another signed Coz                                  |
+
+
+
+
+### 16 Self-Sovereign Philosophy
+
+#### Self-Ownership Philosophy in a Cryptographic System
+
+There are three main categories of ownership:
+
+1. Possess the private keys (Private Key Possession)
+2. Possess the data (Data Possession)
+3. Right to mutate state: `create`, `delete`, `update` (Right)
+
+These three can be summarized as three points: **Keys, Data, Right**
+
+#### 16.2.1 Cyphrpass Goal
+
+The protocol seeks to maximize user ownership across all three dimensions:
+
+Keys → Self-custody, multi-device, revocation, recovery paths.
+Data → Portable exports, optional self-hosting, minimal service lock-in (via MSS).
+Rights → AAA replaces bearer tokens; verifiable authorship/actions without centralized session state.
+
+**Private Key Possession** is important in cryptography. Cryptographic systems
+are implemented using key possession. (Not your keys, not your crypto.)
+
+**Data Possession** - For non-encrypted data: Possession generally equates to
+ownership, as anyone with access can read/copy/use it.
+For encrypted data: Ownership is tied to possession of decryption keys (which
+may overlap with Private Key Possession). Encrypted data hosted by third parties
+(e.g., for availability/security) does not imply loss of ownership if keys
+remain user-controlled.
+
+**Right** is relevant for authorship (comments, user history) and where
+ownership is tracked on a ledger (e.g., bitcoin). Right is proven in a
+cryptographic system using private keys and PoP.
+
+Cyphrpass seeks to help users own their keys, data, and rights.
+
+### 16.5 Natural Ownership
+
+The originating Principal is the **natural owner** of its actions. For example,
+the principal that creates a comment `comment/create` is the natural owner of
+that comment, and has exclusive rights for future mutations: `comment/update`,
+`comment/delete`, and `comment/upsert`. Systems implementing AAA must give
+special attention to items with natural ownership properties.
+
+#### 16.5.1 Ownership Right Semantics
+
+Perhaps:
+ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
+
+`typ`s:
+
+```
+cyphr.me/ownership/claim/create
+cyphr.me/ownership/transfer
+ownership/ack-transfer
+```
+
+
+TODO multiownership
+
+Perhaps an item itself can be represented as a Principal. Abstract things themselves have a chain.
+
+"smart contracts" are supported by level 5+
+Verifiable without full blockchain, Off-chain data friendly
+No native "minting fee" or gas
+No miner, validator race, or fee market
+Revocable/revocable keys
+Soulbound-like — Set transferable=false
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ---
 
@@ -1942,7 +2192,7 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | `MALFORMED_PAYLOAD` | Missing required fields for transaction type     | All   |
 | `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                    | All   |
 | `INVALID_PRIOR`     | `pre` does not match current AS                  | 2+    |
-| `DUPLICATE_KEY`     | `key/add` for key already in KS                  | 3+    |
+| `DUPLICATE_KEY`     | `key/create` for key already in KS               | 3+    |
 | `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
 
 ### 17.2 Recovery Errors
@@ -2072,7 +2322,7 @@ PR = PS = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 
 ### 18.5 Transaction State (Level 3+)
 
-Given a `key/add` transaction with `czd = "<transaction czd>"`:
+Given a `key/create` transaction with `czd = "<transaction czd>"`:
 
 ```
 TS = czd (single transaction, implicit promotion)
