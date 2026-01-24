@@ -18,6 +18,17 @@ protocol built on cryptographic Merkle trees. It enables:
 - Cryptographic primitive agnosticism via the Coz JSON specification.
 
 Cyphrpass provides the authentication layer for the Internet. 
+
+
+| Feature             |  Traditional SSO/Passwords  |         Cyphrpass                 |
+| ---                 |     ---                     |                               --- |
+| **Identity Factor** | Email, Password, or Provider  | Cryptographic Public Keys                      |
+| **Verification**    | Centralized Database          | Independent (Merkle Tree & Coz Spec)                   |
+| **State Tracking**  | Service-only (Centralized)    | Bidirectional (Mutual State Sync)                      |
+| **Action Auth**     | Bearer Tokens (Session-based) | Authenticated Atomic Actions (AAA)                     |
+| **Trust Model**     | Trusted Service               | Explicit Cryptographic Verification (Self-Sovereign)   |
+| **User Recovery**   | Admin-reset or Email          | Cryptographic Key Revocation/Rotation, Social Recovery |
+
 ---
 
 ## 2. Terminology
@@ -31,9 +42,9 @@ truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 | --------------------- | ------ | ------------------------------------------------------ |
 | **Principal**         | —      | An identity in Cyphrpass. Replaces "account".          |
 | **Principal Root**    | PR     | The initial, permanent digest identifying a principal. |
-| **Principal State**   | PS     | Specific top-level digest: `MR(AS, DS)` or promoted.    |
+| **Principal State**   | PS     | Specific top-level digest: `MR(AS, DS)` or promoted.   |
 | **Tip**               | Tip    | The latest PS using a digest identifier.               |
-| **Auth State**        | AS     | Authentication state: `MR(KS, TS, RS)` or promoted.     |
+| **Auth State**        | AS     | Authentication state: `MR(KS, TS, RS)` or promoted.    |
 | **Data State**        | DS     | State of user data/actions (Level 4+).                 |
 | **Key State**         | KS     | Digest of active key thumbprints (`tmb`s).             |
 | **Transaction State** | TS     | Digest of transaction `czd`s (key mutations).          |
@@ -45,7 +56,10 @@ truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 document) and data action, which mutate data state.
 
 ## **State Tree**
+The **state tree** is a hierarchical structure of cryptographic Merkle roots
+that represents the complete state of a Principal (identity).
 
+```text
 Principal State (PS)
 │
 ├── Auth State (AS) ──────────── [Security & Identity]
@@ -59,6 +73,8 @@ Principal State (PS)
 │   └── Nonce ────────────────── [Optional Nonce]
 │
 └── Data State (DS) ──────────── [User Data Actions]
+```
+
 
 The **Auth State (AS) chain** is the core of Cyphrpass. Each auth transaction
 forms a node referencing the prior AS.
@@ -92,12 +108,6 @@ This rule simplifies single-key principals by eliminating the need for explicit
 genesis transactions. Promotion is recursive; items deep in the tree can be
 promoted to the root level.  Implicit promotion applies to all entropic values:
 digests and sufficient strength nonces. 
-
-### 2.3 Unrecoverable Principal
-
-A principal with no active keys and no viable recovery path within the protocol.
-Authentication, mutations, and recovery transactions are impossible without
-out-of-band intervention. See Section Recovery.
 
 ### 2.4 Authenticated Atomic Action (AAA)
 
@@ -172,6 +182,13 @@ the inclusion of `"commit":true`.
 A **witness** is a client that keeps a copy of a principal's state. 
 
 An **oracle** is a witness with some degree of trust delegated to that client
+
+
+### 2.3 Unrecoverable Principal
+
+A principal with no active keys and no viable recovery path within the protocol.
+Authentication, mutations, and recovery transactions are impossible without
+out-of-band intervention. See Section Recovery.
 
 ---
 
