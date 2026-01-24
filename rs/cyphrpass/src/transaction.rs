@@ -90,6 +90,8 @@ pub struct Transaction {
     pub(crate) czd: Czd,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
+    /// Whether this transaction finalizes a commit (`commit: true` in pay).
+    pub(crate) is_finalizer: bool,
 }
 
 impl Transaction {
@@ -109,6 +111,7 @@ impl Transaction {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
+        let is_finalizer = Self::parse_commit_finalize(pay);
 
         Ok(Self {
             kind,
@@ -116,6 +119,7 @@ impl Transaction {
             now,
             czd,
             raw,
+            is_finalizer,
         })
     }
 
@@ -142,6 +146,24 @@ impl Transaction {
     /// Get the raw Coz message for storage/export.
     pub fn raw(&self) -> &coz::CozJson {
         &self.raw
+    }
+
+    /// Check if this transaction finalizes a commit.
+    ///
+    /// Per SPEC §4.2.1, a transaction with `commit: true` in its payload
+    /// signals the end of an atomic commit bundle.
+    pub fn is_finalizer(&self) -> bool {
+        self.is_finalizer
+    }
+
+    /// Parse the `commit` field from pay to determine if this is a finalizer.
+    ///
+    /// Returns `true` if `pay.commit == true`, false otherwise.
+    fn parse_commit_finalize(pay: &Pay) -> bool {
+        pay.extra
+            .get("commit")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     /// Parse the transaction kind from typ and payload fields.
@@ -437,5 +459,59 @@ mod tests {
         let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
+    }
+
+    #[test]
+    fn parse_commit_finalizer_true() {
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/add")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+        pay.extra.insert("commit".into(), json!(true));
+
+        let czd = Czd::from_bytes(vec![0; 32]);
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+
+        assert!(tx.is_finalizer());
+    }
+
+    #[test]
+    fn parse_commit_finalizer_false() {
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/add")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+        pay.extra.insert("commit".into(), json!(false));
+
+        let czd = Czd::from_bytes(vec![0; 32]);
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+
+        assert!(!tx.is_finalizer());
+    }
+
+    #[test]
+    fn parse_commit_finalizer_missing() {
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/add")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+        // No "commit" field
+
+        let czd = Czd::from_bytes(vec![0; 32]);
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+
+        assert!(!tx.is_finalizer());
     }
 }

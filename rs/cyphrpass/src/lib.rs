@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod commit;
 pub mod error;
 pub mod key;
 pub mod principal;
@@ -27,6 +28,7 @@ pub mod transaction;
 
 // Re-exports
 pub use action::Action;
+pub use commit::{Commit, PendingCommit};
 pub use error::Error;
 pub use key::Key;
 pub use principal::Principal;

@@ -934,6 +934,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             raw,
+            is_finalizer: false,
         }
     }
 
@@ -1091,6 +1092,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             raw: dummy_coz_json(),
+            is_finalizer: false,
         };
 
         let result = principal.apply_transaction(tx, None);
@@ -1124,6 +1126,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             raw: dummy_coz_json(),
+            is_finalizer: false,
         };
 
         principal.apply_transaction(tx, None).unwrap();
@@ -1182,6 +1185,7 @@ mod tests {
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             raw: dummy_coz_json(),
+            is_finalizer: false,
         };
         principal.apply_transaction(tx, None).unwrap();
 
@@ -1221,6 +1225,7 @@ mod tests {
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             raw: dummy_coz_json(),
+            is_finalizer: false,
         };
         principal.apply_transaction(tx, Some(key2)).unwrap();
 
