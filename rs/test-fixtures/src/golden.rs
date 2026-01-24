@@ -16,6 +16,7 @@
 //! 5. Extracts final state digests (ks, as, ps, ts)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphrpass_storage::CommitEntry;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,11 +41,11 @@ pub struct Golden {
     /// Full genesis key material (alg, pub, tmb) for storage import.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
-    /// Storage-format entries: [{pay, sig, key?}, ...] in application order.
-    /// Uses Box<RawValue> to preserve exact bytes for signature verification.
+    /// Commit bundles in application order (one commit per line in JSONL).
+    /// Each commit contains: txs (transactions), ts, as, ps digests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entries: Option<Vec<Box<RawValue>>>,
-    /// Coz digests (czd) parallel to entries, for protocol verification.
+    pub commits: Option<Vec<CommitEntry>>,
+    /// Coz digests (czd) parallel to all transactions across commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digests: Option<Vec<String>>,
     /// Expected state after execution.
@@ -177,7 +178,7 @@ impl<'a> Generator<'a> {
                         principal: test.principal.clone(),
                         setup: None,
                         genesis_keys: None,
-                        entries: None,
+                        commits: None,
                         digests: None,
                         expected: GoldenExpected {
                             error: expected_error,
@@ -255,66 +256,87 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
-    /// Export entries from Principal using cyphrpass-storage export logic.
-    /// Returns entries as Vec<Box<RawValue>> and digests as Vec<String>.
+    /// Export commits from Principal using cyphrpass-storage export logic.
+    /// Returns commits as Vec<CommitEntry> and digests as Vec<String>.
     ///
-    /// IMPORTANT: Uses Entry::raw_json() to get the exact bytes that were
-    /// used for czd computation. Box<RawValue> preserves these bytes through
-    /// serde serialization to the golden file, avoiding re-serialization.
-    fn export_principal_entries(
+    /// Each CommitEntry contains:
+    /// - txs: array of transactions in commit (with pay, sig, key? fields)
+    /// - ts: Transaction State digest (base64url)
+    /// - as: Auth State digest (base64url)
+    /// - ps: Principal State digest (base64url)
+    ///
+    /// Actions are exported as single-tx pseudo-commits at the end, with
+    /// the current state digests at the time of action application.
+    fn export_principal_commits(
         principal: &cyphrpass::Principal,
-    ) -> (Vec<Box<RawValue>>, Vec<String>) {
-        use cyphrpass_storage::export_entries;
+    ) -> (Vec<CommitEntry>, Vec<String>) {
+        use cyphrpass_storage::export_commits;
 
-        let entries = export_entries(principal);
-
-        // Convert entries to RawValue to preserve exact bytes through serialization.
-        // This is critical: serializing to Value and back would lose byte ordering.
-        let entry_values: Vec<Box<RawValue>> = entries
-            .iter()
-            .map(|e| serde_json::from_str(e.raw_json()).expect("entry raw_json is valid JSON"))
-            .collect();
+        let mut commits = export_commits(principal);
 
         // Compute digests from transactions and actions
         let mut digests = Vec::new();
         for tx in principal.transactions() {
             digests.push(tx.czd().to_b64());
         }
+
+        // Export actions as pseudo-commits
+        // Each action gets its own single-tx commit entry
+        // Actions use the state from the last finalized commit
+        let last_commit = principal.commits().last();
         for action in principal.actions() {
             digests.push(action.czd().to_b64());
+
+            // Serialize action's CozJson
+            let raw =
+                serde_json::to_value(action.raw()).expect("CozJson serialization cannot fail");
+
+            // Create pseudo-commit with current state
+            // (actions don't change key state, only add data state)
+            // Use last commit's ts if available, else we have no ts (genesis-only)
+            let ts = last_commit
+                .map(|c| c.ts().as_cad().to_b64())
+                .unwrap_or_default();
+            let auth_state = principal.auth_state().as_cad().to_b64();
+            let ps = principal.ps().as_cad().to_b64();
+
+            commits.push(CommitEntry::new(vec![raw], ts, auth_state, ps));
         }
 
-        (entry_values, digests)
+        (commits, digests)
     }
 
-    /// Convert a GoldenCoz to storage entry format {pay, sig, key?}.
+    /// Convert a GoldenCoz to a CommitEntry for error tests.
     /// Used for error tests where the failing entry is not in Principal.
-    /// Returns Box<RawValue> to preserve bytes through golden file serialization.
+    /// Wraps the single failing transaction as a commit with placeholder state digests.
     ///
-    /// CRITICAL: Pay must be embedded as raw bytes, NOT re-serialized through Value.
-    /// This preserves the exact bytes that were signed.
-    fn coz_to_entry_value(coz: &GoldenCoz) -> Box<RawValue> {
-        // Build JSON string manually to preserve exact pay bytes
-        let mut json = String::from("{\"pay\":");
-        json.push_str(coz.pay.get());
-        json.push_str(",\"sig\":\"");
-        json.push_str(&coz.sig);
-        json.push('"');
+    /// Note: For error tests, the state digests are meaningless since the
+    /// transaction failed validation. We use empty strings as placeholders.
+    fn coz_to_commit_entry(coz: &GoldenCoz) -> CommitEntry {
+        // Build JSON object for the failing transaction
+        let mut tx_json = serde_json::json!({
+            "pay": serde_json::from_str::<Value>(coz.pay.get()).expect("valid pay JSON"),
+            "sig": coz.sig,
+        });
 
         if let Some(ref key) = coz.key {
-            // Key can be serialized normally since it wasn't signed
-            let key_json = serde_json::json!({
-                "alg": key.alg,
-                "pub": key.pub_key,
-                "tmb": key.tmb
-            });
-            json.push_str(",\"key\":");
-            json.push_str(&serde_json::to_string(&key_json).expect("key serialization"));
+            tx_json.as_object_mut().unwrap().insert(
+                "key".to_string(),
+                serde_json::json!({
+                    "alg": key.alg,
+                    "pub": key.pub_key,
+                    "tmb": key.tmb
+                }),
+            );
         }
 
-        json.push('}');
-
-        serde_json::from_str(&json).expect("valid JSON")
+        // Wrap as a single-transaction commit with placeholder state digests
+        CommitEntry::new(
+            vec![tx_json],
+            String::new(), // ts placeholder for error tests
+            String::new(), // as placeholder for error tests
+            String::new(), // ps placeholder for error tests
+        )
     }
 
     /// Create a Principal from genesis key names.
@@ -438,9 +460,9 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, the transaction was not applied - add it manually
-        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal);
         if is_error_test {
-            entries.push(Self::coz_to_entry_value(&coz));
+            commits.push(Self::coz_to_commit_entry(&coz));
             digests.push(coz.czd.clone());
         }
 
@@ -449,7 +471,7 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(entries),
+            commits: Some(commits),
             digests: Some(digests),
             expected,
         })
@@ -510,11 +532,11 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, we need to combine exported entries with the failing entry
-        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal);
         if is_error_test && !coz_sequence.is_empty() {
             // The last step was not applied - add it from coz_sequence
             let failing_coz = coz_sequence.last().unwrap();
-            entries.push(Self::coz_to_entry_value(failing_coz));
+            commits.push(Self::coz_to_commit_entry(failing_coz));
             digests.push(failing_coz.czd.clone());
         }
 
@@ -523,7 +545,7 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(entries),
+            commits: Some(commits),
             digests: Some(digests),
             expected,
         })
@@ -545,7 +567,7 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(vec![]),
+            commits: Some(vec![]),
             digests: Some(vec![]),
             expected,
         })
@@ -616,14 +638,14 @@ impl<'a> Generator<'a> {
 
         // Build genesis_keys, entries, and digests using storage export logic
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let (entries, digests) = Self::export_principal_entries(principal);
+        let (commits, digests) = Self::export_principal_commits(principal);
 
         Ok(Golden {
             name: test.name.clone(),
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(entries),
+            commits: Some(commits),
             digests: Some(digests),
             expected,
         })
@@ -662,9 +684,9 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, the action was not applied - add it manually
-        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal);
         if is_error_test {
-            entries.push(Self::coz_to_entry_value(&action_coz));
+            commits.push(Self::coz_to_commit_entry(&action_coz));
             digests.push(action_coz.czd.clone());
         }
 
@@ -673,7 +695,7 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(entries),
+            commits: Some(commits),
             digests: Some(digests),
             expected,
         })
@@ -729,11 +751,11 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, we need to combine exported entries with the failing entry
-        let (mut entries, mut digests) = Self::export_principal_entries(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal);
         if is_error_test && !action_sequence.is_empty() {
             // The last action was not applied - add it from action_sequence
             let failing_coz = action_sequence.last().unwrap();
-            entries.push(Self::coz_to_entry_value(failing_coz));
+            commits.push(Self::coz_to_commit_entry(failing_coz));
             digests.push(failing_coz.czd.clone());
         }
 
@@ -742,7 +764,7 @@ impl<'a> Generator<'a> {
             principal: test.principal.clone(),
             setup: Self::setup_to_golden(&test.setup),
             genesis_keys,
-            entries: Some(entries),
+            commits: Some(commits),
             digests: Some(digests),
             expected,
         })
@@ -1154,26 +1176,25 @@ level = 3
         let golden = &goldens[0];
         assert_eq!(golden.name, "key_add_golden_to_alice");
 
-        // Verify we have entries and digests
-        let entries = golden.entries.as_ref().expect("missing entries");
+        // Verify we have commits and digests
+        let commits = golden.commits.as_ref().expect("missing commits");
         let digests = golden.digests.as_ref().expect("missing digests");
-        assert_eq!(entries.len(), 1, "single-step should have 1 entry");
+        assert_eq!(commits.len(), 1, "single-step should have 1 commit");
         assert_eq!(digests.len(), 1, "single-step should have 1 digest");
 
-        // Verify entry has correct structure (parse RawValue to Value first)
-        let entry_raw = &entries[0];
-        let entry: Value = serde_json::from_str(entry_raw.get()).expect("entry parse");
-        let pay = entry.get("pay").expect("entry missing pay");
+        // Verify commit has correct structure
+        let commit = &commits[0];
+        assert_eq!(commit.txs.len(), 1, "commit should have 1 tx");
+        let tx = &commit.txs[0];
+        let pay = tx.get("pay").expect("tx missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/key/create");
         assert_eq!(pay["now"], 1700000000);
         assert!(pay.get("pre").is_some(), "pre should be populated");
 
         // Verify sig and key are populated
-        assert!(entry.get("sig").is_some(), "entry should have sig");
-        let key = entry
-            .get("key")
-            .expect("key/create entry should include key");
+        assert!(tx.get("sig").is_some(), "tx should have sig");
+        let key = tx.get("key").expect("key/create tx should include key");
         assert_eq!(key["alg"], "ES256");
         assert!(key.get("tmb").is_some(), "key should have tmb");
 

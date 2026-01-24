@@ -13,23 +13,30 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "now": 1700000000,
-        "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-        "rvk": 1700000000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/revoke"
-      },
-      "sig": "_HQoXPH8XQ_tv1YCe1VkB3fk66C6uDMe4oOTGhJsWBZH7D1vDyB6SdSJcTtRa6ExcLuouHs4Fd8P7vlAcVhEpg",
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      }
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "now": 1700000000,
+            "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+            "rvk": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/key/revoke"
+          },
+          "sig": "_HQoXPH8XQ_tv1YCe1VkB3fk66C6uDMe4oOTGhJsWBZH7D1vDyB6SdSJcTtRa6ExcLuouHs4Fd8P7vlAcVhEpg",
+          "key": {
+            "alg": "ES256",
+            "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+          }
+        }
+      ],
+      "ts": "8dMI1A8G60rpIxvG8_GbVN70yA4KzJLUvheMll15OvA",
+      "as": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "ps": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
     }
   ],
   "digests": ["8dMI1A8G60rpIxvG8_GbVN70yA4KzJLUvheMll15OvA"],

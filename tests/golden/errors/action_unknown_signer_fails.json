@@ -8,16 +8,23 @@
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "msg": "Action from unknown key",
-        "now": 1700000001,
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "typ": "cyphr.me/action"
-      },
-      "sig": "RuO5qQ6XV69k-bywYP8rs6RcIbP9CHlFubnInga-p14gZjD2Jzd872MVqi6aj1hAOgBtmgZS40Q-iwEZu1sv1Q"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Action from unknown key",
+            "now": 1700000001,
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "RuO5qQ6XV69k-bywYP8rs6RcIbP9CHlFubnInga-p14gZjD2Jzd872MVqi6aj1hAOgBtmgZS40Q-iwEZu1sv1Q"
+        }
+      ],
+      "ts": "",
+      "as": "",
+      "ps": ""
     }
   ],
   "digests": ["zTBHI2ZDPqIjWD9oENk4VvigCrGEo36jROKNfL7SxHE"],

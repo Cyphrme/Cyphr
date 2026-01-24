@@ -9,9 +9,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cyphrpass_storage::{Entry, Genesis, LoadError, export_entries, load_principal};
-use serde_json::Value;
-use serde_json::value::RawValue;
+use cyphrpass_storage::{
+    CommitEntry, Entry, Genesis, LoadError, export_commits, load_principal_from_commits,
+};
+
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
 // ============================================================================
@@ -84,67 +85,70 @@ fn make_genesis(genesis_keys: &[GoldenKey]) -> Genesis {
         Genesis::Explicit(keys)
     }
 }
-
-/// Convert Golden.entries (Box<RawValue>) to Vec<Entry>.
-/// Parses RawValue to Value first, then creates Entry.
-fn make_entries(entries: &[Box<RawValue>]) -> Vec<Entry> {
-    entries
-        .iter()
-        .map(|raw| {
-            let v: Value = serde_json::from_str(raw.get()).expect("invalid entry JSON");
-            Entry::from_value(&v).expect("invalid entry")
-        })
-        .collect()
+/// Convert Golden.commits to format suitable for load_principal_from_commits.
+/// Just returns a clone since CommitEntry is already the right type.
+fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
+    commits.to_vec()
 }
 
-/// Compare exported entries against expected entries.
-/// Returns true if semantically equivalent (pay, sig, key fields match).
-/// Parses Box<RawValue> to Value for comparison.
-fn compare_entries(exported: &[Entry], expected: &[Box<RawValue>]) -> Result<(), String> {
-    if exported.len() != expected.len() {
+/// Compare exported commits against expected commits.
+/// Returns ok if semantically equivalent.
+/// Note: expected may contain action pseudo-commits (typ not starting with "cyphr.me/key/")
+/// which are filtered out since export_commits only exports transactions.
+fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
+    // Filter expected to only transaction commits (exclude action pseudo-commits)
+    // Action commits have typ field not starting with "cyphr.me/key/"
+    let tx_commits: Vec<_> = expected
+        .iter()
+        .filter(|c| {
+            // A commit is a transaction commit if its first tx has typ starting with "cyphr.me/key/"
+            c.txs.first().map_or(false, |tx| {
+                tx.get("pay")
+                    .and_then(|p| p.get("typ"))
+                    .and_then(|t| t.as_str())
+                    .map_or(false, |typ| typ.starts_with("cyphr.me/key/"))
+            })
+        })
+        .collect();
+
+    if exported.len() != tx_commits.len() {
         return Err(format!(
-            "entry count mismatch: exported {} vs expected {}",
+            "commit count mismatch: exported {} vs expected {} (tx commits)",
             exported.len(),
-            expected.len()
+            tx_commits.len()
         ));
     }
 
-    for (i, (exp, expected_raw)) in exported.iter().zip(expected.iter()).enumerate() {
-        // Parse RawValue to Value for comparison
-        let exp_val: Value = serde_json::from_str(expected_raw.get())
-            .map_err(|e| format!("entry {}: failed to parse expected: {}", i, e))?;
-        // Parse exported entry for comparison
-        let exported_val = exp
-            .as_value()
-            .map_err(|_| format!("entry {}: failed to parse exported entry", i))?;
-
-        // Compare pay fields
-        let exported_pay = exported_val.get("pay");
-        let expected_pay = exp_val.get("pay");
-        if exported_pay != expected_pay {
+    for (i, (exp, expected_commit)) in exported.iter().zip(tx_commits.iter()).enumerate() {
+        // Compare transaction counts
+        if exp.txs.len() != expected_commit.txs.len() {
             return Err(format!(
-                "entry {}: pay mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exported_pay, expected_pay
+                "commit {}: tx count mismatch {} vs {}",
+                i,
+                exp.txs.len(),
+                expected_commit.txs.len()
             ));
         }
 
-        // Compare sig fields
-        let exported_sig = exported_val.get("sig");
-        let expected_sig = exp_val.get("sig");
-        if exported_sig != expected_sig {
+        // Compare state digests
+        if exp.ts != expected_commit.ts {
             return Err(format!(
-                "entry {}: sig mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exported_sig, expected_sig
+                "commit {}: ts mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.ts, expected_commit.ts
             ));
         }
 
-        // Compare key fields (if present)
-        let exported_key = exported_val.get("key");
-        let expected_key = exp_val.get("key");
-        if exported_key != expected_key {
+        if exp.auth_state != expected_commit.auth_state {
             return Err(format!(
-                "entry {}: key mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exported_key, expected_key
+                "commit {}: as mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.auth_state, expected_commit.auth_state
+            ));
+        }
+
+        if exp.ps != expected_commit.ps {
+            return Err(format!(
+                "commit {}: ps mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.ps, expected_commit.ps
             ));
         }
     }
@@ -162,24 +166,25 @@ fn rt_single_tx() {
     let fixture = load_fixture("mutations", "key_add_increases_count");
 
     let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = fixture.entries.as_ref().expect("missing entries");
+    let commits = fixture.commits.as_ref().expect("missing commits");
 
     // Skip if no entries (genesis-only test)
-    if entries.is_empty() {
+    if commits.is_empty() {
         return;
     }
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = make_entries(entries);
+    let commit_vec = make_commits(commits);
 
     // Load principal from genesis + entries
-    let principal = load_principal(genesis, &entry_vec).expect("load_principal failed");
+    let principal =
+        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
 
     // Export entries from loaded principal
-    let exported = export_entries(&principal);
+    let exported = export_commits(&principal);
 
     // Compare exported with original entries
-    compare_entries(&exported, entries).expect("round-trip mismatch");
+    compare_commits(&exported, commits).expect("round-trip mismatch");
 
     // Verify expected state
     if let Some(expected_count) = fixture.expected.key_count {
@@ -197,15 +202,16 @@ fn rt_multi_tx() {
     let fixture = load_fixture("multi_key", "add_third_key_to_dual_key_account");
 
     let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = fixture.entries.as_ref().expect("missing entries");
+    let commits = fixture.commits.as_ref().expect("missing commits");
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = make_entries(entries);
+    let commit_vec = make_commits(commits);
 
-    let principal = load_principal(genesis, &entry_vec).expect("load_principal failed");
-    let exported = export_entries(&principal);
+    let principal =
+        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
+    let exported = export_commits(&principal);
 
-    compare_entries(&exported, entries).expect("round-trip mismatch");
+    compare_commits(&exported, commits).expect("round-trip mismatch");
 
     if let Some(expected_count) = fixture.expected.key_count {
         assert_eq!(
@@ -222,15 +228,16 @@ fn rt_with_actions() {
     let fixture = load_fixture("actions", "single_action_promotes_ds");
 
     let genesis_keys = fixture.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = fixture.entries.as_ref().expect("missing entries");
+    let commits = fixture.commits.as_ref().expect("missing commits");
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = make_entries(entries);
+    let commit_vec = make_commits(commits);
 
-    let principal = load_principal(genesis, &entry_vec).expect("load_principal failed");
-    let exported = export_entries(&principal);
+    let principal =
+        load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
+    let exported = export_commits(&principal);
 
-    compare_entries(&exported, entries).expect("round-trip mismatch");
+    compare_commits(&exported, commits).expect("round-trip mismatch");
 
     // Verify Level 4 promotion
     if let Some(expected_level) = fixture.expected.level {
@@ -253,7 +260,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = golden.entries.as_ref().expect("missing entries");
+    let commits = golden.commits.as_ref().expect("missing commits");
     let digests = golden.digests.as_ref();
 
     // Debug: dump digests from golden
@@ -263,36 +270,35 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         }
     }
 
-    // Skip if no entries (genesis-only test)
-    if entries.is_empty() {
+    // Skip if no commits (genesis-only test)
+    if commits.is_empty() {
         return;
     }
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = make_entries(entries);
+    let commit_vec = make_commits(commits);
 
-    // Debug: dump pre values from entries (parse RawValue to Value first)
-    for (i, e_raw) in entries.iter().enumerate() {
-        let e: Value = serde_json::from_str(e_raw.get()).expect("entry parse");
-        if let Some(pay) = e.get("pay") {
-            if let Some(pre) = pay.get("pre") {
-                eprintln!("  [{}] pre: {}", i, pre);
+    // Debug: dump pre values from commit transactions
+    for (ci, commit) in commits.iter().enumerate() {
+        for (ti, tx) in commit.txs.iter().enumerate() {
+            if let Some(pay) = tx.get("pay") {
+                if let Some(pre) = pay.get("pre") {
+                    eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
+                }
             }
-        }
-        if let Some(key) = e.get("key") {
-            eprintln!("  [{}] key.tmb: {:?}", i, key.get("tmb"));
-        } else {
-            eprintln!("  [{}] key: MISSING", i);
+            if let Some(key) = tx.get("key") {
+                eprintln!("  [{}:{}] key.tmb: {:?}", ci, ti, key.get("tmb"));
+            }
         }
     }
 
-    // Debug: show raw JSON bytes for entry 0
-    if !entry_vec.is_empty() {
-        let entry0 = &entry_vec[0];
-        eprintln!("  [0] entry.raw_json(): {}", entry0.raw_json());
-        if let Ok(pay_bytes) = entry0.pay_bytes() {
-            eprintln!("  [0] pay_bytes: {}", String::from_utf8_lossy(&pay_bytes));
-        }
+    // Debug: show commit state digests
+    if !commit_vec.is_empty() {
+        let commit0 = &commit_vec[0];
+        eprintln!(
+            "  [0] ts={}, as={}, ps={}",
+            commit0.ts, commit0.auth_state, commit0.ps
+        );
     }
 
     // Debug: compute AS step by step to see divergence
@@ -306,12 +312,12 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     );
 
     // Load principal from generated entries
-    let principal = load_principal(genesis, &entry_vec)
+    let principal = load_principal_from_commits(genesis, &commit_vec)
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Export and compare
-    let exported = export_entries(&principal);
-    compare_entries(&exported, entries)
+    let exported = export_commits(&principal);
+    compare_commits(&exported, commits)
         .unwrap_or_else(|e| panic!("{}: round-trip mismatch: {}", test.name, e));
 
     // Verify expected state
@@ -407,10 +413,10 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = golden.entries.as_ref().expect("missing entries");
+    let commits = golden.commits.as_ref().expect("missing commits");
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = make_entries(entries);
+    let commit_vec = make_commits(commits);
 
     // Apply setup modifiers (e.g., pre-revoke keys)
     let mut principal = match &genesis {
@@ -439,7 +445,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     }
 
     // Try to load principal - expect failure
-    match load_principal(genesis.clone(), &entry_vec) {
+    match load_principal_from_commits(genesis.clone(), &commit_vec) {
         Ok(_) => {
             panic!(
                 "{}: expected error '{}' but load_principal succeeded",
@@ -484,13 +490,13 @@ fn run_e2e_genesis_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
     let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
-    let entries = golden.entries.as_ref();
+    let commits = golden.commits.as_ref();
 
     let genesis = make_genesis(genesis_keys);
-    let entry_vec = entries.map(|e| make_entries(e)).unwrap_or_default();
+    let commit_vec = commits.map(|c| make_commits(c)).unwrap_or_default();
 
     // Load principal
-    let principal = load_principal(genesis, &entry_vec)
+    let principal = load_principal_from_commits(genesis, &commit_vec)
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Verify expected state

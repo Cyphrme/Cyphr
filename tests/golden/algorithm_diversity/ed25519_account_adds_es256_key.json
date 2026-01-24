@@ -8,22 +8,29 @@
       "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "Ed25519",
-        "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "now": 1700000000,
-        "pre": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-        "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-        "typ": "cyphr.me/key/create"
-      },
-      "sig": "grV1hs57X3_DJYzhPZb0_q7ChHkrP1uSyHPNXjalBUSEIUeY33_MNaTnL2DEKppW_1xLfTYfrla1JfCw2GUZDQ",
-      "key": {
-        "alg": "ES256",
-        "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-      }
+      "txs": [
+        {
+          "pay": {
+            "alg": "Ed25519",
+            "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "now": 1700000000,
+            "pre": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+            "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+            "typ": "cyphr.me/key/create"
+          },
+          "sig": "grV1hs57X3_DJYzhPZb0_q7ChHkrP1uSyHPNXjalBUSEIUeY33_MNaTnL2DEKppW_1xLfTYfrla1JfCw2GUZDQ",
+          "key": {
+            "alg": "ES256",
+            "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
+          }
+        }
+      ],
+      "ts": "ZGBmyXZY6oVoCBTksSXArLBT3STeiuUpDaB2DpLbm4Y--zLmAiQOxnoWwZj6RESWP-UkTot2WnnkbaFnO1dFug",
+      "as": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+      "ps": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
     }
   ],
   "digests": [

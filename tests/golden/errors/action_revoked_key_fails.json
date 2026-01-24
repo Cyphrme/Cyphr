@@ -17,16 +17,23 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "msg": "Action from revoked key",
-        "now": 1700000001,
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "typ": "cyphr.me/action"
-      },
-      "sig": "hTgNVyX9PUE9dkzepZ84e3uGi5OyprSY6ifc0vmcWsA7Wqe7f5cPpZqsVPWj0_mJGmHXfXmLd_V3DajGSCz6eg"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Action from revoked key",
+            "now": 1700000001,
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "hTgNVyX9PUE9dkzepZ84e3uGi5OyprSY6ifc0vmcWsA7Wqe7f5cPpZqsVPWj0_mJGmHXfXmLd_V3DajGSCz6eg"
+        }
+      ],
+      "ts": "",
+      "as": "",
+      "ps": ""
     }
   ],
   "digests": ["qQGn6-nt69nu8k67DpNSA7tEOUtsG61mDlLG_0OAyOc"],

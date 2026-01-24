@@ -289,48 +289,58 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     }
 
     // ========================================================================
-    // New path: Use entries + digests when available
+    // Apply commits from fixture
     // ========================================================================
-    if let (Some(entries), Some(digests)) = (&fixture.entries, &fixture.digests) {
-        // Apply entries using new format
-        let entry_count = entries.len();
-        for (i, entry_raw) in entries.iter().enumerate() {
-            let is_last = i == entry_count - 1;
-            let czd = &digests[i];
+    if let (Some(commits), Some(digests)) = (&fixture.commits, &fixture.digests) {
+        // Apply transactions from commits
+        let mut digest_idx = 0;
+        let commit_count = commits.len();
 
-            // Parse RawValue to Value for entry processing
-            let entry: serde_json::Value = serde_json::from_str(entry_raw.get())
-                .expect("failed to parse entry RawValue as Value");
+        for (ci, commit) in commits.iter().enumerate() {
+            let is_last_commit = ci == commit_count - 1;
+            let tx_count = commit.txs.len();
 
-            match try_apply_entry(&mut principal, &entry, czd, &fixture.name) {
-                Ok(()) => {
-                    if is_last {
-                        if let Some(err) = expected_error {
-                            panic!(
-                                "{}: expected error '{}' but last entry succeeded",
-                                fixture.name, err
-                            );
+            for (ti, tx) in commit.txs.iter().enumerate() {
+                let is_last_tx = is_last_commit && ti == tx_count - 1;
+                let czd = &digests[digest_idx];
+                digest_idx += 1;
+
+                match try_apply_entry(&mut principal, tx, czd, &fixture.name) {
+                    Ok(()) => {
+                        if is_last_tx {
+                            if let Some(err) = expected_error {
+                                panic!(
+                                    "{}: expected error '{}' but last tx succeeded",
+                                    fixture.name, err
+                                );
+                            }
                         }
-                    }
-                },
-                Err(e) => {
-                    if is_last {
-                        if let Some(expected) = expected_error {
-                            assert_eq!(
-                                error_name(&e),
-                                expected,
-                                "{}: wrong error type on last entry",
-                                fixture.name
-                            );
-                            println!(
-                                "  ✓ {} (expected error: {}) [entries]",
-                                fixture.name, expected
-                            );
-                            return;
+                    },
+                    Err(e) => {
+                        if is_last_tx {
+                            if let Some(expected) = expected_error {
+                                assert_eq!(
+                                    error_name(&e),
+                                    expected,
+                                    "{}: wrong error type on last tx",
+                                    fixture.name
+                                );
+                                println!(
+                                    "  ✓ {} (expected error: {}) [commits]",
+                                    fixture.name, expected
+                                );
+                                return;
+                            }
                         }
-                    }
-                    panic!("{}: entry {} failed: {:?}", fixture.name, i + 1, e);
-                },
+                        panic!(
+                            "{}: commit {} tx {} failed: {:?}",
+                            fixture.name,
+                            ci + 1,
+                            ti + 1,
+                            e
+                        );
+                    },
+                }
             }
         }
 
@@ -340,9 +350,9 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         return;
     }
 
-    // No entries - check for genesis-only test
+    // No commits - check for genesis-only test
     panic!(
-        "{}: fixture has no entries array - regenerate with fixture-gen",
+        "{}: fixture has no commits array - regenerate with fixture-gen",
         fixture.name
     );
 }

@@ -8,32 +8,46 @@
       "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
-        "now": 1700000001,
-        "pre": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
-        "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
-        "typ": "cyphr.me/key/create"
-      },
-      "sig": "0HsBH-UUl4O9IOf1gb5jBg3z3wqJ4ZtHP3pbe0BE0sFyAwa7FC5FxqSBNOtZ-y2OrJFI8txUmQmCQdfwFYtViw",
-      "key": {
-        "alg": "ES256",
-        "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-        "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
-      }
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+            "now": 1700000001,
+            "pre": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+            "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+            "typ": "cyphr.me/key/create"
+          },
+          "sig": "0HsBH-UUl4O9IOf1gb5jBg3z3wqJ4ZtHP3pbe0BE0sFyAwa7FC5FxqSBNOtZ-y2OrJFI8txUmQmCQdfwFYtViw",
+          "key": {
+            "alg": "ES256",
+            "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+            "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+          }
+        }
+      ],
+      "ts": "K2rqARoqxm9yP1Qs3LMe8c46FqOw-jCx3Kme5LfEIFw",
+      "as": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+      "ps": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
     },
     {
-      "pay": {
-        "alg": "ES256",
-        "msg": "Action signed by newly added key",
-        "now": 1700000002,
-        "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
-        "typ": "cyphr.me/action"
-      },
-      "sig": "4m98oN2YHkA8HItcbgDDqUQV4-5I4sQlKSOBkw3yttMwVMg5-AY94bpTbIKQr-pzI1LF9FIbGWMXjqcaWC9XZA"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Action signed by newly added key",
+            "now": 1700000002,
+            "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "4m98oN2YHkA8HItcbgDDqUQV4-5I4sQlKSOBkw3yttMwVMg5-AY94bpTbIKQr-pzI1LF9FIbGWMXjqcaWC9XZA"
+        }
+      ],
+      "ts": "K2rqARoqxm9yP1Qs3LMe8c46FqOw-jCx3Kme5LfEIFw",
+      "as": "IjEYmkxtdXrmU-0sD2mJqbJ_fvli0l_eLOzooCbBhso",
+      "ps": "_BraIqGBd9mI-F-xx9IMmXLV6znNWDNsB4QCChVcv4I"
     }
   ],
   "digests": [

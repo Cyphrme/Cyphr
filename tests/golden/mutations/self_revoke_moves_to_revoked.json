@@ -13,17 +13,24 @@
       "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "now": 1700000000,
-        "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-        "rvk": 1700000000,
-        "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-        "typ": "cyphr.me/key/revoke"
-      },
-      "sig": "Y9e33TsDR3v5EhSW0ZNGJ2zIN7RcYAuAdw-QUX3JIi0aKWwqJHsIB4qxxkdj9Gtr_lBpw8IriMhBX84K07dJig"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "now": 1700000000,
+            "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+            "rvk": 1700000000,
+            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+            "typ": "cyphr.me/key/revoke"
+          },
+          "sig": "Y9e33TsDR3v5EhSW0ZNGJ2zIN7RcYAuAdw-QUX3JIi0aKWwqJHsIB4qxxkdj9Gtr_lBpw8IriMhBX84K07dJig"
+        }
+      ],
+      "ts": "JBjDGRKG67oF8vShYY8rwvqPguKj0KZnhxEmS1zTEkc",
+      "as": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "ps": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
     }
   ],
   "digests": ["JBjDGRKG67oF8vShYY8rwvqPguKj0KZnhxEmS1zTEkc"],

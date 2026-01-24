@@ -8,26 +8,40 @@
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     }
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {
-        "alg": "ES256",
-        "msg": "First action",
-        "now": 1700000100,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/action"
-      },
-      "sig": "8NfZThNijJsm-WCq7wgcd4UM0KQ0JKdHJOqKAOCjZ7QlB1lCvkLYhsG9ctH10fWsjAjMQy0TeS1itrKJtKCRNA"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "First action",
+            "now": 1700000100,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "8NfZThNijJsm-WCq7wgcd4UM0KQ0JKdHJOqKAOCjZ7QlB1lCvkLYhsG9ctH10fWsjAjMQy0TeS1itrKJtKCRNA"
+        }
+      ],
+      "ts": "",
+      "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "ps": "EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4"
     },
     {
-      "pay": {
-        "alg": "ES256",
-        "msg": "Second action with older timestamp",
-        "now": 1700000050,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/action"
-      },
-      "sig": "pb4OJ53Y4eh71pxP7-fFOR3-u7FFAlD0szBSZfGInwwfDVmxSt6XL3HKei-F-msNTBNgITaKqvdI6pYYcfwjUg"
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Second action with older timestamp",
+            "now": 1700000050,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "pb4OJ53Y4eh71pxP7-fFOR3-u7FFAlD0szBSZfGInwwfDVmxSt6XL3HKei-F-msNTBNgITaKqvdI6pYYcfwjUg"
+        }
+      ],
+      "ts": "",
+      "as": "",
+      "ps": ""
     }
   ],
   "digests": [
