@@ -88,7 +88,7 @@ principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -107,7 +107,7 @@ principal = ["golden"]          # Only golden in principal
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "key_a" # key_a is NOT in principal
@@ -140,7 +140,7 @@ principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -164,15 +164,15 @@ principal = ["golden"]
 [[test.step]]
 [test.step.pay]
 now = 1700000100
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 [test.step.crypto]
 signer = "golden"
 target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000050         # Earlier than step 1!
-typ = "cyphr.me/key/add"
+now = 1700000050            # Earlier than step 1!
+typ = "cyphr.me/key/create"
 [test.step.crypto]
 signer = "golden"
 target = "key_b"

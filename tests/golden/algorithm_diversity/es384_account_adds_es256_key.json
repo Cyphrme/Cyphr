@@ -16,9 +16,9 @@
         "now": 1700000000,
         "pre": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
         "tmb": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-        "typ": "cyphr.me/key/add"
+        "typ": "cyphr.me/key/create"
       },
-      "sig": "kv-hKpAyk-LY2Jav_OphnALmMN4tezjoFcwCh505FMfkCMQZukf1Ij4bZF4TKs-WDmMUwYTvAvUszWa0k9QBterX9c_RTK2kJfPHuN672WsnMYau4GEnAc1hKTIfn6T9",
+      "sig": "7Bo5x0BMT0Q_YffUm6S7k0qgdsvNnfYd1FzKLq9JeCm65VQeTRXsnfzEM1TN2T6OT8AxG_hj3q5sV8TnRyci4WCnW1A8PGaprIJqVkqBLoixHHuGlH9avw4HZOvimClI",
       "key": {
         "alg": "ES256",
         "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -27,14 +27,14 @@
     }
   ],
   "digests": [
-    "mx3gPT4PdPNe3uLKlXIy-OVjre_9tM6-Br8XoFmFoRZQU9FVhmqGURVPZ5uFsZa8"
+    "SrdPkwEKoEhzDmHpIDk9CjLnnkt7VyKSX2Pr2AYv0bL2r2o0--Tw2M1dlcVjVZfe"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "RO5xWP49mn9DUxQmF0Wd2bFsDvCLILlwXmSmmAOwKFsWFkorbMgQzn0rZceaZcO6",
-    "as": "XghBcLM3EWPCZF6zbLLUCyTW1dHkxdt6dXhmek8em-FhNMAKiTvDalMYoP-W-HEa",
-    "ps": "XghBcLM3EWPCZF6zbLLUCyTW1dHkxdt6dXhmek8em-FhNMAKiTvDalMYoP-W-HEa",
+    "as": "OSx-ano6VAGxhur0WJKzn4TfF3jDLZfMMnb1ByPGnmKlc7e4cZHHkdXWLIXWva3g",
+    "ps": "OSx-ano6VAGxhur0WJKzn4TfF3jDLZfMMnb1ByPGnmKlc7e4cZHHkdXWLIXWva3g",
     "pr": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
   }
 }

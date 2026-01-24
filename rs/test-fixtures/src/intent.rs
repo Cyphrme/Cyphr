@@ -91,7 +91,7 @@ pub struct PayIntent {
 pub struct CryptoIntent {
     /// Signer key name (from pool).
     pub signer: String,
-    /// Target key name (for key/add, key/revoke).
+    /// Target key name (for key/create, key/revoke).
     #[serde(default)]
     pub target: Option<String>,
 }
@@ -208,7 +208,7 @@ name = "key_add_increases_count"
 principal = ["golden"]
 
 [test.pay]
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 now = 1700000000
 
 [test.crypto]
@@ -226,13 +226,13 @@ name = "transaction_sequence"
 principal = ["golden"]
 
 [[test.step]]
-pay.typ = "cyphr.me/key/add"
+pay.typ = "cyphr.me/key/create"
 pay.now = 1700000001
 crypto.signer = "golden"
 crypto.target = "key_a"
 
 [[test.step]]
-pay.typ = "cyphr.me/key/add"
+pay.typ = "cyphr.me/key/create"
 pay.now = 1700000002
 crypto.signer = "golden"
 crypto.target = "key_b"
@@ -252,7 +252,7 @@ key_count = 3
         assert!(!test.is_multi_step());
 
         let pay = test.pay.as_ref().expect("missing pay");
-        assert_eq!(pay.typ, "cyphr.me/key/add");
+        assert_eq!(pay.typ, "cyphr.me/key/create");
         assert_eq!(pay.now, 1700000000);
 
         let crypto = test.crypto.as_ref().expect("missing crypto");
@@ -275,7 +275,7 @@ key_count = 3
         assert_eq!(test.step.len(), 2);
 
         let step1 = &test.step[0];
-        assert_eq!(step1.pay.typ, "cyphr.me/key/add");
+        assert_eq!(step1.pay.typ, "cyphr.me/key/create");
         assert_eq!(step1.pay.now, 1700000001);
         assert_eq!(step1.crypto.signer, "golden");
         assert_eq!(step1.crypto.target.as_deref(), Some("key_a"));

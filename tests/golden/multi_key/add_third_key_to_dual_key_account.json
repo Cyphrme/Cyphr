@@ -21,9 +21,9 @@
         "now": 1700000000,
         "pre": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
         "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
-        "typ": "cyphr.me/key/add"
+        "typ": "cyphr.me/key/create"
       },
-      "sig": "2oxg0gwnYHgXSqHfIXzDhUKx6MPK90B2OkATnY2l7UUqC72vaU3vr7tyRkSHV4HNzl_H_jVTJ7AygWMOcizUOg",
+      "sig": "8UDcVmrdQ0KaSoknD9qgfiHo4YaiAHzlxnO8vjKRv68F0rZopr5fYjBkjgAKwRKaY9nRiUtuMEO4_0Bl3MFCPg",
       "key": {
         "alg": "ES256",
         "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
@@ -31,13 +31,13 @@
       }
     }
   ],
-  "digests": ["pjETLn8zijwWwfb6rZ6X6LEK5D1KGiPsQalgzBVAUVU"],
+  "digests": ["dwrv638jrbi2LnTJDH2M7C3mKjXit0DOZLCpBwr3l7M"],
   "expected": {
     "key_count": 3,
     "level": 3,
     "ks": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "as": "-gRqNjuykkgbu-RGj9lc0FFhx0aBj5LMkt-xaVr3H1Y",
-    "ps": "-gRqNjuykkgbu-RGj9lc0FFhx0aBj5LMkt-xaVr3H1Y",
+    "as": "BbZAGj6n6AvCVEPEV3V9McB8D_LMeHFf8ospuhmQkKs",
+    "ps": "BbZAGj6n6AvCVEPEV3V9McB8D_LMeHFf8ospuhmQkKs",
     "pr": "2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc"
   }
 }

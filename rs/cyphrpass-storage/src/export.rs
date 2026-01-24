@@ -12,7 +12,7 @@ use serde_json::json;
 /// Returns a vector of `Entry` that can be persisted to any `Store`.
 /// The order is: transactions first (in apply order), then actions.
 ///
-/// For `key/add` and `key/replace` transactions, the associated key material
+/// For `key/create` and `key/replace` transactions, the associated key material
 /// is included in the exported entry as a `key` field, matching SPEC §3.1 JSONL format.
 ///
 /// # Example
@@ -32,7 +32,7 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
         // Serialize complete CozJson {pay, sig}
         let mut raw = serde_json::to_value(tx.raw()).expect("CozJson serialization cannot fail");
 
-        // For key/add and key/replace, include the key material from the transaction
+        // For key/create and key/replace, include the key material from the transaction
         if let Some(key) = tx.new_key() {
             let key_json = json!({
                 "alg": key.alg,

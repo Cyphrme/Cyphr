@@ -16,9 +16,9 @@
         "now": 1700000000,
         "pre": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/add"
+        "typ": "cyphr.me/key/create"
       },
-      "sig": "gPyqcnLA1f2gcJ1fR-R3lvoYrVxjevndfOf9s7MJUPFksQ4UFmbzecNM-ADUnX-GBlzNwJu5Q4abcP4gI-rpHg",
+      "sig": "1wGpKQCm5NazuMRINLP3htrnExul_lVcsSyE5z1NELoIwrrR1rOdCWdoSmbY1B2DcBEMi5bXeNkLgcuLUWaptQ",
       "key": {
         "alg": "ES256",
         "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -26,7 +26,7 @@
       }
     }
   ],
-  "digests": ["UAeJbKeWtU6hyFzbTDpcjHk_Llkld7UVECxtq6B1XFs"],
+  "digests": ["v7rzvxZ_5BnXRk4q7NLoFEl1y4CU69h9-IOdNnH6baY"],
   "expected": {
     "key_count": 1,
     "level": 1,

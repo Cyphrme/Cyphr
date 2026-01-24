@@ -16,9 +16,9 @@
         "now": 1700000100,
         "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/add"
+        "typ": "cyphr.me/key/create"
       },
-      "sig": "NeIPdPnuEBr73D_ax5mGnHcRX0vRxdbWpYcRIf_xU3oiF1n9XEoraqzW6nh9TrjkgTBDPr7Qakx3ptFPYzaQcg",
+      "sig": "ab1H5je3bkJFIKHo9lGJ8ax4Z6HF6QcLJoPVjaSwsZ4YqGj7Xj8g-PiBc3PjKzudyDml3bAMiZzGJEp2PqBE6g",
       "key": {
         "alg": "ES256",
         "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -30,11 +30,11 @@
         "alg": "ES256",
         "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
         "now": 1700000050,
-        "pre": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
+        "pre": "8IvzGlQRw023zMTQ-VWRDidNRdMSJqAoRcnWj6fDSp8",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/key/add"
+        "typ": "cyphr.me/key/create"
       },
-      "sig": "CvjXlV4az1oNKw5xzf2l_529ZvXefz-UfSZ-cTkCdJksCchP4GwGSzFnTHAqnEqDgCPT_tW9sUY8acquUeDPXQ",
+      "sig": "iHuFthVuCX1Y4aj3oiS1NTE4aX4uJBAete8JFjlUe9wgqN4zlX9OcGFt7GFOjNm5SWlqPlPXzl-uorxbvm8MbQ",
       "key": {
         "alg": "ES256",
         "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
@@ -43,15 +43,15 @@
     }
   ],
   "digests": [
-    "rsSDO-dnkg2Qk4ZZq_tNzPArqirmfDeZ6Cki3ssYPtk",
-    "cnKLQwMBEJ9A9eI9noKYbhc5Gvhkr_vamBRoo-87PMg"
+    "QFPSovDfpir8npn_iGdlV9rZhG3Xg-NFIUEO0oZQq6U",
+    "uU2fnXbramKWm7KcN3eunhbe3RyNE8omI2XxYMjFgCk"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
-    "ps": "9tKfPdtRKAJZaqf4M4uijFfcJQPoIm9_JKIbnCWUJ-g",
+    "as": "8IvzGlQRw023zMTQ-VWRDidNRdMSJqAoRcnWj6fDSp8",
+    "ps": "8IvzGlQRw023zMTQ-VWRDidNRdMSJqAoRcnWj6fDSp8",
     "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "error": "TimestampPast"
   }

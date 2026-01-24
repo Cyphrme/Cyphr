@@ -34,7 +34,7 @@ pub enum Error {
     #[error("malformed payload")]
     MalformedPayload,
 
-    /// `key/add` for key already in KS.
+    /// `key/create` for key already in KS.
     #[error("duplicate key")]
     DuplicateKey,
 

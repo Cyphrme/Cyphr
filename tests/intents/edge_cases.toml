@@ -36,13 +36,13 @@ principal = ["alice"]
 crypto.signer = "alice"
 crypto.target = "bob"
 pay.now       = 1700000001
-pay.typ       = "cyphr.me/key/add"
+pay.typ       = "cyphr.me/key/create"
 
 [[test.step]]
 crypto.signer = "alice"
 crypto.target = "carol"
 pay.now       = 1700000002
-pay.typ       = "cyphr.me/key/add"
+pay.typ       = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -52,14 +52,14 @@ key_count = 3
 # ============================================================================
 
 # Test: Transaction followed by action (SPEC §7.4, §7.5)
-# Verifies combined state after key/add + action signed by newly added key
+# Verifies combined state after key/create + action signed by newly added key
 [[test]]
 name      = "action_after_key_add"
 principal = ["alice"]
 
 [test.pay]
 now = 1700000001
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "alice"

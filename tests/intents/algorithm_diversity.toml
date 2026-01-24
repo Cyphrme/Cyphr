@@ -7,7 +7,7 @@ principal = ["diana_es384"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "diana_es384"
@@ -24,7 +24,7 @@ principal = ["eve_ed25519"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "eve_ed25519"

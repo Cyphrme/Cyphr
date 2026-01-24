@@ -1,13 +1,13 @@
 # Transaction mutation tests
 
-# Test 1: L1→L3 transition via key/add
+# Test 1: L1→L3 transition via key/create
 [[test]]
 name      = "key_add_increases_count"
 principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -17,14 +17,14 @@ target = "key_a"
 key_count = 2
 level     = 3
 
-# Test 2: key/add changes AS/PS but not PR
+# Test 2: key/create changes AS/PS but not PR
 [[test]]
 name      = "key_add_changes_state"
 principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -108,7 +108,7 @@ principal = ["golden"]
 [[test.step]]
 [test.step.pay]
 now = 1700000001
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -117,7 +117,7 @@ target = "key_a"
 [[test.step]]
 [test.step.pay]
 now = 1700000002
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"

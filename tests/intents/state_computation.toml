@@ -70,7 +70,7 @@ principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -89,7 +89,7 @@ principal = ["golden"]
 crypto.signer = "golden"
 crypto.target = "key_a"
 pay.now       = 1700000001
-pay.typ       = "cyphr.me/key/add"
+pay.typ       = "cyphr.me/key/create"
 
 [[test.step]]
 crypto.signer = "golden"
@@ -108,7 +108,7 @@ principal = ["golden"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"

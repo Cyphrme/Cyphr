@@ -17,8 +17,6 @@ use crate::state::AuthState;
 pub mod typ {
     /// `<authority>/key/create` - Create a new key (Level 3+)
     pub const KEY_CREATE: &str = "key/create";
-    /// `<authority>/key/add` - Alias for KEY_CREATE (backward compatibility)
-    pub const KEY_ADD_ALIAS: &str = "key/add";
     /// `<authority>/key/delete` - Remove key without invalidation (Level 3+)
     pub const KEY_DELETE: &str = "key/delete";
     /// `<authority>/key/replace` - Atomic key swap (Level 2+)
@@ -171,7 +169,7 @@ impl Transaction {
     /// Parse the transaction kind from typ and payload fields.
     fn parse_kind(pay: &Pay, typ: &str, signer: &Thumbprint) -> Result<TransactionKind> {
         // Check if typ ends with a known transaction type
-        if typ.ends_with(typ::KEY_CREATE) || typ.ends_with(typ::KEY_ADD_ALIAS) {
+        if typ.ends_with(typ::KEY_CREATE) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
             Ok(TransactionKind::KeyCreate { pre, id })
@@ -332,7 +330,7 @@ mod tests {
     #[test]
     fn parse_key_add() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/add")
+            .typ("cyphr.me/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -435,7 +433,7 @@ mod tests {
     #[test]
     fn parse_missing_pre_fails() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/add")
+            .typ("cyphr.me/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -466,7 +464,7 @@ mod tests {
     #[test]
     fn parse_commit_finalizer_true() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/add")
+            .typ("cyphr.me/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -484,7 +482,7 @@ mod tests {
     #[test]
     fn parse_commit_finalizer_false() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/add")
+            .typ("cyphr.me/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -502,7 +500,7 @@ mod tests {
     #[test]
     fn parse_commit_finalizer_missing() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/add")
+            .typ("cyphr.me/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))

@@ -293,7 +293,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
     Ok(())
 }
 
-/// Extract key material from entry (for key/add, key/replace).
+/// Extract key material from entry (for key/create, key/replace).
 fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 

@@ -1010,7 +1010,7 @@ mod tests {
         // Create dummy raw CozJson for test transactions
         let raw = coz::CozJson {
             pay: json!({
-                "typ": "cyphr.me/key/add",
+                "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
@@ -1304,7 +1304,7 @@ mod tests {
         // Initially, last_used should be None
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
-        // Apply a key/add transaction with now=5000
+        // Apply a key/create transaction with now=5000
         let pre = principal.auth_state().clone();
         let key2 = make_test_key(0x22);
 

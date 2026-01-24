@@ -72,7 +72,7 @@ pub struct GoldenCoz {
     pub sig: String,
     /// Coz digest (base64url).
     pub czd: String,
-    /// Embedded key (for key/add transactions).
+    /// Embedded key (for key/create transactions).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<GoldenKey>,
 }
@@ -907,7 +907,7 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // id field for key/add (target key thumbprint)
+        // id field for key/create (target key thumbprint)
         if let Some(target_name) = &crypto.target {
             let target = self.resolve_key(target_name)?;
             let target_tmb = target.compute_tmb_b64()?;
@@ -989,7 +989,7 @@ impl<'a> Generator<'a> {
         let sig_b64 = Base64UrlUnpadded::encode_string(&sig_bytes);
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
-        // Build embedded key for key/add operations
+        // Build embedded key for key/create operations
         let embedded_key = if let Some(target_name) = &crypto.target {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
@@ -1016,7 +1016,7 @@ impl<'a> Generator<'a> {
         czd: coz::Czd,
         test_name: &str,
     ) -> Result<(), Error> {
-        // Get new key for key/add operations
+        // Get new key for key/create operations
         let new_key = if let Some(target_name) = &crypto.target {
             Some(self.pool_key_to_cyphrpass_key(target_name)?)
         } else {
@@ -1124,7 +1124,7 @@ name = "key_add_golden_to_alice"
 principal = ["golden"]
 
 [test.pay]
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 now = 1700000000
 
 [test.crypto]
@@ -1165,13 +1165,15 @@ level = 3
         let entry: Value = serde_json::from_str(entry_raw.get()).expect("entry parse");
         let pay = entry.get("pay").expect("entry missing pay");
         assert_eq!(pay["alg"], "ES256");
-        assert_eq!(pay["typ"], "cyphr.me/key/add");
+        assert_eq!(pay["typ"], "cyphr.me/key/create");
         assert_eq!(pay["now"], 1700000000);
         assert!(pay.get("pre").is_some(), "pre should be populated");
 
         // Verify sig and key are populated
         assert!(entry.get("sig").is_some(), "entry should have sig");
-        let key = entry.get("key").expect("key/add entry should include key");
+        let key = entry
+            .get("key")
+            .expect("key/create entry should include key");
         assert_eq!(key["alg"], "ES256");
         assert!(key.get("tmb").is_some(), "key should have tmb");
 
@@ -1207,7 +1209,7 @@ name = "bad_signer"
 principal = ["golden"]
 
 [test.pay]
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 now = 1700000000
 
 [test.crypto]
@@ -1242,7 +1244,7 @@ name = "genesis_only"
 principal = ["golden"]
 
 [test.pay]
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 now = 1700000000
 
 [test.crypto]
