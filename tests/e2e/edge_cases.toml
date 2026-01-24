@@ -10,7 +10,7 @@ principal = ["alice", "bob"]
 
 [test.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "alice"
@@ -29,7 +29,7 @@ principal = ["golden"]
 [[test.step]]
 [test.step.pay]
 now = 1700000001
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -38,7 +38,7 @@ target = "key_a"
 [[test.step]]
 [test.step.pay]
 now = 1700000002
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -67,7 +67,7 @@ target = "key_b"
 [[test.step]]
 [test.step.pay]
 now = 1700000005
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -76,7 +76,7 @@ target = "alice"
 [[test.step]]
 [test.step.pay]
 now = 1700000006
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -85,7 +85,7 @@ target = "bob"
 [[test.step]]
 [test.step.pay]
 now = 1700000007
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -161,7 +161,7 @@ principal = ["golden"]
 [[test.step]]
 [test.step.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -170,7 +170,7 @@ target = "key_a"
 [[test.step]]
 [test.step.pay]
 now = 1700000000
-typ = "cyphr.me/key/add"
+typ = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
