@@ -6,6 +6,7 @@ use coz::Thumbprint;
 use indexmap::IndexMap;
 
 use crate::action::Action;
+use crate::commit::{Commit, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
@@ -27,15 +28,17 @@ fn current_time() -> i64 {
 // AuthLedger
 // ============================================================================
 
-/// Auth ledger holding keys and transactions.
+/// Auth ledger holding keys and commits.
 #[derive(Debug, Clone, Default)]
 pub struct AuthLedger {
     /// Active keys (tmb b64 string → Key).
     pub keys: IndexMap<String, Key>,
     /// Revoked keys for historical verification.
     pub revoked: IndexMap<String, Key>,
-    /// Signed and verified transactions.
-    pub transactions: Vec<VerifiedTransaction>,
+    /// Finalized commits (atomic transaction bundles).
+    pub commits: Vec<Commit>,
+    /// Pending commit being built (transitory state).
+    pub pending: Option<PendingCommit>,
 }
 
 /// Data ledger holding actions (Level 4+).
@@ -334,9 +337,19 @@ impl Principal {
         self.auth.revoked.insert(tmb_b64, key);
     }
 
-    /// Get all transactions.
+    /// Get all transactions (across all commits).
     pub fn transactions(&self) -> impl Iterator<Item = &VerifiedTransaction> {
-        self.auth.transactions.iter()
+        self.auth.commits.iter().flat_map(|c| c.transactions())
+    }
+
+    /// Get all finalized commits.
+    pub fn commits(&self) -> impl Iterator<Item = &Commit> {
+        self.auth.commits.iter()
+    }
+
+    /// Get the current pending commit, if any.
+    pub fn current_commit(&self) -> Option<&PendingCommit> {
+        self.auth.pending.as_ref()
     }
 
     /// Get all actions.
@@ -350,12 +363,12 @@ impl Principal {
         if !self.data.actions.is_empty() {
             return Level::L4;
         }
-        // Level 3: multiple keys or transactions
-        if self.auth.keys.len() > 1 || !self.auth.transactions.is_empty() {
+        // Level 3: multiple keys or has commits
+        if self.auth.keys.len() > 1 || !self.auth.commits.is_empty() {
             return Level::L3;
         }
-        // Level 2 if any key/replace occurred (detected by Transaction history)
-        // For now, single key with no transactions = Level 1
+        // Level 2 if any key/replace occurred (detected by commit history)
+        // For now, single key with no commits = Level 1
         Level::L1
     }
 
@@ -641,11 +654,30 @@ impl Principal {
             self.latest_timestamp = tx.now;
         }
 
-        // Record transaction and recompute state
-        self.auth.transactions.push(vtx);
+        // Record transaction as single-tx commit and recompute state
+        // TODO: Commit 2 will wire proper pending commit lifecycle
+        self.wrap_as_commit(vtx);
         self.recompute_state();
 
         Ok(&self.auth_state)
+    }
+
+    /// Wrap a single transaction as a finalized commit.
+    ///
+    /// This is temporary scaffolding for backward compatibility during the
+    /// commit model refactor. Commit 2 will wire the proper pending commit
+    /// lifecycle with explicit begin_commit/finalize_commit calls.
+    fn wrap_as_commit(&mut self, vtx: VerifiedTransaction) {
+        use crate::state::compute_ts;
+
+        // Compute TS for this single-tx commit
+        let czds = [vtx.czd()];
+        let ts = compute_ts(&czds, None, self.hash_alg)
+            .expect("single transaction should always produce TS");
+
+        // Create the commit with current state (will be recomputed after)
+        let commit = Commit::new(vec![vtx], ts, self.auth_state.clone(), self.ps.clone());
+        self.auth.commits.push(commit);
     }
 
     /// Verify signature and apply a transaction in one step.
@@ -773,15 +805,12 @@ impl Principal {
 
     /// Recompute all state digests after mutation.
     fn recompute_state(&mut self) {
-        use crate::state::compute_ts;
-
         // Recompute KS from active keys
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         self.ks = compute_ks(&thumbprints, None, self.hash_alg);
 
-        // Recompute TS from transactions
-        let czds: Vec<&coz::Czd> = self.auth.transactions.iter().map(|t| &t.czd).collect();
-        self.ts = compute_ts(&czds, None, self.hash_alg);
+        // TS is from the latest commit (per-commit TS, not cumulative)
+        self.ts = self.auth.commits.last().map(|c| c.ts().clone());
 
         // Recompute AS = H(sort(KS, TS?))
         self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, self.hash_alg);
