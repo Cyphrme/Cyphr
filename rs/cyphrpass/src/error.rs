@@ -99,6 +99,13 @@ pub enum Error {
     #[error("missing finalization marker")]
     MissingFinalizationMarker,
 
+    /// External reference to transitory (unfinalized) commit state.
+    ///
+    /// Per SPEC §4.2.1, transitory state during a pending commit cannot
+    /// be referenced by external transactions until the commit is finalized.
+    #[error("transitory state reference")]
+    TransitoryStateReference,
+
     /// Underlying Coz error.
     #[error("coz: {0}")]
     Coz(#[from] coz::Error),

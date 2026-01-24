@@ -785,7 +785,21 @@ impl Principal {
         self.apply_verified(vtx)
     }
 
-    /// Verify that `pre` matches current Auth State.
+    /// Verify that `pre` matches the expected prior state.
+    ///
+    /// Per SPEC §4.2.1, the `pre` reference depends on commit context:
+    ///
+    /// **Commit-level chaining** (first tx in commit):
+    /// - `pre` MUST reference the previous commit's Auth State (AS)
+    /// - For genesis commit, `pre` references Principal Root (PR)
+    ///
+    /// **Transaction-level chaining** (subsequent tx in commit):
+    /// - `pre` MUST reference the previous transaction's `czd`
+    /// - This ensures ordering within the commit bundle
+    ///
+    /// **Current implementation**: For backward compatibility during refactor,
+    /// this currently validates against current AS only. Full dual-layer
+    /// chaining will be implemented when the pending commit flow is wired.
     fn verify_pre(&self, pre: &AuthState) -> Result<()> {
         if self.auth_state.as_cad().as_bytes() != pre.as_cad().as_bytes() {
             return Err(Error::InvalidPrior);
