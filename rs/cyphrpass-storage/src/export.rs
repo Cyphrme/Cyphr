@@ -3,17 +3,19 @@
 //! These functions bridge the `cyphrpass` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use crate::{Entry, Store};
+use crate::{CommitEntry, Entry, Store};
 use cyphrpass::Principal;
 use serde_json::json;
 
-/// Export all entries from a Principal for storage.
+/// Export all entries from a Principal for storage (legacy flat format).
 ///
 /// Returns a vector of `Entry` that can be persisted to any `Store`.
 /// The order is: transactions first (in apply order), then actions.
 ///
 /// For `key/create` and `key/replace` transactions, the associated key material
 /// is included in the exported entry as a `key` field, matching SPEC §3.1 JSONL format.
+///
+/// **Note**: For commit-based storage, use `export_commits` instead.
 ///
 /// # Example
 ///
@@ -54,6 +56,65 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
     }
 
     entries
+}
+
+/// Export commits from a Principal for commit-based storage.
+///
+/// Returns a vector of `CommitEntry` representing each finalized commit.
+/// Each entry contains:
+/// - `txs`: Array of transaction JSON values (with embedded key material)
+/// - `ts`: Transaction State (base64url)
+/// - `as`: Auth State (base64url)
+/// - `ps`: Principal State (base64url)
+///
+/// **Note**: Actions are not included in commits; they are stored separately
+/// or handled by the caller.
+///
+/// # Example
+///
+/// ```ignore
+/// let commits = export_commits(&principal);
+/// for commit in commits {
+///     file.write_line(&commit.to_json()?)?;
+/// }
+/// ```
+pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut commit_entries = Vec::new();
+
+    for commit in principal.commits() {
+        let mut txs = Vec::new();
+
+        for tx in commit.transactions() {
+            // Serialize complete CozJson {pay, sig}
+            let mut raw =
+                serde_json::to_value(tx.raw()).expect("CozJson serialization cannot fail");
+
+            // For key/create and key/replace, include the key material
+            if let Some(key) = tx.new_key() {
+                let key_json = json!({
+                    "alg": key.alg,
+                    "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
+                    "tmb": key.tmb.to_b64()
+                });
+                raw.as_object_mut()
+                    .expect("CozJson is always an object")
+                    .insert("key".to_string(), key_json);
+            }
+
+            txs.push(raw);
+        }
+
+        // Get state digests as base64url strings
+        let ts = commit.ts().as_cad().to_b64();
+        let auth_state = commit.auth_state().as_cad().to_b64();
+        let ps = commit.ps().as_cad().to_b64();
+
+        commit_entries.push(CommitEntry::new(txs, ts, auth_state, ps));
+    }
+
+    commit_entries
 }
 
 /// Export entries and persist them to storage.

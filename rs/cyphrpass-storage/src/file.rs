@@ -1,9 +1,9 @@
 //! File-based storage backend using JSONL format.
 //!
 //! Stores each principal's entries in a separate `.jsonl` file,
-//! with one signed Coz message per line.
+//! with one commit bundle per line (commit-based format).
 
-use crate::{Entry, EntryError, QueryOpts, Store};
+use crate::{CommitEntry, Entry, EntryError, QueryOpts, Store};
 use cyphrpass::state::PrincipalRoot;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -127,6 +127,72 @@ impl Store for FileStore {
 
     fn exists(&self, pr: &PrincipalRoot) -> Result<bool, Self::Error> {
         Ok(self.path_for(pr).exists())
+    }
+}
+
+// ============================================================================
+// Commit-Based Storage Methods
+// ============================================================================
+
+impl FileStore {
+    /// Append a commit bundle to the principal's log.
+    ///
+    /// Each commit is stored as a single JSON line containing:
+    /// - `txs`: Array of transaction entries
+    /// - `ts`: Transaction State (base64url)
+    /// - `as`: Auth State (base64url)
+    /// - `ps`: Principal State (base64url)
+    pub fn append_commit(
+        &self,
+        pr: &PrincipalRoot,
+        commit: &CommitEntry,
+    ) -> Result<(), FileStoreError> {
+        self.ensure_dir()?;
+        let path = self.path_for(pr);
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(FileStoreError::Io)?;
+
+        // Serialize and write as a single line
+        let json = serde_json::to_string(commit).map_err(FileStoreError::Json)?;
+        writeln!(file, "{}", json).map_err(FileStoreError::Io)?;
+
+        Ok(())
+    }
+
+    /// Get all commits from the principal's log.
+    ///
+    /// Parses each line as a `CommitEntry` with embedded state digests.
+    pub fn get_commits(&self, pr: &PrincipalRoot) -> Result<Vec<CommitEntry>, FileStoreError> {
+        let path = self.path_for(pr);
+
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+
+        let file = File::open(&path).map_err(FileStoreError::Io)?;
+        let reader = BufReader::new(file);
+        let mut commits = Vec::new();
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line.map_err(FileStoreError::Io)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let commit: CommitEntry =
+                serde_json::from_str(&line).map_err(|e| FileStoreError::ParseLine {
+                    line: line_num + 1,
+                    source: e,
+                })?;
+
+            commits.push(commit);
+        }
+
+        Ok(commits)
     }
 }
 

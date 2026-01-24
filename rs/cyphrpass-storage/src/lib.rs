@@ -26,9 +26,12 @@ mod export;
 mod file;
 mod import;
 
-pub use export::{export_entries, persist_entries};
+pub use export::{export_commits, export_entries, persist_entries};
 pub use file::FileStore;
-pub use import::{Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal};
+pub use import::{
+    Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal,
+    load_principal_from_commits,
+};
 
 use cyphrpass::state::PrincipalRoot;
 use serde_json::value::RawValue;
@@ -186,6 +189,51 @@ impl Entry {
         let extractor: NowExtractor =
             serde_json::from_str(json).map_err(|_| EntryError::MissingNow)?;
         Ok(extractor.pay.now)
+    }
+}
+
+/// A stored commit bundle for the commit-based JSONL format.
+///
+/// Each line in the JSONL file represents one finalized commit containing:
+/// - `txs`: Array of transaction entries (each with pay, sig, and optional key)
+/// - `ts`: Transaction State (Merkle root of commit's transaction czds)
+/// - `as`: Auth State (derived from KS and TS)
+/// - `ps`: Principal State (derived from AS and DS)
+///
+/// The derived state digests enable efficient indexing and verification
+/// without replaying the full transaction history.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CommitEntry {
+    /// Transaction entries in this commit bundle.
+    pub txs: Vec<serde_json::Value>,
+    /// Transaction State (per-commit Merkle root).
+    pub ts: String,
+    /// Auth State after this commit.
+    #[serde(rename = "as")]
+    pub auth_state: String,
+    /// Principal State after this commit.
+    pub ps: String,
+}
+
+impl CommitEntry {
+    /// Create a new commit entry from components.
+    pub fn new(txs: Vec<serde_json::Value>, ts: String, auth_state: String, ps: String) -> Self {
+        Self {
+            txs,
+            ts,
+            auth_state,
+            ps,
+        }
+    }
+
+    /// Get the raw JSON string for this commit entry.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    /// Parse a commit entry from a JSON string.
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
     }
 }
 

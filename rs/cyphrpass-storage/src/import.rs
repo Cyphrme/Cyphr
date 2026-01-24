@@ -3,8 +3,11 @@
 //! This module provides functions to reconstruct a `Principal` from stored
 //! entries, supporting both full replay from genesis and partial replay
 //! from a trusted checkpoint.
+//!
+//! Supports both legacy flat format (one tx per line) and commit-based format
+//! (one commit bundle per line).
 
-use crate::Entry;
+use crate::{CommitEntry, Entry};
 use coz::Thumbprint;
 use cyphrpass::state::{AuthState, PrincipalRoot};
 use cyphrpass::{Key, Principal};
@@ -199,6 +202,51 @@ pub fn load_from_checkpoint(
     Ok(principal)
 }
 
+/// Load a principal by replaying commit bundles from genesis.
+///
+/// This is the commit-based equivalent of `load_principal`, used when
+/// storage contains one commit per line (per SPEC §4.2.1, §7.3.1).
+///
+/// # Arguments
+///
+/// * `genesis` - How the principal was created (implicit or explicit)
+/// * `commits` - Commit bundles to replay
+///
+/// # Errors
+///
+/// Returns `LoadError` if:
+/// - Signature verification fails
+/// - Transaction chain is broken (pre mismatch)
+/// - Unknown signer key
+///
+/// # Example
+///
+/// ```ignore
+/// let genesis = Genesis::Implicit(my_key);
+/// let commits = file_store.get_commits(&pr)?;
+/// let principal = load_principal_from_commits(genesis, &commits)?;
+/// ```
+pub fn load_principal_from_commits(
+    genesis: Genesis,
+    commits: &[CommitEntry],
+) -> Result<Principal, LoadError> {
+    // Create principal from genesis
+    let mut principal = match genesis {
+        Genesis::Implicit(key) => Principal::implicit(key)?,
+        Genesis::Explicit(keys) => {
+            if keys.is_empty() {
+                return Err(LoadError::NoGenesisKeys);
+            }
+            Principal::explicit(keys)?
+        },
+    };
+
+    // Replay commits
+    replay_commits(&mut principal, commits)?;
+
+    Ok(principal)
+}
+
 /// Replay entries onto a principal (shared logic).
 fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -287,6 +335,98 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                     },
                     other => LoadError::Protocol(other),
                 })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Replay commit bundles onto a principal (commit-based format).
+///
+/// Each commit bundle contains multiple transactions that form an atomic unit.
+/// The embedded state digests (ts, as, ps) can be used for verification.
+fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    for (commit_idx, commit) in commits.iter().enumerate() {
+        // Note: We could use begin_commit/finalize_commit here for proper
+        // commit lifecycle, but for now we replay transactions directly
+        // as the wrap_as_commit() auto-wraps single transactions.
+
+        for (tx_idx, tx_value) in commit.txs.iter().enumerate() {
+            let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
+
+            let pay = tx_value
+                .get("pay")
+                .ok_or(LoadError::MissingTimestamp { index })?;
+
+            let sig_b64 = tx_value
+                .get("sig")
+                .and_then(|s| s.as_str())
+                .ok_or(LoadError::MissingSig { index })?;
+
+            let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                LoadError::InvalidSignature {
+                    index,
+                    message: "invalid base64 signature".into(),
+                }
+            })?;
+
+            // Serialize pay for verification (bit-perfect for stored data)
+            let pay_json =
+                serde_json::to_vec(pay).map_err(|e| LoadError::Json { index, source: e })?;
+
+            // Determine if this is a transaction or action by typ prefix
+            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+
+            if typ.contains("/key/") {
+                // Transaction: extract key material if present
+                let new_key = extract_key_from_entry(tx_value);
+
+                // Compute czd for this entry
+                let czd = compute_czd(&pay_json, &sig, principal)?;
+
+                // Apply transaction
+                principal
+                    .verify_and_apply_transaction(&pay_json, &sig, czd, new_key)
+                    .map_err(|e| match e {
+                        cyphrpass::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
+                        cyphrpass::Error::InvalidPrior => LoadError::BrokenChain { index },
+                        cyphrpass::Error::UnknownKey => LoadError::UnknownSigner {
+                            index,
+                            tmb: pay
+                                .get("tmb")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("?")
+                                .into(),
+                        },
+                        other => LoadError::Protocol(other),
+                    })?;
+            } else {
+                // Action: compute czd and record
+                let czd = compute_czd(&pay_json, &sig, principal)?;
+
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
+                    .map_err(|e| match e {
+                        cyphrpass::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
+                        cyphrpass::Error::UnknownKey => LoadError::UnknownSigner {
+                            index,
+                            tmb: pay
+                                .get("tmb")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("?")
+                                .into(),
+                        },
+                        other => LoadError::Protocol(other),
+                    })?;
+            }
         }
     }
 
