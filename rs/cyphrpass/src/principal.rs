@@ -595,7 +595,7 @@ impl Principal {
         }
 
         match &tx.kind {
-            TransactionKind::KeyAdd { pre, id } => {
+            TransactionKind::KeyCreate { pre, id } => {
                 self.verify_pre(pre)?;
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
@@ -659,7 +659,7 @@ impl Principal {
     /// * `pay_json` - Raw JSON bytes of the Pay object
     /// * `sig` - Signature bytes
     /// * `czd` - Coz digest for this transaction
-    /// * `new_key` - New key to add (required for KeyAdd/KeyReplace)
+    /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
     ///
     /// # Errors
     ///
@@ -926,7 +926,7 @@ mod tests {
         };
 
         Transaction {
-            kind: TransactionKind::KeyAdd {
+            kind: TransactionKind::KeyCreate {
                 pre: AuthState(pre.as_cad().clone()),
                 id: new_key.tmb.clone(),
             },
@@ -1217,7 +1217,7 @@ mod tests {
 
         use crate::transaction::{Transaction, TransactionKind};
         let tx = Transaction {
-            kind: TransactionKind::KeyAdd {
+            kind: TransactionKind::KeyCreate {
                 pre,
                 id: key2.tmb.clone(),
             },

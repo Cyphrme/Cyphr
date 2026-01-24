@@ -15,8 +15,10 @@ use crate::state::AuthState;
 
 /// Type path suffixes for Cyphrpass transactions.
 pub mod typ {
-    /// `<authority>/key/add` - Add a new key (Level 3+)
-    pub const KEY_ADD: &str = "key/add";
+    /// `<authority>/key/create` - Create a new key (Level 3+)
+    pub const KEY_CREATE: &str = "key/create";
+    /// `<authority>/key/add` - Alias for KEY_CREATE (backward compatibility)
+    pub const KEY_ADD_ALIAS: &str = "key/add";
     /// `<authority>/key/delete` - Remove key without invalidation (Level 3+)
     pub const KEY_DELETE: &str = "key/delete";
     /// `<authority>/key/replace` - Atomic key swap (Level 2+)
@@ -28,11 +30,11 @@ pub mod typ {
 /// Transaction kind variants (SPEC §4.2).
 #[derive(Debug, Clone)]
 pub enum TransactionKind {
-    /// Add a new key (Level 3+) - SPEC §4.2.1
-    KeyAdd {
+    /// Create a new key (Level 3+) - SPEC §4.2.1
+    KeyCreate {
         /// Previous Auth State.
         pre: AuthState,
-        /// Thumbprint of key being added.
+        /// Thumbprint of key being created.
         id: Thumbprint,
     },
 
@@ -169,10 +171,10 @@ impl Transaction {
     /// Parse the transaction kind from typ and payload fields.
     fn parse_kind(pay: &Pay, typ: &str, signer: &Thumbprint) -> Result<TransactionKind> {
         // Check if typ ends with a known transaction type
-        if typ.ends_with(typ::KEY_ADD) {
+        if typ.ends_with(typ::KEY_CREATE) || typ.ends_with(typ::KEY_ADD_ALIAS) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(TransactionKind::KeyAdd { pre, id })
+            Ok(TransactionKind::KeyCreate { pre, id })
         } else if typ.ends_with(typ::KEY_DELETE) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
@@ -341,7 +343,7 @@ mod tests {
         let czd = Czd::from_bytes(vec![0; 32]);
         let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::KeyAdd { .. }));
+        assert!(matches!(tx.kind, TransactionKind::KeyCreate { .. }));
         assert_eq!(tx.now, 1000);
     }
 
