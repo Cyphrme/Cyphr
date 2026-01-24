@@ -82,6 +82,23 @@ pub enum Error {
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
 
+    // === Commit lifecycle errors ===
+    /// Attempted to begin a commit while one is already in progress.
+    #[error("commit already in progress")]
+    CommitInProgress,
+
+    /// Attempted to finalize when no commit is pending.
+    #[error("no pending commit")]
+    NoPendingCommit,
+
+    /// Attempted to finalize an empty commit (no transactions).
+    #[error("empty commit")]
+    EmptyCommit,
+
+    /// Last transaction in commit missing `commit: true` marker.
+    #[error("missing finalization marker")]
+    MissingFinalizationMarker,
+
     /// Underlying Coz error.
     #[error("coz: {0}")]
     Coz(#[from] coz::Error),

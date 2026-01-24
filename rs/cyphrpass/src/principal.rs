@@ -352,6 +352,58 @@ impl Principal {
         self.auth.pending.as_ref()
     }
 
+    /// Get the Transaction State of the last finalized commit.
+    ///
+    /// Returns `None` if no commits exist yet.
+    pub fn current_ts(&self) -> Option<&TransactionState> {
+        self.ts.as_ref()
+    }
+
+    /// Begin a new commit bundle.
+    ///
+    /// Per SPEC §4.2.1, transactions are grouped into atomic commits.
+    /// Call this before adding transactions to a bundle, then call
+    /// `finalize_commit()` after the last transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CommitInProgress` if a pending commit already exists.
+    pub fn begin_commit(&mut self) -> Result<()> {
+        if self.auth.pending.is_some() {
+            return Err(Error::CommitInProgress);
+        }
+        self.auth.pending = Some(PendingCommit::new(self.hash_alg));
+        Ok(())
+    }
+
+    /// Finalize the current pending commit.
+    ///
+    /// Moves the pending commit to the finalized commits list and
+    /// recomputes all state digests.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NoPendingCommit` if no commit is in progress.
+    /// Returns `EmptyCommit` if the pending commit has no transactions.
+    pub fn finalize_commit(&mut self) -> Result<&Commit> {
+        let pending = self.auth.pending.take().ok_or(Error::NoPendingCommit)?;
+
+        if pending.is_empty() {
+            return Err(Error::EmptyCommit);
+        }
+
+        // Finalize with current state (will be accurate after recompute)
+        let commit = pending
+            .finalize(self.auth_state.clone(), self.ps.clone())
+            .ok_or(Error::MissingFinalizationMarker)?;
+
+        self.auth.commits.push(commit);
+        self.recompute_state();
+
+        // Return reference to the just-added commit
+        Ok(self.auth.commits.last().expect("just pushed"))
+    }
+
     /// Get all actions.
     pub fn actions(&self) -> impl Iterator<Item = &Action> {
         self.data.actions.iter()
