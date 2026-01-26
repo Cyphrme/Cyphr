@@ -20,9 +20,9 @@ protocol built on cryptographic Merkle trees. It enables:
 Cyphrpass provides the authentication layer for the Internet. 
 
 
-| Feature             |  Traditional SSO/Passwords  |         Cyphrpass                 |
-| ---                 |     ---                     |                               --- |
-| **Identity Factor** | Email, Password, or Provider  | Cryptographic Public Keys                      |
+| Feature             |  Traditional SSO/Passwords    |         Cyphrpass                                      |
+| ---                 |     ---                       |                                                    --- |
+| **Identity Factor** | Email, Password, or Provider  | Cryptographic Public Keys                              |
 | **Verification**    | Centralized Database          | Independent (Merkle Tree & Coz Spec)                   |
 | **State Tracking**  | Service-only (Centralized)    | Bidirectional (Mutual State Sync)                      |
 | **Action Auth**     | Bearer Tokens (Session-based) | Authenticated Atomic Actions (AAA)                     |
@@ -55,7 +55,7 @@ truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 "Action" is the hypernym of authentication transaction (transaction in this
 document) and data action, which mutate data state.
 
-## **State Tree**
+### State Tree
 The **state tree** is a hierarchical structure of cryptographic Merkle roots
 that represents the complete state of a Principal (identity).
 
@@ -100,7 +100,7 @@ value is **promoted** to the parent level without additional hashing.
 
 **Examples:**
 
-- Single key: `tmb` is promoted to KS, then to AS, then to PS (which equals PR on genesis)
+- Single key: `tmb` is promoted to KS, then AS, then PS, which equals PR on genesis.
 - No DS present: AS is promoted to PS
 - Only KS present (no TS/RS): KS is promoted to AS
 
@@ -628,27 +628,26 @@ A principal is created (genesis) in one of two ways:
 **Implicit Genesis (Single Key)**
 
 - Principal exists the moment the key exists. No transaction required.
-- `PR = tmb` of the single key (via implicit promotion).
+- `pr` == `tmb` of the single key (via implicit promotion).
 - The first signature by this key constitutes the implicit genesis.
 
 ```
-PR = PS = AS = KS = `tmb`
+PR == PS == AS == KS == `tmb`
 ```
 
 **Explicit Genesis (Single-Key)**
 
 - Requires a signed genesis transaction
-- Key signs a `key/create` transaction to add itself as the principal.
-- `PR = MR(tmb₀, nonce?)`
+- Key signs a `key/create` transaction to add itself as the principal. In this
+  special case, `id` == `tmb`
+- `pre = MR(tmb₀, nonce?)`
 - For genesis, `pre` is the value of the first key bundle, which in the case of
   a single key is just the value of that one key.
 
-Optionally, the principal root, `pr` may also be included.
-
 **`typ`**: `<authority>/key/create`
 
-- `id`: `<genesis key tmb>`
-- `pr`: `<Principal Root value>`
+- `id`: `<genesis key tmb>` 
+- `pre`: `<previous>`
 - `key`: `<key public material>`
 
 ```json5
@@ -659,7 +658,8 @@ Optionally, the principal root, `pr` may also be included.
     tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
     typ: "cyphr.me/cyphrpass/key/create",
     id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-    pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the Principal Root value, in this case the same value as `tmb` since there is no nonce or other value.  
+    pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the `tmb`, promoted to AS, then PR, since there is no nonce or other value.  
+    commit:true
   },
   sig: "<b64ut>", // TODO valid sig
   key: {
@@ -676,14 +676,14 @@ Optionally, the principal root, `pr` may also be included.
 **Explicit Genesis (Multi-Key)**
 
 - Key signs a `key/create` transaction
-- `PR = MR(tmb₀, tmb₁, ..., nonce?)`
+- `pre = MR(tmb₀, tmb₁, ..., nonce?)`
 - Without rules, each key has equal weight, so any initial key can sign.
 - Keys are added to the PR, calculated beforehand.
 
 **`typ`: `<authority>/key/create`**
 
 - `id`: `<genesis key tmb>`
-- `pr`: `<Principal Root value>`
+- `pre`: `<previous>`
 - `keys`: `<key public material>`
 
 ```json5
@@ -696,7 +696,7 @@ Optionally, the principal root, `pr` may also be included.
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/key/create",
         id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        pr: "<Principal Root value", // TODO insert actual value for this transaction.
+        pre: "<key bundle>", // TODO insert actual value for this transaction.
       },
       sig: "<b64ut>", // TODO actual sig
     },
@@ -707,7 +707,8 @@ Optionally, the principal root, `pr` may also be included.
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/key/create",
         id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        pr: "<Principal Root value", // TODO insert actual value for this transaction.
+        pre: "<key bundle>", // TODO insert actual value for this transaction.
+        commit:true
       },
       sig: "<b64ut>", // TODO actual sig
     },
@@ -1821,28 +1822,93 @@ When a key is revoked with `rvk` = T:
 
 ---
 
-## 14. Derivations
 
-A **derivation** is the digest of a state computed using a specific hash
-algorithm. States (KS, AS, PS) are singular, but can be referenced via multiple
-derivations.
+## 14. Multihash Identifiers
+In Cyphrpass, cryptographic algorithms are pluggable: no single cryptographic
+primitive is exclusively authoritative or tightly coupled to the architecture.
+This enables flexibility in algorithm choice, security upgrades, and rapid
+removal of broken algorithms. Instead of identifiers being tightly coupled to a
+single digest, identifiers are coupled to an abstraction named a **multihash
+identifier**—a set of equivalent digests, one per supported hash algorithm at
+commit time.
 
-When there are multiple algorithms, no single algorithm is canonical. All
-derivations are considered equivalent by Cyphrpass and security judgements are
-out-of-scope.  
+No single algorithm is canonical. All variants in a multihash identifier are
+considered equivalent by Cyphrpass; security judgments are out-of-scope.
+
+A multihash identifier is calculated for all state (KS, AS, PS) on a per commit
+basis. States are singular, having a singular underlying structure, but may be
+referenced via multiple hashing algorithms. 
+
+For a particular commit, for each algorithm supported by any key, nonce, or
+embedded node in KS, a digest value is calculated. When only one algorithm is
+used, the multihash has only one variant. When multiple algorithms are used, the
+multihash has many variants, many digest identifiers. For example, if the set of
+keys supports SHA-256 and SHA-384, then both a SHA-256 and a SHA-384 digest is
+calculated. If the keys support only SHA-256, then only a SHA-256 digest is
+calculated.
+
+A nonce (or multiple nonces) can be used to inject a specific digest
+algorithm variant into the multihash identifier, even when no key supports that
+algorithm natively.
 
 ### 14.1 Algorithm Mapping
+Each key algorithm implies a hash algorithm, as defined by Coz.
 
-Each key algorithm implies a hash algorithm:
+| Key Algorithm | Hash Algorithm | Digest Size | Strength Category  |
+| ------------- | -------------- | ----------- | ------------------ |
+| ES256         | SHA-256        | 32 bytes    | 256-bit            |
+| ES384         | SHA-384        | 48 bytes    | 384-bit            |
+| ES512         | SHA-512        | 64 bytes    | 512-bit            |
+| Ed25519       | SHA-512        | 64 bytes    | 512-bit            |
 
-| Key Algorithm | Hash Algorithm | Digest Size |
-| ------------- | -------------- | ----------- |
-| ES256         | SHA-256        | 32 bytes    |
-| ES384         | SHA-384        | 48 bytes    |
-| ES512         | SHA-512        | 64 bytes    |
-| Ed25519       | SHA-512        | 64 bytes    |
+### 14.2 Conversion
+To support upgrades, embedded principals and nodes, values from one digest
+algorithm may be **converted** as input to another.
 
-### 14.2 Derivation Semantics
+For example, in a Merkle tree with a SHA-384 node (A) and SHA-256 node (B), a
+SHA-384 root is: MR_SHA384(A, B)—B's value is fed directly into SHA-384.
+
+
+```text
+                SHA-384 Root
+               ┌─────────────┐
+               │  MR_SHA384  │
+               └──────┬──────┘
+                      │
+              SHA-384( A || B )
+                      |
+          ┌───────────┼───────────┐
+          │                       │
+          │           Fed directly into SHA-384
+          │                       │
+   ┌─────────────┐         ┌─────────────┐
+   │   Node A    │         │   Node B    │
+   │  (SHA-384)  │         │  (SHA-256)  │
+   └─────────────┘         └─────────────┘
+```
+
+### 14.3 Security Considerations
+Conversion is not ideal, but is unavoidable for pluggability and
+recursion/embedding. Implementors must be aware that inner nodes may have
+different security levels than the lookup node; the overall tree is bounded by
+the weakest link.
+
+Algorithm diversity aids durability but risks misuse. For uniform security, use
+keys from one strength category. If an algorithm is weakened, Coz will mark it
+deprecated; principals should discontinue via key removal.
+
+
+### 14.4 Rank
+To resolve ties conversion, where multiple.  Rank is a tiebreaker only and not a
+security indicator. Misuse can have security implications.
+
+Cyphrpass provides a default rank. Perhaps in the future, principals may set a
+rank order via `cyphrpass/alg/rank/create` transaction (stored in AS), but for
+now this is out-of-scope.
+
+
+
+### 14.5 Multihash Semantics
 
 **Singular state, multiple references:**
 
@@ -1873,7 +1939,7 @@ are incompatible with the given principal. (error `UNKNOWN_ALG`) (Strategies
 such as state jumping may be able to resolve issues, out-of-scope for this
 section.)
 
-### 14.3 Verification Context
+### 14.6 Verification Context
 
 When verifying a signature:
 
@@ -2515,3 +2581,9 @@ drift early.
 | `dig` | External content digest           |
 | `cad` | Canonical hash of payload         |
 | `czd` | Coz digest (hash of `[cad, sig]`) |
+
+
+
+## Appendix B: See also
+Merkle-tree-based verifiable logs
+
