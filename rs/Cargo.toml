@@ -1,5 +1,11 @@
 [workspace]
-members  = ["cyphrpass", "cyphrpass-storage", "test-fixtures", "fixture-gen"]
+members = [
+  "cyphrpass",
+  "cyphrpass-storage",
+  "cyphrpass-cli",
+  "test-fixtures",
+  "fixture-gen",
+]
 resolver = "2"
 
 [workspace.package]

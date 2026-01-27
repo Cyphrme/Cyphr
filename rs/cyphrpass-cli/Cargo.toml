@@ -1,0 +1,20 @@
+[package]
+description            = "Reference CLI for the Cyphrpass identity protocol"
+edition.workspace      = true
+name                   = "cyphrpass-cli"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[[bin]]
+name = "cyphrpass"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace       = true
+coz.workspace        = true
+cyphrpass            = { path = "../cyphrpass" }
+cyphrpass-storage    = { path = "../cyphrpass-storage" }
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
