@@ -121,9 +121,9 @@ pub enum KeyCommands {
         #[arg(long)]
         identity: String,
 
-        /// Thumbprint of key to add
+        /// Thumbprint of key to add (if omitted, generates new key)
         #[arg(long)]
-        key: String,
+        key: Option<String>,
 
         /// Thumbprint of signing key
         #[arg(long)]
