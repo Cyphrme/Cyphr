@@ -11,6 +11,7 @@ name = "cyphrpass"
 path = "src/main.rs"
 
 [dependencies]
+base64ct.workspace   = true
 clap.workspace       = true
 coz.workspace        = true
 cyphrpass            = { path = "../cyphrpass" }

@@ -18,6 +18,7 @@ rust-version = "1.85"
 coz = { package = "coz-rs", version = "0.3.0" }
 
 # Serialization
+base64ct   = { version = "1", features = ["alloc"] }
 indexmap   = { version = "2", features = ["serde"] }
 serde      = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order"] }

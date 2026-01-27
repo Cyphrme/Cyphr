@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod commands;
+pub mod keystore;
 
 /// Cyphrpass identity protocol CLI.
 #[derive(Parser)]
