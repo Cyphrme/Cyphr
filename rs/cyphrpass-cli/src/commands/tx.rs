@@ -114,9 +114,20 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Extract genesis from commits and replay
-    let genesis = extract_genesis_from_commits(&commits)?;
-    let principal = load_principal_from_commits(genesis, &commits)?;
+    // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let is_implicit_genesis = keystore.get(identity).is_ok();
+
+    let principal = if is_implicit_genesis {
+        // Implicit genesis with commits: use keystore key as genesis
+        let genesis_key = load_key_from_keystore(&keystore, identity)?;
+        let genesis = Genesis::Implicit(genesis_key);
+        load_principal_from_commits(genesis, &commits)?
+    } else {
+        // Explicit genesis: extract from commits
+        let genesis = extract_genesis_from_commits(&commits)?;
+        load_principal_from_commits(genesis, &commits)?
+    };
 
     // Verify PR matches
     let computed_pr = principal.pr().as_cad().to_b64();
