@@ -145,11 +145,11 @@ pub enum KeyCommands {
         signer: String,
     },
 
-    /// List keys for an identity
+    /// List keys (from keystore if no identity, from identity if provided)
     List {
-        /// Principal Root (base64url)
+        /// Principal Root (base64url) - if omitted, lists keystore keys
         #[arg(long)]
-        identity: String,
+        identity: Option<String>,
     },
 }
 

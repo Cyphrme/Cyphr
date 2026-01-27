@@ -18,7 +18,7 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> Result<(), Box<dyn std::error::E
             key,
             signer,
         } => revoke(cli, identity, key, signer),
-        KeyCommands::List { identity } => list(cli, identity),
+        KeyCommands::List { identity } => list(cli, identity.as_deref()),
     }
 }
 
@@ -122,7 +122,54 @@ fn revoke(
     Ok(())
 }
 
-fn list(_cli: &Cli, _identity: &str) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("key list: not yet implemented");
+/// List keys - from keystore if identity is None, from identity if provided.
+fn list(cli: &Cli, identity: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    match identity {
+        None => list_keystore(cli),
+        Some(_pr) => {
+            eprintln!("key list --identity: not yet implemented");
+            Ok(())
+        },
+    }
+}
+
+/// List all keys in the keystore.
+fn list_keystore(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
+    let thumbprints = keystore.list();
+
+    if thumbprints.is_empty() {
+        match cli.output {
+            OutputFormat::Json => println!("[]"),
+            OutputFormat::Table => println!("No keys in keystore"),
+        }
+        return Ok(());
+    }
+
+    match cli.output {
+        OutputFormat::Json => {
+            let keys: Vec<_> = thumbprints
+                .iter()
+                .map(|tmb| {
+                    let key = keystore.get(tmb).unwrap();
+                    serde_json::json!({
+                        "tmb": tmb,
+                        "alg": key.alg,
+                        "tag": key.tag,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&keys)?);
+        },
+        OutputFormat::Table => {
+            println!("Keys in keystore:");
+            for tmb in thumbprints {
+                let key = keystore.get(tmb).unwrap();
+                let tag_str = key.tag.as_deref().unwrap_or("-");
+                println!("  {} ({}) [{}]", tmb, key.alg, tag_str);
+            }
+        },
+    }
+
     Ok(())
 }
