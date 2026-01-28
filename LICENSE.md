@@ -336,3 +336,6 @@ Thinking other angles:
 2. The server that's hosting Cyphrpass has to be fully open source. 
 
 AAA
+
+
+Any modification to Cyphrpass must still allow opaqueness through nonces.  No change to this design is permitted.
