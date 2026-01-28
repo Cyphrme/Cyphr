@@ -99,35 +99,23 @@ fn test_key_lifecycle() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // 2. Add a new key to identity (this creates the first transaction)
-    let add_result = cli.run_json(&[
-        "key",
-        "add",
-        "--identity",
-        genesis_tmb,
-        "--signer",
-        genesis_tmb,
-    ]);
+    // Use --arg=value format to handle thumbprints starting with -
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+    let add_result = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
     let new_key_tmb = add_result["added_key"].as_str().unwrap();
 
     // 3. List keys - should show both (field is "active_keys")
-    let list_result = cli.run_json(&["key", "list", "--identity", genesis_tmb]);
+    let list_result = cli.run_json(&["key", "list", &identity_arg]);
     let keys = list_result["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "should have 2 active keys");
 
     // 4. Revoke the new key
-    let _ = cli.run_ok(&[
-        "key",
-        "revoke",
-        "--identity",
-        genesis_tmb,
-        "--key",
-        new_key_tmb,
-        "--signer",
-        genesis_tmb,
-    ]);
+    let key_arg = format!("--key={new_key_tmb}");
+    let _ = cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &signer_arg]);
 
     // 5. List keys - should show only genesis
-    let list_result = cli.run_json(&["key", "list", "--identity", genesis_tmb]);
+    let list_result = cli.run_json(&["key", "list", &identity_arg]);
     let keys = list_result["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 1, "should have 1 active key after revoke");
     assert_eq!(keys[0]["tmb"], genesis_tmb);
@@ -226,4 +214,166 @@ fn test_tx_list_genesis() {
     let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
 
     assert_eq!(tx_list["transaction_count"], 0);
+}
+
+#[test]
+fn test_tx_list_after_transactions() {
+    let cli = CliTest::new();
+
+    // Generate key
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+
+    // Add a key (creates first transaction)
+    cli.run_ok(&[
+        "key",
+        "add",
+        "--identity",
+        genesis_tmb,
+        "--signer",
+        genesis_tmb,
+    ]);
+
+    // List transactions - should show 1 transaction
+    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+
+    assert_eq!(tx_list["transaction_count"], 1);
+    let txs = tx_list["transactions"].as_array().unwrap();
+    assert_eq!(txs.len(), 1);
+    assert!(txs[0]["kind"].as_str().unwrap().contains("KeyCreate"));
+}
+
+#[test]
+fn test_inspect_genesis() {
+    let cli = CliTest::new();
+
+    // Generate key
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+
+    // Inspect genesis state
+    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+
+    // All state digests should equal PR at genesis
+    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
+    assert_eq!(inspect["ps"].as_str().unwrap(), genesis_tmb);
+    assert_eq!(inspect["ks"].as_str().unwrap(), genesis_tmb);
+    assert_eq!(inspect["as"].as_str().unwrap(), genesis_tmb);
+    assert_eq!(inspect["commit_count"], 0);
+
+    let keys = inspect["active_keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+}
+
+#[test]
+fn test_inspect_after_transactions() {
+    let cli = CliTest::new();
+
+    // Generate key
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+
+    // Add a key
+    cli.run_ok(&[
+        "key",
+        "add",
+        "--identity",
+        genesis_tmb,
+        "--signer",
+        genesis_tmb,
+    ]);
+
+    // Inspect after transaction
+    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+
+    // PR should still be genesis, but other states should change
+    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
+    assert_ne!(
+        inspect["ks"].as_str().unwrap(),
+        genesis_tmb,
+        "KS should change after key add"
+    );
+    assert_eq!(inspect["commit_count"], 1);
+
+    let keys = inspect["active_keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 2, "should have 2 keys after add");
+}
+
+#[test]
+fn test_full_workflow() {
+    // Comprehensive test mimicking the demo script
+    let cli = CliTest::new();
+
+    // 1. Generate genesis key
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "genesis"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+
+    // 2. Verify keystore has the key
+    let keystore_list = cli.run_json(&["key", "list"]);
+    assert_eq!(keystore_list.as_array().unwrap().len(), 1);
+
+    // 3. Check tx list at genesis (0 transactions)
+    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+    assert_eq!(tx_list["transaction_count"], 0);
+
+    // 4. Check inspect at genesis
+    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+    assert_eq!(inspect["commit_count"], 0);
+
+    // 5. Add a key
+    let add_result = cli.run_json(&[
+        "key",
+        "add",
+        "--identity",
+        genesis_tmb,
+        "--signer",
+        genesis_tmb,
+    ]);
+    let second_key = add_result["added_key"].as_str().unwrap();
+
+    // 6. List keys - should have 2
+    let key_list = cli.run_json(&["key", "list", "--identity", genesis_tmb]);
+    assert_eq!(key_list["active_keys"].as_array().unwrap().len(), 2);
+
+    // 7. Check tx list after transaction
+    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+    assert_eq!(tx_list["transaction_count"], 1);
+
+    // 8. Check inspect after transaction
+    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+    assert_eq!(inspect["commit_count"], 1);
+    assert_eq!(inspect["active_keys"].as_array().unwrap().len(), 2);
+
+    // 9. Export
+    let export_path = cli.temp_dir.path().join("export.jsonl");
+    cli.run_ok(&[
+        "export",
+        "--identity",
+        genesis_tmb,
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+    assert!(export_path.exists());
+
+    // 10. Revoke the second key
+    cli.run_ok(&[
+        "key",
+        "revoke",
+        "--identity",
+        genesis_tmb,
+        "--key",
+        second_key,
+        "--signer",
+        genesis_tmb,
+    ]);
+
+    // 11. Verify final state - only genesis key remains
+    let final_list = cli.run_json(&["key", "list", "--identity", genesis_tmb]);
+    let final_keys = final_list["active_keys"].as_array().unwrap();
+    assert_eq!(final_keys.len(), 1);
+    assert_eq!(final_keys[0]["tmb"].as_str().unwrap(), genesis_tmb);
+
+    // 12. Check tx list shows 2 transactions (add + revoke)
+    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+    assert_eq!(tx_list["transaction_count"], 2);
 }
