@@ -140,7 +140,13 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify state digests from commits match computed state
-    let last_commit = commits.last().unwrap();
+    // Note: Empty commits case is handled above at line 96, but we use
+    // defensive pattern here rather than unwrap for robustness.
+    let Some(last_commit) = commits.last() else {
+        // This branch should be unreachable due to the earlier empty check,
+        // but we handle it gracefully rather than panicking.
+        return Ok(());
+    };
     let computed_ps = principal.ps().as_cad().to_b64();
 
     if computed_ps != last_commit.ps {

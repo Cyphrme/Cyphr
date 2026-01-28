@@ -857,8 +857,12 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        // Safe to proceed - remove and revoke
-        let mut key = self.auth.keys.shift_remove(&tmb_b64).unwrap();
+        // Safe to proceed - remove and revoke (key existence verified above)
+        let mut key = self
+            .auth
+            .keys
+            .shift_remove(&tmb_b64)
+            .expect("key existence verified by contains_key check");
         key.revocation = Some(Revocation { rvk, by });
 
         // Move to revoked set for historical verification
