@@ -74,6 +74,77 @@ impl PoolKey {
             tmb.as_bytes(),
         ))
     }
+
+    /// Verify that a private key derives to the stated public key.
+    ///
+    /// Returns `Ok(true)` if the derived public key matches `self.pub_key`,
+    /// `Ok(false)` if they don't match, or `Err` if derivation fails.
+    pub fn verify_prv_derives_to_pub(&self, prv_b64: &str) -> Result<bool, Error> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let prv_bytes =
+            Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid base64url prv: {e}", self.name),
+            })?;
+
+        // Derive public key based on algorithm
+        let derived_pub_b64 = match self.alg.as_str() {
+            "ES256" => {
+                let sk =
+                    coz::signing_key_from_bytes::<coz::ES256>(&prv_bytes).ok_or_else(|| {
+                        Error::PoolValidation {
+                            message: format!(
+                                "key '{}': failed to parse ES256 private key",
+                                self.name
+                            ),
+                        }
+                    })?;
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
+            },
+            "ES384" => {
+                let sk =
+                    coz::signing_key_from_bytes::<coz::ES384>(&prv_bytes).ok_or_else(|| {
+                        Error::PoolValidation {
+                            message: format!(
+                                "key '{}': failed to parse ES384 private key",
+                                self.name
+                            ),
+                        }
+                    })?;
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
+            },
+            "ES512" => {
+                let sk =
+                    coz::signing_key_from_bytes::<coz::ES512>(&prv_bytes).ok_or_else(|| {
+                        Error::PoolValidation {
+                            message: format!(
+                                "key '{}': failed to parse ES512 private key",
+                                self.name
+                            ),
+                        }
+                    })?;
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
+            },
+            "Ed25519" => {
+                let sk =
+                    coz::signing_key_from_bytes::<coz::Ed25519>(&prv_bytes).ok_or_else(|| {
+                        Error::PoolValidation {
+                            message: format!(
+                                "key '{}': failed to parse Ed25519 private key",
+                                self.name
+                            ),
+                        }
+                    })?;
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
+            },
+            _ => {
+                // Unsupported algorithm - skip prv validation
+                return Ok(true);
+            },
+        };
+
+        Ok(derived_pub_b64 == self.pub_key)
+    }
 }
 
 impl Pool {
@@ -124,7 +195,25 @@ impl Pool {
             }
         }
 
-        // TODO: Verify prv derives to pub when coz exposes public key derivation
+        // Verify private key derives to stated public key for keys with prv
+        for key in &self.pool.key {
+            if let Some(ref prv) = key.prv {
+                match key.verify_prv_derives_to_pub(prv) {
+                    Ok(false) => {
+                        errors.push(format!(
+                            "key '{}': private key does not derive to stated public key",
+                            key.name
+                        ));
+                    },
+                    Err(e) => {
+                        errors.push(format!("key '{}': prv validation error: {e}", key.name));
+                    },
+                    Ok(true) => {
+                        // Valid
+                    },
+                }
+            }
+        }
 
         if errors.is_empty() {
             Ok(())
