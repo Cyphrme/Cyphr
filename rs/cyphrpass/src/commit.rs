@@ -196,9 +196,40 @@ impl PendingCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::{Transaction, VerifiedTransaction};
+    use coz::{Czd, PayBuilder, Thumbprint};
+    use serde_json::json;
 
-    // These tests require the Transaction is_finalizer() method to be implemented
-    // TODO: Add comprehensive tests after Task 1.2 completes
+    // Valid base64url for 32 bytes
+    const TEST_PRE: &str = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+    const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
+
+    /// Create a test transaction with specified finalizer flag.
+    fn make_test_tx(is_finalizer: bool, czd_byte: u8) -> VerifiedTransaction {
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/key/create")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID));
+        if is_finalizer {
+            pay.extra.insert("commit".into(), json!(true));
+        }
+
+        let czd = Czd::from_bytes(vec![czd_byte; 32]);
+        let raw = coz::CozJson {
+            pay: serde_json::to_value(&pay).unwrap(),
+            sig: vec![0; 64],
+        };
+        let tx = Transaction::from_pay(&pay, czd, raw).unwrap();
+        VerifiedTransaction::from_transaction_unsafe(tx, None)
+    }
+
+    // ========================================================================
+    // PendingCommit Tests
+    // ========================================================================
 
     #[test]
     fn pending_commit_empty_state() {
@@ -206,5 +237,130 @@ mod tests {
         assert!(pending.is_empty());
         assert_eq!(pending.len(), 0);
         assert!(pending.compute_ts().is_none());
+    }
+
+    #[test]
+    fn pending_commit_push_returns_finalizer_status() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+
+        // Push non-finalizer transaction
+        let tx1 = make_test_tx(false, 0x01);
+        let is_fin = pending.push(tx1);
+        assert!(!is_fin, "non-finalizer should return false");
+        assert_eq!(pending.len(), 1);
+
+        // Push finalizer transaction
+        let tx2 = make_test_tx(true, 0x02);
+        let is_fin = pending.push(tx2);
+        assert!(is_fin, "finalizer should return true");
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn pending_commit_compute_ts_returns_merkle_root() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let tx1 = make_test_tx(false, 0x01);
+        pending.push(tx1);
+
+        let ts = pending.compute_ts();
+        assert!(ts.is_some());
+        // TS should be 32 bytes (SHA256)
+        assert_eq!(ts.unwrap().as_cad().as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn pending_commit_finalize_succeeds_with_finalizer() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let tx = make_test_tx(true, 0x01);
+        pending.push(tx);
+
+        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+
+        let commit = pending.finalize(auth_state.clone(), ps.clone());
+        assert!(commit.is_some());
+
+        let commit = commit.unwrap();
+        assert_eq!(commit.len(), 1);
+        assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.ps(), &ps);
+    }
+
+    #[test]
+    fn pending_commit_finalize_fails_without_finalizer() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let tx = make_test_tx(false, 0x01); // NOT a finalizer
+        pending.push(tx);
+
+        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+
+        let result = pending.finalize(auth_state, ps);
+        assert!(
+            result.is_none(),
+            "should fail when last tx is not finalizer"
+        );
+    }
+
+    #[test]
+    fn pending_commit_finalize_fails_when_empty() {
+        let pending = PendingCommit::new(HashAlg::Sha256);
+
+        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+
+        let result = pending.finalize(auth_state, ps);
+        assert!(result.is_none(), "should fail when empty");
+    }
+
+    #[test]
+    fn pending_commit_into_transactions_returns_accumulated() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        pending.push(make_test_tx(false, 0x01));
+        pending.push(make_test_tx(true, 0x02));
+
+        let txs = pending.into_transactions();
+        assert_eq!(txs.len(), 2);
+    }
+
+    // ========================================================================
+    // Commit Tests
+    // ========================================================================
+
+    #[test]
+    fn commit_accessors_return_correct_values() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        pending.push(make_test_tx(true, 0x01));
+
+        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+
+        let commit = pending.finalize(auth_state.clone(), ps.clone()).unwrap();
+
+        // Test all accessors
+        assert_eq!(commit.transactions().len(), 1);
+        assert!(!commit.is_empty());
+        assert_eq!(commit.len(), 1);
+        assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.ps(), &ps);
+        assert_eq!(commit.ts().as_cad().as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn commit_multi_transaction_computes_correct_ts() {
+        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        pending.push(make_test_tx(false, 0x01));
+        pending.push(make_test_tx(false, 0x02));
+        pending.push(make_test_tx(true, 0x03)); // finalizer
+
+        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+
+        let commit = pending.finalize(auth_state, ps).unwrap();
+        assert_eq!(commit.len(), 3);
+
+        // TS should be Merkle root of all 3 transaction czds
+        let ts = commit.ts();
+        assert_eq!(ts.as_cad().as_bytes().len(), 32);
     }
 }
