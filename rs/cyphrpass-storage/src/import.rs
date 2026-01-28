@@ -124,6 +124,7 @@ pub enum LoadError {
 /// # Example
 ///
 /// ```ignore
+/// // Ignored: requires store context and key material not available in doc-test
 /// let genesis = Genesis::Implicit(my_key);
 /// let entries = store.get_entries(&pr)?;
 /// let principal = load_principal(genesis, &entries)?;
@@ -222,6 +223,7 @@ pub fn load_from_checkpoint(
 /// # Example
 ///
 /// ```ignore
+/// // Ignored: requires file_store context not available in doc-test
 /// let genesis = Genesis::Implicit(my_key);
 /// let commits = file_store.get_commits(&pr)?;
 /// let principal = load_principal_from_commits(genesis, &commits)?;

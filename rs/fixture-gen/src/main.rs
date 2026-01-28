@@ -122,14 +122,16 @@ fn main() {
             },
             PoolCmd::Add { name, alg } => {
                 println!("Add key: {} ({})", name, alg);
-                // TODO: Implement key generation
-                eprintln!("Not yet implemented");
+                // Key generation requires coz-rs to expose public key derivation.
+                // Deferred until coz-rs dependency supports this (see pool.rs:127).
+                eprintln!("Not yet implemented: blocked on coz-rs key derivation");
                 std::process::exit(1);
             },
             PoolCmd::Remove { name } => {
                 println!("Remove key: {}", name);
-                // TODO: Implement key removal
-                eprintln!("Not yet implemented");
+                // Key removal is a convenience feature; manual editing of pool.toml
+                // is acceptable for now. Low priority compared to core functionality.
+                eprintln!("Not yet implemented: use manual pool.toml editing");
                 std::process::exit(1);
             },
         },

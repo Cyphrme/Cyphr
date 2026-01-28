@@ -73,6 +73,7 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
 /// # Example
 ///
 /// ```ignore
+/// // Ignored: requires initialized Principal with commits (external context)
 /// let commits = export_commits(&principal);
 /// for commit in commits {
 ///     file.write_line(&commit.to_json()?)?;
