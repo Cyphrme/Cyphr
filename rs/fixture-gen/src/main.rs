@@ -121,18 +121,10 @@ fn main() {
                 }
             },
             PoolCmd::Add { name, alg } => {
-                println!("Add key: {} ({})", name, alg);
-                // Key generation requires coz-rs to expose public key derivation.
-                // Deferred until coz-rs dependency supports this (see pool.rs:127).
-                eprintln!("Not yet implemented: blocked on coz-rs key derivation");
-                std::process::exit(1);
+                add_key_to_pool(&cli.pool, &name, &alg);
             },
             PoolCmd::Remove { name } => {
-                println!("Remove key: {}", name);
-                // Key removal is a convenience feature; manual editing of pool.toml
-                // is acceptable for now. Low priority compared to core functionality.
-                eprintln!("Not yet implemented: use manual pool.toml editing");
-                std::process::exit(1);
+                remove_key_from_pool(&cli.pool, &name);
             },
         },
     }
@@ -299,4 +291,119 @@ fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtur
         total_files,
         output_dir.display()
     );
+}
+
+/// Add a new key to the pool file.
+fn add_key_to_pool(pool_path: &Path, name: &str, alg: &str) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    // Load existing pool
+    let mut pool = match test_fixtures::Pool::load(pool_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ Failed to load pool '{}': {}", pool_path.display(), e);
+            std::process::exit(1);
+        },
+    };
+
+    // Check for duplicate name
+    if pool.get(name).is_some() {
+        eprintln!("✗ Key '{}' already exists in pool", name);
+        std::process::exit(1);
+    }
+
+    // Generate key based on algorithm
+    let (pub_b64, prv_b64) = match alg {
+        "ES256" => {
+            let sk = coz::SigningKey::<coz::ES256>::generate();
+            (
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
+                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
+            )
+        },
+        "ES384" => {
+            let sk = coz::SigningKey::<coz::ES384>::generate();
+            (
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
+                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
+            )
+        },
+        "ES512" => {
+            let sk = coz::SigningKey::<coz::ES512>::generate();
+            (
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
+                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
+            )
+        },
+        "Ed25519" => {
+            let sk = coz::SigningKey::<coz::Ed25519>::generate();
+            (
+                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
+                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
+            )
+        },
+        _ => {
+            eprintln!(
+                "✗ Unsupported algorithm '{}'. Use: ES256, ES384, ES512, Ed25519",
+                alg
+            );
+            std::process::exit(1);
+        },
+    };
+
+    // Create new key entry
+    let new_key = test_fixtures::PoolKey {
+        name: name.to_string(),
+        alg: alg.to_string(),
+        pub_key: pub_b64,
+        prv: Some(prv_b64),
+        tag: None,
+    };
+
+    // Add to pool
+    pool.pool.key.push(new_key);
+
+    // Write back to file
+    let toml_content = toml::to_string_pretty(&pool).expect("TOML serialization cannot fail");
+    if let Err(e) = std::fs::write(pool_path, toml_content) {
+        eprintln!("✗ Failed to write pool '{}': {}", pool_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!(
+        "✓ Added key '{}' ({}) to {}",
+        name,
+        alg,
+        pool_path.display()
+    );
+}
+
+/// Remove a key from the pool file.
+fn remove_key_from_pool(pool_path: &Path, name: &str) {
+    // Load existing pool
+    let mut pool = match test_fixtures::Pool::load(pool_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("✗ Failed to load pool '{}': {}", pool_path.display(), e);
+            std::process::exit(1);
+        },
+    };
+
+    // Find and remove key
+    let original_len = pool.pool.key.len();
+    pool.pool.key.retain(|k| k.name != name);
+
+    if pool.pool.key.len() == original_len {
+        eprintln!("✗ Key '{}' not found in pool", name);
+        std::process::exit(1);
+    }
+
+    // Write back to file
+    let toml_content = toml::to_string_pretty(&pool).expect("TOML serialization cannot fail");
+    if let Err(e) = std::fs::write(pool_path, toml_content) {
+        eprintln!("✗ Failed to write pool '{}': {}", pool_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!("✓ Removed key '{}' from {}", name, pool_path.display());
 }
