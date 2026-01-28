@@ -28,7 +28,7 @@ fn list(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .map(|(i, tx)| {
                     serde_json::json!({
                         "index": i,
-                        "kind": format!("{:?}", tx.kind()),
+                        "kind": tx.kind().to_string(),
                         "signer": tx.signer().to_b64(),
                         "timestamp": tx.now(),
                         "czd": tx.czd().to_b64(),

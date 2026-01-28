@@ -594,6 +594,7 @@ impl Principal {
     /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
+    #[must_use = "transaction application may fail; handle the Result"]
     pub fn apply_verified(
         &mut self,
         vtx: crate::transaction::VerifiedTransaction,
@@ -760,6 +761,7 @@ impl Principal {
     /// - `MalformedPayload`: Missing required fields
     /// - `InvalidPrior`: `pre` doesn't match current AS
     /// - `NoActiveKeys`: Would leave principal with no keys
+    #[must_use = "transaction application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
         &mut self,
         pay_json: &[u8],

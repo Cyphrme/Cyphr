@@ -69,6 +69,18 @@ pub enum TransactionKind {
     },
 }
 
+impl std::fmt::Display for TransactionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransactionKind::KeyCreate { .. } => write!(f, "key/create"),
+            TransactionKind::KeyDelete { .. } => write!(f, "key/delete"),
+            TransactionKind::KeyReplace { .. } => write!(f, "key/replace"),
+            TransactionKind::SelfRevoke { .. } => write!(f, "key/revoke (self)"),
+            TransactionKind::OtherRevoke { .. } => write!(f, "key/revoke (other)"),
+        }
+    }
+}
+
 // ============================================================================
 // Transaction
 // ============================================================================
