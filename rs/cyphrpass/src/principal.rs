@@ -706,28 +706,36 @@ impl Principal {
             self.latest_timestamp = tx.now;
         }
 
-        // Record transaction as single-tx commit and recompute state
-        // TODO: Commit 2 will wire proper pending commit lifecycle
+        // Record transaction as single-tx commit (wrap_as_commit handles state recomputation)
         self.wrap_as_commit(vtx);
-        self.recompute_state();
 
         Ok(&self.auth_state)
     }
 
     /// Wrap a single transaction as a finalized commit.
     ///
-    /// This is temporary scaffolding for backward compatibility during the
-    /// commit model refactor. Commit 2 will wire the proper pending commit
-    /// lifecycle with explicit begin_commit/finalize_commit calls.
+    /// Computes all state digests inline to ensure the commit stores
+    /// post-mutation values (not stale pre-mutation state).
     fn wrap_as_commit(&mut self, vtx: VerifiedTransaction) {
-        use crate::state::compute_ts;
+        use crate::state::{compute_as, compute_ks, compute_ps, compute_ts};
 
-        // Compute TS for this single-tx commit
+        // 1. Recompute KS from current (post-mutation) key set
+        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        self.ks = compute_ks(&thumbprints, None, self.hash_alg);
+
+        // 2. Compute TS for this commit's transaction(s)
         let czds = [vtx.czd()];
         let ts = compute_ts(&czds, None, self.hash_alg)
             .expect("single transaction should always produce TS");
+        self.ts = Some(ts.clone());
 
-        // Create the commit with current state (will be recomputed after)
+        // 3. Compute AS from updated KS and new TS
+        self.auth_state = compute_as(&self.ks, Some(&ts), None, self.hash_alg);
+
+        // 4. Compute PS from updated AS (no DS yet)
+        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, self.hash_alg);
+
+        // 5. Create commit with CORRECT post-mutation state
         let commit = Commit::new(vec![vtx], ts, self.auth_state.clone(), self.ps.clone());
         self.auth.commits.push(commit);
     }
