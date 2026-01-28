@@ -182,6 +182,7 @@ fn load_identity(
     identity: &str,
 ) -> Result<cyphrpass::Principal, Box<dyn std::error::Error>> {
     let store = parse_store(&cli.store)?;
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
     let pr = parse_principal_root(identity)?;
 
     let commits = match store.get_commits(&pr) {
@@ -189,12 +190,20 @@ fn load_identity(
         Err(_) => vec![],
     };
 
+    // Check if identity is in keystore (implicit genesis indicator)
+    let is_implicit_genesis = keystore.get(identity).is_ok();
+
     if commits.is_empty() {
         // Genesis state - reconstruct from keystore
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
         let key = load_key_from_keystore(&keystore, identity)?;
         Ok(cyphrpass::Principal::implicit(key)?)
+    } else if is_implicit_genesis {
+        // Has commits + in keystore = implicit genesis with transactions
+        let genesis_key = load_key_from_keystore(&keystore, identity)?;
+        let genesis = Genesis::Implicit(genesis_key);
+        Ok(load_principal_from_commits(genesis, &commits)?)
     } else {
+        // Not in keystore = explicit genesis (key embedded in commits)
         let genesis = extract_genesis_from_commits(&commits)?;
         Ok(load_principal_from_commits(genesis, &commits)?)
     }

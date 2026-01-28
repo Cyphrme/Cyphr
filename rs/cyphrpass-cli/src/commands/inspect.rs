@@ -9,6 +9,7 @@ use crate::{Cli, OutputFormat};
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     let store = parse_store(&cli.store)?;
+    let keystore = JsonKeyStore::open(&cli.keystore)?;
     let pr = parse_principal_root(identity)?;
 
     // Try to load commits from store
@@ -17,13 +18,20 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
         Err(_) => vec![], // No file exists yet
     };
 
+    // Check if identity is in keystore (implicit genesis indicator)
+    let is_implicit_genesis = keystore.get(identity).is_ok();
+
     let principal = if commits.is_empty() {
         // No commits - try to reconstruct from keystore (genesis state)
-        let keystore = JsonKeyStore::open(&cli.keystore)?;
         let key = load_key_from_keystore(&keystore, identity)?;
         cyphrpass::Principal::implicit(key)?
+    } else if is_implicit_genesis {
+        // Has commits + in keystore = implicit genesis with transactions
+        let genesis_key = load_key_from_keystore(&keystore, identity)?;
+        let genesis = Genesis::Implicit(genesis_key);
+        load_principal_from_commits(genesis, &commits)?
     } else {
-        // Load from commits
+        // Not in keystore = explicit genesis (key embedded in commits)
         let genesis = extract_genesis_from_commits(&commits)?;
         load_principal_from_commits(genesis, &commits)?
     };
