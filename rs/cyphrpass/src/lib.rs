@@ -22,6 +22,7 @@ pub mod action;
 pub mod commit;
 pub mod error;
 pub mod key;
+pub mod multihash;
 pub mod principal;
 pub mod state;
 pub mod transaction;
@@ -31,6 +32,7 @@ pub use action::Action;
 pub use commit::{Commit, PendingCommit};
 pub use error::Error;
 pub use key::Key;
+pub use multihash::MultihashDigest;
 pub use principal::Principal;
 pub use state::{
     AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,

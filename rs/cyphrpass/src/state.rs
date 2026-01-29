@@ -104,7 +104,7 @@ impl PrincipalRoot {
 // ============================================================================
 
 /// Hash algorithm for state computation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HashAlg {
     /// SHA-256 (ES256)
     Sha256,
@@ -126,6 +126,28 @@ impl HashAlg {
             "ES384" => Ok(Self::Sha384),
             "ES512" | "Ed25519" => Ok(Self::Sha512),
             _ => Err(crate::error::Error::UnsupportedAlgorithm(alg.to_string())),
+        }
+    }
+
+    /// Get hash algorithm from Coz signing algorithm.
+    ///
+    /// This is the infallible variant using the type-safe `coz::Alg` enum.
+    #[must_use]
+    pub const fn from_coz_alg(alg: coz::Alg) -> Self {
+        match alg {
+            coz::Alg::ES256 => Self::Sha256,
+            coz::Alg::ES384 => Self::Sha384,
+            coz::Alg::ES512 | coz::Alg::Ed25519 => Self::Sha512,
+        }
+    }
+
+    /// Get digest size in bytes.
+    #[must_use]
+    pub const fn digest_size(self) -> usize {
+        match self {
+            Self::Sha256 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
         }
     }
 }
