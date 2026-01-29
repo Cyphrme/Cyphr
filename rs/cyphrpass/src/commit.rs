@@ -196,6 +196,7 @@ impl PendingCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multihash::MultihashDigest;
     use crate::transaction::{Transaction, VerifiedTransaction};
     use coz::{Czd, PayBuilder, Thumbprint};
     use serde_json::json;
@@ -274,7 +275,10 @@ mod tests {
         let tx = make_test_tx(true, 0x01);
         pending.push(tx);
 
-        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let auth_state = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xAA; 32],
+        ));
         let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
 
         let commit = pending.finalize(auth_state.clone(), ps.clone());
@@ -292,7 +296,10 @@ mod tests {
         let tx = make_test_tx(false, 0x01); // NOT a finalizer
         pending.push(tx);
 
-        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let auth_state = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xAA; 32],
+        ));
         let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
 
         let result = pending.finalize(auth_state, ps);
@@ -306,7 +313,10 @@ mod tests {
     fn pending_commit_finalize_fails_when_empty() {
         let pending = PendingCommit::new(HashAlg::Sha256);
 
-        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let auth_state = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xAA; 32],
+        ));
         let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
 
         let result = pending.finalize(auth_state, ps);
@@ -332,7 +342,10 @@ mod tests {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         pending.push(make_test_tx(true, 0x01));
 
-        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let auth_state = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xAA; 32],
+        ));
         let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
 
         let commit = pending.finalize(auth_state.clone(), ps.clone()).unwrap();
@@ -353,7 +366,10 @@ mod tests {
         pending.push(make_test_tx(false, 0x02));
         pending.push(make_test_tx(true, 0x03)); // finalizer
 
-        let auth_state = AuthState(coz::Cad::from_bytes(vec![0xAA; 32]));
+        let auth_state = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xAA; 32],
+        ));
         let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
 
         let commit = pending.finalize(auth_state, ps).unwrap();

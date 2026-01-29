@@ -212,12 +212,29 @@ impl Transaction {
     }
 
     /// Extract `pre` field (previous Auth State) from pay.extra.
+    ///
+    /// **Note:** The algorithm is inferred from digest length.
+    /// - 32 bytes → SHA-256
+    /// - 48 bytes → SHA-384
+    /// - 64 bytes → SHA-512
     fn extract_pre(pay: &Pay) -> Result<AuthState> {
+        use crate::multihash::MultihashDigest;
+        use crate::state::HashAlg;
+
         let pre_value = pay.extra.get("pre").ok_or(Error::MalformedPayload)?;
         let pre_str = pre_value.as_str().ok_or(Error::MalformedPayload)?;
         let pre_bytes =
             Base64UrlUnpadded::decode_vec(pre_str).map_err(|_| Error::MalformedPayload)?;
-        Ok(AuthState(coz::Cad::from_bytes(pre_bytes)))
+
+        // Infer algorithm from digest length
+        let alg = match pre_bytes.len() {
+            32 => HashAlg::Sha256,
+            48 => HashAlg::Sha384,
+            64 => HashAlg::Sha512,
+            _ => return Err(Error::MalformedPayload),
+        };
+
+        Ok(AuthState(MultihashDigest::from_single(alg, pre_bytes)))
     }
 
     /// Extract `id` field (target key thumbprint) from pay.extra.

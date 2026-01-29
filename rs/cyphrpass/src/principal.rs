@@ -126,7 +126,7 @@ impl Principal {
         // KS = tmb (single key promotes)
         let ks = compute_ks(&[&key.tmb], None, &[hash_alg]);
         // AS = KS (no TS, promotes)
-        let auth_state = compute_as(&ks, None, None, hash_alg);
+        let auth_state = compute_as(&ks, None, None, &[hash_alg]);
         // PS = AS (no DS, promotes)
         let ps = compute_ps(&auth_state, None, None, hash_alg);
         // PR = first PS
@@ -171,7 +171,7 @@ impl Principal {
         let ks = compute_ks(&thumbprints, None, &[hash_alg]);
 
         // AS = KS (no TS yet)
-        let auth_state = compute_as(&ks, None, None, hash_alg);
+        let auth_state = compute_as(&ks, None, None, &[hash_alg]);
         // PS = AS (no DS)
         let ps = compute_ps(&auth_state, None, None, hash_alg);
         // PR frozen at genesis
@@ -731,7 +731,7 @@ impl Principal {
         self.ts = Some(ts.clone());
 
         // 3. Compute AS from updated KS and new TS
-        self.auth_state = compute_as(&self.ks, Some(&ts), None, self.hash_alg);
+        self.auth_state = compute_as(&self.ks, Some(&ts), None, &[self.hash_alg]);
 
         // 4. Compute PS from updated AS (no DS yet)
         self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, self.hash_alg);
@@ -811,7 +811,24 @@ impl Principal {
     /// this currently validates against current AS only. Full dual-layer
     /// chaining will be implemented when the pending commit flow is wired.
     fn verify_pre(&self, pre: &AuthState) -> Result<()> {
-        if self.auth_state.as_cad().as_bytes() != pre.as_cad().as_bytes() {
+        // Compare AuthState variants using the principal's hash algorithm
+        let current = self
+            .auth_state
+            .get(self.hash_alg)
+            .or_else(|| {
+                self.auth_state
+                    .0
+                    .variants()
+                    .values()
+                    .next()
+                    .map(AsRef::as_ref)
+            })
+            .expect("AuthState must have at least one variant");
+        let expected = pre
+            .get(self.hash_alg)
+            .or_else(|| pre.0.variants().values().next().map(AsRef::as_ref))
+            .expect("pre AuthState must have at least one variant");
+        if current != expected {
             return Err(Error::InvalidPrior);
         }
         Ok(())
@@ -893,7 +910,7 @@ impl Principal {
         self.ts = self.auth.commits.last().map(|c| c.ts().clone());
 
         // Recompute AS = H(sort(KS, TS?))
-        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, self.hash_alg);
+        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, &[self.hash_alg]);
 
         // Recompute PS = H(sort(AS, DS?)) - no DS yet
         self.ps = compute_ps(&self.auth_state, None, None, self.hash_alg);
@@ -948,7 +965,7 @@ mod tests {
         assert_eq!(principal.pr().as_cad().as_bytes(), key.tmb.as_bytes());
         assert_eq!(principal.ps().as_cad().as_bytes(), key.tmb.as_bytes());
         assert_eq!(
-            principal.auth_state().as_cad().as_bytes(),
+            principal.auth_state().get(principal.hash_alg()).unwrap(),
             key.tmb.as_bytes()
         );
         assert_eq!(
@@ -1016,19 +1033,28 @@ mod tests {
         use coz::Czd;
         use serde_json::json;
 
-        use crate::state::AuthState;
         use crate::transaction::{Transaction, TransactionKind};
 
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         // Create dummy raw CozJson for test transactions
+        let as_bytes = pre
+            .get(HashAlg::Sha256)
+            .or_else(|| {
+                pre.as_multihash()
+                    .variants()
+                    .values()
+                    .next()
+                    .map(AsRef::as_ref)
+            })
+            .expect("AuthState must have at least one variant");
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(pre.as_cad().as_bytes()),
+                "pre": Base64UrlUnpadded::encode_string(as_bytes),
                 "id": new_key.tmb.to_b64()
             }),
             sig: vec![0; 64],
@@ -1036,7 +1062,7 @@ mod tests {
 
         Transaction {
             kind: TransactionKind::KeyCreate {
-                pre: AuthState(pre.as_cad().clone()),
+                pre: pre.clone(),
                 id: new_key.tmb.clone(),
             },
             signer: signer.clone(),
@@ -1068,25 +1094,38 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let old_as = principal.auth_state().as_cad().as_bytes().to_vec();
+        let old_as = principal
+            .auth_state()
+            .get(principal.hash_alg())
+            .unwrap()
+            .to_vec();
         let pre = principal.auth_state().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal.apply_transaction(tx, Some(key2)).unwrap();
 
-        let new_as = principal.auth_state().as_cad().as_bytes().to_vec();
+        let new_as = principal
+            .auth_state()
+            .get(principal.hash_alg())
+            .unwrap()
+            .to_vec();
         // Auth state must change after adding key
         assert_ne!(old_as, new_as);
     }
 
     #[test]
     fn apply_key_add_pre_mismatch_fails() {
+        use crate::multihash::MultihashDigest;
+
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Wrong pre value
-        let wrong_pre = AuthState(coz::Cad::from_bytes(vec![0xFF; 32]));
+        let wrong_pre = AuthState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xFF; 32],
+        ));
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
 

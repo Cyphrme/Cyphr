@@ -142,10 +142,17 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
     };
 
     // Debug: show initial Principal state
-    eprintln!(
-        "  [load_principal] initial AS={}",
-        principal.auth_state().0.to_b64()
-    );
+    eprintln!("  [load_principal] initial AS={}", {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        principal
+            .auth_state()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default()
+    });
     for k in principal.active_keys() {
         eprintln!("  [load_principal] genesis_key tmb={}", k.tmb.to_b64());
     }
@@ -293,7 +300,17 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             eprintln!(
                 "  [load_principal] index={} current_AS={} czd={}",
                 index,
-                principal.auth_state().0.to_b64(),
+                {
+                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                    principal
+                        .auth_state()
+                        .as_multihash()
+                        .variants()
+                        .values()
+                        .next()
+                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .unwrap_or_default()
+                },
                 czd.to_b64()
             );
 
@@ -536,9 +553,15 @@ mod tests {
 
     #[test]
     fn checkpoint_empty_keys_fails() {
+        use cyphrpass::multihash::MultihashDigest;
+        use cyphrpass::state::HashAlg;
+
         let pr = PrincipalRoot::from_bytes(vec![0xAA; 32]);
         let checkpoint = Checkpoint {
-            auth_state: AuthState(coz::Cad::from_bytes(vec![0xBB; 32])),
+            auth_state: AuthState(MultihashDigest::from_single(
+                HashAlg::Sha256,
+                vec![0xBB; 32],
+            )),
             keys: vec![],
             attestor: None,
         };

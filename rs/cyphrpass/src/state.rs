@@ -62,13 +62,22 @@ impl TransactionState {
 /// Auth State (AS) - SPEC §7.5
 ///
 /// Authentication state: `H(sort(KS, TS?, RS?))` or promoted if only KS.
+///
+/// Now holds a [`MultihashDigest`] with one variant per active hash algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthState(pub Cad);
+pub struct AuthState(pub MultihashDigest);
 
 impl AuthState {
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the full multihash.
+    #[must_use]
+    pub fn as_multihash(&self) -> &MultihashDigest {
         &self.0
+    }
+
+    /// Get a specific algorithm variant as bytes.
+    #[must_use]
+    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.0.get(alg)
     }
 }
 
@@ -313,42 +322,47 @@ pub fn compute_ts(
 ///
 /// - Only KS, no TS/RS/nonce: AS = KS (implicit promotion)
 /// - Otherwise: AS = H(sort(KS, TS?, RS?, nonce?))
-///
-/// **Note:** Currently extracts the specified algorithm variant from KeyState.
-/// When AuthState becomes multihash, this function will produce all variants.
 pub fn compute_as(
     ks: &KeyState,
     ts: Option<&TransactionState>,
     // rs: Option<&RuleState>,  // Level 5, not yet implemented
     nonce: Option<&[u8]>,
-    alg: HashAlg,
+    algs: &[HashAlg],
 ) -> AuthState {
-    // Get KeyState variant for this algorithm, falling back to first available
-    let ks_bytes = ks
-        .get(alg)
-        .or_else(|| ks.0.variants().values().next().map(AsRef::as_ref))
-        .expect("KeyState must have at least one variant");
-
     // Implicit promotion: only KS, nothing else
+    // Clone the KeyState multihash directly
     if ts.is_none() && nonce.is_none() {
-        return AuthState(Cad::from_bytes(ks_bytes.to_vec()));
+        return AuthState(ks.0.clone());
     }
 
-    // Collect non-nil components
-    let mut components: Vec<&[u8]> = vec![ks_bytes];
-    if let Some(t) = ts {
-        // Get TS variant for this algorithm, falling back to first available
-        let ts_bytes = t
+    // Compute hash for each algorithm variant
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        // Get KS variant for this algorithm, falling back to first available
+        let ks_bytes = ks
             .get(alg)
-            .or_else(|| t.0.variants().values().next().map(AsRef::as_ref))
-            .expect("TransactionState must have at least one variant");
-        components.push(ts_bytes);
-    }
-    if let Some(n) = nonce {
-        components.push(n);
+            .or_else(|| ks.0.variants().values().next().map(AsRef::as_ref))
+            .expect("KeyState must have at least one variant");
+
+        // Collect non-nil components
+        let mut components: Vec<&[u8]> = vec![ks_bytes];
+        if let Some(t) = ts {
+            // Get TS variant for this algorithm, falling back to first available
+            let ts_bytes = t
+                .get(alg)
+                .or_else(|| t.0.variants().values().next().map(AsRef::as_ref))
+                .expect("TransactionState must have at least one variant");
+            components.push(ts_bytes);
+        }
+        if let Some(n) = nonce {
+            components.push(n);
+        }
+
+        let digest = hash_sorted_concat_bytes(alg, &components);
+        variants.insert(alg, digest.into_boxed_slice());
     }
 
-    AuthState(hash_sorted_concat(alg, &components))
+    AuthState(MultihashDigest::new(variants))
 }
 
 /// Compute Data State (SPEC §7.4).
@@ -380,18 +394,27 @@ pub fn compute_ds(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 ///
 /// - Only AS, no DS/nonce: PS = AS (implicit promotion)
 /// - Otherwise: PS = H(sort(AS, DS?, nonce?))
+///
+/// **Note:** Currently extracts the specified algorithm variant from AuthState.
+/// When PrincipalState becomes multihash, this function will produce all variants.
 pub fn compute_ps(
     auth_state: &AuthState,
     ds: Option<&DataState>,
     nonce: Option<&[u8]>,
     alg: HashAlg,
 ) -> PrincipalState {
+    // Get AuthState variant for this algorithm, falling back to first available
+    let as_bytes = auth_state
+        .get(alg)
+        .or_else(|| auth_state.0.variants().values().next().map(AsRef::as_ref))
+        .expect("AuthState must have at least one variant");
+
     // Implicit promotion: only AS, nothing else
     if ds.is_none() && nonce.is_none() {
-        return PrincipalState(auth_state.0.clone());
+        return PrincipalState(Cad::from_bytes(as_bytes.to_vec()));
     }
 
-    let mut components: Vec<&[u8]> = vec![auth_state.0.as_bytes()];
+    let mut components: Vec<&[u8]> = vec![as_bytes];
     if let Some(d) = ds {
         components.push(d.0.as_bytes());
     }
@@ -466,10 +489,13 @@ mod tests {
         // Only KS, no TS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
+        let auth_state = compute_as(&ks, None, None, &[HashAlg::Sha256]);
 
         // AS should equal the KS variant for this algorithm
-        assert_eq!(auth_state.0.as_bytes(), ks.get(HashAlg::Sha256).unwrap());
+        assert_eq!(
+            auth_state.get(HashAlg::Sha256).unwrap(),
+            ks.get(HashAlg::Sha256).unwrap()
+        );
     }
 
     #[test]
@@ -479,11 +505,12 @@ mod tests {
         let czd = Czd::from_bytes(vec![10, 20, 30]);
         let ts = compute_ts(&[&czd], None, &[HashAlg::Sha256]).unwrap();
 
-        let auth_state = compute_as(&ks, Some(&ts), None, HashAlg::Sha256);
+        let auth_state = compute_as(&ks, Some(&ts), None, &[HashAlg::Sha256]);
 
         // Should be hashed combination
-        assert_eq!(auth_state.0.as_bytes().len(), 32);
-        assert_ne!(auth_state.0.as_bytes(), ks.get(HashAlg::Sha256).unwrap());
+        let as_bytes = auth_state.get(HashAlg::Sha256).unwrap();
+        assert_eq!(as_bytes.len(), 32);
+        assert_ne!(as_bytes, ks.get(HashAlg::Sha256).unwrap());
     }
 
     #[test]
@@ -491,10 +518,10 @@ mod tests {
         // Only AS, no DS: PS = AS
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
+        let auth_state = compute_as(&ks, None, None, &[HashAlg::Sha256]);
         let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
 
-        assert_eq!(ps.0.as_bytes(), auth_state.0.as_bytes());
+        assert_eq!(ps.0.as_bytes(), auth_state.get(HashAlg::Sha256).unwrap());
     }
 
     #[test]
@@ -502,14 +529,15 @@ mod tests {
         // Level 1: PR = PS = AS = KS = tmb
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
+        let auth_state = compute_as(&ks, None, None, &[HashAlg::Sha256]);
         let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
         let pr = PrincipalRoot::from_initial(&ps);
 
         // All should be identical to tmb
         let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
+        let as_bytes = auth_state.get(HashAlg::Sha256).unwrap();
         assert_eq!(ks_bytes, tmb.as_bytes());
-        assert_eq!(auth_state.0.as_bytes(), tmb.as_bytes());
+        assert_eq!(as_bytes, tmb.as_bytes());
         assert_eq!(ps.0.as_bytes(), tmb.as_bytes());
         assert_eq!(pr.0.as_bytes(), tmb.as_bytes());
     }

@@ -306,7 +306,14 @@ impl<'a> Generator<'a> {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            let auth_state = principal.auth_state().as_cad().to_b64();
+            let auth_state = principal
+                .auth_state()
+                .as_multihash()
+                .variants()
+                .values()
+                .next()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .unwrap_or_default();
             let ps = principal.ps().as_cad().to_b64();
 
             commits.push(CommitEntry::new(vec![raw], ts, auth_state, ps));
@@ -434,7 +441,16 @@ impl<'a> Generator<'a> {
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = principal.auth_state().0.to_b64();
+                computed_pre = {
+                    principal
+                        .auth_state()
+                        .as_multihash()
+                        .variants()
+                        .values()
+                        .next()
+                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .unwrap_or_default()
+                };
                 &computed_pre
             };
 
@@ -506,7 +522,14 @@ impl<'a> Generator<'a> {
             let is_last_step = i == step_count - 1;
 
             // Capture pre before this step
-            let pre = principal.auth_state().0.to_b64();
+            let pre = principal
+                .auth_state()
+                .as_multihash()
+                .variants()
+                .values()
+                .next()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .unwrap_or_default();
 
             let (coz, sig_bytes, czd) = self
                 .build_golden_coz(&step.pay, &step.crypto, &test.name, Some(&pre))
@@ -607,7 +630,14 @@ impl<'a> Generator<'a> {
         })?;
 
         // Capture pre (auth state before transaction)
-        let pre = principal.auth_state().0.to_b64();
+        let pre = principal
+            .auth_state()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
 
         // Build and sign transaction coz message
         let (tx_coz, tx_sig_bytes, tx_czd) =
@@ -1092,8 +1122,15 @@ impl<'a> Generator<'a> {
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default()
         };
-        let auth_state = principal.auth_state().0.to_b64();
-        let ps = principal.ps().0.to_b64();
+        let auth_state = principal
+            .auth_state()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
+        let ps = principal.ps().as_cad().to_b64();
         let ts = principal.transactions().last().and({
             // Get TS if there are transactions
             // Note: Principal doesn't expose ts() directly, compute from transactions

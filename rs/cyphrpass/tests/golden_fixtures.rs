@@ -182,12 +182,16 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     }
 
     if let Some(ref auth_state) = expected.auth_state {
-        assert_eq!(
-            cad_to_b64(principal.auth_state().as_cad()),
-            *auth_state,
-            "{}: as mismatch",
-            test_name
-        );
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let actual_as = principal
+            .auth_state()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
+        assert_eq!(actual_as, *auth_state, "{}: as mismatch", test_name);
     }
 
     if let Some(ref ps) = expected.ps {

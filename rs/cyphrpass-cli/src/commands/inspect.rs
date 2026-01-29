@@ -55,7 +55,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
                 "pr": principal.pr().as_cad().to_b64(),
                 "ps": principal.ps().as_cad().to_b64(),
                 "ks": format_ks(&principal),
-                "as": principal.auth_state().as_cad().to_b64(),
+                "as": format_as(&principal),
                 "active_keys": active_keys,
                 "commit_count": principal.commits().count(),
             });
@@ -68,7 +68,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
             println!("  PR: {}", principal.pr().as_cad().to_b64());
             println!("  PS: {}", principal.ps().as_cad().to_b64());
             println!("  KS: {}", format_ks(&principal));
-            println!("  AS: {}", principal.auth_state().as_cad().to_b64());
+            println!("  AS: {}", format_as(&principal));
             println!();
 
             let active: Vec<_> = principal.active_keys().collect();
@@ -209,6 +209,23 @@ fn format_ks(principal: &cyphrpass::Principal) -> String {
 
     // Get the variant for the principal's hash algorithm
     ks.get(hash_alg)
+        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .unwrap_or_else(|| "<no variant>".to_string())
+}
+
+/// Format AuthState for display.
+///
+/// AuthState now holds a MultihashDigest; this extracts the variant for
+/// the principal's hash algorithm and encodes it as base64url for display.
+fn format_as(principal: &cyphrpass::Principal) -> String {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+
+    let auth_state = principal.auth_state();
+    let hash_alg = principal.hash_alg();
+
+    // Get the variant for the principal's hash algorithm
+    auth_state
+        .get(hash_alg)
         .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
         .unwrap_or_else(|| "<no variant>".to_string())
 }
