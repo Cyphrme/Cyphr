@@ -6,7 +6,6 @@
 use std::fs;
 use std::path::PathBuf;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphrpass::Principal;
 use cyphrpass::key::Key;
 use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};

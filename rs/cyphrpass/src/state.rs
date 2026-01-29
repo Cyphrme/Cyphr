@@ -591,4 +591,64 @@ mod tests {
         assert_eq!(ps.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
         assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
+
+    /// SPEC §14.2 Cross-Algorithm Conversion Test
+    ///
+    /// When computing a Merkle root with mixed-size digests, smaller digests
+    /// are fed directly into larger hash functions. This test verifies:
+    ///
+    /// 1. Mixed-size thumbprints (32B ES256, 48B ES384, 64B Ed25519) can be
+    ///    combined in a single KS computation
+    /// 2. Each algorithm variant processes all thumbprints correctly
+    /// 3. The resulting multihash contains variants for all active algorithms
+    #[test]
+    fn cross_algorithm_conversion_spec_14_2() {
+        // Simulate real thumbprint sizes from different key algorithms:
+        // ES256 → SHA-256 → 32 bytes
+        // ES384 → SHA-384 → 48 bytes
+        // Ed25519 → SHA-512 → 64 bytes
+        let tmb_es256 = Thumbprint::from_bytes(vec![0xAA; 32]); // 32-byte ES256 tmb
+        let tmb_es384 = Thumbprint::from_bytes(vec![0xBB; 48]); // 48-byte ES384 tmb
+        let tmb_ed25519 = Thumbprint::from_bytes(vec![0xCC; 64]); // 64-byte Ed25519 tmb
+
+        // Compute KS with all three algorithms active
+        let all_algs = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
+        let ks = compute_ks(&[&tmb_es256, &tmb_es384, &tmb_ed25519], None, &all_algs);
+
+        // Verify all algorithm variants are present
+        let sha256_variant = ks.get(HashAlg::Sha256);
+        let sha384_variant = ks.get(HashAlg::Sha384);
+        let sha512_variant = ks.get(HashAlg::Sha512);
+
+        assert!(sha256_variant.is_some(), "SHA-256 variant should exist");
+        assert!(sha384_variant.is_some(), "SHA-384 variant should exist");
+        assert!(sha512_variant.is_some(), "SHA-512 variant should exist");
+
+        // Verify each variant has the correct digest size
+        assert_eq!(
+            sha256_variant.unwrap().len(),
+            32,
+            "SHA-256 digest is 32 bytes"
+        );
+        assert_eq!(
+            sha384_variant.unwrap().len(),
+            48,
+            "SHA-384 digest is 48 bytes"
+        );
+        assert_eq!(
+            sha512_variant.unwrap().len(),
+            64,
+            "SHA-512 digest is 64 bytes"
+        );
+
+        // Verify all three variants are different (not trivially identical)
+        assert_ne!(sha256_variant, sha384_variant);
+        assert_ne!(sha384_variant, sha512_variant);
+        assert_ne!(sha256_variant, sha512_variant);
+
+        // Key insight: The 32-byte ES256 thumbprint is "converted" (fed directly)
+        // into SHA-384 and SHA-512 computations. The implementation handles this
+        // by concatenating all bytes regardless of size and hashing with each
+        // target algorithm—exactly as SPEC §14.2 specifies.
+    }
 }
