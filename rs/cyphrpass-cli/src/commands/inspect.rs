@@ -54,7 +54,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
             let output = serde_json::json!({
                 "pr": principal.pr().as_cad().to_b64(),
                 "ps": principal.ps().as_cad().to_b64(),
-                "ks": principal.key_state().as_cad().to_b64(),
+                "ks": format_ks(&principal),
                 "as": principal.auth_state().as_cad().to_b64(),
                 "active_keys": active_keys,
                 "commit_count": principal.commits().count(),
@@ -67,7 +67,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
             println!("State:");
             println!("  PR: {}", principal.pr().as_cad().to_b64());
             println!("  PS: {}", principal.ps().as_cad().to_b64());
-            println!("  KS: {}", principal.key_state().as_cad().to_b64());
+            println!("  KS: {}", format_ks(&principal));
             println!("  AS: {}", principal.auth_state().as_cad().to_b64());
             println!();
 
@@ -195,4 +195,20 @@ fn parse_principal_root(s: &str) -> Result<cyphrpass::PrincipalRoot, Box<dyn std
 fn decode_b64(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid base64url: {e}").into())
+}
+
+/// Format KeyState for display.
+///
+/// KeyState now holds a MultihashDigest; this extracts the first variant
+/// and encodes it as base64url for display.
+fn format_ks(principal: &cyphrpass::Principal) -> String {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+
+    let ks = principal.key_state();
+    let hash_alg = principal.hash_alg();
+
+    // Get the variant for the principal's hash algorithm
+    ks.get(hash_alg)
+        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .unwrap_or_else(|| "<no variant>".to_string())
 }

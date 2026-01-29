@@ -1076,7 +1076,13 @@ impl<'a> Generator<'a> {
         intent_expected: Option<&ExpectedAssertions>,
     ) -> GoldenExpected {
         // Compute state digests from principal
-        let ks = principal.key_state().0.to_b64();
+        let ks = {
+            let ks_state = principal.key_state();
+            ks_state
+                .get(principal.hash_alg())
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .unwrap_or_default()
+        };
         let auth_state = principal.auth_state().0.to_b64();
         let ps = principal.ps().0.to_b64();
         let ts = principal.transactions().last().and({

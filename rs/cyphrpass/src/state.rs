@@ -14,13 +14,22 @@ use coz::{Cad, Czd, Thumbprint};
 ///
 /// Digest of active key thumbprints.
 /// Single key with no nonce: KS = tmb (implicit promotion).
+///
+/// Now holds a [`MultihashDigest`] with one variant per active hash algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyState(pub Cad);
+pub struct KeyState(pub crate::multihash::MultihashDigest);
 
 impl KeyState {
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the full multihash.
+    #[must_use]
+    pub fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
+    }
+
+    /// Get a specific algorithm variant as bytes.
+    #[must_use]
+    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.0.get(alg)
     }
 }
 
@@ -163,12 +172,19 @@ impl HashAlg {
 /// 3. Concatenate sorted digests
 /// 4. Hash using specified algorithm
 fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
+    Cad::from_bytes(hash_sorted_concat_bytes(alg, components))
+}
+
+/// Compute `H(sort(components...))` returning raw bytes.
+///
+/// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
+fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();
 
     // Hash based on algorithm
-    let bytes = match alg {
+    match alg {
         HashAlg::Sha256 => {
             let mut h = Sha256::new();
             for c in sorted {
@@ -190,9 +206,7 @@ fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
             }
             h.finalize().to_vec()
         },
-    };
-
-    Cad::from_bytes(bytes)
+    }
 }
 
 // ============================================================================
@@ -201,12 +215,29 @@ fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
 
 /// Compute Key State (SPEC §7.2).
 ///
-/// - Single key, no nonce: KS = tmb (implicit promotion)
-/// - Otherwise: KS = H(sort(tmb₀, tmb₁, nonce?, ...))
-pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, alg: HashAlg) -> KeyState {
+/// - Single key, no nonce: KS = tmb (implicit promotion to single-variant multihash)
+/// - Otherwise: KS = H(sort(tmb₀, tmb₁, nonce?, ...)) for each algorithm
+///
+/// The `algs` slice specifies which hash algorithms to include in the multihash.
+/// For single-algorithm keysets, pass a single-element slice.
+pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, algs: &[HashAlg]) -> KeyState {
+    use crate::multihash::MultihashDigest;
+    use std::collections::BTreeMap;
+
+    debug_assert!(
+        !algs.is_empty(),
+        "compute_ks requires at least one algorithm"
+    );
+
     // Implicit promotion: single key, no nonce
+    // The thumbprint becomes the single-variant multihash
     if thumbprints.len() == 1 && nonce.is_none() {
-        return KeyState(Cad::from_bytes(thumbprints[0].as_bytes().to_vec()));
+        // Use the first algorithm for the promoted thumbprint
+        let alg = algs[0];
+        return KeyState(MultihashDigest::from_single(
+            alg,
+            thumbprints[0].as_bytes().to_vec(),
+        ));
     }
 
     // Collect components
@@ -215,7 +246,14 @@ pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, alg: HashAl
         components.push(n);
     }
 
-    KeyState(hash_sorted_concat(alg, &components))
+    // Compute hash for each algorithm variant
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        let digest = hash_sorted_concat_bytes(alg, &components);
+        variants.insert(alg, digest.into_boxed_slice());
+    }
+
+    KeyState(MultihashDigest::new(variants))
 }
 
 /// Compute Transaction State (SPEC §7.3).
@@ -247,6 +285,9 @@ pub fn compute_ts(czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> Option<T
 ///
 /// - Only KS, no TS/RS/nonce: AS = KS (implicit promotion)
 /// - Otherwise: AS = H(sort(KS, TS?, RS?, nonce?))
+///
+/// **Note:** Currently extracts the specified algorithm variant from KeyState.
+/// When AuthState becomes multihash, this function will produce all variants.
 pub fn compute_as(
     ks: &KeyState,
     ts: Option<&TransactionState>,
@@ -254,13 +295,19 @@ pub fn compute_as(
     nonce: Option<&[u8]>,
     alg: HashAlg,
 ) -> AuthState {
+    // Get KeyState variant for this algorithm, falling back to first available
+    let ks_bytes = ks
+        .get(alg)
+        .or_else(|| ks.0.variants().values().next().map(AsRef::as_ref))
+        .expect("KeyState must have at least one variant");
+
     // Implicit promotion: only KS, nothing else
     if ts.is_none() && nonce.is_none() {
-        return AuthState(ks.0.clone());
+        return AuthState(Cad::from_bytes(ks_bytes.to_vec()));
     }
 
     // Collect non-nil components
-    let mut components: Vec<&[u8]> = vec![ks.0.as_bytes()];
+    let mut components: Vec<&[u8]> = vec![ks_bytes];
     if let Some(t) = ts {
         components.push(t.0.as_bytes());
     }
@@ -332,10 +379,14 @@ mod tests {
 
     #[test]
     fn ks_single_key_promotion() {
-        // Single key: KS = tmb (no hashing)
+        // Single key: KS = tmb (no hashing), stored as single-variant multihash
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, HashAlg::Sha256);
-        assert_eq!(ks.0.as_bytes(), tmb.as_bytes());
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+
+        // Should have exactly one variant
+        assert_eq!(ks.0.len(), 1);
+        // The variant value should equal the thumbprint bytes
+        assert_eq!(ks.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
 
     #[test]
@@ -343,11 +394,12 @@ mod tests {
         // Multiple keys: KS = H(sort(tmb₀, tmb₁))
         let tmb1 = Thumbprint::from_bytes(vec![1, 2, 3]);
         let tmb2 = Thumbprint::from_bytes(vec![4, 5, 6]);
-        let ks = compute_ks(&[&tmb1, &tmb2], None, HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]);
 
-        // Should be hashed, not just concatenated
-        assert_eq!(ks.0.as_bytes().len(), 32); // SHA-256 output
-        assert_ne!(ks.0.as_bytes(), tmb1.as_bytes());
+        let digest = ks.get(HashAlg::Sha256).unwrap();
+        // Should be hashed SHA-256 output
+        assert_eq!(digest.len(), 32);
+        assert_ne!(digest, tmb1.as_bytes());
     }
 
     #[test]
@@ -355,10 +407,11 @@ mod tests {
         // Single key with nonce: still hashes (no promotion)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let nonce = vec![0xAA, 0xBB];
-        let ks = compute_ks(&[&tmb], Some(&nonce), HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb], Some(&nonce), &[HashAlg::Sha256]);
 
-        assert_eq!(ks.0.as_bytes().len(), 32);
-        assert_ne!(ks.0.as_bytes(), tmb.as_bytes());
+        let digest = ks.get(HashAlg::Sha256).unwrap();
+        assert_eq!(digest.len(), 32);
+        assert_ne!(digest, tmb.as_bytes());
     }
 
     #[test]
@@ -376,17 +429,19 @@ mod tests {
 
     #[test]
     fn as_promotion_from_ks() {
-        // Only KS, no TS: AS = KS
+        // Only KS, no TS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
-        assert_eq!(auth_state.0.as_bytes(), ks.0.as_bytes());
+
+        // AS should equal the KS variant for this algorithm
+        assert_eq!(auth_state.0.as_bytes(), ks.get(HashAlg::Sha256).unwrap());
     }
 
     #[test]
     fn as_with_ts_hashes() {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let czd = Czd::from_bytes(vec![10, 20, 30]);
         let ts = compute_ts(&[&czd], None, HashAlg::Sha256).unwrap();
 
@@ -394,14 +449,14 @@ mod tests {
 
         // Should be hashed combination
         assert_eq!(auth_state.0.as_bytes().len(), 32);
-        assert_ne!(auth_state.0.as_bytes(), ks.0.as_bytes());
+        assert_ne!(auth_state.0.as_bytes(), ks.get(HashAlg::Sha256).unwrap());
     }
 
     #[test]
     fn ps_promotion_from_as() {
         // Only AS, no DS: PS = AS
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
         let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
 
@@ -412,13 +467,14 @@ mod tests {
     fn full_promotion_chain() {
         // Level 1: PR = PS = AS = KS = tmb
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        let ks = compute_ks(&[&tmb], None, HashAlg::Sha256);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let auth_state = compute_as(&ks, None, None, HashAlg::Sha256);
         let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
         let pr = PrincipalRoot::from_initial(&ps);
 
         // All should be identical to tmb
-        assert_eq!(ks.0.as_bytes(), tmb.as_bytes());
+        let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
+        assert_eq!(ks_bytes, tmb.as_bytes());
         assert_eq!(auth_state.0.as_bytes(), tmb.as_bytes());
         assert_eq!(ps.0.as_bytes(), tmb.as_bytes());
         assert_eq!(pr.0.as_bytes(), tmb.as_bytes());

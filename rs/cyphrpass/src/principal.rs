@@ -124,7 +124,7 @@ impl Principal {
         let tmb_b64 = key.tmb.to_b64();
 
         // KS = tmb (single key promotes)
-        let ks = compute_ks(&[&key.tmb], None, hash_alg);
+        let ks = compute_ks(&[&key.tmb], None, &[hash_alg]);
         // AS = KS (no TS, promotes)
         let auth_state = compute_as(&ks, None, None, hash_alg);
         // PS = AS (no DS, promotes)
@@ -168,7 +168,7 @@ impl Principal {
 
         // Collect thumbprints for KS computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, hash_alg);
+        let ks = compute_ks(&thumbprints, None, &[hash_alg]);
 
         // AS = KS (no TS yet)
         let auth_state = compute_as(&ks, None, None, hash_alg);
@@ -227,7 +227,7 @@ impl Principal {
 
         // Compute KS from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, hash_alg);
+        let ks = compute_ks(&thumbprints, None, &[hash_alg]);
 
         // PS = AS (no DS at checkpoint load)
         let ps = compute_ps(&auth_state, None, None, hash_alg);
@@ -722,7 +722,7 @@ impl Principal {
 
         // 1. Recompute KS from current (post-mutation) key set
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, self.hash_alg);
+        self.ks = compute_ks(&thumbprints, None, &[self.hash_alg]);
 
         // 2. Compute TS for this commit's transaction(s)
         let czds = [vtx.czd()];
@@ -887,7 +887,7 @@ impl Principal {
     fn recompute_state(&mut self) {
         // Recompute KS from active keys
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, self.hash_alg);
+        self.ks = compute_ks(&thumbprints, None, &[self.hash_alg]);
 
         // TS is from the latest commit (per-commit TS, not cumulative)
         self.ts = self.auth.commits.last().map(|c| c.ts().clone());
@@ -952,7 +952,7 @@ mod tests {
             key.tmb.as_bytes()
         );
         assert_eq!(
-            principal.key_state().as_cad().as_bytes(),
+            principal.key_state().get(principal.hash_alg()).unwrap(),
             key.tmb.as_bytes()
         );
     }

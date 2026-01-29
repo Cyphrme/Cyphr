@@ -170,12 +170,15 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     }
 
     if let Some(ref ks) = expected.ks {
-        assert_eq!(
-            cad_to_b64(principal.key_state().as_cad()),
-            *ks,
-            "{}: ks mismatch",
-            test_name
-        );
+        let actual_ks = principal
+            .key_state()
+            .get(principal.hash_alg())
+            .map(|b| {
+                use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                Base64UrlUnpadded::encode_string(b)
+            })
+            .unwrap_or_default();
+        assert_eq!(actual_ks, *ks, "{}: ks mismatch", test_name);
     }
 
     if let Some(ref auth_state) = expected.auth_state {
