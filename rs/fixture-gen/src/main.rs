@@ -312,37 +312,10 @@ fn add_key_to_pool(pool_path: &Path, name: &str, alg: &str) {
         std::process::exit(1);
     }
 
-    // Generate key based on algorithm
-    let (pub_b64, prv_b64) = match alg {
-        "ES256" => {
-            let sk = coz::SigningKey::<coz::ES256>::generate();
-            (
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
-                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
-            )
-        },
-        "ES384" => {
-            let sk = coz::SigningKey::<coz::ES384>::generate();
-            (
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
-                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
-            )
-        },
-        "ES512" => {
-            let sk = coz::SigningKey::<coz::ES512>::generate();
-            (
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
-                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
-            )
-        },
-        "Ed25519" => {
-            let sk = coz::SigningKey::<coz::Ed25519>::generate();
-            (
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes()),
-                Base64UrlUnpadded::encode_string(&sk.private_key_bytes()),
-            )
-        },
-        _ => {
+    // Generate key using Alg enum for type-safe dispatch
+    let alg_enum = match coz::Alg::from_str(alg) {
+        Some(a) => a,
+        None => {
             eprintln!(
                 "✗ Unsupported algorithm '{}'. Use: ES256, ES384, ES512, Ed25519",
                 alg
@@ -350,6 +323,10 @@ fn add_key_to_pool(pool_path: &Path, name: &str, alg: &str) {
             std::process::exit(1);
         },
     };
+
+    let keypair = alg_enum.generate_keypair();
+    let pub_b64 = Base64UrlUnpadded::encode_string(&keypair.pub_bytes);
+    let prv_b64 = Base64UrlUnpadded::encode_string(&keypair.prv_bytes);
 
     // Create new key entry
     let new_key = test_fixtures::PoolKey {

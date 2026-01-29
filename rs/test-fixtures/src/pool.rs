@@ -87,61 +87,26 @@ impl PoolKey {
                 message: format!("key '{}': invalid base64url prv: {e}", self.name),
             })?;
 
-        // Derive public key based on algorithm
-        let derived_pub_b64 = match self.alg.as_str() {
-            "ES256" => {
-                let sk =
-                    coz::signing_key_from_bytes::<coz::ES256>(&prv_bytes).ok_or_else(|| {
-                        Error::PoolValidation {
-                            message: format!(
-                                "key '{}': failed to parse ES256 private key",
-                                self.name
-                            ),
-                        }
-                    })?;
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
-            },
-            "ES384" => {
-                let sk =
-                    coz::signing_key_from_bytes::<coz::ES384>(&prv_bytes).ok_or_else(|| {
-                        Error::PoolValidation {
-                            message: format!(
-                                "key '{}': failed to parse ES384 private key",
-                                self.name
-                            ),
-                        }
-                    })?;
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
-            },
-            "ES512" => {
-                let sk =
-                    coz::signing_key_from_bytes::<coz::ES512>(&prv_bytes).ok_or_else(|| {
-                        Error::PoolValidation {
-                            message: format!(
-                                "key '{}': failed to parse ES512 private key",
-                                self.name
-                            ),
-                        }
-                    })?;
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
-            },
-            "Ed25519" => {
-                let sk =
-                    coz::signing_key_from_bytes::<coz::Ed25519>(&prv_bytes).ok_or_else(|| {
-                        Error::PoolValidation {
-                            message: format!(
-                                "key '{}': failed to parse Ed25519 private key",
-                                self.name
-                            ),
-                        }
-                    })?;
-                Base64UrlUnpadded::encode_string(sk.verifying_key().public_key_bytes())
-            },
-            _ => {
+        // Derive public key using Alg enum for type-safe dispatch
+        let alg_enum = match coz::Alg::from_str(&self.alg) {
+            Some(a) => a,
+            None => {
                 // Unsupported algorithm - skip prv validation
                 return Ok(true);
             },
         };
+
+        let derived_pub_bytes =
+            alg_enum
+                .derive_public_key(&prv_bytes)
+                .ok_or_else(|| Error::PoolValidation {
+                    message: format!(
+                        "key '{}': failed to parse {} private key",
+                        self.name, self.alg
+                    ),
+                })?;
+
+        let derived_pub_b64 = Base64UrlUnpadded::encode_string(&derived_pub_bytes);
 
         Ok(derived_pub_b64 == self.pub_key)
     }
