@@ -108,7 +108,15 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
         }
 
         // Get state digests as base64url strings
-        let ts = commit.ts().as_cad().to_b64();
+        // Extract TS variant (use first available algorithm from multihash)
+        let ts = commit
+            .ts()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .expect("TransactionState must have at least one variant");
         let auth_state = commit.auth_state().as_cad().to_b64();
         let ps = commit.ps().as_cad().to_b64();
 

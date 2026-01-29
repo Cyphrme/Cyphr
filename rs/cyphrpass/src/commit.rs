@@ -149,7 +149,7 @@ impl PendingCommit {
             return None;
         }
         let czds: Vec<&coz::Czd> = self.transactions.iter().map(|t| t.czd()).collect();
-        compute_ts(&czds, None, self.hash_alg)
+        compute_ts(&czds, None, &[self.hash_alg])
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -176,7 +176,7 @@ impl PendingCommit {
 
         // Compute TS from all transaction czds
         let czds: Vec<&coz::Czd> = self.transactions.iter().map(|t| t.czd()).collect();
-        let ts = compute_ts(&czds, None, self.hash_alg)?;
+        let ts = compute_ts(&czds, None, &[self.hash_alg])?;
 
         Some(Commit::new(self.transactions, ts, auth_state, ps))
     }
@@ -265,7 +265,7 @@ mod tests {
         let ts = pending.compute_ts();
         assert!(ts.is_some());
         // TS should be 32 bytes (SHA256)
-        assert_eq!(ts.unwrap().as_cad().as_bytes().len(), 32);
+        assert_eq!(ts.unwrap().get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_state(), &auth_state);
         assert_eq!(commit.ps(), &ps);
-        assert_eq!(commit.ts().as_cad().as_bytes().len(), 32);
+        assert_eq!(commit.ts().get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
     #[test]
@@ -361,6 +361,6 @@ mod tests {
 
         // TS should be Merkle root of all 3 transaction czds
         let ts = commit.ts();
-        assert_eq!(ts.as_cad().as_bytes().len(), 32);
+        assert_eq!(ts.get(HashAlg::Sha256).unwrap().len(), 32);
     }
 }

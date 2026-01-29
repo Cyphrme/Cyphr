@@ -2,9 +2,13 @@
 //!
 //! Implements SPEC §7 state calculation semantics.
 
+use std::collections::BTreeMap;
+
 use coz::digest::Digest;
 use coz::sha2::{Sha256, Sha384, Sha512};
 use coz::{Cad, Czd, Thumbprint};
+
+use crate::multihash::MultihashDigest;
 
 // ============================================================================
 // State newtypes
@@ -36,13 +40,22 @@ impl KeyState {
 /// Transaction State (TS) - SPEC §7.3
 ///
 /// Digest of transaction `czd`s.
+///
+/// Now holds a [`MultihashDigest`] with one variant per active hash algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransactionState(pub Cad);
+pub struct TransactionState(pub crate::multihash::MultihashDigest);
 
 impl TransactionState {
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the full multihash.
+    #[must_use]
+    pub fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
+    }
+
+    /// Get a specific algorithm variant as bytes.
+    #[must_use]
+    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.0.get(alg)
     }
 }
 
@@ -261,15 +274,23 @@ pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, algs: &[Has
 /// - No transactions: TS = None
 /// - Single transaction, no nonce: TS = czd (implicit promotion)
 /// - Otherwise: TS = H(sort(czd₀, czd₁, nonce?, ...))
-pub fn compute_ts(czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> Option<TransactionState> {
+pub fn compute_ts(
+    czds: &[&Czd],
+    nonce: Option<&[u8]>,
+    algs: &[HashAlg],
+) -> Option<TransactionState> {
     if czds.is_empty() && nonce.is_none() {
         return None;
     }
 
     // Implicit promotion: single czd, no nonce
+    // Store the czd bytes as the digest for all algorithm variants
     if czds.len() == 1 && nonce.is_none() {
-        return Some(TransactionState(Cad::from_bytes(
-            czds[0].as_bytes().to_vec(),
+        let czd_bytes = czds[0].as_bytes();
+        return Some(TransactionState(MultihashDigest::from_single(
+            // Use first algorithm for single-variant multihash
+            algs.first().copied().unwrap_or(HashAlg::Sha256),
+            czd_bytes.to_vec(),
         )));
     }
 
@@ -278,7 +299,14 @@ pub fn compute_ts(czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> Option<T
         components.push(n);
     }
 
-    Some(TransactionState(hash_sorted_concat(alg, &components)))
+    // Compute hash for each algorithm variant
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        let digest = hash_sorted_concat_bytes(alg, &components);
+        variants.insert(alg, digest.into_boxed_slice());
+    }
+
+    Some(TransactionState(MultihashDigest::new(variants)))
 }
 
 /// Compute Auth State (SPEC §7.5).
@@ -309,7 +337,12 @@ pub fn compute_as(
     // Collect non-nil components
     let mut components: Vec<&[u8]> = vec![ks_bytes];
     if let Some(t) = ts {
-        components.push(t.0.as_bytes());
+        // Get TS variant for this algorithm, falling back to first available
+        let ts_bytes = t
+            .get(alg)
+            .or_else(|| t.0.variants().values().next().map(AsRef::as_ref))
+            .expect("TransactionState must have at least one variant");
+        components.push(ts_bytes);
     }
     if let Some(n) = nonce {
         components.push(n);
@@ -416,15 +449,16 @@ mod tests {
 
     #[test]
     fn ts_empty_is_none() {
-        let ts = compute_ts(&[], None, HashAlg::Sha256);
+        let ts = compute_ts(&[], None, &[HashAlg::Sha256]);
         assert!(ts.is_none());
     }
 
     #[test]
     fn ts_single_czd_promotion() {
         let czd = Czd::from_bytes(vec![10, 20, 30]);
-        let ts = compute_ts(&[&czd], None, HashAlg::Sha256);
-        assert_eq!(ts.unwrap().0.as_bytes(), czd.as_bytes());
+        let ts = compute_ts(&[&czd], None, &[HashAlg::Sha256]);
+        let ts_bytes = ts.as_ref().map(|t| t.get(HashAlg::Sha256).unwrap());
+        assert_eq!(ts_bytes.unwrap(), czd.as_bytes());
     }
 
     #[test]
@@ -443,7 +477,7 @@ mod tests {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let czd = Czd::from_bytes(vec![10, 20, 30]);
-        let ts = compute_ts(&[&czd], None, HashAlg::Sha256).unwrap();
+        let ts = compute_ts(&[&czd], None, &[HashAlg::Sha256]).unwrap();
 
         let auth_state = compute_as(&ks, Some(&ts), None, HashAlg::Sha256);
 

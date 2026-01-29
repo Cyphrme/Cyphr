@@ -726,7 +726,7 @@ impl Principal {
 
         // 2. Compute TS for this commit's transaction(s)
         let czds = [vtx.czd()];
-        let ts = compute_ts(&czds, None, self.hash_alg)
+        let ts = compute_ts(&czds, None, &[self.hash_alg])
             .expect("single transaction should always produce TS");
         self.ts = Some(ts.clone());
 

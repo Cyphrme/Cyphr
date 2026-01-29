@@ -295,7 +295,16 @@ impl<'a> Generator<'a> {
             // (actions don't change key state, only add data state)
             // Use last commit's ts if available, else we have no ts (genesis-only)
             let ts = last_commit
-                .map(|c| c.ts().as_cad().to_b64())
+                .map(|c| {
+                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                    c.ts()
+                        .as_multihash()
+                        .variants()
+                        .values()
+                        .next()
+                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default();
             let auth_state = principal.auth_state().as_cad().to_b64();
             let ps = principal.ps().as_cad().to_b64();
