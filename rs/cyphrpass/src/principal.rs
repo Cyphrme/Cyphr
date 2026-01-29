@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
     AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
-    compute_as, compute_ds, compute_ks, compute_ps,
+    compute_as, compute_ds, compute_ks, compute_ps, derive_hash_algs,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -96,6 +96,8 @@ pub struct Principal {
     data: DataLedger,
     /// Primary hash algorithm (from first key's alg).
     hash_alg: HashAlg,
+    /// Active hash algorithms derived from current active keys (SPEC §14).
+    active_algs: Vec<HashAlg>,
     /// Latest timestamp seen (SPEC §14.1).
     /// Used to reject timestamps in the past.
     latest_timestamp: i64,
@@ -123,12 +125,15 @@ impl Principal {
         let hash_alg = HashAlg::from_alg(&key.alg)?;
         let tmb_b64 = key.tmb.to_b64();
 
+        // Derive active algorithms from genesis key
+        let active_algs = vec![hash_alg];
+
         // KS = tmb (single key promotes)
-        let ks = compute_ks(&[&key.tmb], None, &[hash_alg]);
+        let ks = compute_ks(&[&key.tmb], None, &active_algs);
         // AS = KS (no TS, promotes)
-        let auth_state = compute_as(&ks, None, None, &[hash_alg]);
+        let auth_state = compute_as(&ks, None, None, &active_algs);
         // PS = AS (no DS, promotes)
-        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
+        let ps = compute_ps(&auth_state, None, None, &active_algs);
         // PR = first PS
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -148,6 +153,7 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
+            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
         })
@@ -166,14 +172,18 @@ impl Principal {
 
         let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
 
+        // Derive active algorithms from all keys (SPEC §14)
+        let key_refs: Vec<&Key> = keys.iter().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+
         // Collect thumbprints for KS computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, &[hash_alg]);
+        let ks = compute_ks(&thumbprints, None, &active_algs);
 
         // AS = KS (no TS yet)
-        let auth_state = compute_as(&ks, None, None, &[hash_alg]);
+        let auth_state = compute_as(&ks, None, None, &active_algs);
         // PS = AS (no DS)
-        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
+        let ps = compute_ps(&auth_state, None, None, &active_algs);
         // PR frozen at genesis
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -195,6 +205,7 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
+            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
         })
@@ -225,12 +236,16 @@ impl Principal {
 
         let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
 
+        // Derive active algorithms from checkpoint keys (SPEC §14)
+        let key_refs: Vec<&Key> = keys.iter().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+
         // Compute KS from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, &[hash_alg]);
+        let ks = compute_ks(&thumbprints, None, &active_algs);
 
         // PS = AS (no DS at checkpoint load)
-        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
+        let ps = compute_ps(&auth_state, None, None, &active_algs);
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -250,6 +265,7 @@ impl Principal {
             },
             data: DataLedger::default(),
             hash_alg,
+            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
         })
@@ -282,6 +298,11 @@ impl Principal {
     /// Get the hash algorithm used by this principal.
     pub fn hash_alg(&self) -> HashAlg {
         self.hash_alg
+    }
+
+    /// Get the active hash algorithms derived from current active keys (SPEC §14).
+    pub fn active_algs(&self) -> &[HashAlg] {
+        &self.active_algs
     }
 
     /// Get a key by thumbprint.
@@ -720,21 +741,25 @@ impl Principal {
     fn wrap_as_commit(&mut self, vtx: VerifiedTransaction) {
         use crate::state::{compute_as, compute_ks, compute_ps, compute_ts};
 
+        // Re-derive active algorithms from current (post-mutation) keyset (SPEC §14)
+        let key_refs: Vec<&Key> = self.auth.keys.values().collect();
+        self.active_algs = derive_hash_algs(&key_refs);
+
         // 1. Recompute KS from current (post-mutation) key set
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, &[self.hash_alg]);
+        self.ks = compute_ks(&thumbprints, None, &self.active_algs);
 
         // 2. Compute TS for this commit's transaction(s)
         let czds = [vtx.czd()];
-        let ts = compute_ts(&czds, None, &[self.hash_alg])
+        let ts = compute_ts(&czds, None, &self.active_algs)
             .expect("single transaction should always produce TS");
         self.ts = Some(ts.clone());
 
         // 3. Compute AS from updated KS and new TS
-        self.auth_state = compute_as(&self.ks, Some(&ts), None, &[self.hash_alg]);
+        self.auth_state = compute_as(&self.ks, Some(&ts), None, &self.active_algs);
 
         // 4. Compute PS from updated AS (no DS yet)
-        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &[self.hash_alg]);
+        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &self.active_algs);
 
         // 5. Create commit with CORRECT post-mutation state
         let commit = Commit::new(vec![vtx], ts, self.auth_state.clone(), self.ps.clone());
@@ -902,18 +927,18 @@ impl Principal {
 
     /// Recompute all state digests after mutation.
     fn recompute_state(&mut self) {
-        // Recompute KS from active keys
+        // Recompute KS from active keys using all active algorithms (SPEC §14)
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, &[self.hash_alg]);
+        self.ks = compute_ks(&thumbprints, None, &self.active_algs);
 
         // TS is from the latest commit (per-commit TS, not cumulative)
         self.ts = self.auth.commits.last().map(|c| c.ts().clone());
 
         // Recompute AS = H(sort(KS, TS?))
-        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, &[self.hash_alg]);
+        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, &self.active_algs);
 
         // Recompute PS = H(sort(AS, DS?)) - no DS yet
-        self.ps = compute_ps(&self.auth_state, None, None, &[self.hash_alg]);
+        self.ps = compute_ps(&self.auth_state, None, None, &self.active_algs);
 
         // PR never changes
     }

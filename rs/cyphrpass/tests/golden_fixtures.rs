@@ -186,34 +186,27 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let actual_as = principal
             .auth_state()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .get(principal.hash_alg())
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .unwrap_or_default();
         assert_eq!(actual_as, *auth_state, "{}: as mismatch", test_name);
     }
 
     if let Some(ref ps) = expected.ps {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let actual_ps = principal
             .ps()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .get(principal.hash_alg())
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .unwrap_or_default();
         assert_eq!(actual_ps, *ps, "{}: ps mismatch", test_name);
     }
 
     if let Some(ref pr) = expected.pr {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let actual_pr = principal
             .pr()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .get(principal.hash_alg())
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .unwrap_or_default();
         assert_eq!(actual_pr, *pr, "{}: pr mismatch", test_name);

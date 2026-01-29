@@ -198,6 +198,30 @@ impl HashAlg {
     }
 }
 
+/// Derive the set of hash algorithms from a keyset (SPEC §14).
+///
+/// For each unique key algorithm, returns the corresponding hash algorithm.
+/// The result is sorted for deterministic ordering.
+///
+/// # Example
+///
+/// ```ignore
+/// use cyphrpass::state::derive_hash_algs;
+/// // ES256 key -> [Sha256]
+/// // ES256 + ES384 keys -> [Sha256, Sha384]
+/// ```
+pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
+    use std::collections::BTreeSet;
+
+    let algs: BTreeSet<HashAlg> = keys
+        .iter()
+        .filter(|k| k.is_active())
+        .filter_map(|k| HashAlg::from_alg(&k.alg).ok())
+        .collect();
+
+    algs.into_iter().collect()
+}
+
 // ============================================================================
 // Core state computation algorithm (SPEC §7.1)
 // ============================================================================
