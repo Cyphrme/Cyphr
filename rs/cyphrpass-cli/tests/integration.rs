@@ -236,7 +236,7 @@ fn test_tx_list_after_transactions() {
     assert_eq!(tx_list["transaction_count"], 1);
     let txs = tx_list["transactions"].as_array().unwrap();
     assert_eq!(txs.len(), 1);
-    assert!(txs[0]["kind"].as_str().unwrap().contains("KeyCreate"));
+    assert!(txs[0]["kind"].as_str().unwrap().contains("key/create"));
 }
 
 #[test]
