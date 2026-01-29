@@ -87,7 +87,15 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         let principal = cyphrpass::Principal::implicit(key)?;
 
         // Verify PR matches
-        let computed_pr = principal.pr().as_cad().to_b64();
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let computed_pr = principal
+            .pr()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .expect("PrincipalRoot must have at least one variant");
         if computed_pr != identity {
             return Err(format!("PR mismatch: computed {} != {}", computed_pr, identity).into());
         }
@@ -130,7 +138,15 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Verify PR matches
-    let computed_pr = principal.pr().as_cad().to_b64();
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    let computed_pr = principal
+        .pr()
+        .as_multihash()
+        .variants()
+        .values()
+        .next()
+        .map(|b| Base64UrlUnpadded::encode_string(b))
+        .expect("PrincipalRoot must have at least one variant");
     if computed_pr != identity {
         return Err(format!(
             "PR mismatch: computed {} != expected {}",
@@ -147,7 +163,14 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         // but we handle it gracefully rather than panicking.
         return Ok(());
     };
-    let computed_ps = principal.ps().as_cad().to_b64();
+    let computed_ps = principal
+        .ps()
+        .as_multihash()
+        .variants()
+        .values()
+        .next()
+        .map(|b| Base64UrlUnpadded::encode_string(b))
+        .expect("PrincipalState must have at least one variant");
 
     if computed_ps != last_commit.ps {
         return Err(format!(

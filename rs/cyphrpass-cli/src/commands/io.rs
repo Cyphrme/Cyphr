@@ -85,7 +85,15 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
     // Check if identity already exists in storage
     let existing = store.get_commits(pr).unwrap_or_default();
     if !existing.is_empty() {
-        return Err(format!("identity {} already exists in storage", pr.0.to_b64()).into());
+        use base64ct::{Base64UrlUnpadded, Encoding};
+        let pr_b64 = pr
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .expect("PrincipalRoot must have at least one variant");
+        return Err(format!("identity {} already exists in storage", pr_b64).into());
     }
 
     // Store commits
@@ -95,8 +103,16 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
 
     match cli.output {
         OutputFormat::Json => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let pr_b64 = pr
+                .as_multihash()
+                .variants()
+                .values()
+                .next()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .expect("PrincipalRoot must have at least one variant");
             let result = serde_json::json!({
-                "identity": pr.0.to_b64(),
+                "identity": pr_b64,
                 "input": input.display().to_string(),
                 "commits": commits.len(),
                 "verified": true,
@@ -104,8 +120,16 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             println!("{}", serde_json::to_string_pretty(&result)?);
         },
         OutputFormat::Table => {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let pr_b64 = pr
+                .as_multihash()
+                .variants()
+                .values()
+                .next()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .expect("PrincipalRoot must have at least one variant");
             println!("Imported identity from {}", input.display());
-            println!("  identity: {}", pr.0.to_b64());
+            println!("  identity: {}", pr_b64);
             println!("  commits: {}", commits.len());
             println!("  verified: OK");
         },

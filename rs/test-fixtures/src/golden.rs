@@ -314,7 +314,14 @@ impl<'a> Generator<'a> {
                 .next()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
-            let ps = principal.ps().as_cad().to_b64();
+            let ps = principal
+                .ps()
+                .as_multihash()
+                .variants()
+                .values()
+                .next()
+                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .unwrap_or_default();
 
             commits.push(CommitEntry::new(vec![raw], ts, auth_state, ps));
         }
@@ -1130,7 +1137,14 @@ impl<'a> Generator<'a> {
             .next()
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .unwrap_or_default();
-        let ps = principal.ps().as_cad().to_b64();
+        let ps = principal
+            .ps()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
         let ts = principal.transactions().last().and({
             // Get TS if there are transactions
             // Note: Principal doesn't expose ts() directly, compute from transactions
@@ -1139,7 +1153,14 @@ impl<'a> Generator<'a> {
             None::<String>
         });
         let ds = principal.data_state().map(|d| d.0.to_b64());
-        let pr = principal.pr().0.to_b64();
+        let pr = principal
+            .pr()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();
 

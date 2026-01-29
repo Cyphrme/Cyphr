@@ -38,10 +38,14 @@ impl FileStore {
     /// Get the file path for a principal's entry log.
     fn path_for(&self, pr: &PrincipalRoot) -> PathBuf {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let filename = format!(
-            "{}.jsonl",
-            Base64UrlUnpadded::encode_string(pr.as_cad().as_bytes())
-        );
+        // Extract the first variant for the filename
+        let pr_bytes = pr
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .expect("PrincipalRoot must have at least one variant");
+        let filename = format!("{}.jsonl", Base64UrlUnpadded::encode_string(pr_bytes));
         self.base_dir.join(filename)
     }
 

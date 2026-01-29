@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphrpass::Principal;
 use cyphrpass::key::Key;
 use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
@@ -195,21 +196,27 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     }
 
     if let Some(ref ps) = expected.ps {
-        assert_eq!(
-            cad_to_b64(principal.ps().as_cad()),
-            *ps,
-            "{}: ps mismatch",
-            test_name
-        );
+        let actual_ps = principal
+            .ps()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
+        assert_eq!(actual_ps, *ps, "{}: ps mismatch", test_name);
     }
 
     if let Some(ref pr) = expected.pr {
-        assert_eq!(
-            cad_to_b64(principal.pr().as_cad()),
-            *pr,
-            "{}: pr mismatch",
-            test_name
-        );
+        let actual_pr = principal
+            .pr()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .unwrap_or_default();
+        assert_eq!(actual_pr, *pr, "{}: pr mismatch", test_name);
     }
 
     if let Some(ref ds) = expected.ds {

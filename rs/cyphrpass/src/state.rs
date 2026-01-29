@@ -98,12 +98,19 @@ impl DataState {
 ///
 /// Current top-level state: `H(sort(AS, DS?))` or promoted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrincipalState(pub Cad);
+pub struct PrincipalState(pub MultihashDigest);
 
 impl PrincipalState {
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the full multihash.
+    #[must_use]
+    pub fn as_multihash(&self) -> &MultihashDigest {
         &self.0
+    }
+
+    /// Get a specific algorithm variant as bytes.
+    #[must_use]
+    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.0.get(alg)
     }
 }
 
@@ -111,12 +118,13 @@ impl PrincipalState {
 ///
 /// The first PS ever computed. Permanent, never changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrincipalRoot(pub Cad);
+pub struct PrincipalRoot(pub MultihashDigest);
 
 impl PrincipalRoot {
     /// Create a PrincipalRoot from raw bytes (e.g., for testing).
+    /// Assumes SHA-256 algorithm for single-variant construction.
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self(Cad::from_bytes(bytes))
+        Self(MultihashDigest::from_single(HashAlg::Sha256, bytes))
     }
 
     /// Create PR from the initial principal state (at genesis).
@@ -124,9 +132,16 @@ impl PrincipalRoot {
         Self(ps.0.clone())
     }
 
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the full multihash.
+    #[must_use]
+    pub fn as_multihash(&self) -> &MultihashDigest {
         &self.0
+    }
+
+    /// Get a specific algorithm variant as bytes.
+    #[must_use]
+    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.0.get(alg)
     }
 }
 
@@ -393,36 +408,44 @@ pub fn compute_ds(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 /// Compute Principal State (SPEC §7.6).
 ///
 /// - Only AS, no DS/nonce: PS = AS (implicit promotion)
-/// - Otherwise: PS = H(sort(AS, DS?, nonce?))
+/// - Otherwise: PS = H(sort(AS, DS?, nonce?)) for each algorithm
 ///
-/// **Note:** Currently extracts the specified algorithm variant from AuthState.
-/// When PrincipalState becomes multihash, this function will produce all variants.
+/// Accepts multiple hash algorithms and produces a variant for each.
 pub fn compute_ps(
     auth_state: &AuthState,
     ds: Option<&DataState>,
     nonce: Option<&[u8]>,
-    alg: HashAlg,
+    algs: &[HashAlg],
 ) -> PrincipalState {
-    // Get AuthState variant for this algorithm, falling back to first available
-    let as_bytes = auth_state
-        .get(alg)
-        .or_else(|| auth_state.0.variants().values().next().map(AsRef::as_ref))
-        .expect("AuthState must have at least one variant");
-
     // Implicit promotion: only AS, nothing else
+    // Clone the AuthState multihash directly
     if ds.is_none() && nonce.is_none() {
-        return PrincipalState(Cad::from_bytes(as_bytes.to_vec()));
+        return PrincipalState(auth_state.0.clone());
     }
 
-    let mut components: Vec<&[u8]> = vec![as_bytes];
-    if let Some(d) = ds {
-        components.push(d.0.as_bytes());
-    }
-    if let Some(n) = nonce {
-        components.push(n);
+    // Compute hash for each algorithm variant
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        // Get AS variant for this algorithm, falling back to first available
+        let as_bytes = auth_state
+            .get(alg)
+            .or_else(|| auth_state.0.variants().values().next().map(AsRef::as_ref))
+            .expect("AuthState must have at least one variant");
+
+        // Collect non-nil components
+        let mut components: Vec<&[u8]> = vec![as_bytes];
+        if let Some(d) = ds {
+            components.push(d.0.as_bytes());
+        }
+        if let Some(n) = nonce {
+            components.push(n);
+        }
+
+        let digest = hash_sorted_concat_bytes(alg, &components);
+        variants.insert(alg, digest.into_boxed_slice());
     }
 
-    PrincipalState(hash_sorted_concat(alg, &components))
+    PrincipalState(MultihashDigest::new(variants))
 }
 
 // ============================================================================
@@ -519,9 +542,12 @@ mod tests {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let auth_state = compute_as(&ks, None, None, &[HashAlg::Sha256]);
-        let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
+        let ps = compute_ps(&auth_state, None, None, &[HashAlg::Sha256]);
 
-        assert_eq!(ps.0.as_bytes(), auth_state.get(HashAlg::Sha256).unwrap());
+        assert_eq!(
+            ps.get(HashAlg::Sha256).unwrap(),
+            auth_state.get(HashAlg::Sha256).unwrap()
+        );
     }
 
     #[test]
@@ -530,7 +556,7 @@ mod tests {
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
         let auth_state = compute_as(&ks, None, None, &[HashAlg::Sha256]);
-        let ps = compute_ps(&auth_state, None, None, HashAlg::Sha256);
+        let ps = compute_ps(&auth_state, None, None, &[HashAlg::Sha256]);
         let pr = PrincipalRoot::from_initial(&ps);
 
         // All should be identical to tmb
@@ -538,7 +564,7 @@ mod tests {
         let as_bytes = auth_state.get(HashAlg::Sha256).unwrap();
         assert_eq!(ks_bytes, tmb.as_bytes());
         assert_eq!(as_bytes, tmb.as_bytes());
-        assert_eq!(ps.0.as_bytes(), tmb.as_bytes());
-        assert_eq!(pr.0.as_bytes(), tmb.as_bytes());
+        assert_eq!(ps.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
+        assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
 }

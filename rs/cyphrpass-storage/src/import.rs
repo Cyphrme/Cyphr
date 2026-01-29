@@ -527,7 +527,10 @@ mod tests {
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
         // Implicit genesis: PR = tmb
-        assert_eq!(principal.pr().as_cad().as_bytes(), expected_tmb.as_bytes());
+        assert_eq!(
+            principal.pr().get(principal.hash_alg()).unwrap(),
+            expected_tmb.as_bytes()
+        );
         assert_eq!(principal.active_key_count(), 1);
     }
 

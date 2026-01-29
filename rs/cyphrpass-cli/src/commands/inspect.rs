@@ -52,8 +52,8 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
                 .collect();
 
             let output = serde_json::json!({
-                "pr": principal.pr().as_cad().to_b64(),
-                "ps": principal.ps().as_cad().to_b64(),
+                "pr": format_pr(&principal),
+                "ps": format_ps(&principal),
                 "ks": format_ks(&principal),
                 "as": format_as(&principal),
                 "active_keys": active_keys,
@@ -62,11 +62,11 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
-            println!("Identity: {}", principal.pr().as_cad().to_b64());
+            println!("Identity: {}", format_pr(&principal));
             println!();
             println!("State:");
-            println!("  PR: {}", principal.pr().as_cad().to_b64());
-            println!("  PS: {}", principal.ps().as_cad().to_b64());
+            println!("  PR: {}", format_pr(&principal));
+            println!("  PS: {}", format_ps(&principal));
             println!("  KS: {}", format_ks(&principal));
             println!("  AS: {}", format_as(&principal));
             println!();
@@ -226,6 +226,38 @@ fn format_as(principal: &cyphrpass::Principal) -> String {
     // Get the variant for the principal's hash algorithm
     auth_state
         .get(hash_alg)
+        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .unwrap_or_else(|| "<no variant>".to_string())
+}
+
+/// Format PrincipalState for display.
+///
+/// PrincipalState now holds a MultihashDigest; this extracts the variant for
+/// the principal's hash algorithm and encodes it as base64url for display.
+fn format_ps(principal: &cyphrpass::Principal) -> String {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+
+    let ps = principal.ps();
+    let hash_alg = principal.hash_alg();
+
+    // Get the variant for the principal's hash algorithm
+    ps.get(hash_alg)
+        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .unwrap_or_else(|| "<no variant>".to_string())
+}
+
+/// Format PrincipalRoot for display.
+///
+/// PrincipalRoot now holds a MultihashDigest; this extracts the variant for
+/// the principal's hash algorithm and encodes it as base64url for display.
+fn format_pr(principal: &cyphrpass::Principal) -> String {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pr = principal.pr();
+    let hash_alg = principal.hash_alg();
+
+    // Get the variant for the principal's hash algorithm
+    pr.get(hash_alg)
         .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
         .unwrap_or_else(|| "<no variant>".to_string())
 }

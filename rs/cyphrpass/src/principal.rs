@@ -128,7 +128,7 @@ impl Principal {
         // AS = KS (no TS, promotes)
         let auth_state = compute_as(&ks, None, None, &[hash_alg]);
         // PS = AS (no DS, promotes)
-        let ps = compute_ps(&auth_state, None, None, hash_alg);
+        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
         // PR = first PS
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -173,7 +173,7 @@ impl Principal {
         // AS = KS (no TS yet)
         let auth_state = compute_as(&ks, None, None, &[hash_alg]);
         // PS = AS (no DS)
-        let ps = compute_ps(&auth_state, None, None, hash_alg);
+        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
         // PR frozen at genesis
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -230,7 +230,7 @@ impl Principal {
         let ks = compute_ks(&thumbprints, None, &[hash_alg]);
 
         // PS = AS (no DS at checkpoint load)
-        let ps = compute_ps(&auth_state, None, None, hash_alg);
+        let ps = compute_ps(&auth_state, None, None, &[hash_alg]);
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -487,7 +487,7 @@ impl Principal {
         self.ds = compute_ds(&czds, None, self.hash_alg);
 
         // Recompute PS = H(sort(AS, DS?))
-        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, self.hash_alg);
+        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &[self.hash_alg]);
 
         Ok(&self.ps)
     }
@@ -734,7 +734,7 @@ impl Principal {
         self.auth_state = compute_as(&self.ks, Some(&ts), None, &[self.hash_alg]);
 
         // 4. Compute PS from updated AS (no DS yet)
-        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, self.hash_alg);
+        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &[self.hash_alg]);
 
         // 5. Create commit with CORRECT post-mutation state
         let commit = Commit::new(vec![vtx], ts, self.auth_state.clone(), self.ps.clone());
@@ -913,7 +913,7 @@ impl Principal {
         self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, &[self.hash_alg]);
 
         // Recompute PS = H(sort(AS, DS?)) - no DS yet
-        self.ps = compute_ps(&self.auth_state, None, None, self.hash_alg);
+        self.ps = compute_ps(&self.auth_state, None, None, &[self.hash_alg]);
 
         // PR never changes
     }
@@ -962,8 +962,14 @@ mod tests {
         let principal = Principal::implicit(key.clone()).unwrap();
 
         // Level 1: PR = PS = AS = KS = tmb
-        assert_eq!(principal.pr().as_cad().as_bytes(), key.tmb.as_bytes());
-        assert_eq!(principal.ps().as_cad().as_bytes(), key.tmb.as_bytes());
+        assert_eq!(
+            principal.pr().get(principal.hash_alg()).unwrap(),
+            key.tmb.as_bytes()
+        );
+        assert_eq!(
+            principal.ps().get(principal.hash_alg()).unwrap(),
+            key.tmb.as_bytes()
+        );
         assert_eq!(
             principal.auth_state().get(principal.hash_alg()).unwrap(),
             key.tmb.as_bytes()
@@ -992,8 +998,14 @@ mod tests {
         let principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
         // PR should NOT equal either single tmb (it's a hash)
-        assert_ne!(principal.pr().as_cad().as_bytes(), key1.tmb.as_bytes());
-        assert_ne!(principal.pr().as_cad().as_bytes(), key2.tmb.as_bytes());
+        assert_ne!(
+            principal.pr().get(principal.hash_alg()).unwrap(),
+            key1.tmb.as_bytes()
+        );
+        assert_ne!(
+            principal.pr().get(principal.hash_alg()).unwrap(),
+            key2.tmb.as_bytes()
+        );
 
         // Should have 2 active keys
         assert_eq!(principal.active_key_count(), 2);
@@ -1016,8 +1028,8 @@ mod tests {
         let principal = Principal::implicit(key).unwrap();
 
         // PR should be the same as PS at genesis
-        let pr_bytes = principal.pr().as_cad().as_bytes().to_vec();
-        let ps_bytes = principal.ps().as_cad().as_bytes().to_vec();
+        let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        let ps_bytes = principal.ps().get(principal.hash_alg()).unwrap().to_vec();
         assert_eq!(pr_bytes, ps_bytes);
     }
 
@@ -1138,14 +1150,14 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pr_before = principal.pr().as_cad().as_bytes().to_vec();
+        let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
         let pre = principal.auth_state().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal.apply_transaction(tx, Some(key2)).unwrap();
 
-        let pr_after = principal.pr().as_cad().as_bytes().to_vec();
+        let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
         // PR is permanent, never changes
         assert_eq!(pr_before, pr_after);
     }
@@ -1195,12 +1207,12 @@ mod tests {
         let key = make_test_key(0xBB);
         let mut principal = Principal::implicit(key.clone()).unwrap();
 
-        let ps_before = principal.ps().as_cad().as_bytes().to_vec();
+        let ps_before = principal.ps().get(principal.hash_alg()).unwrap().to_vec();
 
         let action = make_test_action(&key.tmb);
         principal.record_action(action).unwrap();
 
-        let ps_after = principal.ps().as_cad().as_bytes().to_vec();
+        let ps_after = principal.ps().get(principal.hash_alg()).unwrap().to_vec();
         // PS changes when DS is added
         assert_ne!(ps_before, ps_after);
     }

@@ -279,7 +279,10 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+        let ps = PrincipalState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xBB; 32],
+        ));
 
         let commit = pending.finalize(auth_state.clone(), ps.clone());
         assert!(commit.is_some());
@@ -300,7 +303,10 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+        let ps = PrincipalState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xBB; 32],
+        ));
 
         let result = pending.finalize(auth_state, ps);
         assert!(
@@ -317,7 +323,10 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+        let ps = PrincipalState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xBB; 32],
+        ));
 
         let result = pending.finalize(auth_state, ps);
         assert!(result.is_none(), "should fail when empty");
@@ -346,7 +355,10 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+        let ps = PrincipalState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xBB; 32],
+        ));
 
         let commit = pending.finalize(auth_state.clone(), ps.clone()).unwrap();
 
@@ -370,7 +382,10 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let ps = PrincipalState(coz::Cad::from_bytes(vec![0xBB; 32]));
+        let ps = PrincipalState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xBB; 32],
+        ));
 
         let commit = pending.finalize(auth_state, ps).unwrap();
         assert_eq!(commit.len(), 3);

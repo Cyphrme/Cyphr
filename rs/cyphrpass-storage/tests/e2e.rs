@@ -573,8 +573,8 @@ fn e2e_checkpoint_load() {
 
     // Verify PR matches
     assert_eq!(
-        loaded.pr().as_cad().as_bytes(),
-        pr.as_cad().as_bytes(),
+        loaded.pr().get(loaded.hash_alg()).unwrap(),
+        pr.get(cyphrpass::HashAlg::Sha256).unwrap(),
         "checkpoint_matches_pr: PR mismatch"
     );
 

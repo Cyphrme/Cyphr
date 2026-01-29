@@ -125,7 +125,14 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
             .next()
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .expect("AuthState must have at least one variant");
-        let ps = commit.ps().as_cad().to_b64();
+        let ps = commit
+            .ps()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .expect("PrincipalState must have at least one variant");
 
         commit_entries.push(CommitEntry::new(txs, ts, auth_state, ps));
     }

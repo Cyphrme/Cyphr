@@ -53,7 +53,17 @@ pub fn run(
     };
 
     // Get PR for output
-    let pr = principal.pr().as_cad().to_b64();
+    let pr = {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        principal
+            .pr()
+            .as_multihash()
+            .variants()
+            .values()
+            .next()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .expect("PrincipalRoot must have at least one variant")
+    };
 
     // Store the identity
     let store = parse_store(&cli.store)?;
