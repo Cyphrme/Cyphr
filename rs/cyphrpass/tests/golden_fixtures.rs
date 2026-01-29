@@ -186,7 +186,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         let actual_as = principal
             .auth_state()
             .get(principal.hash_alg())
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         assert_eq!(actual_as, *auth_state, "{}: as mismatch", test_name);
     }
@@ -196,7 +196,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         let actual_ps = principal
             .ps()
             .get(principal.hash_alg())
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         assert_eq!(actual_ps, *ps, "{}: ps mismatch", test_name);
     }
@@ -206,7 +206,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         let actual_pr = principal
             .pr()
             .get(principal.hash_alg())
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         assert_eq!(actual_pr, *pr, "{}: pr mismatch", test_name);
     }

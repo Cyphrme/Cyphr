@@ -124,10 +124,7 @@ fn add(
     let pr = parse_principal_root(identity)?;
 
     // Load current principal state
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![],
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
     let is_implicit_genesis = keystore.get(identity).is_ok();
@@ -182,7 +179,7 @@ fn add(
                     .next()
                     .map(AsRef::as_ref)
             })
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .expect("AuthState must have at least one variant")
     };
 
@@ -258,10 +255,7 @@ fn revoke(
     let pr = parse_principal_root(identity)?;
 
     // Load current principal state
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![],
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
     let is_implicit_genesis = keystore.get(identity).is_ok();
@@ -300,7 +294,7 @@ fn revoke(
                     .next()
                     .map(AsRef::as_ref)
             })
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .expect("AuthState must have at least one variant")
     };
 
@@ -419,10 +413,7 @@ fn list_identity(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Er
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
 
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![],
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
     let is_implicit_genesis = keystore.get(identity).is_ok();

@@ -1126,7 +1126,7 @@ impl<'a> Generator<'a> {
             let ks_state = principal.key_state();
             ks_state
                 .get(principal.hash_alg())
-                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default()
         };
         let auth_state = principal

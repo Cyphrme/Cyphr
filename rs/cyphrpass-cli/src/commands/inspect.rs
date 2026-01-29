@@ -13,10 +13,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
     let pr = parse_principal_root(identity)?;
 
     // Try to load commits from store
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![], // No file exists yet
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     // Check if identity is in keystore (implicit genesis indicator)
     let is_implicit_genesis = keystore.get(identity).is_ok();
@@ -209,7 +206,7 @@ fn format_ks(principal: &cyphrpass::Principal) -> String {
 
     // Get the variant for the principal's hash algorithm
     ks.get(hash_alg)
-        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
@@ -226,7 +223,7 @@ fn format_as(principal: &cyphrpass::Principal) -> String {
     // Get the variant for the principal's hash algorithm
     auth_state
         .get(hash_alg)
-        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
@@ -242,7 +239,7 @@ fn format_ps(principal: &cyphrpass::Principal) -> String {
 
     // Get the variant for the principal's hash algorithm
     ps.get(hash_alg)
-        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
@@ -258,6 +255,6 @@ fn format_pr(principal: &cyphrpass::Principal) -> String {
 
     // Get the variant for the principal's hash algorithm
     pr.get(hash_alg)
-        .map(|bytes| Base64UrlUnpadded::encode_string(bytes))
+        .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }

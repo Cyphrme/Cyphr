@@ -75,10 +75,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     let pr = parse_principal_root(identity)?;
 
     // Load commits from store
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![],
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
@@ -214,10 +211,7 @@ fn load_identity(
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let pr = parse_principal_root(identity)?;
 
-    let commits = match store.get_commits(&pr) {
-        Ok(c) => c,
-        Err(_) => vec![],
-    };
+    let commits = store.get_commits(&pr).unwrap_or_default();
 
     // Check if identity is in keystore (implicit genesis indicator)
     let is_implicit_genesis = keystore.get(identity).is_ok();
