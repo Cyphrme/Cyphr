@@ -146,56 +146,23 @@ impl PrincipalRoot {
 }
 
 // ============================================================================
-// Hash algorithm dispatch
+// Hash algorithm dispatch (re-export from coz)
 // ============================================================================
 
-/// Hash algorithm for state computation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HashAlg {
-    /// SHA-256 (ES256)
-    Sha256,
-    /// SHA-384 (ES384)
-    Sha384,
-    /// SHA-512 (ES512, Ed25519)
-    Sha512,
-}
+// Re-export HashAlg from coz - single source of truth for algorithm mapping
+pub use coz::HashAlg;
 
-impl HashAlg {
-    /// Get hash algorithm from signing algorithm name.
-    ///
-    /// # Errors
-    ///
-    /// Returns `UnsupportedAlgorithm` if the algorithm is not recognized.
-    pub fn from_alg(alg: &str) -> crate::error::Result<Self> {
-        match alg {
-            "ES256" => Ok(Self::Sha256),
-            "ES384" => Ok(Self::Sha384),
-            "ES512" | "Ed25519" => Ok(Self::Sha512),
-            _ => Err(crate::error::Error::UnsupportedAlgorithm(alg.to_string())),
-        }
-    }
-
-    /// Get hash algorithm from Coz signing algorithm.
-    ///
-    /// This is the infallible variant using the type-safe `coz::Alg` enum.
-    #[must_use]
-    pub const fn from_coz_alg(alg: coz::Alg) -> Self {
-        match alg {
-            coz::Alg::ES256 => Self::Sha256,
-            coz::Alg::ES384 => Self::Sha384,
-            coz::Alg::ES512 | coz::Alg::Ed25519 => Self::Sha512,
-        }
-    }
-
-    /// Get digest size in bytes.
-    #[must_use]
-    pub const fn digest_size(self) -> usize {
-        match self {
-            Self::Sha256 => 32,
-            Self::Sha384 => 48,
-            Self::Sha512 => 64,
-        }
-    }
+/// Get hash algorithm from signing algorithm name (string).
+///
+/// Prefer `coz::Alg::from_str(s).map(|a| a.hash_alg())` when possible.
+///
+/// # Errors
+///
+/// Returns `UnsupportedAlgorithm` if the algorithm is not recognized.
+pub fn hash_alg_from_str(alg: &str) -> crate::error::Result<HashAlg> {
+    coz::Alg::from_str(alg)
+        .map(coz::Alg::hash_alg)
+        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(alg.to_string()))
 }
 
 /// Derive the set of hash algorithms from a keyset (SPEC §14).
@@ -216,7 +183,7 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
     let algs: BTreeSet<HashAlg> = keys
         .iter()
         .filter(|k| k.is_active())
-        .filter_map(|k| HashAlg::from_alg(&k.alg).ok())
+        .filter_map(|k| hash_alg_from_str(&k.alg).ok())
         .collect();
 
     algs.into_iter().collect()

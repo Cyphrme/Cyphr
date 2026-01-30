@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
     AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
-    compute_as, compute_ds, compute_ks, compute_ps, derive_hash_algs,
+    compute_as, compute_ds, compute_ks, compute_ps, derive_hash_algs, hash_alg_from_str,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -122,7 +122,7 @@ impl Principal {
     ///
     /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
     pub fn implicit(key: Key) -> Result<Self> {
-        let hash_alg = HashAlg::from_alg(&key.alg)?;
+        let hash_alg = hash_alg_from_str(&key.alg)?;
         let tmb_b64 = key.tmb.to_b64();
 
         // Derive active algorithms from genesis key
@@ -170,7 +170,7 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
+        let hash_alg = hash_alg_from_str(&keys[0].alg)?;
 
         // Derive active algorithms from all keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
@@ -234,7 +234,7 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        let hash_alg = HashAlg::from_alg(&keys[0].alg)?;
+        let hash_alg = hash_alg_from_str(&keys[0].alg)?;
 
         // Derive active algorithms from checkpoint keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
