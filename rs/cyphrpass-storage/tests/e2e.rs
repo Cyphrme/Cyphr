@@ -36,6 +36,16 @@ fn e2e_intents_dir() -> PathBuf {
     tests_dir().join("e2e")
 }
 
+fn intents_dir() -> PathBuf {
+    tests_dir().join("intents")
+}
+
+/// Load intents from tests/intents/ directory.
+fn load_intents(filename: &str) -> Intent {
+    let path = intents_dir().join(filename);
+    Intent::load(&path).unwrap_or_else(|e| panic!("failed to load {:?}: {}", path, e))
+}
+
 #[allow(dead_code)]
 fn load_pool() -> Pool {
     let path = tests_dir().join("keys").join("pool.toml");
@@ -783,5 +793,160 @@ fn e2e_dynamic_edge_cases() {
 
     for test in &intent.test {
         run_e2e_round_trip(&pool, test);
+    }
+}
+
+// ============================================================================
+// Multihash Coherence Tests (SPEC §14)
+// ============================================================================
+
+/// Multihash round-trip coherence test.
+///
+/// Verifies that after serialization and reimport:
+/// 1. All expected hash algorithm variants are present
+/// 2. Each variant matches independently recomputed values
+///
+/// This proves the round-trip preserves information needed for deterministic
+/// state derivation across all supported algorithms.
+#[test]
+fn e2e_multihash_round_trip() {
+    use cyphrpass::state::{compute_as, compute_ks, compute_ps};
+
+    let pool = load_pool();
+    let intent = load_intents("algorithm_diversity.toml");
+
+    for test in &intent.test {
+        eprintln!("  Testing multihash coherence: {}", test.name);
+
+        // Generate fixture at runtime
+        let generator = Generator::new(&pool);
+        let golden = generator
+            .generate_test(test)
+            .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
+
+        let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
+        let commits = golden.commits.as_ref().expect("missing commits");
+
+        if commits.is_empty() {
+            continue;
+        }
+
+        let genesis = make_genesis(genesis_keys);
+        let commit_vec = make_commits(commits);
+
+        // --- Step 1: Load principal from serialized commits ---
+        let principal = load_principal_from_commits(genesis, &commit_vec)
+            .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
+
+        // --- Step 2: Verify active_algs contains expected algorithms ---
+        let active_algs = principal.active_algs();
+        assert!(
+            !active_algs.is_empty(),
+            "{}: active_algs should not be empty",
+            test.name
+        );
+
+        eprintln!(
+            "    active_algs: {:?} ({} variants)",
+            active_algs,
+            active_algs.len()
+        );
+
+        // For mixed-algorithm principals, we expect multiple algorithms
+        // (e.g., Ed25519+ES256 → Sha512 + Sha256)
+        if test.name.contains("adds_es256") {
+            assert!(
+                active_algs.len() >= 2,
+                "{}: expected multiple algorithms for mixed-key principal, got {:?}",
+                test.name,
+                active_algs
+            );
+        }
+
+        // --- Step 3: Verify each variant is coherent (recomputable) ---
+        // Get thumbprints from current keyset
+        let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
+
+        // Recompute KS with all active algorithms
+        let recomputed_ks = compute_ks(
+            &thumbprints.iter().map(|t| *t).collect::<Vec<_>>(),
+            None,
+            active_algs,
+        );
+
+        // Verify each algorithm variant matches
+        for &alg in active_algs {
+            // KS coherence
+            let principal_ks = principal.key_state().get(alg);
+            let recomputed_ks_variant = recomputed_ks.get(alg);
+
+            assert_eq!(
+                principal_ks, recomputed_ks_variant,
+                "{}: KS variant {:?} mismatch - reimported != recomputed",
+                test.name, alg
+            );
+
+            // Verify AS variant exists
+            let principal_as = principal.auth_state().get(alg);
+            assert!(
+                principal_as.is_some(),
+                "{}: AS variant {:?} should exist",
+                test.name,
+                alg
+            );
+
+            // Verify PS variant exists
+            let principal_ps = principal.ps().get(alg);
+            assert!(
+                principal_ps.is_some(),
+                "{}: PS variant {:?} should exist",
+                test.name,
+                alg
+            );
+
+            eprintln!("    ✓ {:?} variant present (KS/AS/PS)", alg);
+        }
+
+        // PR is immutable from genesis - only has genesis algorithm variant (native-only)
+        // This is per design decision: PR is derived once at genesis, not recomputed
+        let genesis_alg = principal.hash_alg();
+        let principal_pr = principal.pr().get(genesis_alg);
+        assert!(
+            principal_pr.is_some(),
+            "{}: PR should have genesis algorithm {:?} variant",
+            test.name,
+            genesis_alg
+        );
+        eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
+
+        // --- Step 4: Full AS/PS recomputation verification ---
+        // Recompute AS from KS + TS
+        let ts = principal.current_ts();
+        let recomputed_as = compute_as(&recomputed_ks, ts, None, active_algs);
+
+        for &alg in active_algs {
+            assert_eq!(
+                principal.auth_state().get(alg),
+                recomputed_as.get(alg),
+                "{}: AS variant {:?} mismatch after recomputation",
+                test.name,
+                alg
+            );
+        }
+
+        // Recompute PS from AS
+        let recomputed_ps = compute_ps(&recomputed_as, principal.data_state(), None, active_algs);
+
+        for &alg in active_algs {
+            assert_eq!(
+                principal.ps().get(alg),
+                recomputed_ps.get(alg),
+                "{}: PS variant {:?} mismatch after recomputation",
+                test.name,
+                alg
+            );
+        }
+
+        eprintln!("  ✓ {} multihash coherence verified", test.name);
     }
 }
