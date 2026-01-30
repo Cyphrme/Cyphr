@@ -36,16 +36,6 @@ fn e2e_intents_dir() -> PathBuf {
     tests_dir().join("e2e")
 }
 
-fn intents_dir() -> PathBuf {
-    tests_dir().join("intents")
-}
-
-/// Load intents from tests/intents/ directory.
-fn load_intents(filename: &str) -> Intent {
-    let path = intents_dir().join(filename);
-    Intent::load(&path).unwrap_or_else(|e| panic!("failed to load {:?}: {}", path, e))
-}
-
 #[allow(dead_code)]
 fn load_pool() -> Pool {
     let path = tests_dir().join("keys").join("pool.toml");
@@ -813,7 +803,7 @@ fn e2e_multihash_round_trip() {
     use cyphrpass::state::{compute_as, compute_ks, compute_ps};
 
     let pool = load_pool();
-    let intent = load_intents("algorithm_diversity.toml");
+    let intent = load_e2e_intents("multihash_coherence.toml");
 
     for test in &intent.test {
         eprintln!("  Testing multihash coherence: {}", test.name);

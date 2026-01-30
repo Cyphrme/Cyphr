@@ -1,0 +1,45 @@
+# Multihash Coherence Tests (SPEC §14)
+#
+# These tests verify that after serialization and reimport, multi-algorithm
+# principals have coherent state derivation. All implementations MUST pass
+# these tests to ensure multihash round-trip correctness.
+#
+# Verification requirements:
+# 1. active_algs contains expected hash algorithms for the mixed keyset
+# 2. KS/AS/PS have variants for ALL active algorithms
+# 3. PR has only the genesis algorithm variant (native-only)
+# 4. Recomputed state values match reimported values
+
+# Test 1: ES384 genesis + ES256 added key → [Sha256, Sha384] active
+[[test]]
+name      = "multihash_es384_plus_es256"
+principal = ["diana_es384"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/create"
+
+[test.crypto]
+signer = "diana_es384"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
+
+# Test 2: Ed25519 genesis + ES256 added key → [Sha256, Sha512] active
+[[test]]
+name      = "multihash_ed25519_plus_es256"
+principal = ["eve_ed25519"]
+
+[test.pay]
+now = 1700000000
+typ = "cyphr.me/key/create"
+
+[test.crypto]
+signer = "eve_ed25519"
+target = "key_a"
+
+[test.expected]
+key_count = 2
+level     = 3
