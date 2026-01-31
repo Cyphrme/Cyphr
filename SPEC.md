@@ -19,6 +19,7 @@ protocol built on cryptographic Merkle trees. It enables:
 - Authenticated Atomic Actions (AAA) — individually signed, independently
   verifiable user actions.
 - Cryptographic primitive agnosticism via the Coz JSON specification.
+- Data Provenance
 
 Cyphrpass provides the authentication layer for the Internet. 
 
@@ -373,7 +374,7 @@ Transactions mutate the AS and form a chain via the `pre` field:
 {
   pay: {
     alg: "ES256",
-    now: 1628181264,
+    now: 1623132000,
     tmb: "<signing key tmb>", // Existing key
     typ: "<authority>/key/create",
     pre: "<previous AS>",
@@ -505,10 +506,9 @@ A principal is created (genesis) in one of two ways, implicit or explicit genesi
   must contain `pre`, which is a reference to the prior principal state.
 
 **`typ`**: `<authority>/key/create`
-- `id`: the Auth State bundle, in this case Key State.  
+- `id`: the Auth State (AS), in this case Key State (KS).  
 
 **`typ`**: `<authority>/cyphrpass/principal/create`
-
 
 Outside of the cozies is `key`, which is the public key material.  Note that it
 is unsigned since it is outside of a coz, but the `tmb` is signed within the
@@ -520,7 +520,7 @@ coz.
     {
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key signing the transaction, which in this case is the genesis `tmb`
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key to add. 
@@ -530,7 +530,7 @@ coz.
         {
       "pay": {
         "alg": "ES256",
-        "now": 1736893000,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The AS to add.  In this case, AS == KS == `tmb`.
@@ -553,7 +553,8 @@ coz.
 - Key signs a `key/create` transaction.
 - That key then constructs the rest of the AS by adding other AS components.  In
   this case, just adding another key.
-- For all cases, `AS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))`  TS is omitted since there are no prior transactions.
+- For all cases, `AS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))`  TS is omitted since
+  there are no prior transactions.
 - The principal is created by `principal/create`.
 - `pre` is omitted since there isn't a prior principal state until after the
   genesis `principal/create`.
@@ -565,7 +566,7 @@ coz.
     {
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -575,7 +576,7 @@ coz.
     },{
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
@@ -612,11 +613,11 @@ coz.
 }
 ```
 
-### Transaction Verbs
-
+### Transaction Verbs Required Fields
 **Required fields for `create`, `delete`, `update`, `replace` transactions**:
 - `id`: The identifier for the noun. For example, for `key/create`, `id` is the `tmb` for the key.  
 
+### Key
 #### 4.2.1 `key/create` — Add a Key (Level 3+)
 Adds a new key to KS for an existing principal.  
 
@@ -648,7 +649,6 @@ previously.  This construction is good practice.
 
 
 #### 4.2.2 `key/delete` — Remove a Key (Level 3+)
-
 Removes a key from KS without marking it as compromised. Unlike `key/revoke`,
 `key/delete` does not invalidate the key itself, it only removes it from KS,
 which is useful for graceful key retirement (e.g., decommissioning a device)
@@ -681,7 +681,7 @@ and later re-added (each re-addition starts a new active period).
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/delete",
     "pre": "<previous AS>",
@@ -703,7 +703,7 @@ For level 3+, `pre` is required.
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
     "typ": "cyphr.me/cyphrpass/key/replace",
     "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
@@ -718,57 +718,69 @@ For level 3+, `pre` is required.
 }
 ```
 
-#### 4.2.4 `key/revoke` — Revoke a Key (Self-Revoke, Level 1+)
-Self-revoke is a special case of `key/revoke` where the signing key is the same
-as the key being revoked. It is used to revoke a key that has been compromised.
-Self-revoke is built into the Coz standard. 
+#### 4.2.4 `key/revoke` — Revoke a Key (Level 1+)
+A revoke is a self-signed declaration that a key is compromised and should never
+be trusted again.  The key signing the revoke message must be the key itself.
+Revoke is built into the Coz standard:
 
-Note that `pre` is not required, a revoke is a special case mutating the user's
-AS without reference to prior states.
+>A Coz key may revoke itself by signing a coz containing the field `rvk` with an
+>integer value greater than 0. The integer value 1 is suitable to denote
+>revocation and the current Unix timestamp is the suggested value.
+>
+> `rvk` and `now` must be a positive integer less than 2^53 – 1
+>(9,007,199,254,740,991), which is the integer precision limit specified by
+>IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or larger
+>than 2^53 - 1.
 
-Signatures by the revoked key with `now >= rvk` are invalid. Setting `rvk = now`
-removes a key without invalidating past signatures
-
+Example Revoke:
 ```json
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/revoke",
-    "rvk": 1628181264
+    "rvk": 1623132000,
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
   },
   "sig": "<b64ut>"
 }
 ```
 
-#### 4.2.5 `key/other-revoke` — Revoke Another Key (Level 3+)
-Revokes a different key from the signing key. Used in multi-key accounts.
+Note that `pre` is not required, because a third party may be signing the
+revoke, declaring the key compromised, without any other knowledge. 
+
+However, a revoke without a `pre` does not mutate PS.  Although a client signing
+a revoke should include a `pre`,  on recept of a valid revoke that's missing
+`pre`, a principal should either acknowledge the revoke by signing a new revoke
+with a `pre`, or sign a `key/delete` removing the key from AT.
+
+A client may include `msg` detailing why the key was revoked. See also section
+"Recovery" for principal lockout.
 
 ```json
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/revoke",
     "pre": "<previous AS>",
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-    "rvk": 1628181264
+    "rvk": 1623132000,
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
   },
-  "sig": "<b64ut>" // TODO
+  "sig": "<b64ut>"
 }
 ```
 
 #### Key Transactions Summary
 
-| Type                | Level | Adds Key | Removes Key | Notes                   |
-| ------------------- | ----- | -------- | ----------- | ----------------------- |
-| `key/revoke` (self) | 1+    | —        | ✓ (signer)  | Self-revoke, sets `rvk` |
-| `key/replace`       | 2+    | ✓        | ✓ (signer)  | Atomic swap             |
-| `key/create`        | 3+    | ✓        | —           | —                       |
-| `key/delete`        | 3+    | —        | ✓           | No revocation timestamp |
-| `key/revoke-other`  | 3+    | —        | ✓           | Revoke another key      |
+| Type                | Level | Adds Key | Removes Key | Notes                           |
+| ------------------- | ----- | -------- | ----------- | ------------------------------- |
+| `key/revoke`        | 1+    | —        | ✓ (signer)  | Sets `rvk`, must be self-signed |
+| `key/replace`       | 2+    | ✓        | ✓ (signer)  | Atomic swap                     |
+| `key/create`        | 3+    | ✓        | —           | —                               |
+| `key/delete`        | 3+    | —        | ✓           | No revocation timestamp         |
 
 
 ### Transaction Nonce
@@ -944,14 +956,14 @@ would be secrete to the client.
     {
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        typ: "cyphr.me/cyphrpass/key/create",
-        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        pre: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the `tmb`, promoted to AS, then PR, since there is no nonce or other value.  
-        commit:true
+        "typ": "cyphr.me/cyphrpass/key/create",
+        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the `tmb`, promoted to AS, then PR, since there is no nonce or other value.  
+        "commit":true
       },
-      sig: "<b64ut>" // TODO valid sig
+      "sig": "<b64ut>" // TODO valid sig
     }
   ]
 
@@ -963,18 +975,18 @@ would be secrete to the client.
 ### Declarative Transaction
 From the clients internal state, a targeted state is calculated for a checkpoint
 transaction.  (As always, for signing, comments are removed and compactified
-according to Coz rules.)
+according to Coz rules.) Declarative data structures are are in JSON.
+
+Note: All client secretes are stripped before signing.  (The Go/Rust
+implementation accomplishes this by using types that preclude secretes.)
 
 `cyphrpass/principal/checkpoint/create`
-`/principal/declare/create`
 
-// TODO Zami talk about how this formalizes JSON into Cyphrpass. 
-
-
+The declarative principal:
 ```json
 {
 "PT":{ // The actual Principal Tree, at the point of this commit
-  "AT":{   // Auth State
+  "AT":{   // Auth Tree
     "KT": {
       "keys": [{
         "tag": "User Key 0",
@@ -995,6 +1007,7 @@ according to Coz rules.)
 }
 ```
 
+Embedded into a coz transaction:
 ```JSON
 {
   "pay": {
@@ -1003,16 +1016,13 @@ according to Coz rules.)
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/checkpoint/create",
     "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",  // Links to prior PS/AS for chain integrity
-    "id": "<b64UT>",  // The computed PS of the declared state
+    "id": "<b64UT>",  // The computed AS of the declared state
     "PT": {...},
     "commit": true 
   },
   "sig": "<b64ut>"
 }
 ```
-
-`revoke`, `checkpoint` implicit transaction // TODO detail this. 
-
 
 
 
@@ -1049,7 +1059,7 @@ total transaction:
     {
       pay: {
         alg: "ES256",
-        now: 1628181264,
+        now: 1623132000,
         tmb: "<signing key tmb>", // First Existing key
         typ: "<authority>/cyphrpass/key/create",
         pre: "<previous AS>",
@@ -1060,7 +1070,7 @@ total transaction:
     {
       pay: {
         alg: "ES256",
-        now: 1628181264,
+        now: 1623132000,
         tmb: "<signing key tmb>", // Second Existing key
         typ: "<authority>/cyphrpass/key/create",
         pre: "<previous AS>",
@@ -1121,7 +1131,7 @@ To authenticate to a service:
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
     "typ": "cyphr.me/cyphrpass/auth/login",
     "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service.
@@ -1143,7 +1153,7 @@ To authenticate to a service:
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
     "typ": "<authority>/<service>/auth/login"
   },
@@ -1177,11 +1187,11 @@ After successful PoP, the service issues a bearer token:
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<service key tmb>",
     "typ": "<service>/auth/token",
     "pr": "<principal root>",
-    "exp": 1628267664,
+    "exp": 1623132000,
     "perms": ["read", "write"]
   },
   "sig": "<b64ut>"
@@ -1655,16 +1665,15 @@ PIN:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
 
 
 ## Consensus
+Cyphrpass design prioritizes a **good faith assumption** that puts the emphasis
+of security on the Principal themselves.  Principals are assumed to control
+their keys and act honestly. Rejection triggers on "undeniable" bad behavior
+(e.g., crypto contradictions, bad timestamps) that could indicate compromise,
+bugs, or attacks. The design goal of Cyphrpass rejection rules is to be simple,
+deterministic, and verifiable by any witness without needing coordination.
 
-Cyphrpass design prioritizes a **good faith assumption**,  Principals are
-assumed to control their keys and act honestly. Rejection triggers on
-"undeniable" bad behavior (e.g., crypto contradictions, bad timestamps) that
-could indicate compromise, bugs, or attacks. The design goal of Cyphrpass
-rejection rules is to be simple, deterministic, and verifiable by any witness
-without needing coordination.
-
-Cyphrpass provides minimal consensus rules that delegates more security burden on
-the Principal itself instead of the consensus mechanism. 
+Cyphrpass provides minimal consensus rules that delegates more security burden
+on the Principal itself instead of the consensus mechanism. 
 
 
 
@@ -1880,7 +1889,7 @@ Registers a recovery agent (backup key, service, or social contacts).
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/recovery/create",
     "pre": "<previous AS>",
@@ -1906,7 +1915,7 @@ Removes a previously designated recovery agent.
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/delete",
     "pre": "<previous AS>",
@@ -1933,7 +1942,7 @@ When a principal is locked out:
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<recovery agent tmb>",
     "typ": "<authority>/key/create",
     "pre": "<previous AS>",
@@ -1984,7 +1993,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/create",
     "pre": "<previous AS>"
@@ -2009,7 +2018,7 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 {
   "pay": {
     "alg": "ES256",
-    "now": 1628181264,
+    "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/delete",
     "pre": "<previous AS>"
@@ -2172,7 +2181,7 @@ For "bad faith" forking, see section "Consensus".
     {
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -2183,7 +2192,7 @@ For "bad faith" forking, see section "Consensus".
     {
       "pay": {
         "alg": "ES256",
-        "now": 1628181264,
+        "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
@@ -2743,7 +2752,7 @@ Verification rules for the jump transaction:
 {
   pay: {
     alg: "ES256",
-    now: 1628181264,
+    now: 1623132000,
     tmb: "<active key tmb from anchor>",
     typ: "cyphr.me/cyphrpass/principal/state_jump/create",
     pre: "<old trust anchor AS>", // e.g., PS at previous trust anchor
