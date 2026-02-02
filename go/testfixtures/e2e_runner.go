@@ -148,9 +148,9 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 	// Build pay object
 	payObj := buildTransactionPay(pay, signerKey.Tmb, principal.AS())
 
-	// Handle target key for key/add
+	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
-	if crypto.Target != "" && strings.Contains(pay.Typ, "key/add") {
+	if crypto.Target != "" && (strings.Contains(pay.Typ, "key/create") || strings.Contains(pay.Typ, "key/add")) {
 		targetPool := pool.Get(crypto.Target)
 		if targetPool == nil {
 			return fmt.Errorf("target %q not found in pool", crypto.Target)
@@ -185,6 +185,11 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 		if test.Override.Tmb != "" {
 			payObj["tmb"] = test.Override.Tmb
 		}
+	}
+
+	// Handle principal/create: id is self-referential (current AS)
+	if strings.Contains(pay.Typ, "principal/create") {
+		payObj["id"] = principal.AS().String()
 	}
 
 	// Sign and apply
@@ -264,10 +269,12 @@ func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.
 	}
 
 	// Add pre field (current auth state) for transactions that need it
-	if strings.Contains(pay.Typ, "key/add") ||
+	if strings.Contains(pay.Typ, "key/create") ||
+		strings.Contains(pay.Typ, "key/add") ||
 		strings.Contains(pay.Typ, "key/delete") ||
 		strings.Contains(pay.Typ, "key/replace") ||
-		strings.Contains(pay.Typ, "key/revoke") {
+		strings.Contains(pay.Typ, "key/revoke") ||
+		strings.Contains(pay.Typ, "principal/create") {
 		payObj["pre"] = currentAS.String()
 	}
 
