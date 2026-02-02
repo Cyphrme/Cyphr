@@ -1,15 +1,23 @@
-with import (builtins.fetchTarball {
-  url = "https://github.com/nixos/nixpkgs/archive/fb7944c166a3b630f177938e478f0378e64ce108.tar.gz";
-  sha256 = "sha256:1k5rlkipyc4n7jk8nfmzm1rg3i94zmr90k41yplxhnrb3fkk808j";
-}) { };
+let
+  fenix = import (builtins.fetchTarball {
+    url = "https://github.com/nix-community/fenix/archive/8a42e00e442d416e6c838fc6b40240da65aacbcd.tar.gz";
+    sha256 = "sha256:0z6d6gr35ly1haa89yk8zss11ca33naxnp3l2i63p73jaw53g8xi";
+  }) { inherit pkgs; };
+  pkgs = import (builtins.fetchTarball {
+    url = "https://github.com/nixos/nixpkgs/archive/fb7944c166a3b630f177938e478f0378e64ce108.tar.gz";
+    sha256 = "sha256:1k5rlkipyc4n7jk8nfmzm1rg3i94zmr90k41yplxhnrb3fkk808j";
+  }) { };
+  toolchain = fenix.fromToolchainFile { file = ./rs/rust-toolchain.toml; };
+in
+with pkgs;
 mkShell {
+  RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
   packages = [
     go
     gopls
     go-tools
-    cargo
-    rustfmt
     treefmt
+    toolchain
     shfmt
     nixfmt
     taplo
