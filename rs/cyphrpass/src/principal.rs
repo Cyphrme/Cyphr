@@ -714,13 +714,15 @@ impl Principal {
             TransactionKind::SelfRevoke { rvk } => {
                 self.revoke_key(&tx.signer, *rvk, None)?;
             },
-            TransactionKind::PrincipalCreate { id } => {
+            TransactionKind::PrincipalCreate { pre, id } => {
                 // Genesis finalization (SPEC §5.1)
-                // Verify that `id` matches the computed Auth State
+                // Verify that `pre` matches the current Auth State (chain continuity)
+                self.verify_pre(pre)?;
+                // Verify that `id` matches the computed Auth State (becomes PR)
                 if *id != self.auth_state {
                     return Err(Error::StateMismatch);
                 }
-                // No state mutation needed — AS is already established via key/create txs
+                // No state mutation needed — AS is already established via implicit key + key/create txs
             },
         }
 

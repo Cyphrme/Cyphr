@@ -61,8 +61,12 @@ pub enum TransactionKind {
     },
 
     /// Principal creation (explicit genesis finalization) - SPEC §5.1
+    ///
+    /// Finalizes explicit genesis. `pre` references current Auth State.
     PrincipalCreate {
-        /// Auth State bundle identifier (computed AS at genesis).
+        /// Previous Auth State (required per implicit first key model).
+        pre: AuthState,
+        /// Final Auth State bundle identifier (becomes PR).
         id: AuthState,
     },
 }
@@ -198,9 +202,10 @@ impl Transaction {
             Ok(TransactionKind::SelfRevoke { rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
-            // `id` is the Auth State bundle identifier
+            // `pre` references current AS, `id` is final AS (becomes PR)
+            let pre = Self::extract_pre(pay)?;
             let id = Self::extract_as(pay)?;
-            Ok(TransactionKind::PrincipalCreate { id })
+            Ok(TransactionKind::PrincipalCreate { pre, id })
         } else {
             Err(Error::MalformedPayload)
         }
@@ -451,7 +456,9 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        // id is the Auth State bundle identifier (same format as pre: b64ut digest)
+        // pre is the current AS before finalization (required per SPEC §5.1)
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        // id is the final AS (becomes PR)
         pay.extra.insert("id".into(), json!(TEST_PRE));
         pay.extra.insert("commit".into(), json!(true));
 
