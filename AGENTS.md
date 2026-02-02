@@ -150,3 +150,23 @@ Key abstractions:
 - **Nix:** Development shell via `shell.nix`
 - **direnv:** Auto-load with `.envrc`
 - **VS Code:** Workspace settings in `.vscode/`
+
+---
+
+## Stability
+
+- **Status:** Currently pre-alpha; the specification is experimental and in flux
+- **Correctness over compatibility:** We are striving for a correct and working spec, experimenting toward it
+- **Backwards compatibility is not a concern:** We may move in a direction, then decide to abandon it; there is no concern for supporting these codepaths until we reach stability
+- **SPEC alignment:** The specification is the source of truth. If you sense a contradiction in it, please alert us, but otherwise consider it authoritative
+
+---
+
+## Workflow
+
+- **C.O.R.E. interaction:** We follow a consistent pattern of crafting an implementation plan, building a task list, and then using the C.O.R.E. workflow over multiple rounds for coherently iterating through our task list
+- **Well-scoped work:** You do not need to capture the entire implementation plan or task list in a single round of C.O.R.E.; rather, C.O.R.E. is useful for focusing in and finishing a collection of tasks at well-defined boundaries. We typically move through several rounds of C.O.R.E. to complete a single task list and plan.
+- **Commit strategy:** We are in a mono-repo, so be sure to add necessary context to commits (e.g. `feat(rs/transaction): ...`), specifying what implementation and concern we are working on
+- **C.O.R.E. compliance:** C.O.R.E. tries to specify its steps are strict and not to be liberally modified, but I'll just reiterate that point. Follow the outlined procedure as precisely as possible without adding steps or extending it.
+- **Socratic primacy:** We are a team. All the rules, C.O.R.E., and everything else is written to reinforce a spirit of collaboration over rushed implementation. If you are unsure or unclear, always bias toward stopping to clarify. Never make assumptions or make unilateral design decisions without consulting.
+- **Never commit:** Outlined in C.O.R.E. already, but just to clarify: it is absolutely imperative that you do not make commits yourself, but only report a commit message for your changes and allow your human partner to commit on your behalf. This means you need to always STOP and report at commit boundaries as outlined in C.O.R.E.
