@@ -185,6 +185,7 @@ fn add(
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
+    pay_map.insert("commit".to_string(), Value::Bool(true));
     pay_map.insert("id".to_string(), Value::String(new_key_tmb.clone()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("pre".to_string(), Value::String(pre));
@@ -208,13 +209,8 @@ fn add(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal
+    // Apply transaction to principal (auto-finalizes due to commit: true)
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
-
-    // Finalize commit if in pending state
-    if principal.current_commit().is_some() {
-        principal.finalize_commit()?;
-    }
 
     // Store updated state
     let new_commits = export_commits(&principal);
@@ -300,6 +296,7 @@ fn revoke(
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
+    pay_map.insert("commit".to_string(), Value::Bool(true));
     pay_map.insert("id".to_string(), Value::String(key_tmb.to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("pre".to_string(), Value::String(pre));
@@ -324,13 +321,8 @@ fn revoke(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal (no new key for revoke)
+    // Apply transaction to principal (auto-finalizes due to commit: true)
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
-
-    // Finalize commit if in pending state
-    if principal.current_commit().is_some() {
-        principal.finalize_commit()?;
-    }
 
     // Store updated state
     let new_commits = export_commits(&principal);

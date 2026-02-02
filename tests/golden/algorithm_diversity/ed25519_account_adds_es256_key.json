@@ -14,13 +14,14 @@
         {
           "pay": {
             "alg": "Ed25519",
+            "commit": true,
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000000,
             "pre": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
             "tmb": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "grV1hs57X3_DJYzhPZb0_q7ChHkrP1uSyHPNXjalBUSEIUeY33_MNaTnL2DEKppW_1xLfTYfrla1JfCw2GUZDQ",
+          "sig": "y4_BNP3lwV_coIAMKNB3usCOBN6Kp5SnPFUkL34QiT8nefQiVa_90yKdjr2nEubzKU-dzvm-Xiw6dgamjBLKBQ",
           "key": {
             "alg": "ES256",
             "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -28,20 +29,20 @@
           }
         }
       ],
-      "ts": "ZGBmyXZY6oVoCBTksSXArLBT3STeiuUpDaB2DpLbm4Y--zLmAiQOxnoWwZj6RESWP-UkTot2WnnkbaFnO1dFug",
-      "as": "TY4bQnmPmjGTyJbABVsYGmH2movRuVe7Z6vRQXfWrR1Y1XwDR0Mv-M_CEDbU4Y4owOCMPy5DM5vcR_Pi7dzS5Q",
-      "ps": "TY4bQnmPmjGTyJbABVsYGmH2movRuVe7Z6vRQXfWrR1Y1XwDR0Mv-M_CEDbU4Y4owOCMPy5DM5vcR_Pi7dzS5Q"
+      "ts": "FESwNCwU78uD_In6nwhnMJwg9yLuG8P2Zi3I4yYifrWxua7XJTD55ZlVQK3WfKIe4u-DpJghE86Eh6xKWK1sXA",
+      "as": "HiRbZ01DuomAxsiFDMZgTdHyygbZRfTDXPx8I-bElX4",
+      "ps": "HiRbZ01DuomAxsiFDMZgTdHyygbZRfTDXPx8I-bElX4"
     }
   ],
   "digests": [
-    "ZGBmyXZY6oVoCBTksSXArLBT3STeiuUpDaB2DpLbm4Y--zLmAiQOxnoWwZj6RESWP-UkTot2WnnkbaFnO1dFug"
+    "FESwNCwU78uD_In6nwhnMJwg9yLuG8P2Zi3I4yYifrWxua7XJTD55ZlVQK3WfKIe4u-DpJghE86Eh6xKWK1sXA"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "NF8jOA3fbSDGWaFVBAHfZ2O8T9ltLoSbqsGksjSY8XPf0Pl0ecGzG1LQVoOClkidA9KsnrP0v2OsiEOXRC6cAg",
-    "as": "TY4bQnmPmjGTyJbABVsYGmH2movRuVe7Z6vRQXfWrR1Y1XwDR0Mv-M_CEDbU4Y4owOCMPy5DM5vcR_Pi7dzS5Q",
-    "ps": "TY4bQnmPmjGTyJbABVsYGmH2movRuVe7Z6vRQXfWrR1Y1XwDR0Mv-M_CEDbU4Y4owOCMPy5DM5vcR_Pi7dzS5Q",
+    "as": "yUuT8okV3r_07L61eKWpVxqXBRQ_mDOg8ZEqGh-YM9BjT0Q0EW7PEcaEONCfqWjyR_3Wvfnb0hgt-qW6Z2hjnQ",
+    "ps": "yUuT8okV3r_07L61eKWpVxqXBRQ_mDOg8ZEqGh-YM9BjT0Q0EW7PEcaEONCfqWjyR_3Wvfnb0hgt-qW6Z2hjnQ",
     "pr": "eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ"
   }
 }

@@ -10,8 +10,9 @@ name      = "e2e_key_add"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -28,8 +29,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -37,8 +39,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -71,8 +74,9 @@ principal = ["alice"]              # Start with single implicit key
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "alice"
@@ -89,8 +93,9 @@ signer = "alice"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000003
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000003
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "alice"
@@ -107,8 +112,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -116,9 +122,10 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-rvk = 1700000002
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000002
+rvk    = 1700000002
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "golden"

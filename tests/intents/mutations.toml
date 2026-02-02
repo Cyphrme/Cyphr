@@ -6,8 +6,9 @@ name      = "key_add_increases_count"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -23,8 +24,9 @@ name      = "key_add_changes_state"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -40,8 +42,9 @@ name      = "key_delete_decreases_count"
 principal = ["golden", "key_a"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/delete"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/delete"
 
 [test.crypto]
 signer = "golden"
@@ -57,8 +60,9 @@ name      = "key_replace_single_key"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/replace"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/replace"
 
 [test.crypto]
 signer = "golden"
@@ -73,9 +77,10 @@ name      = "self_revoke_moves_to_revoked"
 principal = ["golden", "key_a"]
 
 [test.pay]
-now = 1700000000
-rvk = 1700000000
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000000
+rvk    = 1700000000
+typ    = "cyphr.me/key/revoke"
 
 [test.crypto]
 signer = "key_a"
@@ -90,8 +95,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -99,8 +105,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -108,8 +115,9 @@ target = "key_b"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000003
-typ = "cyphr.me/key/delete"
+commit = true
+now    = 1700000003
+typ    = "cyphr.me/key/delete"
 
 [test.step.crypto]
 signer = "key_a"

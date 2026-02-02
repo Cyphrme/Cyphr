@@ -14,13 +14,14 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000001,
             "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "X8op82hosYr9-TPb7p7izRn_m964qSseu_-_fZiZ42NvEY9Kfs9DTgo4sIgGY5EZefBL5UFEKCiLTkCPFA0V8g",
+          "sig": "A-6C6jVr5-5khzTMIKnftzsAsMc_TuhwOI-aeNxBC7wwP46OKl9Ii8PC6zL1-XFWei_vZEvM9AJ0OGs9loTD2A",
           "key": {
             "alg": "ES256",
             "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -28,22 +29,23 @@
           }
         }
       ],
-      "ts": "RGRkj5zVRhu41Tn3h6pfeHmns36IxpHklxx-eZhCHvI",
-      "as": "sBefs28jjfKAv2YKv-UIR2gmxmC3pHx2WIGQ8QGMuYQ",
-      "ps": "sBefs28jjfKAv2YKv-UIR2gmxmC3pHx2WIGQ8QGMuYQ"
+      "ts": "4A8puIEoAmbkUtB30U1qM1FTf6vbgPnecKICdv_d7xE",
+      "as": "5ZuwPA5NTKHcXD9PpHgoC23xJIQgl6jcvl6ECMXkjyE",
+      "ps": "5ZuwPA5NTKHcXD9PpHgoC23xJIQgl6jcvl6ECMXkjyE"
     },
     {
       "txs": [
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
             "now": 1700000002,
-            "pre": "sBefs28jjfKAv2YKv-UIR2gmxmC3pHx2WIGQ8QGMuYQ",
+            "pre": "5ZuwPA5NTKHcXD9PpHgoC23xJIQgl6jcvl6ECMXkjyE",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "yJWyY0Bno6nBh5biWggugM6QT0aVjwyQPgdYjnyTu4Yfcm-N33zF98BgT5QWEWkynVUzqN6egNovrAWUaotzjw",
+          "sig": "Os1W7ogutwenKhqttShzJHozx22a8KzQ41iAf8VevzA7wWU507VjvdyxauPwBxuUIvrCfzUJLPMIdQEcsv3E9w",
           "key": {
             "alg": "ES256",
             "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
@@ -51,22 +53,23 @@
           }
         }
       ],
-      "ts": "KzopL7Z31N5rJk_bECpN7fjL_xmNOKQsxcoqrvOwmHU",
-      "as": "0wNX563QZa1jRvOH1oY1Xabmti7AhLa7f9Vo-ZkSoxU",
-      "ps": "0wNX563QZa1jRvOH1oY1Xabmti7AhLa7f9Vo-ZkSoxU"
+      "ts": "fJ452fUXJgPQwgZTBPhim6bayK9RVo6oJAEs1hxsQsQ",
+      "as": "MhGFnb5DZMNNyVt1H_NImyj7WU_OKPLwefq0g2PQcTk",
+      "ps": "MhGFnb5DZMNNyVt1H_NImyj7WU_OKPLwefq0g2PQcTk"
     },
     {
       "txs": [
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "1tWLpnLAq645dr6p6hQucrLtkJoFtq07YBncOQ-ME8E",
             "now": 1700000003,
-            "pre": "0wNX563QZa1jRvOH1oY1Xabmti7AhLa7f9Vo-ZkSoxU",
+            "pre": "MhGFnb5DZMNNyVt1H_NImyj7WU_OKPLwefq0g2PQcTk",
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "felKxIZG2gui3TAR0QseLHM0OqksCvguo5eql6Bas9cl1xKZpxACOYDDbIuKU6D8fih5_pwuyhxbuIx6PW6h8Q",
+          "sig": "38fdLyqevML42fIPf123wS5jNR10Y7EpwferFZntkRJgLsA3JuBaQTrvJiGhZ0v1Rg-r7_S_WBzAey2Ep6H1gg",
           "key": {
             "alg": "ES256",
             "pub": "ChVQej503kclgOzJevAXlzQ0kxYh6HYtgaInsQ_ivxB4Dc72qI3cBPJzpjmJn8nven1O0Xc6ntUSd9d5F-1W5Q",
@@ -74,22 +77,22 @@
           }
         }
       ],
-      "ts": "PSvHEsOGtqkfuR96bR_f_xUbZ979XrNjiXHdlQQWdbE",
-      "as": "qTa9H-wue0EUBau6u7cpa0uPX6tct4jXpFJYSIvUA8Q",
-      "ps": "qTa9H-wue0EUBau6u7cpa0uPX6tct4jXpFJYSIvUA8Q"
+      "ts": "xuIlYgHy3yqYeTsvSK_ni9CK8cPP4X-NH3wNC0QNscQ",
+      "as": "AH9kQwdvHQdMVSMcq04RgT8uDXcwR3zlYR-IYOB-DPU",
+      "ps": "AH9kQwdvHQdMVSMcq04RgT8uDXcwR3zlYR-IYOB-DPU"
     }
   ],
   "digests": [
-    "RGRkj5zVRhu41Tn3h6pfeHmns36IxpHklxx-eZhCHvI",
-    "KzopL7Z31N5rJk_bECpN7fjL_xmNOKQsxcoqrvOwmHU",
-    "PSvHEsOGtqkfuR96bR_f_xUbZ979XrNjiXHdlQQWdbE"
+    "4A8puIEoAmbkUtB30U1qM1FTf6vbgPnecKICdv_d7xE",
+    "fJ452fUXJgPQwgZTBPhim6bayK9RVo6oJAEs1hxsQsQ",
+    "xuIlYgHy3yqYeTsvSK_ni9CK8cPP4X-NH3wNC0QNscQ"
   ],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "qTa9H-wue0EUBau6u7cpa0uPX6tct4jXpFJYSIvUA8Q",
-    "ps": "qTa9H-wue0EUBau6u7cpa0uPX6tct4jXpFJYSIvUA8Q",
+    "as": "AH9kQwdvHQdMVSMcq04RgT8uDXcwR3zlYR-IYOB-DPU",
+    "ps": "AH9kQwdvHQdMVSMcq04RgT8uDXcwR3zlYR-IYOB-DPU",
     "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   }
 }

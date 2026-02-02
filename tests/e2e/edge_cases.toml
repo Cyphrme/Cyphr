@@ -9,8 +9,9 @@ name      = "edge_algorithm_diversity"
 principal = ["alice", "bob"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "alice"
@@ -28,8 +29,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -40,9 +42,10 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000003
-rvk = 1700000003
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000003
+rvk    = 1700000003
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "key_a" # self-revoke: key revokes itself
@@ -50,8 +53,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000005
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000005
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -59,8 +63,9 @@ target = "alice"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000006
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000006
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -68,8 +73,9 @@ target = "bob"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000007
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000007
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -77,9 +83,10 @@ target = "carol"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000008
-rvk = 1700000008
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000008
+rvk    = 1700000008
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "alice" # self-revoke
@@ -87,9 +94,10 @@ target = "alice"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000009
-rvk = 1700000009
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000009
+rvk    = 1700000009
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "bob" # self-revoke
@@ -97,9 +105,10 @@ target = "bob"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000010
-rvk = 1700000010
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000010
+rvk    = 1700000010
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "carol" # self-revoke
@@ -144,8 +153,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -153,8 +163,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"

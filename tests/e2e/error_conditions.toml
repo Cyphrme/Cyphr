@@ -9,8 +9,9 @@ name      = "err_broken_chain"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -28,8 +29,9 @@ name      = "err_unknown_signer"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "alice"
@@ -45,8 +47,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -54,8 +57,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -71,8 +75,9 @@ principal = ["golden"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -80,8 +85,9 @@ target = "key_a"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -97,9 +103,10 @@ principal = ["alice", "bob"]
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-rvk = 1700000001
-typ = "cyphr.me/key/revoke"
+commit = true
+now    = 1700000001
+rvk    = 1700000001
+typ    = "cyphr.me/key/revoke"
 
 [test.step.crypto]
 signer = "alice" # self-revoke: alice revokes herself
@@ -107,8 +114,9 @@ target = "alice"
 
 [[test.step]]
 [test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "alice"

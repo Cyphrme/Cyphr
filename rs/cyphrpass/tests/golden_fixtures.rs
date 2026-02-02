@@ -122,7 +122,7 @@ fn try_apply_entry(
 
     // Determine if this is a transaction or action based on typ field
     let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
-    if typ.starts_with("cyphr.me/key/") {
+    if typ.starts_with("cyphr.me/key/") || typ == "cyphr.me/principal/create" {
         // Transaction
         principal.verify_and_apply_transaction(&pay_json, &sig, computed_czd, new_key)?;
     } else {

@@ -6,8 +6,9 @@ name      = "es384_account_adds_es256_key"
 principal = ["diana_es384"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "diana_es384"
@@ -23,8 +24,9 @@ name      = "ed25519_account_adds_es256_key"
 principal = ["eve_ed25519"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "eve_ed25519"

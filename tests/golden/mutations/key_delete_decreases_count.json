@@ -19,13 +19,14 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000000,
             "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "ZCSen_WiU4zEKqY-lWVNmznX31wEfQ-5GisJ0amx_D4UWHRKzvzbB0La8GjSCVBbYEz2jCvbUosVard-FEk89g",
+          "sig": "_r_6-Rs23TUx0BFE7vl7OP7oIVFD1g-HwmXvzAL-eJpUTGQa_zkzT0Nw_ox-KU2gxWBWHPbmbSqVmsZDnZwiEw",
           "key": {
             "alg": "ES256",
             "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -33,18 +34,18 @@
           }
         }
       ],
-      "ts": "w5dztzl4r_AVekos5XxSw34qJDlA9rCE0_HoDY6uE6w",
-      "as": "XhDB7L_g3vkqiG6bS0A5zfPu7vRda16FTaJUbCSwoSA",
-      "ps": "XhDB7L_g3vkqiG6bS0A5zfPu7vRda16FTaJUbCSwoSA"
+      "ts": "PIVlU80K3GD3MpROT78anPwlgvUp4ITyR5NAk2k2yp8",
+      "as": "Ze737U5GI1t6Kq4xaueOJsv3jYs8FLgnm1LLtAENWIk",
+      "ps": "Ze737U5GI1t6Kq4xaueOJsv3jYs8FLgnm1LLtAENWIk"
     }
   ],
-  "digests": ["w5dztzl4r_AVekos5XxSw34qJDlA9rCE0_HoDY6uE6w"],
+  "digests": ["PIVlU80K3GD3MpROT78anPwlgvUp4ITyR5NAk2k2yp8"],
   "expected": {
     "key_count": 1,
     "level": 3,
     "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "XhDB7L_g3vkqiG6bS0A5zfPu7vRda16FTaJUbCSwoSA",
-    "ps": "XhDB7L_g3vkqiG6bS0A5zfPu7vRda16FTaJUbCSwoSA",
+    "as": "Ze737U5GI1t6Kq4xaueOJsv3jYs8FLgnm1LLtAENWIk",
+    "ps": "Ze737U5GI1t6Kq4xaueOJsv3jYs8FLgnm1LLtAENWIk",
     "pr": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
   }
 }

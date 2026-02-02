@@ -406,21 +406,9 @@ impl Principal {
     ///
     /// Returns `NoPendingCommit` if no commit is in progress.
     /// Returns `EmptyCommit` if the pending commit has no transactions.
+    /// Returns `MissingFinalizationMarker` if last tx doesn't have `commit: true`.
     pub fn finalize_commit(&mut self) -> Result<&Commit> {
-        let pending = self.auth.pending.take().ok_or(Error::NoPendingCommit)?;
-
-        if pending.is_empty() {
-            return Err(Error::EmptyCommit);
-        }
-
-        // Finalize with current state (will be accurate after recompute)
-        let commit = pending
-            .finalize(self.auth_state.clone(), self.ps.clone())
-            .ok_or(Error::MissingFinalizationMarker)?;
-
-        self.auth.commits.push(commit);
-        self.recompute_state();
-
+        self.finalize_current_commit()?;
         // Return reference to the just-added commit
         Ok(self.auth.commits.last().expect("just pushed"))
     }
@@ -734,42 +722,63 @@ impl Principal {
             self.latest_timestamp = tx.now;
         }
 
-        // Record transaction as single-tx commit (wrap_as_commit handles state recomputation)
-        self.wrap_as_commit(vtx);
+        // Add transaction to pending commit (unified pathway per SPEC §4.2.1)
+        // Auto-begin commit if none in progress
+        if self.auth.pending.is_none() {
+            self.auth.pending = Some(PendingCommit::new(self.hash_alg));
+        }
+
+        // Push transaction to pending commit
+        let pending = self.auth.pending.as_mut().expect("just created if none");
+        let is_finalizer = pending.push(vtx);
+
+        // If this transaction has commit: true, auto-finalize the commit
+        if is_finalizer {
+            self.finalize_current_commit()?;
+        }
 
         Ok(&self.auth_state)
     }
 
-    /// Wrap a single transaction as a finalized commit.
+    /// Finalize the current pending commit with proper state recomputation.
     ///
-    /// Computes all state digests inline to ensure the commit stores
-    /// post-mutation values (not stale pre-mutation state).
-    fn wrap_as_commit(&mut self, vtx: VerifiedTransaction) {
-        use crate::state::{compute_as, compute_ks, compute_ps, compute_ts};
+    /// This is the internal finalization that recomputes all states after
+    /// mutations have been applied.
+    fn finalize_current_commit(&mut self) -> Result<()> {
+        let pending = self.auth.pending.take().ok_or(Error::NoPendingCommit)?;
+
+        if pending.is_empty() {
+            return Err(Error::EmptyCommit);
+        }
 
         // Re-derive active algorithms from current (post-mutation) keyset (SPEC §14)
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         self.active_algs = derive_hash_algs(&key_refs);
 
-        // 1. Recompute KS from current (post-mutation) key set
+        // Recompute KS from current (post-mutation) key set
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         self.ks = compute_ks(&thumbprints, None, &self.active_algs);
 
-        // 2. Compute TS for this commit's transaction(s)
-        let czds = [vtx.czd()];
-        let ts = compute_ts(&czds, None, &self.active_algs)
-            .expect("single transaction should always produce TS");
+        // Compute TS from pending commit
+        let ts = pending
+            .compute_ts()
+            .expect("non-empty pending should produce TS");
         self.ts = Some(ts.clone());
 
-        // 3. Compute AS from updated KS and new TS
+        // Compute AS from updated KS and new TS
         self.auth_state = compute_as(&self.ks, Some(&ts), None, &self.active_algs);
 
-        // 4. Compute PS from updated AS (no DS yet)
+        // Compute PS from updated AS and DS
         self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &self.active_algs);
 
-        // 5. Create commit with CORRECT post-mutation state
-        let commit = Commit::new(vec![vtx], ts, self.auth_state.clone(), self.ps.clone());
+        // Finalize the pending commit with computed states
+        let commit = pending
+            .finalize(self.auth_state.clone(), self.ps.clone())
+            .ok_or(Error::MissingFinalizationMarker)?;
+
         self.auth.commits.push(commit);
+
+        Ok(())
     }
 
     /// Verify signature and apply a transaction in one step.
@@ -929,24 +938,6 @@ impl Principal {
         if let Some(key) = self.auth.keys.get_mut(&tmb_b64) {
             key.last_used = Some(timestamp);
         }
-    }
-
-    /// Recompute all state digests after mutation.
-    fn recompute_state(&mut self) {
-        // Recompute KS from active keys using all active algorithms (SPEC §14)
-        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, &self.active_algs);
-
-        // TS is from the latest commit (per-commit TS, not cumulative)
-        self.ts = self.auth.commits.last().map(|c| c.ts().clone());
-
-        // Recompute AS = H(sort(KS, TS?))
-        self.auth_state = compute_as(&self.ks, self.ts.as_ref(), None, &self.active_algs);
-
-        // Recompute PS = H(sort(AS, DS?)) - no DS yet
-        self.ps = compute_ps(&self.auth_state, None, None, &self.active_algs);
-
-        // PR never changes
     }
 }
 
@@ -1112,7 +1103,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             raw,
-            is_finalizer: false,
+            is_finalizer: true,
         }
     }
 
@@ -1283,7 +1274,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: false,
+            is_finalizer: true,
         };
 
         let result = principal.apply_transaction(tx, None);
@@ -1313,7 +1304,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: false,
+            is_finalizer: true,
         };
 
         principal.apply_transaction(tx, None).unwrap();
@@ -1368,7 +1359,7 @@ mod tests {
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: false,
+            is_finalizer: true,
         };
         principal.apply_transaction(tx, None).unwrap();
 
@@ -1408,7 +1399,7 @@ mod tests {
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: false,
+            is_finalizer: true,
         };
         principal.apply_transaction(tx, Some(key2)).unwrap();
 

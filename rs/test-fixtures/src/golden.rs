@@ -461,7 +461,7 @@ impl<'a> Generator<'a> {
                 &computed_pre
             };
 
-        // Build and sign coz message
+        // Build and sign coz message - use pay_intent as-is (intent files are explicit about commit: true)
         let (coz, sig_bytes, czd) =
             self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(pre))?;
 
@@ -538,6 +538,7 @@ impl<'a> Generator<'a> {
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
 
+            // Use step.pay as-is (intent files are explicit about commit: true)
             let (coz, sig_bytes, czd) = self
                 .build_golden_coz(&step.pay, &step.crypto, &test.name, Some(&pre))
                 .map_err(|e| Error::Generation {
@@ -646,7 +647,7 @@ impl<'a> Generator<'a> {
             .map(|b| Base64UrlUnpadded::encode_string(b))
             .unwrap_or_default();
 
-        // Build and sign transaction coz message
+        // Build and sign transaction coz message - use pay_intent as-is
         let (tx_coz, tx_sig_bytes, tx_czd) =
             self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(&pre))?;
 
@@ -1143,19 +1144,13 @@ impl<'a> Generator<'a> {
         };
         let auth_state = principal
             .auth_state()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .get(principal.hash_alg())
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         let ps = principal
             .ps()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .get(principal.hash_alg())
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         let ts = principal.transactions().last().and({
             // Get TS if there are transactions
@@ -1167,11 +1162,8 @@ impl<'a> Generator<'a> {
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .get(principal.hash_alg())
+            .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();
@@ -1233,6 +1225,7 @@ principal = ["golden"]
 [test.pay]
 typ = "cyphr.me/key/create"
 now = 1700000000
+commit = true
 
 [test.crypto]
 signer = "golden"

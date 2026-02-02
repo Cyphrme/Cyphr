@@ -21,8 +21,9 @@ principal = ["alice"]               # Start with single implicit key
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "alice"
@@ -48,8 +49,9 @@ name      = "load_with_transactions"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"

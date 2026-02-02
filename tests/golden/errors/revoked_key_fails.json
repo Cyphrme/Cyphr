@@ -23,13 +23,14 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "now": 1700000000,
             "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "E-YO956or4pjrQg8wEa44eCuI6toQR6MMh8Y2ME6UEQDlJqAQqKd2uI0RHawVSknKZgXAUtpVQtn-1wWkI-jww",
+          "sig": "AEHbToknTyimcHyto5cIyJVT523dqXGU959U8HlpbSBVrmseq2u5VXitI6iKlVKbauUJ1buOSgA0QWpvyhftwA",
           "key": {
             "alg": "ES256",
             "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
@@ -42,7 +43,7 @@
       "ps": ""
     }
   ],
-  "digests": ["0OvHTdhQnWsZFZXyFhO6ufWgAKB4YABxXwcudpYuh7k"],
+  "digests": ["XjIJ0K7XMQURymVIgAUMyExKm9zzlqDZTAhNsDMPGYk"],
   "expected": {
     "key_count": 1,
     "level": 1,

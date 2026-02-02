@@ -14,13 +14,14 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
             "now": 1700000001,
             "pre": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "0HsBH-UUl4O9IOf1gb5jBg3z3wqJ4ZtHP3pbe0BE0sFyAwa7FC5FxqSBNOtZ-y2OrJFI8txUmQmCQdfwFYtViw",
+          "sig": "mwRBuoscQx5j-lyfi9j2ybtmJ5HKJUQOoBjIVDTscuEBaTqGYAcyezjyHMiPzR7pRpylhEg-_UltiO6tVKCLtQ",
           "key": {
             "alg": "ES256",
             "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
@@ -28,22 +29,23 @@
           }
         }
       ],
-      "ts": "K2rqARoqxm9yP1Qs3LMe8c46FqOw-jCx3Kme5LfEIFw",
-      "as": "IjEYmkxtdXrmU-0sD2mJqbJ_fvli0l_eLOzooCbBhso",
-      "ps": "IjEYmkxtdXrmU-0sD2mJqbJ_fvli0l_eLOzooCbBhso"
+      "ts": "K0s2-5k-johouY1ZLhHlKXwA0R3wBiwZhVGOTboXGNM",
+      "as": "8yZ8EBLnlSd2ovvVbgwIPBGsxzlyN0xQiMGiY6hpSrk",
+      "ps": "8yZ8EBLnlSd2ovvVbgwIPBGsxzlyN0xQiMGiY6hpSrk"
     },
     {
       "txs": [
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "id": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA",
             "now": 1700000002,
-            "pre": "IjEYmkxtdXrmU-0sD2mJqbJ_fvli0l_eLOzooCbBhso",
+            "pre": "8yZ8EBLnlSd2ovvVbgwIPBGsxzlyN0xQiMGiY6hpSrk",
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "WKYs3Trp1C6p-MJgDAafzjvE8dw4C2Lj2pLyE5IIdfQf1G91FoYCHQBcgZB-32MEaPJr632v36COyTh9KsrBYA",
+          "sig": "tIrGYenkJw_HPjq1UQDYaxv7uAE09mTC2X8J6DbiBsF2zMS9mSorgTsq4KkWsD6sNzkMTqRtMEJCGO4PJvCKjg",
           "key": {
             "alg": "ES256",
             "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
@@ -51,21 +53,21 @@
           }
         }
       ],
-      "ts": "ybPVAZoe2--0xHwtlPmd3Ouoom_UpbJzSTQehiMKp_c",
-      "as": "bNoCRaoc8wjaYYv1ddxEKHxhoyOmOdNVpSvPxNd_1UU",
-      "ps": "bNoCRaoc8wjaYYv1ddxEKHxhoyOmOdNVpSvPxNd_1UU"
+      "ts": "IuLMdnTq0hGi6Y70u-KRnSh9tfYMmOoTfXPf6lhdQOA",
+      "as": "8lz5fvQCFM-WhqDZqe1mYf0lqmjTNTH5-RpJaaVe5G0",
+      "ps": "8lz5fvQCFM-WhqDZqe1mYf0lqmjTNTH5-RpJaaVe5G0"
     }
   ],
   "digests": [
-    "K2rqARoqxm9yP1Qs3LMe8c46FqOw-jCx3Kme5LfEIFw",
-    "ybPVAZoe2--0xHwtlPmd3Ouoom_UpbJzSTQehiMKp_c"
+    "K0s2-5k-johouY1ZLhHlKXwA0R3wBiwZhVGOTboXGNM",
+    "IuLMdnTq0hGi6Y70u-KRnSh9tfYMmOoTfXPf6lhdQOA"
   ],
   "expected": {
     "key_count": 3,
     "level": 3,
     "ks": "lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "as": "bNoCRaoc8wjaYYv1ddxEKHxhoyOmOdNVpSvPxNd_1UU",
-    "ps": "bNoCRaoc8wjaYYv1ddxEKHxhoyOmOdNVpSvPxNd_1UU",
+    "as": "8lz5fvQCFM-WhqDZqe1mYf0lqmjTNTH5-RpJaaVe5G0",
+    "ps": "8lz5fvQCFM-WhqDZqe1mYf0lqmjTNTH5-RpJaaVe5G0",
     "pr": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
   }
 }

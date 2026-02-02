@@ -6,8 +6,9 @@ name      = "add_third_key_to_dual_key_account"
 principal = ["alice", "bob"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "alice"
@@ -23,8 +24,9 @@ name      = "replace_one_of_two_keys"
 principal = ["alice", "bob"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/replace"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/replace"
 
 [test.crypto]
 signer = "alice"
@@ -40,8 +42,9 @@ name      = "non_signer_adds_key"
 principal = ["alice", "bob"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "bob"
@@ -57,8 +60,9 @@ name      = "delete_from_triple_key_leaves_two"
 principal = ["alice", "bob", "carol"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/delete"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/delete"
 
 [test.crypto]
 signer = "alice"

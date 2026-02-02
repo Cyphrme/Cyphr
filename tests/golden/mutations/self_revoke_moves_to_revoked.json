@@ -19,27 +19,28 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": true,
             "now": 1700000000,
             "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "rvk": 1700000000,
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/revoke"
           },
-          "sig": "Y9e33TsDR3v5EhSW0ZNGJ2zIN7RcYAuAdw-QUX3JIi0aKWwqJHsIB4qxxkdj9Gtr_lBpw8IriMhBX84K07dJig"
+          "sig": "ee9JYplwo5fEVr8Gf-nEGkdsplf63ee5YyUlva6uQoM689LyrVCi_u2fIodO88YBthC0ESTG1ockY-d3LEkSUA"
         }
       ],
-      "ts": "JBjDGRKG67oF8vShYY8rwvqPguKj0KZnhxEmS1zTEkc",
-      "as": "oA-w6uAP7eIP9sLBkQU_uAZdNmO9Md39JTpNYOVEjac",
-      "ps": "oA-w6uAP7eIP9sLBkQU_uAZdNmO9Md39JTpNYOVEjac"
+      "ts": "DQC_SinyiJBXsA0Wj0D8GD96ZKB-RN1dAq6iFV0EhCM",
+      "as": "JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
+      "ps": "JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w"
     }
   ],
-  "digests": ["JBjDGRKG67oF8vShYY8rwvqPguKj0KZnhxEmS1zTEkc"],
+  "digests": ["DQC_SinyiJBXsA0Wj0D8GD96ZKB-RN1dAq6iFV0EhCM"],
   "expected": {
     "key_count": 1,
     "level": 3,
     "ks": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "oA-w6uAP7eIP9sLBkQU_uAZdNmO9Md39JTpNYOVEjac",
-    "ps": "oA-w6uAP7eIP9sLBkQU_uAZdNmO9Md39JTpNYOVEjac",
+    "as": "JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
+    "ps": "JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
     "pr": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
   }
 }

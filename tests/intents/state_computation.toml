@@ -21,8 +21,9 @@ principal = ["golden"]           # Start with single implicit key
 
 [[test.step]]
 [test.step.pay]
-now = 1700000001
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000001
+typ    = "cyphr.me/key/create"
 
 [test.step.crypto]
 signer = "golden"
@@ -87,8 +88,9 @@ name      = "ts_single_tx_promotion"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
@@ -106,12 +108,14 @@ principal = ["golden"]
 [[test.step]]
 crypto.signer = "golden"
 crypto.target = "key_a"
+pay.commit    = true
 pay.now       = 1700000001
 pay.typ       = "cyphr.me/key/create"
 
 [[test.step]]
 crypto.signer = "golden"
 crypto.target = "key_a"
+pay.commit    = true
 pay.now       = 1700000002
 pay.typ       = "cyphr.me/key/delete"
 
@@ -125,8 +129,9 @@ name      = "as_ks_ts_combined"
 principal = ["golden"]
 
 [test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
+commit = true
+now    = 1700000000
+typ    = "cyphr.me/key/create"
 
 [test.crypto]
 signer = "golden"
