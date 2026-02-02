@@ -108,13 +108,23 @@ func replayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
 func ReplayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error {
 	// Determine if transaction or action
 	if entry.IsTransaction() {
-		return replayTransaction(principal, entry, index)
+		return replayTransaction(principal, entry, index, false)
+	}
+	return replayAction(principal, entry, index)
+}
+
+// ReplayEntryWithCommit replays a single entry with commit flag support.
+// If isCommit is true, marks the transaction as a commit finalizer.
+// This is exported for use by testfixtures package for commit-aware loading.
+func ReplayEntryWithCommit(principal *cyphrpass.Principal, entry *Entry, index int, isCommit bool) error {
+	if entry.IsTransaction() {
+		return replayTransaction(principal, entry, index, isCommit)
 	}
 	return replayAction(principal, entry, index)
 }
 
 // replayTransaction replays a transaction entry.
-func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) error {
+func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int, isCommit bool) error {
 	// Extract pay and sig bytes
 	payBytes, err := entry.PayBytes()
 	if err != nil {
@@ -154,6 +164,9 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 			Message: fmt.Sprintf("verification failed: %v", err),
 		}
 	}
+
+	// Note: IsCommit is derived from the payload's commit field during parsing.
+	// No external assignment needed - payload is source of truth (SPEC §4.2.1).
 
 	if err := principal.ApplyVerified(verifiedTx); err != nil {
 		return &LoadError{

@@ -160,3 +160,25 @@ func (g *Golden) FlattenEntries() []json.RawMessage {
 	}
 	return g.Entries
 }
+
+// FlattenEntriesWithBoundaries returns all transaction entries and the indices
+// of commit finalizer transactions (last tx of each commit).
+// For legacy entries without commits, returns nil for boundaries.
+func (g *Golden) FlattenEntriesWithBoundaries() (entries []json.RawMessage, finalizerIndices []int) {
+	if len(g.Commits) == 0 {
+		return g.Entries, nil
+	}
+
+	idx := 0
+	for _, c := range g.Commits {
+		for i, tx := range c.Txs {
+			entries = append(entries, tx)
+			// Last tx in this commit is the finalizer
+			if i == len(c.Txs)-1 {
+				finalizerIndices = append(finalizerIndices, idx)
+			}
+			idx++
+		}
+	}
+	return entries, finalizerIndices
+}

@@ -79,6 +79,11 @@ type Principal struct {
 	data    DataLedger
 	hashAlg HashAlg
 
+	// currentCommitCzds tracks transaction czds for the current commit.
+	// Per SPEC §4.2.1: TS is computed from CURRENT commit's czds only.
+	// Reset after each commit finalizer (tx.IsCommit = true).
+	currentCommitCzds []coz.B64
+
 	// latestTimestamp tracks the most recent `now` value seen (SPEC §14.1).
 	// Used to reject timestamps in the past.
 	latestTimestamp int64
@@ -511,9 +516,19 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		p.latestTimestamp = tx.Now
 	}
 
-	// Record transaction and recompute state
+	// Record transaction and accumulate czd for per-commit TS (SPEC §4.2.1)
 	p.auth.Transactions = append(p.auth.Transactions, tx)
-	return p.recomputeState()
+	p.currentCommitCzds = append(p.currentCommitCzds, tx.Czd)
+
+	if err := p.recomputeState(); err != nil {
+		return err
+	}
+
+	// Reset currentCommitCzds after commit finalization
+	if tx.IsCommit {
+		p.currentCommitCzds = nil
+	}
+	return nil
 }
 
 // verifyPre checks that the transaction's pre matches current AS.
@@ -622,13 +637,10 @@ func (p *Principal) recomputeState() error {
 	}
 	p.ks = ks
 
-	// Recompute TS from transactions
-	if len(p.auth.Transactions) > 0 {
-		czds := make([]coz.B64, len(p.auth.Transactions))
-		for i, t := range p.auth.Transactions {
-			czds[i] = t.Czd
-		}
-		ts, err := ComputeTS(czds, nil, p.hashAlg)
+	// Recompute TS from current commit's transactions only (SPEC §4.2.1)
+	// TS = MR(czds) for transactions in THIS commit, not cumulative
+	if len(p.currentCommitCzds) > 0 {
+		ts, err := ComputeTS(p.currentCommitCzds, nil, p.hashAlg)
 		if err != nil {
 			return err
 		}
