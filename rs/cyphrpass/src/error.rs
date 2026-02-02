@@ -2,10 +2,10 @@
 
 use thiserror::Error;
 
-/// Cyphrpass error type covering all error conditions from SPEC §14.
+/// Cyphrpass error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
 pub enum Error {
-    // === Transaction errors (§14.1) ===
+    // === Transaction errors (§17.1) ===
     /// Signature does not verify against claimed key.
     #[error("invalid signature")]
     InvalidSignature,
@@ -13,6 +13,10 @@ pub enum Error {
     /// Referenced key (`tmb` or `id`) not in current KS.
     #[error("unknown key")]
     UnknownKey,
+
+    /// Client doesn't know or support the algorithm.
+    #[error("unknown algorithm")]
+    UnknownAlg,
 
     /// `pre` does not match current AS.
     #[error("invalid prior state")]
@@ -42,7 +46,7 @@ pub enum Error {
     #[error("threshold not met")]
     ThresholdNotMet,
 
-    // === Recovery errors (§14.2) ===
+    // === Recovery errors (§17.2) ===
     /// Agent not registered via `recovery/designate`.
     #[error("recovery not designated")]
     RecoveryNotDesignated,
@@ -52,10 +56,10 @@ pub enum Error {
     AccountRecoverable,
 
     /// No active keys AND no designated recovery agents.
-    #[error("account unrecoverable")]
-    AccountUnrecoverable,
+    #[error("unrecoverable principal")]
+    UnrecoverablePrincipal,
 
-    // === State errors (§14.3) ===
+    // === State errors (§17.3) ===
     /// Computed PS does not match claimed PS.
     #[error("state mismatch")]
     StateMismatch,
@@ -64,11 +68,11 @@ pub enum Error {
     #[error("chain broken")]
     ChainBroken,
 
-    /// Derivation computed with wrong algorithm.
-    #[error("derivation mismatch")]
-    DerivationMismatch,
+    /// Multihash variant computed with wrong algorithm.
+    #[error("hash algorithm mismatch")]
+    HashAlgMismatch,
 
-    // === Action errors (§14.4) ===
+    // === Action errors (§17.4) ===
     /// Action `typ` not permitted for this key (Level 5+).
     #[error("unauthorized action")]
     UnauthorizedAction,
