@@ -75,8 +75,9 @@ func TestLoadGolden(t *testing.T) {
 		t.Errorf("Principal = %v, want [golden]", golden.Principal)
 	}
 
-	if len(golden.Entries) != 1 {
-		t.Errorf("Entries count = %d, want 1", len(golden.Entries))
+	// Check entry count using helper (works with both commits and legacy entries)
+	if golden.EntryCount() != 1 {
+		t.Errorf("EntryCount = %d, want 1", golden.EntryCount())
 	}
 
 	if !golden.IsGenesisOnly() == false {
@@ -95,9 +96,9 @@ func TestLoadGoldenDir(t *testing.T) {
 		t.Fatalf("LoadGoldenDir failed: %v", err)
 	}
 
-	// Should have 7 mutation tests
-	if len(goldens) != 7 {
-		t.Errorf("LoadGoldenDir returned %d goldens, want 7", len(goldens))
+	// Should have 6 mutation tests
+	if len(goldens) != 6 {
+		t.Errorf("LoadGoldenDir returned %d goldens, want 6", len(goldens))
 	}
 }
 

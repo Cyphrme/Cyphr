@@ -148,10 +148,16 @@ func (e *Entry) IsTransaction() bool {
 }
 
 // containsKeyPrefix checks if typ indicates a transaction.
+// Per SPEC: transactions have typ containing "/key/" or "/principal/".
 func containsKeyPrefix(typ string) bool {
-	// Look for "/key/" in the typ string
+	// Look for "/key/" or "/principal/" in the typ string
 	for i := 0; i+5 <= len(typ); i++ {
 		if typ[i:i+5] == "/key/" {
+			return true
+		}
+	}
+	for i := 0; i+11 <= len(typ); i++ {
+		if typ[i:i+11] == "/principal/" {
 			return true
 		}
 	}
