@@ -714,6 +714,14 @@ impl Principal {
             TransactionKind::SelfRevoke { rvk } => {
                 self.revoke_key(&tx.signer, *rvk, None)?;
             },
+            TransactionKind::PrincipalCreate { id } => {
+                // Genesis finalization (SPEC §5.1)
+                // Verify that `id` matches the computed Auth State
+                if *id != self.auth_state {
+                    return Err(Error::StateMismatch);
+                }
+                // No state mutation needed — AS is already established via key/create txs
+            },
         }
 
         // Update signer's last_used timestamp

@@ -23,6 +23,8 @@ pub mod typ {
     pub const KEY_REPLACE: &str = "key/replace";
     /// `<authority>/key/revoke` - Revoke a key (Level 1+ self, Level 3+ other)
     pub const KEY_REVOKE: &str = "key/revoke";
+    /// `<authority>/principal/create` - Explicit genesis finalization (Level 3+)
+    pub const PRINCIPAL_CREATE: &str = "principal/create";
 }
 
 /// Transaction kind variants (SPEC §4.2).
@@ -57,6 +59,12 @@ pub enum TransactionKind {
         /// Revocation timestamp.
         rvk: i64,
     },
+
+    /// Principal creation (explicit genesis finalization) - SPEC §5.1
+    PrincipalCreate {
+        /// Auth State bundle identifier (computed AS at genesis).
+        id: AuthState,
+    },
 }
 
 impl std::fmt::Display for TransactionKind {
@@ -66,6 +74,7 @@ impl std::fmt::Display for TransactionKind {
             TransactionKind::KeyDelete { .. } => write!(f, "key/delete"),
             TransactionKind::KeyReplace { .. } => write!(f, "key/replace"),
             TransactionKind::SelfRevoke { .. } => write!(f, "key/revoke"),
+            TransactionKind::PrincipalCreate { .. } => write!(f, "principal/create"),
         }
     }
 }
@@ -187,6 +196,11 @@ impl Transaction {
             // All key/revoke transactions are self-revoke (SPEC §4.2.4)
             // Other-revoke was removed per zami's directive
             Ok(TransactionKind::SelfRevoke { rvk })
+        } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
+            // Genesis finalization (SPEC §5.1)
+            // `id` is the Auth State bundle identifier
+            let id = Self::extract_as(pay)?;
+            Ok(TransactionKind::PrincipalCreate { id })
         } else {
             Err(Error::MalformedPayload)
         }
@@ -229,6 +243,30 @@ impl Transaction {
         let id_str = id_value.as_str()?;
         let id_bytes = Base64UrlUnpadded::decode_vec(id_str).ok()?;
         Some(Thumbprint::from_bytes(id_bytes))
+    }
+
+    /// Extract `id` field as AuthState (for principal/create).
+    ///
+    /// Per SPEC §5.1, the `id` field in principal/create contains the
+    /// Auth State bundle identifier.
+    fn extract_as(pay: &Pay) -> Result<AuthState> {
+        use crate::multihash::MultihashDigest;
+        use crate::state::HashAlg;
+
+        let id_value = pay.extra.get("id").ok_or(Error::MalformedPayload)?;
+        let id_str = id_value.as_str().ok_or(Error::MalformedPayload)?;
+        let id_bytes =
+            Base64UrlUnpadded::decode_vec(id_str).map_err(|_| Error::MalformedPayload)?;
+
+        // Infer algorithm from digest length
+        let alg = match id_bytes.len() {
+            32 => HashAlg::Sha256,
+            48 => HashAlg::Sha384,
+            64 => HashAlg::Sha512,
+            _ => return Err(Error::MalformedPayload),
+        };
+
+        Ok(AuthState(MultihashDigest::from_single(alg, id_bytes)))
     }
 }
 
@@ -403,6 +441,25 @@ mod tests {
         let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::SelfRevoke { rvk: 1000 }));
+    }
+
+    #[test]
+    fn parse_principal_create() {
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/principal/create")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        // id is the Auth State bundle identifier (same format as pre: b64ut digest)
+        pay.extra.insert("id".into(), json!(TEST_PRE));
+        pay.extra.insert("commit".into(), json!(true));
+
+        let czd = Czd::from_bytes(vec![0; 32]);
+        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+
+        assert!(matches!(tx.kind, TransactionKind::PrincipalCreate { .. }));
+        assert!(tx.is_finalizer); // commit: true
     }
 
     #[test]
