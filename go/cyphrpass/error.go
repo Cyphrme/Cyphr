@@ -69,4 +69,10 @@ var (
 
 	// ErrUnsupportedAlgorithm indicates the algorithm is not supported.
 	ErrUnsupportedAlgorithm = errors.New("cyphrpass: unsupported algorithm")
+
+	// ErrEmptyCommit indicates an attempt to finalize a commit with no transactions.
+	ErrEmptyCommit = errors.New("cyphrpass: empty commit")
+
+	// ErrMissingFinalizer indicates the last transaction lacks `commit: true`.
+	ErrMissingFinalizer = errors.New("cyphrpass: missing commit finalizer")
 )
