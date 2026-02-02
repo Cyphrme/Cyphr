@@ -46,8 +46,8 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 		return result
 	}
 
-	// Convert entries
-	entries, err := convertEntries(golden.Entries)
+	// Convert entries (flattening commits if present)
+	entries, err := convertEntries(golden.FlattenEntries())
 	if err != nil {
 		result.Err = fmt.Errorf("failed to convert entries: %w", err)
 		return result

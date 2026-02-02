@@ -22,7 +22,9 @@ type Golden struct {
 	Setup *GoldenSetup `json:"setup,omitempty"`
 	// GenesisKeys contains full key material for storage import.
 	GenesisKeys []GoldenKey `json:"genesis_keys,omitempty"`
-	// Entries contains storage-format entries [{pay, sig, key?}, ...].
+	// Commits contains atomic transaction bundles (new format).
+	Commits []GoldenCommit `json:"commits,omitempty"`
+	// Entries contains storage-format entries (legacy format, deprecated).
 	Entries []json.RawMessage `json:"entries,omitempty"`
 	// Digests contains czd values parallel to entries.
 	Digests []string `json:"digests,omitempty"`
@@ -46,6 +48,19 @@ type GoldenKey struct {
 	Pub string `json:"pub"`
 	// Tmb is the thumbprint (base64url).
 	Tmb string `json:"tmb"`
+}
+
+// GoldenCommit is an atomic transaction bundle from a golden file.
+// Matches the Rust fixture format: {txs, ts, as, ps}.
+type GoldenCommit struct {
+	// Txs contains the transactions in this commit.
+	Txs []json.RawMessage `json:"txs"`
+	// TS is the transaction state after this commit (base64url).
+	TS string `json:"ts,omitempty"`
+	// AS is the auth state after this commit (base64url).
+	AS string `json:"as,omitempty"`
+	// PS is the principal state after this commit (base64url).
+	PS string `json:"ps,omitempty"`
 }
 
 // GoldenExpected contains expected state assertions.
@@ -112,9 +127,9 @@ func LoadGoldenDir(dir string) ([]*Golden, error) {
 	return goldens, nil
 }
 
-// IsGenesisOnly returns true if this test has no entries.
+// IsGenesisOnly returns true if this test has no transactions.
 func (g *Golden) IsGenesisOnly() bool {
-	return len(g.Entries) == 0
+	return len(g.Commits) == 0 && len(g.Entries) == 0
 }
 
 // IsErrorTest returns true if this test expects an error.
@@ -122,7 +137,26 @@ func (g *Golden) IsErrorTest() bool {
 	return g.Expected.Error != ""
 }
 
-// EntryCount returns the number of entries.
+// EntryCount returns the number of entries (from commits or legacy entries).
 func (g *Golden) EntryCount() int {
+	if len(g.Commits) > 0 {
+		count := 0
+		for _, c := range g.Commits {
+			count += len(c.Txs)
+		}
+		return count
+	}
 	return len(g.Entries)
+}
+
+// FlattenEntries returns all transaction entries from commits or legacy entries.
+func (g *Golden) FlattenEntries() []json.RawMessage {
+	if len(g.Commits) > 0 {
+		var entries []json.RawMessage
+		for _, c := range g.Commits {
+			entries = append(entries, c.Txs...)
+		}
+		return entries
+	}
+	return g.Entries
 }
