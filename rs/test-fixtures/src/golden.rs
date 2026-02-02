@@ -975,8 +975,20 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // id field for key/create (target key thumbprint)
-        if let Some(target_name) = &crypto.target {
+        // commit field (for principal/create finalization)
+        if pay.commit == Some(true) {
+            fields.insert("commit".to_string(), Value::Bool(true));
+        }
+
+        // id field handling depends on transaction type
+        let is_principal_create = pay.typ.contains("principal/create");
+        if is_principal_create {
+            // For principal/create, id is the current auth state (same as pre)
+            if let Some(pre_val) = pre {
+                fields.insert("id".to_string(), Value::String(pre_val.to_string()));
+            }
+        } else if let Some(target_name) = &crypto.target {
+            // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
             let target_tmb = target.compute_tmb_b64()?;
             fields.insert("id".to_string(), Value::String(target_tmb));

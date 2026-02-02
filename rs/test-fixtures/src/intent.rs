@@ -84,6 +84,9 @@ pub struct PayIntent {
     /// Optional revocation timestamp.
     #[serde(default)]
     pub rvk: Option<i64>,
+    /// Commit flag (for principal/create finalization).
+    #[serde(default)]
+    pub commit: Option<bool>,
 }
 
 /// Crypto fields for a test step.

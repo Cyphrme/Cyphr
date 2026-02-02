@@ -93,20 +93,22 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
 
 /// Compare exported commits against expected commits.
 /// Returns ok if semantically equivalent.
-/// Note: expected may contain action pseudo-commits (typ not starting with "cyphr.me/key/")
-/// which are filtered out since export_commits only exports transactions.
+/// Note: expected may contain action pseudo-commits which are filtered out
+/// since export_commits only exports transactions.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
     // Filter expected to only transaction commits (exclude action pseudo-commits)
-    // Action commits have typ field not starting with "cyphr.me/key/"
+    // Transactions: key/* and principal/create
     let tx_commits: Vec<_> = expected
         .iter()
         .filter(|c| {
-            // A commit is a transaction commit if its first tx has typ starting with "cyphr.me/key/"
+            // A commit is a transaction commit if its first tx has a transaction typ
             c.txs.first().map_or(false, |tx| {
                 tx.get("pay")
                     .and_then(|p| p.get("typ"))
                     .and_then(|t| t.as_str())
-                    .map_or(false, |typ| typ.starts_with("cyphr.me/key/"))
+                    .map_or(false, |typ| {
+                        typ.contains("/key/") || typ.contains("/principal/create")
+                    })
             })
         })
         .collect();

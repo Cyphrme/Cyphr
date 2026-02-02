@@ -63,16 +63,36 @@ typ    = "cyphr.me/action"
 key_count = 1
 level     = 4
 
-# Multi-key genesis round-trip (explicit genesis with 2 keys)
+# Multi-key genesis round-trip (explicit genesis via transactions)
+# Per SPEC §5.1: implicit first key + key/create + principal/create
 [[test]]
 name      = "rt_multi_key_genesis"
-principal = ["alice", "bob"]
+principal = ["alice"]              # Start with single implicit key
 
-[test.pay]
-now = 1700000000
+[[test.step]]
+[test.step.pay]
+now = 1700000001
 typ = "cyphr.me/key/create"
 
-[test.crypto]
+[test.step.crypto]
+signer = "alice"
+target = "bob"
+
+[[test.step]]
+[test.step.pay]
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/principal/create"
+
+[test.step.crypto]
+signer = "alice"
+
+[[test.step]]
+[test.step.pay]
+now = 1700000003
+typ = "cyphr.me/key/create"
+
+[test.step.crypto]
 signer = "alice"
 target = "key_a"
 

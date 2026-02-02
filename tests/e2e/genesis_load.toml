@@ -13,10 +13,29 @@ key_count = 1
 level     = 1
 # PR should equal the genesis key thumbprint for implicit genesis
 
-# Explicit genesis: multiple keys, PR = H(sort(tmbs))
+# Explicit genesis: single implicit key + key/create + principal/create
+# Per SPEC §5.1: implicit first key model
 [[test]]
 name      = "load_explicit_genesis"
-principal = ["alice", "bob"]
+principal = ["alice"]               # Start with single implicit key
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/create"
+
+[test.step.crypto]
+signer = "alice"
+target = "bob"
+
+[[test.step]]
+[test.step.pay]
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/principal/create"
+
+[test.step.crypto]
+signer = "alice"
 
 [test.expected]
 key_count = 2

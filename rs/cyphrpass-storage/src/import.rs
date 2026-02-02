@@ -101,6 +101,14 @@ pub enum LoadError {
     UnsupportedAlgorithm,
 }
 
+/// Determine if a typ string represents a transaction (not an action).
+///
+/// Transactions are: key/*, principal/create
+/// Everything else is an action.
+fn is_transaction_typ(typ: &str) -> bool {
+    typ.contains("/key/") || typ.contains("/principal/create")
+}
+
 // ============================================================================
 // Import Functions
 // ============================================================================
@@ -289,7 +297,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
         // Determine if this is a transaction or action by typ prefix
         let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
-        if typ.contains("/key/") {
+        if is_transaction_typ(typ) {
             // Transaction: extract key material if present
             let new_key = extract_key_from_entry(&raw);
 
@@ -398,7 +406,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
             // Determine if this is a transaction or action by typ prefix
             let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
-            if typ.contains("/key/") {
+            if is_transaction_typ(typ) {
                 // Transaction: extract key material if present
                 let new_key = extract_key_from_entry(tx_value);
 

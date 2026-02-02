@@ -14,10 +14,28 @@ principal = ["golden"]
 key_count = 1
 level     = 1
 
-# KS = H(sort(tmb₀, tmb₁)) for multi-key (SPEC §7.1)
+# KS = H(sort(tmb₀, tmb₁)) for multi-key via genesis transactions (SPEC §7.1)
 [[test]]
 name      = "ks_two_keys_sorted"
-principal = ["golden", "key_a"]
+principal = ["golden"]           # Start with single implicit key
+
+[[test.step]]
+[test.step.pay]
+now = 1700000001
+typ = "cyphr.me/key/create"
+
+[test.step.crypto]
+signer = "golden"
+target = "key_a"
+
+[[test.step]]
+[test.step.pay]
+commit = true
+now    = 1700000002
+typ    = "cyphr.me/principal/create"
+
+[test.step.crypto]
+signer = "golden"
 
 [test.expected]
 key_count = 2
