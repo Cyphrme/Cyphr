@@ -440,7 +440,7 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 	}
 
 	switch tx.Kind {
-	case TxKeyAdd:
+	case TxKeyCreate:
 		if err := p.verifyPre(tx.Pre); err != nil {
 			return err
 		}
@@ -490,6 +490,17 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		if err := p.revokeKey(tx.ID, tx.Rvk, tx.Signer); err != nil {
 			return err
 		}
+
+	case TxPrincipalCreate:
+		// SPEC §5.1: Genesis finalization. Verify pre matches AS and id matches AS.
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
+		// id must equal current AS (self-referential for genesis finalization)
+		if !bytes.Equal(tx.ID, coz.B64(p.as)) {
+			return ErrMalformedPayload
+		}
+		// No state mutation needed; transaction is recorded for chain continuity
 	}
 
 	// Update signer's last_used timestamp

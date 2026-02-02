@@ -9,28 +9,31 @@ import (
 // Transaction type constants per SPEC §4.2.
 // These are typ suffixes; full typ is "<authority>/<suffix>".
 const (
-	TypKeyAdd     = "key/add"
+	TypKeyCreate  = "key/create" // SPEC §4.2
 	TypKeyDelete  = "key/delete"
 	TypKeyReplace = "key/replace"
 	TypKeyRevoke  = "key/revoke"
+
+	TypPrincipalCreate = "principal/create" // SPEC §5.1 genesis finalization
 )
 
 // TransactionKind represents the type of auth mutation.
 type TransactionKind int
 
 const (
-	TxKeyAdd TransactionKind = iota
+	TxKeyCreate TransactionKind = iota
 	TxKeyDelete
 	TxKeyReplace
 	TxSelfRevoke
 	TxOtherRevoke
+	TxPrincipalCreate // SPEC §5.1 genesis finalization
 )
 
 // String returns the string representation of a TransactionKind.
 func (k TransactionKind) String() string {
 	switch k {
-	case TxKeyAdd:
-		return "key/add"
+	case TxKeyCreate:
+		return "key/create"
 	case TxKeyDelete:
 		return "key/delete"
 	case TxKeyReplace:
@@ -39,6 +42,8 @@ func (k TransactionKind) String() string {
 		return "key/revoke (self)"
 	case TxOtherRevoke:
 		return "key/revoke (other)"
+	case TxPrincipalCreate:
+		return "principal/create"
 	default:
 		return "unknown"
 	}
@@ -105,8 +110,8 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 	suffix := typSuffix(pay.Typ)
 
 	switch suffix {
-	case TypKeyAdd:
-		tx.Kind = TxKeyAdd
+	case TypKeyCreate:
+		tx.Kind = TxKeyCreate
 		if err := tx.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
@@ -147,6 +152,16 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 		}
 		if pay.Rvk == 0 {
 			return nil, ErrMalformedPayload
+		}
+
+	case TypPrincipalCreate:
+		// SPEC §5.1: Genesis finalization transaction
+		tx.Kind = TxPrincipalCreate
+		if err := tx.parsePre(pay.Pre); err != nil {
+			return nil, err
+		}
+		if err := tx.parseID(pay.ID); err != nil {
+			return nil, err
 		}
 
 	default:

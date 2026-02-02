@@ -148,7 +148,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 
 	key2 := makeTestCozKey(0x22)
 	tx := &Transaction{
-		Kind:   TxKeyAdd,
+		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
@@ -189,7 +189,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 	key2 := makeTestCozKey(0x22)
 	wrongPre := AuthState(bytes.Repeat([]byte{0xFF}, 32))
 	tx := &Transaction{
-		Kind:   TxKeyAdd,
+		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
@@ -238,7 +238,7 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 
 	key2 := makeTestCozKey(0x22)
 	tx := &Transaction{
-		Kind:   TxKeyAdd,
+		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
