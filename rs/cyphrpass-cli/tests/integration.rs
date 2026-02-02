@@ -110,15 +110,21 @@ fn test_key_lifecycle() {
     let keys = list_result["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "should have 2 active keys");
 
-    // 4. Revoke the new key
+    // 4. Revoke the new key (self-revoke: the key signs its own revocation)
+    // Per SPEC §4.2.4, only self-revoke is supported
     let key_arg = format!("--key={new_key_tmb}");
-    let _ = cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &signer_arg]);
+    let new_key_signer = format!("--signer={new_key_tmb}");
+    let _ = cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &new_key_signer]);
 
     // 5. List keys - should show only genesis
     let list_result = cli.run_json(&["key", "list", &identity_arg]);
     let keys = list_result["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 1, "should have 1 active key after revoke");
-    assert_eq!(keys[0]["tmb"], genesis_tmb);
+    // Key order is not guaranteed, check that genesis key is present
+    assert!(
+        keys.iter().any(|k| k["tmb"].as_str() == Some(genesis_tmb)),
+        "genesis key should be in active keys"
+    );
 }
 
 #[test]
@@ -136,13 +142,8 @@ fn test_export_import_roundtrip() {
 
     // 2. Export to file
     let export_path = cli.temp_dir.path().join("export.jsonl");
-    let _ = cli.run_ok(&[
-        "export",
-        "--identity",
-        genesis_tmb,
-        "--output",
-        export_path.to_str().unwrap(),
-    ]);
+    let output_path_arg = format!("--output={}", export_path.to_str().unwrap());
+    let _ = cli.run_ok(&["export", &identity_arg, &output_path_arg]);
 
     assert!(export_path.exists(), "export file should exist");
 
@@ -344,14 +345,21 @@ fn test_full_workflow() {
     cli.run_ok(&["export", &identity_arg, &output_arg]);
     assert!(export_path.exists());
 
-    // 10. Revoke the second key
-    cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &signer_arg]);
+    // 10. Revoke the second key (self-revoke: the key signs its own revocation)
+    let second_key_signer = format!("--signer={second_key}");
+    cli.run_ok(&["key", "revoke", &identity_arg, &key_arg, &second_key_signer]);
 
     // 11. Verify final state - only genesis key remains
     let final_list = cli.run_json(&["key", "list", &identity_arg]);
     let final_keys = final_list["active_keys"].as_array().unwrap();
     assert_eq!(final_keys.len(), 1);
-    assert_eq!(final_keys[0]["tmb"].as_str().unwrap(), genesis_tmb);
+    // Key order is not guaranteed, check that genesis key is present
+    assert!(
+        final_keys
+            .iter()
+            .any(|k| k["tmb"].as_str() == Some(genesis_tmb)),
+        "genesis key should be in final active keys"
+    );
 
     // 12. Check tx list shows 2 transactions (add + revoke)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);

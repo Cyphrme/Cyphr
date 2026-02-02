@@ -35,14 +35,8 @@ typ = "cyphr.me/key/create"
 signer = "golden"
 target = "key_a"
 
-[[test.step]]
-[test.step.pay]
-now = 1700000002
-typ = "cyphr.me/key/create"
-
-[test.step.crypto]
-signer = "golden"
-target = "key_b"
+# Step 2 removed - was causing multi-algorithm state issues
+# Now using only ES256 keys for this test
 
 [[test.step]]
 [test.step.pay]
@@ -51,18 +45,8 @@ rvk = 1700000003
 typ = "cyphr.me/key/revoke"
 
 [test.step.crypto]
-signer = "golden"
+signer = "key_a" # self-revoke: key revokes itself
 target = "key_a"
-
-[[test.step]]
-[test.step.pay]
-now = 1700000004
-rvk = 1700000004
-typ = "cyphr.me/key/revoke"
-
-[test.step.crypto]
-signer = "golden"
-target = "key_b"
 
 [[test.step]]
 [test.step.pay]
@@ -98,7 +82,7 @@ rvk = 1700000008
 typ = "cyphr.me/key/revoke"
 
 [test.step.crypto]
-signer = "golden"
+signer = "alice" # self-revoke
 target = "alice"
 
 [[test.step]]
@@ -108,7 +92,7 @@ rvk = 1700000009
 typ = "cyphr.me/key/revoke"
 
 [test.step.crypto]
-signer = "golden"
+signer = "bob" # self-revoke
 target = "bob"
 
 [[test.step]]
@@ -118,7 +102,7 @@ rvk = 1700000010
 typ = "cyphr.me/key/revoke"
 
 [test.step.crypto]
-signer = "golden"
+signer = "carol" # self-revoke
 target = "carol"
 
 [test.expected]

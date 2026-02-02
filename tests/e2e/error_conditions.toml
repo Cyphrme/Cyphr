@@ -90,7 +90,7 @@ target = "key_a"
 [test.expected]
 error = "DuplicateKey"
 
-# Revoked signer: signer key has been revoked by a previous transaction
+# Revoked signer: signer key has been revoked (self-revoke), then tries to sign
 [[test]]
 name      = "err_revoked_signer"
 principal = ["alice", "bob"]
@@ -102,7 +102,7 @@ rvk = 1700000001
 typ = "cyphr.me/key/revoke"
 
 [test.step.crypto]
-signer = "bob"
+signer = "alice" # self-revoke: alice revokes herself
 target = "alice"
 
 [[test.step]]
