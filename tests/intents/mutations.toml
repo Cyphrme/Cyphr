@@ -83,23 +83,6 @@ signer = "key_a"
 [test.expected]
 key_count = 1
 
-# Test 6: Cross-key revocation (one key revokes another)
-[[test]]
-name      = "other_revoke_by_peer"
-principal = ["golden", "key_a"]
-
-[test.pay]
-now = 1700000000
-rvk = 1700000000
-typ = "cyphr.me/key/revoke"
-
-[test.crypto]
-signer = "golden"
-target = "key_a"
-
-[test.expected]
-key_count = 1
-
 # Test 7: Multi-step transaction sequence
 [[test]]
 name      = "transaction_sequence_replay"

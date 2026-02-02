@@ -714,10 +714,6 @@ impl Principal {
             TransactionKind::SelfRevoke { rvk } => {
                 self.revoke_key(&tx.signer, *rvk, None)?;
             },
-            TransactionKind::OtherRevoke { pre, id, rvk } => {
-                self.verify_pre(pre)?;
-                self.revoke_key(id, *rvk, Some(tx.signer.clone()))?;
-            },
         }
 
         // Update signer's last_used timestamp
@@ -1296,18 +1292,14 @@ mod tests {
 
         assert_eq!(principal.active_key_count(), 2);
 
-        // Revoke key2 via other-revoke
+        // Revoke key2 via self-revoke (key2 revokes itself)
         use coz::Czd;
 
         use crate::transaction::{Transaction, TransactionKind};
 
         let tx = Transaction {
-            kind: TransactionKind::OtherRevoke {
-                pre: principal.auth_state().clone(),
-                id: key2.tmb.clone(),
-                rvk: 2000,
-            },
-            signer: key1.tmb.clone(),
+            kind: TransactionKind::SelfRevoke { rvk: 2000 },
+            signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             raw: dummy_coz_json(),
@@ -1359,14 +1351,10 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        // Revoke key2
+        // Revoke key2 (self-revoke)
         let tx = Transaction {
-            kind: TransactionKind::OtherRevoke {
-                pre: principal.auth_state().clone(),
-                id: key2.tmb.clone(),
-                rvk: 1500,
-            },
-            signer: key1.tmb.clone(),
+            kind: TransactionKind::SelfRevoke { rvk: 1500 },
+            signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             raw: dummy_coz_json(),

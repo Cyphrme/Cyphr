@@ -57,16 +57,6 @@ pub enum TransactionKind {
         /// Revocation timestamp.
         rvk: i64,
     },
-
-    /// Other-revoke (Level 3+) - SPEC §4.2.5
-    OtherRevoke {
-        /// Previous Auth State.
-        pre: AuthState,
-        /// Thumbprint of key to revoke.
-        id: Thumbprint,
-        /// Revocation timestamp.
-        rvk: i64,
-    },
 }
 
 impl std::fmt::Display for TransactionKind {
@@ -75,8 +65,7 @@ impl std::fmt::Display for TransactionKind {
             TransactionKind::KeyCreate { .. } => write!(f, "key/create"),
             TransactionKind::KeyDelete { .. } => write!(f, "key/delete"),
             TransactionKind::KeyReplace { .. } => write!(f, "key/replace"),
-            TransactionKind::SelfRevoke { .. } => write!(f, "key/revoke (self)"),
-            TransactionKind::OtherRevoke { .. } => write!(f, "key/revoke (other)"),
+            TransactionKind::SelfRevoke { .. } => write!(f, "key/revoke"),
         }
     }
 }
@@ -179,7 +168,7 @@ impl Transaction {
     }
 
     /// Parse the transaction kind from typ and payload fields.
-    fn parse_kind(pay: &Pay, typ: &str, signer: &Thumbprint) -> Result<TransactionKind> {
+    fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<TransactionKind> {
         // Check if typ ends with a known transaction type
         if typ.ends_with(typ::KEY_CREATE) {
             let pre = Self::extract_pre(pay)?;
@@ -195,16 +184,8 @@ impl Transaction {
             Ok(TransactionKind::KeyReplace { pre, id })
         } else if typ.ends_with(typ::KEY_REVOKE) {
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
-
-            // Distinguish self-revoke from other-revoke
-            if let Some(id) = Self::try_extract_id(pay) {
-                // Other-revoke: has `id` field different from signer
-                if id.to_b64() != signer.to_b64() {
-                    let pre = Self::extract_pre(pay)?;
-                    return Ok(TransactionKind::OtherRevoke { pre, id, rvk });
-                }
-            }
-            // Self-revoke: no `id` or `id` == signer
+            // All key/revoke transactions are self-revoke (SPEC §4.2.4)
+            // Other-revoke was removed per zami's directive
             Ok(TransactionKind::SelfRevoke { rvk })
         } else {
             Err(Error::MalformedPayload)
@@ -422,27 +403,6 @@ mod tests {
         let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::SelfRevoke { rvk: 1000 }));
-    }
-
-    #[test]
-    fn parse_other_revoke() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/revoke")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .rvk(2000)
-            .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
-        pay.extra.insert("id".into(), json!(TEST_ID));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert!(matches!(
-            tx.kind,
-            TransactionKind::OtherRevoke { rvk: 2000, .. }
-        ));
     }
 
     #[test]
