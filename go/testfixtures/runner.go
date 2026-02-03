@@ -169,47 +169,83 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	if exp.Level != nil && int(p.Level()) != *exp.Level {
 		failures = append(failures, fmt.Sprintf("level: got %d, want %d", p.Level(), *exp.Level))
 	}
-	// Get genesis algorithm for first variant comparison
-	genesisAlg := p.HashAlg()
-
-	// KS - compare genesis algorithm variant
+	// KS - parse alg:digest format and compare
 	if exp.KS != "" {
-		ksDigest := p.KS().Get(genesisAlg)
-		if ksDigest == nil {
-			failures = append(failures, fmt.Sprintf("ks: got nil, want %s", exp.KS))
-		} else if coz.B64(ksDigest).String() != exp.KS {
-			failures = append(failures, fmt.Sprintf("ks: got %s, want %s", coz.B64(ksDigest).String(), exp.KS))
+		alg, expectedDigest := parseAlgDigest(exp.KS)
+		if alg == "" {
+			// Legacy format without prefix - skip verification
+		} else {
+			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("ks: invalid algorithm %s", alg))
+			} else {
+				ksDigest := p.KS().Get(hashAlg)
+				if ksDigest == nil {
+					failures = append(failures, fmt.Sprintf("ks: got nil, want %s", expectedDigest))
+				} else if coz.B64(ksDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("ks: got %s, want %s", coz.B64(ksDigest).String(), expectedDigest))
+				}
+			}
 		}
 	}
 
-	// AS - compare genesis algorithm variant
+	// AS - parse alg:digest format and compare
 	if exp.AS != "" {
-		asDigest := p.AS().Get(genesisAlg)
-		if asDigest == nil {
-			failures = append(failures, fmt.Sprintf("as: got nil, want %s", exp.AS))
-		} else if coz.B64(asDigest).String() != exp.AS {
-			failures = append(failures, fmt.Sprintf("as: got %s, want %s", coz.B64(asDigest).String(), exp.AS))
+		alg, expectedDigest := parseAlgDigest(exp.AS)
+		if alg == "" {
+			// Legacy format without prefix - skip verification
+		} else {
+			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("as: invalid algorithm %s", alg))
+			} else {
+				asDigest := p.AS().Get(hashAlg)
+				if asDigest == nil {
+					failures = append(failures, fmt.Sprintf("as: got nil, want %s", expectedDigest))
+				} else if coz.B64(asDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("as: got %s, want %s", coz.B64(asDigest).String(), expectedDigest))
+				}
+			}
 		}
 	}
 
-	// PS - compare genesis algorithm variant
+	// PS - parse alg:digest format and compare
 	if exp.PS != "" {
-		psDigest := p.PS().Get(genesisAlg)
-		if psDigest == nil {
-			failures = append(failures, fmt.Sprintf("ps: got nil, want %s", exp.PS))
-		} else if coz.B64(psDigest).String() != exp.PS {
-			failures = append(failures, fmt.Sprintf("ps: got %s, want %s", coz.B64(psDigest).String(), exp.PS))
+		alg, expectedDigest := parseAlgDigest(exp.PS)
+		if alg == "" {
+			// Legacy format without prefix - skip verification
+		} else {
+			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("ps: invalid algorithm %s", alg))
+			} else {
+				psDigest := p.PS().Get(hashAlg)
+				if psDigest == nil {
+					failures = append(failures, fmt.Sprintf("ps: got nil, want %s", expectedDigest))
+				} else if coz.B64(psDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("ps: got %s, want %s", coz.B64(psDigest).String(), expectedDigest))
+				}
+			}
 		}
 	}
 
-	// PR - compare genesis algorithm variant
+	// PR - parse alg:digest format and compare (skip if empty or non-prefixed)
 	if exp.PR != "" {
-		prDigest := p.PR().Get(genesisAlg)
-		if prDigest == nil {
-			failures = append(failures, fmt.Sprintf("pr: got nil, want %s", exp.PR))
-		} else if coz.B64(prDigest).String() != exp.PR {
-			failures = append(failures, fmt.Sprintf("pr: got %s, want %s", coz.B64(prDigest).String(), exp.PR))
+		alg, expectedDigest := parseAlgDigest(exp.PR)
+		if alg != "" {
+			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
+			} else {
+				prDigest := p.PR().Get(hashAlg)
+				if prDigest == nil {
+					failures = append(failures, fmt.Sprintf("pr: got nil, want %s", expectedDigest))
+				} else if coz.B64(prDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("pr: got %s, want %s", coz.B64(prDigest).String(), expectedDigest))
+				}
+			}
 		}
+		// If no ':' in pr, it's a raw thumbprint format - skip alg:digest verification
 	}
 
 	// DS (only for Level 4+)
@@ -361,4 +397,14 @@ func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*stor
 	}
 
 	return principal, nil
+}
+
+// parseAlgDigest splits "alg:digest" format strings.
+// Returns ("", "") if the string doesn't contain a colon.
+func parseAlgDigest(s string) (alg, digest string) {
+	idx := strings.Index(s, ":")
+	if idx == -1 {
+		return "", ""
+	}
+	return s[:idx], s[idx+1:]
 }

@@ -29,9 +29,9 @@
           }
         }
       ],
-      "ts": "TQ1lehgjrT6IxG4rv7FJ-2oDzZ61fMSePbpXhvv3yQs",
-      "as": "2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
-      "ps": "2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE"
+      "ts": "SHA-256:TQ1lehgjrT6IxG4rv7FJ-2oDzZ61fMSePbpXhvv3yQs",
+      "as": "SHA-256:2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
+      "ps": "SHA-256:2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE"
     },
     {
       "txs": [
@@ -65,10 +65,10 @@
   "expected": {
     "key_count": 2,
     "level": 3,
-    "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
-    "ps": "2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
-    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "as": "SHA-256:2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
+    "ps": "SHA-256:2v4JmEfxDIitrmmDYmID1fpPX_DH8N9tuLGmQJIRfxE",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "error": "TimestampPast"
   }
 }

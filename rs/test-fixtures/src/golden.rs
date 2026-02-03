@@ -1144,30 +1144,37 @@ impl<'a> Generator<'a> {
         principal: &cyphrpass::Principal,
         intent_expected: Option<&ExpectedAssertions>,
     ) -> GoldenExpected {
-        // Compute state digests from principal (first variant)
+        // Get lexicographically first algorithm for deterministic ordering
+        let first_alg = principal
+            .active_algs()
+            .first()
+            .copied()
+            .expect("Principal must have at least one active algorithm");
+
+        // Compute state digests with algorithm prefix (alg:digest format)
         let ks = {
             let ks_state = principal.key_state();
             ks_state
-                .get(principal.hash_alg())
-                .map(Base64UrlUnpadded::encode_string)
+                .get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
                 .unwrap_or_default()
         };
         let auth_state = principal
             .auth_state()
-            .get(principal.hash_alg())
-            .map(Base64UrlUnpadded::encode_string)
+            .get(first_alg)
+            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
         let ps = principal
             .ps()
-            .get(principal.hash_alg())
-            .map(Base64UrlUnpadded::encode_string)
+            .get(first_alg)
+            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
         let ts = principal.transactions().last().and(None::<String>);
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
-            .get(principal.hash_alg())
-            .map(Base64UrlUnpadded::encode_string)
+            .get(first_alg)
+            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();

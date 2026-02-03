@@ -29,18 +29,18 @@
           }
         }
       ],
-      "ts": "5FPDmCO4kOeZywthwO7nTeVFJpg_iuaTkzAipl5rbv4",
-      "as": "yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
-      "ps": "yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s"
+      "ts": "SHA-256:5FPDmCO4kOeZywthwO7nTeVFJpg_iuaTkzAipl5rbv4",
+      "as": "SHA-256:yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
+      "ps": "SHA-256:yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s"
     }
   ],
   "digests": ["5FPDmCO4kOeZywthwO7nTeVFJpg_iuaTkzAipl5rbv4"],
   "expected": {
     "key_count": 2,
     "level": 3,
-    "ks": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
-    "ps": "yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
-    "pr": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "as": "SHA-256:yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
+    "ps": "SHA-256:yMBg2WgDvVXiPTI4Dy0Gp2f6eOPwgiklF4hniwpqv9s",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   }
 }

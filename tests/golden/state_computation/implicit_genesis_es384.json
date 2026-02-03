@@ -13,9 +13,9 @@
   "expected": {
     "key_count": 1,
     "level": 1,
-    "ks": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "as": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "ps": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "pr": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    "ks": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "as": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "ps": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
   }
 }

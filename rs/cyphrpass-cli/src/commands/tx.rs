@@ -169,10 +169,13 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         .map(|b| Base64UrlUnpadded::encode_string(b))
         .expect("PrincipalState must have at least one variant");
 
-    if computed_ps != last_commit.ps {
+    // Parse stored ps which may be in "alg:digest" format
+    let stored_ps_digest = last_commit.ps.split(':').last().unwrap_or(&last_commit.ps);
+
+    if computed_ps != stored_ps_digest {
         return Err(format!(
             "PS mismatch: computed {} != stored {}",
-            computed_ps, last_commit.ps
+            computed_ps, stored_ps_digest
         )
         .into());
     }

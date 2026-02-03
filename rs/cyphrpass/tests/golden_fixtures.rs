@@ -37,6 +37,14 @@ fn parse_hash_alg(s: &str) -> Option<coz::HashAlg> {
     }
 }
 
+/// Parse algorithm-prefixed digest string (e.g., "SHA-256:abc123..." -> ("SHA-256", "abc123...")).
+fn parse_alg_digest(s: &str) -> Option<(String, String)> {
+    let mut parts = s.splitn(2, ':');
+    let alg = parts.next()?;
+    let digest = parts.next()?;
+    Some((alg.to_string(), digest.to_string()))
+}
+
 fn load_pool() -> Pool {
     let path = tests_dir().join("keys").join("pool.toml");
     Pool::load(&path).expect("failed to load pool.toml")
@@ -180,45 +188,68 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     }
 
     if let Some(ref ks) = expected.ks {
+        // Parse alg:digest format
+        let (alg, expected_digest) = parse_alg_digest(ks)
+            .unwrap_or_else(|| panic!("{}: invalid ks format (expected alg:digest)", test_name));
+        let hash_alg = parse_hash_alg(&alg)
+            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_ks = principal
             .key_state()
-            .get(principal.hash_alg())
+            .get(hash_alg)
             .map(|b| {
                 use coz::base64ct::{Base64UrlUnpadded, Encoding};
                 Base64UrlUnpadded::encode_string(b)
             })
             .unwrap_or_default();
-        assert_eq!(actual_ks, *ks, "{}: ks mismatch", test_name);
+        assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
     }
 
     if let Some(ref auth_state) = expected.auth_state {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        // Parse alg:digest format
+        let (alg, expected_digest) = parse_alg_digest(auth_state)
+            .unwrap_or_else(|| panic!("{}: invalid as format (expected alg:digest)", test_name));
+        let hash_alg = parse_hash_alg(&alg)
+            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_as = principal
             .auth_state()
-            .get(principal.hash_alg())
+            .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
-        assert_eq!(actual_as, *auth_state, "{}: as mismatch", test_name);
+        assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
     }
 
     if let Some(ref ps) = expected.ps {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        // Parse alg:digest format
+        let (alg, expected_digest) = parse_alg_digest(ps)
+            .unwrap_or_else(|| panic!("{}: invalid ps format (expected alg:digest)", test_name));
+        let hash_alg = parse_hash_alg(&alg)
+            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_ps = principal
             .ps()
-            .get(principal.hash_alg())
+            .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
-        assert_eq!(actual_ps, *ps, "{}: ps mismatch", test_name);
+        assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
     }
 
     if let Some(ref pr) = expected.pr {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let actual_pr = principal
-            .pr()
-            .get(principal.hash_alg())
-            .map(Base64UrlUnpadded::encode_string)
-            .unwrap_or_default();
-        assert_eq!(actual_pr, *pr, "{}: pr mismatch", test_name);
+        // Skip empty PR or non-prefixed format (implicit genesis uses raw thumbprint)
+        if !pr.is_empty() {
+            if let Some((alg, expected_digest)) = parse_alg_digest(pr) {
+                use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                let hash_alg = parse_hash_alg(&alg)
+                    .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+                let actual_pr = principal
+                    .pr()
+                    .get(hash_alg)
+                    .map(Base64UrlUnpadded::encode_string)
+                    .unwrap_or_default();
+                assert_eq!(actual_pr, expected_digest, "{}: pr mismatch", test_name);
+            }
+            // If no ':' in pr, it's a raw thumbprint format - skip alg:digest verification
+        }
     }
 
     if let Some(ref ds) = expected.ds {

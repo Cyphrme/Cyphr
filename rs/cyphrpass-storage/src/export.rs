@@ -107,32 +107,40 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
             txs.push(raw);
         }
 
-        // Get state digests as base64url strings
-        // Extract TS variant (use first available algorithm from multihash)
-        let ts = commit
-            .ts()
-            .as_multihash()
-            .variants()
-            .values()
+        // Get state digests as algorithm-prefixed strings (alg:digest format)
+        // Use lexicographically first algorithm for deterministic ordering
+        let ts_mh = commit.ts().as_multihash();
+        let ts_alg = ts_mh
+            .algorithms()
             .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
             .expect("TransactionState must have at least one variant");
-        let auth_state = commit
-            .auth_state()
-            .as_multihash()
-            .variants()
-            .values()
+        let ts = format!(
+            "{}:{}",
+            ts_alg,
+            Base64UrlUnpadded::encode_string(ts_mh.get(ts_alg).unwrap())
+        );
+
+        let as_mh = commit.auth_state().as_multihash();
+        let as_alg = as_mh
+            .algorithms()
             .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
             .expect("AuthState must have at least one variant");
-        let ps = commit
-            .ps()
-            .as_multihash()
-            .variants()
-            .values()
+        let auth_state = format!(
+            "{}:{}",
+            as_alg,
+            Base64UrlUnpadded::encode_string(as_mh.get(as_alg).unwrap())
+        );
+
+        let ps_mh = commit.ps().as_multihash();
+        let ps_alg = ps_mh
+            .algorithms()
             .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
             .expect("PrincipalState must have at least one variant");
+        let ps = format!(
+            "{}:{}",
+            ps_alg,
+            Base64UrlUnpadded::encode_string(ps_mh.get(ps_alg).unwrap())
+        );
 
         commit_entries.push(CommitEntry::new(txs, ts, auth_state, ps));
     }
