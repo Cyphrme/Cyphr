@@ -91,6 +91,93 @@ func ParseHashAlg(s string) (HashAlg, error) {
 	}
 }
 
+// DigestLength returns the expected byte length for a hash algorithm.
+func (h HashAlg) DigestLength() int {
+	switch h {
+	case HashSha256:
+		return 32
+	case HashSha384:
+		return 48
+	case HashSha512:
+		return 64
+	default:
+		return 0
+	}
+}
+
+// TaggedDigest is a digest with its algorithm explicitly specified.
+// Format: "ALG:base64url" (e.g., "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg").
+// This enforces "Parse, Don't Validate" at the wire boundary.
+type TaggedDigest struct {
+	Alg    HashAlg
+	Digest coz.B64
+}
+
+// ParseTaggedDigest parses an "ALG:digest" string.
+// Returns an error if:
+// - Format is invalid (missing colon)
+// - Algorithm is unsupported
+// - Digest length doesn't match algorithm requirements
+func ParseTaggedDigest(s string) (TaggedDigest, error) {
+	idx := -1
+	for i, c := range s {
+		if c == ':' {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return TaggedDigest{}, fmt.Errorf("invalid tagged digest format: missing ':' separator in %q", s)
+	}
+
+	algStr := s[:idx]
+	digestStr := s[idx+1:]
+
+	alg, err := ParseHashAlg(algStr)
+	if err != nil {
+		return TaggedDigest{}, fmt.Errorf("invalid tagged digest: %w", err)
+	}
+
+	digest, err := coz.Decode(digestStr)
+	if err != nil {
+		return TaggedDigest{}, fmt.Errorf("invalid tagged digest: base64 decode failed: %w", err)
+	}
+
+	// Validate digest length matches algorithm
+	expectedLen := alg.DigestLength()
+	if len(digest) != expectedLen {
+		return TaggedDigest{}, fmt.Errorf("invalid tagged digest: expected %d bytes for %s, got %d", expectedLen, alg, len(digest))
+	}
+
+	return TaggedDigest{Alg: alg, Digest: digest}, nil
+}
+
+// String returns the canonical "ALG:base64url" representation.
+func (td TaggedDigest) String() string {
+	return fmt.Sprintf("%s:%s", td.Alg, td.Digest.String())
+}
+
+// MarshalJSON implements json.Marshaler.
+func (td TaggedDigest) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + td.String() + `"`), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
+	// Remove quotes
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return fmt.Errorf("invalid tagged digest JSON: expected quoted string")
+	}
+	s := string(data[1 : len(data)-1])
+
+	parsed, err := ParseTaggedDigest(s)
+	if err != nil {
+		return err
+	}
+	*td = parsed
+	return nil
+}
+
 // String methods for state types (return base64 of first variant for compatibility).
 func (s KeyState) String() string         { return s.First().String() }
 func (s TransactionState) String() string { return s.First().String() }

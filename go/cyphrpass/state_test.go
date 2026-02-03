@@ -191,3 +191,152 @@ func TestMultihashDigest_Variants(t *testing.T) {
 		t.Error("First() should return SHA-256 variant")
 	}
 }
+
+func TestParseTaggedDigest_Valid(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		alg    HashAlg
+		digest string
+	}{
+		{
+			name:   "SHA-256 golden",
+			input:  "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+			alg:    HashSha256,
+			digest: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+		},
+		{
+			name:   "SHA-384",
+			input:  "SHA-384:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			alg:    HashSha384,
+			digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		},
+		{
+			name:   "SHA-512",
+			input:  "SHA-512:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			alg:    HashSha512,
+			digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			td, err := ParseTaggedDigest(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if td.Alg != tt.alg {
+				t.Errorf("Alg = %v, want %v", td.Alg, tt.alg)
+			}
+			expectedDigest, _ := coz.Decode(tt.digest)
+			if !bytes.Equal(td.Digest, expectedDigest) {
+				t.Errorf("Digest mismatch")
+			}
+		})
+	}
+}
+
+func TestParseTaggedDigest_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{
+			name:    "missing separator",
+			input:   "SHA-256U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+			wantErr: "missing ':'",
+		},
+		{
+			name:    "unsupported algorithm",
+			input:   "MD5:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+			wantErr: "unsupported hash algorithm",
+		},
+		{
+			name:    "wrong length for SHA-256",
+			input:   "SHA-256:AAAA",
+			wantErr: "expected 32 bytes",
+		},
+		{
+			name:    "wrong length for SHA-384",
+			input:   "SHA-384:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+			wantErr: "expected 48 bytes",
+		},
+		{
+			name:    "invalid base64",
+			input:   "SHA-256:!!!invalid!!!",
+			wantErr: "base64 decode failed",
+		},
+		{
+			name:    "empty digest",
+			input:   "SHA-256:",
+			wantErr: "expected 32 bytes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseTaggedDigest(tt.input)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestTaggedDigest_RoundTrip(t *testing.T) {
+	original := "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+	td, err := ParseTaggedDigest(original)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	// String round-trip
+	if td.String() != original {
+		t.Errorf("String() = %q, want %q", td.String(), original)
+	}
+}
+
+func TestTaggedDigest_JSON(t *testing.T) {
+	original := "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+	td, err := ParseTaggedDigest(original)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	// Marshal
+	data, err := td.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+	expected := `"SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"`
+	if string(data) != expected {
+		t.Errorf("MarshalJSON = %s, want %s", data, expected)
+	}
+
+	// Unmarshal
+	var td2 TaggedDigest
+	if err := td2.UnmarshalJSON(data); err != nil {
+		t.Fatalf("UnmarshalJSON failed: %v", err)
+	}
+	if td2.Alg != td.Alg || !bytes.Equal(td2.Digest, td.Digest) {
+		t.Error("JSON round-trip produced different result")
+	}
+}
+
+// contains checks if s contains substr
+func contains(s, substr string) bool {
+	return len(substr) > 0 && len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
+}
+
+func containsImpl(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
