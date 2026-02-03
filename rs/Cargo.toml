@@ -15,7 +15,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Core crypto - from coz-rs (re-exports digest, sha2)
-coz = { package = "coz-rs", path = "../coz-rust/coz-rs", version = "0.4.1" }
+coz = { package = "coz-rs", version = "0.4.1" }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
