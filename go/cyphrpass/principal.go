@@ -238,9 +238,19 @@ func (p *Principal) DS() *DataState {
 	return p.ds
 }
 
-// HashAlg returns the hash algorithm used by this principal.
+// HashAlg returns the hash algorithm used by this principal (genesis algorithm).
 func (p *Principal) HashAlg() HashAlg {
 	return p.hashAlg
+}
+
+// ActiveAlgs returns the set of hash algorithms derived from active keys.
+func (p *Principal) ActiveAlgs() []HashAlg {
+	return p.activeAlgs
+}
+
+// TS returns the current Transaction State (nil if no transactions).
+func (p *Principal) TS() *TransactionState {
+	return p.ts
 }
 
 // Key returns a key by thumbprint, or nil if not found.

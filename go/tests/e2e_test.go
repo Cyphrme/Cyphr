@@ -111,3 +111,27 @@ func TestE2E_ErrorConditions(t *testing.T) {
 		})
 	}
 }
+
+// TestE2E_MultihashCoherence tests multihash round-trip coherence (SPEC §14).
+// Mirrors Rust's e2e_multihash_round_trip: after serialization and reimport,
+// recomputed state values must match reimported values for all active algorithms.
+func TestE2E_MultihashCoherence(t *testing.T) {
+	pool := loadE2EPool(t)
+
+	intent, err := testfixtures.LoadIntent(filepath.Join(e2eIntentsDir(), "multihash_coherence.toml"))
+	if err != nil {
+		t.Fatalf("failed to load intent: %v", err)
+	}
+
+	for _, test := range intent.Test {
+		t.Run(test.Name, func(t *testing.T) {
+			result := testfixtures.RunE2EMultihashCoherence(pool, &test)
+			if !result.Passed {
+				t.Errorf("test failed: %v", result.Err)
+				for _, f := range result.Failures {
+					t.Errorf("  - %s", f)
+				}
+			}
+		})
+	}
+}

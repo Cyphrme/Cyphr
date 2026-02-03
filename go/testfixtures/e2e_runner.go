@@ -512,3 +512,172 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 
 	return result
 }
+
+// RunE2EMultihashCoherence verifies multihash round-trip coherence (SPEC §14).
+// Mirrors Rust's e2e_multihash_round_trip: after serialization and reimport,
+// recomputed state values must match reimported values for ALL active algorithms.
+func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
+	result := &E2EResult{Name: test.Name}
+
+	// Build genesis keys from principal names
+	genesisKeys, err := resolveGenesisFromNames(pool, test.Principal)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to resolve genesis: %w", err)
+		return result
+	}
+
+	// Create principal from genesis
+	var principal *cyphrpass.Principal
+	if len(genesisKeys) == 1 {
+		principal, err = cyphrpass.Implicit(genesisKeys[0])
+	} else {
+		principal, err = cyphrpass.Explicit(genesisKeys)
+	}
+	if err != nil {
+		result.Err = fmt.Errorf("failed to create principal: %w", err)
+		return result
+	}
+
+	// Apply transactions if present
+	var applyErr error
+	if test.IsMultiStep() {
+		applyErr = applyMultiStep(pool, principal, test)
+	} else if test.Pay != nil && test.Crypto != nil {
+		applyErr = applySingleStep(pool, principal, test)
+	}
+
+	if applyErr != nil {
+		result.Err = fmt.Errorf("apply failed: %w", applyErr)
+		return result
+	}
+
+	// Export entries
+	exported := storage.ExportEntries(principal)
+
+	// Rebuild genesis for reimport
+	var genesis storage.Genesis
+	if len(genesisKeys) == 1 {
+		genesis = storage.ImplicitGenesis{Key: genesisKeys[0]}
+	} else {
+		genesis = storage.ExplicitGenesis{Keys: genesisKeys}
+	}
+
+	// Load from exported entries
+	reimported, err := storage.LoadPrincipal(genesis, exported)
+	if err != nil {
+		result.Err = fmt.Errorf("reimport failed: %w", err)
+		return result
+	}
+
+	// --- Multihash coherence verification ---
+
+	// Step 1: Verify active_algs is not empty
+	activeAlgs := reimported.ActiveAlgs()
+	if len(activeAlgs) == 0 {
+		result.Failures = append(result.Failures, "active_algs should not be empty")
+	}
+
+	// Step 2: Get thumbprints and recompute KS for each algorithm
+	var thumbprints []coz.B64
+	for _, k := range reimported.ActiveKeys() {
+		thumbprints = append(thumbprints, k.Tmb)
+	}
+
+	recomputedKS, err := cyphrpass.ComputeKS(thumbprints, nil, activeAlgs)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to recompute KS: %w", err)
+		return result
+	}
+
+	// Step 3: Verify each algorithm variant matches for KS
+	for _, alg := range activeAlgs {
+		reimportedVariant := reimported.KS().Get(alg)
+		recomputedVariant := recomputedKS.Get(alg)
+
+		if reimportedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("KS missing variant for %s", alg))
+			continue
+		}
+		if recomputedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed KS missing variant for %s", alg))
+			continue
+		}
+		if string(reimportedVariant) != string(recomputedVariant) {
+			result.Failures = append(result.Failures, fmt.Sprintf(
+				"KS variant %s mismatch: reimported=%x recomputed=%x",
+				alg, reimportedVariant[:8], recomputedVariant[:8]))
+		}
+	}
+
+	// Step 4: Recompute AS and verify variants
+	recomputedAS, err := cyphrpass.ComputeAS(recomputedKS, reimported.TS(), nil, activeAlgs)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to recompute AS: %w", err)
+		return result
+	}
+
+	for _, alg := range activeAlgs {
+		reimportedVariant := reimported.AS().Get(alg)
+		recomputedVariant := recomputedAS.Get(alg)
+
+		if reimportedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("AS missing variant for %s", alg))
+			continue
+		}
+		if recomputedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed AS missing variant for %s", alg))
+			continue
+		}
+		if string(reimportedVariant) != string(recomputedVariant) {
+			result.Failures = append(result.Failures, fmt.Sprintf(
+				"AS variant %s mismatch: reimported=%x recomputed=%x",
+				alg, reimportedVariant[:8], recomputedVariant[:8]))
+		}
+	}
+
+	// Step 5: Recompute PS and verify variants
+	recomputedPS, err := cyphrpass.ComputePS(recomputedAS, reimported.DS(), nil, activeAlgs)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to recompute PS: %w", err)
+		return result
+	}
+
+	for _, alg := range activeAlgs {
+		reimportedVariant := reimported.PS().Get(alg)
+		recomputedVariant := recomputedPS.Get(alg)
+
+		if reimportedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("PS missing variant for %s", alg))
+			continue
+		}
+		if recomputedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed PS missing variant for %s", alg))
+			continue
+		}
+		if string(reimportedVariant) != string(recomputedVariant) {
+			result.Failures = append(result.Failures, fmt.Sprintf(
+				"PS variant %s mismatch: reimported=%x recomputed=%x",
+				alg, reimportedVariant[:8], recomputedVariant[:8]))
+		}
+	}
+
+	// Step 6: PR only has genesis algorithm variant (native-only)
+	genesisAlg := reimported.HashAlg()
+	prVariant := reimported.PR().Get(genesisAlg)
+	if prVariant == nil {
+		result.Failures = append(result.Failures, fmt.Sprintf(
+			"PR should have genesis algorithm %s variant", genesisAlg))
+	}
+
+	// Also verify expected state if provided
+	if test.Expected != nil {
+		result.Failures = append(result.Failures, verifyE2EExpected(reimported, test.Expected)...)
+	}
+
+	result.Passed = len(result.Failures) == 0
+	if !result.Passed {
+		result.Err = fmt.Errorf("failures: %s", strings.Join(result.Failures, "; "))
+	}
+
+	return result
+}
