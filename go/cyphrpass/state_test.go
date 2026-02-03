@@ -39,66 +39,22 @@ func TestHashAlgFromSEAlg(t *testing.T) {
 	}
 }
 
-func TestHashSortedConcat_SingleComponent(t *testing.T) {
-	// Single component should be returned unchanged (implicit promotion)
-	input := []byte{1, 2, 3, 4}
-	result, err := HashSortedConcat(HashAlg(coz.SHA256), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !bytes.Equal(result, input) {
-		t.Errorf("single component should promote without hashing: got %v, want %v", result, input)
-	}
-}
-
-func TestHashSortedConcat_Empty(t *testing.T) {
-	result, err := HashSortedConcat(HashAlg(coz.SHA256))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != nil {
-		t.Errorf("empty components should return nil: got %v", result)
-	}
-}
-
-func TestHashSortedConcat_MultipleComponents(t *testing.T) {
-	// Multiple components should be sorted, concatenated, and hashed
-	a := []byte{0x01, 0x02}
-	b := []byte{0x00, 0x03} // b < a lexicographically
-
-	result, err := HashSortedConcat(HashAlg(coz.SHA256), a, b)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Result should be a hash (32 bytes for SHA-256)
-	if len(result) != 32 {
-		t.Errorf("expected 32-byte SHA-256 hash, got %d bytes", len(result))
-	}
-
-	// Verify order independence: H(a, b) == H(b, a)
-	result2, err := HashSortedConcat(HashAlg(coz.SHA256), b, a)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !bytes.Equal(result, result2) {
-		t.Errorf("hash should be order-independent: got %x vs %x", result, result2)
-	}
-}
-
 func TestComputeKS_ImplicitPromotion(t *testing.T) {
 	// SPEC §7.2: Single key, no nonce → KS = tmb
-	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, HashAlg(coz.SHA256))
+	algs := []HashAlg{HashAlg(coz.SHA256)}
+	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(ks, goldenTmb) {
-		t.Errorf("single key should promote to KS: got %x, want %x", ks, goldenTmb)
+	// First variant should equal the thumbprint (implicit promotion)
+	if !bytes.Equal(ks.First(), goldenTmb) {
+		t.Errorf("single key should promote to KS: got %x, want %x", ks.First(), goldenTmb)
 	}
 }
 
 func TestComputeKS_EmptyKeys(t *testing.T) {
-	_, err := ComputeKS(nil, nil, HashAlg(coz.SHA256))
+	algs := []HashAlg{HashAlg(coz.SHA256)}
+	_, err := ComputeKS(nil, nil, algs)
 	if err != ErrNoActiveKeys {
 		t.Errorf("expected ErrNoActiveKeys, got %v", err)
 	}
@@ -106,51 +62,132 @@ func TestComputeKS_EmptyKeys(t *testing.T) {
 
 func TestComputeAS_ImplicitPromotion(t *testing.T) {
 	// SPEC §7.5: Only KS, no TS, no nonce → AS = KS
-	ks := KeyState(goldenTmb)
-	as, err := ComputeAS(ks, TransactionState(nil), nil, HashAlg(coz.SHA256))
+	algs := []HashAlg{HashAlg(coz.SHA256)}
+	ks := KeyState{FromSingleDigest(HashSha256, goldenTmb)}
+	as, err := ComputeAS(ks, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(as, ks) {
-		t.Errorf("AS should promote from KS: got %x, want %x", as, ks)
+	if !bytes.Equal(as.First(), ks.First()) {
+		t.Errorf("AS should promote from KS: got %x, want %x", as.First(), ks.First())
 	}
 }
 
 func TestComputePS_ImplicitPromotion(t *testing.T) {
 	// SPEC §7.6: Only AS, no DS, no nonce → PS = AS
-	as := AuthState(goldenTmb)
-	ps, err := ComputePS(as, DataState(nil), nil, HashAlg(coz.SHA256))
+	algs := []HashAlg{HashAlg(coz.SHA256)}
+	as := AuthState{FromSingleDigest(HashSha256, goldenTmb)}
+	ps, err := ComputePS(as, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(ps, as) {
-		t.Errorf("PS should promote from AS: got %x, want %x", ps, as)
+	if !bytes.Equal(ps.First(), as.First()) {
+		t.Errorf("PS should promote from AS: got %x, want %x", ps.First(), as.First())
 	}
 }
 
 func TestImplicitGenesisSingleKey(t *testing.T) {
 	// SPEC §15.3: Level 1 single-key → PR = PS = AS = KS = tmb
-	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, HashAlg(coz.SHA256))
+	algs := []HashAlg{HashAlg(coz.SHA256)}
+	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeKS: %v", err)
 	}
-	as, err := ComputeAS(ks, TransactionState(nil), nil, HashAlg(coz.SHA256))
+	as, err := ComputeAS(ks, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeAS: %v", err)
 	}
-	ps, err := ComputePS(as, DataState(nil), nil, HashAlg(coz.SHA256))
+	ps, err := ComputePS(as, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputePS: %v", err)
 	}
 
 	// All states should equal the thumbprint
-	if !bytes.Equal(ks, goldenTmb) {
+	if !bytes.Equal(ks.First(), goldenTmb) {
 		t.Errorf("KS != tmb")
 	}
-	if !bytes.Equal(as, goldenTmb) {
+	if !bytes.Equal(as.First(), goldenTmb) {
 		t.Errorf("AS != tmb")
 	}
-	if !bytes.Equal(ps, goldenTmb) {
+	if !bytes.Equal(ps.First(), goldenTmb) {
 		t.Errorf("PS != tmb")
+	}
+}
+
+func TestDeriveHashAlgs(t *testing.T) {
+	// Create test keys with different algorithms
+	key256 := &Key{
+		Key: &coz.Key{
+			Alg: coz.SEAlg(coz.ES256),
+			Tmb: bytes.Repeat([]byte{0x11}, 32),
+		},
+	}
+	key384 := &Key{
+		Key: &coz.Key{
+			Alg: coz.SEAlg(coz.ES384),
+			Tmb: bytes.Repeat([]byte{0x22}, 48),
+		},
+	}
+
+	// Single algorithm
+	algs := DeriveHashAlgs([]*Key{key256})
+	if len(algs) != 1 {
+		t.Errorf("expected 1 algorithm, got %d", len(algs))
+	}
+	if algs[0] != HashSha256 {
+		t.Errorf("expected SHA-256, got %v", algs[0])
+	}
+
+	// Multiple algorithms (should be sorted)
+	algs = DeriveHashAlgs([]*Key{key384, key256})
+	if len(algs) != 2 {
+		t.Errorf("expected 2 algorithms, got %d", len(algs))
+	}
+	// SHA-256 should come before SHA-384 lexicographically
+	if algs[0] != HashSha256 {
+		t.Errorf("expected SHA-256 first, got %v", algs[0])
+	}
+	if algs[1] != HashSha384 {
+		t.Errorf("expected SHA-384 second, got %v", algs[1])
+	}
+}
+
+func TestMultihashDigest_Variants(t *testing.T) {
+	// Test multihash with multiple variants
+	variants := map[HashAlg]coz.B64{
+		HashSha256: bytes.Repeat([]byte{0xAA}, 32),
+		HashSha384: bytes.Repeat([]byte{0xBB}, 48),
+	}
+	mh := NewMultihashDigest(variants)
+
+	// Check variant access
+	if !bytes.Equal(mh.Get(HashSha256), variants[HashSha256]) {
+		t.Error("Get(SHA-256) failed")
+	}
+	if !bytes.Equal(mh.Get(HashSha384), variants[HashSha384]) {
+		t.Error("Get(SHA-384) failed")
+	}
+	if mh.Get(HashSha512) != nil {
+		t.Error("Get(SHA-512) should return nil")
+	}
+
+	// Check Contains
+	if !mh.Contains(HashSha256) {
+		t.Error("Contains(SHA-256) should be true")
+	}
+	if mh.Contains(HashSha512) {
+		t.Error("Contains(SHA-512) should be false")
+	}
+
+	// Check Algorithms (should be sorted)
+	algs := mh.Algorithms()
+	if len(algs) != 2 {
+		t.Errorf("expected 2 algorithms, got %d", len(algs))
+	}
+
+	// Check First (should be lexicographically first)
+	first := mh.First()
+	if !bytes.Equal(first, variants[HashSha256]) {
+		t.Error("First() should return SHA-256 variant")
 	}
 }

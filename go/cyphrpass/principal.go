@@ -71,13 +71,14 @@ type Principal struct {
 	pr PrincipalRoot
 	ps PrincipalState
 	ks KeyState
-	ts TransactionState // nil if no transactions
+	ts *TransactionState // nil if no transactions
 	as AuthState
-	ds DataState // nil if no actions
+	ds *DataState // nil if no actions
 
-	auth    AuthLedger
-	data    DataLedger
-	hashAlg HashAlg
+	auth       AuthLedger
+	data       DataLedger
+	hashAlg    HashAlg
+	activeAlgs []HashAlg // Per SPEC §14: algorithms derived from active keyset
 
 	// currentCommitCzds tracks transaction czds for the current commit.
 	// Per SPEC §4.2.1: TS is computed from CURRENT commit's czds only.
@@ -107,6 +108,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 	}
 
 	hashAlg := HashAlgFromSEAlg(key.Alg)
+	algs := []HashAlg{hashAlg}
 
 	// Wrap in our Key type
 	k := &Key{
@@ -115,32 +117,33 @@ func Implicit(key *coz.Key) (*Principal, error) {
 	}
 
 	// KS = tmb (single key promotes)
-	ks, err := ComputeKS([]coz.B64{key.Tmb}, nil, hashAlg)
+	ks, err := ComputeKS([]coz.B64{key.Tmb}, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// AS = KS (no TS, promotes)
-	as, err := ComputeAS(ks, TransactionState(nil), nil, hashAlg)
+	as, err := ComputeAS(ks, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PS = AS (no DS, promotes)
-	ps, err := ComputePS(as, DataState(nil), nil, hashAlg)
+	ps, err := ComputePS(as, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PR = first PS
-	pr := PrincipalRoot(ps)
+	pr := NewPrincipalRoot(ps)
 
 	p := &Principal{
-		pr:      pr,
-		ps:      ps,
-		ks:      ks,
-		as:      as,
-		hashAlg: hashAlg,
+		pr:         pr,
+		ps:         ps,
+		ks:         ks,
+		as:         as,
+		hashAlg:    hashAlg,
+		activeAlgs: algs,
 		auth: AuthLedger{
 			Keys:   []*Key{k},
 			keyIdx: map[string]int{string(key.Tmb.String()): 0},
@@ -162,6 +165,7 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 	}
 
 	hashAlg := HashAlgFromSEAlg(keys[0].Alg)
+	algs := []HashAlg{hashAlg}
 
 	// Collect thumbprints and wrap keys
 	thumbprints := make([]coz.B64, len(keys))
@@ -175,32 +179,33 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 	}
 
 	// KS = H(sort(tmb₀, tmb₁, ...)) or promoted if single
-	ks, err := ComputeKS(thumbprints, nil, hashAlg)
+	ks, err := ComputeKS(thumbprints, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// AS = KS (no TS yet)
-	as, err := ComputeAS(ks, TransactionState(nil), nil, hashAlg)
+	as, err := ComputeAS(ks, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PS = AS (no DS)
-	ps, err := ComputePS(as, DataState(nil), nil, hashAlg)
+	ps, err := ComputePS(as, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PR frozen at genesis
-	pr := PrincipalRoot(ps)
+	pr := NewPrincipalRoot(ps)
 
 	return &Principal{
-		pr:      pr,
-		ps:      ps,
-		ks:      ks,
-		as:      as,
-		hashAlg: hashAlg,
+		pr:         pr,
+		ps:         ps,
+		ks:         ks,
+		as:         as,
+		hashAlg:    hashAlg,
+		activeAlgs: algs,
 		auth: AuthLedger{
 			Keys:   wrappedKeys,
 			keyIdx: keyIdx,
@@ -229,7 +234,7 @@ func (p *Principal) KS() KeyState {
 }
 
 // DS returns the current Data State (nil if no actions).
-func (p *Principal) DS() DataState {
+func (p *Principal) DS() *DataState {
 	return p.ds
 }
 
@@ -380,7 +385,7 @@ func (p *Principal) RecordAction(action *Action) error {
 	p.ds = ds
 
 	// Recompute PS = H(sort(AS, DS?))
-	ps, err := ComputePS(p.as, p.ds, nil, p.hashAlg)
+	ps, err := ComputePS(p.as, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -502,7 +507,7 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 			return err
 		}
 		// id must equal current AS (self-referential for genesis finalization)
-		if !bytes.Equal(tx.ID, coz.B64(p.as)) {
+		if !bytes.Equal(tx.ID, p.as.First()) {
 			return ErrMalformedPayload
 		}
 		// No state mutation needed; transaction is recorded for chain continuity
@@ -533,7 +538,7 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 
 // verifyPre checks that the transaction's pre matches current AS.
 func (p *Principal) verifyPre(pre AuthState) error {
-	if !bytes.Equal(p.as, pre) {
+	if !bytes.Equal(p.as.First(), pre.First()) {
 		return ErrInvalidPrior
 	}
 	return nil
@@ -631,7 +636,7 @@ func (p *Principal) recomputeState() error {
 	for i, k := range p.auth.Keys {
 		thumbprints[i] = k.Tmb
 	}
-	ks, err := ComputeKS(thumbprints, nil, p.hashAlg)
+	ks, err := ComputeKS(thumbprints, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -640,7 +645,7 @@ func (p *Principal) recomputeState() error {
 	// Recompute TS from current commit's transactions only (SPEC §4.2.1)
 	// TS = MR(czds) for transactions in THIS commit, not cumulative
 	if len(p.currentCommitCzds) > 0 {
-		ts, err := ComputeTS(p.currentCommitCzds, nil, p.hashAlg)
+		ts, err := ComputeTS(p.currentCommitCzds, nil, p.activeAlgs)
 		if err != nil {
 			return err
 		}
@@ -648,14 +653,14 @@ func (p *Principal) recomputeState() error {
 	}
 
 	// Recompute AS = H(sort(KS, TS?))
-	as, err := ComputeAS(p.ks, p.ts, nil, p.hashAlg)
+	as, err := ComputeAS(p.ks, p.ts, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
 	p.as = as
 
 	// Recompute PS = H(sort(AS, DS?))
-	ps, err := ComputePS(p.as, p.ds, nil, p.hashAlg)
+	ps, err := ComputePS(p.as, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}

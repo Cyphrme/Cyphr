@@ -3,47 +3,111 @@ package cyphrpass
 import (
 	"bytes"
 	"slices"
+	"sort"
 
 	"github.com/cyphrme/coz"
 )
 
-// State types wrap coz.B64 for type safety. Each represents a Merkle digest
+// State types wrap MultihashDigest for type safety. Each represents a Merkle digest
 // at different levels of the Cyphrpass state tree per SPEC §7.
+// Per SPEC §14, each state has one variant per active hash algorithm.
 
 // KeyState (KS) is the digest of active key thumbprints (SPEC §7.2).
 // Single key with no nonce: KS = tmb (implicit promotion).
-type KeyState coz.B64
+type KeyState struct {
+	MultihashDigest
+}
 
 // TransactionState (TS) is the digest of transaction czds (SPEC §7.3).
-type TransactionState coz.B64
+type TransactionState struct {
+	MultihashDigest
+}
 
 // AuthState (AS) is the authentication state: H(sort(KS, TS?, RS?)) or promoted (SPEC §7.5).
-type AuthState coz.B64
+type AuthState struct {
+	MultihashDigest
+}
 
 // DataState (DS) is the state of user actions (SPEC §7.4).
-type DataState coz.B64
+// Currently single-algorithm (Cad-based), per Rust implementation.
+type DataState struct {
+	digest coz.B64
+}
+
+// NewDataState creates a DataState from a digest.
+func NewDataState(digest coz.B64) DataState {
+	return DataState{digest: slices.Clone(digest)}
+}
+
+// Bytes returns the raw digest bytes.
+func (d DataState) Bytes() coz.B64 {
+	return d.digest
+}
 
 // PrincipalState (PS) is the current top-level state: H(sort(AS, DS?)) or promoted (SPEC §7.6).
-type PrincipalState coz.B64
+type PrincipalState struct {
+	MultihashDigest
+}
 
 // PrincipalRoot (PR) is the first PS ever computed. Permanent, never changes (SPEC §7.7).
-type PrincipalRoot coz.B64
+// Frozen at genesis with only the genesis-time algorithm variants.
+type PrincipalRoot struct {
+	MultihashDigest
+}
+
+// NewPrincipalRoot creates a PrincipalRoot from the initial PrincipalState.
+func NewPrincipalRoot(ps PrincipalState) PrincipalRoot {
+	return PrincipalRoot{ps.Clone()}
+}
 
 // HashAlg is a hash algorithm used for state computation (SPEC §12).
 type HashAlg coz.HshAlg
 
-// String methods for state types (return base64 encoding)
-func (s KeyState) String() string         { return coz.B64(s).String() }
-func (s TransactionState) String() string { return coz.B64(s).String() }
-func (s AuthState) String() string        { return coz.B64(s).String() }
-func (s DataState) String() string        { return coz.B64(s).String() }
-func (s PrincipalState) String() string   { return coz.B64(s).String() }
-func (s PrincipalRoot) String() string    { return coz.B64(s).String() }
+// String returns the hash algorithm name.
+func (h HashAlg) String() string {
+	return string(h)
+}
+
+// Common hash algorithms (re-exported for convenience).
+const (
+	HashSha256 HashAlg = "SHA-256"
+	HashSha384 HashAlg = "SHA-384"
+	HashSha512 HashAlg = "SHA-512"
+)
+
+// String methods for state types (return base64 of first variant for compatibility).
+func (s KeyState) String() string         { return s.First().String() }
+func (s TransactionState) String() string { return s.First().String() }
+func (s AuthState) String() string        { return s.First().String() }
+func (s DataState) String() string        { return s.digest.String() }
+func (s PrincipalState) String() string   { return s.First().String() }
+func (s PrincipalRoot) String() string    { return s.First().String() }
 
 // HashAlgFromSEAlg returns the hash algorithm for a given signing/encryption algorithm.
 // Uses SEAlg.Hash() method per Coz API.
 func HashAlgFromSEAlg(alg coz.SEAlg) HashAlg {
 	return HashAlg(alg.Hash())
+}
+
+// DeriveHashAlgs extracts the set of hash algorithms from active keys (SPEC §14).
+// Returns a sorted, deduplicated slice.
+func DeriveHashAlgs(keys []*Key) []HashAlg {
+	seen := make(map[HashAlg]bool)
+	for _, k := range keys {
+		if k.IsActive() {
+			alg := HashAlgFromSEAlg(k.Alg)
+			seen[alg] = true
+		}
+	}
+
+	algs := make([]HashAlg, 0, len(seen))
+	for alg := range seen {
+		algs = append(algs, alg)
+	}
+	sort.Slice(algs, func(i, j int) bool {
+		return string(algs[i]) < string(algs[j])
+	})
+	return algs
 }
 
 // isSupportedAlg checks if the algorithm is supported by Cyphrpass.
@@ -57,19 +121,14 @@ func isSupportedAlg(alg coz.SEAlg) bool {
 	}
 }
 
-// HashSortedConcat implements SPEC §7.1 canonical digest algorithm:
+// hashSortedConcatBytes implements SPEC §7.1 canonical digest algorithm:
 // 1. Collect component digests
 // 2. Sort lexicographically (byte comparison)
 // 3. Concatenate sorted digests
 // 4. Hash using specified algorithm
-func HashSortedConcat(alg HashAlg, components ...[]byte) (coz.B64, error) {
+func hashSortedConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
 	if len(components) == 0 {
 		return nil, nil
-	}
-
-	// Single component promotes without hashing (implicit promotion)
-	if len(components) == 1 {
-		return slices.Clone(components[0]), nil
 	}
 
 	// Sort lexicographically by byte comparison
@@ -89,14 +148,19 @@ func HashSortedConcat(alg HashAlg, components ...[]byte) (coz.B64, error) {
 
 // ComputeKS computes Key State from thumbprints (SPEC §7.2).
 // If only one thumbprint with no nonce, KS = tmb (implicit promotion).
-func ComputeKS(thumbprints []coz.B64, nonce coz.B64, alg HashAlg) (KeyState, error) {
+// Computes one variant per algorithm in algs.
+func ComputeKS(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyState, error) {
 	if len(thumbprints) == 0 {
-		return KeyState(nil), ErrNoActiveKeys
+		return KeyState{}, ErrNoActiveKeys
+	}
+	if len(algs) == 0 {
+		return KeyState{}, ErrNoActiveKeys
 	}
 
 	// Implicit promotion: single key, no nonce
+	// Use first algorithm for single-variant multihash
 	if len(thumbprints) == 1 && len(nonce) == 0 {
-		return KeyState(slices.Clone(coz.B64(thumbprints[0]))), nil
+		return KeyState{FromSingleDigest(algs[0], thumbprints[0])}, nil
 	}
 
 	// Collect all components
@@ -108,24 +172,34 @@ func ComputeKS(thumbprints []coz.B64, nonce coz.B64, alg HashAlg) (KeyState, err
 		components = append(components, nonce)
 	}
 
-	digest, err := HashSortedConcat(alg, components...)
-	if err != nil {
-		return KeyState(nil), err
+	// Compute hash for each algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		digest, err := hashSortedConcatBytes(alg, components...)
+		if err != nil {
+			return KeyState{}, err
+		}
+		variants[alg] = digest
 	}
-	return KeyState(digest), nil
+
+	return KeyState{NewMultihashDigest(variants)}, nil
 }
 
 // ComputeTS computes Transaction State from czds (SPEC §7.3).
 // If only one transaction with no nonce, TS = czd (implicit promotion).
 // Returns nil TS if no transactions.
-func ComputeTS(czds []coz.B64, nonce coz.B64, alg HashAlg) (TransactionState, error) {
+func ComputeTS(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*TransactionState, error) {
 	if len(czds) == 0 {
-		return TransactionState(nil), nil // No transactions = nil TS
+		return nil, nil // No transactions = nil TS
+	}
+	if len(algs) == 0 {
+		algs = []HashAlg{HashSha256} // Default fallback
 	}
 
 	// Implicit promotion: single transaction, no nonce
 	if len(czds) == 1 && len(nonce) == 0 {
-		return TransactionState(slices.Clone(coz.B64(czds[0]))), nil
+		ts := TransactionState{FromSingleDigest(algs[0], czds[0])}
+		return &ts, nil
 	}
 
 	components := make([][]byte, 0, len(czds)+1)
@@ -136,48 +210,71 @@ func ComputeTS(czds []coz.B64, nonce coz.B64, alg HashAlg) (TransactionState, er
 		components = append(components, nonce)
 	}
 
-	digest, err := HashSortedConcat(alg, components...)
-	if err != nil {
-		return TransactionState(nil), err
+	// Compute hash for each algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		digest, err := hashSortedConcatBytes(alg, components...)
+		if err != nil {
+			return nil, err
+		}
+		variants[alg] = digest
 	}
-	return TransactionState(digest), nil
+
+	ts := TransactionState{NewMultihashDigest(variants)}
+	return &ts, nil
 }
 
 // ComputeAS computes Auth State from KS and optional TS (SPEC §7.5).
 // If TS is nil with no nonce, AS = KS (implicit promotion).
-func ComputeAS(ks KeyState, ts TransactionState, nonce coz.B64, alg HashAlg) (AuthState, error) {
+func ComputeAS(ks KeyState, ts *TransactionState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
 	// Implicit promotion: only KS, no TS, no nonce
-	if len(ts) == 0 && len(nonce) == 0 {
-		return AuthState(slices.Clone(coz.B64(ks))), nil
+	if ts == nil && len(nonce) == 0 {
+		return AuthState{ks.Clone()}, nil
 	}
 
-	components := make([][]byte, 0, 3)
-	components = append(components, ks)
-	if len(ts) > 0 {
-		components = append(components, ts)
-	}
-	if len(nonce) > 0 {
-		components = append(components, nonce)
+	if len(algs) == 0 {
+		algs = ks.Algorithms()
 	}
 
-	digest, err := HashSortedConcat(alg, components...)
-	if err != nil {
-		return AuthState(nil), err
+	// Compute hash for each algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		// Get KS variant for this algorithm, falling back to first available
+		ksBytes := ks.GetOrFirst(alg)
+
+		// Collect non-nil components
+		components := [][]byte{ksBytes}
+		if ts != nil {
+			tsBytes := ts.GetOrFirst(alg)
+			components = append(components, tsBytes)
+		}
+		if len(nonce) > 0 {
+			components = append(components, nonce)
+		}
+
+		digest, err := hashSortedConcatBytes(alg, components...)
+		if err != nil {
+			return AuthState{}, err
+		}
+		variants[alg] = digest
 	}
-	return AuthState(digest), nil
+
+	return AuthState{NewMultihashDigest(variants)}, nil
 }
 
 // ComputeDS computes Data State from action czds (SPEC §7.4).
 // If only one action with no nonce, DS = czd (implicit promotion).
 // Returns nil DS if no actions.
-func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (DataState, error) {
+// DataState is currently single-algorithm (per Rust).
+func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataState, error) {
 	if len(czds) == 0 {
-		return DataState(nil), nil // No actions = nil DS
+		return nil, nil // No actions = nil DS
 	}
 
 	// Implicit promotion: single action, no nonce
 	if len(czds) == 1 && len(nonce) == 0 {
-		return DataState(slices.Clone(coz.B64(czds[0]))), nil
+		ds := NewDataState(czds[0])
+		return &ds, nil
 	}
 
 	components := make([][]byte, 0, len(czds)+1)
@@ -188,33 +285,47 @@ func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (DataState, error) {
 		components = append(components, nonce)
 	}
 
-	digest, err := HashSortedConcat(alg, components...)
+	digest, err := hashSortedConcatBytes(alg, components...)
 	if err != nil {
-		return DataState(nil), err
+		return nil, err
 	}
-	return DataState(digest), nil
+	ds := NewDataState(digest)
+	return &ds, nil
 }
 
 // ComputePS computes Principal State from AS and optional DS (SPEC §7.6).
 // If DS is nil with no nonce, PS = AS (implicit promotion).
-func ComputePS(as AuthState, ds DataState, nonce coz.B64, alg HashAlg) (PrincipalState, error) {
+func ComputePS(as AuthState, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
 	// Implicit promotion: only AS, no DS, no nonce
-	if len(ds) == 0 && len(nonce) == 0 {
-		return PrincipalState(slices.Clone(coz.B64(as))), nil
+	if ds == nil && len(nonce) == 0 {
+		return PrincipalState{as.Clone()}, nil
 	}
 
-	components := make([][]byte, 0, 3)
-	components = append(components, as)
-	if len(ds) > 0 {
-		components = append(components, ds)
-	}
-	if len(nonce) > 0 {
-		components = append(components, nonce)
+	if len(algs) == 0 {
+		algs = as.Algorithms()
 	}
 
-	digest, err := HashSortedConcat(alg, components...)
-	if err != nil {
-		return PrincipalState(nil), err
+	// Compute hash for each algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		// Get AS variant for this algorithm, falling back to first available
+		asBytes := as.GetOrFirst(alg)
+
+		// Collect non-nil components
+		components := [][]byte{asBytes}
+		if ds != nil {
+			components = append(components, ds.Bytes())
+		}
+		if len(nonce) > 0 {
+			components = append(components, nonce)
+		}
+
+		digest, err := hashSortedConcatBytes(alg, components...)
+		if err != nil {
+			return PrincipalState{}, err
+		}
+		variants[alg] = digest
 	}
-	return PrincipalState(digest), nil
+
+	return PrincipalState{NewMultihashDigest(variants)}, nil
 }

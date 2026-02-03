@@ -23,16 +23,16 @@ func TestImplicit_SingleKey(t *testing.T) {
 	}
 
 	// Level 1: PR = PS = AS = KS = tmb (implicit promotion)
-	if !bytes.Equal(p.PR(), key.Tmb) {
+	if !bytes.Equal(p.PR().First(), key.Tmb) {
 		t.Errorf("PR != tmb")
 	}
-	if !bytes.Equal(p.PS(), key.Tmb) {
+	if !bytes.Equal(p.PS().First(), key.Tmb) {
 		t.Errorf("PS != tmb")
 	}
-	if !bytes.Equal(p.AS(), key.Tmb) {
+	if !bytes.Equal(p.AS().First(), key.Tmb) {
 		t.Errorf("AS != tmb")
 	}
-	if !bytes.Equal(p.KS(), key.Tmb) {
+	if !bytes.Equal(p.KS().First(), key.Tmb) {
 		t.Errorf("KS != tmb")
 	}
 }
@@ -64,7 +64,7 @@ func TestExplicit_MultiKey(t *testing.T) {
 	}
 
 	// PR should NOT equal either single tmb (it's a hash)
-	if bytes.Equal(p.PR(), key1.Tmb) || bytes.Equal(p.PR(), key2.Tmb) {
+	if bytes.Equal(p.PR().First(), key1.Tmb) || bytes.Equal(p.PR().First(), key2.Tmb) {
 		t.Error("PR should be hash of sorted thumbprints, not a single tmb")
 	}
 
@@ -93,14 +93,14 @@ func TestPR_IsImmutable(t *testing.T) {
 	key := makeTestCozKey(0xCC)
 	p, _ := Implicit(key)
 
-	prBefore := append([]byte{}, p.PR()...)
+	prBefore := append([]byte{}, p.PR().First()...)
 
 	// Modify PS (simulate state change)
 	// In practice we'd apply a transaction, but for this test just verify the reference
 	ps := p.PS()
 	_ = ps // PS may change but PR should not
 
-	if !bytes.Equal(p.PR(), prBefore) {
+	if !bytes.Equal(p.PR().First(), prBefore) {
 		t.Error("PR should be immutable")
 	}
 }
@@ -156,7 +156,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 		ID:     key2.Tmb,
 	}
 
-	oldAS := append([]byte{}, p.AS()...)
+	oldAS := append([]byte{}, p.AS().First()...)
 
 	err := p.ApplyTransactionUnsafe(tx, key2)
 	if err != nil {
@@ -177,7 +177,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 	}
 
 	// AS should have changed
-	if bytes.Equal(p.AS(), oldAS) {
+	if bytes.Equal(p.AS().First(), oldAS) {
 		t.Error("AS should change after key add")
 	}
 }
@@ -187,7 +187,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 	p, _ := Implicit(key1)
 
 	key2 := makeTestCozKey(0x22)
-	wrongPre := AuthState(bytes.Repeat([]byte{0xFF}, 32))
+	wrongPre := AuthState{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
 	tx := &Transaction{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
@@ -234,7 +234,7 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 	key1 := makeTestCozKey(0x11)
 	p, _ := Implicit(key1)
 
-	prBefore := append([]byte{}, p.PR()...)
+	prBefore := append([]byte{}, p.PR().First()...)
 
 	key2 := makeTestCozKey(0x22)
 	tx := &Transaction{
@@ -247,7 +247,7 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 	}
 	p.ApplyTransactionUnsafe(tx, key2)
 
-	if !bytes.Equal(p.PR(), prBefore) {
+	if !bytes.Equal(p.PR().First(), prBefore) {
 		t.Error("PR should never change")
 	}
 }
@@ -292,7 +292,7 @@ func TestRecordAction_ChangesPS(t *testing.T) {
 	key := makeTestCozKey(0xBB)
 	p, _ := Implicit(key)
 
-	psBefore := append([]byte{}, p.PS()...)
+	psBefore := append([]byte{}, p.PS().First()...)
 
 	action := &Action{
 		Typ:    "cyphr.me/action/test",
@@ -302,7 +302,7 @@ func TestRecordAction_ChangesPS(t *testing.T) {
 	}
 	p.RecordAction(action)
 
-	if bytes.Equal(p.PS(), psBefore) {
+	if bytes.Equal(p.PS().First(), psBefore) {
 		t.Error("PS should change after adding DS")
 	}
 }

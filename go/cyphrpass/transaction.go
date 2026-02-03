@@ -185,7 +185,8 @@ func (tx *Transaction) parsePre(pre string) error {
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	tx.Pre = AuthState(preBytes)
+	// Create single-variant AuthState from pre bytes (assumes SHA-256 for pre field)
+	tx.Pre = AuthState{FromSingleDigest(HashSha256, preBytes)}
 	return nil
 }
 

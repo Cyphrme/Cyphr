@@ -18,7 +18,7 @@ type Commit struct {
 	// transactions are the verified transactions in this commit.
 	transactions []*Transaction
 	// ts is the Transaction State: Merkle root of transaction czds.
-	ts TransactionState
+	ts *TransactionState
 	// as is the Auth State at the end of this commit.
 	as AuthState
 	// ps is the Principal State at the end of this commit.
@@ -29,7 +29,7 @@ type Commit struct {
 
 // NewCommit creates a finalized commit from transactions and computed states.
 // Panics if transactions is empty.
-func NewCommit(txs []*Transaction, ts TransactionState, as AuthState, ps PrincipalState) *Commit {
+func NewCommit(txs []*Transaction, ts *TransactionState, as AuthState, ps PrincipalState) *Commit {
 	if len(txs) == 0 {
 		panic("Commit must contain at least one transaction")
 	}
@@ -47,7 +47,7 @@ func (c *Commit) Transactions() []*Transaction {
 }
 
 // TS returns the Transaction State (Merkle root of this commit's czds).
-func (c *Commit) TS() TransactionState {
+func (c *Commit) TS() *TransactionState {
 	return c.ts
 }
 
@@ -133,7 +133,7 @@ func (p *PendingCommit) Len() int {
 
 // ComputeTS computes the Transaction State for the current pending transactions.
 // Returns nil if no transactions have been added.
-func (p *PendingCommit) ComputeTS() (TransactionState, error) {
+func (p *PendingCommit) ComputeTS() (*TransactionState, error) {
 	if len(p.transactions) == 0 {
 		return nil, nil
 	}
@@ -141,7 +141,7 @@ func (p *PendingCommit) ComputeTS() (TransactionState, error) {
 	for i, tx := range p.transactions {
 		czds[i] = tx.Czd
 	}
-	return ComputeTS(czds, nil, p.hashAlg)
+	return ComputeTS(czds, nil, []HashAlg{p.hashAlg})
 }
 
 // Finalize converts the pending commit to an immutable Commit.
