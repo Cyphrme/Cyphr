@@ -208,7 +208,9 @@ fn test_tx_list_genesis() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // List transactions (should be empty for genesis)
-    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+    // Use --arg=value format to handle thumbprints starting with -
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
 
     assert_eq!(tx_list["transaction_count"], 0);
 }
@@ -222,17 +224,13 @@ fn test_tx_list_after_transactions() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // Add a key (creates first transaction)
-    cli.run_ok(&[
-        "key",
-        "add",
-        "--identity",
-        genesis_tmb,
-        "--signer",
-        genesis_tmb,
-    ]);
+    // Use --arg=value format to handle thumbprints starting with -
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // List transactions - should show 1 transaction
-    let tx_list = cli.run_json(&["tx", "list", "--identity", genesis_tmb]);
+    let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
 
     assert_eq!(tx_list["transaction_count"], 1);
     let txs = tx_list["transactions"].as_array().unwrap();
@@ -249,7 +247,9 @@ fn test_inspect_genesis() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // Inspect genesis state
-    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+    // Use --arg=value format to handle thumbprints starting with -
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
 
     // All state digests should equal PR at genesis
     assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
@@ -271,17 +271,13 @@ fn test_inspect_after_transactions() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
     // Add a key
-    cli.run_ok(&[
-        "key",
-        "add",
-        "--identity",
-        genesis_tmb,
-        "--signer",
-        genesis_tmb,
-    ]);
+    // Use --arg=value format to handle thumbprints starting with -
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Inspect after transaction
-    let inspect = cli.run_json(&["inspect", "--identity", genesis_tmb]);
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
 
     // PR should still be genesis, but other states should change
     assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
