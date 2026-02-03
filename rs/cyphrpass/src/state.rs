@@ -152,6 +152,125 @@ impl PrincipalRoot {
 // Re-export HashAlg from coz - single source of truth for algorithm mapping
 pub use coz::HashAlg;
 
+// ============================================================================
+// Tagged Digest (algorithm-prefixed digest with parse-time validation)
+// ============================================================================
+
+/// A cryptographic digest with explicit algorithm tag.
+///
+/// Format: `<alg>:<digest>` (e.g., `SHA-256:U5XUZots-WmQ...`)
+///
+/// Validated during parsing - invalid algorithm/length combinations fail early.
+/// This implements "Parse, Don't Validate" - once constructed, the digest is
+/// guaranteed to have the correct length for its algorithm.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TaggedDigest {
+    alg: HashAlg,
+    digest: Vec<u8>,
+}
+
+impl TaggedDigest {
+    /// Returns the hash algorithm of this digest.
+    #[must_use]
+    pub fn alg(&self) -> HashAlg {
+        self.alg
+    }
+
+    /// Returns the raw digest bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.digest
+    }
+
+    /// Returns the expected digest length in bytes for a given algorithm.
+    #[must_use]
+    pub const fn expected_len(alg: HashAlg) -> usize {
+        match alg {
+            HashAlg::Sha256 => 32,
+            HashAlg::Sha384 => 48,
+            HashAlg::Sha512 => 64,
+        }
+    }
+
+    /// Parses a hash algorithm name string (e.g., "SHA-256").
+    fn parse_alg(s: &str) -> Result<HashAlg, crate::error::Error> {
+        match s {
+            "SHA-256" => Ok(HashAlg::Sha256),
+            "SHA-384" => Ok(HashAlg::Sha384),
+            "SHA-512" => Ok(HashAlg::Sha512),
+            _ => Err(crate::error::Error::UnsupportedAlgorithm(s.to_string())),
+        }
+    }
+}
+
+impl std::str::FromStr for TaggedDigest {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (alg_str, digest_b64) =
+            s.split_once(':')
+                .ok_or(crate::error::Error::MalformedDigest(
+                    "missing ':' separator",
+                ))?;
+
+        let alg = Self::parse_alg(alg_str)?;
+
+        // Decode base64 into a buffer sized for the expected algorithm output
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let expected = Self::expected_len(alg);
+
+        // Allocate buffer for max possible digest (SHA-512 = 64 bytes)
+        let mut buf = [0u8; 64];
+        let decoded = Base64UrlUnpadded::decode(digest_b64, &mut buf)
+            .map_err(|_| crate::error::Error::MalformedDigest("invalid base64"))?;
+
+        // Validate length matches algorithm
+        if decoded.len() != expected {
+            return Err(crate::error::Error::DigestLengthMismatch {
+                alg,
+                expected,
+                actual: decoded.len(),
+            });
+        }
+
+        Ok(Self {
+            alg,
+            digest: decoded.to_vec(),
+        })
+    }
+}
+
+impl std::fmt::Display for TaggedDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        write!(
+            f,
+            "{}:{}",
+            self.alg,
+            Base64UrlUnpadded::encode_string(&self.digest)
+        )
+    }
+}
+
+impl serde::Serialize for TaggedDigest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TaggedDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Get hash algorithm from signing algorithm name (string).
 ///
 /// Prefer `coz::Alg::from_str(s).map(|a| a.hash_alg())` when possible.
@@ -617,5 +736,93 @@ mod tests {
         // into SHA-384 and SHA-512 computations. The implementation handles this
         // by concatenating all bytes regardless of size and hashing with each
         // target algorithm—exactly as SPEC §14.2 specifies.
+    }
+
+    // ========================================================================
+    // TaggedDigest tests
+    // ========================================================================
+
+    #[test]
+    fn tagged_digest_parse_valid_sha256() {
+        // 32 bytes = 43 chars base64url (no padding)
+        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let digest: super::TaggedDigest = input.parse().expect("valid digest");
+
+        assert_eq!(digest.alg(), super::HashAlg::Sha256);
+        assert_eq!(digest.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn tagged_digest_display_roundtrip() {
+        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let digest: super::TaggedDigest = input.parse().expect("valid digest");
+        let output = digest.to_string();
+
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn tagged_digest_serde_roundtrip() {
+        let input = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let digest: super::TaggedDigest = input.parse().expect("valid digest");
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&digest).expect("serialize");
+        assert_eq!(json, format!("\"{}\"", input));
+
+        // Deserialize from JSON
+        let parsed: super::TaggedDigest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(digest, parsed);
+    }
+
+    #[test]
+    fn tagged_digest_missing_separator() {
+        let input = "SHA-256U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let result: Result<super::TaggedDigest, _> = input.parse();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::MalformedDigest(_)),
+            "expected MalformedDigest, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tagged_digest_unknown_algorithm() {
+        let input = "SHA-999:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let result: Result<super::TaggedDigest, _> = input.parse();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::UnsupportedAlgorithm(_)),
+            "expected UnsupportedAlgorithm, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn tagged_digest_length_mismatch() {
+        // SHA-256 expects 32 bytes, but this is only 16 bytes
+        // 16 bytes = 22 chars base64url (AAAAAAAAAAAAAAAAAAAAAA)
+        let input = "SHA-256:AAAAAAAAAAAAAAAAAAAAAA";
+        let result: Result<super::TaggedDigest, _> = input.parse();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::error::Error::DigestLengthMismatch {
+                    alg: super::HashAlg::Sha256,
+                    expected: 32,
+                    actual: 16,
+                }
+            ),
+            "expected DigestLengthMismatch, got {:?}",
+            err
+        );
     }
 }

@@ -110,6 +110,22 @@ pub enum Error {
     #[error("transitory state reference")]
     TransitoryStateReference,
 
+    // === Digest parsing errors ===
+    /// Malformed tagged digest string (missing separator, invalid base64).
+    #[error("malformed digest: {0}")]
+    MalformedDigest(&'static str),
+
+    /// Digest length does not match the algorithm's expected output size.
+    #[error("digest length mismatch for {alg}: expected {expected} bytes, got {actual}")]
+    DigestLengthMismatch {
+        /// The hash algorithm specified in the tagged digest.
+        alg: crate::state::HashAlg,
+        /// Expected digest length in bytes for this algorithm.
+        expected: usize,
+        /// Actual digest length in bytes received.
+        actual: usize,
+    },
+
     /// Underlying Coz error.
     #[error("coz: {0}")]
     Coz(#[from] coz::Error),
