@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"bytes"
+	"sort"
 	"time"
 
 	"github.com/cyphrme/coz"
@@ -563,6 +564,22 @@ func (p *Principal) addKey(key *coz.Key, firstSeen int64) {
 	tmbStr := string(key.Tmb.String())
 	p.auth.keyIdx[tmbStr] = len(p.auth.Keys)
 	p.auth.Keys = append(p.auth.Keys, k)
+
+	// Update activeAlgs if new key introduces a new algorithm (SPEC §14)
+	newAlg := HashAlgFromSEAlg(key.Alg)
+	found := false
+	for _, alg := range p.activeAlgs {
+		if alg == newAlg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		p.activeAlgs = append(p.activeAlgs, newAlg)
+		sort.Slice(p.activeAlgs, func(i, j int) bool {
+			return string(p.activeAlgs[i]) < string(p.activeAlgs[j])
+		})
+	}
 }
 
 // removeKey removes a key from the active set (delete, not revoke).

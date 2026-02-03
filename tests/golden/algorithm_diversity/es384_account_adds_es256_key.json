@@ -43,6 +43,18 @@
     "ks": "RO5xWP49mn9DUxQmF0Wd2bFsDvCLILlwXmSmmAOwKFsWFkorbMgQzn0rZceaZcO6",
     "as": "PIqlU57nWzoTuWRsoybF8gjM9FDbAryHS2pSxhSGm69I6UiLtNWV7yrE2JksaYoq",
     "ps": "PIqlU57nWzoTuWRsoybF8gjM9FDbAryHS2pSxhSGm69I6UiLtNWV7yrE2JksaYoq",
-    "pr": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8"
+    "pr": "h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "multihash_ks": {
+      "SHA-256": "lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
+      "SHA-384": "RO5xWP49mn9DUxQmF0Wd2bFsDvCLILlwXmSmmAOwKFsWFkorbMgQzn0rZceaZcO6"
+    },
+    "multihash_as": {
+      "SHA-256": "ddmVJsfo0dsVhZnb0RAcI6U06VLRJ-jCJUisdG6zi1A",
+      "SHA-384": "PIqlU57nWzoTuWRsoybF8gjM9FDbAryHS2pSxhSGm69I6UiLtNWV7yrE2JksaYoq"
+    },
+    "multihash_ps": {
+      "SHA-256": "ddmVJsfo0dsVhZnb0RAcI6U06VLRJ-jCJUisdG6zi1A",
+      "SHA-384": "PIqlU57nWzoTuWRsoybF8gjM9FDbAryHS2pSxhSGm69I6UiLtNWV7yrE2JksaYoq"
+    }
   }
 }

@@ -27,6 +27,16 @@ fn golden_dir() -> PathBuf {
     tests_dir().join("golden")
 }
 
+/// Parse hash algorithm name from string (e.g., "SHA-256" -> HashAlg::Sha256).
+fn parse_hash_alg(s: &str) -> Option<coz::HashAlg> {
+    match s {
+        "SHA-256" => Some(coz::HashAlg::Sha256),
+        "SHA-384" => Some(coz::HashAlg::Sha384),
+        "SHA-512" => Some(coz::HashAlg::Sha512),
+        _ => None,
+    }
+}
+
 fn load_pool() -> Pool {
     let path = tests_dir().join("keys").join("pool.toml");
     Pool::load(&path).expect("failed to load pool.toml")
@@ -217,6 +227,61 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
             .map(|d| cad_to_b64(&d.0))
             .unwrap_or_else(|| "<no ds>".to_string());
         assert_eq!(principal_ds, *ds, "{}: ds mismatch", test_name);
+    }
+
+    // Verify per-algorithm multihash variants (SPEC §14 cross-implementation parity)
+    if let Some(ref mh_ks) = expected.multihash_ks {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        for (alg_name, expected_digest) in mh_ks {
+            let hash_alg = parse_hash_alg(alg_name)
+                .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
+            let actual = principal
+                .key_state()
+                .get(hash_alg)
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(
+                actual, *expected_digest,
+                "{}: multihash_ks[{}] mismatch",
+                test_name, alg_name
+            );
+        }
+    }
+
+    if let Some(ref mh_as) = expected.multihash_as {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        for (alg_name, expected_digest) in mh_as {
+            let hash_alg = parse_hash_alg(alg_name)
+                .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
+            let actual = principal
+                .auth_state()
+                .get(hash_alg)
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(
+                actual, *expected_digest,
+                "{}: multihash_as[{}] mismatch",
+                test_name, alg_name
+            );
+        }
+    }
+
+    if let Some(ref mh_ps) = expected.multihash_ps {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        for (alg_name, expected_digest) in mh_ps {
+            let hash_alg = parse_hash_alg(alg_name)
+                .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
+            let actual = principal
+                .ps()
+                .get(hash_alg)
+                .map(Base64UrlUnpadded::encode_string)
+                .unwrap_or_default();
+            assert_eq!(
+                actual, *expected_digest,
+                "{}: multihash_ps[{}] mismatch",
+                test_name, alg_name
+            );
+        }
     }
 }
 

@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 	"sort"
 
@@ -74,6 +75,21 @@ const (
 	HashSha384 HashAlg = "SHA-384"
 	HashSha512 HashAlg = "SHA-512"
 )
+
+// ParseHashAlg parses a hash algorithm name string (e.g., "SHA-256").
+// Returns an error if the algorithm is not recognized.
+func ParseHashAlg(s string) (HashAlg, error) {
+	switch s {
+	case "SHA-256":
+		return HashSha256, nil
+	case "SHA-384":
+		return HashSha384, nil
+	case "SHA-512":
+		return HashSha512, nil
+	default:
+		return "", fmt.Errorf("unsupported hash algorithm: %s", s)
+	}
+}
 
 // String methods for state types (return base64 of first variant for compatibility).
 func (s KeyState) String() string         { return s.First().String() }

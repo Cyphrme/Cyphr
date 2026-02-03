@@ -169,25 +169,47 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	if exp.Level != nil && int(p.Level()) != *exp.Level {
 		failures = append(failures, fmt.Sprintf("level: got %d, want %d", p.Level(), *exp.Level))
 	}
+	// Get genesis algorithm for first variant comparison
+	genesisAlg := p.HashAlg()
 
-	// KS
-	if exp.KS != "" && p.KS().String() != exp.KS {
-		failures = append(failures, fmt.Sprintf("ks: got %s, want %s", p.KS().String(), exp.KS))
+	// KS - compare genesis algorithm variant
+	if exp.KS != "" {
+		ksDigest := p.KS().Get(genesisAlg)
+		if ksDigest == nil {
+			failures = append(failures, fmt.Sprintf("ks: got nil, want %s", exp.KS))
+		} else if coz.B64(ksDigest).String() != exp.KS {
+			failures = append(failures, fmt.Sprintf("ks: got %s, want %s", coz.B64(ksDigest).String(), exp.KS))
+		}
 	}
 
-	// AS
-	if exp.AS != "" && p.AS().String() != exp.AS {
-		failures = append(failures, fmt.Sprintf("as: got %s, want %s", p.AS().String(), exp.AS))
+	// AS - compare genesis algorithm variant
+	if exp.AS != "" {
+		asDigest := p.AS().Get(genesisAlg)
+		if asDigest == nil {
+			failures = append(failures, fmt.Sprintf("as: got nil, want %s", exp.AS))
+		} else if coz.B64(asDigest).String() != exp.AS {
+			failures = append(failures, fmt.Sprintf("as: got %s, want %s", coz.B64(asDigest).String(), exp.AS))
+		}
 	}
 
-	// PS
-	if exp.PS != "" && p.PS().String() != exp.PS {
-		failures = append(failures, fmt.Sprintf("ps: got %s, want %s", p.PS().String(), exp.PS))
+	// PS - compare genesis algorithm variant
+	if exp.PS != "" {
+		psDigest := p.PS().Get(genesisAlg)
+		if psDigest == nil {
+			failures = append(failures, fmt.Sprintf("ps: got nil, want %s", exp.PS))
+		} else if coz.B64(psDigest).String() != exp.PS {
+			failures = append(failures, fmt.Sprintf("ps: got %s, want %s", coz.B64(psDigest).String(), exp.PS))
+		}
 	}
 
-	// PR
-	if exp.PR != "" && p.PR().String() != exp.PR {
-		failures = append(failures, fmt.Sprintf("pr: got %s, want %s", p.PR().String(), exp.PR))
+	// PR - compare genesis algorithm variant
+	if exp.PR != "" {
+		prDigest := p.PR().Get(genesisAlg)
+		if prDigest == nil {
+			failures = append(failures, fmt.Sprintf("pr: got nil, want %s", exp.PR))
+		} else if coz.B64(prDigest).String() != exp.PR {
+			failures = append(failures, fmt.Sprintf("pr: got %s, want %s", coz.B64(prDigest).String(), exp.PR))
+		}
 	}
 
 	// DS (only for Level 4+)
@@ -196,6 +218,60 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 			failures = append(failures, fmt.Sprintf("ds: got nil, want %s", exp.DS))
 		} else if p.DS().String() != exp.DS {
 			failures = append(failures, fmt.Sprintf("ds: got %s, want %s", p.DS().String(), exp.DS))
+		}
+	}
+
+	// Multihash KS variants (SPEC §14 cross-impl verification)
+	for algName, expectedDigest := range exp.MultihashKS {
+		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("multihash_ks: invalid algorithm %s", algName))
+			continue
+		}
+		actualDigest := p.KS().Get(hashAlg)
+		if actualDigest == nil {
+			failures = append(failures, fmt.Sprintf("multihash_ks[%s]: got nil, want %s", algName, expectedDigest))
+		} else {
+			actualB64 := coz.B64(actualDigest).String()
+			if actualB64 != expectedDigest {
+				failures = append(failures, fmt.Sprintf("multihash_ks[%s]: got %s, want %s", algName, actualB64, expectedDigest))
+			}
+		}
+	}
+
+	// Multihash AS variants
+	for algName, expectedDigest := range exp.MultihashAS {
+		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("multihash_as: invalid algorithm %s", algName))
+			continue
+		}
+		actualDigest := p.AS().Get(hashAlg)
+		if actualDigest == nil {
+			failures = append(failures, fmt.Sprintf("multihash_as[%s]: got nil, want %s", algName, expectedDigest))
+		} else {
+			actualB64 := coz.B64(actualDigest).String()
+			if actualB64 != expectedDigest {
+				failures = append(failures, fmt.Sprintf("multihash_as[%s]: got %s, want %s", algName, actualB64, expectedDigest))
+			}
+		}
+	}
+
+	// Multihash PS variants
+	for algName, expectedDigest := range exp.MultihashPS {
+		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("multihash_ps: invalid algorithm %s", algName))
+			continue
+		}
+		actualDigest := p.PS().Get(hashAlg)
+		if actualDigest == nil {
+			failures = append(failures, fmt.Sprintf("multihash_ps[%s]: got nil, want %s", algName, expectedDigest))
+		} else {
+			actualB64 := coz.B64(actualDigest).String()
+			if actualB64 != expectedDigest {
+				failures = append(failures, fmt.Sprintf("multihash_ps[%s]: got %s, want %s", algName, actualB64, expectedDigest))
+			}
 		}
 	}
 

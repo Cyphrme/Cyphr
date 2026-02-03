@@ -99,13 +99,13 @@ pub struct GoldenExpected {
     /// Expected level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
-    /// Expected key state digest.
+    /// Expected key state digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ks: Option<String>,
-    /// Expected auth state digest.
+    /// Expected auth state digest (first variant).
     #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
     pub auth_state: Option<String>,
-    /// Expected principal state digest.
+    /// Expected principal state digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ps: Option<String>,
     /// Expected transaction state digest.
@@ -120,6 +120,16 @@ pub struct GoldenExpected {
     /// Expected error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Per-algorithm KS variants for multihash verification (SPEC §14).
+    /// Key: algorithm name (e.g., "SHA-256"), Value: base64url digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multihash_ks: Option<std::collections::BTreeMap<String, String>>,
+    /// Per-algorithm AS variants for multihash verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multihash_as: Option<std::collections::BTreeMap<String, String>>,
+    /// Per-algorithm PS variants for multihash verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multihash_ps: Option<std::collections::BTreeMap<String, String>>,
 }
 
 // ============================================================================
@@ -1134,7 +1144,7 @@ impl<'a> Generator<'a> {
         principal: &cyphrpass::Principal,
         intent_expected: Option<&ExpectedAssertions>,
     ) -> GoldenExpected {
-        // Compute state digests from principal
+        // Compute state digests from principal (first variant)
         let ks = {
             let ks_state = principal.key_state();
             ks_state
@@ -1152,13 +1162,7 @@ impl<'a> Generator<'a> {
             .get(principal.hash_alg())
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
-        let ts = principal.transactions().last().and({
-            // Get TS if there are transactions
-            // Note: Principal doesn't expose ts() directly, compute from transactions
-            // For now, we'll leave ts as None and rely on the fact that
-            // AS = H(KS, TS) when TS exists
-            None::<String>
-        });
+        let ts = principal.transactions().last().and(None::<String>);
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
@@ -1167,6 +1171,41 @@ impl<'a> Generator<'a> {
             .unwrap_or_default();
         let level = principal.level() as u8;
         let key_count = principal.active_key_count();
+
+        // Build multihash variants if multiple algorithms active
+        let active_algs = principal.active_algs();
+        let (multihash_ks, multihash_as, multihash_ps) = if active_algs.len() > 1 {
+            let ks_map: std::collections::BTreeMap<String, String> = active_algs
+                .iter()
+                .filter_map(|alg| {
+                    principal
+                        .key_state()
+                        .get(*alg)
+                        .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
+                })
+                .collect();
+            let as_map: std::collections::BTreeMap<String, String> = active_algs
+                .iter()
+                .filter_map(|alg| {
+                    principal
+                        .auth_state()
+                        .get(*alg)
+                        .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
+                })
+                .collect();
+            let ps_map: std::collections::BTreeMap<String, String> = active_algs
+                .iter()
+                .filter_map(|alg| {
+                    principal
+                        .ps()
+                        .get(*alg)
+                        .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
+                })
+                .collect();
+            (Some(ks_map), Some(as_map), Some(ps_map))
+        } else {
+            (None, None, None)
+        };
 
         // Use intent overrides if present, otherwise use computed values
         match intent_expected {
@@ -1180,6 +1219,9 @@ impl<'a> Generator<'a> {
                 ds: ds.clone(),
                 pr: Some(pr.clone()),
                 error: e.error.clone(),
+                multihash_ks: multihash_ks.clone(),
+                multihash_as: multihash_as.clone(),
+                multihash_ps: multihash_ps.clone(),
             },
             None => GoldenExpected {
                 key_count: Some(key_count),
@@ -1191,6 +1233,9 @@ impl<'a> Generator<'a> {
                 ds,
                 pr: Some(pr),
                 error: None,
+                multihash_ks,
+                multihash_as,
+                multihash_ps,
             },
         }
     }

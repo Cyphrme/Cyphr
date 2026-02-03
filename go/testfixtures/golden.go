@@ -69,11 +69,11 @@ type GoldenExpected struct {
 	KeyCount *int `json:"key_count,omitempty"`
 	// Level is the expected feature level.
 	Level *int `json:"level,omitempty"`
-	// KS is the expected key state digest.
+	// KS is the expected key state digest (first variant).
 	KS string `json:"ks,omitempty"`
-	// AS is the expected auth state digest (JSON field is "as").
+	// AS is the expected auth state digest (JSON field is "as", first variant).
 	AS string `json:"as,omitempty"`
-	// PS is the expected principal state digest.
+	// PS is the expected principal state digest (first variant).
 	PS string `json:"ps,omitempty"`
 	// TS is the expected transaction state digest.
 	TS string `json:"ts,omitempty"`
@@ -83,6 +83,12 @@ type GoldenExpected struct {
 	PR string `json:"pr,omitempty"`
 	// Error is the expected error (for error tests).
 	Error string `json:"error,omitempty"`
+	// MultihashKS contains per-algorithm KS variants for cross-impl verification (SPEC §14).
+	MultihashKS map[string]string `json:"multihash_ks,omitempty"`
+	// MultihashAS contains per-algorithm AS variants for cross-impl verification.
+	MultihashAS map[string]string `json:"multihash_as,omitempty"`
+	// MultihashPS contains per-algorithm PS variants for cross-impl verification.
+	MultihashPS map[string]string `json:"multihash_ps,omitempty"`
 }
 
 // LoadGolden loads a golden test from a JSON file.
