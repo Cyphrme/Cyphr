@@ -189,7 +189,7 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 
 	// Handle principal/create: id is self-referential (current AS)
 	if strings.Contains(pay.Typ, "principal/create") {
-		payObj["id"] = principal.AS().String()
+		payObj["id"] = principal.AS().Tagged()
 	}
 
 	// Sign and apply
@@ -275,7 +275,7 @@ func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.
 		strings.Contains(pay.Typ, "key/replace") ||
 		strings.Contains(pay.Typ, "key/revoke") ||
 		strings.Contains(pay.Typ, "principal/create") {
-		payObj["pre"] = currentAS.String()
+		payObj["pre"] = currentAS.Tagged()
 	}
 
 	// Add rvk field if present

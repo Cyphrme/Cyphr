@@ -161,11 +161,12 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 
 	case TypPrincipalCreate:
 		// SPEC §5.1: Genesis finalization transaction
+		// For principal/create, id is an AuthState (tagged digest format)
 		tx.Kind = TxPrincipalCreate
 		if err := tx.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseID(pay.ID); err != nil {
+		if err := tx.parseIDAsAuthState(pay.ID); err != nil {
 			return nil, err
 		}
 
@@ -176,21 +177,21 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 	return tx, nil
 }
 
-// parsePre decodes the pre field.
+// parsePre decodes the pre field in alg:digest format.
 func (tx *Transaction) parsePre(pre string) error {
 	if pre == "" {
 		return ErrMalformedPayload
 	}
-	preBytes, err := coz.Decode(pre)
+	tagged, err := ParseTaggedDigest(pre)
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	// Create single-variant AuthState from pre bytes (assumes SHA-256 for pre field)
-	tx.Pre = AuthState{FromSingleDigest(HashSha256, preBytes)}
+	// Create single-variant AuthState from tagged digest
+	tx.Pre = AuthState{FromSingleDigest(tagged.Alg, tagged.Digest)}
 	return nil
 }
 
-// parseID decodes the id field.
+// parseID decodes the id field (raw base64 thumbprint).
 func (tx *Transaction) parseID(id string) error {
 	if id == "" {
 		return ErrMalformedPayload
@@ -200,6 +201,21 @@ func (tx *Transaction) parseID(id string) error {
 		return ErrMalformedPayload
 	}
 	tx.ID = idBytes
+	return nil
+}
+
+// parseIDAsAuthState decodes the id field as an AuthState (alg:digest format).
+// Used for principal/create where id is the current AuthState per SPEC §5.1.
+func (tx *Transaction) parseIDAsAuthState(id string) error {
+	if id == "" {
+		return ErrMalformedPayload
+	}
+	tagged, err := ParseTaggedDigest(id)
+	if err != nil {
+		return ErrMalformedPayload
+	}
+	// Store the raw digest bytes in ID field
+	tx.ID = tagged.Digest
 	return nil
 }
 
