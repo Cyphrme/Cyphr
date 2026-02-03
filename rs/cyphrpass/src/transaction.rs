@@ -213,28 +213,21 @@ impl Transaction {
 
     /// Extract `pre` field (previous Auth State) from pay.extra.
     ///
-    /// **Note:** The algorithm is inferred from digest length.
-    /// - 32 bytes → SHA-256
-    /// - 48 bytes → SHA-384
-    /// - 64 bytes → SHA-512
+    /// Expects `alg:digest` format (e.g., `SHA-256:U5XUZots...`).
     fn extract_pre(pay: &Pay) -> Result<AuthState> {
         use crate::multihash::MultihashDigest;
-        use crate::state::HashAlg;
+        use crate::state::TaggedDigest;
 
         let pre_value = pay.extra.get("pre").ok_or(Error::MalformedPayload)?;
         let pre_str = pre_value.as_str().ok_or(Error::MalformedPayload)?;
-        let pre_bytes =
-            Base64UrlUnpadded::decode_vec(pre_str).map_err(|_| Error::MalformedPayload)?;
 
-        // Infer algorithm from digest length
-        let alg = match pre_bytes.len() {
-            32 => HashAlg::Sha256,
-            48 => HashAlg::Sha384,
-            64 => HashAlg::Sha512,
-            _ => return Err(Error::MalformedPayload),
-        };
+        // Parse tagged digest (validates algorithm and length)
+        let tagged: TaggedDigest = pre_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(AuthState(MultihashDigest::from_single(alg, pre_bytes)))
+        Ok(AuthState(MultihashDigest::from_single(
+            tagged.alg(),
+            tagged.as_bytes().to_vec(),
+        )))
     }
 
     /// Extract `id` field (target key thumbprint) from pay.extra.
@@ -253,25 +246,21 @@ impl Transaction {
     /// Extract `id` field as AuthState (for principal/create).
     ///
     /// Per SPEC §5.1, the `id` field in principal/create contains the
-    /// Auth State bundle identifier.
+    /// Auth State bundle identifier. Expects `alg:digest` format.
     fn extract_as(pay: &Pay) -> Result<AuthState> {
         use crate::multihash::MultihashDigest;
-        use crate::state::HashAlg;
+        use crate::state::TaggedDigest;
 
         let id_value = pay.extra.get("id").ok_or(Error::MalformedPayload)?;
         let id_str = id_value.as_str().ok_or(Error::MalformedPayload)?;
-        let id_bytes =
-            Base64UrlUnpadded::decode_vec(id_str).map_err(|_| Error::MalformedPayload)?;
 
-        // Infer algorithm from digest length
-        let alg = match id_bytes.len() {
-            32 => HashAlg::Sha256,
-            48 => HashAlg::Sha384,
-            64 => HashAlg::Sha512,
-            _ => return Err(Error::MalformedPayload),
-        };
+        // Parse tagged digest (validates algorithm and length)
+        let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(AuthState(MultihashDigest::from_single(alg, id_bytes)))
+        Ok(AuthState(MultihashDigest::from_single(
+            tagged.alg(),
+            tagged.as_bytes().to_vec(),
+        )))
     }
 }
 
@@ -368,8 +357,8 @@ mod tests {
 
     use super::*;
 
-    // Valid base64url for 32 bytes (use golden thumbprint from Coz spec)
-    const TEST_PRE: &str = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+    // Valid alg:digest format for 32-byte SHA-256 digests
+    const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
     /// Helper to wrap Pay in CozJson for tests.

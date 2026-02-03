@@ -21,26 +21,26 @@
             "alg": "ES256",
             "commit": true,
             "now": 1700000000,
-            "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+            "pre": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "rvk": 1700000000,
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/revoke"
           },
-          "sig": "ee9JYplwo5fEVr8Gf-nEGkdsplf63ee5YyUlva6uQoM689LyrVCi_u2fIodO88YBthC0ESTG1ockY-d3LEkSUA"
+          "sig": "hL14UjeJh_3CLjwZB6M88YUSdhOhZnmUptRXUBUffWRslP_1XZu81nDDaCVGOryjpt0WgRa9t5ji9izEEVhURQ"
         }
       ],
-      "ts": "SHA-256:DQC_SinyiJBXsA0Wj0D8GD96ZKB-RN1dAq6iFV0EhCM",
-      "as": "SHA-256:JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
-      "ps": "SHA-256:JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w"
+      "ts": "SHA-256:owE5Mspn9OG_w0wttH8nLDhZvmJQsx9V6qUI6aBqemw",
+      "as": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
+      "ps": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s"
     }
   ],
-  "digests": ["DQC_SinyiJBXsA0Wj0D8GD96ZKB-RN1dAq6iFV0EhCM"],
+  "digests": ["owE5Mspn9OG_w0wttH8nLDhZvmJQsx9V6qUI6aBqemw"],
   "expected": {
     "key_count": 1,
     "level": 3,
     "ks": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "SHA-256:JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
-    "ps": "SHA-256:JtRvttlXijbG5n26XegSbQwbJf9d23jBGc_2B-nLl9w",
+    "as": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
+    "ps": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
   }
 }

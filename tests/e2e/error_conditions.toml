@@ -18,7 +18,7 @@ signer = "golden"
 target = "key_a"
 
 [test.override]
-pre = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
 error = "BrokenChain"

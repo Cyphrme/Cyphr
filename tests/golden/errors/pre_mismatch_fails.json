@@ -17,11 +17,11 @@
             "commit": true,
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000000,
-            "pre": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "pre": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "5Ujfc9bAcX1cwVLz3wygF6y6zadaxs23PmlPhWOgD0EUmWKgLYycq_gFqI60AGz_tqcM5Y5zqTV15L_1AmX59g",
+          "sig": "AbObIcl7kd9NEn1UlLfv57cpeJfvDtTweXH7NhQ5QRoMpdTIXxWhs6q_6mj-Ai3ZjEItjn5GaVoFjZsCN50crg",
           "key": {
             "alg": "ES256",
             "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
@@ -34,7 +34,7 @@
       "ps": ""
     }
   ],
-  "digests": ["uuHVhlaJ9keoSJx4poK0JKvkPxQmd4XXwXeIEYbyINE"],
+  "digests": ["x1BytYWtDP8jEeoxHscQKYaH2j3OCfLuwJyQy122_nk"],
   "expected": {
     "key_count": 1,
     "level": 1,

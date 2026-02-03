@@ -154,6 +154,13 @@ impl<'a> Generator<'a> {
         Self { pool }
     }
 
+    /// Format auth state as tagged digest string (alg:digest format).
+    ///
+    /// Delegates to Principal::auth_state_tagged().
+    fn format_auth_state_tagged(principal: &cyphrpass::Principal) -> String {
+        principal.auth_state_tagged()
+    }
+
     /// Generate golden test cases from an intent file.
     ///
     /// Each test in the intent becomes a golden test case.
@@ -451,23 +458,14 @@ impl<'a> Generator<'a> {
             ),
         })?;
 
-        // Capture pre (auth state before transaction)
+        // Capture pre (auth state before transaction) in alg:digest format
         // Use override.pre if specified (for InvalidPrior tests)
         let computed_pre;
         let pre: &str =
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = {
-                    principal
-                        .auth_state()
-                        .as_multihash()
-                        .variants()
-                        .values()
-                        .next()
-                        .map(|b| Base64UrlUnpadded::encode_string(b))
-                        .unwrap_or_default()
-                };
+                computed_pre = Self::format_auth_state_tagged(principal);
                 &computed_pre
             };
 
@@ -538,15 +536,8 @@ impl<'a> Generator<'a> {
         for (i, step) in test.step.iter().enumerate() {
             let is_last_step = i == step_count - 1;
 
-            // Capture pre before this step
-            let pre = principal
-                .auth_state()
-                .as_multihash()
-                .variants()
-                .values()
-                .next()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
-                .unwrap_or_default();
+            // Capture pre before this step (alg:digest format)
+            let pre = Self::format_auth_state_tagged(principal);
 
             // Use step.pay as-is (intent files are explicit about commit: true)
             let (coz, sig_bytes, czd) = self
@@ -647,15 +638,8 @@ impl<'a> Generator<'a> {
             ),
         })?;
 
-        // Capture pre (auth state before transaction)
-        let pre = principal
-            .auth_state()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
-            .unwrap_or_default();
+        // Capture pre (auth state before transaction) in alg:digest format
+        let pre = Self::format_auth_state_tagged(principal);
 
         // Build and sign transaction coz message - use pay_intent as-is
         let (tx_coz, tx_sig_bytes, tx_czd) =

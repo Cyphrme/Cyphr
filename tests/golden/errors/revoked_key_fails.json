@@ -26,11 +26,11 @@
             "commit": true,
             "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "now": 1700000000,
-            "pre": "GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+            "pre": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "AEHbToknTyimcHyto5cIyJVT523dqXGU959U8HlpbSBVrmseq2u5VXitI6iKlVKbauUJ1buOSgA0QWpvyhftwA",
+          "sig": "53CmfqK7FOFoP767toTyJelB2mxCi-BvhbelhuggCd9pQKdXXZFSNAt4IQSoUr85k4oSSL-5HQcCQKqhxlsd4Q",
           "key": {
             "alg": "ES256",
             "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
@@ -43,7 +43,7 @@
       "ps": ""
     }
   ],
-  "digests": ["XjIJ0K7XMQURymVIgAUMyExKm9zzlqDZTAhNsDMPGYk"],
+  "digests": ["atz_TrCGc0Yjf0fNwZwR7CrS65NjebjpMubBRVhrAeM"],
   "expected": {
     "key_count": 1,
     "level": 1,

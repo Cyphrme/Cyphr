@@ -201,8 +201,8 @@ mod tests {
     use coz::{Czd, PayBuilder, Thumbprint};
     use serde_json::json;
 
-    // Valid base64url for 32 bytes
-    const TEST_PRE: &str = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+    // Valid alg:digest format for 32-byte SHA-256 digests
+    const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
     /// Create a test transaction with specified finalizer flag.

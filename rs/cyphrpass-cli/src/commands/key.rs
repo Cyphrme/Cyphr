@@ -165,23 +165,8 @@ fn add(
 
     // Build pay JSON for key/create
     let now = current_timestamp();
-    let pre = {
-        use cyphrpass::state::HashAlg;
-        let auth_state = principal.auth_state();
-        // Default to SHA-256 since we don't have hash_alg here
-        auth_state
-            .get(HashAlg::Sha256)
-            .or_else(|| {
-                auth_state
-                    .as_multihash()
-                    .variants()
-                    .values()
-                    .next()
-                    .map(AsRef::as_ref)
-            })
-            .map(Base64UrlUnpadded::encode_string)
-            .expect("AuthState must have at least one variant")
-    };
+    // Get pre (auth state before transaction) in alg:digest format
+    let pre = principal.auth_state_tagged();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -276,23 +261,8 @@ fn revoke(
 
     // Build pay JSON for key/revoke
     let now = current_timestamp();
-    let pre = {
-        use cyphrpass::state::HashAlg;
-        let auth_state = principal.auth_state();
-        // Default to SHA-256 since we don't have hash_alg here
-        auth_state
-            .get(HashAlg::Sha256)
-            .or_else(|| {
-                auth_state
-                    .as_multihash()
-                    .variants()
-                    .values()
-                    .next()
-                    .map(AsRef::as_ref)
-            })
-            .map(Base64UrlUnpadded::encode_string)
-            .expect("AuthState must have at least one variant")
-    };
+    // Get pre (auth state before transaction) in alg:digest format
+    let pre = principal.auth_state_tagged();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));

@@ -151,9 +151,9 @@ typ    = "cyphr.me/key/create"
 signer = "golden"
 target = "key_a"
 
-# Override pre with wrong value
+# Override pre with wrong value (must be valid alg:digest format to test InvalidPrior)
 [test.override]
-pre = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
 error = "InvalidPrior"

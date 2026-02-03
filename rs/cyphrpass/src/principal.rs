@@ -290,6 +290,21 @@ impl Principal {
         &self.auth_state
     }
 
+    /// Get the current Auth State as a tagged digest string (alg:digest format).
+    ///
+    /// Uses the lexicographically first algorithm from active_algs for deterministic output.
+    /// This is the canonical format for the `pre` field in transactions.
+    pub fn auth_state_tagged(&self) -> String {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
+
+        self.auth_state
+            .get(first_alg)
+            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+            .expect("AuthState must have at least one variant")
+    }
+
     /// Get the current Key State.
     pub fn key_state(&self) -> &KeyState {
         &self.ks

@@ -16,12 +16,12 @@
             "alg": "ES256",
             "commit": true,
             "now": 1700000000,
-            "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "rvk": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/revoke"
           },
-          "sig": "p4-or5grZ5aGD1F9d-u53SNCmK9mUjVv_SGFUkrX_OkbfZmPeQlv0Y8IIU57CwtUfCNPjl0Qz4yaI9C9b1s6gg"
+          "sig": "9QirLp9081jhxJvnBdNf0TLxYTVSxWymk6_zsh876rpk8zZoFicYwAPgbUNrAB6Xg1Bf0QJib3-g50W9o9XqWA"
         }
       ],
       "ts": "",
@@ -29,7 +29,7 @@
       "ps": ""
     }
   ],
-  "digests": ["nu1mxZGHq9vVJHDYhG3mHoZnjuF5K61lhJkiQ030A0M"],
+  "digests": ["YqmgXtBoh_mS98-idjd4dXkgMsy4_P5FZGg-dBkRAts"],
   "expected": {
     "key_count": 1,
     "level": 1,
