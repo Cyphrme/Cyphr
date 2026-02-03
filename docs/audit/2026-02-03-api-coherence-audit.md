@@ -717,26 +717,27 @@ Both implementations infer hash algorithm from the `pre` field's byte length:
 
 ```rust
 // Rust: transaction.rs:230-234
-let alg = match pre_bytes.len() {
-    32 => HashAlg::Sha256,
-    48 => HashAlg::Sha384,
-    64 => HashAlg::Sha512,
-    _ => return Err(Error::MalformedPayload),
-};
+// Storage layer explicitly tags algorithm:
+// Example from test vectors: "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
+let (alg, digest) = parse_alg_digest(pre_str)?;
 ```
 
-**Go:** Hardcodes SHA-256 assumption:
+**Go:** Ignores algorithm prefix and hardcodes SHA-256:
 
 ```go
-// Go: transaction.go:189
+// Go: transaction.go:184-189
+preBytes, err := coz.Decode(pre)  // Decodes without parsing prefix
+// Assumes SHA-256 regardless of actual algorithm
 tx.Pre = AuthState{FromSingleDigest(HashSha256, preBytes)}
 ```
 
-**Discrepancy:** Go assumes all `pre` fields are SHA-256; Rust infers from length.
+**Discrepancy:** Storage format uses `alg:digest` prefix (e.g., `"SHA-256:abc123..."`), but Go ignores it.
 
-**Impact:** Go will misinterpret SHA-384 or SHA-512 `pre` values as SHA-256 digests.
+**Evidence:** Test vectors use explicit algorithm prefix format (200+ instances across `tests/golden/`).
 
-**Recommendation:** Update Go to match Rust's length-based inference.
+**Impact:** Go cannot parse `pre` fields with non-SHA-256 algorithms (SHA-384, SHA-512), violating storage format convention.
+
+**Recommendation:** Update Go to parse the `alg:digest` prefix before decoding, matching storage layer format.
 
 ---
 
@@ -765,12 +766,12 @@ If `typ` is `cyphr.me/cyphrpass/key/create` (namespaced per SPEC), this returns 
 
 #### Recommended Changes
 
-| ID       | Priority | Description                                                                        |
-| :------- | :------- | :--------------------------------------------------------------------------------- |
-| **T1-1** | P1       | Go: Implement length-based hash algorithm inference in `parsePre()` to match Rust. |
-| **T1-2** | P1       | Go: Fix `typ` parsing to handle namespaced URIs (use `HasSuffix`). Add unit tests. |
-| **T2-1** | P2       | Align on other-revoke: either remove from Go or add to Rust.                       |
-| **T3-1** | P3       | Consider refactoring Go `TransactionKind` to carry embedded data (larger lift).    |
+| ID       | Priority | Description                                                                                         |
+| :------- | :------- | :-------------------------------------------------------------------------------------------------- |
+| **T1-1** | P1       | Go: Parse `alg:digest` prefix in `parsePre()` to support storage format (e.g., `SHA-256:<digest>`). |
+| **T1-2** | P1       | Go: Fix `typ` parsing to handle namespaced URIs (use `HasSuffix`). Add unit tests.                  |
+| **T2-1** | P2       | Align on other-revoke: either remove from Go or add to Rust.                                        |
+| **T3-1** | P3       | Consider refactoring Go `TransactionKind` to carry embedded data (larger lift).                     |
 
 ---
 
@@ -1534,16 +1535,17 @@ This audit identified **23 recommendations** across 4 phases. After deduplicatio
 
 These items represent correctness issues that could cause subtle bugs or protocol violations.
 
-| ID       | Scope | Description                                                         | Component   | Effort |
-| :------- | :---- | :------------------------------------------------------------------ | :---------- | :----- |
-| **T1-1** | Go    | **Implement length-based hash algorithm inference in `parsePre()`** | Transaction | Medium |
+| ID       | Scope | Description                                                                    | Component   | Effort |
+| :------- | :---- | :----------------------------------------------------------------------------- | :---------- | :----- |
+| **T1-1** | Go    | **Parse `alg:digest` prefix in `parsePre()` for storage format compatibility** | Transaction | Medium |
 
 **Details:**
 
-- **Current:** Go hardcodes SHA-256 when parsing the `pre` field.
-- **Issue:** Transactions using SHA-384 or SHA-512 will fail to parse correctly.
-- **Fix:** Infer algorithm from digest length: 32 bytes → SHA-256, 48 → SHA-384, 64 → SHA-512. Match Rust implementation in `pre_from_digest()`.
+- **Current:** Go ignores algorithm prefix and hardcodes SHA-256 when parsing the `pre` field.
+- **Issue:** Test vectors and storage layer use `"SHA-256:<digest>"` format, but Go ignores the prefix, causing failures for SHA-384/SHA-512 transactions.
+- **Fix:** Parse the `alg:digest` prefix (e.g., `"SHA-384:abcd..."`) and create `AuthState` with the correct algorithm. Follow Rust's `parse_alg_digest` pattern from `golden_fixtures.rs:40-46`.
 - **File:** `go/cyphrpass/transaction.go` (around `parsePre()`)
+- **Pattern:** Split on `:`, map algorithm name to `HashAlg`, then decode digest.
 
 | **T1-2** | Go | **Fix `typ` parsing to handle namespaced URIs** | Transaction | Medium |
 
