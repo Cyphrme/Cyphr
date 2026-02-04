@@ -83,22 +83,6 @@ that represents the complete state of a Principal (identity).
 ```text
 Principal State (PS)
 │
-├── Auth State (AS) ──────────── [Security & Identity]
-│   │
-│   ├── Key State (KS) ───────── [Public Keys]
-│   │
-│   ├── Rule State (RS) ──────── [Permissions & Thresholds]
-│   │
-│   ├── Transaction State (TS) ─ [State Mutations]
-│   │
-│   └── Nonce ────────────────── [Optional Nonce]
-│
-└── Data State (DS) ──────────── [User Data Actions]
-
-
-Second option:
-Principal State (PS)
-│
 ├── Commit State (CS) ─────────── [Finalized Commit]
 │   │
 │   ├── Auth State (AS) ───────── [Authentication]
@@ -107,27 +91,11 @@ Principal State (PS)
 │   │   │
 │   │   └── Rule State (RS) ───── [Permissions & Thresholds]
 │   │
-│   └── Transaction State (TS) ── [State Mutations]
-│
-└── Data State (DS) ───────────── [User Data / Application State]
-
-
-Third Option:
-Principal State (PS)
-│
-├── Commit State (CS) ─────────── [Commit With Transaction]
-│   │
-│   └── Auth State (AS) ───────── [Authentication]
-│       │
-│       ├── Key State (KS) ────── [Public Keys]
-│       │
-│       └── Rule State (RS) ───── [Permissions & Thresholds]
+│   └── Transaction ── [State Mutations]
 │
 └── Data State (DS) ───────────── [User Data / Application State]
 
 ```
-
-// TODO think about Commit State CS and AS being just KS and RS
 
 The **Auth State (AS) chain** is the core of Cyphrpass. Each auth transaction
 forms a node referencing the prior AS.
@@ -2508,45 +2476,6 @@ variants is assumed by the protocol; no relative strength ordering is enforced
 at the protocol level (see §14.4 Rank for tie-breaking considerations).
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ### 14.4 Rank
 When multiple algorithms are supported, there may be a tie at the time of
 conversion.  Cyphrpass provides a default rank.  Rank is a tiebreaker only and
@@ -2625,17 +2554,6 @@ operations:
 
 
 // TODO ZAMI: discuss idempotency for "create"
-
-
-
-
-
-
-
-
-
-
-
 
 
 
