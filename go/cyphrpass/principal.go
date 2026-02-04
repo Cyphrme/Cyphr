@@ -540,10 +540,6 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		return err
 	}
 
-	// Reset currentCommitCzds after commit finalization
-	if tx.IsCommit {
-		p.currentCommitCzds = nil
-	}
 	return nil
 }
 

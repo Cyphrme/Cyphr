@@ -26,12 +26,6 @@ func (vt *VerifiedTx) Signer() *Key {
 	return vt.signer
 }
 
-// IsCommit returns true if this transaction finalizes a commit (SPEC §4.2.1).
-// The value is derived from the payload's commit field - it cannot be overridden.
-func (vt *VerifiedTx) IsCommit() bool {
-	return vt.tx.IsCommit
-}
-
 // VerifyTransaction verifies a Coz message and returns a VerifiedTx if valid.
 //
 // The coz message must contain:

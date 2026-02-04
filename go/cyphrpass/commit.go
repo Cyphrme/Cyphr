@@ -107,13 +107,11 @@ func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 }
 
 // Push adds a transaction to the pending commit.
-// Returns true if this transaction has the `commit: true` finalizer.
-func (p *PendingCommit) Push(tx *Transaction) bool {
+func (p *PendingCommit) Push(tx *Transaction) {
 	p.transactions = append(p.transactions, tx)
 	if tx.Raw != nil {
 		p.raw = append(p.raw, tx.Raw)
 	}
-	return tx.IsCommit
 }
 
 // Transactions returns the current list of pending transactions.
@@ -150,17 +148,10 @@ func (p *PendingCommit) ComputeTS() (*TransactionState, error) {
 //   - as: The computed Auth State after all transactions
 //   - ps: The computed Principal State after all transactions
 //
-// Returns nil if no transactions exist or if the last transaction
-// does not have the `commit: true` finalizer.
+// Returns nil if no transactions exist.
 func (p *PendingCommit) Finalize(as AuthState, ps PrincipalState) (*Commit, error) {
 	if len(p.transactions) == 0 {
 		return nil, ErrEmptyCommit
-	}
-
-	// Verify last transaction is a finalizer
-	last := p.transactions[len(p.transactions)-1]
-	if !last.IsCommit {
-		return nil, ErrMissingFinalizer
 	}
 
 	// Compute TS from all transaction czds

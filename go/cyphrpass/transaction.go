@@ -74,9 +74,6 @@ type Transaction struct {
 	// Rvk is the revocation timestamp (for revoke transactions).
 	Rvk int64
 
-	// IsCommit indicates this transaction finalizes a commit (SPEC §4.2.1).
-	IsCommit bool
-
 	// Raw is the original CozJson bytes for this transaction.
 	// This field enables bit-perfect export for storage round-trips.
 	// It includes the complete {pay, sig, key?} structure.
@@ -86,14 +83,13 @@ type Transaction struct {
 // TransactionPay represents the payload fields for a Cyphrpass transaction.
 // This struct is used for JSON unmarshaling of transaction payloads.
 type TransactionPay struct {
-	Alg    coz.SEAlg `json:"alg"`
-	Tmb    coz.B64   `json:"tmb"`
-	Now    int64     `json:"now"`
-	Typ    string    `json:"typ"`
-	Pre    string    `json:"pre,omitempty"`    // Base64url previous auth state
-	ID     string    `json:"id,omitempty"`     // Base64url target key thumbprint
-	Rvk    int64     `json:"rvk,omitempty"`    // Revocation timestamp
-	Commit bool      `json:"commit,omitempty"` // True if this finalizes a commit (SPEC §4.2.1)
+	Alg coz.SEAlg `json:"alg"`
+	Tmb coz.B64   `json:"tmb"`
+	Now int64     `json:"now"`
+	Typ string    `json:"typ"`
+	Pre string    `json:"pre,omitempty"` // Base64url previous auth state
+	ID  string    `json:"id,omitempty"`  // Base64url target key thumbprint
+	Rvk int64     `json:"rvk,omitempty"` // Revocation timestamp
 }
 
 // ParseTransaction parses a transaction from a TransactionPay and czd.
@@ -104,11 +100,10 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 	}
 
 	tx := &Transaction{
-		Signer:   pay.Tmb,
-		Now:      pay.Now,
-		Czd:      czd,
-		Rvk:      pay.Rvk,
-		IsCommit: pay.Commit,
+		Signer: pay.Tmb,
+		Now:    pay.Now,
+		Czd:    czd,
+		Rvk:    pay.Rvk,
 	}
 
 	// Parse typ suffix to determine kind
