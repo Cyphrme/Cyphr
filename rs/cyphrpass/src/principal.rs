@@ -399,7 +399,7 @@ impl Principal {
     ///
     /// Per SPEC §4.2.1, transactions are grouped into atomic commits.
     /// Call this before adding transactions to a bundle, then call
-    /// `finalize_commit()` after the last transaction.
+    /// `complete_transaction()` after the last coz.
     ///
     /// # Errors
     ///
@@ -421,7 +421,7 @@ impl Principal {
     ///
     /// Returns `NoPendingCommit` if no commit is in progress.
     /// Returns `EmptyCommit` if the pending commit has no transactions.
-    pub fn finalize_commit(&mut self) -> Result<&Commit> {
+    pub fn complete_transaction(&mut self) -> Result<&Commit> {
         self.finalize_current_commit()?;
         // Return reference to the just-added commit
         Ok(self.auth.commits.last().expect("just pushed"))
@@ -1148,7 +1148,7 @@ mod tests {
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal.apply_transaction(tx, Some(key2)).unwrap();
-        principal.finalize_commit().unwrap(); // Required since auto-finalize removed
+        principal.complete_transaction().unwrap(); // Required since auto-finalize removed
 
         let new_as = principal
             .auth_state()

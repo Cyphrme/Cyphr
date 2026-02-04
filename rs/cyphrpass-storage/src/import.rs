@@ -376,7 +376,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        // Note: We could use begin_commit/finalize_commit here for proper
+        // Note: We could use begin_commit/complete_transaction here for proper
         // commit lifecycle, but for now we replay transactions directly
         // as the wrap_as_commit() auto-wraps single transactions.
 
