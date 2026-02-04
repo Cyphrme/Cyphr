@@ -87,14 +87,47 @@ Principal State (PS)
 │   │
 │   ├── Key State (KS) ───────── [Public Keys]
 │   │
-│   ├── Transaction State (TS) ─ [State Mutations]
-│   │
 │   ├── Rule State (RS) ──────── [Permissions & Thresholds]
+│   │
+│   ├── Transaction State (TS) ─ [State Mutations]
 │   │
 │   └── Nonce ────────────────── [Optional Nonce]
 │
 └── Data State (DS) ──────────── [User Data Actions]
+
+
+Second option:
+Principal State (PS)
+│
+├── Commit State (CS) ─────────── [Finalized Commit]
+│   │
+│   ├── Auth State (AS) ───────── [Authentication]
+│   │   │
+│   │   ├── Key State (KS) ────── [Public Keys]
+│   │   │
+│   │   └── Rule State (RS) ───── [Permissions & Thresholds]
+│   │
+│   └── Transaction State (TS) ── [State Mutations]
+│
+└── Data State (DS) ───────────── [User Data / Application State]
+
+
+Third Option:
+Principal State (PS)
+│
+├── Commit State (CS) ─────────── [Commit With Transaction]
+│   │
+│   └── Auth State (AS) ───────── [Authentication]
+│       │
+│       ├── Key State (KS) ────── [Public Keys]
+│       │
+│       └── Rule State (RS) ───── [Permissions & Thresholds]
+│
+└── Data State (DS) ───────────── [User Data / Application State]
+
 ```
+
+// TODO think about Commit State CS and AS being just KS and RS
 
 The **Auth State (AS) chain** is the core of Cyphrpass. Each auth transaction
 forms a node referencing the prior AS.
@@ -105,7 +138,7 @@ forms a node referencing the prior AS.
         PR/PS (Genesis)            PS (State 2)                PS (State 3)
    +-------------------+      +-------------------+      +-------------------+
    |                   |      |                   |      |                   |
-   |   [AS]     [DS]   | ===> |    [AS]    [DS]   | ===> |    [AS]    [DS]   | ===> (Future)
+   |   [CS]     [DS]   | ===> |    [CS]    [DS]   | ===> |    [CS]    [DS]   | ===> (Future)
    |    ^              |      |    |  ^           |      |    |  ^           |
    +----|--------------+      +----V--|-----------+      +----V--|-----------+ 
         |                          |  |                       |  |
@@ -273,28 +306,24 @@ out-of-band intervention. See Section Recovery.
 - **Self-revoke**: A Level 1 key can self-revoke, but this results in permanent lockout (no recovery without sideband intervention)
 
 ### 3.2 Level 2: Key Replacement
-
 - Single active key at any time
 - `key/replace` transaction swaps current key for new key
 - TS is implicit at Level 2 (not stored in protocol)
 - Use case: Devices that can rotate keys but only store one
 
 ### 3.3 Level 3: Multi-Key (Commit)
-
 - Multiple concurrent keys with equal authority
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
 - Recommended minimum for services
 
 ### 3.4 Level 4: Arbitrary Data
-
 - Introduces Data State (DS) for user actions
 - Actions (comments, posts, etc.) recorded in DS
 - `PS = MR(AS, DS)`
 - Enables Authenticated Atomic Actions (AAA)
 
 ### 3.5 Level 5: Rules (Weighted Permissions)
-
 - Introduces Rule State (RS) for access control
 - Each key has a weight (default: 1)
 - Transactions and actions have threshold requirements
@@ -488,134 +517,146 @@ Example Finalize:
 }
 ```
 
+
 ## 5. Genesis (Principal Creation)
 ### 5.1 Initial Transactions
-A principal is created (genesis) in one of two ways, implicit or explicit genesis.
+A principal is created (genesis) by its **genesis key**. Levels 1 and 2 have an
+implicit genesis and levels 3+ have an explicit genesis.
 
 **Implicit Genesis (Levels 1 and 2)**
 - Multikey is not supported.
-- Principal exists the moment the key exists. No transaction required.
+- The Principal exist with a single key. No transaction required.
 - `pr` == `tmb` of the single key (via implicit promotion, PR == PS == AS == KS == `tmb`).
 
 **Explicit Genesis (Levels 3+)**
-- Requires a signed genesis transaction.
-- Key signs a `key/create` transaction, and then that key creates the principal. 
-- For genesis only, `pre` is omitted, since there is no prior principal state
-  being mutated.  
-- After the initial `principal/create` (genesis), all subsequent transaction
-  must contain `pre`, which is a reference to the prior principal state.
+Stateful Principal with Commit and graceful upgrading
+
+Explicit genesis uses a bootstrap model, upgrading from level 1/2 to level 3:
+
+1. First key is level 1/2 and exists without a transaction.   AS = KS = `tmb` of
+   the first key initially.
+2. Additional keys, rules, or any other AS component (if any) require
+   transactions with `pre` referencing the current AS (computed from
+   each additional component).  For example, for a second key, `key/create`
+   contains a `pre` referring to the first key's `tmb`.
+3. `principal/create` finalizes the genesis with `pre` referencing the
+   bootstrapped Auth State. This establishes PR and marks the principal as
+   created.
+
+This design ensures every transaction (including genesis transactions) requires
+`pre`, maintaining chain continuity from the moment the first key
+exists. 
 
 **`typ`**: `<authority>/key/create`
-- `id`: the Auth State (AS), in this case Key State (KS).  
+- `pre`: Current Auth State (required)
+- `id`: Thumbprint of key being added
 
-**`typ`**: `<authority>/cyphrpass/principal/create`
+**`typ`**: `<authority>/principal/create`
+- `pre`: Current Auth State (required)
+- `id`: Final Auth State (the PR to anchor)
+- `commit`: true (finalizes the genesis bundle)
 
-Outside of the cozies is `key`, which is the public key material.  Note that it
+Outside of the cozies is `key`, which is the public key material. Note that it
 is unsigned since it is outside of a coz, but the `tmb` is signed within the
 coz.
 
 ```json5
 {
-  "cozies": [
+  cozies: [
     {
-      "pay": {
-        "alg": "ES256",
-        "now": 1623132000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key signing the transaction, which in this case is the genesis `tmb`
-        "typ": "cyphr.me/cyphrpass/key/create",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key to add. 
+      pay: {
+        alg: "ES256",
+        now: 1628181264,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key signing the transaction, which in this case is the genesis `tmb`
+        typ: "cyphr.me/cyphrpass/key/create",
+        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key to add.
       },
-      "sig": "<b64ut>" // TODO valid sig
+      sig: "<b64ut>", // TODO valid sig
     },
-        {
-      "pay": {
-        "alg": "ES256",
-        "now": 1623132000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/principal/create",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The AS to add.  In this case, AS == KS == `tmb`.
-        "commit": true
+    {
+      pay: {
+        alg: "ES256",
+        now: 1736893000,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        typ: "cyphr.me/cyphrpass/principal/create",
+        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The AS to add.  In this case, AS == KS == `tmb`.
+        commit: true,
       },
-      "sig": "<source sig>"
+      sig: "<source sig>",
     },
   ],
-  "key": { // key public material
-    "alg": "ES256",
-    "now": 1623132000,
-    "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-    "tag": "User Key 0",
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-  }
+  key: {
+    // key public material
+    alg: "ES256",
+    now: 1623132000,
+    pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+    tag: "User Key 0",
+    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  },
 }
 ```
 
 **Explicit Genesis (Multi-Key, Multi-Transaction)**
+
 - Key signs a `key/create` transaction.
-- That key then constructs the rest of the AS by adding other AS components.  In
+- That key then constructs the rest of the AS by adding other AS components. In
   this case, just adding another key.
-- For all cases, `AS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))`  TS is omitted since
-  there are no prior transactions.
+- For all cases, `AS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))` TS is omitted since there are no prior transactions.
 - The principal is created by `principal/create`.
 - `pre` is omitted since there isn't a prior principal state until after the
   genesis `principal/create`.
 
-
 ```json5
 {
-  "cozies": [
+  cozies: [
     {
-      "pay": {
-        "alg": "ES256",
-        "now": 1623132000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/key/create",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        // no "pre" as this transaction is the in the genesis bundle.
+      pay: {
+        alg: "ES256",
+        now: 1628181264,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key adds the second key.
+        typ: "cyphr.me/cyphrpass/key/create",
+        id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
       },
-      "sig": "<b64ut>", // TODO actual sig
-    },{
-      "pay": {
-        "alg": "ES256",
-        "now": 1623132000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/key/create",
-        "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+      sig: "<b64ut>", // TODO actual sig
+    },
+    {
+      pay: {
+        alg: "ES256",
+        now: 1736893000,
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        typ: "cyphr.me/cyphrpass/principal/create",
+        id: "", // TODO calc AS which is tmb MR
+        commit: true,
       },
-      "sig": "<b64ut>" // TODO actual sig
-    },{
-      "pay": {
-        "alg": "ES256",
-        "now": 1736893000,
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/principal/create",
-        "id": "", // TODO calc AS which is tmb MR
-        "commit": true
-      },
-      "sig": "<source sig>"
+      sig: "<source sig>",
     },
   ],
-  "keys": [ // Public key material
+  keys: [
+    // Public key material
     {
-      "tag": "User Key 0",
-      "alg": "ES256",
-      "now": 1623132000,
-      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+      tag: "User Key 0",
+      alg: "ES256",
+      now: 1623132000,
+      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     },
     {
-      "tag": "User Key 1",
-      "alg": "ES256",
-      "now": 1768092490,
-      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
-    }
-  ]
+      tag: "User Key 1",
+      alg: "ES256",
+      now: 1768092490,
+      pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+    },
+  ],
 }
 ```
 
+
 ### Transaction Verbs Required Fields
-**Required fields for `create`, `delete`, `update`, `replace` transactions**:
+**Required fields for `create`, `delete`, `update`, `replace` transactions**
+This does not include data actions, only auth transactions:
 - `id`: The identifier for the noun. For example, for `key/create`, `id` is the `tmb` for the key.  
+- `pre`: the prior state of the auth, AS.
 
 ### Key
 #### 4.2.1 `key/create` — Add a Key (Level 3+)
@@ -723,14 +764,15 @@ A revoke is a self-signed declaration that a key is compromised and should never
 be trusted again.  The key signing the revoke message must be the key itself.
 Revoke is built into the Coz standard:
 
->A Coz key may revoke itself by signing a coz containing the field `rvk` with an
->integer value greater than 0. The integer value 1 is suitable to denote
->revocation and the current Unix timestamp is the suggested value.
+>A revoke is a self-signed declaration that a key is compromised. A Coz key may
+>revoke itself by signing a coz containing the field `rvk` with an integer value
+>greater than `0`. The integer value `1` is suitable to denote revocation and
+>the current Unix timestamp is the suggested value.
 >
 > `rvk` and `now` must be a positive integer less than 2^53 – 1
 >(9,007,199,254,740,991), which is the integer precision limit specified by
->IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or larger
->than 2^53 - 1.
+>IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or
+>larger than 2^53 - 1.
 
 Example Revoke:
 ```json
@@ -774,7 +816,6 @@ A client may include `msg` detailing why the key was revoked. See also section
 ```
 
 #### Key Transactions Summary
-
 | Type                | Level | Adds Key | Removes Key | Notes                           |
 | ------------------- | ----- | -------- | ----------- | ------------------------------- |
 | `key/revoke`        | 1+    | —        | ✓ (signer)  | Sets `rvk`, must be self-signed |
@@ -804,7 +845,6 @@ To delete a nonce, a `nonce/delete` is signed.
 ```
 
 #### Nonce path
-
 Nonces may be inserted anywhere in the state tree.  `typ` species the path.  
 
 `cyphrpass/nonce/create` // Principal (Root)
@@ -824,7 +864,6 @@ The client should keep the nonce value for reveal.
 
 
 ### 4.3 Data Action
-
 A data action is a signed Coz message representing a user action, recorded in DS:
 
 ```json
@@ -844,9 +883,7 @@ Data actions are ordered by `now`, and secondly by lexographical order, in the
 Merkle tree.
 
 
-
-
-### 9.2 Data Actions (Level 4)
+### Data Actions (Level 4)
 Data Actions are stateless signed messages. They are simply signed by an
 authorized key without chain structure:
 
@@ -856,26 +893,6 @@ authorized key without chain structure:
 
 This keeps actions lightweight for common use cases (comments, posts, etc.).
 
-### 9.3 State Resolution
-To resolve from a **target AS** to a **prior known AS**:
-
-1. Obtain current AS (from principal or trusted service)
-2. Request transaction chain from target back to prior known (`pre`)
-3. Verify `pre` references form unbroken chain
-4. Validate each signature against KS at that point
-
-Trust is optional — full independent verification is always possible.
-
-#### 9.3.1 Checkpoints
-Each state digest (PS, AS) encapsulates the full state tree (PT, AT) at that
-point. Verifiers only need the current state plus the transaction chain back to
-a known good state, the trust anchor.  Since chains may get long, clients may
-issue checkpoint which contain the whole state without the need of transitive
-transaction.  Clients may update their trust anchor to a checkpoint for faster
-client synchronization. (See section Declarative Transaction)
-
-The genesis state is the foundational checkpoint; services may cache
-intermediate checkpoints to reduce chain length for verification.
 
 
 #### 9.4 Declarative Datastructure
@@ -974,7 +991,7 @@ would be secrete to the client.
 
 ### Declarative Transaction
 From the clients internal state, a targeted state is calculated for a checkpoint
-transaction.  (As always, for signing, comments are removed and compactified
+transaction (see section checkpoint).  (As always, for signing, comments are removed and compactified
 according to Coz rules.) Declarative data structures are are in JSON.
 
 Note: All client secretes are stripped before signing.  (The Go/Rust
@@ -1023,9 +1040,6 @@ Embedded into a coz transaction:
   "sig": "<b64ut>"
 }
 ```
-
-
-
 
 ### 9.4 Level 5 Preview: Weighted Permissions
 
@@ -1084,14 +1098,6 @@ total transaction:
   },
 }
 ```
-
-
-
-
-
-
-
-
 
 ---
 
@@ -1304,6 +1310,21 @@ Storage backends provide:
 Semantic operations (verification, state computation, key validity) are handled
 by the Cyphrpass protocol layer, not storage.
 
+
+
+#### Checkpoints
+Each state digest (PS, AS) encapsulates the full state tree (PT, AT) at that
+point. Verifiers only need the current state plus the transaction chain back to
+a known good state, the trust anchor.  Since chains may get long, clients may
+issue checkpoint which contain the whole state without the need of transitive
+transaction.  Clients may update their trust anchor to a checkpoint for faster
+client synchronization. (See section Declarative Transaction)
+
+The genesis state is the foundational checkpoint; services may cache
+intermediate checkpoints to reduce chain length for verification.
+
+
+
 #### 7.3.3 Checkpoints
 
 **Checkpoints** are self-contained snapshots of the authentication-relevant
@@ -1428,7 +1449,7 @@ When a principal upgrades (e.g., adds a second key), the **PR stays the same**, 
 
 To verify a principal's current state:
 
-1. **Obtain PR or PS** — the claimed root or transitive state (PS)
+1. **Obtain PR or PS** — the claimed root (PR) or transitive state (PS).
 2. **Obtain transaction history** — ordered list of transactions from genesis or prior PS trust anchor.
 3. **Replay transactions**:
    - Start with genesis KS (initial keys)
@@ -1439,6 +1460,8 @@ To verify a principal's current state:
      - Transaction is well-formed for its `typ`
    - Apply mutation to derive new KS
 4. **Compare** — final computed KS/AS/PS should match claimed current state
+
+Third parties that also forward principal state are witnesses.
 
 ### 10.1 Mutual State Synchronization (MSS)
 
@@ -1572,6 +1595,18 @@ After successful syncing:
 
 ---
 
+###  State Resolution
+To resolve from a **target AS** to a **prior known AS**:
+
+1. Obtain current AS (from principal or trusted service)
+2. Request transaction chain from target back to prior known (`pre`)
+3. Verify `pre` references form unbroken chain
+4. Validate each signature against KS at that point
+
+Trust is optional — full independent verification is always possible.
+
+
+
 
 ## Embedding 
 An embedding is a digest reference. Embedding is the mechanism by which
@@ -1659,41 +1694,60 @@ A pin prefixes the digest value:
 ```
 PIN:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
 ```
-
-
-
-
+---
 
 ## Consensus
-Cyphrpass design prioritizes a **good faith assumption** that puts the emphasis
-of security on the Principal themselves.  Principals are assumed to control
-their keys and act honestly. Rejection triggers on "undeniable" bad behavior
+Cyphrpass prioritizes a design that puts the emphasis of security on the
+Principal themselves.  Principals are assumed to control their keys and act
+honestly. Cyphrpass provides minimal consensus rules that delegates more
+security burden on the Principal itself instead of the consensus mechanism. 
+
+Consensus rules are minimal, focusing on triggering on "undeniable" bad behavior
 (e.g., crypto contradictions, bad timestamps) that could indicate compromise,
 bugs, or attacks. The design goal of Cyphrpass rejection rules is to be simple,
 deterministic, and verifiable by any witness without needing coordination.
 
-Cyphrpass provides minimal consensus rules that delegates more security burden
-on the Principal itself instead of the consensus mechanism. 
+For resolving conflicts in consensus, see section "Recovery".
+
+# Marking the Principal as "Bad State"
 
 
 
-For resolving conflicts in consensus, see section "Recovery". 
+# Errors
+ - Time stamp out of range
+ - Conflicting state (implicit fork)
+
+Errors triggering "bad state":
+INVALID_SIGNATURE
+INVALID_CONSTRUCTION
+MESSAGE_TOO_LARGE
+TIMESTAMP_OUT_OF_RANGE
+MULTIHASH_MISMATCH
+JUMP_INVALID
 
 
+Errors triggering "ignore":
+UNKNOWN_KEY
+UNKNOWN_ALG
+TIMESTAMP_PAST
+TIMESTAMP_FUTURE
+KEY_REVOKED
+DUPLICATE_KEY
+
+Last known good state.
 
 
 
 ### Consensus and Witnesses
 Witnesses can diverge temporarily on consensus.  Witnesses (clients/oracles) verify independently but may gossip
-valid states (as in spec §2.5). Rejection leads to local refusal (e.g., ignore
-the message) or escalation (e.g., freeze the principal temporarily until
-resolved).
+valid states. Rejection leads to 
+
+ -Ignore the message
+- escalation (e.g., freeze the principal temporarily until resolved) or
+- Holding the message as proof of error.
 
 Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
 may broadcast it via gossip for other witnesses to confirm.
-
-
-duplicitous behavior
 
 
 
@@ -1717,40 +1771,40 @@ duplicitous behavior
 
 
 
-## Verifiable Logs
-// TODO, but basically the MR provides this built in.  
-
-Logs should be append only.  
-
-Also mention that this is useful for compliance. 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
 
 ## 11. Recovery
+
+## Recovering from Trust Anchor (Last Known Good State)
+When a third party is out of sync or divergent from the principal state, the third party may recover from the the trust anchor.
+
+This process may be triggered manually, automatically.  Clients may also just wait for the principal to initialize communication again.
+
+1. **Identify Last Known Good State**  
+   The client selects a trusted PS or AS as the recovery starting point (trust anchor).
+
+2. **Fetch Delta (Patch)**  
+   The client requests a transaction patch from one or more services or witnesses:  
+   - `GET /patch?from=<anchor-PS>&to=<current-tip-or-empty>`  
+   - If PR-known: `GET /patch?pr=<PR>&from=<anchor-PS>`  
+   The patch contains the minimal set of transactions needed to advance from the anchor to the target PS.
+
+3. **Verify Patch**  
+   The client MUST independently verify:  
+   - Each transaction chains correctly via `pre` (linear order)  
+   - All signing keys were active in KS at the time of signing (no intervening revocation)  
+   - Computed intermediate and final PS match the claimed values  
+   - Timestamps obey PS binding rules (§13.1)  
+   - Thresholds and rules are satisfied (Level 5+)  
+   - No conflicting commits or forks appear in the patch
+
+   If verification fails at any step, the patch is rejected and the client MUST fall back to another source or request a smaller patch range.
+
+4. **Apply and Update Trust Anchor**  
+   On successful verification, the client applies the patch, updates its local state to the new tip, and promotes the new PS to its current trust anchor.
+
 
 ### 11.1 Unrecoverable, Dead, and Zombie Accounts
 
@@ -1967,7 +2021,6 @@ External recovery delegates recovery authority to an external principal. The rec
 | **Third-party service** | Verification service    | Service trust     |
 
 ### 11.8 Social Recovery
-
 For social recovery, multiple contacts sign:
 
 - Each contact signs the same `key/create` transaction
@@ -1977,13 +2030,11 @@ For social recovery, multiple contacts sign:
 **Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
 
 ### 11.9 Account Freeze
-
 A **freeze** is a global protocol state where valid transactions are temporarily rejected to prevent unauthorized changes during a potential compromise. A freeze halts all key mutations (`key/*`) and may restrict other actions depending on service policy.
 
 Freezes are **global** — they apply to the principal across all services that observe the freeze state.
 
 #### 11.9.1 Self-Freeze
-
 A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
 
 - **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
@@ -2033,14 +2084,12 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 - External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
 
 ### 11.10 Security Considerations
-
 - **Timelocks (Level 5+):** Recovery can have a mandatory waiting period.
 - **Revocation:** Backup keys can be revoked if compromised.
 - **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
 - **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
 ### 11.11 Retrospection
-
 **TODO:** Define retrospection semantics — how past signatures are validated
 after key removal/revocation needs further specification. Stub:
 
@@ -2053,6 +2102,14 @@ for retrospection, since if only one key set, a single
 retrospection attack: Backdating actions to "undo" actions since a time period.
 
 Instead of removing a record, the record can be marked as "rescinded".
+
+
+## Verifiable Logs
+// TODO, but basically the MR provides this built in.  
+
+Logs should be append only.  
+
+Also mention that this is useful for compliance. 
 
 
 ## 12. Close, Merge, Fork
@@ -2292,17 +2349,18 @@ When a key is revoked with `rvk` = T:
 In Cyphrpass, cryptographic algorithms are pluggable: no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
 This enables flexibility in algorithm choice, security upgrades, and rapid
-removal of broken algorithms. Instead of identifiers being tightly coupled to a
-single digest, identifiers are coupled to an abstraction named a **multihash
-identifier**—a set of equivalent digests, one per supported hash algorithm at
-commit time.
+removal of broken algorithms.
+
+Instead of identifiers being tightly coupled to a single digest, identifiers are
+coupled to an abstraction named a **multihash identifier**, a set of equivalent
+digests, one per supported hash algorithm at commit time.
 
 No single algorithm is canonical. All variants in a multihash identifier are
 considered equivalent by Cyphrpass; security judgments are out-of-scope.
 
-A multihash identifier is calculated for all state (KS, AS, PS, and Merkle tree
-nodes) on a per commit basis. States are singular, having a singular underlying
-structure, but may be referenced via multiple hashing algorithms. 
+A multihash identifier is calculated for all state (e.g. PR/PS, KS, CS, and
+Merkle tree nodes) on a per commit basis. States are singular, having a singular
+underlying structure, but may be referenced via multiple hashing algorithms. 
 
 For a particular commit, for each algorithm supported by any key, nonce, or
 embedded node in KS, a digest value is calculated. When only one algorithm is
@@ -2312,9 +2370,10 @@ keys supports SHA-256 and SHA-384, then both a SHA-256 and a SHA-384 digest is
 calculated. If the keys support only SHA-256, then only a SHA-256 digest is
 calculated.
 
-A nonce (or multiple nonces) can be used to inject a specific digest
-algorithm variant into the multihash identifier, even when no key supports that
-algorithm natively.
+A nonce (or multiple nonces) can be used to inject a specific digest algorithm
+variant into the multihash identifier, even when no key supports that algorithm
+natively.  This is because a nonce itself is associated with a hashing algorithm
+or multihash identifier.
 
 In summary:
 - PR, PS, AS, KS and nodes in the Merkle Trees are singular underlying states.
@@ -2338,11 +2397,16 @@ Each key algorithm implies a hash algorithm, as defined by Coz.
 
 ### 14.2 Conversion
 To support upgrades and embedded principals/nodes, values from one digest
-algorithm may be **converted** as input to another.
+algorithm may be **converted** as input to another. Conversion happens at the
+node level and the parent node isn't required to know of the child node's
+conversion.
 
 For example, in a Merkle tree with a SHA-384 node (A) and SHA-256 node (B), a
-SHA-384 root is: MR_SHA384(A, B)—B's value is fed directly into SHA-384.
+SHA-384 root is: MR_SHA384(SHA384(A), B)—B's value is fed into the hashing
+algorithm first before being inputted into the MR.
 
+As a consequence of this design, for each algorithm, every node may have an
+identifier for that hashing algorithm.
 
 ```text
                 SHA-384 Root
@@ -2354,7 +2418,7 @@ SHA-384 root is: MR_SHA384(A, B)—B's value is fed directly into SHA-384.
                       |
           ┌───────────┼───────────┐
           │                       │
-          │           Fed directly into SHA-384
+          │               SHA-384(Node B)
           │                       │
    ┌─────────────┐         ┌─────────────┐
    │   Node A    │         │   Node B    │
@@ -2362,7 +2426,7 @@ SHA-384 root is: MR_SHA384(A, B)—B's value is fed directly into SHA-384.
    └─────────────┘         └─────────────┘
 ```
 
-### 14.3 Security Considerations
+### 14.3 Conversion Security Considerations
 Conversion is not ideal, but is unavoidable for pluggability and
 recursion/embedding. Implementors must be aware that inner nodes may have
 different security levels than the lookup node; the overall tree is bounded by
@@ -2371,6 +2435,116 @@ the weakest link.
 Algorithm diversity aids durability but risks misuse. For uniform security, use
 keys from one strength category. If an algorithm is weakened, Coz will mark it
 deprecated; principals should discontinue via key removal.
+
+### 14.TODOAINUMBERME Multi Hash Merkle Root (MHMR) Algorithm
+The **Multi Hash Merkle Root (MHMR)** algorithm is used to compute every digest
+in the Cyphrpass state tree (KS, TS, RS, AS, DS, PS, and all internal Merkle
+tree nodes) when multiple hash algorithms may be in use.
+
+MHMR is computed with respect to a **target hash algorithm** H. The target H is
+determined per commit as follows:
+
+- H is one of the hash algorithms associated with any currently active key in KS
+- When multiple hash algorithms are supported, implementations MUST compute an
+  MHMR variant for each supported H.
+- A multihash identifier for a node/state therefore consists of one digest per
+  supported H at the time of the commit.
+- All MHMR variants are considered equivalent references to the same logical
+  state.
+
+#### MHMR Computation
+Given an ordered list of child digests (each child is a binary digest value
+computed under some hash algorithm):
+
+1. **Sort** the child digests in **lexical byte order** (treating them as opaque
+   byte sequences, independent of their original hash algorithm).
+2. **Single child (implicit promotion)**:  
+   If there is exactly one child digest, the MHMR_H for any target H is simply
+   the bytes of that child digest (no hashing occurs). Promotion is recursive.
+3. **Multiple children**:  
+   Concatenate the sorted child digest bytes in order.  
+   Compute MHMR_H = H( concatenated bytes ).
+
+#### Examples
+| Case                          | Children                          | Target H     | MHMR_H Computation                              | Result                              |
+|-------------------------------|-----------------------------------|--------------|--------------------------------------------------|-------------------------------------|
+| Single child (promotion)      | B (32-byte SHA-256)               | SHA-384      | — (implicit promotion)                           | B bytes (32 bytes)                  |
+| Two children, different algs  | A (48-byte SHA-384), B (32-byte SHA-256) | SHA-384 | sort(A,B) → assume A < B → SHA-384(A ∥ B)        | 48-byte digest                      |
+| Two children, same alg        | C, D (both SHA-256)               | SHA-256      | sort(C,D) → SHA-256(C ∥ D)                       | 32-byte digest                      |
+| Three children                | A (SHA-384), B (SHA-256), E (SHA-512) | SHA-512 | sort(A,B,E) → SHA-512(sorted concat)             | 64-byte digest                      |
+
+#### Important Properties
+- **No re-hashing of children**: Inner digests are fed directly into the parent
+  hash function as raw bytes (conversion by direct inclusion).
+- **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
+  regardless of how children were labeled or enumerated.
+- **Security bounded by weakest link**: The strength of any MHMR_H variant is
+  limited by the weakest hash algorithm appearing anywhere in the subtree below
+  it.
+- **Nonce injection**: A nonce carrying a desired hash algorithm can be inserted
+  as a child to force computation of that algorithm variant even if no active
+  key natively supports it.
+- **Flat concatenation**: For the small number of children typically found in
+  KS, RS, TS, and AS, a single sorted concatenation + hash is used. Large Data
+  Trees (DS with many actions) MAY use recursive binary pairing under the same
+  MHMR rule if explicitly defined by the application layer (out of scope for
+  core protocol).
+
+#### Rationale
+The MHMR design achieves three simultaneous goals:
+
+1. Cryptographic pluggability without algorithm lock-in  
+2. Support for embedded principals and recursive structures  
+3. Backward- and forward-compatibility during algorithm transitions
+
+Implementations MUST compute MHMR variants for every hash algorithm currently
+supported by active keys (and any nonce-injected algorithms) at each commit.
+When an algorithm is deprecated or removed from support, its MHMR variant is no
+longer generated for new commits.
+
+All references to state (PR, PS, AS, KS, etc.) in protocol messages, storage,
+gossip, and verification use one of these multihash variants. Equivalence across
+variants is assumed by the protocol; no relative strength ordering is enforced
+at the protocol level (see §14.4 Rank for tie-breaking considerations).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ### 14.4 Rank
