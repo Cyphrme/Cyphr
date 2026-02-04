@@ -117,13 +117,8 @@ impl PendingCommit {
     }
 
     /// Add a transaction to the pending commit.
-    ///
-    /// Returns whether this transaction has the `commit: true` finalizer.
-    /// The caller should call `finalize()` after adding a finalizing transaction.
-    pub fn push(&mut self, tx: VerifiedTransaction) -> bool {
-        let is_finalizer = tx.is_finalizer();
+    pub fn push(&mut self, tx: VerifiedTransaction) {
         self.transactions.push(tx);
-        is_finalizer
     }
 
     /// Get the current list of pending transactions.
@@ -161,16 +156,9 @@ impl PendingCommit {
     ///
     /// # Errors
     ///
-    /// Returns `None` if no transactions exist or if the last transaction
-    /// does not have the `commit: true` finalizer.
+    /// Returns `None` if no transactions exist.
     pub fn finalize(self, auth_state: AuthState, ps: PrincipalState) -> Option<Commit> {
         if self.transactions.is_empty() {
-            return None;
-        }
-
-        // Verify last transaction is a finalizer
-        let last = self.transactions.last()?;
-        if !last.is_finalizer() {
             return None;
         }
 
@@ -241,19 +229,16 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_push_returns_finalizer_status() {
+    fn pending_commit_push_adds_transactions() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
 
-        // Push non-finalizer transaction
+        // Push transactions
         let tx1 = make_test_tx(false, 0x01);
-        let is_fin = pending.push(tx1);
-        assert!(!is_fin, "non-finalizer should return false");
+        pending.push(tx1);
         assert_eq!(pending.len(), 1);
 
-        // Push finalizer transaction
         let tx2 = make_test_tx(true, 0x02);
-        let is_fin = pending.push(tx2);
-        assert!(is_fin, "finalizer should return true");
+        pending.push(tx2);
         assert_eq!(pending.len(), 2);
     }
 
@@ -294,9 +279,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_finalize_fails_without_finalizer() {
+    fn pending_commit_finalize_succeeds_without_finalizer_marker() {
+        // Per protocol simplification, commit: true is no longer required
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        let tx = make_test_tx(false, 0x01); // NOT a finalizer
+        let tx = make_test_tx(false, 0x01); // No finalizer marker, but finalize should succeed
         pending.push(tx);
 
         let auth_state = AuthState(MultihashDigest::from_single(
@@ -310,8 +296,8 @@ mod tests {
 
         let result = pending.finalize(auth_state, ps);
         assert!(
-            result.is_none(),
-            "should fail when last tx is not finalizer"
+            result.is_some(),
+            "finalize should succeed without finalizer marker"
         );
     }
 

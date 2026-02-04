@@ -55,7 +55,10 @@ pub enum TransactionKind {
     },
 
     /// Self-revoke (Level 1+) - SPEC §4.2.4
+    /// Per protocol simplification, revoke requires `pre` like all other coz.
     SelfRevoke {
+        /// Previous Auth State.
+        pre: AuthState,
         /// Revocation timestamp.
         rvk: i64,
     },
@@ -104,8 +107,6 @@ pub struct Transaction {
     pub(crate) czd: Czd,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
-    /// Whether this transaction finalizes a commit (`commit: true` in pay).
-    pub(crate) is_finalizer: bool,
 }
 
 impl Transaction {
@@ -125,15 +126,12 @@ impl Transaction {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
-        let is_finalizer = Self::parse_commit_finalize(pay);
-
         Ok(Self {
             kind,
             signer,
             now,
             czd,
             raw,
-            is_finalizer,
         })
     }
 
@@ -162,24 +160,6 @@ impl Transaction {
         &self.raw
     }
 
-    /// Check if this transaction finalizes a commit.
-    ///
-    /// Per SPEC §4.2.1, a transaction with `commit: true` in its payload
-    /// signals the end of an atomic commit bundle.
-    pub fn is_finalizer(&self) -> bool {
-        self.is_finalizer
-    }
-
-    /// Parse the `commit` field from pay to determine if this is a finalizer.
-    ///
-    /// Returns `true` if `pay.commit == true`, false otherwise.
-    fn parse_commit_finalize(pay: &Pay) -> bool {
-        pay.extra
-            .get("commit")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    }
-
     /// Parse the transaction kind from typ and payload fields.
     fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<TransactionKind> {
         // Check if typ ends with a known transaction type
@@ -196,10 +176,10 @@ impl Transaction {
             let id = Self::extract_id(pay)?;
             Ok(TransactionKind::KeyReplace { pre, id })
         } else if typ.ends_with(typ::KEY_REVOKE) {
+            // Per protocol simplification, revoke requires pre like all other coz
+            let pre = Self::extract_pre(pay)?;
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
-            // All key/revoke transactions are self-revoke (SPEC §4.2.4)
-            // Other-revoke was removed per zami's directive
-            Ok(TransactionKind::SelfRevoke { rvk })
+            Ok(TransactionKind::SelfRevoke { pre, rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
             // `pre` references current AS, `id` is final AS (becomes PR)
@@ -423,18 +403,23 @@ mod tests {
 
     #[test]
     fn parse_self_revoke() {
-        let pay = PayBuilder::new()
+        let mut pay = PayBuilder::new()
             .typ("cyphr.me/key/revoke")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .rvk(1000)
             .build();
+        // Per protocol simplification, revoke requires pre like all other coz
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
 
         let czd = Czd::from_bytes(vec![0; 32]);
         let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::SelfRevoke { rvk: 1000 }));
+        assert!(matches!(
+            tx.kind,
+            TransactionKind::SelfRevoke { rvk: 1000, .. }
+        ));
     }
 
     #[test]
@@ -455,7 +440,6 @@ mod tests {
         let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::PrincipalCreate { .. }));
-        assert!(tx.is_finalizer); // commit: true
     }
 
     #[test]
@@ -501,59 +485,5 @@ mod tests {
         let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
-    }
-
-    #[test]
-    fn parse_commit_finalizer_true() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
-        pay.extra.insert("id".into(), json!(TEST_ID));
-        pay.extra.insert("commit".into(), json!(true));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert!(tx.is_finalizer());
-    }
-
-    #[test]
-    fn parse_commit_finalizer_false() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
-        pay.extra.insert("id".into(), json!(TEST_ID));
-        pay.extra.insert("commit".into(), json!(false));
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert!(!tx.is_finalizer());
-    }
-
-    #[test]
-    fn parse_commit_finalizer_missing() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
-        pay.extra.insert("id".into(), json!(TEST_ID));
-        // No "commit" field
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
-
-        assert!(!tx.is_finalizer());
     }
 }

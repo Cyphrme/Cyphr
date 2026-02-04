@@ -421,7 +421,6 @@ impl Principal {
     ///
     /// Returns `NoPendingCommit` if no commit is in progress.
     /// Returns `EmptyCommit` if the pending commit has no transactions.
-    /// Returns `MissingFinalizationMarker` if last tx doesn't have `commit: true`.
     pub fn finalize_commit(&mut self) -> Result<&Commit> {
         self.finalize_current_commit()?;
         // Return reference to the just-added commit
@@ -714,7 +713,9 @@ impl Principal {
                 // (we just added a key, so this is safe)
                 self.auth.keys.shift_remove(&tx.signer.to_b64());
             },
-            TransactionKind::SelfRevoke { rvk } => {
+            TransactionKind::SelfRevoke { pre, rvk } => {
+                // Per protocol simplification, revoke requires pre like all other coz
+                self.verify_pre(pre)?;
                 self.revoke_key(&tx.signer, *rvk, None)?;
             },
             TransactionKind::PrincipalCreate { pre, id } => {
@@ -745,12 +746,7 @@ impl Principal {
 
         // Push transaction to pending commit
         let pending = self.auth.pending.as_mut().expect("just created if none");
-        let is_finalizer = pending.push(vtx);
-
-        // If this transaction has commit: true, auto-finalize the commit
-        if is_finalizer {
-            self.finalize_current_commit()?;
-        }
+        pending.push(vtx);
 
         Ok(&self.auth_state)
     }
@@ -789,7 +785,7 @@ impl Principal {
         // Finalize the pending commit with computed states
         let commit = pending
             .finalize(self.auth_state.clone(), self.ps.clone())
-            .ok_or(Error::MissingFinalizationMarker)?;
+            .ok_or(Error::EmptyCommit)?;
 
         self.auth.commits.push(commit);
 
@@ -1118,7 +1114,6 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             raw,
-            is_finalizer: true,
         }
     }
 
@@ -1153,6 +1148,7 @@ mod tests {
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal.apply_transaction(tx, Some(key2)).unwrap();
+        principal.finalize_commit().unwrap(); // Required since auto-finalize removed
 
         let new_as = principal
             .auth_state()
@@ -1283,13 +1279,14 @@ mod tests {
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
 
+        let pre = principal.auth_state().clone();
+
         let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { rvk: 2000 },
+            kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: true,
         };
 
         let result = principal.apply_transaction(tx, None);
@@ -1313,13 +1310,14 @@ mod tests {
 
         use crate::transaction::{Transaction, TransactionKind};
 
+        let pre = principal.auth_state().clone();
+
         let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { rvk: 2000 },
+            kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
             signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: true,
         };
 
         principal.apply_transaction(tx, None).unwrap();
@@ -1367,14 +1365,15 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
+        let pre = principal.auth_state().clone();
+
         // Revoke key2 (self-revoke)
         let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { rvk: 1500 },
+            kind: TransactionKind::SelfRevoke { pre, rvk: 1500 },
             signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: true,
         };
         principal.apply_transaction(tx, None).unwrap();
 
@@ -1414,7 +1413,6 @@ mod tests {
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             raw: dummy_coz_json(),
-            is_finalizer: true,
         };
         principal.apply_transaction(tx, Some(key2)).unwrap();
 

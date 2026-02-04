@@ -99,10 +99,6 @@ pub enum Error {
     #[error("empty commit")]
     EmptyCommit,
 
-    /// Last transaction in commit missing `commit: true` marker.
-    #[error("missing finalization marker")]
-    MissingFinalizationMarker,
-
     /// External reference to transitory (unfinalized) commit state.
     ///
     /// Per SPEC §4.2.1, transitory state during a pending commit cannot
