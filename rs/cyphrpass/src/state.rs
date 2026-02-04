@@ -356,6 +356,29 @@ fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     }
 }
 
+/// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
+///
+/// Used when converting a czd from one algorithm to another.
+fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
+    match alg {
+        HashAlg::Sha256 => {
+            let mut h = Sha256::new();
+            h.update(data);
+            h.finalize().to_vec()
+        },
+        HashAlg::Sha384 => {
+            let mut h = Sha384::new();
+            h.update(data);
+            h.finalize().to_vec()
+        },
+        HashAlg::Sha512 => {
+            let mut h = Sha512::new();
+            h.update(data);
+            h.finalize().to_vec()
+        },
+    }
+}
+
 // ============================================================================
 // State computation functions
 // ============================================================================
@@ -438,6 +461,112 @@ pub fn compute_ts(
     for &alg in algs {
         let digest = hash_sorted_concat_bytes(alg, &components);
         variants.insert(alg, digest.into_boxed_slice());
+    }
+
+    Some(TransactionState(MultihashDigest::new(variants)))
+}
+
+/// A czd tagged with its source hash algorithm.
+///
+/// Used for cross-algorithm state computation where czds from different
+/// signing algorithms need to be converted to a common hash algorithm.
+#[derive(Debug, Clone)]
+pub struct TaggedCzd<'a> {
+    /// The raw czd bytes.
+    pub czd: &'a Czd,
+    /// Hash algorithm that produced this czd (from signing key).
+    pub alg: HashAlg,
+}
+
+impl<'a> TaggedCzd<'a> {
+    /// Create a new tagged czd.
+    pub fn new(czd: &'a Czd, alg: HashAlg) -> Self {
+        Self { czd, alg }
+    }
+
+    /// Convert this czd to target algorithm.
+    ///
+    /// If source and target algorithms match, returns the raw bytes.
+    /// Otherwise, re-hashes the czd bytes with the target algorithm.
+    pub fn convert_to(&self, target: HashAlg) -> Vec<u8> {
+        if self.alg == target {
+            // Same algorithm: use raw bytes
+            self.czd.as_bytes().to_vec()
+        } else {
+            // Different algorithm: re-hash (SPEC §14.2 conversion)
+            hash_bytes(target, self.czd.as_bytes())
+        }
+    }
+}
+
+/// Compute Transaction State with cross-algorithm conversion (SPEC §14.2).
+///
+/// Like `compute_ts`, but accepts czds tagged with their source algorithm.
+/// When computing a target hash variant, czds from different algorithms
+/// are converted (re-hashed) to the target algorithm.
+///
+/// - No transactions: TS = None
+/// - Single transaction, no nonce: TS = czd (implicit promotion)
+/// - Otherwise: TS = H(sort(converted_czd₀, converted_czd₁, nonce?, ...))
+pub fn compute_ts_tagged(
+    czds: &[TaggedCzd<'_>],
+    nonce: Option<&[u8]>,
+    algs: &[HashAlg],
+) -> Option<TransactionState> {
+    if czds.is_empty() && nonce.is_none() {
+        return None;
+    }
+
+    // Implicit promotion: single czd, no nonce
+    // For single czd, convert to first target algorithm if needed
+    if czds.len() == 1 && nonce.is_none() {
+        let target_alg = algs.first().copied().unwrap_or(HashAlg::Sha256);
+        let converted = czds[0].convert_to(target_alg);
+        return Some(TransactionState(MultihashDigest::from_single(
+            target_alg, converted,
+        )));
+    }
+
+    // Compute hash for each target algorithm variant
+    let mut variants = BTreeMap::new();
+    for &target_alg in algs {
+        // Convert each czd to target algorithm
+        let mut converted: Vec<Vec<u8>> = czds.iter().map(|tc| tc.convert_to(target_alg)).collect();
+
+        // Add nonce if present
+        if let Some(n) = nonce {
+            converted.push(n.to_vec());
+        }
+
+        // Sort and hash
+        converted.sort();
+        let digest = match target_alg {
+            HashAlg::Sha256 => {
+                use coz::sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                for c in &converted {
+                    h.update(c);
+                }
+                h.finalize().to_vec()
+            },
+            HashAlg::Sha384 => {
+                use coz::sha2::{Digest, Sha384};
+                let mut h = Sha384::new();
+                for c in &converted {
+                    h.update(c);
+                }
+                h.finalize().to_vec()
+            },
+            HashAlg::Sha512 => {
+                use coz::sha2::{Digest, Sha512};
+                let mut h = Sha512::new();
+                for c in &converted {
+                    h.update(c);
+                }
+                h.finalize().to_vec()
+            },
+        };
+        variants.insert(target_alg, digest.into_boxed_slice());
     }
 
     Some(TransactionState(MultihashDigest::new(variants)))

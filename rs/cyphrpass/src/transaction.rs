@@ -105,6 +105,9 @@ pub struct Transaction {
     pub(crate) now: i64,
     /// Coz digest (unique identifier).
     pub(crate) czd: Czd,
+    /// Hash algorithm associated with the signing key.
+    /// Used for cross-algorithm state computation (MHMR).
+    pub(crate) hash_alg: crate::state::HashAlg,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
 }
@@ -120,7 +123,12 @@ impl Transaction {
     /// # Errors
     ///
     /// Returns `Error::MalformedPayload` if required fields are missing.
-    pub fn from_pay(pay: &Pay, czd: Czd, raw: coz::CozJson) -> Result<Self> {
+    pub fn from_pay(
+        pay: &Pay,
+        czd: Czd,
+        hash_alg: crate::state::HashAlg,
+        raw: coz::CozJson,
+    ) -> Result<Self> {
         let signer = pay.tmb.clone().ok_or(Error::MalformedPayload)?;
         let now = pay.now.ok_or(Error::MalformedPayload)?;
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
@@ -131,6 +139,7 @@ impl Transaction {
             signer,
             now,
             czd,
+            hash_alg,
             raw,
         })
     }
@@ -158,6 +167,11 @@ impl Transaction {
     /// Get the raw Coz message for storage/export.
     pub fn raw(&self) -> &coz::CozJson {
         &self.raw
+    }
+
+    /// Get the hash algorithm associated with the signing key.
+    pub fn hash_alg(&self) -> crate::state::HashAlg {
+        self.hash_alg
     }
 
     /// Parse the transaction kind from typ and payload fields.
@@ -320,8 +334,11 @@ pub fn verify_transaction(
         sig: sig.to_vec(),
     };
 
+    // Derive hash algorithm from signing key's algorithm
+    let hash_alg = crate::state::hash_alg_from_str(&key.alg)?;
+
     // Create transaction from parsed Pay
-    let tx = Transaction::from_pay(&pay, czd, raw)?;
+    let tx = Transaction::from_pay(&pay, czd, hash_alg, raw)?;
 
     Ok(VerifiedTransaction { tx, new_key })
 }
@@ -336,6 +353,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::state::HashAlg;
 
     // Valid alg:digest format for 32-byte SHA-256 digests
     const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
@@ -361,7 +379,7 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyCreate { .. }));
         assert_eq!(tx.now, 1000);
@@ -379,7 +397,7 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyDelete { .. }));
     }
@@ -396,7 +414,7 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::KeyReplace { .. }));
     }
@@ -414,7 +432,7 @@ mod tests {
         pay.extra.insert("pre".into(), json!(TEST_PRE));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(
             tx.kind,
@@ -437,7 +455,7 @@ mod tests {
         pay.extra.insert("commit".into(), json!(true));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, to_raw(&pay)).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(tx.kind, TransactionKind::PrincipalCreate { .. }));
     }
@@ -451,7 +469,7 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
+        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
@@ -467,7 +485,7 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
+        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
@@ -482,7 +500,7 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, to_raw(&pay));
+        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }

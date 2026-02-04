@@ -1113,6 +1113,7 @@ mod tests {
             signer: signer.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
             raw,
         }
     }
@@ -1286,6 +1287,7 @@ mod tests {
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
 
@@ -1317,6 +1319,7 @@ mod tests {
             signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
 
@@ -1373,6 +1376,7 @@ mod tests {
             signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction(tx, None).unwrap();
@@ -1412,6 +1416,7 @@ mod tests {
             signer: key1.tmb.clone(),
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction(tx, Some(key2)).unwrap();

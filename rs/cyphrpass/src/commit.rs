@@ -4,7 +4,9 @@
 //! The Transaction State (TS) is computed as the Merkle root of only
 //! the transactions in a single commit, not cumulatively.
 
-use crate::state::{AuthState, HashAlg, PrincipalState, TransactionState, compute_ts};
+use crate::state::{
+    AuthState, HashAlg, PrincipalState, TaggedCzd, TransactionState, compute_ts_tagged,
+};
 use crate::transaction::VerifiedTransaction;
 
 // ============================================================================
@@ -143,8 +145,13 @@ impl PendingCommit {
         if self.transactions.is_empty() {
             return None;
         }
-        let czds: Vec<&coz::Czd> = self.transactions.iter().map(|t| t.czd()).collect();
-        compute_ts(&czds, None, &[self.hash_alg])
+        // Collect czds with their source algorithms for cross-algorithm conversion
+        let tagged_czds: Vec<TaggedCzd<'_>> = self
+            .transactions
+            .iter()
+            .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
+            .collect();
+        compute_ts_tagged(&tagged_czds, None, &[self.hash_alg])
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -162,9 +169,13 @@ impl PendingCommit {
             return None;
         }
 
-        // Compute TS from all transaction czds
-        let czds: Vec<&coz::Czd> = self.transactions.iter().map(|t| t.czd()).collect();
-        let ts = compute_ts(&czds, None, &[self.hash_alg])?;
+        // Compute TS from all transaction czds with algorithm tagging
+        let tagged_czds: Vec<TaggedCzd<'_>> = self
+            .transactions
+            .iter()
+            .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
+            .collect();
+        let ts = compute_ts_tagged(&tagged_czds, None, &[self.hash_alg])?;
 
         Some(Commit::new(self.transactions, ts, auth_state, ps))
     }
@@ -212,7 +223,7 @@ mod tests {
             pay: serde_json::to_value(&pay).unwrap(),
             sig: vec![0; 64],
         };
-        let tx = Transaction::from_pay(&pay, czd, raw).unwrap();
+        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, raw).unwrap();
         VerifiedTransaction::from_transaction_unsafe(tx, None)
     }
 
