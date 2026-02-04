@@ -144,11 +144,12 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 			if err := tx.parseID(pay.ID); err != nil {
 				return nil, err
 			}
-			if err := tx.parsePre(pay.Pre); err != nil {
-				return nil, err
-			}
 		} else {
 			tx.Kind = TxSelfRevoke
+		}
+		// All revoke types require pre (unified pre semantics)
+		if err := tx.parsePre(pay.Pre); err != nil {
+			return nil, err
 		}
 		if pay.Rvk == 0 {
 			return nil, ErrMalformedPayload

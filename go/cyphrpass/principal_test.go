@@ -214,6 +214,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xEE}, 32),
 		Rvk:    2000,
+		Pre:    p.AS(), // Unified pre semantics: all transactions require pre
 	}
 
 	err := p.ApplyTransactionUnsafe(tx, nil)

@@ -500,6 +500,9 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		p.removeKeyDirect(tx.Signer)
 
 	case TxSelfRevoke:
+		if err := p.verifyPre(tx.Pre); err != nil {
+			return err
+		}
 		if err := p.revokeKey(tx.Signer, tx.Rvk, nil); err != nil {
 			return err
 		}
