@@ -558,8 +558,7 @@ coz.
 
 ### Transaction Verbs Required Fields
 
-**Required fields for `create`, `delete`, `update`, `replace` transactions**
-This does not include data actions, only auth transactions:
+Required fields for `create`, `delete`, `update`, `replace` auth transactions**:
 
 - `id`: The identifier for the noun. For example, for `key/create`, `id` is the key.
   `tmb` for the key.
@@ -766,7 +765,8 @@ To delete a nonce, a `nonce/delete` is signed.
 
 #### Nonce path
 
-Nonces may be inserted anywhere in the state tree. `typ` species the path.
+Nonces may be inserted anywhere in the state tree. `typ` species the path. A
+`nonce/delete`, where `id` == nonce removes the nonce.
 
 `cyphrpass/nonce/create` // Principal (Root)
 `cyphrpass/AS/nonce/create` // Auth State
@@ -906,12 +906,14 @@ dump, which includes meta values and values that would be secrete to the client.
 ```
 
 ### Declarative Transaction
+Instead of imperatively creating principal state, state may be exhaustively
+declared. Declarative data structures are are in JSON.
 
-From the clients internal state, a targeted state is calculated for a checkpoint
-transaction (see section checkpoint). (As always, for signing, comments are removed and compactified
-according to Coz rules.) Declarative data structures are are in JSON.
+Since declarative transaction enumerate the full principal state, they
+inherently act as checkpoints (see section Checkpoint). As always, the
+declarative structure is compactified according to Coz.
 
-Note: All client secretes are stripped before signing. (The Go/Rust
+Note that all client secretes are stripped before signing. (The Go/Rust
 implementation accomplishes this by using types that preclude secretes.)
 
 `cyphrpass/principal/checkpoint/create`
@@ -1097,16 +1099,14 @@ Unrecoverable.
 - **Frozen**: Principal has been frozen `freeze/create` and has not yet been
   unfrozen `freeze/delete`
 - **Unrecoverable**: Principal cannot mutate AS, but may be able to perform DS
-  actions. (Level 4+)
+  actions. (Level 4+) An recoverable account is either dead or zombie based on
+  the ability of doing DS actions, but that may not be known.
 - **Dead** - An principal is dead if no transactions or actions possible (no
   transactions or data actions). This may be caused by signing a
   `principal/delete` or revoking/deleting all keys. Dead is a hypernym of
-  deleted and sometimes unrecoverable. A dead account may or may not have been
-  deleted. Example: The only key is revoked. The account is unrecoverable
-  and dead.
-
-Non-normative states
-
+  deleted, nuked, and sometimes unrecoverable. A dead account may or may not
+  have been deleted. Example: The only key is revoked. The account is
+  unrecoverable and dead.
 - **Zombie**: (Level 4+) An unrecoverable principal is a zombie if no new
   transactions are possible but some data actions are still possible. (Partial
   functionality remains) Example: `key/create` requires 2 points, but there's
@@ -1124,9 +1124,6 @@ Non-normative states
 - Frozen
 - Unrecoverable
 - Dead
-
-And non-normative
-
 - Zombie
 - Nuked
 
