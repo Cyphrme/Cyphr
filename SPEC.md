@@ -334,7 +334,7 @@ Level 5 Key concepts:
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
 
-
+---
 
 ## 4 Commit
 
@@ -347,7 +347,7 @@ A commit contains cozies that mutate AS and forms a chain via the `pre` field.
 
 - `pre`: The previous Commit State (CS) Merkle root targeted for mutation.
 
-# Transaction Coz
+# 4.1.0 Transaction Coz
 
 Transactions are signed Coz messages that mutate Auth State (AS). A transaction
 may be one or multiple cozies that results in a mutation. A transaction coz
@@ -358,15 +358,15 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>", // Existing key
-    typ: "<authority>/key/create",
-    pre: "<previous CS>",
-    id: "<new key's tmb>",
-  }
-  sig: "<b64ut>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>", // Existing key
+    "typ": "<authority>/key/create",
+    "pre": "<previous CS>",
+    "id": "<new key's tmb>",
+  },
+  "sig": "<b64ut>",
 }
 ```
 
@@ -378,7 +378,7 @@ Following Coz semantics, all digest references in `pay`, such as `id`, must
 align with `alg` unless explicitly labeled. For example, the `id` of the new key
 must be `SHA256`, aligning with alg `ES256` unless explicitly labeled.
 
-### 4.2.1 Transactions and Transaction Bundles
+### 4.1.1 Transactions and Transaction Bundles
 
 The transaction identifier is the Merkle root of `czd` for transaction cozies.
 
@@ -388,12 +388,12 @@ commit. For example, a transaction bundle may have one transaction for
 `key/update`, signed by two keys and containing two cozies, and one for
 `key/create`, signed by one key and consisting of one coz.
 
-### 4.something DS inclusion (Stub)
+### 4.2 DS inclusion (Stub)
 DS may or may not be included in a transaction.  To explicitly include DS:
 
 ```json
 {
-  pay: {
+  "pay": {
     alg: "ES256",
     now: 1736893000,
     tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -406,6 +406,7 @@ DS may or may not be included in a transaction.  To explicitly include DS:
 }
 ```
 
+---
 
 ## 5. Genesis (Principal Creation)
 
@@ -445,6 +446,8 @@ exists.
 - `pre`: Current Auth State (required)
 - `id`: Final Auth State (the PR to anchor)
 
+
+### 5.1.2 Single Key Genesis
 Outside of the cozies is `key`, which is the public key material. Note that it
 is unsigned since it is outside of a coz, but the `tmb` is signed within the
 coz.
@@ -474,7 +477,9 @@ coz.
 }
 ```
 
-**Commit Genesis (Multi-Key, Multi-Transaction)**
+### 5.1.2 Multi Key Genesis
+
+Commit Genesis (Multi-Key, Multi-Transaction)
 
 - Key signs a `key/create` transaction.
 - That key then constructs the rest of the AS by adding other AS components. In
@@ -527,15 +532,17 @@ coz.
 }
 ```
 
-### Transaction Verbs Required Fields
+### 5.2 Transaction Verbs Required Fields
 
-Required fields for `create`, `delete`, `update`, `replace` auth transactions**:
+Required fields for `create`, `delete`, `update`, `replace` auth transactions:
 
 - `id`: The identifier for the noun. For example, for `key/create`, `id` is the key.
-  `tmb` for the key.
-- `pre`: the prior state of the auth, AS.
+  `tmb` The identifier for the key.
+- `pre`: The prior state of the auth, AS.
 
-### Key
+---
+
+### 6 Key
 
 Example private Coz key with standard fields:
 
@@ -565,7 +572,7 @@ Example public key:
 }
 ```
 
-#### 4.2.1 `key/create` — Add a Key (Level 3+)
+#### 6.1 `key/create` — Add a Key (Level 3+)
 
 Adds a new key to KS for an existing principal.
 
@@ -595,7 +602,7 @@ previously. This construction is good practice.
 }
 ```
 
-#### 4.2.2 `key/delete` — Remove a Key (Level 3+)
+#### 6.2 `key/delete` — Remove a Key (Level 3+)
 
 Removes a key from KS without marking it as compromised. Unlike `key/revoke`,
 `key/delete` does not invalidate the key itself, it only removes it from KS,
@@ -640,7 +647,7 @@ and later re-added (each re-addition starts a new active period).
 }
 ```
 
-#### 4.2.3 `key/replace` — Atomic Key Swap (Level 2+)
+#### 6.3 `key/replace` — Atomic Key Swap (Level 2+)
 
 Removes the signing key and adds a new key atomically. Maintains single-key
 invariant for Level 2 devices.
@@ -667,7 +674,7 @@ For level 3+, `pre` is required.
 }
 ```
 
-#### 4.2.4 `key/revoke` — Revoke a Key (Level 1+)
+#### 6.4 `key/revoke` — Revoke a Key (Level 1+)
 
 A revoke is a self-signed declaration that a key is compromised and should never
 be trusted again. The key signing the revoke message must be the key itself.
@@ -732,7 +739,7 @@ A client may include `msg` detailing why the key was revoked. See also section
 }
 ```
 
-#### Key Transactions Summary
+#### 6.5 Key Transactions Summary
 
 | Type          | Level | Adds Key | Removes Key | Notes                           |
 | ------------- | ----- | -------- | ----------- | ------------------------------- |
@@ -741,7 +748,7 @@ A client may include `msg` detailing why the key was revoked. See also section
 | `key/create`  | 3+    | ✓        | —           | —                               |
 | `key/delete`  | 3+    | —        | ✓           | No revocation timestamp         |
 
-### Transaction Nonce
+### 6.6.0 Transaction Nonce
 
 As explained in detail above, Cyphrpass uses nonces at every level. A new PS
 may be generated through CS by signing a transaction nonce.
@@ -762,7 +769,7 @@ To delete a nonce, a `nonce/delete` is signed.
 }
 ```
 
-#### Nonce path
+#### 6.6.1 Nonce path
 
 Nonces may be inserted anywhere in the state tree. `typ` species the path. A
 `nonce/delete`, where `id` == nonce removes the nonce.
@@ -771,7 +778,7 @@ Nonces may be inserted anywhere in the state tree. `typ` species the path. A
 `cyphrpass/AS/nonce/create` // Auth State
 `cyphrpass/AS/KS/nonce/create` // Key State
 
-#### Nonce as Opaque Value
+#### 6.6.2 Nonce as Opaque Value
 
 Since nonces may be indistinguishable from other digest values, the may be
 inserted into the state tree through normal creates.
@@ -781,7 +788,16 @@ inserted into the state tree through normal creates.
 
 The client should keep the nonce value for reveal.
 
-### 4.3 Data Action
+### 6.7 Data Action
+
+Data Actions are stateless signed messages. They are simply signed by an
+authorized key without chain structure:
+
+- No prior field required (no `pre`)
+- DS is computed from action `czd`s.
+- Ordered by `now` and if needed lexical as tie-breaker.
+
+This keeps actions lightweight for common use cases (comments, posts, etc.).
 
 A data action is a signed Coz message representing a user action, recorded in DS:
 
@@ -801,18 +817,9 @@ A data action is a signed Coz message representing a user action, recorded in DS
 Data actions are ordered by `now`, and secondly by lexographical order, in the
 Merkle tree.
 
-### Data Actions (Level 4)
+---
 
-Data Actions are stateless signed messages. They are simply signed by an
-authorized key without chain structure:
-
-- No prior field required (no `pre`)
-- DS is computed from action `czd`s.
-- Ordered by `now` and if needed lexical as tie-breaker.
-
-This keeps actions lightweight for common use cases (comments, posts, etc.).
-
-#### 9.4 Declarative Datastructure
+## 7 Declarative Datastructure
 
 Detailed in this document so far is iterative state mutation. Cyphrpass also
 supports declarative mutation.
@@ -904,7 +911,7 @@ dump, which includes meta values and values that would be secrete to the client.
 }
 ```
 
-### Declarative Transaction
+### 7.1 Declarative Transaction
 Instead of imperatively creating principal state, state may be exhaustively
 declared. Declarative data structures are are in JSON.
 
@@ -961,9 +968,10 @@ Embedded into a coz transaction:
 }
 ```
 
-### 9.4 Level 5 Preview: Weighted Permissions
 
-At Level 5, the Rule State (RS) introduces **weighted keys**:
+### 8 Level 5 Preview: Weighted Permissions
+
+At Level 5, the Rule State (RS) introduces **weighted keys** and **timelocks**:
 
 - Each key has a weight/score.
 - Actions require meeting a threshold weight
@@ -1019,9 +1027,10 @@ total transaction:
 }
 ```
 
+
 ---
 
-### 8.7 Principal Root (PR)
+## 9 Principal Root (PR)
 
 The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
 
@@ -1033,7 +1042,30 @@ The PR is the **first** PS ever computed for the principal. It is **permanent** 
 
 When a principal upgrades (e.g., adds a second key), the **PR stays the same**, only PS evolves.
 
-### 8.6 Principal State (PS)
+### 9.1 Node Canonical Digest Algorithm
+
+All state digests follow the same algorithm:
+
+1. **Collect** component digests (including nonce if present).
+2. **Sort** lexicographically (byte comparison).
+3. **Merkle Root** Take the Merkle root of a binary node Merkle tree.
+
+```
+digest = MR(d₀, d₁, ...)
+```
+
+**Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
+
+### 9.2 Key State (KS)
+
+```
+if n == 1:
+    KS = tmb₀                              # implicit promotion
+else:
+    KS = MR(tmb₀, tmb₁, nonce?, PS?, ...)
+```
+
+### 9.3 Principal State (PS)
 
 ```
 if DS == nil && no nonce:
@@ -1042,7 +1074,7 @@ else:
     PS = MR(CS, DS?, recursion? nonce?)
 ```
 
-### 8.5 Auth State (AS)
+### 9.4 Auth State (AS)
 
 AS combines authentication-related states:
 
@@ -1053,7 +1085,7 @@ else:
     AS = MR(KS, RS?,  nonce?)      # nil components excluded from sort
 ```
 
-### 8.3 Commit State (CS)
+### 9.5 Commit State (CS)
 
 Commit is the digest of all transaction `czd`s, and CS is the MR(AS, commit ID)
 
@@ -1066,13 +1098,12 @@ else:
     Commit ID = MR(czd₀, czd₁, nonce?, ...)
 ```
 
-Then CS
-CS is inherently append-only. Unlike DS, which services may prune
-at their discretion, removing transactions from CS would break chain integrity
-verification. For high-volume principals, use checkpoints or state jumping
-(§16) rather than pruning.
+CS is inherently append-only. Unlike DS, which services may prune at
+their discretion, removing transactions from CS would break chain integrity
+verification. For high-volume principals, use checkpoints or state jumping (§16)
+rather than pruning.
 
-### 8.4 Data State (DS) — Level 4+
+### 9.6 Data State (DS) — Level 4+
 
 DS is the digest of all action `czd`s:
 
@@ -1085,7 +1116,7 @@ else:
     DS = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-### 11.1 Principal States
+### 10 Principal States
 
 A Principal may be in different states, Active, Errored, Deleted, Frozen, and
 Unrecoverable.
@@ -1115,7 +1146,7 @@ Unrecoverable.
   (`key/delete`), and the principal deleted (`principal/delete`). Nuked may be
   the hypernym of deleted, unrecoverable, and dead.
 
-### All Principals States
+### 10.1 All Principals States
 
 - Active
 - Errored
@@ -1128,7 +1159,7 @@ Unrecoverable.
 
 ---
 
-### Checkpoints
+### 11 Checkpoints
 
 **Checkpoints** are self-contained snapshots of the authentication-relevant
 state at a particular point in the chain, allowing verification from the
@@ -1162,41 +1193,17 @@ transaction volume (e.g., automated key rotation, frequent rule changes). They
 are also a useful debugging tool.
 See also State Jumping
 
-## 8. State Calculation
-
-### 8.1 Canonical Digest Algorithm
-
-All state digests follow the same algorithm:
-
-1. **Collect** component digests (including nonce if present).
-2. **Sort** lexicographically (byte comparison).
-3. **Merkle Root**
-
-```
-digest = MR(d₀, d₁, ...)
-```
-
-**Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
-
-### 8.2 Key State (KS)
-
-```
-if n == 1:
-    KS = tmb₀                              # implicit promotion
-else:
-    KS = MR(tmb₀, tmb₁, nonce?, PS?, ...)
-```
 
 ---
 
-## Embedding
+## 12 Embedding
 
 An embedding is a digest reference. Embedding is the mechanism by which
 Cyphrpass achieves hierarchy, delegation, and selective opacity (using nonces).
 
 Recursive loops are generally discouraged. Embedding is transitive.
 
-### Embedded Principal
+### 12.1 Embedded Principal
 
 Cyphrpass permits a recursive tree structure. An **embedded principal** is a
 full Cyphrpass identity embedded into another principal. An embedded principal
@@ -1224,7 +1231,7 @@ The typical use for embedded principals is identity encapsulation, external
 recovery authorities, social recovery, organizational delegation, and disaster
 recovery.
 
-### Embedded Node
+### 12.2.0 Embedded Node
 
 An opaque node, or a partial identity, which may be a AS, KS, nonce, or other
 node value, is an **embedded node**.
@@ -1242,7 +1249,7 @@ Principal State (PS0)
 │   |   ├── Embedded Key State (KS1)
 ```
 
-### Conjunctive Authorization
+### 12.2.1 Conjunctive Authorization
 
 To sign/act as the primary principal, the embedded principal must produce a
 valid signature according to its own rules (its own AS).
@@ -1258,7 +1265,7 @@ When a Principal(B) or AS(B) is embedded into a KS(A), embedded principal is
 treated as one logical key (with a default weight of 1), but the internal
 authorization depends on Principal(B)
 
-### Meaningful Embeddings and Embedding Promotion
+### 12.2.2 Meaningful Embeddings and Embedding Promotion
 
 All nodes may be embedded into other nodes, but that embedding may not always be
 meaningful. For example, a Rule State embedded into a Key State carries no
@@ -1269,7 +1276,7 @@ When a Key State(B) is embedded into another Key State(A), the keys from B are
 be logically unioned to A. This is **embedded promotion**. Embedded promotion
 applies to KS and DS.
 
-### Pinning
+### 12.3 Pinning
 
 Pinned identifiers (prefixed with `PIN`, `PIN:<alg>:<value:`) denote static
 states that prohibit updates, ensuring immutability for lookups. PR, PS, and AS
@@ -1286,7 +1293,7 @@ PIN:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
 
 
 
-### 15 `typ` Action Grammar
+### 13 `typ` Action Grammar
 
 Cyphrpass follows a grammar system developed by Cyphr.me. The `typ` grammar
 consists of these core components: `auth`, `act`, `noun`, and `verb`.
