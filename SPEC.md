@@ -24,7 +24,7 @@ protocol built on cryptographic Merkle trees. It enables:
 - Authenticated Atomic Actions (AAA) — individually signed, independently
   verifiable user actions.
 - Cryptographic primitive agnosticism via the Coz JSON specification.
-- Data Provenance
+- Data Provenance.
 
 Cyphrpass provides the authentication layer for the Internet.
 
@@ -83,20 +83,20 @@ referencing the prior commit.
 Binary encoded values in this document are in `b64ut`: "Base64 URI canonical
 truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 
-| Term                | Abbrev | Definition                                            |
-| ------------------- | ------ | ----------------------------------------------------- |
-| **Principal**       | —      | An identity in Cyphrpass. Replaces "account"          |
-| **Principal Root**  | PR     | The initial, permanent digest identifying a principal |
-| **Principal State** | PS     | Specific top-level digest: `MR(CS, DS)` or promoted   |
-| **Commit State**    | CS     | MR(AS, commit ID)                                     |
-| **Auth State**      | AS     | MR(KS, RS) (Authentication state)                     |
-| **Key State**       | KS     | Merkle root of active key thumbprints (`tmb`s)        |
-| **Rule State**      | RS     | Merkle root of rules (Level 5)                        |
-| **Data State**      | DS     | Merkle root of user data actions (Level 4+)           |
-| **Tip**             | —      | The latest PS (digest identifier)                     |
-| **Commit ID**       | —      | Merkle root of `czd` of all cozies in a commit        |
-| **Action**          | —      | A signed coz, denoted by `typ`. Foundation of AAA     |
-| **trust anchor**    | —      | Last known valid state for a principal                |
+| Term                | Abv | Definition                                            |
+| ------------------- | --- | ----------------------------------------------------- |
+| **Principal**       | —   | An identity in Cyphrpass. Replaces "account"          |
+| **Principal Root**  | PR  | The initial, permanent digest identifying a principal |
+| **Principal State** | PS  | Specific top-level digest: `MR(CS, DS)` or promoted   |
+| **Commit State**    | CS  | MR(AS, commit ID)                                     |
+| **Auth State**      | AS  | MR(KS, RS) (Authentication state)                     |
+| **Key State**       | KS  | Merkle root of active key thumbprints (`tmb`s)        |
+| **Rule State**      | RS  | Merkle root of rules (Level 5)                        |
+| **Data State**      | DS  | Merkle root of user data actions (Level 4+)           |
+| **Tip**             | —   | The latest PS (digest identifier)                     |
+| **Commit ID**       | —   | Merkle root of `czd` of all cozies in a commit        |
+| **Action**          | —   | A signed coz, denoted by `typ`. Foundation of AAA     |
+| **trust anchor**    | —   | Last known valid state for a principal                |
 
 PR, PS, CS, AS, KS, RS, and DS are all Merkle root digest values.
 
@@ -267,7 +267,7 @@ may also need to be revealed during commits or other signing operations.
 
 And for transaction cozies:
 
-- `pre`: The identifier of the previous commit.
+- `pre`: The identifier for the targeted commit to mutate.
 
 ---
 
@@ -345,14 +345,14 @@ ledger.
 
 A commit contains cozies that mutate AS and forms a chain via the `pre` field.
 
-- `pre`: The previous Commit State (CS) Merkle root targeted for mutation.
+- `pre`: The Commit State (CS) targeted for mutation.
 
 # 4.1.0 Transaction Coz
 
 Transactions are signed Coz messages that mutate Auth State (AS). A transaction
 may be one or multiple cozies that results in a mutation. A transaction coz
 contains `typ` which defines the purpose of the intent and `pre` containing the
-identifier for the previous commit.
+identifier for the current commit.
 
 For example, `typ` may be `<authority>/key/create` or similar key mutation type.
 
@@ -363,7 +363,7 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
     "now": 1623132000,
     "tmb": "<signing key tmb>", // Existing key
     "typ": "<authority>/key/create",
-    "pre": "<previous CS>",
+    "pre": "<current CS>",
     "id": "<new key's tmb>",
   },
   "sig": "<b64ut>",
@@ -419,18 +419,20 @@ implicit genesis and levels 3+ have an explicit genesis.
 
 - Multikey is not supported.
 - The Principal exist with a single key. No commit required.
-- `pr` == `tmb` of the single key (via implicit promotion, PR == PS == AS == KS == `tmb`).
+- `pr` == `tmb` of the single key (via implicit promotion, PR == PS == CS == AS == KS == `tmb`).
+
+**Genesis AS implicit promotion To CS** On genesis only, since there is no commit, the prior
+AS is the genesis key, which is then promoted to CS. `pre` must be the value of this key.
 
 **Commit Genesis (Levels 3+)**
 A commit genesis explicitly creates a stateful principal with a commit. Commit
 genesis uses a bootstrap model, gracefully upgrading from level 1/2 to level 3:
 
-1. First key is level 1+ and exists without a transaction. AS == KS == `tmb`
+1. First key is level 1+ and exists without a transaction. CS == AS == KS == `tmb`
    of the first key initially.
 2. Additional keys, rules, or any other AS component (if any) require
-   transactions with `pre` referencing the current AS (computed from each
-   additional component). For example, for a second key, `key/create` contains
-   `pre` referring to the first key's `tmb`.
+   transactions with `pre` referencing the current CS. For example, for a second
+   key, `key/create` contains `pre` referring to the first key's `tmb`.
 3. `principal/create` finalizes the genesis commit. This establishes PR and
    marks the principal as created.
 
@@ -439,11 +441,9 @@ This design ensures every transaction (including genesis transactions) requires
 exists.
 
 **`typ`**: `<authority>/key/create`
-- `pre`: Current Auth State (required)
 - `id`: Thumbprint of key being added
 
 **`typ`**: `<authority>/principal/create`
-- `pre`: Current Auth State (required)
 - `id`: Final Auth State (the PR to anchor)
 
 
@@ -461,7 +461,7 @@ coz.
         now: 1736893000,
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/principal/create",
-        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The AS to add.  In this case, AS == KS == `tmb`.
+        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The bootstrap genesis key.
         pre:"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
       sig: "<source sig>",
@@ -499,6 +499,7 @@ Commit Genesis (Multi-Key, Multi-Transaction)
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
         typ: "cyphr.me/cyphrpass/key/create",
         id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key.
+        pre:"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
       sig: "<b64ut>", // TODO actual sig
     },
@@ -508,7 +509,8 @@ Commit Genesis (Multi-Key, Multi-Transaction)
         now: 1736893000,
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/principal/create",
-        id: "", // TODO calc AS which is tmb MR
+        id: "", // TODO calc CS (equal to AS) which is tmb MR
+        pre:"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
       sig: "<source sig>",
     },
@@ -587,7 +589,7 @@ previously. This construction is good practice.
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
     "typ": "cyphr.me/cyphrpass/key/create",
-    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous AS for the Principal.
+    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted CS.  At genesis, CS == AS == KS == first key's tmb.
     "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key
     "commit": true
   },
@@ -639,7 +641,7 @@ and later re-added (each re-addition starts a new active period).
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/delete",
-    "pre": "<previous AS>",
+    "pre": "<targeted CS>",
     "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "commit": true
   },
@@ -652,7 +654,7 @@ and later re-added (each re-addition starts a new active period).
 Removes the signing key and adds a new key atomically. Maintains single-key
 invariant for Level 2 devices.
 
-For level 2, `pre` is the `tmb` of the previous key.
+For level 2, `pre` is the `tmb` of the previous key. (CS == AS == KS == tmb)
 For level 3+, `pre` is required.
 
 ```json
@@ -663,7 +665,7 @@ For level 3+, `pre` is required.
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
     "typ": "cyphr.me/cyphrpass/key/replace",
     "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
-    "pre": "<previous AS>" // In the case of level 2, AS is the previous `tmb`
+    "pre": "<targeted CS>" // In the case of level 2, CS is the previous `tmb`
   },
   "key": {
     "alg": "ES256",
@@ -731,7 +733,7 @@ A client may include `msg` detailing why the key was revoked. See also section
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/revoke",
-    "pre": "<previous AS>",
+    "pre": "<targeted CS>",
     "rvk": 1623132000,
     "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
   },
@@ -834,7 +836,7 @@ dump, which includes meta values and values that would be secrete to the client.
   "PS":   "dYkP9mL2vNx8rQjW7tYfK3cB5nJHs6vPqRtL8xZmA2k=",
 
   // Digest Meta
-  "PRE":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Previous Commit
+  "PRE":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted Commit
   "AS":"", // Auth State
   "KS":"", // Key State
   "CS":"", // Commit State  (the last transaction resulting in the current commit.)
@@ -1004,7 +1006,7 @@ total transaction:
         now: 1623132000,
         tmb: "<signing key tmb>", // First Existing key
         typ: "<authority>/cyphrpass/key/create",
-        pre: "<previous AS>",
+        pre: "<targeted CS>",
         id: "<new keys tmb>",
       },
       sig: "<b64ut>",
@@ -1015,7 +1017,7 @@ total transaction:
         now: 1623132000,
         tmb: "<signing key tmb>", // Second Existing key
         typ: "<authority>/cyphrpass/key/create",
-        pre: "<previous AS>",
+        pre: "<targeted CS>",
         id: "<new keys tmb>",
       },
       sig: "<b64ut>",
@@ -1068,7 +1070,7 @@ else:
 ### 9.3 Principal State (PS)
 
 ```
-if DS == nil && no nonce:
+if DS == nil :
     PS = CS                                # implicit promotion
 else:
     PS = MR(CS, DS?, recursion? nonce?)
@@ -1079,7 +1081,7 @@ else:
 AS combines authentication-related states:
 
 ```
-if RS == nil && no nonce:
+if RS == nil:
     AS = KS                         # implicit promotion
 else:
     AS = MR(KS, RS?,  nonce?)      # nil components excluded from sort
@@ -1290,8 +1292,6 @@ PIN:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
 ```
 
 ---
-
-
 
 ### 13 `typ` Action Grammar
 
@@ -1916,6 +1916,10 @@ Response includes broadcast fork proof and rejection of both branches until
 resolved (for example principal/merge, revocation, or multi-sig confirmation in
 Level 5+).
 
+Fork Resolution: TODO finish
+- Sign a resync PoP
+- Select by building on the correct chain.
+
 ## Timestamp Verification
 
 Compromised keys can produce backdated or future-dated messages. Mitigation
@@ -2049,7 +2053,7 @@ Registers a recovery agent (backup key, service, or social contacts).
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/recovery/create",
-    "pre": "<previous AS>",
+    "pre": "<targeted CS>",
     "recovery": {
       "agent": "<recovery agent PR or tmb>",
       "threshold": 1
@@ -2075,7 +2079,7 @@ Removes a previously designated recovery agent.
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/delete",
-    "pre": "<previous AS>",
+    "pre": "<targeted CS>",
     "recovery": {
       "agent": "<recovery agent PR or tmb>"
     }
@@ -2093,7 +2097,10 @@ When a principal is locked out:
 2. **Agent verifies identity** (method varies by agent type)
 3. **Agent signs a Recovery Initialization transaction** for the new user key:
 
-   This initializes a new Principal State (PS) that is manually linked to the previous state by the Recovery Authority. The new PS is not cryptographically linked to the previous state, but it is manually linked to the original PR by the Recovery Authority's recovery transaction.
+This initializes a new Principal State (PS) that is manually linked to the
+previous state by the Recovery Authority. The new PS is not cryptographically
+linked to the previous state, but it is manually linked to the original PR by
+the Recovery Authority's recovery transaction.
 
 ```json
 {
@@ -2102,7 +2109,7 @@ When a principal is locked out:
     "now": 1623132000,
     "tmb": "<recovery agent tmb>",
     "typ": "<authority>/key/create",
-    "pre": "<previous AS>",
+    "pre": "<targeted CS>",
     "id": "<new user key tmb>"
   },
   "key": {
@@ -2157,7 +2164,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/create",
-    "pre": "<previous AS>"
+    "pre": "<targeted CS>"
   },
   "sig": "<b64ut>"
 }
@@ -2182,7 +2189,7 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/delete",
-    "pre": "<previous AS>"
+    "pre": "<targeted CS>"
   },
   "sig": "<b64ut>"
 }
@@ -2862,8 +2869,8 @@ Verification rules for the jump transaction:
     now: 1623132000,
     tmb: "<active key tmb from anchor>",
     typ: "cyphr.me/cyphrpass/principal/state_jump/create",
-    pre: "<old trust anchor AS>", // e.g., PS at previous trust anchor
-    jump_to_ps: "<current tip PS>", // e.g., PS at transaction 100,000
+    pre: "<old trust anchor CS>", // e.g., CS at previous trust anchor
+    jump_to_ps: "<current tip CS>", // e.g., CS at transaction 100,000
   },
   sig: "<b64ut>",
 }
