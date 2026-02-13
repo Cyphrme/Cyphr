@@ -366,11 +366,8 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
     tmb: "<signing key tmb>", // Existing key
     typ: "<authority>/key/create",
     pre: "<previous CS>",
-    id: "<new keys tmb>",
-  },
-  key: {
-    /* new key */
-  },
+    id: "<new key's tmb>",
+  }
   sig: "<b64ut>",
 }
 ```
