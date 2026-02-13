@@ -1341,7 +1341,7 @@ All `create` operations in Cyphrpass are idempotent. If the target item (e.g.,
 key, rule, principal) already exists, the operation fails. This applies
 universally, not just to keys. `DUPLICATE`
 
-
+---
 
 ## 6. Authentication
 
@@ -1457,6 +1457,8 @@ centralization around identity providers. In Cyphrpass, the principal's
 cryptographic keys are the sole authentication factor, verifiable by any party
 without a central authority.
 
+---
+
 ## 7. Storage Models
 
 ### 7.1 Client/Principal Storage
@@ -1558,24 +1560,6 @@ by the Cyphrpass protocol layer, not storage.
 
 ---
 
-## 10. Verification by a Third Party (Level 3)
-
-To verify a principal's current state:
-
-1. **Obtain PR or PS** — the claimed root (PR) or transitive state (PS).
-2. **Obtain transaction history** — ordered list of transactions from genesis or prior PS trust anchor.
-3. **Replay transactions**:
-   - Start with genesis KS (initial keys)
-   - For each transaction, verify:
-     - Signature is valid
-     - `tmb` belongs to a key in current KS
-     - `now` is after previous transaction (if time ordering required)
-     - Transaction is well-formed for its `typ`
-   - Apply mutation to derive new KS
-4. **Compare** — final computed KS/AS/PS should match claimed current state
-
-Third parties that also forward principal state are witnesses.
-
 ### 10.1 Mutual State Synchronization (MSS)
 
 Cyphrpass enables symmetric, bidirectional state awareness between principals
@@ -1612,6 +1596,26 @@ MSS directly addresses concerns about stale distributed state, helping clients
 to keep in sync. This practice is similar to double entry accounting, where
 instead of one entry in a ledger being depended upon as a single source of
 truth, two entries are best practice.
+
+
+## 10.2 Verification by a Third Party
+
+To verify a principal's current state:
+
+1. **Obtain PR or PS** — the claimed root (PR) or transitive state (PS).
+2. **Obtain transaction history** — ordered list of transactions from genesis or prior PS trust anchor.
+3. **Replay transactions**:
+   - Start with genesis KS (initial keys)
+   - For each transaction, verify:
+     - Signature is valid
+     - `tmb` belongs to a key in current KS
+     - `now` is after previous transaction (if time ordering required)
+     - Transaction is well-formed for its `typ`
+   - Apply mutation to derive new KS
+4. **Compare** — final computed KS/AS/PS should match claimed current state
+
+Third parties that also forward principal state are witnesses.
+
 
 #### Core Properties of MSS
 
@@ -1668,8 +1672,6 @@ This message is transported to the external witness for registration.
 
 The witness is removed with a `delete`. 
 
-
-
 #### Recommended Usage Patterns
 
 - **Proactive push on mutation** — After transaction (`key/create`, `key/revoke`,
@@ -1697,8 +1699,6 @@ Although Cyphrpass provides single-sign-on semantics, it differs from historic
 systems by eliminating passwords, email dependency, and unidirectional state
 tracking.
 
----
-
 ### 10.2 MSS Registration Example
 
 Example ledger displaying remote state synchronization. Local Principal `X` is
@@ -1718,7 +1718,6 @@ After successful syncing:
 | B         | State3       | Y       |
 | C         | State3       | Y       |
 
----
 
 ### State Resolution
 
@@ -1732,35 +1731,12 @@ To resolve from a **target AS** to a **prior known AS**:
 Trust is optional — full independent verification is always possible.
 
 ## Witness Timestamps
-Clients should record their own "first_seen" if the oracle has a date after receipt.  If external witness timestamps are out of expected range, clients should also record external witness timestamps. 
+Clients should record their own "first_seen" if the oracle has a date after
+receipt.  If external witness timestamps are out of expected range, clients
+should also record external witness timestamps.  This allows MSS to detect
+conflict, dishonest behavior, and bugs.
 
-This allows MSS to detext 
-
-###  Oracle Tiers // TODO needs work and is wrong.
-
-
-| Tier        | Method                               | Trust Level | Use Case                |
-| ----------- | ------------------------------------ | ----------- | ----------------------- |
-| **None**    | Trust `now` field                    | Lowest      | Simple apps, low-value  |
-| **Service** | Service logs first-seen time         | Medium      | Most applications       |
-| **Trusted** | Hash into blockchain (Bitcoin, etc.) | Highest     | Legal, financial, audit |
-
-**No Oracle (Default):**
-
-- Accept `now` field as claimed from principal.
-- Simple but vulnerable to retroactive signing
-
-**Service Oracle:**
-
-- Service records `received_at` timestamp when signature arrives
-- Stored alongside action for dispute resolution
-- Not cryptographically provable, but practical
-
-**Trusted Oracle:**
-
-- Signature (or `czd`) is hashed into a blockchain transaction
-- Commit timestamp proves signature existed before that time
-- Irrefutable, but adds latency and cost
+---
 
 ## Consensus
 ### Consensus Philosophy
