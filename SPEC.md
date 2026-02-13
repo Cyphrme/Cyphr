@@ -57,7 +57,7 @@ Principal State (PS)
 │   │   │
 │   │   └── Rule State (RS) ───────── [Permissions & Thresholds]
 │   │
-│   └── Commit (Commit ID) ────────── [Auth State Mutation]
+│   └── Commit ────────────────────── [Auth State Mutation]
 │
 └── Data State (DS) ───────────────── [User Data / Application State]
 ```
@@ -214,14 +214,12 @@ collisions, so generally digest labels are not used in practice.
 
 #### Identifier
 
-All identifiers are encoded as b64ut.
-
-For MRs, if order is not otherwise given, lexical byte order is used. Values
-are opaque bytes, meaning a sequence of bytes that should be treated as a whole
-unit, without any attempt by the consuming software to interpret their internal
-structure or meaning. Cyphrpass identifiers are CID's, cryptographic Content
-IDentifiers. The identifier provides addressing and cryptographically protects
-the integrity of the reference.
+All identifiers are encoded as b64ut. For MRs, if order is not otherwise given,
+lexical byte order is used. Values are opaque bytes, meaning a sequence of bytes
+that should be treated as a whole unit, without any attempt by the consuming
+software to interpret their internal structure or meaning. Cyphrpass identifiers
+are CID's, cryptographic Content IDentifiers. The identifier provides addressing
+and cryptographically protects the integrity of the reference.
 
 #### Commit
 
@@ -1733,8 +1731,13 @@ To resolve from a **target AS** to a **prior known AS**:
 
 Trust is optional — full independent verification is always possible.
 
+## Witness Timestamps
+Clients should record their own "first_seen" if the oracle has a date after receipt.  If external witness timestamps are out of expected range, clients should also record external witness timestamps. 
+
+This allows MSS to detext 
+
 ###  Oracle Tiers // TODO needs work and is wrong.
-Clients may record their own "first_seen" if the oracle has a date after receipt. 
+
 
 | Tier        | Method                               | Trust Level | Use Case                |
 | ----------- | ------------------------------------ | ----------- | ----------------------- |
@@ -1766,35 +1769,31 @@ Cyphrpass is a self-sovereign protocol in which the principal is the primary
 custodian of its own security and state. Consensus rules are deliberately
 minimal. They detect and respond only to clear, cryptographically undeniable
 violations such as invalid signatures, contradictions, and conflicting commits
-that signal compromise, bugs, or attacks.  
+that signal compromise, bugs, or attacks.
 
 Consensus rules prioritize simplicity, determinism, and independent
 verifiability by any witness, without requiring global coordination or a
 blockchain-like mechanism. Security is largely delegated to the principal
 itself, with witnesses (clients, services, oracles) enforcing basic invariants
 to prevent propagation of invalid state. The design assumes principals generally
-act honestly, control their keys, and that repeatedly dishonest clients are
-dropped from gossip.
+act honestly because repeatedly dishonest clients are dropped from gossip and
+that principals control their keys.
 
 Consensus is intentionally "shades of grey" rather than strict black-and-white.
 The design accommodates diverse implementations (including smart-contract
-clients on rigid chains) and accepts that incompatibility between clients can be
+clients on external hosted blockchains) and accepts that incompatibility between clients can be
 an intentional choice. This consensus model also permits logical deduction.
 Retained errors and timestamps serve as transparent signals of client honesty.
 It represents a fundamentally different philosophy: consensus emerges from what
-actually occurred and who published what when, not from coordinated rule
-enforcement or majority vote, and opens the door for intelligent agents to
-detect violations through reasoning instead of strict rule matching. There are
-no requirements for universal agreement; divergence is reasonably tolerated and
-clients error tolerant.
+actually occurred and who published what when, not strictly from coordinated
+rule enforcement or majority vote, and opens the door for intelligent agents to
+detect violations through reasoning instead of strict rule matching.
 
 Although outside of the scope of this document, consensus rules attempt to
-accommodate a wide set of circumstances and implementation, and should not
-assume tight control of implementation.  For example, clients themselves may be
-smart contracts hosted on blockchains with more rigid rules.  Consensus rules
-should accommodate as best as possible such situations, but acknowledge that
-various circumstances may result in client incompatibility, which may be an
-intentional decision by principals.  
+accommodate a wide set of circumstances and implementation, and should assume
+minimal control of implementation.  Consensus rules accommodate as best as
+possible such situations, but acknowledge that various circumstances may result
+in client incompatibility, which may be an intentional decision by principals.
 
 For conflict resolution beyond consensus rules, see section "Recovery".
 
@@ -3154,6 +3153,7 @@ Since cryptographic digests are suitable, all `GETS` may simply be looked up by 
 
 - Cryptographically verifiable web archive
 - Unstoppable, internet-wide user comments
+- "Bittorrent for social media".
 
 ## Appendix A: Coz Field Reference
 
