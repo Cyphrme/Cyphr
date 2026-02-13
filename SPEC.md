@@ -8,6 +8,10 @@ Protocol Specification
 
 Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
+QUICK AI Guidance:
+DO NOT USE EM DASH OR DASH. Use period, comma, semi-colon, and other sentence construction appropriately.
+DO NOT USE uppercase MAY, SHOULD, or MUST.  This isn't an IETF RFC.
+
 ---
 
 ## 1. Introduction
@@ -97,8 +101,9 @@ truncated" (URL alphabet, errors on non-canonical encodings, no padding).
 PR, PS, CS, AS, KS, RS, and DS are all Merkle root digest values.
 
 Each digest corresponds to a tree datastructure: Principal Tree (PT), Commit
-Tree (CT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT).
-(PT, CT, AT, KT, RT, DT)
+Tree (CT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT). (PT,
+CT, AT, KT, RT, DT).  In addition to principal state, clients may track
+principal non-mutating state (example, for proof of possession PoP). 
 
 An action the `typ` of a signed coz. "Action" is the hypernym of commit
 transaction coz and data action. A key and a rule is not an action, but the
@@ -331,39 +336,9 @@ Level 5 Key concepts:
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
 
-## 4. Data Structures
 
-### 4.1 Key
 
-Example private Coz key with standard fields:
-
-```json5
-{
-  tag: "User Key 0", // Optional human label, non-programmatic.
-  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
-  alg: "ES256", // Key algorithm.
-  now: 1623132000, // Creation timestamp
-  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
-}
-```
-
-`tmb` is the digest of the canonical public key representation using the hash
-algorithm associated with `alg`.
-
-Example public key:
-
-```json
-{
-  "tag": "User Key 0",
-  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-  "alg": "ES256",
-  "now": 1623132000,
-  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
-}
-```
-
-### 4.2 Commit
+## 4 Commit
 
 A **commit** is a finalized atomic bundle containing one or more transaction
 cozies. Many mutations may occur per commit, as dictated by the principal.
@@ -392,7 +367,6 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
     typ: "<authority>/key/create",
     pre: "<previous CS>",
     id: "<new keys tmb>",
-    commit: true,
   },
   key: {
     /* new key */
@@ -419,6 +393,25 @@ commit. For example, a transaction bundle may have one transaction for
 `key/update`, signed by two keys and containing two cozies, and one for
 `key/create`, signed by one key and consisting of one coz.
 
+### 4.something DS inclusion (Stub)
+DS may or may not be included in a transaction.  To explicitly include DS:
+
+```json
+{
+  pay: {
+    alg: "ES256",
+    now: 1736893000,
+    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    typ: "cyphr.me/cyphrpass/data/create",
+    pre: "<prior CS>",
+    new_ds: "<computed new DS MR>",
+    commit: true
+  },
+  sig: "<b64ut>"
+}
+```
+
+
 ## 5. Genesis (Principal Creation)
 
 ### 5.1 Initial Commit
@@ -432,10 +425,9 @@ implicit genesis and levels 3+ have an explicit genesis.
 - The Principal exist with a single key. No commit required.
 - `pr` == `tmb` of the single key (via implicit promotion, PR == PS == AS == KS == `tmb`).
 
-**Explicit Genesis (Levels 3+)**
-Stateful Principal with Commit and graceful upgrading
-
-Explicit genesis uses a bootstrap model, upgrading from level 1/2 to level 3:
+**Commit Genesis (Levels 3+)**
+A commit genesis explicitly creates a stateful principal with a commit. Commit
+genesis uses a bootstrap model, gracefully upgrading from level 1/2 to level 3:
 
 1. First key is level 1+ and exists without a transaction. AS == KS == `tmb`
    of the first key initially.
@@ -451,15 +443,12 @@ This design ensures every transaction (including genesis transactions) requires
 exists.
 
 **`typ`**: `<authority>/key/create`
-
 - `pre`: Current Auth State (required)
 - `id`: Thumbprint of key being added
 
 **`typ`**: `<authority>/principal/create`
-
 - `pre`: Current Auth State (required)
 - `id`: Final Auth State (the PR to anchor)
-- `commit`: true (finalizes the genesis bundle)
 
 Outside of the cozies is `key`, which is the public key material. Note that it
 is unsigned since it is outside of a coz, but the `tmb` is signed within the
@@ -467,17 +456,7 @@ coz.
 
 ```json5
 {
-  cozies: [
-    {
-      pay: {
-        alg: "ES256",
-        now: 1628181264,
-        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key signing the transaction, which in this case is the genesis `tmb`
-        typ: "cyphr.me/cyphrpass/key/create",
-        id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The key to add.
-      },
-      sig: "<b64ut>", // TODO valid sig
-    },
+  tx: [ // Always a list, even with one.
     {
       pay: {
         alg: "ES256",
@@ -485,13 +464,12 @@ coz.
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/principal/create",
         id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The AS to add.  In this case, AS == KS == `tmb`.
-        commit: true,
+        pre:"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
       sig: "<source sig>",
     },
   ],
-  key: {
-    // key public material
+  key: { // key public material
     alg: "ES256",
     now: 1623132000,
     pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
@@ -501,7 +479,7 @@ coz.
 }
 ```
 
-**Explicit Genesis (Multi-Key, Multi-Transaction)**
+**Commit Genesis (Multi-Key, Multi-Transaction)**
 
 - Key signs a `key/create` transaction.
 - That key then constructs the rest of the AS by adding other AS components. In
@@ -518,9 +496,9 @@ coz.
       pay: {
         alg: "ES256",
         now: 1628181264,
-        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key adds the second key.
+        tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
         typ: "cyphr.me/cyphrpass/key/create",
-        id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+        id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key.
       },
       sig: "<b64ut>", // TODO actual sig
     },
@@ -531,13 +509,11 @@ coz.
         tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         typ: "cyphr.me/cyphrpass/principal/create",
         id: "", // TODO calc AS which is tmb MR
-        commit: true,
       },
       sig: "<source sig>",
     },
   ],
-  keys: [
-    // Public key material
+  keys: [ // Public keys material
     {
       tag: "User Key 0",
       alg: "ES256",
@@ -565,6 +541,34 @@ Required fields for `create`, `delete`, `update`, `replace` auth transactions**:
 - `pre`: the prior state of the auth, AS.
 
 ### Key
+
+Example private Coz key with standard fields:
+
+```json5
+{
+  tag: "User Key 0", // Optional human label, non-programmatic.
+  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
+  alg: "ES256", // Key algorithm.
+  now: 1623132000, // Creation timestamp
+  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
+}
+```
+
+`tmb` is the digest of the canonical public key representation using the hash
+algorithm associated with `alg`.
+
+Example public key:
+
+```json
+{
+  "tag": "User Key 0",
+  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "alg": "ES256",
+  "now": 1623132000,
+  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+}
+```
 
 #### 4.2.1 `key/create` — Add a Key (Level 3+)
 
@@ -1093,7 +1097,7 @@ Unrecoverable.
 
 - **Active** - Principal state is normal.
 - **Errored** - Principal state is errored. (Caused by an exception like signing
-  an implicit fork.)
+  an implicit fork.) See section Consensus.
 - **Deleted**: The principal signed `principal/delete`. No new transactions or
   actions (including data actions) are possible, total immutability (Level 3+)
 - **Frozen**: Principal has been frozen `freeze/create` and has not yet been
@@ -1285,136 +1289,7 @@ PIN:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
 
 ---
 
-## Consensus
 
-Cyphrpass prioritizes a design that puts the emphasis of security on the
-Principal themselves. Principals are assumed to control their keys and act
-honestly. Cyphrpass provides minimal consensus rules that delegates more
-security burden on the Principal itself instead of the consensus mechanism.
-
-Consensus rules are minimal, focusing on triggering on "undeniable" bad behavior
-(e.g., crypto contradictions, bad timestamps) that could indicate compromise,
-bugs, or attacks. The design goal of Cyphrpass rejection rules is to be simple,
-deterministic, and verifiable by any witness without needing coordination.
-
-For resolving conflicts in consensus, see section "Recovery".
-
-# Marking the Principal as "Error State"
-
-# Errors
-
-- Time stamp out of range
-- Conflicting state (implicit fork)
-
-Errors triggering "bad state":
-INVALID_SIGNATURE
-INVALID_CONSTRUCTION
-MESSAGE_TOO_LARGE
-TIMESTAMP_OUT_OF_RANGE
-MULTIHASH_MISMATCH
-JUMP_INVALID
-
-Errors triggering "ignore":
-UNKNOWN_KEY
-UNKNOWN_ALG
-TIMESTAMP_PAST
-TIMESTAMP_FUTURE
-KEY_REVOKED
-DUPLICATE_KEY
-
-Last known good state.
-
-### Consensus and Witnesses
-
-Witnesses can diverge temporarily on consensus. Witnesses (clients/oracles) verify independently but may gossip
-valid states. Rejection leads to
-
--Ignore the message
-
-- escalation (e.g., freeze the principal temporarily until resolved) or
-- Holding the message as proof of error.
-
-Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
-may broadcast it via gossip for other witnesses to confirm.
-
-### Implicit forks within quick succession
-
-Implicit forks (conflicting commits from the same PR) violate the single-chain
-assumption (spec §2.3, chain via pre). Quick succession (e.g., within timestamp
-tolerance, spec §13.2, ±60s) proves compromise (e.g., two devices signing
-conflicting mutations simultaneously).
-
-Witnesses keep these transaction as proof of compromise.
-
-The principal account is marked as "
-
-### Fork Detection
-
-// TODO
-duplicitous behavior
-
-## Timestamp Verification
-
-When a key is compromised, attackers can sign messages with arbitrary `now`
-values. Timestamp verification prevents retroactive and future-dated attacks.
-
-### 13.1 PS Timestamp Binding
-
-The **latest known timestamp** for a principal is:
-
-- The `now` field of the most recent transaction (if any)
-- Otherwise, the key creation `now` (implicit accounts)
-
-**Rule:** Services should reject actions where:
-
-- `now` < latest known PS timestamp (too far in the past)
-- `now` > server time + tolerance (too far in the future)
-
-### 13.2 Tolerance Window
-
-Services accept `now` values within an acceptable variance:
-
-| Type             | Tolerance       | Rationale                                        |
-| ---------------- | --------------- | ------------------------------------------------ |
-| **Transactions** | ±60 seconds     | Strict — key mutations are security-critical     |
-| **Actions**      | Service-defined | Looser — user data may legitimately be backdated |
-
-**Implementation:** Compare `now` to server time at receipt. Reject if outside tolerance.
-
-### 13.3 Revocation Timestamp Semantics
-
-When a key is revoked with `rvk` = T:
-
-- Signatures with `now` >= T are **invalid** (key was compromised)
-- Signatures with `now` < T are **valid** (signed before compromise)
-- Attackers cannot forge pre-revocation signatures if services enforce PS timestamp binding
-
-### 13.4 Oracle Tiers
-
-| Tier        | Method                               | Trust Level | Use Case                |
-| ----------- | ------------------------------------ | ----------- | ----------------------- |
-| **None**    | Trust `now` field                    | Lowest      | Simple apps, low-value  |
-| **Service** | Service logs first-seen time         | Medium      | Most applications       |
-| **Trusted** | Hash into blockchain (Bitcoin, etc.) | Highest     | Legal, financial, audit |
-
-**No Oracle (Default):**
-
-- Accept `now` field as claimed
-- Simple but vulnerable to retroactive signing
-
-**Service Oracle:**
-
-- Service records `received_at` timestamp when signature arrives
-- Stored alongside action for dispute resolution
-- Not cryptographically provable, but practical
-
-**Trusted Oracle:**
-
-- Signature (or `czd`) is hashed into a blockchain transaction
-- Commit timestamp proves signature existed before that time
-- Irrefutable, but adds latency and cost
-
----
 
 ### 15 `typ` Action Grammar
 
@@ -1465,7 +1340,13 @@ operations:
 - `principal/ack-merge`
 - `nonce`
 
-// TODO ZAMI: discuss idempotency for "create"
+
+### Idempotency
+All `create` operations in Cyphrpass are idempotent. If the target item (e.g.,
+key, rule, principal) already exists, the operation fails. This applies
+universally, not just to keys. `DUPLICATE`
+
+
 
 ## 6. Authentication
 
@@ -1780,7 +1661,19 @@ to keep clients in sync. See also section `API`.
 - If service-reported tip equals the client's local PS, state is synced.
 - On mismatch, client pushes delta or service requests missing patch.
 
-// TODO suggest a way to do local client registration.
+## Witness Registration
+A principal may have many clients.  The principal signs a message to inform
+clients of the registration of external witnesses, which themselves are
+represented as principals.  This message is not included in AS, and is instead
+included in DS as a data action, so that PS may remain unmodified. 
+
+`cyphr.me/cyphrpass/witness/register/create`: Value of the Principal's PR.
+
+This message is transported to the external witness for registration.
+
+The witness is removed with a `delete`. 
+
+
 
 #### Recommended Usage Patterns
 
@@ -1843,44 +1736,228 @@ To resolve from a **target AS** to a **prior known AS**:
 
 Trust is optional — full independent verification is always possible.
 
+###  Oracle Tiers // TODO needs work and is wrong.
+Clients may record their own "first_seen" if the oracle has a date after receipt. 
+
+| Tier        | Method                               | Trust Level | Use Case                |
+| ----------- | ------------------------------------ | ----------- | ----------------------- |
+| **None**    | Trust `now` field                    | Lowest      | Simple apps, low-value  |
+| **Service** | Service logs first-seen time         | Medium      | Most applications       |
+| **Trusted** | Hash into blockchain (Bitcoin, etc.) | Highest     | Legal, financial, audit |
+
+**No Oracle (Default):**
+
+- Accept `now` field as claimed from principal.
+- Simple but vulnerable to retroactive signing
+
+**Service Oracle:**
+
+- Service records `received_at` timestamp when signature arrives
+- Stored alongside action for dispute resolution
+- Not cryptographically provable, but practical
+
+**Trusted Oracle:**
+
+- Signature (or `czd`) is hashed into a blockchain transaction
+- Commit timestamp proves signature existed before that time
+- Irrefutable, but adds latency and cost
+
+## Consensus
+### Consensus Philosophy
+
+Cyphrpass is a self-sovereign protocol in which the principal is the primary
+custodian of its own security and state. Consensus rules are deliberately
+minimal. They detect and respond only to clear, cryptographically undeniable
+violations such as invalid signatures, contradictions, and conflicting commits
+that signal compromise, bugs, or attacks.  
+
+Consensus rules prioritize simplicity, determinism, and independent
+verifiability by any witness, without requiring global coordination or a
+blockchain-like mechanism. Security is largely delegated to the principal
+itself, with witnesses (clients, services, oracles) enforcing basic invariants
+to prevent propagation of invalid state. The design assumes principals generally
+act honestly, control their keys, and that repeatedly dishonest clients are
+dropped from gossip.
+
+Consensus is intentionally "shades of grey" rather than strict black-and-white.
+The design accommodates diverse implementations (including smart-contract
+clients on rigid chains) and accepts that incompatibility between clients can be
+an intentional choice. This consensus model also permits logical deduction.
+Retained errors and timestamps serve as transparent signals of client honesty.
+It represents a fundamentally different philosophy: consensus emerges from what
+actually occurred and who published what when, not from coordinated rule
+enforcement or majority vote, and opens the door for intelligent agents to
+detect violations through reasoning instead of strict rule matching. There are
+no requirements for universal agreement; divergence is reasonably tolerated and
+clients error tolerant.
+
+Although outside of the scope of this document, consensus rules attempt to
+accommodate a wide set of circumstances and implementation, and should not
+assume tight control of implementation.  For example, clients themselves may be
+smart contracts hosted on blockchains with more rigid rules.  Consensus rules
+should accommodate as best as possible such situations, but acknowledge that
+various circumstances may result in client incompatibility, which may be an
+intentional decision by principals.  
+
+For conflict resolution beyond consensus rules, see section "Recovery".
+
+### Proof of Error
+
+All messages in Cyphrpass are signed by the principal, making errors auditable
+and attributable. Witnesses may retain invalid messages as **proof of error**, a
+signed message demonstrating bad behavior (e.g., an invalid signature or
+conflicting commit). This proof can be shared via gossip, **proactive error
+sharing**, presented during recovery/escalation, or retained until resync error
+resolution. For example, during an implicit fork, a witness may retain both
+conflicting transactions as proof of compromise and broadcast them to other
+witnesses or the principal for resolution.  Proof of error is a hypernym of
+"fraud proof" and "fault proof". Proof of error is powerful: security may be
+improved from game theory or novel mechanisms.  Exhaustive detailing is outside
+the scope of this document, but the authors acknowledge its potential in
+security distributed systems.
+
+### Resync
+
+**Resync** lets a witness advance from a known good trust anchor to the current
+tip by fetching and verifying the delta (tx_patch) and may be triggered manually
+or automatically.  
+
+1. **Select Trust Anchor**  Select trust anchor (trusted PS, AS, or PR).
+2. **Fetch Delta (Patch)** Request minimal patch with GET
+   /patch?from=<anchor-PS>&to=<tip-or-empty> or GET
+   /patch?pr=<PR>&from=<anchor-PS>.
+3. **Verify Patch**  Independently verify the patch for valid pre chaining,
+   signing keys that were active with no revocation in path, computed
+   intermediate and final PS that match claims, correct timestamps, thresholds
+   (Level 5+), and no forks.
+4. **Apply and Progress Trust Anchor**  On success, apply patch, update local
+   state, and promote new PS to trust anchor.
+
+Witnesses should use an exponential backoff cooldown for repeated resync
+attempts to prevent denial-of-service. Clients should gossip tip to other
+clients to ensure a uniformed presentation of the principal, especially after
+long offline periods.
+
+Many transient errors resolve via resync. Persistent failure escalates to
+errored state or ignore.
+
+#### Resync PoP
+
+A principal may re-iterate an existing state as authoritative without mutating
+PS/AS/CS through a resync POP.
+- **PoP Confirmation**: To accelerate resync or confirm intent, the principal
+  may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
+  `typ: "cyphr.me/cyphrpass/resync/create"`) with an active key. This helps
+  distinguish transient errors from genuine issues.
+
+Resync PoP is also useful for expired timestamps.  When a client has been
+offline, but the principal issue a transaction a while ago, a Resync PoP may
+confirm current possession without mutating PS.  Clients should also gossip
+these timestamps to other clients that were online to verify integrity.
+
+Local clients track their own last operation timestamp (written to disk) to
+detect offline periods and decide when a Resync PoP is needed.  Local clients
+should also add their own timestamps to the receipt of principal messages.
+
+### Principal Consensus States
+
+In addition to principal base states (see "Principal States" for base states
+like Active, Errored, etc.) witnesses independently track principal consensus
+states. Witnesses may escalate ignored/resync errors to error state after
+repeated failures (e.g., >3 attempts).
+
+- **Active**: Client is Normal
+- **Pending**: Message requires more context before principal mutation
+   (incomplete transaction) may or may not be gossiped. 
+- **Resync**: Attempt automatic recovery before escalating. 
+- **Offline**: Failed to communicate with principal.  Client should timestamp "Offline Since".
+- **Error**: Mark the principal as errored for severe violations
+  or if resync repeatedly fails. No new transactions or actions are processed
+  until resolved (e.g., via recovery or resync). 
+- **Ignore**: Silently discard messages without state change.
+- **Client Mismatch**:
+When a witness sees an error but the principal’s client insists the message is
+valid, mark principal as CLIENT_MISMATCH. This usually indicates a bug, version
+skew, or intentional divergence. Witnesses may reject interaction until
+resolved.
+
+For individual messages:
+- **Forward**: Gossip to local clients.
+- **Hold Local**: Message is incorrect, is held locally, and not forwarded in the gossip.
+- **Error**: Message is incorrect.
+- **Proof of Error**: 
+
+Errors:
+- `INVALID_SIGNATURE`: Transaction signature fails verification.
+- `INVALID_CONSTRUCTION`: Malformed coz or transaction (e.g., missing fields).
+- `KEY_REVOKED`: Signing key has `rvk` set.
+- `MULTIHASH_MISMATCH`: Computed digests do not match claimed values.
+- `CHAIN_BROKEN`: Cannot calculate tip from prior trust anchor.
+- `FORK`: An implicit fork.  Resolved by resync or see section Recovery.
+- `INVALID_PRIOR`: `pre` chain invalid or incomplete.
+- `UNKNOWN_KEY`: `tmb` not in KS.
+- `UNKNOWN_ALG`: Unsupported algorithm.
+- `MESSAGE_TOO_LARGE`: Payload exceeds limits.
+- `TIMESTAMP_PAST`: `now` < latest known timestamp.
+- `TIMESTAMP_FUTURE`: `now` > witness time + tolerance.
+- `TIMESTAMP_OUT_OF_RANGE`: `now` outside global tolerance (e.g., > 1 year in
+  future).
+- `THRESHOLD_NOT_MET` (Level 5+) 
+- `MALFORMED_PAYLOAD`
+- `JUMP_INVALID`: State jump fails (e.g., revoked key in path).
+- `IMPLICIT_FORK`: Conflicting commits (see below).
+- `DUPLICATE`: `*/create` for existing items. Cyphrpass `create` is idempotent.
+- `STATE_MISMATCH`: Computed PS/AS differs from claimed.
+
+
+### Consensus and Witnesses
+
+Cyphrpass assumes a single linear chain per principal. An implicit fork occurs
+when two or more conflicting commits reference the same pre (prior AS),
+violating this assumption.
+
+- Ignoring the message
+- Escalation (e.g., freeze the principal temporarily until resolved) or
+- Holding the message as Proof of Error.
+
+Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
+may broadcast it via gossip for other witnesses to confirm.
+
+### Implicit Forks, Fork Detection, and Duplicitous Behavior
+An implicit fork occurs when two or more commits reference the same pre,
+violating the single-chain rule. Quick succession (e.g., within timestamp
+tolerance, ±60s) is strong evidence of compromise (e.g., two devices signing
+conflicting mutations simultaneously).  Witnesses should keep such transaction
+as proof of error. 
+
+Witnesses detect forks via mismatched tips in gossip, inconsistent /patch
+responses, and conflicting signed proofs.
+
+Response includes broadcast fork proof and rejection of both branches until
+resolved (for example principal/merge, revocation, or multi-sig confirmation in
+Level 5+).
+
+## Timestamp Verification
+
+Compromised keys can produce backdated or future-dated messages. Mitigation
+includes comparing now to witness time on receipt and rejecting outside ±360 s
+default tolerance, tracking latest known timestamp per principal from the most
+recent valid message, rejecting any now earlier than latest known timestamp to
+prevent history rewriting, and rejecting future-dated messages.
+
+Clients maintain their own persistent last-seen timestamp to detect offline
+periods and trigger Resync PoP when rejoining. Time servers can be compromised.
+Cyphrpass remains durable by relying on relative ordering and possession proofs
+rather than absolute trusted time.
+
+---
+
 ## 11. Recovery
 
-## Recovering from Trust Anchor (Last Known Good State)
+## Resync and Recovering from Trust Anchor (Last Known Good State)
 
 When a third party is out of sync or divergent from the principal state, the
-third party may recover from the the trust anchor.
-
-This process may be triggered manually, automatically. Clients may also just
-wait for the principal to initialize communication again.
-
-1. **Identify Last Known Good State**  
-   The client selects a trusted PS or AS as the recovery starting point (trust
-   anchor).
-
-2. **Fetch Delta (Patch)**  
-   The client requests a transaction patch from one or more services or
-   witnesses:
-   - `GET /patch?from=<anchor-PS>&to=<current-tip-or-empty>`
-   - If PR-known: `GET /patch?pr=<PR>&from=<anchor-PS>`  
-     The patch contains the minimal set of transactions needed to advance from the
-     anchor to the target PS.
-
-3. **Verify Patch**  
-   The client MUST independently verify:
-   - Each transaction chains correctly via `pre` (linear order)
-   - All signing keys were active in KS at the time of signing (no intervening
-     revocation)
-   - Computed intermediate and final PS match the claimed values
-   - Timestamps obey PS binding rules (§13.1)
-   - Thresholds and rules are satisfied (Level 5+)
-   - No conflicting commits or forks appear in the patch
-
-   If verification fails at any step, the patch is rejected and the client MUST
-   fall back to another source or request a smaller patch range.
-
-4. **Apply and Update Trust Anchor**  
-   On successful verification, the client applies the patch, updates its local
-   state to the new tip, and promotes the new PS to its current trust anchor.
+third party may recover from the the trust anchor, resync.  See section Consensus Resync.
 
 An unrecoverable principal is where:
 
@@ -1970,15 +2047,15 @@ For implicit (single-key) accounts, a `fallback` field may be included at key cr
   (`key/replace`). The fallback functionality must adhere to this, replacing the
   lost key rather than complying with `key/create` like Level 3+.
 
-#### 11.4.1 Recovery Validity // TODO needs some work
+#### 11.4.1 Recovery Validity 
 
-Recovery agents can only act when the account is in an **unrecoverable state**:
+Ideally, recovery agents only act when the account is in an unrecoverable state,
+however, the unrecoverable state may not be definitively known or verifiable by
+the protocol, such as in the case with lost keys.
 
-- All regular keys have been revoked or are inaccessible.
-- Insufficient keys remain to meet threshold for mutations (Level 5+).
-- Signatures from recovery agents are invalid while account is recoverable.
-- This prevents recovery from being used as a backdoor.
-- The rule for `key/create` is of a higher weight than keys on the account.
+Principals should create recovery circumstances carefully. The protocol does not
+enumerate these conditions here; they are defined by principal rules at the time
+of the attempted recovery.
 
 ### 11.5 Recovery Transactions
 
@@ -2144,28 +2221,40 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 - **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
 - **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
-### 11.11 Retrospection
+### 11.11 Append Only Verifiable Logs
 
-**TODO:** Define retrospection semantics — how past signatures are validated
-after key removal/revocation needs further specification. Stub:
+Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
+Each commit references the prior via pre and is anchored in the Merkle root
+(MR), enabling efficient verification of history without full chain replay. This
+supports tamper-evident auditing and is useful for compliance requirements, such
+as regulatory record-keeping or forensic analysis.
 
-Retrospection is undoing actions to a timestamp. This is a complex issue for
-services.
 
-As a best practice Level 3 plus should define more than one key being required
-for retrospection, since if only one key set, a single
+### 11.12 Retroactivity (Reversion, Retrospection)
 
-retrospection attack: Backdating actions to "undo" actions since a time period.
+Retroactivity is undoing actions to a given timestamp. This is a complex issue
+for services.  
 
-Instead of removing a record, the record can be marked as "rescinded".
+Unlike Git, and outside of consensus, Cyphrpass does not use reversion, that is
+undoing past actions.  Instead, clients should mutate their state using the
+appropriate verbs, `create` and `delete`, as needed for a targeted state. 
 
-### Verifiable Logs
+For example, even though a `key/revoke` can be postdated to the time of an
+attack, Cyphrpass should interpret transaction based on current `now` and not
+`rvk`.
 
-// TODO, but basically the MR provides this built in.
+If an attacker gains access to keys and is able to sign actions unauthorized by
+the agent represented by the Principal, when the Principal regains control, they
+may want to undo these actions.  Instead of retrospectively marking revokes,
+Principals must explicitly mutate their state forward.  
 
-Logs should be append only.
+**Retrospection Attack**: An attacker uses retroactivity to undo legitimate
+Principal actions.
 
-Also mention that this is useful for compliance.
+As a matter of bookkeeping, a client may mark past actions as disowned,
+expressing the intent of the Principal to mark that action as unintentional.
+However disowning does not mutate AS.
+
 
 ## 12. Close, Merge, Fork
 
@@ -2445,7 +2534,7 @@ MHMR is computed with respect to a **target hash algorithm** H. The target H is
 determined per commit as follows:
 
 - H is one of the hash algorithms associated with any currently active key in KS
-- When multiple hash algorithms are supported, implementations MUST compute an
+- When multiple hash algorithms are supported, implementations must compute an
   MHMR variant for each supported H.
 - A multihash identifier for a node/state therefore consists of one digest per
   supported H at the time of the commit.
@@ -2462,7 +2551,7 @@ computed under some hash algorithm):
 2. **Single child (implicit promotion)**:  
    If there is exactly one child digest, the MHMR_H for any target H is simply
    the bytes of that child digest (no hashing occurs). Promotion is recursive.
-3. **Multiple children**:  
+3. **Binary Hashing of Children**:
    Concatenate the sorted child digest bytes in order.  
    Compute MHMR_H = H( concatenated bytes ).
 
@@ -2478,7 +2567,7 @@ computed under some hash algorithm):
 #### Important Properties
 
 - **No re-hashing of children**: Inner digests are fed directly into the parent
-  hash function as raw bytes (conversion by direct inclusion).
+  hash function as raw bytes (unless being converted, where the node is hashed first).
 - **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
   regardless of how children were labeled or enumerated.
 - **Security bounded by weakest link**: The strength of any MHMR_hash variant is
@@ -2488,13 +2577,7 @@ computed under some hash algorithm):
   as a child to force computation of that algorithm variant even if no active
   key natively supports it.
 
-  // TODO THIS IS WRONG
 
-- **Flat concatenation**: For the small number of children typically found in
-  PR/PS, CS, AS, KS, RS, DS, a single sorted concatenation + hash is used. Large Data
-  Trees (DS with many actions) MAY use recursive binary pairing under the same
-  MHMR rule if explicitly defined by the application layer (out of scope for
-  core protocol).
 
 #### Rationale
 
@@ -2504,7 +2587,7 @@ The MHMR design achieves three simultaneous goals:
 2. Support for embedded principals and recursive structures
 3. Backward- and forward-compatibility during algorithm transitions
 
-Implementations MUST compute MHMR variants for every hash algorithm currently
+Implementations must compute MHMR variants for every hash algorithm currently
 supported by active keys (and any nonce-injected algorithms) at each commit.
 When an algorithm is deprecated or removed from support, its MHMR variant is no
 longer generated for new commits.
@@ -2745,7 +2828,7 @@ Verification rules for the jump transaction:
   invalidate the signing key(s) — this is enforced by requiring the jump
   transaction to be accepted only if KS at tip still includes the signing
   `tmb`(s).
-- Services MAY require additional proofs (e.g., Merkle inclusion of unchanged KS
+- Services may require additional proofs (e.g., Merkle inclusion of unchanged KS
   components) or restrict jumps to trusted checkpoints.
 
 **Typical Processing Flow**
@@ -2856,7 +2939,7 @@ See also §7.3.3 Checkpoints.
 
 ## 17. Error Conditions
 
-This section defines error conditions that implementations MUST detect. Error
+This section defines error conditions that implementations must detect. Error
 _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 ### 17.1 Transaction Errors
@@ -2894,22 +2977,21 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 | Error                 | Condition                               | Level |
 | --------------------- | --------------------------------------- | ----- |
-| `UNAUTHORIZED_ACTION` | Action `typ` not permitted for this key | 5+    |
+| `UNAUTHORIZED_ACTION` | Action `typ` not permitted              | 5+    |
 
 ### 17.5 Error Handling Guidance
 
-**Implementations MUST:**
+**Implementations must:**
 
 - Reject transactions with any error condition
 - Not apply partial state changes (atomic)
 
-**Implementations SHOULD:**
+**Implementations should:**
 
 - Return meaningful error identifiers to clients
-- Distinguish between client errors (fixable) and server errors (retry)
 - Log errors for debugging (optional but recommended)
 
-**Implementations MAY:**
+**Implementations may:**
 
 - Define additional application-specific error conditions
 - Implement rate limiting for repeated errors
@@ -3011,11 +3093,11 @@ Follow the Coz spec.
 ### 18.7 Integration Test Requirements
 
 Language-agnostic test vectors are provided in `/test_vectors/`. Integration
-tests consuming these vectors SHOULD:
+tests consuming these vectors should:
 
 1. **Validate fixture `pre` values**: Before applying a transaction, verify that
    the fixture's `pre` field matches the implementation's computed Auth State.
-   If they differ, the test SHOULD fail immediately, indicating a fixture data
+   If they differ, the test should fail immediately, indicating a fixture data
    error rather than an implementation bug.
 
 2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other
