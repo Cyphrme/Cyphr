@@ -437,8 +437,9 @@ genesis uses a bootstrap model, gracefully upgrading from level 1/2 to level 3:
    marks the principal as created.
 
 This design ensures every transaction (including genesis transactions) requires
-`pre`, maintaining chain continuity from the moment the first key
-exists.
+`pre`, maintaining chain continuity from the moment the first key exists.
+Another consequence of the bootstrapping model is that the first key's `tmb` is
+the principal's PR. 
 
 **`typ`**: `<authority>/key/create`
 - `id`: Thumbprint of key being added
@@ -486,8 +487,6 @@ Commit Genesis (Multi-Key, Multi-Transaction)
   this case, just adding another key.
 - For all cases, `CS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))` CS is omitted since there are no prior transactions.
 - The principal is created by `principal/create`.
-- `pre` is omitted since there isn't a prior principal state until after the
-  genesis `principal/create`.
 
 ```json5
 {
@@ -792,8 +791,9 @@ The client should keep the nonce value for reveal.
 
 ### 6.7 Data Action
 
-Data Actions are stateless signed messages. They are simply signed by an
-authorized key without chain structure:
+Data Actions are stateless signed messages. Data actions are not transactions
+and do not mutate AS. Data actions are simply messages signed by an authorized
+key without chain structure:
 
 - No prior field required (no `pre`)
 - DS is computed from action `czd`s.
@@ -901,7 +901,7 @@ dump, which includes meta values and values that would be secrete to the client.
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is the `tmb`, promoted to AS, then PR, since there is no nonce or other value.
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is CS. In this case CS == AS since there is no nonce or other value.
         "commit":true
       },
       "sig": "<b64ut>" // TODO valid sig
