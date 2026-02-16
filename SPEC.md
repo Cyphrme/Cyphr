@@ -445,7 +445,7 @@ commit. For example, a transaction bundle may have one transaction for
 ### 4.2 DS inclusion (Stub)
 DS may or may not be included in a transaction.  To explicitly include DS:
 
-```json
+```json5
 {
   "pay": {
     alg: "ES256",
@@ -453,8 +453,7 @@ DS may or may not be included in a transaction.  To explicitly include DS:
     tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     typ: "cyphr.me/cyphrpass/data/create",
     pre: "<prior CS>",
-    new_ds: "<computed new DS MR>",
-    commit: true
+    new_ds: "<computed new DS MR>"
   },
   sig: "<b64ut>"
 }
@@ -620,7 +619,7 @@ algorithm associated with `alg`.
 
 Example public key:
 
-```json
+```json5
 {
   "tag": "User Key 0",
   "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -638,7 +637,7 @@ Note that `key` is included in the JSON payload, but not the signed payload, as
 reference for client. The key may be transmitted through sideband or known
 previously. This construction is good practice.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -646,8 +645,7 @@ previously. This construction is good practice.
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
     "typ": "cyphr.me/cyphrpass/key/create",
     "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted CS.  At genesis, CS == AS == KS == first key's tmb.
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key
-    "commit": true
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
   },
   "key": {
     "alg": "ES256",
@@ -690,7 +688,7 @@ and later re-added (each re-addition starts a new active period).
 
 - `id`: `tmb` of the key being removed
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -698,8 +696,7 @@ and later re-added (each re-addition starts a new active period).
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/delete",
     "pre": "<targeted CS>",
-    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "commit": true
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
   "sig": "<b64ut>"
 }
@@ -713,7 +710,7 @@ invariant for Level 2 devices.
 For level 2, `pre` is the `tmb` of the previous key. (CS == AS == KS == tmb)
 For level 3+, `pre` is required.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -750,7 +747,7 @@ Revoke is built into the Coz standard:
 
 Example Naked Revoke:
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -782,7 +779,7 @@ initiate a key revoke, it should sign a revoke with `pre` and a subsequent
 A client may include `msg` detailing why the key was revoked. See also section
 "Recovery" for principal lockout.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -813,15 +810,14 @@ may be generated through CS by signing a transaction nonce.
 
 To delete a nonce, a `nonce/delete` is signed.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphrpass/nonce/create",
-    "nonce": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8",
-    "commit": true
+    "nonce": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
   },
   "sig": "" // TODO
 }
@@ -860,7 +856,7 @@ This keeps actions lightweight for common use cases (comments, posts, etc.).
 
 A data action is a signed Coz message representing a user action, recorded in DS:
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -929,8 +925,7 @@ dump, which includes meta values and values that would be secrete to the client.
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "typ": "cyphr.me/cyphrpass/key/create",
       "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-      "commit":true
+      "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
       },
       "key": {
       "alg": "ES256",
@@ -958,8 +953,7 @@ dump, which includes meta values and values that would be secrete to the client.
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // "pre" is CS. In this case CS == AS since there is no nonce or other value.
-        "commit":true
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // "pre" is CS. In this case CS == AS since there is no nonce or other value.
       },
       "sig": "<b64ut>" // TODO valid sig
     }
@@ -985,7 +979,7 @@ implementation accomplishes this by using types that preclude secretes.)
 
 The declarative principal:
 
-```json
+```json5
 {
 "PT":{ // The actual Principal Tree, at the point of this commit
   "AT":{   // Auth Tree
@@ -1020,8 +1014,7 @@ Embedded into a coz transaction:
     "typ": "cyphr.me/cyphrpass/checkpoint/create",
     "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",  // Links to prior PS/AS for chain integrity
     "id": "<b64UT>",  // The computed AS of the declared state
-    "PT": {...},
-    "commit": true
+    "PT": {...}
   },
   "sig": "<b64ut>"
 }
@@ -1430,10 +1423,10 @@ operations:
 - `nonce`
 
 
-### Idempotency
-All `create` operations in Cyphrpass are idempotent. If the target item (e.g.,
-key, rule, principal) already exists, the operation fails. This applies
-universally, not just to keys. `DUPLICATE`
+### Uniqueness Enforcement
+All `create` operations in Cyphrpass enforce uniqueness. If the target item (e.g.,
+key, rule, principal) already exists, the operation returns `DUPLICATE`. This applies
+universally, not just to keys.
 
 ---
 
@@ -1471,7 +1464,7 @@ To authenticate to a service:
    - Challenge matches the one issued (prevents replay)
 4. Service issues bearer token
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -1495,7 +1488,7 @@ To authenticate to a service:
    - `now` is within acceptable window (e.g., ±60 seconds of server time)
 3. Service issues bearer token
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -1529,7 +1522,7 @@ After successful PoP, the service issues a bearer token:
 - Contains: principal PR, authorized permissions, expiry
 - Used for subsequent requests (avoids re-signing each request)
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -1977,7 +1970,7 @@ Errors:
 - `MALFORMED_PAYLOAD`
 - `JUMP_INVALID`: State jump fails (e.g., revoked key in path).
 - `IMPLICIT_FORK`: Conflicting commits (see below).
-- `DUPLICATE`: `*/create` for existing items. Cyphrpass `create` is idempotent.
+- `DUPLICATE`: `*/create` for existing items. Cyphrpass `create` rejects duplicates.
 - `STATE_MISMATCH`: Computed PS/AS differs from claimed.
 
 
@@ -2097,7 +2090,7 @@ Level 3+ supports recovery and can add new keys.
 
 For implicit (single-key) accounts, a `fallback` field may be included at key creation:
 
-```json
+```json5
 {
   "alg": "ES256",
   "pub": "<b64ut>",
@@ -2138,7 +2131,7 @@ of the attempted recovery.
 
 Registers a recovery agent (backup key, service, or social contacts).
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2164,7 +2157,7 @@ Registers a recovery agent (backup key, service, or social contacts).
 
 Removes a previously designated recovery agent.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2194,7 +2187,7 @@ previous state by the Recovery Authority. The new PS is not cryptographically
 linked to the previous state, but it is manually linked to the original PR by
 the Recovery Authority's recovery transaction.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2249,7 +2242,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 - **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
 - **Effect**: Stops all mutations until unfrozen.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2274,7 +2267,7 @@ A designated **Recovery Authority** may initiate a freeze based on heuristics
 
 To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2344,7 +2337,7 @@ actions are possible on a closed account. However, the protocol does not prevent
 a user from creating a new principal reusing the existing keys, unless those
 keys were revoked.
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2396,7 +2389,7 @@ Explicit merging is performed via a special transaction type:
 
 Example source principal merge transaction:
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2412,7 +2405,7 @@ Example source principal merge transaction:
 
 And the acknowledgement by the target principal:
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -2447,7 +2440,7 @@ or reuse existing keys.
 
 For "bad faith" forking, see section "Consensus".
 
-```json
+```json5
 {
   "cozies": [
     {
@@ -2479,8 +2472,7 @@ For "bad faith" forking, see section "Consensus".
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        "pre": "<key bundle>",
-        "commit": true
+        "pre": "<key bundle>"
       },
       "sig": "<b64ut>"
     }
@@ -3085,7 +3077,7 @@ These golden test vectors enable implementation verification. All values use B64
 
 ### 18.1 Golden Key "User Key 0" (ES256)
 
-```json
+```json5
 {
   "tag": "User Key 0",
   "alg": "ES256",
@@ -3126,7 +3118,7 @@ These golden test vectors enable implementation verification. All values use B64
 
 The canonical Coz test message with verified signature:
 
-```json
+```json5
 {
   "pay": {
     "msg": "Coz is a cryptographic JSON messaging specification.",
@@ -3209,25 +3201,7 @@ Since cryptographic digests are suitable, all `GETS` may simply be looked up by 
 
 - `GET /e/<diget-value>`
 
-**tip** - Gets the latest state for the principal
-
-- `GET /tip?pr=<principal-root>`
-  Returns the service's view of the tip (or latest known AS/PS digest) for the principal.
-
-**patch** - Returns the service's view for the principal.
-
-- `GET /patch?pr=<principal-root>&from=<ps>&to=<target-ps>` - Full form
-- `GET /patch?from=<ps>` - From PS to current
-- `GET /patch?pr=<principal-root>` from PR to current
-- `GET /patch?pr=<principal-root>from=<ps>` from PS, for particular PR, to current
-- `GET /patch?from=<ps>&to=<target-ps-or-empty>` - Range
-
-`to` is optional and on omission is `tip`.
-`pr` is optional since it should be included in patch. May be explicit for debugging.
-`from` is optional if pr is given.
-
-- `POST /push`
-  Accepts one or more signed transactions (`tx_patch`). Service verifies chain validity and applies update.
+See §10.1 for `tip`, `patch`, and `push` endpoint definitions.
 
 ---
 
