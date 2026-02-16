@@ -1449,14 +1449,16 @@ operations:
 - `cyphrpass/nonce`
 
 ### 13.2 Idempotency
-Cyphrpass transaction mutations are idempotent. If a particular coz is replayed,
-it is ignored and no state is mutated.
+Cyphrpass transaction mutations are idempotent. Replaying an already applied coz
+is ignored and produces no state change.
 
 ### 13.3 Uniqueness Enforcement
 All `create` operations in Cyphrpass enforce uniqueness. If the target item
 (e.g., key, rule, principal) already exists, the operation returns `DUPLICATE`.
 
+
 ---
+
 
 ## 14. Authentication
 
@@ -1576,7 +1578,9 @@ centralization around identity providers. In Cyphrpass, the principal's
 cryptographic keys are the sole authentication factor, verifiable by any party
 without a central authority.
 
+
 ---
+
 
 ## 15. Storage Models
 
@@ -1688,7 +1692,9 @@ truly append only data structure or as a mutatable data structure, where events
 like forks, requiring chain selection, may be deleted (mutatable) or marked as
 discarded (immutable implementation).
 
+
 ---
+
 
 ## 16 Mutual State Synchronization (MSS)
 // TODO in MSS section discuss gossip.
@@ -1840,7 +1846,6 @@ receipt.  If external witness timestamps are out of expected range, clients
 should also record external witness timestamps.  This allows MSS to detect
 conflict, dishonest behavior, and bugs.
 
-
 ### 16.3 Recommended Usage Patterns
 
 - **Proactive push on mutation** — After transaction (`key/create`, `key/revoke`,
@@ -1868,7 +1873,9 @@ Although Cyphrpass provides single-sign-on semantics, it differs from historic
 systems by eliminating passwords, email dependency, and unidirectional state
 tracking.
 
+
 ---
+
 
 ## 17 Consensus
 ### Consensus Philosophy
@@ -2093,7 +2100,9 @@ periods and trigger Resync PoP when rejoining. Time servers can be compromised.
 Cyphrpass remains durable by relying on relative ordering and possession proofs
 rather than absolute trusted time.
 
+
 ---
+
 
 ## 18. Recovery
 
@@ -2391,6 +2400,9 @@ Principal actions.
 As a matter of bookkeeping, a client may mark past actions as disowned,
 expressing the intent of the Principal to mark that action as unintentional.
 However disowning does not mutate AS.
+
+
+---
 
 
 ## 19. Close, Merge, Fork
@@ -2712,8 +2724,6 @@ computed under some hash algorithm):
   as a child to force computation of that algorithm variant even if no active
   key natively supports it.
 
-
-
 #### 20.6 MHMR Rationale
 
 The MHMR design achieves three simultaneous goals:
@@ -2732,7 +2742,7 @@ gossip, and verification use one of these multihash variants. Equivalence across
 variants is assumed by the protocol; no relative strength ordering is enforced
 at the protocol level (see §14.4 Rank for tie-breaking considerations).
 
-### 20.7 Rank
+### 20.7 Multihash Algorithm Rank
 
 When multiple algorithms are supported, there may be a tie at the time of
 conversion. Cyphrpass provides a default rank. Rank is a tiebreaker only and
@@ -2756,7 +2766,9 @@ Compatibility is strictly required only for operations where the service must
 verify or interpret the cryptographic material. If such an operation is
 attempted using an unsupported algorithm, the services are incompatible.
 
+
 ---
+
 
 ## 21 Cyphrpass Type System and Ownership
 
@@ -2853,7 +2865,9 @@ Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offe
 | Transport        | Usually TLS + HTTP         | Can be sent any way (TLS, HTTP, IPFS, email, gossip...) |
 | Response model   | Status + body              | Tip, another signed Coz                                 |
 
+
 ---
+
 
 ### 22 Self-Sovereign Philosophy
 
@@ -2923,7 +2937,9 @@ No miner, validator race, or fee market
 Revocable/revocable keys
 Soulbound-like — Set transferable=false
 
+
 ---
+
 
 ## 23. State Jumping
 
