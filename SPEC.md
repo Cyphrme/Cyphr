@@ -404,7 +404,7 @@ A commit contains cozies that mutate AS and forms a chain via the `pre` field.
 
 - `pre`: The Commit State (CS) targeted for mutation.
 
-# 4.1.0 Transaction Coz
+### 4.1.0 Transaction Coz
 
 Transactions are signed Coz messages that mutate Auth State (AS). A transaction
 may be one or multiple cozies that results in a mutation. A transaction coz
@@ -602,7 +602,7 @@ Required fields for `create`, `delete`, `update`, `replace` auth transactions:
 
 ---
 
-### 6 Key
+## 6 Key
 
 Example private Coz key with standard fields:
 
@@ -1085,7 +1085,8 @@ total transaction:
 
 ---
 
-## 9 Principal Root (PR)
+## 9 Principal Root (PR) and State calculation
+### 9.0 Principal Root (PR)
 
 The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
 
@@ -1203,7 +1204,7 @@ occupies. Any base state can be errored or non-errored.
 #### 10.2 Base States
 
 These conditions combine into 6 base states. `Deleted` and `Frozen` are
-mutually exclusive — a principal cannot be frozen and deleted at the same time.
+mutually exclusive. A principal cannot be frozen and deleted at the same time.
 
 | State        | Conditions                                    |
 | :----------- | :-------------------------------------------- |
@@ -1412,23 +1413,23 @@ Example: `"cyphr.me/user/image/create"`
 
 **Other Examples:**
 
-- `cyphr.me/key/upsert`
-- `cyphr.me/key/revoke`
+- `cyphr.me/cyphrpass/key/upsert`
+- `cyphr.me/cyphrpass/key/revoke`
+- `cyphr.me/cyphrpass/principal/merge`
 - `cyphr.me/comment/create`
-- `cyphr.me/principal/merge`
 
-#### Special verbs
+
+#### 13.1 Special verbs
 
 In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
 `upsert`, `delete`), Cyphrpass defines these special verbs for protocol-level
 operations:
 
 - `key/revoke`
-- `key/replace`
-- `principal/merge`
-- `principal/ack-merge`
-- `nonce`
-
+- `/cyphrpass/key/replace`
+- `/cyphrpass/principal/merge`
+- `/cyphrpass/principal/ack-merge`
+- `/cyphrpass/nonce`
 
 ### Uniqueness Enforcement
 All `create` operations in Cyphrpass enforce uniqueness. If the target item (e.g.,
@@ -1437,7 +1438,7 @@ universally, not just to keys.
 
 ---
 
-## 6. Authentication
+## 14. Authentication
 
 Cyphrpass replaces password-based authentication with cryptographic Proof of
 Possession (PoP).
@@ -1446,7 +1447,7 @@ Cyphrpass recommends AAA (Authenticated Atomic Action) over bearer tokens when
 possible, but bearer tokens remain useful for access control and for upgrading
 legacy password systems to Cyphrpass.
 
-### 6.1 Proof of Possession (PoP)
+### 14.1 Proof of Possession (PoP)
 
 Every valid signature by an authorized key constitutes a Proof of Possession:
 
@@ -1455,7 +1456,7 @@ Every valid signature by an authorized key constitutes a Proof of Possession:
 - **Action PoP**: Signing an action proves the principal performed it.
 - **Login PoP**: Signing a challenge proves identity to a service.
 
-### 6.2 Login Flow
+### 14.2 Login Flow
 
 To authenticate to a service:
 
@@ -1507,7 +1508,7 @@ To authenticate to a service:
 }
 ```
 
-### 6.3 Replay Prevention
+### 14.3 Replay Prevention
 
 Two mechanisms prevent signature replay:
 
@@ -1520,7 +1521,7 @@ Challenge-response is useful for security contexts where time isn't trusted,
 while timestamp-based authentication works for low-friction flows with
 reasonably accurate time sources.
 
-### 6.4 Bearer Tokens
+### 14.4 Bearer Tokens
 
 After successful PoP, the service issues a bearer token:
 
@@ -1547,7 +1548,7 @@ After successful PoP, the service issues a bearer token:
 **Note:** The service signs the token with its own key. The principal verifies the
 token came from the expected service.
 
-### 6.5 Single Sign-On (SSO)
+### 14.5 Single Sign-On (SSO)
 
 Cyphrpass provides single sign-on semantics but differs from traditional SSO
 systems that depend on passwords and email. Traditional SSO creates
@@ -1557,9 +1558,9 @@ without a central authority.
 
 ---
 
-## 7. Storage Models
+## 15. Storage Models
 
-### 7.1 Client/Principal Storage
+### 15.1 Client/Principal Storage
 
 Cyphrpass distinguishes between several storage contexts. Clients are
 categorized as **thin**, **fat**, or **full**, based on storage capacity:
@@ -1596,7 +1597,7 @@ but could be retrieved from a service.
 | Transactions | ✓        | Full audit trail     |
 | Actions      | ✓        | Application-specific |
 
-### 7.2 Third-Party Service Storage
+### 15.2 Third-Party Service Storage
 
 Services that interact with principals store:
 
@@ -1620,12 +1621,12 @@ Service operations:
 multiple services. Full verification is always possible with transaction
 history.
 
-### 7.3 Storage API (Non-Normative)
+### 15.3 Storage API (Non-Normative)
 
 > Note: This section is informative only. Implementations may use any storage
 > mechanism appropriate to their deployment context.
 
-#### 7.3.1 Export Format
+#### 15.3.1 Export Format
 
 The recommended export format is newline-delimited JSON (JSONL) containing all
 signed transactions and actions:
@@ -1645,7 +1646,7 @@ signed transactions and actions:
 Entries with `typ` prefix `<authority>/cyphrpass/*` are authentication
 transactions; all others are data actions.
 
-#### 7.3.2 Storage Capabilities
+#### 15.3.2 Storage Capabilities
 
 Storage backends provide:
 
@@ -1656,9 +1657,21 @@ Storage backends provide:
 Semantic operations (verification, state computation, key validity) are handled
 by the Cyphrpass protocol layer, not storage.
 
+### 15.4 Append Only Verifiable Logs
+
+Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
+Each commit references the prior via pre and is anchored in the Merkle root
+(MR), enabling efficient verification of history without full chain replay. This
+supports tamper-evident auditing and is useful for compliance requirements, such
+as regulatory record-keeping or forensic analysis.  This may be implemented as a
+truly append only data structure or as a mutatable data structure, where events
+like forks, requiring chain selection, may be deleted (mutatable) or marked as
+discarded (immutable implementation).
+
 ---
 
-### 10.1 Mutual State Synchronization (MSS)
+## 16 Mutual State Synchronization (MSS)
+// TODO in MSS section discuss gossip.
 
 Cyphrpass enables symmetric, bidirectional state awareness between principals
 and services, eliminating the one-sided dependency inherent in traditional
@@ -1696,7 +1709,7 @@ instead of one entry in a ledger being depended upon as a single source of
 truth, two entries are best practice.
 
 
-## 10.2 Verification by a Third Party
+## 16.1 Verification by a Third Party
 
 To verify a principal's current state:
 
@@ -1714,6 +1727,17 @@ To verify a principal's current state:
 4. **Compare** — final computed KS/AS/PS should match claimed current state
 
 Third parties that also forward principal state are witnesses.
+
+### 16.2 State Resolution
+
+To resolve from a **target AS** to a **prior known AS**:
+
+1. Obtain current AS (from principal or trusted service)
+2. Request transaction chain from target back to prior known (`pre`)
+3. Verify `pre` references form unbroken chain
+4. Validate each signature against KS at that point
+
+Trust is optional — full independent verification is always possible.
 
 
 #### Core Properties of MSS
@@ -1759,7 +1783,7 @@ to keep clients in sync. See also section `API`.
 - If service-reported tip equals the client's local PS, state is synced.
 - On mismatch, client pushes delta or service requests missing patch.
 
-## Witness Registration
+### 16.2 Witness Registration
 A principal may have many clients.  The principal signs a message to inform
 clients of the registration of external witnesses, which themselves are
 represented as principals.  This message is not included in AS, and is instead
@@ -1771,34 +1795,7 @@ This message is transported to the external witness for registration.
 
 The witness is removed with a `delete`. 
 
-#### Recommended Usage Patterns
-
-- **Proactive push on mutation** — After transaction (`key/create`, `key/revoke`,
-  etc.), client pushes to all registered services (stored locally through
-  previous registration).
-- **On-demand sync** — Before high-value actions, client queries service tip and
-  reconciles if needed.
-- **Service identity anchoring** — Users track service PR/PS directly (instead
-  of DNS + CA certs), enabling trust outside email/CAs.
-- **Recovery acceleration** — Pre-synced state allows new devices to bootstrap
-  faster via push to known services.
-
-#### Why MSS Matters
-
-MSS addresses centralization risks in legacy SSO (passwords + email as de facto
-recovery root) and bearer-token models (service as sole state oracle). By making
-state mutual, verifiable, and push-capable, Cyphrpass enables:
-
-- Lower-latency authentication flows.
-- Independence from email/CA choke points.
-- Auditable recovery without manual per-service intervention.
-- Programmable, symmetric trust between users and services.
-
-Although Cyphrpass provides single-sign-on semantics, it differs from historic
-systems by eliminating passwords, email dependency, and unidirectional state
-tracking.
-
-### 10.2 MSS Registration Example
+### 16.2.1 MSS Registration Example
 
 Example ledger displaying remote state synchronization. Local Principal `X` is
 at tip `State3`.
@@ -1817,27 +1814,43 @@ After successful syncing:
 | B         | State3       | Y       |
 | C         | State3       | Y       |
 
-
-### State Resolution
-
-To resolve from a **target AS** to a **prior known AS**:
-
-1. Obtain current AS (from principal or trusted service)
-2. Request transaction chain from target back to prior known (`pre`)
-3. Verify `pre` references form unbroken chain
-4. Validate each signature against KS at that point
-
-Trust is optional — full independent verification is always possible.
-
-## Witness Timestamps
+### Witness Timestamps
 Clients should record their own "first_seen" if the oracle has a date after
 receipt.  If external witness timestamps are out of expected range, clients
 should also record external witness timestamps.  This allows MSS to detect
 conflict, dishonest behavior, and bugs.
 
+
+### 16.3 Recommended Usage Patterns
+
+- **Proactive push on mutation** — After transaction (`key/create`, `key/revoke`,
+  etc.), client pushes to all registered services (stored locally through
+  previous registration).
+- **On-demand sync** — Before high-value actions, client queries service tip and
+  reconciles if needed.
+- **Service identity anchoring** — Users track service PR/PS directly (instead
+  of DNS + CA certs), enabling trust outside email/CAs.
+- **Recovery acceleration** — Pre-synced state allows new devices to bootstrap
+  faster via push to known services.
+
+### 16.4 Why MSS Matters
+
+MSS addresses centralization risks in legacy SSO (passwords + email as de facto
+recovery root) and bearer-token models (service as sole state oracle). By making
+state mutual, verifiable, and push-capable, Cyphrpass enables:
+
+- Lower-latency authentication flows.
+- Independence from email/CA choke points.
+- Auditable recovery without manual per-service intervention.
+- Programmable, symmetric trust between users and services.
+
+Although Cyphrpass provides single-sign-on semantics, it differs from historic
+systems by eliminating passwords, email dependency, and unidirectional state
+tracking.
+
 ---
 
-## Consensus
+## 17 Consensus
 ### Consensus Philosophy
 
 Cyphrpass is a self-sovereign protocol in which the principal is the primary
@@ -1856,13 +1869,14 @@ that principals control their keys.
 
 Consensus is intentionally "shades of grey" rather than strict black-and-white.
 The design accommodates diverse implementations (including smart-contract
-clients on external hosted blockchains) and accepts that incompatibility between clients can be
-an intentional choice. This consensus model also permits logical deduction.
-Retained errors and timestamps serve as transparent signals of client honesty.
-It represents a fundamentally different philosophy: consensus emerges from what
-actually occurred and who published what when, not strictly from coordinated
-rule enforcement or majority vote, and opens the door for intelligent agents to
-detect violations through reasoning instead of strict rule matching.
+clients on external hosted blockchains) and accepts that incompatibility between
+clients can be an intentional choice. This consensus model also permits logical
+deduction. Retained errors and timestamps serve as transparent signals of client
+honesty. It represents a fundamentally different philosophy: consensus emerges
+from what actually occurred and who published what when, not strictly from
+coordinated rule enforcement or majority vote, and opens the door for
+intelligent agents to detect violations through reasoning instead of strict rule
+matching.
 
 Although outside of the scope of this document, consensus rules attempt to
 accommodate a wide set of circumstances and implementation, and should assume
@@ -1872,7 +1886,7 @@ in client incompatibility, which may be an intentional decision by principals.
 
 For conflict resolution beyond consensus rules, see section "Recovery".
 
-### Proof of Error
+### 17.1 Proof of Error
 
 All messages in Cyphrpass are signed by the principal, making errors auditable
 and attributable. Witnesses may retain invalid messages as **proof of error**, a
@@ -1887,7 +1901,7 @@ improved from game theory or novel mechanisms.  Exhaustive detailing is outside
 the scope of this document, but the authors acknowledge its potential in
 security distributed systems.
 
-### Resync
+### 17.2 Resync
 
 **Resync** lets a witness advance from a known good trust anchor to the current
 tip by fetching and verifying the delta (tx_patch) and may be triggered manually
@@ -1912,7 +1926,7 @@ long offline periods.
 Many transient errors resolve via resync. Persistent failure escalates to
 errored state or ignore.
 
-#### Resync PoP
+#### 17.2.1 Resync PoP
 
 A principal may re-iterate an existing state as authoritative without mutating
 PS/AS/CS through a resync POP.
@@ -1930,7 +1944,7 @@ Local clients track their own last operation timestamp (written to disk) to
 detect offline periods and decide when a Resync PoP is needed.  Local clients
 should also add their own timestamps to the receipt of principal messages.
 
-### Principal Consensus States
+### 17.3 Principal Consensus States
 
 In addition to principal base states (see "Principal States" for base states
 like Active, Errored, etc.) witnesses independently track principal consensus
@@ -1952,7 +1966,7 @@ valid, mark principal as CLIENT_MISMATCH. This usually indicates a bug, version
 skew, or intentional divergence. Witnesses may reject interaction until
 resolved.
 
-#### Consensus State Transitions
+#### 17.3.1 Consensus State Transitions
 
 | From    | To              | Trigger                                                          |
 | :------ | :-------------- | :--------------------------------------------------------------- |
@@ -1997,7 +2011,7 @@ Errors:
 - `STATE_MISMATCH`: Computed PS/AS differs from claimed.
 
 
-### Consensus and Witnesses
+### 17.4 Consensus and Witnesses
 
 Cyphrpass assumes a single linear chain per principal. An implicit fork occurs
 when two or more conflicting commits reference the same pre (prior AS),
@@ -2010,7 +2024,7 @@ violating this assumption.
 Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
 may broadcast it via gossip for other witnesses to confirm.
 
-### Implicit Forks, Fork Detection, and Duplicitous Behavior
+### 17.5 Implicit Forks, Fork Detection, and Duplicitous Behavior
 An implicit fork occurs when two or more commits reference the same pre,
 violating the single-chain rule. Quick succession (e.g., within timestamp
 tolerance, ±60s) is strong evidence of compromise (e.g., two devices signing
@@ -2024,7 +2038,7 @@ Response includes broadcast fork proof and rejection of both branches until
 resolved (for example principal/merge, revocation, or multi-sig confirmation in
 Level 5+).
 
-#### Fork Resolution
+#### 17.5.1 Fork Resolution
 
 An implicit fork is resolved when the principal unambiguously selects one
 branch. Until resolved, witnesses hold both branches and the principal's
@@ -2046,7 +2060,7 @@ Keys that were only added in the abandoned branch are not part of KS. Witnesses
 transition the principal's consensus state from Error back to Active upon
 observing a valid resolution.
 
-## Timestamp Verification
+### 17.6 Timestamp Verification
 
 Compromised keys can produce backdated or future-dated messages. Mitigation
 includes comparing now to witness time on receipt and rejecting outside ±360 s
@@ -2061,7 +2075,7 @@ rather than absolute trusted time.
 
 ---
 
-## 11. Recovery
+## 18. Recovery
 
 ## Resync and Recovering from Trust Anchor (Last Known Good State)
 
@@ -2103,7 +2117,7 @@ physical access or SSH access to the device with the unrecoverable principal,
 deleting the old key replacing it with a new key, and updating the public key on
 services that communicate to that device.
 
-### 11.2 Recovery Mechanisms
+### 18.2 Recovery Mechanisms
 
 When a principal loses access to all active keys, or the account is otherwise in
 an **unrecoverable state** recovery mechanisms allow regaining control.
@@ -2118,7 +2132,7 @@ Level 1 doesn't support recovery. Any recovery is accomplished through sideband.
 Level 2 supports recovery but only atomic swaps. The recovery key can replace the existing key.
 Level 3+ supports recovery and can add new keys.
 
-### 11.3 Self-Recovery Mechanisms
+### 18.3 Self-Recovery Mechanisms
 
 | Mechanism         | Description                            | Trust Model  |
 | ----------------- | -------------------------------------- | ------------ |
@@ -2127,7 +2141,7 @@ Level 3+ supports recovery and can add new keys.
 | **Hardware key**  | Hardware key device (U2F-Zero, solo1)  | User custody |
 | **Airgapped key** | Cold storage, never online             | User custody |
 
-### 11.4 Implicit Fallback (Single-Key Accounts)
+### 18.4 Implicit Fallback (Single-Key Accounts)
 
 For implicit (single-key) accounts, a `fallback` field may be included at key creation:
 
@@ -2156,7 +2170,7 @@ For implicit (single-key) accounts, a `fallback` field may be included at key cr
   (`key/replace`). The fallback functionality must adhere to this, replacing the
   lost key rather than complying with `key/create` like Level 3+.
 
-#### 11.4.1 Recovery Validity 
+#### 18.4.1 Recovery Validity 
 
 Ideally, recovery agents only act when the account is in an unrecoverable state,
 however, the unrecoverable state may not be definitively known or verifiable by
@@ -2166,9 +2180,9 @@ Principals should create recovery circumstances carefully. The protocol does not
 enumerate these conditions here; they are defined by principal rules at the time
 of the attempted recovery.
 
-### 11.5 Recovery Transactions
+### 18.5 Recovery Transactions
 
-#### 11.5.1 `cyphrpass/recovery/create` — Register Fallback
+#### 18.5.1 `cyphrpass/recovery/create` — Register Fallback
 
 Registers a recovery agent (backup key, service, or social contacts).
 
@@ -2194,7 +2208,7 @@ Registers a recovery agent (backup key, service, or social contacts).
 - `agent`: PR of service, tmb of backup key, or array of contact PRs
 - `threshold`: For social recovery, M-of-N threshold (default: 1)
 
-#### 11.5.2 `recovery/delete` — Remove Fallback
+#### 18.5.2 `recovery/delete` — Remove Fallback
 
 Removes a previously designated recovery agent.
 
@@ -2214,7 +2228,7 @@ Removes a previously designated recovery agent.
 }
 ```
 
-### 11.6 Recovery Flow
+### 18.6 Recovery Flow
 
 When a principal is locked out:
 
@@ -2247,7 +2261,7 @@ the Recovery Authority's recovery transaction.
 
 Because the agent was designated via `cyphrpass/recovery/create`, their `key/create` is valid even though no regular user key signed it.
 
-### 11.7 External Recovery
+### 18.7 External Recovery
 
 External recovery delegates recovery authority to an external principal. The recovery agent verifies identity out-of-band and signs a recovery transaction on behalf of the locked-out user.
 
@@ -2256,7 +2270,7 @@ External recovery delegates recovery authority to an external principal. The rec
 | **Social recovery**     | M-of-N trusted contacts | Distributed trust |
 | **Third-party service** | Verification service    | Service trust     |
 
-### 11.8 Social Recovery
+### 18.8 Social Recovery
 
 For social recovery, multiple contacts sign:
 
@@ -2266,7 +2280,7 @@ For social recovery, multiple contacts sign:
 
 **Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
 
-### 11.9 Account Freeze
+### 18.9 Account Freeze
 
 A **freeze** is a global protocol state where valid transactions are temporarily
 rejected to prevent unauthorized changes during a potential compromise. A freeze
@@ -2276,7 +2290,7 @@ service policy.
 Freezes are **global** — they apply to the principal across all services that
 observe the freeze state.
 
-#### 11.9.1 Self-Freeze
+#### 18.9.1 Self-Freeze
 
 A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
 
@@ -2304,7 +2318,7 @@ A designated **Recovery Authority** may initiate a freeze based on heuristics
 - **Trust**: The principal explicitly delegates this power to the authority via
   `cyphrpass/recovery/create`.
 
-#### 11.9.3 Unfreeze (Thaw)
+#### 18.9.3 Unfreeze (Thaw)
 
 To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 
@@ -2326,23 +2340,14 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 - Self-freeze can be unfrozen by active keys.
 - External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
 
-### 11.10 Security Considerations
+### 18.10 Security Considerations
 
 - **Timelocks (Level 5+):** Recovery can have a mandatory waiting period.
 - **Revocation:** Backup keys can be revoked if compromised.
 - **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
 - **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
-### 11.11 Append Only Verifiable Logs
-
-Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
-Each commit references the prior via pre and is anchored in the Merkle root
-(MR), enabling efficient verification of history without full chain replay. This
-supports tamper-evident auditing and is useful for compliance requirements, such
-as regulatory record-keeping or forensic analysis.
-
-
-### 11.12 Retroactivity (Reversion, Retrospection)
+### 18.12 Retroactivity (Reversion, Retrospection)
 
 Retroactivity is undoing actions to a given timestamp. This is a complex issue
 for services.  
@@ -2368,9 +2373,9 @@ expressing the intent of the Principal to mark that action as unintentional.
 However disowning does not mutate AS.
 
 
-## 12. Close, Merge, Fork
+## 19. Close, Merge, Fork
 
-### 12.1 Closing an Account (Principal Delete, Level 3+)
+### 19.1 Closing an Account (Principal Delete, Level 3+)
 
 Closing an account is performed via a `principal/delete` transaction. Closed
 accounts are permanently closed and cannot be recovered. No transactions or
@@ -2395,7 +2400,7 @@ To ensure that no aspect of a deleted principal may be reused, an account may be
 "nuked", all keys revoked, then deleted, and then the principal deleted. This
 ensures that no new principal may be created reusing existing principal keys.
 
-### 12.2 Account Merging (Principal Merge, Level 3+)
+### 19.2 Account Merging (Principal Merge, Level 3+)
 
 Merging allows one principal (the **source**) to adopt the state of another
 principal (the **target**), consolidating identities while preserving the
@@ -2460,7 +2465,7 @@ And the acknowledgement by the target principal:
 }
 ```
 
-### 12.3 Principal Forking (Account Fork, Level 3+)
+### 19.3 Principal Forking (Account Fork, Level 3+)
 
 Forking allows one principal (the **source**) to create a new principal (the
 **target**), effectively splitting identities while preserving the source's
@@ -2539,7 +2544,7 @@ For "bad faith" forking, see section "Consensus".
 
 ---
 
-## 14. Multihash Identifiers
+## 20. Multihash Identifiers
 
 In Cyphrpass, cryptographic algorithms are pluggable: no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
@@ -2581,7 +2586,7 @@ In summary:
   longer computed. When a primitive algorithm is added, its algorithm's
   variant begins being computed.
 
-### 14.1 Algorithm Mapping
+### 20.1 Algorithm Mapping
 
 Each key algorithm implies a hash algorithm, as defined by Coz.
 
@@ -2592,7 +2597,7 @@ Each key algorithm implies a hash algorithm, as defined by Coz.
 | ES512         | SHA-512        | 64 bytes    | 512-bit           |
 | Ed25519       | SHA-512        | 64 bytes    | 512-bit           |
 
-### 14.2 Conversion
+### 20.2 Conversion
 
 To support upgrades and embedded principals/nodes, values from one digest
 algorithm may be **converted** as input to another. Conversion happens at the
@@ -2624,7 +2629,7 @@ identifier for that hashing algorithm.
    └─────────────┘         └─────────────┘
 ```
 
-### 14.3 Conversion Security Considerations
+### 20.3 Conversion Security Considerations
 
 Conversion is not ideal, but is unavoidable for pluggability and
 recursion/embedding. Implementors must be aware that inner nodes may have
@@ -2635,7 +2640,7 @@ Algorithm diversity aids durability but risks misuse. For uniform security, use
 keys from one strength category. If an algorithm is weakened, Coz will mark it
 deprecated; principals should discontinue via key removal.
 
-### 14. Multi Hash Merkle Root (MHMR) Algorithm
+### 20.4 Multi Hash Merkle Root (MHMR) Algorithm
 
 The **Multi Hash Merkle Root (MHMR)** algorithm is used to compute every digest
 in the Cyphrpass state tree (PR/PS, CS, AS, KS, RS, DS, and all internal Merkle
@@ -2652,7 +2657,7 @@ determined per commit as follows:
 - All MHMR variants are considered equivalent references to the same logical
   state.
 
-#### MHMR Computation
+#### 20.5 MHMR Computation
 
 Given an ordered list of child digests (each child is a binary digest value
 computed under some hash algorithm):
@@ -2666,7 +2671,7 @@ computed under some hash algorithm):
    Concatenate the sorted child digest bytes in order.  
    Compute MHMR_H = H( concatenated bytes ).
 
-#### Examples
+#### 20.5.1 MHMR Examples
 
 | Case                         | Children                                 | Target H | MHMR_H Computation                        | Result             |
 | ---------------------------- | ---------------------------------------- | -------- | ----------------------------------------- | ------------------ |
@@ -2675,8 +2680,7 @@ computed under some hash algorithm):
 | Two children, same alg       | C, D (both SHA-256)                      | SHA-256  | sort(C,D) → SHA-256(C ∥ D)                | 32-byte digest     |
 | Three children               | A (SHA-384), B (SHA-256), E (SHA-512)    | SHA-512  | sort(A,B,E) → SHA-512(sorted concat)      | 64-byte digest     |
 
-#### Important Properties
-
+**Important Properties**
 - **No re-hashing of children**: Inner digests are fed directly into the parent
   hash function as raw bytes (unless being converted, where the node is hashed first).
 - **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
@@ -2690,7 +2694,7 @@ computed under some hash algorithm):
 
 
 
-#### Rationale
+#### 20.6 MHMR Rationale
 
 The MHMR design achieves three simultaneous goals:
 
@@ -2708,7 +2712,7 @@ gossip, and verification use one of these multihash variants. Equivalence across
 variants is assumed by the protocol; no relative strength ordering is enforced
 at the protocol level (see §14.4 Rank for tie-breaking considerations).
 
-### 14.4 Rank
+### 20.7 Rank
 
 When multiple algorithms are supported, there may be a tie at the time of
 conversion. Cyphrpass provides a default rank. Rank is a tiebreaker only and
@@ -2718,7 +2722,7 @@ Perhaps in the future, principals may set a rank order via
 `cyphrpass/alg/rank/create` transaction (stored in AS as a rule), but for now
 this is out-of-scope.
 
-#### 14.5 Algorithm Incompatibility
+#### 20.8 Algorithm Incompatibility
 
 A service and a client are deemed **incompatible** if the service cannot support
 the specific algorithm (alg) used in a client's message.
@@ -2734,7 +2738,7 @@ attempted using an unsupported algorithm, the services are incompatible.
 
 ---
 
-## 16 Cyphrpass Type System and Ownership
+## 21 Cyphrpass Type System and Ownership
 
 Cyphrpass's `typ` as an alternative to HTTP semantics.
 
@@ -2743,15 +2747,15 @@ deliberate design choice that shifts how we think about invoking actions,
 addressing resources, and expressing intent in a cryptographically native,
 decentralized way which is realized in Authenticated Atomic Action.
 
-### `typ` as a Unified Intent + Resource + Verb Descriptor
+### 21.1 `typ` as a Unified Intent + Resource + Verb Descriptor
 
-In 1968 there was the "Mother of all demos", demonstrating the GUI, mouse, and other computer
-basics. In 1988 was HTTP, which with other components was the creation of the
-Web.
+In 1968 there was the "Mother of all demos", demonstrating the GUI, mouse, and
+other computer basics. In 1988 HTTP was invented, which with other components
+was the creation of the Web.
 
 Unlike most Internet systems, Cyphrpass is designed to work in parallel to HTTP,
-not on top of it. Where HTTP has Method (GET/POST/PUT/DELETE/PATCH...),
-Path (/users/123/profile/photo), Headers (Accept, Content-Type, Authorization...)
+not on top of it. Where HTTP has Method (GET/POST/PUT/DELETE/PATCH...), Path
+(/users/123/profile/photo), Headers (Accept, Content-Type, Authorization...)
 Cyphrpass collapses almost all of that expressive into one field: `typ`.
 
 For example, `cyphr.me/cyphrpass/key/create`
@@ -2781,7 +2785,7 @@ Cyphrpass Advantages Over HTTP (in Cyphrpass's World)
 Actions are first-class and atomic. AAA means the "API call" is individually
 verifiable forever, not just during a session.
 
-#### Authority and `typ`
+#### 21.1.1 Authority and `typ`
 
 The authority defines the acceptance rules allowable for various types. These
 rules may be enforced by a consensus mechanism like a blockchain, a VM, a
@@ -2790,7 +2794,7 @@ does not set permissions outside of the core authentication rules, Cyphrpass
 acknowledges that rules must be implemented by an authority. (In the case of
 this document, `Cyphr.me` is typically that authority)
 
-### Noun Properties
+### 21.2 Noun Properties
 
 The `typ` denotes a noun, which may have properties as set by an authority.
 Properties
@@ -2815,7 +2819,7 @@ new key, but that would be ambiguous: was is a transfer or just as a result of a
 key update? For that reason, updates with new keys outside of principal should
 fail and transfer explicitly used for transfer.
 
-### Where Cyphrpass Diverges from Being a Full HTTP Replacement
+### 21.3 Where Cyphrpass Diverges from Being a Full HTTP Replacement
 
 Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers an **alternative interaction model**:
 
@@ -2829,7 +2833,9 @@ Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offe
 | Transport        | Usually TLS + HTTP         | Can be sent any way (TLS, HTTP, IPFS, email, gossip...) |
 | Response model   | Status + body              | Tip, another signed Coz                                 |
 
-### 16 Self-Sovereign Philosophy
+---
+
+### 22 Self-Sovereign Philosophy
 
 #### Self-Ownership Philosophy in a Cryptographic System
 
@@ -2841,7 +2847,7 @@ There are three main categories of ownership:
 
 These three can be summarized as three points: **Keys, Data, Right**
 
-#### 16.2.1 Cyphrpass Goal
+#### 22.1 Cyphrpass Goal
 
 The protocol seeks to maximize user ownership across all three dimensions:
 
@@ -2865,7 +2871,7 @@ cryptographic system using private keys and PoP.
 
 Cyphrpass seeks to help users own their keys, data, and rights.
 
-### 16.5 Natural Ownership
+### 22.2 Natural Ownership
 
 The originating Principal is the **natural owner** of its actions. For example,
 the principal that creates a comment `comment/create` is the natural owner of
@@ -2873,7 +2879,7 @@ that comment, and has exclusive rights for future mutations: `comment/update`,
 `comment/delete`, and `comment/upsert`. Systems implementing AAA must give
 special attention to items with natural ownership properties.
 
-#### 16.5.1 Ownership Right Semantics
+#### 22.2.1 Ownership Right Semantics
 
 Perhaps:
 ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
@@ -2899,7 +2905,7 @@ Soulbound-like — Set transferable=false
 
 ---
 
-## 16. State Jumping
+## 23. State Jumping
 
 For high-volume principals (e.g., those with tens of thousands of transactions)
 or thin clients with limited bandwidth/storage, full chain replay from a distant
@@ -2920,7 +2926,7 @@ delegates some trust to third party services. By default, the Cyphrpass
 reference client rejects state jumps, preserving a conservative security
 baseline.
 
-### 16.1 Core Mechanism
+### 23.1 Core Mechanism
 
 A principal with access to one or more still-active keys from the trust anchor
 can sign a special **state-jump transaction** that:
@@ -2985,7 +2991,7 @@ Verification rules for the jump transaction:
   |                                            |
 ```
 
-### 16.2 Example State Jump Transaction
+### 23.2 Example State Jump Transaction
 
 ```json5
 {
@@ -3001,7 +3007,7 @@ Verification rules for the jump transaction:
 }
 ```
 
-### 16.3 Security Considerations
+### 23.3 Security Considerations
 
 - Jumping must not bypass revocation semantics: if a key was revoked between
   anchor and tip, the jump fails.
@@ -3014,7 +3020,7 @@ State jumping preserves Cyphrpass's core properties (verifiable history, no
 trusted central oracle) while enabling scalable operation for long-lived
 principals.
 
-### 16.4 State Jump Examples
+### 23.4 State Jump Examples
 
 **Example 1: Single large jump (no revokes)**
 
@@ -3039,7 +3045,7 @@ The client must discover or know an intermediate safe anchor where a valid
 signing key exists. Services can help by returning recent checkpoints or
 suggesting viable jump points when the direct jump fails due to revocation.
 
-### 16.5 Other High Volume Strategies
+### 23.5 Other High Volume Strategies
 
 In addition to state jumping, other future related designs include zero-knowledge
 proofs and trusted third parties. (Ethereum uses Infura; similar infrastructure
@@ -3048,12 +3054,15 @@ decentralization.)
 
 See also §7.3.3 Checkpoints.
 
-## 17. Error Conditions
+---
+
+
+## 24. Error Conditions
 
 This section defines error conditions that implementations must detect. Error
 _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
-### 17.1 Transaction Errors
+### 24.1 Transaction Errors
 
 | Error               | Condition                                        | Level |
 | ------------------- | ------------------------------------------------ | ----- |
@@ -3068,14 +3077,14 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | `DUPLICATE_KEY`     | `key/create` for key already in KS               | 3+    |
 | `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
 
-### 17.2 Recovery Errors
+### 24.2 Recovery Errors
 
 | Error                     | Condition                                                        | Level |
 | ------------------------- | ---------------------------------------------------------------- | ----- |
 | `UNRECOVERABLE_PRINCIPAL` | No keys capable of transaction and no designated recovery agents | All   |
 | `RECOVERY_NOT_DESIGNATED` | Agent not registered via `cyphrpass/recovery/create`             | 3+    |
 
-### 17.3 State Errors
+### 24.3 State Errors
 
 | Error               | Condition                                               | Level |
 | ------------------- | ------------------------------------------------------- | ----- |
@@ -3084,13 +3093,13 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | `ALG_INCOMPATIBLE`  | Referred `alg` is not supported                         | All   |
 | `CHAIN_BROKEN`      | `pre` references do not form valid chain to known state | 2+    |
 
-### 17.4 Action Errors (Level 4+)
+### 24.4 Action Errors (Level 4+)
 
 | Error                 | Condition                               | Level |
 | --------------------- | --------------------------------------- | ----- |
 | `UNAUTHORIZED_ACTION` | Action `typ` not permitted              | 5+    |
 
-### 17.5 Error Handling Guidance
+### 24.5 Error Handling Guidance
 
 **Implementations must:**
 
@@ -3109,14 +3118,14 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 ---
 
-## 18. Test Vectors
+## 25. Test Vectors
 
 These golden test vectors enable implementation verification. All values use B64ut encoding.
 
 - `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
 - ES256 uses P-256 curve, SHA-256 for `tmb`
 
-### 18.1 Golden Key "User Key 0" (ES256)
+### 25.1 Golden Key "User Key 0" (ES256)
 
 ```json5
 {
@@ -3129,7 +3138,7 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-#### 18.1.1 Golden Key: "User Key 1" (ES256)
+#### 25.1.1 Golden Key: "User Key 1" (ES256)
 
 ```json5
 {
@@ -3142,7 +3151,7 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-#### 18.1.2 Golden Key: Cyphrpass Server Key A (ES256)
+#### 25.1.2 Golden Key: Cyphrpass Server Key A (ES256)
 
 ```json5
 {
@@ -3155,7 +3164,7 @@ These golden test vectors enable implementation verification. All values use B64
 }
 ```
 
-### 18.2 Golden Message
+### 25.2 Golden Message
 
 The canonical Coz test message with verified signature:
 
@@ -3177,11 +3186,11 @@ Computed digests, where `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
 
-### 18.3 Golden Nonce
+### 25.3 Golden Nonce
 
 "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
 
-### 18.4 State and Cryptographic Digest (Level 1 and 2)
+### 25.4 State and Cryptographic Digest (Level 1 and 2)
 
 For a single-key account with the golden key:
 
@@ -3192,7 +3201,7 @@ PS = AS (no DS)
 PR = PS = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 ```
 
-### 18.6 Implementation Notes
+### 25.6 Implementation Notes
 
 Follow the Coz spec.
 
@@ -3201,7 +3210,7 @@ Follow the Coz spec.
 - `tmb`'s use the hash algorithm associated with `alg`
 - State digests use the hash algorithm of the signing key
 
-### 18.7 Integration Test Requirements
+### 25.7 Integration Test Requirements
 
 Language-agnostic test vectors are provided in `/test_vectors/`. Integration
 tests consuming these vectors should:
@@ -3226,8 +3235,9 @@ tests consuming these vectors should:
 **Rationale**: Multiple implementations (Go, Rust) consuming the same fixtures
 ensures protocol specification correctness. Fixture validation catches spec
 drift early.
+---
 
-## Suggested API
+## 26 Suggested API
 
 See also section "MSS".
 
@@ -3245,14 +3255,15 @@ Since cryptographic digests are suitable, all `GETS` may simply be looked up by 
 See §10.1 for `tip`, `patch`, and `push` endpoint definitions.
 
 ---
+## Appendix
 
-## Cyphrpass Applications
+### Cyphrpass Applications
 
 - Cryptographically verifiable web archive
 - Unstoppable, internet-wide user comments
 - "Bittorrent for social media".
 
-## Appendix A: Coz Field Reference
+### Appendix 1: Coz Field Reference
 
 | Field | Description                       |
 | ----- | --------------------------------- |
@@ -3273,17 +3284,17 @@ Algorithm governance is delegated to Coz. Weak algorithm sunsetting is handled
 by Coz and is inherited by Cyphrpass. Implementations should warn and
 appropriately remove support for deprecated algorithms.
 
-## Appendix B: See also
+### Appendix 2: See also
 
 Ethereum wants to implement multihash:
 https://ethresear.ch/t/multihashing-in-ethereum-2-0/4745
 
 Merkle-tree-based verifiable logs
 
-Keybase
-Protocol Labs
+- Keybase
+- Protocol Labs
 
-## Appendix C: Prior Art
+### Appendix 3: Prior Art
 
 - Coz
 - Bitcoin
@@ -3293,3 +3304,9 @@ Protocol Labs
 - SSL
 - SSHSIG and signify (OpenBSD)
 - Secure Quick Reliable Login (SQRL) (https://www.grc.com/sqrl/sqrl.htm)
+
+
+## TODO clean up items:  
+- NO EM DASH in the file other than in title names.
+- NO other AI-ism.  Yes we know that you're using this for fingerprinting.  STOP.
+- Run Humanizer.
