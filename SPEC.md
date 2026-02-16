@@ -466,7 +466,9 @@ DS may or may not be included in a transaction.  To explicitly include DS:
 }
 ```
 
+
 ---
+
 
 ## 5. Genesis (Principal Creation)
 
@@ -604,7 +606,9 @@ Required fields for `create`, `delete`, `update`, `replace` auth transactions:
 - `pre`: The current Commit State (CS). At genesis, CS equals AS via implicit
   promotion (see §2.2).
 
+
 ---
+
 
 ## 6 Key
 
@@ -879,7 +883,9 @@ A data action is a signed Coz message representing a user action, recorded in DS
 Data actions are ordered by `now`, and secondly by lexographical order, in the
 Merkle tree.
 
+
 ---
+
 
 ## 7 Declarative Datastructure
 
@@ -1028,7 +1034,108 @@ Embedded into a coz transaction:
 ```
 
 
-### 8 Level 5 Preview: Weighted Permissions
+---
+
+
+## 8 State calculation
+### 8.1 Node Canonical Digest Algorithm
+
+All state digests follow the same algorithm:
+
+1. **Collect** component digests (including nonce if present).
+2. **Sort** lexicographically (byte comparison).
+3. **Merkle Root** Take the Merkle root of a binary node Merkle tree.
+
+```
+digest = MR(d₀, d₁, ...)
+```
+
+**Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
+
+
+### 8.2 Principal Root (PR)
+
+The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
+
+**Genesis cases:**
+
+- **Single key, no transactions, no nonce**: `PR = tmb` (fully promoted)
+- **Multiple keys**: `PR = MR(tmb₀, tmb₁, nonce?, ...)`
+- **With DS at genesis**: `PR = MR(AS₀, DS₀, nonce?)`
+
+When a principal upgrades (e.g., adds a second key), the **PR stays the same**, only PS evolves.
+
+
+### 8.3 Principal State (PS)
+
+```
+if DS == nil :
+    PS = CS                                # implicit promotion
+else:
+    PS = MR(CS, DS?, recursion? nonce?)
+```
+
+### 8.3 Key State (KS)
+
+```
+if n == 1:
+    KS = tmb₀                              # implicit promotion
+else:
+    KS = MR(tmb₀, tmb₁, nonce?, PS?, ...)
+```
+
+### 8.4 Auth State (AS)
+
+AS combines authentication-related states:
+
+```
+if RS == nil:
+    AS = KS                         # implicit promotion
+else:
+    AS = MR(KS, RS?,  nonce?)      # nil components excluded from sort
+```
+
+### 8.5 Commit State (CS)
+
+CS is computed from AS and the Commit ID:
+
+```
+CS = MR(AS, commit_id)
+```
+
+where AS is the Auth State *after* applying all transactions in the commit, and
+Commit ID is the Merkle root of all transaction `czd`s in the commit:
+
+```
+if 1 transaction:
+    commit_id = czd₀                           # implicit promotion
+else:
+    commit_id = MR(czd₀, czd₁, nonce?, ...)
+```
+
+AS is computed independently of CS; there is no circular dependency. The
+commit produces a new AS via transaction application, then CS is derived from
+that AS and the Commit ID.
+
+CS is inherently append-only. Unlike DS, which services may prune at their
+discretion, removing transactions from CS would break chain integrity
+verification. For high-volume principals, use checkpoints or state jumping (§16)
+rather than pruning.
+
+### 8.6 Data State (DS) — Level 4+
+
+DS is the digest of all action `czd`s:
+
+```
+if no actions:
+    DS = nil
+elif 1 action && no nonce:
+    DS = czd₀                              # implicit promotion
+else:
+    DS = MR(czd₀, czd₁, ..., nonce?)
+```
+
+### 9 Rule State (Level 5 Preview)
 
 At Level 5, the Rule State (RS) introduces **weighted keys** and **timelocks**:
 
@@ -1089,101 +1196,6 @@ total transaction:
 
 ---
 
-## 9 Principal Root (PR) and State calculation
-### 9.0 Principal Root (PR)
-
-The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
-
-**Genesis cases:**
-
-- **Single key, no transactions, no nonce**: `PR = tmb` (fully promoted)
-- **Multiple keys**: `PR = MR(tmb₀, tmb₁, nonce?, ...)`
-- **With DS at genesis**: `PR = MR(AS₀, DS₀, nonce?)`
-
-When a principal upgrades (e.g., adds a second key), the **PR stays the same**, only PS evolves.
-
-### 9.1 Node Canonical Digest Algorithm
-
-All state digests follow the same algorithm:
-
-1. **Collect** component digests (including nonce if present).
-2. **Sort** lexicographically (byte comparison).
-3. **Merkle Root** Take the Merkle root of a binary node Merkle tree.
-
-```
-digest = MR(d₀, d₁, ...)
-```
-
-**Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
-
-### 9.2 Key State (KS)
-
-```
-if n == 1:
-    KS = tmb₀                              # implicit promotion
-else:
-    KS = MR(tmb₀, tmb₁, nonce?, PS?, ...)
-```
-
-### 9.3 Principal State (PS)
-
-```
-if DS == nil :
-    PS = CS                                # implicit promotion
-else:
-    PS = MR(CS, DS?, recursion? nonce?)
-```
-
-### 9.4 Auth State (AS)
-
-AS combines authentication-related states:
-
-```
-if RS == nil:
-    AS = KS                         # implicit promotion
-else:
-    AS = MR(KS, RS?,  nonce?)      # nil components excluded from sort
-```
-
-### 9.5 Commit State (CS)
-
-CS is computed from AS and the Commit ID:
-
-```
-CS = MR(AS, commit_id)
-```
-
-where AS is the Auth State *after* applying all transactions in the commit, and
-Commit ID is the Merkle root of all transaction `czd`s in the commit:
-
-```
-if 1 transaction:
-    commit_id = czd₀                           # implicit promotion
-else:
-    commit_id = MR(czd₀, czd₁, nonce?, ...)
-```
-
-AS is computed independently of CS; there is no circular dependency. The
-commit produces a new AS via transaction application, then CS is derived from
-that AS and the Commit ID.
-
-CS is inherently append-only. Unlike DS, which services may prune at their
-discretion, removing transactions from CS would break chain integrity
-verification. For high-volume principals, use checkpoints or state jumping (§16)
-rather than pruning.
-
-### 9.6 Data State (DS) — Level 4+
-
-DS is the digest of all action `czd`s:
-
-```
-if no actions:
-    DS = nil
-elif 1 action && no nonce:
-    DS = czd₀                              # implicit promotion
-else:
-    DS = MR(czd₀, czd₁, ..., nonce?)
-```
 
 ### 10 Principal Lifecycle States
 
@@ -1248,6 +1260,7 @@ threshold for AS mutation.
 
 
 ---
+
 
 ### 11 Checkpoints
 
@@ -1430,15 +1443,18 @@ In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
 operations:
 
 - `key/revoke`
-- `/cyphrpass/key/replace`
-- `/cyphrpass/principal/merge`
-- `/cyphrpass/principal/ack-merge`
-- `/cyphrpass/nonce`
+- `cyphrpass/key/replace`
+- `cyphrpass/principal/merge`
+- `cyphrpass/principal/ack-merge`
+- `cyphrpass/nonce`
 
-### Uniqueness Enforcement
-All `create` operations in Cyphrpass enforce uniqueness. If the target item (e.g.,
-key, rule, principal) already exists, the operation returns `DUPLICATE`. This applies
-universally, not just to keys.
+### 13.2 Idempotency
+Cyphrpass transaction mutations are idempotent. If a particular coz is replayed,
+it is ignored and no state is mutated.
+
+### 13.3 Uniqueness Enforcement
+All `create` operations in Cyphrpass enforce uniqueness. If the target item
+(e.g., key, rule, principal) already exists, the operation returns `DUPLICATE`.
 
 ---
 
