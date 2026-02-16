@@ -1127,19 +1127,28 @@ else:
 
 ### 9.5 Commit State (CS)
 
-Commit is the digest of all transaction `czd`s, and CS is the MR(AS, commit ID)
+CS is computed from AS and the Commit ID:
 
 ```
-if no transactions:
-    Commit = nil
-elif 1 transaction:
-    Commit = czd₀                              # implicit promotion
+CS = MR(AS, commit_id)
+```
+
+where AS is the Auth State *after* applying all transactions in the commit, and
+Commit ID is the Merkle root of all transaction `czd`s in the commit:
+
+```
+if 1 transaction:
+    commit_id = czd₀                           # implicit promotion
 else:
-    Commit ID = MR(czd₀, czd₁, nonce?, ...)
+    commit_id = MR(czd₀, czd₁, nonce?, ...)
 ```
 
-CS is inherently append-only. Unlike DS, which services may prune at
-their discretion, removing transactions from CS would break chain integrity
+AS is computed independently of CS; there is no circular dependency. The
+commit produces a new AS via transaction application, then CS is derived from
+that AS and the Commit ID.
+
+CS is inherently append-only. Unlike DS, which services may prune at their
+discretion, removing transactions from CS would break chain integrity
 verification. For high-volume principals, use checkpoints or state jumping (§16)
 rather than pruning.
 
