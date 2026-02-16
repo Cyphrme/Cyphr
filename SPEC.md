@@ -342,7 +342,7 @@ consequences of the protocol's structure and serve as testable invariants.
 
 - Introduces Data State (DS) for user actions
 - Actions (comments, posts, etc.) recorded in DS
-- `PS = MR(AS, DS)`
+- `PS = MR(CS, DS)`
 - Enables Authenticated Atomic Actions (AAA)
 
 ### 3.5 Level 5: Rules (Weighted Permissions)
@@ -539,7 +539,9 @@ Commit Genesis (Multi-Key, Multi-Transaction)
 - Key signs a `key/create` transaction.
 - That key then constructs the rest of the AS by adding other AS components. In
   this case, just adding another key.
-- For all cases, `CS = MR(RS, KS(tmb₀, tmb₁, ..., nonce?))` CS is omitted since there are no prior transactions.
+- At genesis there are no prior commits, so AS is promoted to CS via implicit
+  promotion. AS = MR(KS) when only keys are present, or MR(KS, RS) if rules
+  exist. For example, with two keys: AS = MR(tmb₀, tmb₁).
 - The principal is created by `principal/create`.
 
 ```json5
@@ -593,7 +595,8 @@ Required fields for `create`, `delete`, `update`, `replace` auth transactions:
 
 - `id`: The identifier for the noun. For example, for `key/create`, `id` is the key.
   `tmb` The identifier for the key.
-- `pre`: The prior state of the auth, AS.
+- `pre`: The current Commit State (CS). At genesis, CS equals AS via implicit
+  promotion (see §2.2).
 
 ---
 
@@ -1704,6 +1707,7 @@ To verify a principal's current state:
    - For each transaction, verify:
      - Signature is valid
      - `tmb` belongs to a key in current KS
+     - Principal lifecycle state permits the operation (see §10)
      - `now` is after previous transaction (if time ordering required)
      - Transaction is well-formed for its `typ`
    - Apply mutation to derive new KS
@@ -2347,7 +2351,7 @@ keys were revoked.
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/delete",
-    "pre": "<current AS>"
+    "pre": "<current CS>"
   },
   "sig": "<b64ut>"
 }
@@ -2383,7 +2387,7 @@ account, the source may sign a `principal/delete` transaction.
 
 Explicit merging is performed via a special transaction type:
 
-- References the source's current AS via `pre`
+- References the source's current CS via `pre`
 - Declares the target's PS as the next state via a new field `merge_to_ps`
 - Includes proof that the signer is authorized on the **source** (not the target)
 - Note that if the target account wants to reuse keys from the source account, it
@@ -2399,7 +2403,7 @@ Example source principal merge transaction:
     "now": 1736893000,
     "tmb": "<source signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge",
-    "pre": "<source current AS>",
+    "pre": "<source current CS>",
     "merge_to_ps": "<target Principal State>"
   },
   "sig": "<b64ut>"
@@ -2415,7 +2419,7 @@ And the acknowledgement by the target principal:
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/ack-merge",
-    "pre": "<target current AS>",
+    "pre": "<target current CS>",
     "merge_from_ps": "<source Principal State>"
   },
   "sig": "<b64ut>"
@@ -2452,7 +2456,7 @@ For "bad faith" forking, see section "Consensus".
         "now": 1736893000,
         "tmb": "<signing tmb>",
         "typ": "cyphr.me/cyphrpass/principal/fork/create",
-        "pre": "<common AS>",
+        "pre": "<current CS>",
         "fork_pr": "<fresh PR digest, which in this case is just KS>"
       },
       "sig": "<b64ut>"
