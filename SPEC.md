@@ -287,6 +287,22 @@ And for transaction cozies:
 
 - `pre`: The identifier for the targeted commit to mutate.
 
+### 2.6 Protocol Guarantees
+
+The following properties hold for all conforming implementations. They are
+consequences of the protocol's structure and serve as testable invariants.
+
+1. **Pre-state authorization.** A transaction's signing key must be active in
+   the state *before* the commit is applied. A key created or revoked within
+   the same commit does not affect authorization of that commit.
+
+2. **Auth State is append-only.** Commits are never removed from the chain.
+   Revocations are permanent — once a key is revoked, it remains revoked in all
+   subsequent states. (Data State is *not* append-only; see §2.3.)
+
+3. **Principal Root is immutable.** The genesis digest (PR) is preserved by all
+   transitions. No operation can change a principal's root identity.
+
 ---
 
 ## 3. Feature Levels
@@ -1225,6 +1241,7 @@ possible) or **Dead** (nothing possible).
 **Note:** `CanMutateAS` is not monotonic in key count at Level 5+. A principal
 with active keys may still have `¬CanMutateAS` if no key combination meets the
 threshold for AS mutation.
+
 
 ---
 
