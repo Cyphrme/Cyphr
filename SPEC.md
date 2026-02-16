@@ -41,7 +41,7 @@ Cyphrpass provides the authentication layer for the Internet.
 
 ## 2. Core Concepts
 
-### State Tree
+### 2.1 State Tree
 
 The **state tree** is a hierarchical structure of cryptographic Merkle roots
 that represents the complete state of a Principal (identity).
@@ -78,7 +78,8 @@ referencing the prior commit.
 
 ```
 
-### 2.1 Terminology
+### 2.2 Terminology
+#### 2.2.1 Core Terminology
 
 Binary encoded values in this document are in `b64ut`: "Base64 URI canonical
 truncated" (URL alphabet, errors on non-canonical encodings, no padding).
@@ -120,7 +121,35 @@ Cyphrpass has six operational levels. See section "Levels" for more.
 | **5** | Rules             | AS with RS                   |
 | **6** | Programmable      | VM execution                 |
 
-### 2.2 Implicit Promotion
+#### 2.2.2 Digest
+
+A digest is the binary output of a cryptographic hashing algorithm.
+
+Good practice for digest identifiers is prepending with Coz algorithm
+identifier, e.g. `SHA256:<B64-value>`. Without an algorithm identifier, the
+system is as strong as the weakest supported hashing algorithm. When in a coz,
+the digest's algorithm is assumed to aligned with alg in pay unless otherwise
+noted.
+
+However, systems like Cyphr.me have measures in place to protect against
+collisions, so generally digest labels are not used in practice.
+
+#### 2.2.3 Identifier
+
+All identifiers are encoded as b64ut. For MRs, if order is not otherwise given,
+lexical byte order is used. Values are opaque bytes, meaning a sequence of bytes
+that should be treated as a whole unit, without any attempt by the consuming
+software to interpret their internal structure or meaning. Cyphrpass identifiers
+are CID's, cryptographic Content IDentifiers. The identifier provides addressing
+and cryptographically protects the integrity of the reference.
+
+#### 2.2.4 Commit
+
+A commit is a finalized bundle of cozies that results in a new CS and thus a new
+PS. Commits are chained together using references to prior commits through
+`pre`.
+
+#### 2.2.5 Implicit Promotion
 
 When a component of the state tree contains only **one node**, that node's
 value is **promoted** to the parent level without additional hashing.
@@ -139,25 +168,7 @@ field. For nonces, the value's bit length must match the declared algorithm's
 output size (e.g., a nonce declared as SHA-256 must be 256 bits). Bit-checking
 is the only viable strength verification for opaque nonce values.
 
-### 2.3 AS/DS Duality
-
-Auth State (AS) and Data State (DS) have fundamentally different structural
-properties:
-
-| Property             | Auth State (AS)                 | Data State (DS)                   |
-| :------------------- | :------------------------------ | :-------------------------------- |
-| Mutability           | Append-only (immutable history) | Mutable (deletable content)       |
-| Chain structure      | Hash-linked via `pre`           | No chain — ordered by `now`       |
-| Verification         | Replay from genesis             | Point-in-time snapshot only       |
-| State type           | Monotonic sequence of commits   | Non-monotonic bag of data actions |
-| Prescribed semantics | Full protocol semantics         | None — application-defined        |
-
-DS is a general-purpose data transaction ledger. Applications may impose
-additional structure (including append-only chains) by referencing prior data
-action digests in application-defined fields. The protocol does not mandate any
-specific DS structure.
-
-### 2.4 Authenticated Atomic Action (AAA)
+#### 2.2.6 Authenticated Atomic Action (AAA)
 
 Authenticated Atomic Actions are when a principal performs individually
 verifiable operations using Cyphrpass which supersedes trust traditionally
@@ -182,7 +193,7 @@ verify actions without trusting the integrity of the centralized service despite
 countless examples of that trust being abused. AAA defends the user against
 such abuse.
 
-### 2.5 Nonces
+#### 2.2.7 Nonces
 
 A **nonce** is a high-entropy cryptographic random value used to add entropy and
 ensure uniqueness in Cyphrpass. Unlike systems that rely on incrementing
@@ -212,7 +223,8 @@ Design Notes:
 - Nonces may be implicitly promoted in the Merkle tree just like any other
   digest or entropic value.
 - At any tree level, multiple nonces are permitted.
-- For any opaque value, at signing, specific structure may need to be revealed,
+- For any opaque value, specific structure may need to be revealed for specific
+- operations.  For example, an opaque key cannot be used until it is revealed.
   for example like keys
 - Like other digest values, when calculating a new hashing algorithm value, new
   values are calculated from a prior value. (See section on digest conversion.)
@@ -220,42 +232,20 @@ Design Notes:
 As an aside, cryptographic signatures and other identifiers may act as an
 entropy source, but that's outside of the scope of this document.
 
-#### Digest
+#### 2.2.8 Reveal
 
-A digest is the binary output of a cryptographic hashing algorithm.
+The general principle of obfuscated structures becoming transparent is reveal.
+Public keys must be revealed for verification; nonces and other data structures
+may also need to be revealed during commits or other signing operations.
 
-Good practice for digest identifiers is prepending with Coz algorithm
-identifier, e.g. `SHA256:<B64-value>`. Without an algorithm identifier, the
-system is as strong as the weakest supported hashing algorithm. When in a coz,
-the digest's algorithm is assumed to aligned with alg in pay unless otherwise
-noted.
-
-However, systems like Cyphr.me have measures in place to protect against
-collisions, so generally digest labels are not used in practice.
-
-#### Identifier
-
-All identifiers are encoded as b64ut. For MRs, if order is not otherwise given,
-lexical byte order is used. Values are opaque bytes, meaning a sequence of bytes
-that should be treated as a whole unit, without any attempt by the consuming
-software to interpret their internal structure or meaning. Cyphrpass identifiers
-are CID's, cryptographic Content IDentifiers. The identifier provides addressing
-and cryptographically protects the integrity of the reference.
-
-#### Commit
-
-A commit is a finalized bundle of cozies that results in a new CS and thus a new
-PS. Commits are chained together using references to prior commits through
-`pre`.
-
-#### Embedded Principal and Embedded Nodes.
+#### 2.2.9 Embedded Principal and Embedded Nodes.
 
 Cyphrpass is a recursive tree structure. An **embedded principal** is a full
 Cyphrpass identity embedded into another principal and an opaque node, which may
 be a AS, KS, nonce, or other node value, is an **embedded node**. See section
 on embedding.
 
-#### Witnesses and Oracle
+#### 2.2.10 Witnesses and Oracle
 
 A **witness** is a client that keeps a copy of a principal's state. Clients may
 transmit their state through a gossip protocol.
@@ -265,19 +255,16 @@ For example, if a client does not want to verify all commits in a jump, that
 client may delegate some processing to an oracle, where it is trusted that the
 commits in the jump were appropriately processed.
 
-#### Unrecoverable Principal
+#### 2.2.11 Unrecoverable Principal
 
 A principal with no active keys and no viable recovery path within the protocol.
 Authentication, mutations, and recovery are impossible without out-of-band
 intervention. See Section Recovery.
 
-#### Reveal
-
-The general principle of obfuscated structures becoming transparent is reveal.
-Public keys must be revealed for verification; nonces and other data structures
-may also need to be revealed during commits or other signing operations.
-
-#### Coz Required fields:
+### Core Protocol Constraints
+#### 2.3.1 Coz Required Fields
+Although all fields in Coz are optional, Cyphrpass requires specific fields for
+messages.  All cozies must have the fields: 
 
 - `alg`: Following Coz semantics, this the algorithm of the signing key, which
   also is paired to a hashing algorithm.
@@ -290,21 +277,38 @@ And for transaction cozies:
 
 - `pre`: The identifier for the targeted commit to mutate.
 
-### 2.6 Protocol Guarantees
+#### 2.3.2 Protocol Guarantees
 
 The following properties hold for all conforming implementations. They are
 consequences of the protocol's structure and serve as testable invariants.
 
 1. **Pre-state authorization.** A transaction's signing key must be active in
-   the state *before* the commit is applied. A key created or revoked within
-   the same commit does not affect authorization of that commit.
+   the state before the commit is applied. A key created or revoked within the
+   same commit does not affect authorization of that commit.
 
-2. **Auth State is append-only.** Commits are never removed from the chain.
-   Revocations are permanent — once a key is revoked, it remains revoked in all
-   subsequent states. (Data State is *not* append-only; see §2.3.)
+2. **Commit State is append-only.** Commits are never removed from the chain.
+   (Data State is not necessarily append-only.)
 
 3. **Principal Root is immutable.** The genesis digest (PR) is preserved by all
    transitions. No operation can change a principal's root identity.
+
+#### 2.3.3 AS/DS Duality
+
+Auth State (AS) and Data State (DS) have fundamentally different structural
+properties:
+
+| Property             | Auth State (AS)                 | Data State (DS)                   |
+| :------------------- | :------------------------------ | :-------------------------------- |
+| Mutability           | Append-only (immutable history) | Mutable (deletable content)       |
+| Chain structure      | Hash-linked via `pre`           | No chain — ordered by `now`       |
+| Verification         | Replay from genesis             | Point-in-time snapshot only       |
+| State type           | Monotonic sequence of commits   | Non-monotonic bag of data actions |
+| Prescribed semantics | Full protocol semantics         | None — application-defined        |
+
+DS is a general-purpose data transaction ledger. Applications may impose
+additional structure (including append-only chains) by referencing prior data
+action digests in application-defined fields. The protocol does not mandate any
+specific DS structure.
 
 ---
 
