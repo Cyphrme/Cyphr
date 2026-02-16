@@ -134,7 +134,10 @@ value is **promoted** to the parent level without additional hashing.
 This rule simplifies single-key principals by eliminating the need for explicit
 genesis transactions. Promotion is recursive; items deep in the tree can be
 promoted to the root level. Implicit promotion applies to all entropic values:
-digests and sufficient strength nonces.
+digests and nonces. Promotion-eligible values must carry an explicit `alg`
+field. For nonces, the value's bit length must match the declared algorithm's
+output size (e.g., a nonce declared as SHA-256 must be 256 bits). Bit-checking
+is the only viable strength verification for opaque nonce values.
 
 ### 2.3 AS/DS Duality
 
@@ -1283,7 +1286,11 @@ See also State Jumping
 An embedding is a digest reference. Embedding is the mechanism by which
 Cyphrpass achieves hierarchy, delegation, and selective opacity (using nonces).
 
-Recursive loops are generally discouraged. Embedding is transitive.
+Embedding resolves one level deep. When principal A embeds principal B and B
+embeds A, verifying A includes B's direct members (keys, nonces) but does not
+recursively resolve B's embedding of A. This prevents infinite recursion
+without requiring cycle detection, since some cycles are structurally
+unidentifiable. Embedding is transitive within a single level of resolution.
 
 ### 12.1 Embedded Principal
 
