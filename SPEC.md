@@ -1945,6 +1945,22 @@ valid, mark principal as CLIENT_MISMATCH. This usually indicates a bug, version
 skew, or intentional divergence. Witnesses may reject interaction until
 resolved.
 
+#### Consensus State Transitions
+
+| From    | To              | Trigger                                                          |
+| :------ | :-------------- | :--------------------------------------------------------------- |
+| Active  | Pending         | Incomplete transaction received (e.g., missing bundle component) |
+| Pending | Active          | Transaction completes or witness timeout expires                 |
+| Active  | Error           | Fork detected, chain invalid, or repeated resync failure         |
+| Error   | Active          | Fork resolved (branch selection or resync PoP)                   |
+| Active  | Resync          | Trust anchor is stale, delta needed                              |
+| Resync  | Active          | Patch verified and applied                                       |
+| Resync  | Error           | Repeated resync failure (e.g., >3 attempts)                      |
+| Active  | Offline         | Communication failure with principal                             |
+| Offline | Resync          | Reconnect; stale state needs verification                        |
+| Any     | Ignore          | Principal dropped from gossip                                    |
+| Any     | Client Mismatch | Witness and client disagree on message validity                  |
+
 For individual messages:
 - **Forward**: Gossip to local clients.
 - **Hold Local**: Message is incorrect, is held locally, and not forwarded in the gossip.
@@ -2001,9 +2017,27 @@ Response includes broadcast fork proof and rejection of both branches until
 resolved (for example principal/merge, revocation, or multi-sig confirmation in
 Level 5+).
 
-Fork Resolution: TODO finish
-- Sign a resync PoP
-- Select by building on the correct chain.
+#### Fork Resolution
+
+An implicit fork is resolved when the principal unambiguously selects one
+branch. Until resolved, witnesses hold both branches and the principal's
+consensus state is Error.
+
+**Path 1 — New commit.** The principal signs a new commit whose `pre`
+references the tip of the chosen branch. This implicitly abandons the other
+branch. Witnesses that see this commit treat the selected branch as canonical
+and discard the abandoned branch (retaining it only as proof of error).
+
+**Path 2 — PoP assertion.** The principal signs a `resync/create` message
+re-asserting the current tip without mutating PS/AS/CS. Witnesses that held
+both branches resolve to the asserted tip. This is appropriate when the
+principal wants to confirm which branch is authoritative without advancing the
+chain.
+
+In both cases, the abandoned branch's transactions become permanently invalid.
+Keys that were only added in the abandoned branch are not part of KS. Witnesses
+transition the principal's consensus state from Error back to Active upon
+observing a valid resolution.
 
 ## Timestamp Verification
 
