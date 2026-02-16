@@ -90,9 +90,15 @@ life(s)  = see §1.2
 
 #### 1.2 Lifecycle State
 
-A principal's lifecycle is a constrained sum type. The base conditions are
-independent boolean predicates derived from state; the type structure
-prohibits invalid combinations.
+A principal's lifecycle is a product of two orthogonal components:
+
+```
+Lifecycle(s) = BaseState(s) × ErrorStatus(s)
+```
+
+`Errored` is an orthogonal flag — it annotates that something went wrong
+(fork detected, chain invalid) but does not change which base state the
+principal occupies. Any base state can be errored or non-errored.
 
 **Condition channels** (each derived from state):
 
@@ -101,48 +107,64 @@ prohibits invalid combinations.
 | `Errored(s)`       | Fork detected or chain invalid                            |
 | `Deleted(s)`       | `principal/delete` transaction signed                     |
 | `Frozen(s)`        | `freeze/create` active ∧ `freeze/delete` not signed       |
-| `Recoverable(s)`   | `can_mutate_AS(s)` — has keys meeting required thresholds |
+| `CanMutateAS(s)`   | Has keys meeting required thresholds to mutate AS         |
 | `HasActiveKeys(s)` | `active_keys(s) ≠ ∅`                                      |
-| `CanDSAction(s)`   | Can sign data actions (L4+, active key exists)            |
+| `CanDataAction(s)` | Can sign data actions (L4+, active key exists)            |
 
-**Lifecycle type** (GADT — invalid states are unconstructible):
+**Error status** (orthogonal to base state):
 
 ```
-data Lifecycle (s : State) where
-  Active        : ¬Errored(s) → ¬Deleted(s) → ¬Frozen(s) → Recoverable(s)
-                  → HasActiveKeys(s) → Lifecycle s
-
-  ErrOnly       : Errored(s) → ¬Deleted(s) → Recoverable(s)
-                  → HasActiveKeys(s) → Lifecycle s
-
-  FrzOnly       : Frozen(s) → ¬Deleted(s) → ¬Errored(s) → Recoverable(s)
-                  → HasActiveKeys(s) → Lifecycle s
-
-  ErrAndFrz     : Errored(s) → Frozen(s) → ¬Deleted(s) → Recoverable(s)
-                  → HasActiveKeys(s) → Lifecycle s
-
-  DelOnly       : Deleted(s) → ¬Frozen(s) → Lifecycle s
-
-  ErrAndDel     : Errored(s) → Deleted(s) → ¬Frozen(s) → Lifecycle s
-
-  Zombie        : ¬Recoverable(s) → CanDSAction(s) → ¬Deleted(s)
-                  → Lifecycle s
-
-  Dead          : ¬HasActiveKeys(s) → ¬CanDSAction(s) → Lifecycle s
-
-  Nuked         : Deleted(s) → AllKeysRevokedOrDeleted(s) → Lifecycle s
+data ErrorStatus (s : State) where
+  OK      : ¬Errored(s) → ErrorStatus s
+  Errored : Errored(s)  → ErrorStatus s
 ```
+
+**Base state** (GADT — invalid states are unconstructible):
+
+```
+data BaseState (s : State) where
+  Active  : ¬Deleted(s) → ¬Frozen(s) → CanMutateAS(s)
+            → HasActiveKeys(s) → BaseState s
+
+  Frozen  : Frozen(s) → ¬Deleted(s) → CanMutateAS(s)
+            → HasActiveKeys(s) → BaseState s
+
+  Deleted : Deleted(s) → ¬Frozen(s) → BaseState s
+
+  Zombie  : ¬CanMutateAS(s) → CanDataAction(s) → ¬Deleted(s)
+            → BaseState s
+
+  Dead    : ¬HasActiveKeys(s) → ¬CanDataAction(s) → BaseState s
+
+  Nuked   : Deleted(s) → AllKeysRevokedOrDeleted(s) → BaseState s
+```
+
+**Refinement superstate** — `Unrecoverable` is a coarser observation for
+when `CanDataAction` has not been determined:
+
+```
+data Unrecoverable (s : State) where
+  MkUnrecoverable : ¬CanMutateAS(s) → ¬Deleted(s) → Unrecoverable s
+  -- Refines to Zombie (CanDataAction) or Dead (¬CanDataAction)
+```
+
+In the observation lattice: `Unrecoverable ⊒ Zombie` and
+`Unrecoverable ⊒ Dead`. An observer who can determine `CanDataAction` sees
+the refined state; one who cannot sees `Unrecoverable`.
 
 **Key properties:**
 
 1. **`¬(Deleted ∧ Frozen)` is unconstructible** — no constructor accepts
    both proofs. Enforced by type structure, not runtime check.
 2. **Nuked ⊂ Dead** — `Nuked` requires
-   `Deleted ∧ AllKeysRevokedOrDeleted`, implying `¬HasActiveKeys ∧ ¬CanDS`.
-3. **Pattern matching is total** — omitting a case is a type error.
+   `Deleted ∧ AllKeysRevokedOrDeleted`, implying `¬HasActiveKeys ∧ ¬CanDataAction`.
+3. **Product is total** — 6 base states × 2 error states = 12 combinations,
+   all representable. No combinatorial explosion.
+4. **Unrecoverable refines** — `Zombie ⊔ Dead = Unrecoverable` in the
+   observation lattice. Classification is progressive, not all-or-nothing.
 
-**Note:** `Recoverable` is not monotonic in key count at L5+. A principal
-with active keys may still be `¬Recoverable` if no key combination meets
+**Note:** `CanMutateAS` is not monotonic in key count at L5+. A principal
+with active keys may still have `¬CanMutateAS` if no key combination meets
 the threshold for AS mutation.
 
 #### 1.3 Level Function
@@ -503,8 +525,8 @@ any specific DS structure.
 
 | Check                                          | Result  | Detail                                                    |
 | :--------------------------------------------- | :------ | :-------------------------------------------------------- |
-| Lifecycle GADT — no invalid inhabitants        | PASS    | `¬(Deleted ∧ Frozen)` unconstructible by type structure   |
-| Lifecycle GADT — exhaustiveness                | PASS    | 9 constructors cover all valid combinations               |
+| Lifecycle — no invalid inhabitants             | PASS    | `¬(Deleted ∧ Frozen)` unconstructible by type structure   |
+| Lifecycle — exhaustiveness                     | PASS    | 6 base states × 2 error states; product is total          |
 | Level function — total, non-overlapping        | PARTIAL | L6 depends on undefined `has_advanced_features`           |
 | Authorization predicate — well-defined         | PASS    | Three-part predicate is total and deterministic           |
 | Transition function — pure                     | PASS    | `δ(s, input)` is a pure function                          |

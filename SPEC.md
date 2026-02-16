@@ -1118,46 +1118,66 @@ else:
     DS = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-### 10 Principal States
+### 10 Principal Lifecycle States
 
-A Principal may be in different states, Active, Errored, Deleted, Frozen, and
-Unrecoverable.
+A principal's lifecycle is determined by the following conditions, each derived
+from state.
 
-- **Active** - Principal state is normal.
-- **Errored** - Principal state is errored. (Caused by an exception like signing
-  an implicit fork.) See section Consensus.
+#### 10.1 Lifecycle Conditions
+
+| Condition        | Definition                                                    |
+| :--------------- | :------------------------------------------------------------ |
+| `Errored`        | Fork detected or chain invalid (see Consensus)                |
+| `Deleted`        | `principal/delete` transaction signed                         |
+| `Frozen`         | `freeze/create` active and `freeze/delete` not signed         |
+| `CanMutateAS`    | Has keys meeting required thresholds to mutate Auth State     |
+| `HasActiveKeys`  | At least one active (non-revoked, non-deleted) key exists     |
+| `CanDataAction`  | Can sign data actions (Level 4+, active key exists)           |
+
+`Errored` is an orthogonal flag — it indicates that something went wrong (fork
+detected, chain invalid) but does not change which base state the principal
+occupies. Any base state can be errored or non-errored.
+
+#### 10.2 Base States
+
+These conditions combine into 6 base states. `Deleted` and `Frozen` are
+mutually exclusive — a principal cannot be frozen and deleted at the same time.
+
+| State        | Conditions                                    |
+| :----------- | :-------------------------------------------- |
+| **Active**   | ¬Deleted, ¬Frozen, CanMutateAS, HasActiveKeys |
+| **Frozen**   | Frozen, ¬Deleted, CanMutateAS, HasActiveKeys  |
+| **Deleted**  | Deleted, ¬Frozen                              |
+| **Zombie**   | ¬CanMutateAS, CanDataAction, ¬Deleted         |
+| **Dead**     | ¬HasActiveKeys, ¬CanDataAction                |
+| **Nuked**    | Deleted, all keys revoked or deleted          |
+
+- **Active**: Normal operating state.
+- **Frozen**: Principal has been frozen via `freeze/create` and has not yet been
+  unfrozen via `freeze/delete`. No mutations until unfrozen.
 - **Deleted**: The principal signed `principal/delete`. No new transactions or
-  actions (including data actions) are possible, total immutability (Level 3+)
-- **Frozen**: Principal has been frozen `freeze/create` and has not yet been
-  unfrozen `freeze/delete`
-- **Unrecoverable**: Principal cannot mutate AS, but may be able to perform DS
-  actions. (Level 4+) An recoverable account is either dead or zombie based on
-  the ability of doing DS actions, but that may not be known.
-- **Dead** - An principal is dead if no transactions or actions possible (no
-  transactions or data actions). This may be caused by signing a
-  `principal/delete` or revoking/deleting all keys. Dead is a hypernym of
-  deleted, nuked, and sometimes unrecoverable. A dead account may or may not
-  have been deleted. Example: The only key is revoked. The account is
-  unrecoverable and dead.
-- **Zombie**: (Level 4+) An unrecoverable principal is a zombie if no new
-  transactions are possible but some data actions are still possible. (Partial
-  functionality remains) Example: `key/create` requires 2 points, but there's
-  only one key with weight 1. `comment/create` requires default 1, so comments
-  are still possible but AS mutation is impossible.
-- **Nuked**: (Level 3+) All keys revoked (`revoke`), all keys deleted
-  (`key/delete`), and the principal deleted (`principal/delete`). Nuked may be
-  the hypernym of deleted, unrecoverable, and dead.
+  actions (including data actions) are possible.
+- **Zombie**: (Level 4+) AS mutation is impossible (`¬CanMutateAS`), but data
+  actions are still possible. Example: `key/create` requires 2 weight points,
+  but only one key exists with weight 1. `comment/create` requires default 1,
+  so comments are still possible but AS mutation is impossible.
+- **Dead**: No transactions or actions possible at all. No active keys remain.
+  Dead is a consequence of any condition that leaves the principal with no keys
+  and no data action capability.
+- **Nuked**: (Level 3+) All keys revoked, all keys deleted, and the principal
+  deleted (`principal/delete`). The most terminal state — Nuked implies Dead.
 
-### 10.1 All Principals States
+#### 10.3 Unrecoverable
 
-- Active
-- Errored
-- Deleted
-- Frozen
-- Unrecoverable
-- Dead
-- Zombie
-- Nuked
+**Unrecoverable** is a partial classification: the principal cannot mutate AS
+(`¬CanMutateAS`) and is not deleted, but whether data actions remain possible
+has not yet been determined. Once `CanDataAction` is evaluated, an
+unrecoverable principal resolves to either **Zombie** (data actions still
+possible) or **Dead** (nothing possible).
+
+**Note:** `CanMutateAS` is not monotonic in key count at Level 5+. A principal
+with active keys may still have `¬CanMutateAS` if no key combination meets the
+threshold for AS mutation.
 
 ---
 
