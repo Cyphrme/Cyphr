@@ -1463,6 +1463,8 @@ To authenticate to a service:
 3. Service verifies:
    - Signature is valid
    - `tmb` belongs to an active key in principal's KS
+   - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
+     etc. — see §10)
    - Challenge matches the one issued (prevents replay)
 4. Service issues bearer token
 
@@ -1485,6 +1487,8 @@ To authenticate to a service:
 2. Service verifies:
    - Signature is valid
    - `tmb` belongs to an active key in principal's KS
+   - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
+     etc. — see §10)
    - `now` is within acceptable window (e.g., ±60 seconds of server time)
 3. Service issues bearer token
 
