@@ -235,18 +235,20 @@ Input = { key/create, key/delete, key/revoke, key/replace,
           advanced/* }      — extensible (L6+)
 ```
 
-Level stratification belongs in the authorization predicate:
+Capability stratification belongs in the authorization predicate:
 
 ```
 authorize(s, input) =
   signer(input).tmb ∈ active_keys(s)      — I1: pre-state key
   ∧ lifecycle_permits(life(s), input)      — lifecycle gate
-  ∧ level_permits(level(s), input)         — level gate
+  ∧ capability_permits(s, input)           — capability gate
 
-where level_permits(l, input) =
-  | input ∈ {rule/*}     → l ≥ 5
-  | input ∈ {advanced/*} → l ≥ 6
+where capability_permits(s, input) =
+  | input ∈ {data/*}     → DS(s) exists
+  | input ∈ {rule/*}     → RS(s) exists
+  | input ∈ {advanced/*} → VM(s) exists
   | otherwise             → true
+  ∧ rs_constraints(s, input)              — L5+ weight/timelock rules
 ```
 
 #### 1.5 Transition Function

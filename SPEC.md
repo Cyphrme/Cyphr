@@ -334,6 +334,26 @@ Level 5 Key concepts:
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
 
+### 3.7 Authorization
+
+A transaction is authorized if and only if all three conditions hold:
+
+1. **Pre-state key**: The signing key must be active in the state *before* the
+   transaction is applied. A key added or revoked within the same commit does
+   not affect authorization of that commit's transactions.
+2. **Lifecycle gate**: The principal's current lifecycle state must permit the
+   operation. For example, a Frozen principal rejects all mutations; a Deleted
+   principal rejects everything. (See §10 Principal Lifecycle States.)
+3. **Capability gate**: The principal must have the state components required
+   for the operation. Data actions require DS to exist. Rule operations require
+   RS to exist. At Level 5+, Rule State (RS) may define additional constraints
+   — weight thresholds, timelocks, or other conditions that must be satisfied
+   for the transaction to proceed.
+
+Levels (§3.1–§3.6) describe increasing complexity of a principal's state
+composition. They are not an authorization input — authorization is determined
+by which state components exist and what rules govern them.
+
 ---
 
 ## 4 Commit
