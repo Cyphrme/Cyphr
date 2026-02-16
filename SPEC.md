@@ -136,6 +136,24 @@ genesis transactions. Promotion is recursive; items deep in the tree can be
 promoted to the root level. Implicit promotion applies to all entropic values:
 digests and sufficient strength nonces.
 
+### 2.3 AS/DS Duality
+
+Auth State (AS) and Data State (DS) have fundamentally different structural
+properties:
+
+| Property             | Auth State (AS)                 | Data State (DS)                   |
+| :------------------- | :------------------------------ | :-------------------------------- |
+| Mutability           | Append-only (immutable history) | Mutable (deletable content)       |
+| Chain structure      | Hash-linked via `pre`           | No chain — ordered by `now`       |
+| Verification         | Replay from genesis             | Point-in-time snapshot only       |
+| State type           | Monotonic sequence of commits   | Non-monotonic bag of data actions |
+| Prescribed semantics | Full protocol semantics         | None — application-defined        |
+
+DS is a general-purpose data transaction ledger. Applications may impose
+additional structure (including append-only chains) by referencing prior data
+action digests in application-defined fields. The protocol does not mandate any
+specific DS structure.
+
 ### 2.4 Authenticated Atomic Action (AAA)
 
 Authenticated Atomic Actions are when a principal performs individually
