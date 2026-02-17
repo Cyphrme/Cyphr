@@ -102,16 +102,16 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 ## Phases
 
 1. **Phase 1: Type Restructuring** — Introduce new types and rename existing ones
-   - [ ] **Rust**: Rename `TransactionState` → `CommitID` in `state.rs`
-   - [ ] **Rust**: Add `CommitState` type in `state.rs` (wraps `MultihashDigest`)
-   - [ ] **Rust**: Add `compute_cs(as, commit_id, algs) → CommitState` in `state.rs`
-   - [ ] **Rust**: Update `compute_as()` — remove `ts` parameter
-   - [ ] **Rust**: Update `compute_ps()` — take `CommitState` instead of `AuthState`
-   - [ ] **Go**: Rename `TransactionState` → `CommitID` in `state.go`
-   - [ ] **Go**: Add `CommitState` type in `state.go`
-   - [ ] **Go**: Add `ComputeCS(as, commitID, algs) → CommitState` in `state.go`
-   - [ ] **Go**: Update `ComputeAS()` — remove `ts` parameter
-   - [ ] **Go**: Update `ComputePS()` — take `CommitState` instead of `AuthState`
+   - [x] **Rust**: Rename `TransactionState` → `CommitID` in `state.rs`
+   - [x] **Rust**: Add `CommitState` type in `state.rs` (wraps `MultihashDigest`)
+   - [x] **Rust**: Add `compute_cs(as, commit_id, algs) → CommitState` in `state.rs`
+   - [x] **Rust**: Update `compute_as()` — remove `ts` parameter
+   - [x] **Rust**: Update `compute_ps()` — take `CommitState` instead of `AuthState`
+   - [x] **Go**: Rename `TransactionState` → `CommitID` in `state.go`
+   - [x] **Go**: Add `CommitState` type in `state.go`
+   - [x] **Go**: Add `ComputeCS(as, commitID, algs) → CommitState` in `state.go`
+   - [x] **Go**: Update `ComputeAS()` — remove `ts` parameter
+   - [x] **Go**: Update `ComputePS()` — take `CommitState` instead of `AuthState`
 
 2. **Phase 2: Integration** — Wire new types through Principal and Commit
    - [ ] **Rust**: Update `Principal` struct — add `cs: Option<CommitState>`, rename `ts` to `commit_id`

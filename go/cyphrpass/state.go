@@ -19,13 +19,20 @@ type KeyState struct {
 	MultihashDigest
 }
 
-// TransactionState (TS) is the digest of transaction czds (SPEC §7.3).
-type TransactionState struct {
+// CommitID is the digest of transaction czds within a single commit (SPEC §8.5).
+// Previously named TransactionState; renamed to reflect its role as the
+// identity of a commit rather than a state-tree node.
+type CommitID struct {
 	MultihashDigest
 }
 
-// AuthState (AS) is the authentication state: H(sort(KS, TS?, RS?)) or promoted (SPEC §7.5).
+// AuthState (AS) is the authentication state: MR(KS, RS?) or promoted (SPEC §8.4).
 type AuthState struct {
+	MultihashDigest
+}
+
+// CommitState (CS) binds an Auth State to a specific commit: MR(AS, CommitID) (SPEC §8.5).
+type CommitState struct {
 	MultihashDigest
 }
 
@@ -45,7 +52,7 @@ func (d DataState) Bytes() coz.B64 {
 	return d.digest
 }
 
-// PrincipalState (PS) is the current top-level state: H(sort(AS, DS?)) or promoted (SPEC §7.6).
+// PrincipalState (PS) is the current top-level state: MR(CS, DS?) or promoted (SPEC §8.3).
 type PrincipalState struct {
 	MultihashDigest
 }
@@ -179,12 +186,13 @@ func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
 }
 
 // String methods for state types (return base64 of first variant for compatibility).
-func (s KeyState) String() string         { return s.First().String() }
-func (s TransactionState) String() string { return s.First().String() }
-func (s AuthState) String() string        { return s.First().String() }
-func (s DataState) String() string        { return s.digest.String() }
-func (s PrincipalState) String() string   { return s.First().String() }
-func (s PrincipalRoot) String() string    { return s.First().String() }
+func (s KeyState) String() string       { return s.First().String() }
+func (s CommitID) String() string       { return s.First().String() }
+func (s AuthState) String() string      { return s.First().String() }
+func (s CommitState) String() string    { return s.First().String() }
+func (s DataState) String() string      { return s.digest.String() }
+func (s PrincipalState) String() string { return s.First().String() }
+func (s PrincipalRoot) String() string  { return s.First().String() }
 
 // Tagged returns the AuthState as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
@@ -302,12 +310,13 @@ func ComputeKS(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyState, 
 	return KeyState{NewMultihashDigest(variants)}, nil
 }
 
-// ComputeTS computes Transaction State from czds (SPEC §7.3).
-// If only one transaction with no nonce, TS = czd (implicit promotion).
-// Returns nil TS if no transactions.
-func ComputeTS(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*TransactionState, error) {
+// ComputeCommitID computes the Commit ID (formerly Transaction State) from czds (SPEC §8.5).
+// The Commit ID is the Merkle root of the czds within a single commit.
+// If only one transaction with no nonce, CommitID = czd (implicit promotion).
+// Returns nil if no transactions.
+func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
 	if len(czds) == 0 {
-		return nil, nil // No transactions = nil TS
+		return nil, nil // No transactions = nil CommitID
 	}
 	if len(algs) == 0 {
 		algs = []HashAlg{HashSha256} // Default fallback
@@ -315,8 +324,8 @@ func ComputeTS(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*TransactionState
 
 	// Implicit promotion: single transaction, no nonce
 	if len(czds) == 1 && len(nonce) == 0 {
-		ts := TransactionState{FromSingleDigest(algs[0], czds[0])}
-		return &ts, nil
+		cid := CommitID{FromSingleDigest(algs[0], czds[0])}
+		return &cid, nil
 	}
 
 	components := make([][]byte, 0, len(czds)+1)
@@ -337,15 +346,16 @@ func ComputeTS(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*TransactionState
 		variants[alg] = digest
 	}
 
-	ts := TransactionState{NewMultihashDigest(variants)}
-	return &ts, nil
+	cid := CommitID{NewMultihashDigest(variants)}
+	return &cid, nil
 }
 
-// ComputeAS computes Auth State from KS and optional TS (SPEC §7.5).
-// If TS is nil with no nonce, AS = KS (implicit promotion).
-func ComputeAS(ks KeyState, ts *TransactionState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
-	// Implicit promotion: only KS, no TS, no nonce
-	if ts == nil && len(nonce) == 0 {
+// ComputeAS computes Auth State from KS (SPEC §8.4).
+// AS = MR(KS, RS?) — authentication state derived from the keyset.
+// If no nonce (and no RS), AS = KS (implicit promotion).
+func ComputeAS(ks KeyState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
+	// Implicit promotion: only KS, no nonce
+	if len(nonce) == 0 {
 		return AuthState{ks.Clone()}, nil
 	}
 
@@ -361,10 +371,7 @@ func ComputeAS(ks KeyState, ts *TransactionState, nonce coz.B64, algs []HashAlg)
 
 		// Collect non-nil components
 		components := [][]byte{ksBytes}
-		if ts != nil {
-			tsBytes := ts.GetOrFirst(alg)
-			components = append(components, tsBytes)
-		}
+		// TODO: Level 5 — add RS component here when RuleState is implemented
 		if len(nonce) > 0 {
 			components = append(components, nonce)
 		}
@@ -377,6 +384,39 @@ func ComputeAS(ks KeyState, ts *TransactionState, nonce coz.B64, algs []HashAlg)
 	}
 
 	return AuthState{NewMultihashDigest(variants)}, nil
+}
+
+// ComputeCS computes Commit State (SPEC §8.5).
+// CS = MR(AS, Commit ID) — binds an auth state to a specific commit.
+// If commitID is nil (genesis / no transactions), CS promotes from AS.
+func ComputeCS(as AuthState, commitID *CommitID, algs []HashAlg) (CommitState, error) {
+	// Implicit promotion: no commit ID → CS = AS
+	if commitID == nil {
+		return CommitState{as.Clone()}, nil
+	}
+
+	if len(algs) == 0 {
+		algs = as.Algorithms()
+	}
+
+	// Compute hash for each algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		// Get AS variant for this algorithm, falling back to first available
+		asBytes := as.GetOrFirst(alg)
+
+		// Get CommitID variant for this algorithm, falling back to first available
+		cidBytes := commitID.GetOrFirst(alg)
+
+		components := [][]byte{asBytes, cidBytes}
+		digest, err := hashSortedConcatBytes(alg, components...)
+		if err != nil {
+			return CommitState{}, err
+		}
+		variants[alg] = digest
+	}
+
+	return CommitState{NewMultihashDigest(variants)}, nil
 }
 
 // ComputeDS computes Data State from action czds (SPEC §7.4).
@@ -410,26 +450,27 @@ func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataState, error) {
 	return &ds, nil
 }
 
-// ComputePS computes Principal State from AS and optional DS (SPEC §7.6).
-// If DS is nil with no nonce, PS = AS (implicit promotion).
-func ComputePS(as AuthState, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
-	// Implicit promotion: only AS, no DS, no nonce
+// ComputePS computes Principal State from CS and optional DS (SPEC §8.3).
+// PS = MR(CS, DS?) — top-level state derived from commit state.
+// If DS is nil with no nonce, PS = CS (implicit promotion).
+func ComputePS(cs CommitState, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
+	// Implicit promotion: only CS, no DS, no nonce
 	if ds == nil && len(nonce) == 0 {
-		return PrincipalState{as.Clone()}, nil
+		return PrincipalState{cs.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = as.Algorithms()
+		algs = cs.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		// Get AS variant for this algorithm, falling back to first available
-		asBytes := as.GetOrFirst(alg)
+		// Get CS variant for this algorithm, falling back to first available
+		csBytes := cs.GetOrFirst(alg)
 
 		// Collect non-nil components
-		components := [][]byte{asBytes}
+		components := [][]byte{csBytes}
 		if ds != nil {
 			components = append(components, ds.Bytes())
 		}

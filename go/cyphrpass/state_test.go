@@ -61,10 +61,10 @@ func TestComputeKS_EmptyKeys(t *testing.T) {
 }
 
 func TestComputeAS_ImplicitPromotion(t *testing.T) {
-	// SPEC §7.5: Only KS, no TS, no nonce → AS = KS
+	// SPEC §8.4: Only KS, no RS, no nonce → AS = KS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	ks := KeyState{FromSingleDigest(HashSha256, goldenTmb)}
-	as, err := ComputeAS(ks, nil, nil, algs)
+	as, err := ComputeAS(ks, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,30 +74,38 @@ func TestComputeAS_ImplicitPromotion(t *testing.T) {
 }
 
 func TestComputePS_ImplicitPromotion(t *testing.T) {
-	// SPEC §7.6: Only AS, no DS, no nonce → PS = AS
+	// SPEC §8.3: Only CS (promoted from AS), no DS, no nonce → PS = CS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	as := AuthState{FromSingleDigest(HashSha256, goldenTmb)}
-	ps, err := ComputePS(as, nil, nil, algs)
+	cs, err := ComputeCS(as, nil, algs)
+	if err != nil {
+		t.Fatalf("ComputeCS: %v", err)
+	}
+	ps, err := ComputePS(cs, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(ps.First(), as.First()) {
-		t.Errorf("PS should promote from AS: got %x, want %x", ps.First(), as.First())
+	if !bytes.Equal(ps.First(), cs.First()) {
+		t.Errorf("PS should promote from CS: got %x, want %x", ps.First(), cs.First())
 	}
 }
 
 func TestImplicitGenesisSingleKey(t *testing.T) {
-	// SPEC §15.3: Level 1 single-key → PR = PS = AS = KS = tmb
+	// SPEC §15.3: Level 1 single-key → PR = PS = CS = AS = KS = tmb
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeKS: %v", err)
 	}
-	as, err := ComputeAS(ks, nil, nil, algs)
+	as, err := ComputeAS(ks, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeAS: %v", err)
 	}
-	ps, err := ComputePS(as, nil, nil, algs)
+	cs, err := ComputeCS(as, nil, algs)
+	if err != nil {
+		t.Fatalf("ComputeCS: %v", err)
+	}
+	ps, err := ComputePS(cs, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputePS: %v", err)
 	}
@@ -108,6 +116,9 @@ func TestImplicitGenesisSingleKey(t *testing.T) {
 	}
 	if !bytes.Equal(as.First(), goldenTmb) {
 		t.Errorf("AS != tmb")
+	}
+	if !bytes.Equal(cs.First(), goldenTmb) {
+		t.Errorf("CS != tmb")
 	}
 	if !bytes.Equal(ps.First(), goldenTmb) {
 		t.Errorf("PS != tmb")
