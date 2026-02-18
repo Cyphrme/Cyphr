@@ -157,11 +157,58 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Verify non-golden unit tests pass in both languages
    - [x] Stale reference sweep: zero `TransactionState`/`ComputeTS`/`.TS()` hits
 
-7. **Phase 4: Golden Fixture Regeneration** — Update test fixtures to match new state computation
-   - [ ] Identify all golden fixture files in both languages
-   - [ ] Update fixture generator(s) to use new computation hierarchy
-   - [ ] Regenerate golden fixtures
-   - [ ] Verify full test suites pass: `cargo test` and `go test ./...`
+7. **Phase 4: Fixture Format Alignment & Golden Regeneration**
+   *Sketch: `.sketches/2026-02-18-fixture-format-alignment.md`*
+
+   **4a: Intent format redesign** — Migrate to commit-first canonical form
+   - [ ] **Rust `intent.rs`**: Replace `PayIntent`, `CryptoIntent`, `StepIntent` with `CommitIntent` + `TxIntent`
+   - [ ] **Rust `intent.rs`**: Unify actions — remove `ActionIntent` singular/plural split, always `Vec<ActionIntent>`
+   - [ ] **Go `intent.go`**: Mirror Rust struct changes (`CommitIntent`, `TxIntent`, unified actions)
+   - [ ] **Intent TOML files**: Migrate all 7 files (`mutations`, `multi_key`, `algorithm_diversity`, `state_computation`, `edge_cases`, `actions`, `errors`) to new format
+   - [ ] **E2E TOML files**: Migrate all 4 files (`round_trip`, `genesis_load`, `edge_cases`, `error_conditions`) to new format
+   - [ ] **All TOML files**: Remove all `commit = true` fields
+   - [ ] **All TOML files**: Fix stale SPEC §7 references → §8
+   - [ ] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]`
+
+   **4b: Generator fixes** — Fix bugs and dead code in `golden.rs`
+   - [ ] Fix `commit_id` always-`None` bug (L1214: `principal.transactions().last().and(None)`)
+   - [ ] Add `cs` computation and emission to `build_expected_from_principal`
+   - [ ] Add `cs` field to `GoldenExpected` (Rust `golden.rs`)
+   - [ ] Fix DRY violation: `apply_action_to_principal` rebuilds pay JSON — reuse from `build_action_coz`
+   - [ ] Remove deprecated `entries` field from `Golden` struct (Rust)
+   - [ ] Simplify generator dispatch from 7-way to commit-based iteration
+
+   **4c: Expected assertions & struct cleanup** — Add `cs`, remove deprecated fields
+   - [ ] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`)
+   - [ ] Add `cs` to Go `ExpectedAssertions` (`intent.go`)
+   - [ ] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag)
+   - [ ] Add `cs` to Go `GoldenExpected` (`golden.go`)
+   - [ ] Remove deprecated `Entries` field from Go `Golden` struct
+   - [ ] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
+   - [ ] Rewrite Go `intent.go` dispatch helpers for commit-based model (`IsMultiStep` → dead, `HasAction` → `len(Action)>0`, etc.)
+
+   **4d: Golden regeneration** — Regenerate all fixtures
+   - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
+   - [ ] Verify golden JSON output includes `commit_id` and `cs` in expected
+   - [ ] Verify golden JSON uses `commits` format (not `entries`)
+
+   **4e: Consumer updates** — Update test consumers to verify CS
+   - [ ] **Rust e2e tests**: Update golden consumers to verify `cs` field
+   - [ ] **Go golden tests**: Update `golden_test.go` to verify `CS`
+   - [ ] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs`
+
+   **4f: Documentation** — Update README and terminology
+   - [ ] `tests/README.md`: Update golden format example (add `commit_id`, `cs`)
+   - [ ] `tests/README.md`: Update error table (`pre doesn't match current AS` → `CS`)
+   - [ ] `tests/README.md`: Update state categories (`KS, TS, AS, PS` → `KS, CommitID, AS, CS, PS`)
+   - [ ] `tests/README.md`: Update intent field reference table for new format
+   - [ ] `tests/README.md`: Remove `entries` format documentation
+
+   **4g: Verification** — Full test suite
+   - [ ] `cargo test` — all tests including golden integration
+   - [ ] `go test ./...` — all tests including golden integration
+   - [ ] Both builds compile cleanly
+   - [ ] Verify no duplicate action tests remain (consolidate `actions.toml` tests 3-5)
 
 ## Verification
 
