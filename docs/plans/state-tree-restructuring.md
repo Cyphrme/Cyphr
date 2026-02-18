@@ -158,17 +158,16 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Stale reference sweep: zero `TransactionState`/`ComputeTS`/`.TS()` hits
 
 7. **Phase 4: Fixture Format Alignment & Golden Regeneration**
-   *Sketch: `.sketches/2026-02-18-fixture-format-alignment.md`*
+   _Sketch: `.sketches/2026-02-18-fixture-format-alignment.md`_
 
-   **4a: Intent format redesign** — Migrate to commit-first canonical form
-   - [ ] **Rust `intent.rs`**: Replace `PayIntent`, `CryptoIntent`, `StepIntent` with `CommitIntent` + `TxIntent`
-   - [ ] **Rust `intent.rs`**: Unify actions — remove `ActionIntent` singular/plural split, always `Vec<ActionIntent>`
-   - [ ] **Go `intent.go`**: Mirror Rust struct changes (`CommitIntent`, `TxIntent`, unified actions)
-   - [ ] **Intent TOML files**: Migrate all 7 files (`mutations`, `multi_key`, `algorithm_diversity`, `state_computation`, `edge_cases`, `actions`, `errors`) to new format
-   - [ ] **E2E TOML files**: Migrate all 4 files (`round_trip`, `genesis_load`, `edge_cases`, `error_conditions`) to new format
-   - [ ] **All TOML files**: Remove all `commit = true` fields
-   - [ ] **All TOML files**: Fix stale SPEC §7 references → §8
-   - [ ] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]`
+   **4a: Intent struct redesign** — Add new types, keep legacy bridge
+   - [x] **Rust `intent.rs`**: Add `CommitIntent` + `TxIntent` types, `cs` field in `ExpectedAssertions`
+   - [x] **Go `intent.go`**: Mirror Rust struct changes, rename `TS` → `CommitID`
+   - [ ] **Rust `intent.rs`**: Unify actions — `action: Option` + `action_step: Vec` → `action: Vec<ActionIntent>`
+   - [ ] **Go `intent.go`**: Mirror action unification
+   - [ ] **Rust `golden.rs`**: Update generator refs (`action.as_ref()` → `action.first()`, `action_step` → `action`)
+   - [ ] **Rust `intent.rs`**: Remove legacy types (`PayIntent`, `CryptoIntent`, `StepIntent`) and old fields
+   - [ ] **Go `intent.go`**: Remove legacy types and old fields
 
    **4b: Generator fixes** — Fix bugs and dead code in `golden.rs`
    - [ ] Fix `commit_id` always-`None` bug (L1214: `principal.transactions().last().and(None)`)
@@ -179,13 +178,13 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [ ] Simplify generator dispatch from 7-way to commit-based iteration
 
    **4c: Expected assertions & struct cleanup** — Add `cs`, remove deprecated fields
-   - [ ] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`)
-   - [ ] Add `cs` to Go `ExpectedAssertions` (`intent.go`)
-   - [ ] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag)
+   - [x] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`) *(done in 4a)*
+   - [x] Add `cs` to Go `ExpectedAssertions` (`intent.go`) *(done in 4a)*
+   - [x] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag) *(done in 4a)*
    - [ ] Add `cs` to Go `GoldenExpected` (`golden.go`)
    - [ ] Remove deprecated `Entries` field from Go `Golden` struct
    - [ ] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
-   - [ ] Rewrite Go `intent.go` dispatch helpers for commit-based model (`IsMultiStep` → dead, `HasAction` → `len(Action)>0`, etc.)
+   - [ ] Rewrite Go `intent.go` dispatch helpers for commit-based model
 
    **4d: Golden regeneration** — Regenerate all fixtures
    - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
@@ -197,14 +196,21 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [ ] **Go golden tests**: Update `golden_test.go` to verify `CS`
    - [ ] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs`
 
-   **4f: Documentation** — Update README and terminology
+   **4f: TOML file migration** — Migrate all intent/E2E files to new format *(after all code changes)*
+   - [ ] **Intent TOML files**: Migrate all 7 files to `[[test.commit]]` + `[[test.commit.tx]]` format
+   - [ ] **E2E TOML files**: Migrate all 5 files to new format
+   - [ ] **All TOML files**: Remove all `commit = true` fields
+   - [ ] **All TOML files**: Fix stale SPEC §7 references → §8
+   - [ ] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]`
+
+   **4g: Documentation** — Update README and terminology
    - [ ] `tests/README.md`: Update golden format example (add `commit_id`, `cs`)
    - [ ] `tests/README.md`: Update error table (`pre doesn't match current AS` → `CS`)
    - [ ] `tests/README.md`: Update state categories (`KS, TS, AS, PS` → `KS, CommitID, AS, CS, PS`)
    - [ ] `tests/README.md`: Update intent field reference table for new format
    - [ ] `tests/README.md`: Remove `entries` format documentation
 
-   **4g: Verification** — Full test suite
+   **4h: Verification** — Full test suite
    - [ ] `cargo test` — all tests including golden integration
    - [ ] `go test ./...` — all tests including golden integration
    - [ ] Both builds compile cleanly
@@ -246,6 +252,8 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 | Stale `pre` comments say "auth state"                            | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                              |   [x]    |
 | `compare_commits` missing `cs` field check                       | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                                   |   [x]    |
 | `vtx.clone()` in `principal.rs` L780                             | LOW      | Borrow checker workaround during restructuring                  | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why            |   [ ]    |
+| Legacy intent bridge types (`PayIntent`, `CryptoIntent`, `StepIntent`) | MEDIUM   | Kept for generator `golden.rs` compatibility during Phase 4a     | Remove entirely in Phase 4b when generator is rewritten to use `CommitIntent`/`TxIntent`            |   [ ]    |
+| Action unification deferred (`action: Option` + `action_step: Vec`) | MEDIUM   | TOML `[test.action]` (table) can't deserialize into `Vec`; should have used `[[test.action]]` and broken old format | Unify to `action: Vec<ActionIntent>` and update generator `action.as_ref()` → `action.first()`     |   [ ]    |
 | Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW      | Defensive coding; `current_as` is always provided in practice   | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
 | `unwrap()`/`expect()` panics in library code                     | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code        |   [ ]    |
 

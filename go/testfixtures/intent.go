@@ -16,6 +16,10 @@ type Intent struct {
 }
 
 // TestIntent is a single test case intent.
+//
+// Supports both the new v2 format (Commit + unified Action) and the legacy
+// format (Pay/Crypto/Step + Action/ActionStep). Legacy fields will be removed
+// once all TOML files are migrated and the generator/runner are rewritten.
 type TestIntent struct {
 	// Name is the test identifier.
 	Name string `toml:"name"`
@@ -23,21 +27,58 @@ type TestIntent struct {
 	Principal []string `toml:"principal"`
 	// Setup contains optional modifiers (e.g., pre-revoke keys).
 	Setup *SetupIntent `toml:"setup,omitempty"`
+
+	// ── New canonical fields (v2) ──────────────────────────────
+
+	// Commit is the commit sequence. Each commit contains one or more
+	// transactions. Used by new [[test.commit]] / [[test.commit.tx]] format.
+	Commit []CommitIntent `toml:"commit,omitempty"`
+
+	// ── Legacy fields (bridge for runner + old TOML parsing) ───
+
 	// Pay is payload intent for single-step tests.
 	Pay *PayIntent `toml:"pay,omitempty"`
 	// Crypto is crypto intent for single-step tests.
 	Crypto *CryptoIntent `toml:"crypto,omitempty"`
 	// Step contains steps for multi-step transaction tests.
 	Step []StepIntent `toml:"step,omitempty"`
-	// Action is single action for single-action tests.
+	// Action is single action for single-action tests ([test.action]).
 	Action *ActionIntent `toml:"action,omitempty"`
 	// ActionStep contains action sequence for multi-action tests.
 	ActionStep []ActionIntent `toml:"action_step,omitempty"`
+
 	// Override contains override fields for error tests.
 	Override *OverrideIntent `toml:"override,omitempty"`
 	// Expected contains assertions about final state.
 	Expected *ExpectedAssertions `toml:"expected,omitempty"`
 }
+
+// ── New canonical types (v2) ──────────────────────────────────────
+
+// CommitIntent is a single commit containing one or more transactions.
+type CommitIntent struct {
+	// Tx contains transactions within this commit.
+	Tx []TxIntent `toml:"tx,omitempty"`
+}
+
+// TxIntent is a single transaction within a commit.
+// Merges the old PayIntent + CryptoIntent into one flat struct.
+type TxIntent struct {
+	// Typ is transaction type (e.g., "cyphr.me/key/create").
+	Typ string `toml:"typ"`
+	// Now is timestamp.
+	Now int64 `toml:"now"`
+	// Signer is signer key name from pool.
+	Signer string `toml:"signer"`
+	// Target is target key name for key/add, key/revoke.
+	Target string `toml:"target,omitempty"`
+	// Msg is optional message.
+	Msg string `toml:"msg,omitempty"`
+	// Rvk is optional revocation timestamp.
+	Rvk int64 `toml:"rvk,omitempty"`
+}
+
+// ── Legacy types (bridge for runner) ──────────────────────────────
 
 // SetupIntent contains setup modifiers for a test.
 type SetupIntent struct {
@@ -48,6 +89,8 @@ type SetupIntent struct {
 }
 
 // PayIntent contains payload fields for a test step.
+//
+// Deprecated: use TxIntent instead. Kept for runner compatibility.
 type PayIntent struct {
 	// Typ is transaction/action type.
 	Typ string `toml:"typ"`
@@ -60,6 +103,8 @@ type PayIntent struct {
 }
 
 // CryptoIntent contains crypto fields for a test step.
+//
+// Deprecated: use TxIntent instead. Kept for runner compatibility.
 type CryptoIntent struct {
 	// Signer is signer key name from pool.
 	Signer string `toml:"signer"`
@@ -68,6 +113,8 @@ type CryptoIntent struct {
 }
 
 // StepIntent is a single step in a multi-step test.
+//
+// Deprecated: use CommitIntent + TxIntent instead. Kept for runner compatibility.
 type StepIntent struct {
 	// Pay is payload intent.
 	Pay PayIntent `toml:"pay"`
@@ -105,10 +152,12 @@ type ExpectedAssertions struct {
 	KS string `toml:"ks,omitempty"`
 	// AS is expected auth state digest.
 	AS string `toml:"as,omitempty"`
+	// CS is expected commit state digest.
+	CS string `toml:"cs,omitempty"`
 	// PS is expected principal state digest.
 	PS string `toml:"ps,omitempty"`
-	// TS is expected commit ID digest (legacy alias for commit_id).
-	TS string `toml:"ts,omitempty"`
+	// CommitID is expected commit ID digest.
+	CommitID string `toml:"commit_id,omitempty"`
 	// Error is expected error for error tests.
 	Error string `toml:"error,omitempty"`
 }
@@ -150,7 +199,14 @@ func LoadIntentDir(dir string) ([]*Intent, error) {
 	return intents, nil
 }
 
-// IsMultiStep returns true if this is a multi-step transaction test.
+// ── Dispatch helpers ─────────────────────────────────────────────
+
+// HasCommits returns true if this test has commits (new v2 format).
+func (t *TestIntent) HasCommits() bool {
+	return len(t.Commit) > 0
+}
+
+// IsMultiStep returns true if this is a multi-step transaction test (legacy).
 func (t *TestIntent) IsMultiStep() bool {
 	return len(t.Step) > 0
 }
@@ -167,12 +223,12 @@ func (t *TestIntent) IsMultiAction() bool {
 
 // IsGenesisOnly returns true if this is a genesis-only test.
 func (t *TestIntent) IsGenesisOnly() bool {
-	return t.Pay == nil && len(t.Step) == 0 && t.Action == nil && len(t.ActionStep) == 0
+	return t.Pay == nil && len(t.Step) == 0 && t.Action == nil && len(t.ActionStep) == 0 && len(t.Commit) == 0
 }
 
 // HasTxAndAction returns true if this test has both transaction and action.
 func (t *TestIntent) HasTxAndAction() bool {
-	return t.Pay != nil && t.Action != nil
+	return (t.Pay != nil || len(t.Commit) > 0) && (t.Action != nil || len(t.ActionStep) > 0)
 }
 
 // IsErrorTest returns true if this test expects an error.
