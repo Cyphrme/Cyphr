@@ -146,7 +146,10 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 	}
 
 	// Build pay object
-	payObj := buildTransactionPay(pay, signerKey.Tmb, principal.AS())
+	if principal.CS() == nil {
+		return fmt.Errorf("principal has no commit state")
+	}
+	payObj := buildTransactionPay(pay, signerKey.Tmb, *principal.CS())
 
 	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
@@ -260,7 +263,7 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.AuthState) map[string]any {
+func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentCS cyphrpass.CommitState) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
@@ -268,14 +271,14 @@ func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentAS cyphrpass.
 		"now": pay.Now,
 	}
 
-	// Add pre field (current auth state) for transactions that need it
+	// Add pre field (current commit state) for transactions that need it
 	if strings.Contains(pay.Typ, "key/create") ||
 		strings.Contains(pay.Typ, "key/add") ||
 		strings.Contains(pay.Typ, "key/delete") ||
 		strings.Contains(pay.Typ, "key/replace") ||
 		strings.Contains(pay.Typ, "key/revoke") ||
 		strings.Contains(pay.Typ, "principal/create") {
-		payObj["pre"] = currentAS.Tagged()
+		payObj["pre"] = currentCS.Tagged()
 	}
 
 	// Add rvk field if present
@@ -610,7 +613,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 4: Recompute AS and verify variants
-	recomputedAS, err := cyphrpass.ComputeAS(recomputedKS, reimported.TS(), nil, activeAlgs)
+	recomputedAS, err := cyphrpass.ComputeAS(recomputedKS, nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute AS: %w", err)
 		return result
@@ -635,8 +638,36 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Step 5: Recompute PS and verify variants
-	recomputedPS, err := cyphrpass.ComputePS(recomputedAS, reimported.DS(), nil, activeAlgs)
+	// Step 5: Recompute CS = MR(AS, Commit ID) and verify variants
+	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.CommitID(), activeAlgs)
+	if err != nil {
+		result.Err = fmt.Errorf("failed to recompute CS: %w", err)
+		return result
+	}
+
+	if reimported.CS() != nil {
+		for _, alg := range activeAlgs {
+			reimportedVariant := reimported.CS().Get(alg)
+			recomputedVariant := recomputedCS.Get(alg)
+
+			if reimportedVariant == nil {
+				result.Failures = append(result.Failures, fmt.Sprintf("CS missing variant for %s", alg))
+				continue
+			}
+			if recomputedVariant == nil {
+				result.Failures = append(result.Failures, fmt.Sprintf("recomputed CS missing variant for %s", alg))
+				continue
+			}
+			if string(reimportedVariant) != string(recomputedVariant) {
+				result.Failures = append(result.Failures, fmt.Sprintf(
+					"CS variant %s mismatch: reimported=%x recomputed=%x",
+					alg, reimportedVariant[:8], recomputedVariant[:8]))
+			}
+		}
+	}
+
+	// Step 6: Recompute PS = MR(CS, DS?) and verify variants
+	recomputedPS, err := cyphrpass.ComputePS(recomputedCS, reimported.DS(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute PS: %w", err)
 		return result

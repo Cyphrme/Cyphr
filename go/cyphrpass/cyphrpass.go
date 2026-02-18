@@ -25,9 +25,10 @@
 // State is computed as Merkle digests per SPEC §7:
 //   - [PrincipalRoot] (PR): Permanent identifier, set at genesis
 //   - [PrincipalState] (PS): Current top-level state
-//   - [AuthState] (AS): Authentication state from keys and transactions
+//   - [AuthState] (AS): Authentication state from keyset
+//   - [CommitState] (CS): Auth state bound to a specific commit
 //   - [KeyState] (KS): Digest of active key thumbprints
-//   - [TransactionState] (TS): Digest of transaction czds
+//   - [CommitID]: Identity of a commit (Merkle root of transaction czds)
 //   - [DataState] (DS): Digest of action czds (Level 4)
 //
 // # Genesis

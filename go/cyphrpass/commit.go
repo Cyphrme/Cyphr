@@ -9,16 +9,18 @@ import (
 // Commit is a finalized, atomic bundle of transactions.
 //
 // Per SPEC §4.2.1:
-//   - TS = MR(sort(czd₀, czd₁, ...)) for transactions in this commit only
+//   - Commit ID = MR(sort(czd₀, czd₁, ...)) for transactions in this commit only
 //   - The last transaction has `commit: true` in its payload
-//   - `pre` of first transaction references previous commit's AS (or PR for genesis)
+//   - `pre` of first transaction references previous commit's CS (or PR for genesis)
 //
 // A Commit is immutable once finalized.
 type Commit struct {
 	// transactions are the verified transactions in this commit.
 	transactions []*Transaction
-	// ts is the Transaction State: Merkle root of transaction czds.
-	ts *TransactionState
+	// commitID is the Commit ID: Merkle root of transaction czds.
+	commitID *CommitID
+	// cs is the Commit State at the end of this commit.
+	cs CommitState
 	// as is the Auth State at the end of this commit.
 	as AuthState
 	// ps is the Principal State at the end of this commit.
@@ -29,13 +31,14 @@ type Commit struct {
 
 // NewCommit creates a finalized commit from transactions and computed states.
 // Panics if transactions is empty.
-func NewCommit(txs []*Transaction, ts *TransactionState, as AuthState, ps PrincipalState) *Commit {
+func NewCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) *Commit {
 	if len(txs) == 0 {
 		panic("Commit must contain at least one transaction")
 	}
 	return &Commit{
 		transactions: txs,
-		ts:           ts,
+		commitID:     commitID,
+		cs:           cs,
 		as:           as,
 		ps:           ps,
 	}
@@ -46,9 +49,14 @@ func (c *Commit) Transactions() []*Transaction {
 	return c.transactions
 }
 
-// TS returns the Transaction State (Merkle root of this commit's czds).
-func (c *Commit) TS() *TransactionState {
-	return c.ts
+// CommitID returns the Commit ID (Merkle root of this commit's czds).
+func (c *Commit) CommitID() *CommitID {
+	return c.commitID
+}
+
+// CS returns the Commit State at the end of this commit.
+func (c *Commit) CS() CommitState {
+	return c.cs
 }
 
 // AS returns the Auth State at the end of this commit.
@@ -129,9 +137,9 @@ func (p *PendingCommit) Len() int {
 	return len(p.transactions)
 }
 
-// ComputeTS computes the Transaction State for the current pending transactions.
+// ComputeCommitID computes the Commit ID for the current pending transactions.
 // Returns nil if no transactions have been added.
-func (p *PendingCommit) ComputeTS() (*TransactionState, error) {
+func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
 	if len(p.transactions) == 0 {
 		return nil, nil
 	}
@@ -139,28 +147,29 @@ func (p *PendingCommit) ComputeTS() (*TransactionState, error) {
 	for i, tx := range p.transactions {
 		czds[i] = tx.Czd
 	}
-	return ComputeTS(czds, nil, []HashAlg{p.hashAlg})
+	return ComputeCommitID(czds, nil, []HashAlg{p.hashAlg})
 }
 
 // Finalize converts the pending commit to an immutable Commit.
 //
 // Arguments:
 //   - as: The computed Auth State after all transactions
+//   - cs: The computed Commit State (binds AS to this commit's ID)
 //   - ps: The computed Principal State after all transactions
 //
 // Returns nil if no transactions exist.
-func (p *PendingCommit) Finalize(as AuthState, ps PrincipalState) (*Commit, error) {
+func (p *PendingCommit) Finalize(as AuthState, cs CommitState, ps PrincipalState) (*Commit, error) {
 	if len(p.transactions) == 0 {
 		return nil, ErrEmptyCommit
 	}
 
-	// Compute TS from all transaction czds
-	ts, err := p.ComputeTS()
+	// Compute Commit ID from all transaction czds
+	cid, err := p.ComputeCommitID()
 	if err != nil {
 		return nil, err
 	}
 
-	commit := NewCommit(p.transactions, ts, as, ps)
+	commit := NewCommit(p.transactions, cid, cs, as, ps)
 	commit.SetRaw(p.raw)
 	return commit, nil
 }

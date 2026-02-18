@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 	"time"
 
@@ -69,12 +70,13 @@ type DataLedger struct {
 //   - Auth ledger tracking keys and transactions
 //   - Data ledger tracking actions (Level 4+)
 type Principal struct {
-	pr PrincipalRoot
-	ps PrincipalState
-	ks KeyState
-	ts *TransactionState // nil if no transactions
-	as AuthState
-	ds *DataState // nil if no actions
+	pr       PrincipalRoot
+	ps       PrincipalState
+	ks       KeyState
+	commitID *CommitID // nil if no transactions
+	as       AuthState
+	cs       *CommitState // nil before first commit
+	ds       *DataState   // nil if no actions
 
 	auth       AuthLedger
 	data       DataLedger
@@ -82,8 +84,8 @@ type Principal struct {
 	activeAlgs []HashAlg // Per SPEC §14: algorithms derived from active keyset
 
 	// currentCommitCzds tracks transaction czds for the current commit.
-	// Per SPEC §4.2.1: TS is computed from CURRENT commit's czds only.
-	// Reset after each commit finalizer (tx.IsCommit = true).
+	// Per SPEC §4.2.1: Commit ID is computed from CURRENT commit's czds only.
+	// Reset after each commit finalizer.
 	currentCommitCzds []coz.B64
 
 	// latestTimestamp tracks the most recent `now` value seen (SPEC §14.1).
@@ -123,14 +125,20 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// AS = KS (no TS, promotes)
-	as, err := ComputeAS(ks, nil, nil, algs)
+	// AS = KS (no RS, promotes)
+	as, err := ComputeAS(ks, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = AS (no DS, promotes)
-	ps, err := ComputePS(as, nil, nil, algs)
+	// CS = AS (no commit ID at genesis, promotes)
+	cs, err := ComputeCS(as, nil, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	// PS = CS (no DS, promotes)
+	ps, err := ComputePS(cs, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +151,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		ps:         ps,
 		ks:         ks,
 		as:         as,
+		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
 		auth: AuthLedger{
@@ -185,14 +194,20 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// AS = KS (no TS yet)
-	as, err := ComputeAS(ks, nil, nil, algs)
+	// AS = KS (no RS, promotes)
+	as, err := ComputeAS(ks, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = AS (no DS)
-	ps, err := ComputePS(as, nil, nil, algs)
+	// CS = AS (no commit ID at genesis, promotes)
+	cs, err := ComputeCS(as, nil, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	// PS = CS (no DS, promotes)
+	ps, err := ComputePS(cs, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +220,7 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		ps:         ps,
 		ks:         ks,
 		as:         as,
+		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
 		auth: AuthLedger{
@@ -249,9 +265,14 @@ func (p *Principal) ActiveAlgs() []HashAlg {
 	return p.activeAlgs
 }
 
-// TS returns the current Transaction State (nil if no transactions).
-func (p *Principal) TS() *TransactionState {
-	return p.ts
+// CommitID returns the current Commit ID (nil if no transactions).
+func (p *Principal) CommitID() *CommitID {
+	return p.commitID
+}
+
+// CS returns the current Commit State (nil before first commit).
+func (p *Principal) CS() *CommitState {
+	return p.cs
 }
 
 // Key returns a key by thumbprint, or nil if not found.
@@ -395,8 +416,11 @@ func (p *Principal) RecordAction(action *Action) error {
 	}
 	p.ds = ds
 
-	// Recompute PS = H(sort(AS, DS?))
-	ps, err := ComputePS(p.as, p.ds, nil, p.activeAlgs)
+	// Recompute PS = MR(CS, DS?)
+	if p.cs == nil {
+		return fmt.Errorf("cannot recompute PS: no commit state")
+	}
+	ps, err := ComputePS(*p.cs, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -535,7 +559,7 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		p.latestTimestamp = tx.Now
 	}
 
-	// Record transaction and accumulate czd for per-commit TS (SPEC §4.2.1)
+	// Record transaction and accumulate czd for per-commit Commit ID (SPEC §4.2.1)
 	p.auth.Transactions = append(p.auth.Transactions, tx)
 	p.currentCommitCzds = append(p.currentCommitCzds, tx.Czd)
 
@@ -546,9 +570,13 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 	return nil
 }
 
-// verifyPre checks that the transaction's pre matches current AS.
-func (p *Principal) verifyPre(pre AuthState) error {
-	if !bytes.Equal(p.as.First(), pre.First()) {
+// verifyPre checks that the transaction's pre matches current CS.
+// At genesis (before first commit), CS is promoted from AS, so pre = AS = CS.
+func (p *Principal) verifyPre(pre CommitState) error {
+	if p.cs == nil {
+		return fmt.Errorf("cannot verify pre: no commit state")
+	}
+	if !bytes.Equal(p.cs.First(), pre.First()) {
 		return ErrInvalidPrior
 	}
 	return nil
@@ -656,6 +684,14 @@ func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
 }
 
 // recomputeState recomputes all state digests after mutation.
+//
+// State hierarchy per SPEC §8:
+//
+//	KS = MR(thumbprints)
+//	Commit ID = MR(czds)       — current commit's transaction czds
+//	AS = MR(KS, RS?)           — RS not yet implemented (Level 5)
+//	CS = MR(AS, Commit ID)     — binds auth state to this commit
+//	PS = MR(CS, DS?)           — top-level principal state
 func (p *Principal) recomputeState() error {
 	// Recompute KS from active keys
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
@@ -668,25 +704,31 @@ func (p *Principal) recomputeState() error {
 	}
 	p.ks = ks
 
-	// Recompute TS from current commit's transactions only (SPEC §4.2.1)
-	// TS = MR(czds) for transactions in THIS commit, not cumulative
+	// Recompute Commit ID from current commit's transactions only (SPEC §4.2.1)
 	if len(p.currentCommitCzds) > 0 {
-		ts, err := ComputeTS(p.currentCommitCzds, nil, p.activeAlgs)
+		cid, err := ComputeCommitID(p.currentCommitCzds, nil, p.activeAlgs)
 		if err != nil {
 			return err
 		}
-		p.ts = ts
+		p.commitID = cid
 	}
 
-	// Recompute AS = H(sort(KS, TS?))
-	as, err := ComputeAS(p.ks, p.ts, nil, p.activeAlgs)
+	// Recompute AS = MR(KS, RS?)
+	as, err := ComputeAS(p.ks, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
 	p.as = as
 
-	// Recompute PS = H(sort(AS, DS?))
-	ps, err := ComputePS(p.as, p.ds, nil, p.activeAlgs)
+	// Recompute CS = MR(AS, Commit ID)
+	cs, err := ComputeCS(p.as, p.commitID, p.activeAlgs)
+	if err != nil {
+		return err
+	}
+	p.cs = &cs
+
+	// Recompute PS = MR(CS, DS?)
+	ps, err := ComputePS(cs, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}

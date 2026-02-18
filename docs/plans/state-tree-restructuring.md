@@ -137,13 +137,17 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] **CLI Verification**: Manual check of `cyphrpass-cli key` commands → **BUG FOUND** (Finding 1)
    - [x] **E2E Verification**: Manual check of `e2e.rs` logic → **GAP FOUND** (Finding 3)
 
-5. **Phase 2d: Core Integration (Go)** — Wire new types (Pending)
-   - [ ] **Go**: Update `Principal` struct — add `cs *CommitState`, rename `ts` fields
-   - [ ] **Go**: Update `recomputeState()` — compute CS between AS and PS
-   - [ ] **Go**: Add `(*Principal).CS()` accessor
-   - [ ] **Go**: Update transaction `Pre` field type — use `CommitState`
-   - [ ] **Go**: Update `pre` validation in `Apply` — compare against CS
-   - [ ] **Go**: Rename `currentCommitCzds` references to use `CommitID` terminology
+5. **Phase 2d: Core Integration (Go)** — Wire new types
+   - [x] **Go**: Update `Principal` struct — add `cs *CommitState`, rename `ts` to `commitID`
+   - [x] **Go**: Update `recomputeState()` — compute CS between AS and PS
+   - [x] **Go**: Add `(*Principal).CS()` and `CommitID()` accessors
+   - [x] **Go**: Update transaction `Pre` field type — use `CommitState`
+   - [x] **Go**: Update `pre` validation in `verifyPre` — compare against CS
+   - [x] **Go**: Rename `currentCommitCzds` comment references to use `CommitID` terminology
+   - [x] **Go**: Update `Commit` struct — add `cs`, rename `ts` to `commitID`
+   - [x] **Go**: Update `PendingCommit.ComputeTS()` → `ComputeCommitID()`
+   - [x] **Go**: Update `e2e_runner.go` — multihash coherence, `buildTransactionPay`
+   - [x] **Go**: Add `CommitState.Tagged()` method for wire-format `pre` field
 
 6. **Phase 3: Cleanup & Verification** — Comment/doc updates, unit tests, compilation checks
    - [ ] Update all doc comments with new terminology (TS → Commit ID, AS formulas)
@@ -188,14 +192,14 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 ## Technical Debt
 
-| Item                                                | Severity | Why Introduced                                                  | Follow-Up                                                                                 | Resolved |
-| :-------------------------------------------------- | :------- | :-------------------------------------------------------------- | :---------------------------------------------------------------------------------------- | :------: |
-| CLI `add`/`revoke` missing `complete_transaction()` | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands  |   [x]    |
-| Stale `pre` comments say "auth state"               | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                    |   [x]    |
-| `compare_commits` missing `cs` field check          | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                         |   [x]    |
-| `vtx.clone()` in `principal.rs` L780                | LOW      | Borrow checker workaround during restructuring                  | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why  |   [ ]    |
-| Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW | Defensive coding; `current_as` is always provided in practice | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
-| `unwrap()`/`expect()` panics in library code        | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code |   [ ]    |
+| Item                                                             | Severity | Why Introduced                                                  | Follow-Up                                                                                           | Resolved |
+| :--------------------------------------------------------------- | :------- | :-------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :------: |
+| CLI `add`/`revoke` missing `complete_transaction()`              | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands           |   [x]    |
+| Stale `pre` comments say "auth state"                            | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                              |   [x]    |
+| `compare_commits` missing `cs` field check                       | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                                   |   [x]    |
+| `vtx.clone()` in `principal.rs` L780                             | LOW      | Borrow checker workaround during restructuring                  | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why            |   [ ]    |
+| Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW      | Defensive coding; `current_as` is always provided in practice   | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
+| `unwrap()`/`expect()` panics in library code                     | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code        |   [ ]    |
 
 ## Deviation Log
 

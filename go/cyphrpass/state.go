@@ -197,8 +197,21 @@ func (s PrincipalRoot) String() string  { return s.First().String() }
 // Tagged returns the AuthState as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
-// This is the canonical format for the `pre` field in transactions.
 func (s AuthState) Tagged() string {
+	algs := s.Algorithms()
+	if len(algs) == 0 {
+		return ""
+	}
+	firstAlg := algs[0]
+	digest := s.Get(firstAlg)
+	return fmt.Sprintf("%s:%s", firstAlg, digest.String())
+}
+
+// Tagged returns the CommitState as an algorithm-prefixed digest string.
+// Format: "ALG:base64url" (e.g., "SHA-256:digest...").
+// Uses the lexicographically first algorithm for deterministic output.
+// This is the canonical format for the `pre` field in transactions.
+func (s CommitState) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
 		return ""
