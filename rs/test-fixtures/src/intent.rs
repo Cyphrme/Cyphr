@@ -140,9 +140,9 @@ pub struct ExpectedAssertions {
     /// Expected principal state digest.
     #[serde(default)]
     pub ps: Option<String>,
-    /// Expected transaction state digest.
+    /// Expected commit ID digest.
     #[serde(default)]
-    pub ts: Option<String>,
+    pub commit_id: Option<String>,
     /// Expected error (for error tests).
     #[serde(default)]
     pub error: Option<String>,

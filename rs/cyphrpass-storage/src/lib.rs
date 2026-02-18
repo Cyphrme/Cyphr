@@ -196,9 +196,10 @@ impl Entry {
 ///
 /// Each line in the JSONL file represents one finalized commit containing:
 /// - `txs`: Array of transaction entries (each with pay, sig, and optional key)
-/// - `ts`: Transaction State (Merkle root of commit's transaction czds)
-/// - `as`: Auth State (derived from KS and TS)
-/// - `ps`: Principal State (derived from AS and DS)
+/// - `commit_id`: Commit ID (Merkle root of commit's transaction czds)
+/// - `as`: Auth State (derived from KS)
+/// - `cs`: Commit State (derived from AS and Commit ID)
+/// - `ps`: Principal State (derived from CS and DS)
 ///
 /// The derived state digests enable efficient indexing and verification
 /// without replaying the full transaction history.
@@ -206,22 +207,33 @@ impl Entry {
 pub struct CommitEntry {
     /// Transaction entries in this commit bundle.
     pub txs: Vec<serde_json::Value>,
-    /// Transaction State (per-commit Merkle root).
-    pub ts: String,
+    /// Commit ID (per-commit Merkle root of transaction czds).
+    #[serde(alias = "ts")]
+    pub commit_id: String,
     /// Auth State after this commit.
     #[serde(rename = "as")]
     pub auth_state: String,
+    /// Commit State: MR(AS, Commit ID).
+    #[serde(default)]
+    pub cs: String,
     /// Principal State after this commit.
     pub ps: String,
 }
 
 impl CommitEntry {
     /// Create a new commit entry from components.
-    pub fn new(txs: Vec<serde_json::Value>, ts: String, auth_state: String, ps: String) -> Self {
+    pub fn new(
+        txs: Vec<serde_json::Value>,
+        commit_id: String,
+        auth_state: String,
+        cs: String,
+        ps: String,
+    ) -> Self {
         Self {
             txs,
-            ts,
+            commit_id,
             auth_state,
+            cs,
             ps,
         }
     }

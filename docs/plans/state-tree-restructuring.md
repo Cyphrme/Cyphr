@@ -190,9 +190,12 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 | Item                                                | Severity | Why Introduced                                                  | Follow-Up                                                                                 | Resolved |
 | :-------------------------------------------------- | :------- | :-------------------------------------------------------------- | :---------------------------------------------------------------------------------------- | :------: |
-| CLI `add`/`revoke` missing `complete_transaction()` | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands |   [x]    |
+| CLI `add`/`revoke` missing `complete_transaction()` | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands  |   [x]    |
 | Stale `pre` comments say "auth state"               | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                    |   [x]    |
 | `compare_commits` missing `cs` field check          | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                         |   [x]    |
+| `vtx.clone()` in `principal.rs` L780                | LOW      | Borrow checker workaround during restructuring                  | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why  |   [ ]    |
+| Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW | Defensive coding; `current_as` is always provided in practice | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
+| `unwrap()`/`expect()` panics in library code        | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code |   [ ]    |
 
 ## Deviation Log
 

@@ -63,8 +63,9 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
 /// Returns a vector of `CommitEntry` representing each finalized commit.
 /// Each entry contains:
 /// - `txs`: Array of transaction JSON values (with embedded key material)
-/// - `ts`: Transaction State (base64url)
+/// - `commit_id`: Commit ID (Merkle root of transaction czds, base64url)
 /// - `as`: Auth State (base64url)
+/// - `cs`: Commit State (MR(AS, Commit ID), base64url)
 /// - `ps`: Principal State (base64url)
 ///
 /// **Note**: Actions are not included in commits; they are stored separately
@@ -109,15 +110,15 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
         // Use lexicographically first algorithm for deterministic ordering
-        let ts_mh = commit.ts().as_multihash();
-        let ts_alg = ts_mh
+        let cid_mh = commit.commit_id().as_multihash();
+        let cid_alg = cid_mh
             .algorithms()
             .next()
-            .expect("TransactionState must have at least one variant");
-        let ts = format!(
+            .expect("CommitID must have at least one variant");
+        let commit_id = format!(
             "{}:{}",
-            ts_alg,
-            Base64UrlUnpadded::encode_string(ts_mh.get(ts_alg).unwrap())
+            cid_alg,
+            Base64UrlUnpadded::encode_string(cid_mh.get(cid_alg).unwrap())
         );
 
         let as_mh = commit.auth_state().as_multihash();
@@ -131,6 +132,17 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
             Base64UrlUnpadded::encode_string(as_mh.get(as_alg).unwrap())
         );
 
+        let cs_mh = commit.cs().as_multihash();
+        let cs_alg = cs_mh
+            .algorithms()
+            .next()
+            .expect("CommitState must have at least one variant");
+        let cs = format!(
+            "{}:{}",
+            cs_alg,
+            Base64UrlUnpadded::encode_string(cs_mh.get(cs_alg).unwrap())
+        );
+
         let ps_mh = commit.ps().as_multihash();
         let ps_alg = ps_mh
             .algorithms()
@@ -142,7 +154,7 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
             Base64UrlUnpadded::encode_string(ps_mh.get(ps_alg).unwrap())
         );
 
-        commit_entries.push(CommitEntry::new(txs, ts, auth_state, ps));
+        commit_entries.push(CommitEntry::new(txs, commit_id, auth_state, cs, ps));
     }
 
     commit_entries

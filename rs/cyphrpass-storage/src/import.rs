@@ -248,15 +248,7 @@ pub fn load_principal_from_commits(
     commits: &[CommitEntry],
 ) -> Result<Principal, LoadError> {
     // Create principal from genesis
-    let mut principal = match genesis {
-        Genesis::Implicit(key) => Principal::implicit(key)?,
-        Genesis::Explicit(keys) => {
-            if keys.is_empty() {
-                return Err(LoadError::NoGenesisKeys);
-            }
-            Principal::explicit(keys)?
-        },
-    };
+    let mut principal = load_principal(genesis, &[])?; // Load from genesis, no flat entries
 
     // Replay commits
     replay_commits(&mut principal, commits)?;
@@ -303,24 +295,6 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
 
             // Compute czd for this entry
             let czd = compute_czd(&pay_json, &sig, principal)?;
-
-            // Debug: print current AS before applying
-            eprintln!(
-                "  [load_principal] index={} current_AS={} czd={}",
-                index,
-                {
-                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    principal
-                        .auth_state()
-                        .as_multihash()
-                        .variants()
-                        .values()
-                        .next()
-                        .map(|b| Base64UrlUnpadded::encode_string(b))
-                        .unwrap_or_default()
-                },
-                czd.to_b64()
-            );
 
             // Apply transaction
             principal
@@ -380,6 +354,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
         // commit lifecycle, but for now we replay transactions directly
         // as the wrap_as_commit() auto-wraps single transactions.
 
+        let mut applied_tx_count = 0;
         for (tx_idx, tx_value) in commit.txs.iter().enumerate() {
             let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
 
@@ -432,6 +407,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                         },
                         other => LoadError::Protocol(other),
                     })?;
+                applied_tx_count += 1;
             } else {
                 // Action: compute czd and record
                 let czd = compute_czd(&pay_json, &sig, principal)?;
@@ -454,6 +430,13 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                         other => LoadError::Protocol(other),
                     })?;
             }
+        }
+
+        if applied_tx_count > 0 {
+            // Finalize the commit after applying all its transactions
+            principal
+                .complete_transaction()
+                .map_err(LoadError::Protocol)?;
         }
     }
 

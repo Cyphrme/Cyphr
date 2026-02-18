@@ -108,9 +108,9 @@ pub struct GoldenExpected {
     /// Expected principal state digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ps: Option<String>,
-    /// Expected transaction state digest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ts: Option<String>,
+    /// Expected commit ID digest.
+    #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<String>,
     /// Expected data state digest (Level 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ds: Option<String>,
@@ -154,11 +154,22 @@ impl<'a> Generator<'a> {
         Self { pool }
     }
 
-    /// Format auth state as tagged digest string (alg:digest format).
+    /// Format commit state as tagged digest string (alg:digest format).
     ///
-    /// Delegates to Principal::auth_state_tagged().
+    /// Delegates to Principal::commit_state_tagged().
+    fn format_commit_state_tagged(principal: &cyphrpass::Principal) -> String {
+        principal.commit_state_tagged()
+    }
+
+    /// Format auth state as tagged digest string (alg:digest format).
     fn format_auth_state_tagged(principal: &cyphrpass::Principal) -> String {
-        principal.auth_state_tagged()
+        // Assume first active algorithm for now (golden uses it)
+        let alg = principal.active_algs().first().unwrap();
+        let digest = principal
+            .auth_state()
+            .get(*alg) // Fix lint: dereference alg
+            .expect("principal must have auth state for active alg");
+        format!("{}:{}", alg, Base64UrlUnpadded::encode_string(digest))
     }
 
     /// Generate golden test cases from an intent file.
@@ -278,8 +289,9 @@ impl<'a> Generator<'a> {
     ///
     /// Each CommitEntry contains:
     /// - txs: array of transactions in commit (with pay, sig, key? fields)
-    /// - ts: Transaction State digest (base64url)
+    /// - commit_id: Commit ID digest (base64url)
     /// - as: Auth State digest (base64url)
+    /// - cs: Commit State digest (base64url)
     /// - ps: Principal State digest (base64url)
     ///
     /// Actions are exported as single-tx pseudo-commits at the end, with
@@ -310,11 +322,11 @@ impl<'a> Generator<'a> {
 
             // Create pseudo-commit with current state
             // (actions don't change key state, only add data state)
-            // Use last commit's ts if available, else we have no ts (genesis-only)
-            let ts = last_commit
+            // Use last commit's commit_id if available, else we have no commit_id (genesis-only)
+            let commit_id = last_commit
                 .map(|c| {
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    c.ts()
+                    c.commit_id()
                         .as_multihash()
                         .variants()
                         .values()
@@ -331,6 +343,17 @@ impl<'a> Generator<'a> {
                 .next()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
+            let cs = principal
+                .cs()
+                .map(|c| {
+                    c.as_multihash()
+                        .variants()
+                        .values()
+                        .next()
+                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
             let ps = principal
                 .ps()
                 .as_multihash()
@@ -340,7 +363,7 @@ impl<'a> Generator<'a> {
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
 
-            commits.push(CommitEntry::new(vec![raw], ts, auth_state, ps));
+            commits.push(CommitEntry::new(vec![raw], commit_id, auth_state, cs, ps));
         }
 
         (commits, digests)
@@ -373,8 +396,9 @@ impl<'a> Generator<'a> {
         // Wrap as a single-transaction commit with placeholder state digests
         CommitEntry::new(
             vec![tx_json],
-            String::new(), // ts placeholder for error tests
+            String::new(), // commit_id placeholder for error tests
             String::new(), // as placeholder for error tests
+            String::new(), // cs placeholder for error tests
             String::new(), // ps placeholder for error tests
         )
     }
@@ -465,13 +489,19 @@ impl<'a> Generator<'a> {
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = Self::format_auth_state_tagged(principal);
+                computed_pre = Self::format_commit_state_tagged(principal);
                 &computed_pre
             };
+        let computed_as = Self::format_auth_state_tagged(principal);
 
         // Build and sign coz message - use pay_intent as-is (intent files are explicit about commit: true)
-        let (coz, sig_bytes, czd) =
-            self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(pre))?;
+        let (coz, sig_bytes, czd) = self.build_golden_coz(
+            pay_intent,
+            crypto_intent,
+            &test.name,
+            Some(pre),
+            Some(&computed_as),
+        )?;
 
         // Check if this is an error test
         let is_error_test = test
@@ -537,11 +567,18 @@ impl<'a> Generator<'a> {
             let is_last_step = i == step_count - 1;
 
             // Capture pre before this step (alg:digest format)
-            let pre = Self::format_auth_state_tagged(principal);
+            let pre = Self::format_commit_state_tagged(principal);
+            let current_as = Self::format_auth_state_tagged(principal);
 
             // Use step.pay as-is (intent files are explicit about commit: true)
             let (coz, sig_bytes, czd) = self
-                .build_golden_coz(&step.pay, &step.crypto, &test.name, Some(&pre))
+                .build_golden_coz(
+                    &step.pay,
+                    &step.crypto,
+                    &test.name,
+                    Some(&pre),
+                    Some(&current_as),
+                )
                 .map_err(|e| Error::Generation {
                     name: test.name.clone(),
                     reason: format!("step {}: {}", i + 1, e),
@@ -639,11 +676,17 @@ impl<'a> Generator<'a> {
         })?;
 
         // Capture pre (auth state before transaction) in alg:digest format
-        let pre = Self::format_auth_state_tagged(principal);
+        let pre = Self::format_commit_state_tagged(principal);
+        let current_as = Self::format_auth_state_tagged(principal);
 
         // Build and sign transaction coz message - use pay_intent as-is
-        let (tx_coz, tx_sig_bytes, tx_czd) =
-            self.build_golden_coz(pay_intent, crypto_intent, &test.name, Some(&pre))?;
+        let (tx_coz, tx_sig_bytes, tx_czd) = self.build_golden_coz(
+            pay_intent,
+            crypto_intent,
+            &test.name,
+            Some(&pre),
+            Some(&current_as),
+        )?;
 
         // Apply transaction to principal
         self.apply_transaction_to_principal(
@@ -929,13 +972,15 @@ impl<'a> Generator<'a> {
         crypto: &CryptoIntent,
         test_name: &str,
         pre: Option<&str>,
+        current_as: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer key
         let signer = self.resolve_key(&crypto.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build pay JSON with derived fields (including pre)
-        let pay_json = self.build_pay_json(pay, &signer.alg, &signer_tmb, crypto, pre)?;
+        let pay_json =
+            self.build_pay_json(pay, &signer.alg, &signer_tmb, crypto, pre, current_as)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
@@ -964,6 +1009,7 @@ impl<'a> Generator<'a> {
         tmb: &str,
         crypto: &CryptoIntent,
         pre: Option<&str>,
+        current_as: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
         let mut fields: IndexMap<String, Value> = IndexMap::new();
 
@@ -979,7 +1025,9 @@ impl<'a> Generator<'a> {
         let is_principal_create = pay.typ.contains("principal/create");
         if is_principal_create {
             // For principal/create, id is the current auth state (same as pre)
-            if let Some(pre_val) = pre {
+            if let Some(as_val) = current_as {
+                fields.insert("id".to_string(), Value::String(as_val.to_string()));
+            } else if let Some(pre_val) = pre {
                 fields.insert("id".to_string(), Value::String(pre_val.to_string()));
             }
         } else if let Some(target_name) = &crypto.target {
@@ -1084,7 +1132,7 @@ impl<'a> Generator<'a> {
     fn apply_transaction_to_principal(
         &self,
         principal: &mut cyphrpass::Principal,
-        _pay: &PayIntent,
+        pay: &PayIntent,
         crypto: &CryptoIntent,
         coz: &GoldenCoz,
         sig_bytes: &[u8],
@@ -1111,6 +1159,16 @@ impl<'a> Generator<'a> {
                 name: test_name.to_string(),
                 reason: format!("transaction application failed: {}", e),
             })?;
+
+        // Finalize commit if requested
+        if pay.commit == Some(true) {
+            principal
+                .complete_transaction()
+                .map_err(|e| Error::Generation {
+                    name: test_name.to_string(),
+                    reason: format!("transaction completion failed: {}", e),
+                })?;
+        }
 
         Ok(())
     }
@@ -1153,7 +1211,7 @@ impl<'a> Generator<'a> {
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
-        let ts = principal.transactions().last().and(None::<String>);
+        let commit_id = principal.transactions().last().and(None::<String>);
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
@@ -1206,7 +1264,7 @@ impl<'a> Generator<'a> {
                 ks: e.ks.clone().or(Some(ks)),
                 auth_state: e.auth_state.clone().or(Some(auth_state)),
                 ps: e.ps.clone().or(Some(ps)),
-                ts: e.ts.clone().or(ts),
+                commit_id: e.commit_id.clone().or(commit_id),
                 ds: ds.clone(),
                 pr: Some(pr.clone()),
                 error: e.error.clone(),
@@ -1220,7 +1278,7 @@ impl<'a> Generator<'a> {
                 ks: Some(ks),
                 auth_state: Some(auth_state),
                 ps: Some(ps),
-                ts,
+                commit_id,
                 ds,
                 pr: Some(pr),
                 error: None,

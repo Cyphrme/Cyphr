@@ -777,10 +777,8 @@ impl Principal {
         if self.auth.pending.is_none() {
             self.auth.pending = Some(PendingCommit::new(self.hash_alg));
         }
-
-        // Push transaction to pending commit
-        let pending = self.auth.pending.as_mut().expect("just created if none");
-        pending.push(vtx);
+        let pending = self.auth.pending.as_mut().unwrap();
+        pending.push(vtx.clone());
 
         Ok(&self.auth_state)
     }
@@ -796,7 +794,8 @@ impl Principal {
             return Err(Error::EmptyCommit);
         }
 
-        // Re-derive active algorithms from current (post-mutation) keyset (SPEC §14)
+        // Re-derive active algorithms from ALL current keys
+        // (SPEC §14: union of all active keys' algorithms)
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         self.active_algs = derive_hash_algs(&key_refs);
 
