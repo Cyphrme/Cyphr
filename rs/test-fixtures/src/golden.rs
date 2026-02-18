@@ -23,9 +23,7 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 
 use crate::Error;
-use crate::intent::{
-    ActionIntent, CryptoIntent, ExpectedAssertions, Intent, PayIntent, SetupIntent, TestIntent,
-};
+use crate::intent::{ActionIntent, ExpectedAssertions, Intent, SetupIntent, TestIntent, TxIntent};
 use crate::pool::{Pool, PoolKey};
 
 /// A golden test case with real cryptographic values.
@@ -228,15 +226,15 @@ impl<'a> Generator<'a> {
         if test.is_genesis_only() {
             self.generate_genesis_only(test, &principal)
         } else if test.has_tx_and_action() {
-            // Combined: transaction + action
+            // Combined: commits + actions
             self.generate_tx_and_action(test, &mut principal)
         } else if test.has_action() {
-            if test.is_multi_action() {
+            if test.action.len() > 1 {
                 self.generate_multi_action(test, &mut principal)
             } else {
                 self.generate_single_action(test, &mut principal)
             }
-        } else if test.is_multi_step() {
+        } else if test.commit.len() > 1 {
             self.generate_multi_step(test, &mut principal)
         } else {
             self.generate_single_step(test, &mut principal)
@@ -462,25 +460,22 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Generate a single-step golden test case.
+    /// Generate a single-commit golden test case.
     fn generate_single_step(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        let pay_intent = test.pay.as_ref().ok_or_else(|| Error::InvalidIntent {
-            message: format!(
-                "test '{}': single-step test requires [pay] section",
-                test.name
-            ),
-        })?;
-
-        let crypto_intent = test.crypto.as_ref().ok_or_else(|| Error::InvalidIntent {
-            message: format!(
-                "test '{}': single-step test requires [crypto] section",
-                test.name
-            ),
-        })?;
+        let tx = test
+            .commit
+            .first()
+            .and_then(|c| c.tx.first())
+            .ok_or_else(|| Error::InvalidIntent {
+                message: format!(
+                    "test '{}': single-commit test requires [[commit.tx]]",
+                    test.name
+                ),
+            })?;
 
         // Capture pre (auth state before transaction) in alg:digest format
         // Use override.pre if specified (for InvalidPrior tests)
@@ -494,14 +489,9 @@ impl<'a> Generator<'a> {
             };
         let computed_as = Self::format_auth_state_tagged(principal);
 
-        // Build and sign coz message - use pay_intent as-is (intent files are explicit about commit: true)
-        let (coz, sig_bytes, czd) = self.build_golden_coz(
-            pay_intent,
-            crypto_intent,
-            &test.name,
-            Some(pre),
-            Some(&computed_as),
-        )?;
+        // Build and sign coz message
+        let (coz, sig_bytes, czd) =
+            self.build_golden_coz(tx, &test.name, Some(pre), Some(&computed_as))?;
 
         // Check if this is an error test
         let is_error_test = test
@@ -512,15 +502,7 @@ impl<'a> Generator<'a> {
 
         if !is_error_test {
             // Apply transaction to principal to get final state
-            self.apply_transaction_to_principal(
-                principal,
-                pay_intent,
-                crypto_intent,
-                &coz,
-                &sig_bytes,
-                czd,
-                &test.name,
-            )?;
+            self.apply_transaction_to_principal(principal, tx, &coz, &sig_bytes, czd, &test.name)?;
         }
 
         // Build expected with computed state digests (or error)
@@ -547,57 +529,47 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Generate a multi-step golden test case.
+    /// Generate a multi-commit golden test case.
     fn generate_multi_step(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        let mut coz_sequence = Vec::with_capacity(test.step.len());
+        let mut coz_sequence = Vec::with_capacity(test.commit.len());
 
-        // Check if this is an error test (applies to last step)
+        // Check if this is an error test (applies to last commit)
         let is_error_test = test
             .expected
             .as_ref()
             .and_then(|e| e.error.as_ref())
             .is_some();
 
-        let step_count = test.step.len();
-        for (i, step) in test.step.iter().enumerate() {
-            let is_last_step = i == step_count - 1;
+        let commit_count = test.commit.len();
+        for (i, commit) in test.commit.iter().enumerate() {
+            let is_last_commit = i == commit_count - 1;
+            let tx = commit.tx.first().ok_or_else(|| Error::InvalidIntent {
+                message: format!("test '{}': commit {} has no transactions", test.name, i + 1),
+            })?;
 
-            // Capture pre before this step (alg:digest format)
+            // Capture pre before this commit (alg:digest format)
             let pre = Self::format_commit_state_tagged(principal);
             let current_as = Self::format_auth_state_tagged(principal);
 
-            // Use step.pay as-is (intent files are explicit about commit: true)
             let (coz, sig_bytes, czd) = self
-                .build_golden_coz(
-                    &step.pay,
-                    &step.crypto,
-                    &test.name,
-                    Some(&pre),
-                    Some(&current_as),
-                )
+                .build_golden_coz(tx, &test.name, Some(&pre), Some(&current_as))
                 .map_err(|e| Error::Generation {
                     name: test.name.clone(),
-                    reason: format!("step {}: {}", i + 1, e),
+                    reason: format!("commit {}: {}", i + 1, e),
                 })?;
 
-            // Apply transaction (skip last step for error tests)
-            if !(is_last_step && is_error_test) {
+            // Apply transaction (skip last commit for error tests)
+            if !(is_last_commit && is_error_test) {
                 self.apply_transaction_to_principal(
-                    principal,
-                    &step.pay,
-                    &step.crypto,
-                    &coz,
-                    &sig_bytes,
-                    czd,
-                    &test.name,
+                    principal, tx, &coz, &sig_bytes, czd, &test.name,
                 )
                 .map_err(|e| Error::Generation {
                     name: test.name.clone(),
-                    reason: format!("step {}: {}", i + 1, e),
+                    reason: format!("commit {}: {}", i + 1, e),
                 })?;
             }
 
@@ -651,48 +623,38 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Generate a combined transaction + action test case.
+    /// Generate a combined commit + action test case.
     ///
-    /// This handles tests with both `pay` (transaction) and `action` fields.
-    /// The transaction is applied first, then the action.
+    /// The commit transactions are applied first, then the actions.
     fn generate_tx_and_action(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        // First, apply the transaction (reuse single_step logic)
-        let pay_intent = test.pay.as_ref().ok_or_else(|| Error::InvalidIntent {
-            message: format!(
-                "test '{}': tx+action test requires [pay] section",
-                test.name
-            ),
-        })?;
-
-        let crypto_intent = test.crypto.as_ref().ok_or_else(|| Error::InvalidIntent {
-            message: format!(
-                "test '{}': tx+action test requires [crypto] section",
-                test.name
-            ),
-        })?;
+        // First, apply the commit transaction
+        let tx = test
+            .commit
+            .first()
+            .and_then(|c| c.tx.first())
+            .ok_or_else(|| Error::InvalidIntent {
+                message: format!(
+                    "test '{}': tx+action test requires [[commit.tx]]",
+                    test.name
+                ),
+            })?;
 
         // Capture pre (auth state before transaction) in alg:digest format
         let pre = Self::format_commit_state_tagged(principal);
         let current_as = Self::format_auth_state_tagged(principal);
 
-        // Build and sign transaction coz message - use pay_intent as-is
-        let (tx_coz, tx_sig_bytes, tx_czd) = self.build_golden_coz(
-            pay_intent,
-            crypto_intent,
-            &test.name,
-            Some(&pre),
-            Some(&current_as),
-        )?;
+        // Build and sign transaction coz message
+        let (tx_coz, tx_sig_bytes, tx_czd) =
+            self.build_golden_coz(tx, &test.name, Some(&pre), Some(&current_as))?;
 
         // Apply transaction to principal
         self.apply_transaction_to_principal(
             principal,
-            pay_intent,
-            crypto_intent,
+            tx,
             &tx_coz,
             &tx_sig_bytes,
             tx_czd,
@@ -700,11 +662,8 @@ impl<'a> Generator<'a> {
         )?;
 
         // Now apply the action
-        let action_intent = test.action.as_ref().ok_or_else(|| Error::InvalidIntent {
-            message: format!(
-                "test '{}': tx+action test requires [action] section",
-                test.name
-            ),
+        let action_intent = test.action.first().ok_or_else(|| Error::InvalidIntent {
+            message: format!("test '{}': tx+action test requires [[action]]", test.name),
         })?;
 
         let (_, action_sig_bytes, action_czd) = self.build_action_coz(action_intent, &test.name)?;
@@ -741,9 +700,9 @@ impl<'a> Generator<'a> {
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        let action_intent = test.action.as_ref().ok_or_else(|| Error::InvalidIntent {
+        let action_intent = test.action.first().ok_or_else(|| Error::InvalidIntent {
             message: format!(
-                "test '{}': single-action test requires [action] section",
+                "test '{}': single-action test requires [[action]]",
                 test.name
             ),
         })?;
@@ -791,7 +750,7 @@ impl<'a> Generator<'a> {
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        let mut action_sequence = Vec::with_capacity(test.action_step.len());
+        let mut action_sequence = Vec::with_capacity(test.action.len());
 
         // Check if this is an error test (applies to last action)
         let is_error_test = test
@@ -800,8 +759,8 @@ impl<'a> Generator<'a> {
             .and_then(|e| e.error.as_ref())
             .is_some();
 
-        let action_count = test.action_step.len();
-        for (i, action_intent) in test.action_step.iter().enumerate() {
+        let action_count = test.action.len();
+        for (i, action_intent) in test.action.iter().enumerate() {
             let is_last_action = i == action_count - 1;
 
             let (action_coz, sig_bytes, czd) = self
@@ -963,28 +922,26 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    /// Build a GoldenCoz from pay and crypto intents.
+    /// Build a GoldenCoz from a transaction intent.
     ///
     /// Returns the GoldenCoz plus raw sig bytes and czd for applying to Principal.
     fn build_golden_coz(
         &self,
-        pay: &PayIntent,
-        crypto: &CryptoIntent,
+        tx: &TxIntent,
         test_name: &str,
         pre: Option<&str>,
         current_as: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer key
-        let signer = self.resolve_key(&crypto.signer)?;
+        let signer = self.resolve_key(&tx.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build pay JSON with derived fields (including pre)
-        let pay_json =
-            self.build_pay_json(pay, &signer.alg, &signer_tmb, crypto, pre, current_as)?;
+        let pay_json = self.build_pay_json(tx, &signer.alg, &signer_tmb, pre, current_as)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
-            self.sign_pay(&pay_json, signer, crypto, test_name)?;
+            self.sign_pay(&pay_json, signer, tx, test_name)?;
 
         let coz = GoldenCoz {
             pay: serde_json::from_slice(&pay_json).map_err(|e| Error::Generation {
@@ -1004,10 +961,9 @@ impl<'a> Generator<'a> {
     /// Per Coz spec, standard fields appear in canonical order.
     fn build_pay_json(
         &self,
-        pay: &PayIntent,
+        tx: &TxIntent,
         alg: &str,
         tmb: &str,
-        crypto: &CryptoIntent,
         pre: Option<&str>,
         current_as: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
@@ -1016,13 +972,11 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // commit field (for principal/create finalization)
-        if pay.commit == Some(true) {
-            fields.insert("commit".to_string(), Value::Bool(true));
-        }
+        // commit field — always true (every tx is within a CommitIntent)
+        fields.insert("commit".to_string(), Value::Bool(true));
 
         // id field handling depends on transaction type
-        let is_principal_create = pay.typ.contains("principal/create");
+        let is_principal_create = tx.typ.contains("principal/create");
         if is_principal_create {
             // For principal/create, id is the current auth state (same as pre)
             if let Some(as_val) = current_as {
@@ -1030,7 +984,7 @@ impl<'a> Generator<'a> {
             } else if let Some(pre_val) = pre {
                 fields.insert("id".to_string(), Value::String(pre_val.to_string()));
             }
-        } else if let Some(target_name) = &crypto.target {
+        } else if let Some(target_name) = &tx.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
             let target_tmb = target.compute_tmb_b64()?;
@@ -1038,12 +992,12 @@ impl<'a> Generator<'a> {
         }
 
         // msg if present
-        if let Some(msg) = &pay.msg {
+        if let Some(msg) = &tx.msg {
             fields.insert("msg".to_string(), Value::String(msg.clone()));
         }
 
         // now (timestamp)
-        fields.insert("now".to_string(), Value::Number(pay.now.into()));
+        fields.insert("now".to_string(), Value::Number(tx.now.into()));
 
         // pre (prior auth state) - only for transactions, not genesis
         if let Some(pre_val) = pre {
@@ -1051,7 +1005,7 @@ impl<'a> Generator<'a> {
         }
 
         // rvk if present
-        if let Some(rvk) = pay.rvk {
+        if let Some(rvk) = tx.rvk {
             fields.insert("rvk".to_string(), Value::Number(rvk.into()));
         }
 
@@ -1059,7 +1013,7 @@ impl<'a> Generator<'a> {
         fields.insert("tmb".to_string(), Value::String(tmb.to_string()));
 
         // typ (transaction/action type)
-        fields.insert("typ".to_string(), Value::String(pay.typ.clone()));
+        fields.insert("typ".to_string(), Value::String(tx.typ.clone()));
 
         // Serialize with preserved order
         serde_json::to_vec(&fields).map_err(|e| Error::Signing {
@@ -1074,7 +1028,7 @@ impl<'a> Generator<'a> {
         &self,
         pay_json: &[u8],
         signer: &PoolKey,
-        crypto: &CryptoIntent,
+        tx: &TxIntent,
         test_name: &str,
     ) -> SignResult {
         // Get private key bytes
@@ -1113,7 +1067,7 @@ impl<'a> Generator<'a> {
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
         // Build embedded key for key/create operations
-        let embedded_key = if let Some(target_name) = &crypto.target {
+        let embedded_key = if let Some(target_name) = &tx.target {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
                 alg: target.alg.clone(),
@@ -1128,19 +1082,17 @@ impl<'a> Generator<'a> {
     }
 
     /// Apply a transaction to the principal.
-    #[allow(clippy::too_many_arguments)]
     fn apply_transaction_to_principal(
         &self,
         principal: &mut cyphrpass::Principal,
-        pay: &PayIntent,
-        crypto: &CryptoIntent,
+        tx: &TxIntent,
         coz: &GoldenCoz,
         sig_bytes: &[u8],
         czd: coz::Czd,
         test_name: &str,
     ) -> Result<(), Error> {
         // Get new key for key/create operations
-        let new_key = if let Some(target_name) = &crypto.target {
+        let new_key = if let Some(target_name) = &tx.target {
             Some(self.pool_key_to_cyphrpass_key(target_name)?)
         } else {
             None
@@ -1160,15 +1112,13 @@ impl<'a> Generator<'a> {
                 reason: format!("transaction application failed: {}", e),
             })?;
 
-        // Finalize commit if requested
-        if pay.commit == Some(true) {
-            principal
-                .complete_transaction()
-                .map_err(|e| Error::Generation {
-                    name: test_name.to_string(),
-                    reason: format!("transaction completion failed: {}", e),
-                })?;
-        }
+        // Finalize commit — every tx in a CommitIntent is committed
+        principal
+            .complete_transaction()
+            .map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("transaction completion failed: {}", e),
+            })?;
 
         Ok(())
     }
@@ -1316,12 +1266,10 @@ mod tests {
 name = "key_add_golden_to_alice"
 principal = ["golden"]
 
-[test.pay]
+[[test.commit]]
+[[test.commit.tx]]
 typ = "cyphr.me/key/create"
 now = 1700000000
-commit = true
-
-[test.crypto]
 signer = "golden"
 target = "alice"
 
@@ -1401,11 +1349,10 @@ level = 3
 name = "bad_signer"
 principal = ["golden"]
 
-[test.pay]
+[[test.commit]]
+[[test.commit.tx]]
 typ = "cyphr.me/key/create"
 now = 1700000000
-
-[test.crypto]
 signer = "nonexistent_key"
 target = "alice"
 "#;
@@ -1436,11 +1383,10 @@ target = "alice"
 name = "genesis_only"
 principal = ["golden"]
 
-[test.pay]
+[[test.commit]]
+[[test.commit.tx]]
 typ = "cyphr.me/key/create"
 now = 1700000000
-
-[test.crypto]
 signer = "golden"
 target = "alice"
 "#;
