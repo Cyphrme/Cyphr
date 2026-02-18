@@ -10,8 +10,9 @@ use crate::commit::{Commit, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
-    AuthState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState, TransactionState,
-    compute_as, compute_ds, compute_ks, compute_ps, derive_hash_algs, hash_alg_from_str,
+    AuthState, CommitID, CommitState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState,
+    compute_as, compute_cs, compute_ds, compute_ks, compute_ps, derive_hash_algs,
+    hash_alg_from_str,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -84,8 +85,10 @@ pub struct Principal {
     ps: PrincipalState,
     /// Current Key State.
     ks: KeyState,
-    /// Current Transaction State.
-    ts: Option<TransactionState>,
+    /// Current Commit ID (Merkle root of last commit's transactions).
+    commit_id: Option<CommitID>,
+    /// Current Commit State: MR(AS, Commit ID).
+    cs: Option<CommitState>,
     /// Current Auth State.
     auth_state: AuthState,
     /// Current Data State (Level 4+).
@@ -130,10 +133,12 @@ impl Principal {
 
         // KS = tmb (single key promotes)
         let ks = compute_ks(&[&key.tmb], None, &active_algs);
-        // AS = KS (no TS, promotes)
-        let auth_state = compute_as(&ks, None, None, &active_algs);
-        // PS = AS (no DS, promotes)
-        let ps = compute_ps(&auth_state, None, None, &active_algs);
+        // AS = KS (no Commit ID, promotes)
+        let auth_state = compute_as(&ks, None, &active_algs);
+        // CS = promoted from AS at genesis (no prior commit)
+        let cs = compute_cs(&auth_state, None, &active_algs);
+        // PS = MR(CS, DS?) — at genesis DS is None
+        let ps = compute_ps(&cs, None, None, &active_algs);
         // PR = first PS
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -144,7 +149,8 @@ impl Principal {
             pr,
             ps,
             ks,
-            ts: None,
+            commit_id: None,
+            cs: Some(cs),
             auth_state,
             ds: None,
             auth: AuthLedger {
@@ -180,10 +186,12 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let ks = compute_ks(&thumbprints, None, &active_algs);
 
-        // AS = KS (no TS yet)
-        let auth_state = compute_as(&ks, None, None, &active_algs);
-        // PS = AS (no DS)
-        let ps = compute_ps(&auth_state, None, None, &active_algs);
+        // AS = KS (no Commit ID yet)
+        let auth_state = compute_as(&ks, None, &active_algs);
+        // CS = promoted from AS at genesis
+        let cs = compute_cs(&auth_state, None, &active_algs);
+        // PS = MR(CS, DS?)
+        let ps = compute_ps(&cs, None, None, &active_algs);
         // PR frozen at genesis
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -196,7 +204,8 @@ impl Principal {
             pr,
             ps,
             ks,
-            ts: None,
+            commit_id: None,
+            cs: Some(cs),
             auth_state,
             ds: None,
             auth: AuthLedger {
@@ -244,8 +253,10 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let ks = compute_ks(&thumbprints, None, &active_algs);
 
-        // PS = AS (no DS at checkpoint load)
-        let ps = compute_ps(&auth_state, None, None, &active_algs);
+        // CS = promoted from checkpoint AS (no commit history loaded)
+        let cs = compute_cs(&auth_state, None, &active_algs);
+        // PS = MR(CS, DS?) — no DS at checkpoint load
+        let ps = compute_ps(&cs, None, None, &active_algs);
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -256,7 +267,8 @@ impl Principal {
             pr,
             ps,
             ks,
-            ts: None, // TS is implicit in checkpoint's AS
+            commit_id: None,
+            cs: Some(cs),
             auth_state,
             ds: None,
             auth: AuthLedger {
@@ -290,19 +302,30 @@ impl Principal {
         &self.auth_state
     }
 
-    /// Get the current Auth State as a tagged digest string (alg:digest format).
+    /// Get the current Commit State as a tagged digest string (alg:digest format).
     ///
     /// Uses the lexicographically first algorithm from active_algs for deterministic output.
     /// This is the canonical format for the `pre` field in transactions.
-    pub fn auth_state_tagged(&self) -> String {
+    ///
+    /// At genesis (before any commits), returns the promoted Auth State value
+    /// since CS == promoted(AS) at genesis.
+    pub fn commit_state_tagged(&self) -> String {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
 
-        self.auth_state
-            .get(first_alg)
-            .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
-            .expect("AuthState must have at least one variant")
+        // Use cs if available, otherwise fall back to promoted auth_state (genesis)
+        if let Some(cs) = &self.cs {
+            cs.get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+                .expect("CommitState must have at least one variant")
+        } else {
+            // Genesis fallback: CS == promoted(AS)
+            self.auth_state
+                .get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+                .expect("AuthState must have at least one variant")
+        }
     }
 
     /// Get the current Key State.
@@ -388,11 +411,19 @@ impl Principal {
         self.auth.pending.as_ref()
     }
 
-    /// Get the Transaction State of the last finalized commit.
+    /// Get the Commit ID of the last finalized commit.
     ///
     /// Returns `None` if no commits exist yet.
-    pub fn current_ts(&self) -> Option<&TransactionState> {
-        self.ts.as_ref()
+    pub fn current_commit_id(&self) -> Option<&CommitID> {
+        self.commit_id.as_ref()
+    }
+
+    /// Get the current Commit State.
+    ///
+    /// Returns `None` only if no state has been computed (shouldn't happen
+    /// after genesis). At genesis, CS is promoted from AS.
+    pub fn cs(&self) -> Option<&CommitState> {
+        self.cs.as_ref()
     }
 
     /// Begin a new commit bundle.
@@ -509,8 +540,11 @@ impl Principal {
         let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
         self.ds = compute_ds(&czds, None, self.hash_alg);
 
-        // Recompute PS = H(sort(AS, DS?))
-        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &[self.hash_alg]);
+        // Recompute PS = MR(CS, DS?)
+        // CS doesn't change on action recording (only on commits), so use existing CS.
+        // If CS is None (shouldn't happen after genesis), compute_ps would need it.
+        let cs_ref = self.cs.as_ref().expect("CS must exist after genesis");
+        self.ps = compute_ps(cs_ref, self.ds.as_ref(), None, &[self.hash_alg]);
 
         Ok(&self.ps)
     }
@@ -770,21 +804,25 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         self.ks = compute_ks(&thumbprints, None, &self.active_algs);
 
-        // Compute TS from pending commit
-        let ts = pending
-            .compute_ts()
-            .expect("non-empty pending should produce TS");
-        self.ts = Some(ts.clone());
+        // Compute Commit ID from pending commit
+        let commit_id = pending
+            .compute_commit_id()
+            .expect("non-empty pending should produce Commit ID");
+        self.commit_id = Some(commit_id.clone());
 
-        // Compute AS from updated KS and new TS
-        self.auth_state = compute_as(&self.ks, Some(&ts), None, &self.active_algs);
+        // Compute AS from updated KS (AS = MR(KS, RS?) per SPEC §8.4)
+        self.auth_state = compute_as(&self.ks, None, &self.active_algs);
 
-        // Compute PS from updated AS and DS
-        self.ps = compute_ps(&self.auth_state, self.ds.as_ref(), None, &self.active_algs);
+        // Compute CS = MR(AS, Commit ID)
+        let cs = compute_cs(&self.auth_state, Some(&commit_id), &self.active_algs);
+        self.cs = Some(cs.clone());
+
+        // Compute PS = MR(CS, DS?)
+        self.ps = compute_ps(&cs, self.ds.as_ref(), None, &self.active_algs);
 
         // Finalize the pending commit with computed states
         let commit = pending
-            .finalize(self.auth_state.clone(), self.ps.clone())
+            .finalize(self.auth_state.clone(), cs, self.ps.clone())
             .ok_or(Error::EmptyCommit)?;
 
         self.auth.commits.push(commit);
@@ -846,39 +884,40 @@ impl Principal {
         self.apply_verified(vtx)
     }
 
-    /// Verify that `pre` matches the expected prior state.
+    /// Verify that `pre` matches the expected prior Commit State.
     ///
-    /// Per SPEC §4.2.1, the `pre` reference depends on commit context:
+    /// Per SPEC §4, the `pre` field references the previous commit's CS.
+    /// At genesis (no prior commits), CS is implicitly promoted from AS,
+    /// so `pre` is compared against the promoted auth_state.
     ///
-    /// **Commit-level chaining** (first tx in commit):
-    /// - `pre` MUST reference the previous commit's Auth State (AS)
-    /// - For genesis commit, `pre` references Principal Root (PR)
-    ///
-    /// **Transaction-level chaining** (subsequent tx in commit):
-    /// - `pre` MUST reference the previous transaction's `czd`
-    /// - This ensures ordering within the commit bundle
-    ///
-    /// **Current implementation**: For backward compatibility during refactor,
-    /// this currently validates against current AS only. Full dual-layer
-    /// chaining will be implemented when the pending commit flow is wired.
-    fn verify_pre(&self, pre: &AuthState) -> Result<()> {
-        // Compare AuthState variants using the principal's hash algorithm
-        let current = self
-            .auth_state
-            .get(self.hash_alg)
-            .or_else(|| {
-                self.auth_state
-                    .0
-                    .variants()
-                    .values()
-                    .next()
-                    .map(AsRef::as_ref)
-            })
-            .expect("AuthState must have at least one variant");
+    /// **Current implementation**: Validates against current CS (or promoted AS
+    /// at genesis). Full dual-layer chaining (commit-level + transaction-level)
+    /// will be implemented when the pending commit flow is wired.
+    fn verify_pre(&self, pre: &CommitState) -> Result<()> {
+        // Get the reference CS to compare against.
+        // If self.cs is Some, use it; otherwise fall back to promoted auth_state for genesis.
+        let current = if let Some(cs) = &self.cs {
+            cs.get(self.hash_alg)
+                .or_else(|| cs.0.variants().values().next().map(AsRef::as_ref))
+                .expect("CommitState must have at least one variant")
+        } else {
+            // Genesis fallback: CS == promoted(AS)
+            self.auth_state
+                .get(self.hash_alg)
+                .or_else(|| {
+                    self.auth_state
+                        .0
+                        .variants()
+                        .values()
+                        .next()
+                        .map(AsRef::as_ref)
+                })
+                .expect("AuthState must have at least one variant")
+        };
         let expected = pre
             .get(self.hash_alg)
             .or_else(|| pre.0.variants().values().next().map(AsRef::as_ref))
-            .expect("pre AuthState must have at least one variant");
+            .expect("pre CommitState must have at least one variant");
         if current != expected {
             return Err(Error::InvalidPrior);
         }
@@ -1071,7 +1110,7 @@ mod tests {
     // ========================================================================
 
     fn make_key_add_tx(
-        pre: &AuthState,
+        pre: &CommitState,
         new_key: &Key,
         signer: &Thumbprint,
     ) -> crate::transaction::Transaction {
@@ -1083,7 +1122,7 @@ mod tests {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         // Create dummy raw CozJson for test transactions
-        let as_bytes = pre
+        let cs_bytes = pre
             .get(HashAlg::Sha256)
             .or_else(|| {
                 pre.as_multihash()
@@ -1092,14 +1131,14 @@ mod tests {
                     .next()
                     .map(AsRef::as_ref)
             })
-            .expect("AuthState must have at least one variant");
+            .expect("CommitState must have at least one variant");
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(as_bytes),
+                "pre": Base64UrlUnpadded::encode_string(cs_bytes),
                 "id": new_key.tmb.to_b64()
             }),
             sig: vec![0; 64],
@@ -1123,7 +1162,7 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1144,7 +1183,7 @@ mod tests {
             .get(principal.hash_alg())
             .unwrap()
             .to_vec();
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1168,7 +1207,7 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Wrong pre value
-        let wrong_pre = AuthState(MultihashDigest::from_single(
+        let wrong_pre = CommitState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xFF; 32],
         ));
@@ -1185,7 +1224,7 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1280,7 +1319,7 @@ mod tests {
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
 
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
 
         let tx = Transaction {
             kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
@@ -1312,7 +1351,7 @@ mod tests {
 
         use crate::transaction::{Transaction, TransactionKind};
 
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
 
         let tx = Transaction {
             kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
@@ -1339,7 +1378,7 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
         let mut key2 = make_test_key(0x22);
         key2.first_seen = 0; // Caller may not set this
 
@@ -1368,7 +1407,7 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
 
         // Revoke key2 (self-revoke)
         let tx = Transaction {
@@ -1402,7 +1441,7 @@ mod tests {
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
         // Apply a key/create transaction with now=5000
-        let pre = principal.auth_state().clone();
+        let pre = principal.cs().unwrap().clone();
         let key2 = make_test_key(0x22);
 
         use coz::Czd;

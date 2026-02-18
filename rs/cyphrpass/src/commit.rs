@@ -1,11 +1,11 @@
 //! Commit types for atomic transaction bundles.
 //!
-//! Per SPEC §4.2.1, a Commit is an atomic bundle of transactions.
-//! The Transaction State (TS) is computed as the Merkle root of only
-//! the transactions in a single commit, not cumulatively.
+//! Per SPEC §4, a Commit is an atomic bundle of transactions.
+//! The Commit ID is the Merkle root of only the transactions in a
+//! single commit, not cumulatively.
 
 use crate::state::{
-    AuthState, HashAlg, PrincipalState, TaggedCzd, TransactionState, compute_ts_tagged,
+    AuthState, CommitID, CommitState, HashAlg, PrincipalState, TaggedCzd, compute_commit_id_tagged,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -15,20 +15,22 @@ use crate::transaction::VerifiedTransaction;
 
 /// A finalized, atomic bundle of transactions.
 ///
-/// Per SPEC §4.2.1:
-/// - `TS = MR(sort(czd₀, czd₁, ...))` for transactions in this commit only
-/// - The last transaction has `commit: true` in its payload
-/// - `pre` of first transaction references previous commit's AS (or PR for genesis)
+/// Per SPEC §4:
+/// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for transactions in this commit only
+/// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
+/// - `pre` of first transaction references previous commit's CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
 pub struct Commit {
     /// The verified transactions in this commit.
     transactions: Vec<VerifiedTransaction>,
-    /// Transaction State: Merkle root of transaction czds.
-    ts: TransactionState,
+    /// Commit ID: Merkle root of transaction czds.
+    commit_id: CommitID,
     /// Auth State at the end of this commit.
     auth_state: AuthState,
+    /// Commit State: MR(AS, Commit ID).
+    cs: CommitState,
     /// Principal State at the end of this commit.
     ps: PrincipalState,
 }
@@ -42,8 +44,9 @@ impl Commit {
     /// the normal flow which validates this invariant.
     pub(crate) fn new(
         transactions: Vec<VerifiedTransaction>,
-        ts: TransactionState,
+        commit_id: CommitID,
         auth_state: AuthState,
+        cs: CommitState,
         ps: PrincipalState,
     ) -> Self {
         debug_assert!(
@@ -52,8 +55,9 @@ impl Commit {
         );
         Self {
             transactions,
-            ts,
+            commit_id,
             auth_state,
+            cs,
             ps,
         }
     }
@@ -63,9 +67,14 @@ impl Commit {
         &self.transactions
     }
 
-    /// Get the Transaction State (Merkle root of this commit's czds).
-    pub fn ts(&self) -> &TransactionState {
-        &self.ts
+    /// Get the Commit ID (Merkle root of this commit's czds).
+    pub fn commit_id(&self) -> &CommitID {
+        &self.commit_id
+    }
+
+    /// Get the Commit State: MR(AS, Commit ID).
+    pub fn cs(&self) -> &CommitState {
+        &self.cs
     }
 
     /// Get the Auth State at the end of this commit.
@@ -138,10 +147,10 @@ impl PendingCommit {
         self.transactions.len()
     }
 
-    /// Compute the Transaction State for the current pending transactions.
+    /// Compute the Commit ID for the current pending transactions.
     ///
     /// Returns `None` if no transactions have been added.
-    pub fn compute_ts(&self) -> Option<TransactionState> {
+    pub fn compute_commit_id(&self) -> Option<CommitID> {
         if self.transactions.is_empty() {
             return None;
         }
@@ -151,7 +160,7 @@ impl PendingCommit {
             .iter()
             .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
             .collect();
-        compute_ts_tagged(&tagged_czds, None, &[self.hash_alg])
+        compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -159,25 +168,37 @@ impl PendingCommit {
     /// # Arguments
     ///
     /// * `auth_state` - The computed Auth State after all transactions
+    /// * `cs` - The computed Commit State: MR(AS, Commit ID)
     /// * `ps` - The computed Principal State after all transactions
     ///
     /// # Errors
     ///
     /// Returns `None` if no transactions exist.
-    pub fn finalize(self, auth_state: AuthState, ps: PrincipalState) -> Option<Commit> {
+    pub fn finalize(
+        self,
+        auth_state: AuthState,
+        cs: CommitState,
+        ps: PrincipalState,
+    ) -> Option<Commit> {
         if self.transactions.is_empty() {
             return None;
         }
 
-        // Compute TS from all transaction czds with algorithm tagging
+        // Compute Commit ID from all transaction czds with algorithm tagging
         let tagged_czds: Vec<TaggedCzd<'_>> = self
             .transactions
             .iter()
             .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
             .collect();
-        let ts = compute_ts_tagged(&tagged_czds, None, &[self.hash_alg])?;
+        let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])?;
 
-        Some(Commit::new(self.transactions, ts, auth_state, ps))
+        Some(Commit::new(
+            self.transactions,
+            commit_id,
+            auth_state,
+            cs,
+            ps,
+        ))
     }
 
     /// Consume the pending commit and return the transactions.
@@ -236,7 +257,7 @@ mod tests {
         let pending = PendingCommit::new(HashAlg::Sha256);
         assert!(pending.is_empty());
         assert_eq!(pending.len(), 0);
-        assert!(pending.compute_ts().is_none());
+        assert!(pending.compute_commit_id().is_none());
     }
 
     #[test]
@@ -254,15 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_compute_ts_returns_merkle_root() {
+    fn pending_commit_compute_commit_id_returns_merkle_root() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         let tx1 = make_test_tx(false, 0x01);
         pending.push(tx1);
 
-        let ts = pending.compute_ts();
-        assert!(ts.is_some());
-        // TS should be 32 bytes (SHA256)
-        assert_eq!(ts.unwrap().get(HashAlg::Sha256).unwrap().len(), 32);
+        let commit_id = pending.compute_commit_id();
+        assert!(commit_id.is_some());
+        // Commit ID should be 32 bytes (SHA256)
+        assert_eq!(commit_id.unwrap().get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
     #[test]
@@ -275,17 +296,22 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
+        let cs = CommitState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xCC; 32],
+        ));
         let ps = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_state.clone(), ps.clone());
+        let commit = pending.finalize(auth_state.clone(), cs.clone(), ps.clone());
         assert!(commit.is_some());
 
         let commit = commit.unwrap();
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.cs(), &cs);
         assert_eq!(commit.ps(), &ps);
     }
 
@@ -300,12 +326,16 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
+        let cs = CommitState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xCC; 32],
+        ));
         let ps = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_state, ps);
+        let result = pending.finalize(auth_state, cs, ps);
         assert!(
             result.is_some(),
             "finalize should succeed without finalizer marker"
@@ -320,12 +350,16 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
+        let cs = CommitState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xCC; 32],
+        ));
         let ps = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_state, ps);
+        let result = pending.finalize(auth_state, cs, ps);
         assert!(result.is_none(), "should fail when empty");
     }
 
@@ -352,24 +386,31 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
+        let cs = CommitState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xCC; 32],
+        ));
         let ps = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_state.clone(), ps.clone()).unwrap();
+        let commit = pending
+            .finalize(auth_state.clone(), cs.clone(), ps.clone())
+            .unwrap();
 
         // Test all accessors
         assert_eq!(commit.transactions().len(), 1);
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.cs(), &cs);
         assert_eq!(commit.ps(), &ps);
-        assert_eq!(commit.ts().get(HashAlg::Sha256).unwrap().len(), 32);
+        assert_eq!(commit.commit_id().get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
     #[test]
-    fn commit_multi_transaction_computes_correct_ts() {
+    fn commit_multi_transaction_computes_correct_commit_id() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         pending.push(make_test_tx(false, 0x01));
         pending.push(make_test_tx(false, 0x02));
@@ -379,16 +420,20 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
+        let cs = CommitState(MultihashDigest::from_single(
+            HashAlg::Sha256,
+            vec![0xCC; 32],
+        ));
         let ps = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_state, ps).unwrap();
+        let commit = pending.finalize(auth_state, cs, ps).unwrap();
         assert_eq!(commit.len(), 3);
 
-        // TS should be Merkle root of all 3 transaction czds
-        let ts = commit.ts();
-        assert_eq!(ts.get(HashAlg::Sha256).unwrap().len(), 32);
+        // Commit ID should be Merkle root of all 3 transaction czds
+        let cid = commit.commit_id();
+        assert_eq!(cid.get(HashAlg::Sha256).unwrap().len(), 32);
     }
 }
