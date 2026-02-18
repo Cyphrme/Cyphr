@@ -163,11 +163,11 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    **4a: Intent struct redesign** — Add new types, keep legacy bridge
    - [x] **Rust `intent.rs`**: Add `CommitIntent` + `TxIntent` types, `cs` field in `ExpectedAssertions`
    - [x] **Go `intent.go`**: Mirror Rust struct changes, rename `TS` → `CommitID`
-   - [ ] **Rust `intent.rs`**: Unify actions — `action: Option` + `action_step: Vec` → `action: Vec<ActionIntent>`
-   - [ ] **Go `intent.go`**: Mirror action unification
-   - [ ] **Rust `golden.rs`**: Update generator refs (`action.as_ref()` → `action.first()`, `action_step` → `action`)
-   - [ ] **Rust `intent.rs`**: Remove legacy types (`PayIntent`, `CryptoIntent`, `StepIntent`) and old fields
-   - [ ] **Go `intent.go`**: Remove legacy types and old fields
+   - [x] **Rust `intent.rs`**: Unify actions — `action: Option` + `action_step: Vec` → `action: Vec<ActionIntent>`
+   - [x] **Go `intent.go`**: Mirror action unification
+   - [x] **Rust `golden.rs`**: Update generator refs (`action.as_ref()` → `action.first()`, `action_step` → `action`)
+   - [x] **Rust `intent.rs`**: Remove legacy types (`PayIntent`, `CryptoIntent`, `StepIntent`) and old fields
+   - [x] **Go `intent.go`**: Remove legacy types and old fields
 
    **4b: Generator fixes** — Fix bugs and dead code in `golden.rs`
    - [ ] Fix `commit_id` always-`None` bug (L1214: `principal.transactions().last().and(None)`)

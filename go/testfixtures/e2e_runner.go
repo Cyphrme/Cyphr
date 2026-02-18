@@ -68,18 +68,18 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 
 	// Build and apply transactions/actions based on intent type
 	var applyErr error
-	if test.IsMultiStep() {
-		applyErr = applyMultiStep(pool, principal, test)
-	} else if test.Pay != nil && test.Crypto != nil {
-		applyErr = applySingleStep(pool, principal, test)
+	if len(test.Commit) > 1 {
+		applyErr = applyMultiCommit(pool, principal, test)
+	} else if len(test.Commit) == 1 {
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], test.Override)
 	}
 
 	// Apply actions if present
 	if applyErr == nil && test.HasAction() {
-		if test.IsMultiAction() {
+		if len(test.Action) > 1 {
 			applyErr = applyMultiAction(pool, principal, test)
-		} else if test.Action != nil {
-			applyErr = applySingleAction(pool, principal, test)
+		} else {
+			applyErr = applySingleAction(pool, principal, &test.Action[0])
 		}
 	}
 
@@ -130,15 +130,12 @@ func resolveGenesisFromNames(pool *Pool, names []string) ([]*coz.Key, error) {
 	return keys, nil
 }
 
-// applySingleStep applies a single transaction from intent.
-func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
-	pay := test.Pay
-	crypto := test.Crypto
-
+// applySingleCommit applies a single transaction from a TxIntent.
+func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent, override *OverrideIntent) error {
 	// Get signer key
-	signerPool := pool.Get(crypto.Signer)
+	signerPool := pool.Get(tx.Signer)
 	if signerPool == nil {
-		return fmt.Errorf("signer %q not found in pool", crypto.Signer)
+		return fmt.Errorf("signer %q not found in pool", tx.Signer)
 	}
 	signerKey, err := signerPool.ToSigningKey()
 	if err != nil {
@@ -149,28 +146,27 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 	if principal.CS() == nil {
 		return fmt.Errorf("principal has no commit state")
 	}
-	payObj := buildTransactionPay(pay, signerKey.Tmb, *principal.CS())
+	payObj := buildTransactionPay(tx, signerKey.Tmb, *principal.CS())
 
 	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
-	if crypto.Target != "" && (strings.Contains(pay.Typ, "key/create") || strings.Contains(pay.Typ, "key/add")) {
-		targetPool := pool.Get(crypto.Target)
+	if tx.Target != "" && (strings.Contains(tx.Typ, "key/create") || strings.Contains(tx.Typ, "key/add")) {
+		targetPool := pool.Get(tx.Target)
 		if targetPool == nil {
-			return fmt.Errorf("target %q not found in pool", crypto.Target)
+			return fmt.Errorf("target %q not found in pool", tx.Target)
 		}
 		targetKey, err = targetPool.ToCozKey()
 		if err != nil {
 			return fmt.Errorf("target key: %w", err)
 		}
-		// Set id field to target thumbprint
 		payObj["id"] = targetKey.Tmb.String()
 	}
 
 	// Handle target key for key/delete or key/revoke
-	if crypto.Target != "" && (strings.Contains(pay.Typ, "key/delete") || strings.Contains(pay.Typ, "key/revoke")) {
-		targetPool := pool.Get(crypto.Target)
+	if tx.Target != "" && (strings.Contains(tx.Typ, "key/delete") || strings.Contains(tx.Typ, "key/revoke")) {
+		targetPool := pool.Get(tx.Target)
 		if targetPool == nil {
-			return fmt.Errorf("target %q not found in pool", crypto.Target)
+			return fmt.Errorf("target %q not found in pool", tx.Target)
 		}
 		var targetCoz *coz.Key
 		targetCoz, err = targetPool.ToCozKey()
@@ -180,18 +176,18 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 		payObj["id"] = targetCoz.Tmb.String()
 	}
 
-	// Apply override if present
-	if test.Override != nil {
-		if test.Override.Pre != "" {
-			payObj["pre"] = test.Override.Pre
+	// Apply override if present (for error tests)
+	if override != nil {
+		if override.Pre != "" {
+			payObj["pre"] = override.Pre
 		}
-		if test.Override.Tmb != "" {
-			payObj["tmb"] = test.Override.Tmb
+		if override.Tmb != "" {
+			payObj["tmb"] = override.Tmb
 		}
 	}
 
 	// Handle principal/create: id is self-referential (current AS)
-	if strings.Contains(pay.Typ, "principal/create") {
+	if strings.Contains(tx.Typ, "principal/create") {
 		payObj["id"] = principal.AS().Tagged()
 	}
 
@@ -199,31 +195,25 @@ func applySingleStep(pool *Pool, principal *cyphrpass.Principal, test *TestInten
 	return signAndApplyTransaction(signerKey, payObj, targetKey, principal)
 }
 
-// applyMultiStep applies multiple transactions.
-func applyMultiStep(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
-	for i, step := range test.Step {
-		// Create a temporary single-step test
-		tempTest := &TestIntent{
-			Name:     fmt.Sprintf("%s_step_%d", test.Name, i),
-			Pay:      &step.Pay,
-			Crypto:   &step.Crypto,
-			Override: test.Override, // Apply override to last step if present
-		}
-		// Only apply override to last step
-		if i < len(test.Step)-1 {
-			tempTest.Override = nil
-		}
-		if err := applySingleStep(pool, principal, tempTest); err != nil {
-			return fmt.Errorf("step %d: %w", i, err)
+// applyMultiCommit applies multiple commits.
+func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
+	for i, commit := range test.Commit {
+		for j, tx := range commit.Tx {
+			// Apply override only to the last tx of the last commit
+			var override *OverrideIntent
+			if i == len(test.Commit)-1 && j == len(commit.Tx)-1 {
+				override = test.Override
+			}
+			if err := applySingleCommit(pool, principal, &tx, override); err != nil {
+				return fmt.Errorf("commit %d tx %d: %w", i, j, err)
+			}
 		}
 	}
 	return nil
 }
 
-// applySingleAction applies a single action from intent.
-func applySingleAction(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
-	action := test.Action
-
+// applySingleAction applies a single action.
+func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *ActionIntent) error {
 	// Get signer key
 	signerPool := pool.Get(action.Signer)
 	if signerPool == nil {
@@ -250,12 +240,8 @@ func applySingleAction(pool *Pool, principal *cyphrpass.Principal, test *TestInt
 
 // applyMultiAction applies multiple actions.
 func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
-	for i, action := range test.ActionStep {
-		tempTest := &TestIntent{
-			Name:   fmt.Sprintf("%s_action_%d", test.Name, i),
-			Action: &action,
-		}
-		if err := applySingleAction(pool, principal, tempTest); err != nil {
+	for i := range test.Action {
+		if err := applySingleAction(pool, principal, &test.Action[i]); err != nil {
 			return fmt.Errorf("action %d: %w", i, err)
 		}
 	}
@@ -263,32 +249,32 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(pay *PayIntent, signerTmb coz.B64, currentCS cyphrpass.CommitState) map[string]any {
+func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentCS cyphrpass.CommitState) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
-		"typ": pay.Typ,
-		"now": pay.Now,
+		"typ": tx.Typ,
+		"now": tx.Now,
 	}
 
 	// Add pre field (current commit state) for transactions that need it
-	if strings.Contains(pay.Typ, "key/create") ||
-		strings.Contains(pay.Typ, "key/add") ||
-		strings.Contains(pay.Typ, "key/delete") ||
-		strings.Contains(pay.Typ, "key/replace") ||
-		strings.Contains(pay.Typ, "key/revoke") ||
-		strings.Contains(pay.Typ, "principal/create") {
+	if strings.Contains(tx.Typ, "key/create") ||
+		strings.Contains(tx.Typ, "key/add") ||
+		strings.Contains(tx.Typ, "key/delete") ||
+		strings.Contains(tx.Typ, "key/replace") ||
+		strings.Contains(tx.Typ, "key/revoke") ||
+		strings.Contains(tx.Typ, "principal/create") {
 		payObj["pre"] = currentCS.Tagged()
 	}
 
 	// Add rvk field if present
-	if pay.Rvk != 0 {
-		payObj["rvk"] = pay.Rvk
+	if tx.Rvk != 0 {
+		payObj["rvk"] = tx.Rvk
 	}
 
 	// Add msg field if present
-	if pay.Msg != "" {
-		payObj["msg"] = pay.Msg
+	if tx.Msg != "" {
+		payObj["msg"] = tx.Msg
 	}
 
 	return payObj
@@ -453,17 +439,17 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 
 	// Apply all transactions/actions (same as RunE2ETest)
 	var applyErr error
-	if test.IsMultiStep() {
-		applyErr = applyMultiStep(pool, principal, test)
-	} else if test.Pay != nil && test.Crypto != nil {
-		applyErr = applySingleStep(pool, principal, test)
+	if len(test.Commit) > 1 {
+		applyErr = applyMultiCommit(pool, principal, test)
+	} else if len(test.Commit) == 1 {
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], nil)
 	}
 
 	if applyErr == nil && test.HasAction() {
-		if test.IsMultiAction() {
+		if len(test.Action) > 1 {
 			applyErr = applyMultiAction(pool, principal, test)
-		} else if test.Action != nil {
-			applyErr = applySingleAction(pool, principal, test)
+		} else {
+			applyErr = applySingleAction(pool, principal, &test.Action[0])
 		}
 	}
 
@@ -543,10 +529,10 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 
 	// Apply transactions if present
 	var applyErr error
-	if test.IsMultiStep() {
-		applyErr = applyMultiStep(pool, principal, test)
-	} else if test.Pay != nil && test.Crypto != nil {
-		applyErr = applySingleStep(pool, principal, test)
+	if len(test.Commit) > 1 {
+		applyErr = applyMultiCommit(pool, principal, test)
+	} else if len(test.Commit) == 1 {
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], nil)
 	}
 
 	if applyErr != nil {

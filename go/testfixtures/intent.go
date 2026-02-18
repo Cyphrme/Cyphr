@@ -16,10 +16,6 @@ type Intent struct {
 }
 
 // TestIntent is a single test case intent.
-//
-// Supports both the new v2 format (Commit + unified Action) and the legacy
-// format (Pay/Crypto/Step + Action/ActionStep). Legacy fields will be removed
-// once all TOML files are migrated and the generator/runner are rewritten.
 type TestIntent struct {
 	// Name is the test identifier.
 	Name string `toml:"name"`
@@ -28,32 +24,17 @@ type TestIntent struct {
 	// Setup contains optional modifiers (e.g., pre-revoke keys).
 	Setup *SetupIntent `toml:"setup,omitempty"`
 
-	// ── New canonical fields (v2) ──────────────────────────────
-
 	// Commit is the commit sequence. Each commit contains one or more
-	// transactions. Used by new [[test.commit]] / [[test.commit.tx]] format.
+	// transactions.
 	Commit []CommitIntent `toml:"commit,omitempty"`
-
-	// ── Legacy fields (bridge for runner + old TOML parsing) ───
-
-	// Pay is payload intent for single-step tests.
-	Pay *PayIntent `toml:"pay,omitempty"`
-	// Crypto is crypto intent for single-step tests.
-	Crypto *CryptoIntent `toml:"crypto,omitempty"`
-	// Step contains steps for multi-step transaction tests.
-	Step []StepIntent `toml:"step,omitempty"`
-	// Action is single action for single-action tests ([test.action]).
-	Action *ActionIntent `toml:"action,omitempty"`
-	// ActionStep contains action sequence for multi-action tests.
-	ActionStep []ActionIntent `toml:"action_step,omitempty"`
+	// Action contains the action sequence (Level 4).
+	Action []ActionIntent `toml:"action,omitempty"`
 
 	// Override contains override fields for error tests.
 	Override *OverrideIntent `toml:"override,omitempty"`
 	// Expected contains assertions about final state.
 	Expected *ExpectedAssertions `toml:"expected,omitempty"`
 }
-
-// ── New canonical types (v2) ──────────────────────────────────────
 
 // CommitIntent is a single commit containing one or more transactions.
 type CommitIntent struct {
@@ -62,7 +43,7 @@ type CommitIntent struct {
 }
 
 // TxIntent is a single transaction within a commit.
-// Merges the old PayIntent + CryptoIntent into one flat struct.
+// Flat struct merging the old PayIntent + CryptoIntent fields.
 type TxIntent struct {
 	// Typ is transaction type (e.g., "cyphr.me/key/create").
 	Typ string `toml:"typ"`
@@ -78,48 +59,12 @@ type TxIntent struct {
 	Rvk int64 `toml:"rvk,omitempty"`
 }
 
-// ── Legacy types (bridge for runner) ──────────────────────────────
-
 // SetupIntent contains setup modifiers for a test.
 type SetupIntent struct {
 	// RevokeKey is key name to pre-revoke before test.
 	RevokeKey string `toml:"revoke_key,omitempty"`
 	// RevokeAt is timestamp for the revocation.
 	RevokeAt int64 `toml:"revoke_at,omitempty"`
-}
-
-// PayIntent contains payload fields for a test step.
-//
-// Deprecated: use TxIntent instead. Kept for runner compatibility.
-type PayIntent struct {
-	// Typ is transaction/action type.
-	Typ string `toml:"typ"`
-	// Now is timestamp.
-	Now int64 `toml:"now"`
-	// Msg is optional message.
-	Msg string `toml:"msg,omitempty"`
-	// Rvk is optional revocation timestamp.
-	Rvk int64 `toml:"rvk,omitempty"`
-}
-
-// CryptoIntent contains crypto fields for a test step.
-//
-// Deprecated: use TxIntent instead. Kept for runner compatibility.
-type CryptoIntent struct {
-	// Signer is signer key name from pool.
-	Signer string `toml:"signer"`
-	// Target is target key name for key/add, key/revoke.
-	Target string `toml:"target,omitempty"`
-}
-
-// StepIntent is a single step in a multi-step test.
-//
-// Deprecated: use CommitIntent + TxIntent instead. Kept for runner compatibility.
-type StepIntent struct {
-	// Pay is payload intent.
-	Pay PayIntent `toml:"pay"`
-	// Crypto is crypto intent.
-	Crypto CryptoIntent `toml:"crypto"`
 }
 
 // ActionIntent is an action intent (Level 4).
@@ -201,34 +146,24 @@ func LoadIntentDir(dir string) ([]*Intent, error) {
 
 // ── Dispatch helpers ─────────────────────────────────────────────
 
-// HasCommits returns true if this test has commits (new v2 format).
+// HasCommits returns true if this test has commits.
 func (t *TestIntent) HasCommits() bool {
 	return len(t.Commit) > 0
 }
 
-// IsMultiStep returns true if this is a multi-step transaction test (legacy).
-func (t *TestIntent) IsMultiStep() bool {
-	return len(t.Step) > 0
-}
-
 // HasAction returns true if this test has actions.
 func (t *TestIntent) HasAction() bool {
-	return t.Action != nil || len(t.ActionStep) > 0
-}
-
-// IsMultiAction returns true if this test has multi-step actions.
-func (t *TestIntent) IsMultiAction() bool {
-	return len(t.ActionStep) > 0
+	return len(t.Action) > 0
 }
 
 // IsGenesisOnly returns true if this is a genesis-only test.
 func (t *TestIntent) IsGenesisOnly() bool {
-	return t.Pay == nil && len(t.Step) == 0 && t.Action == nil && len(t.ActionStep) == 0 && len(t.Commit) == 0
+	return len(t.Commit) == 0 && len(t.Action) == 0
 }
 
-// HasTxAndAction returns true if this test has both transaction and action.
+// HasTxAndAction returns true if this test has both transactions and actions.
 func (t *TestIntent) HasTxAndAction() bool {
-	return (t.Pay != nil || len(t.Commit) > 0) && (t.Action != nil || len(t.ActionStep) > 0)
+	return len(t.Commit) > 0 && len(t.Action) > 0
 }
 
 // IsErrorTest returns true if this test expects an error.

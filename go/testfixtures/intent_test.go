@@ -77,27 +77,32 @@ func TestLoadIntentDir(t *testing.T) {
 }
 
 func TestTestIntent_Helpers(t *testing.T) {
-	t.Run("IsMultiStep", func(t *testing.T) {
-		test := TestIntent{Step: []StepIntent{{}, {}}}
-		if !test.IsMultiStep() {
-			t.Error("should be multi-step")
+	t.Run("HasCommits", func(t *testing.T) {
+		test := TestIntent{Commit: []CommitIntent{{}, {}}}
+		if !test.HasCommits() {
+			t.Error("should have commits")
 		}
 
-		test2 := TestIntent{Pay: &PayIntent{}}
-		if test2.IsMultiStep() {
-			t.Error("should not be multi-step")
+		test2 := TestIntent{}
+		if test2.HasCommits() {
+			t.Error("should not have commits")
 		}
 	})
 
 	t.Run("HasAction", func(t *testing.T) {
-		test := TestIntent{Action: &ActionIntent{}}
+		test := TestIntent{Action: []ActionIntent{{}}}
 		if !test.HasAction() {
 			t.Error("should have action")
 		}
 
-		test2 := TestIntent{ActionStep: []ActionIntent{{}}}
+		test2 := TestIntent{Action: []ActionIntent{{}, {}}}
 		if !test2.HasAction() {
-			t.Error("should have action via action_step")
+			t.Error("should have action via multiple actions")
+		}
+
+		test3 := TestIntent{}
+		if test3.HasAction() {
+			t.Error("should not have action")
 		}
 	})
 
