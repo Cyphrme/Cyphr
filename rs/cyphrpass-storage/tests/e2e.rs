@@ -133,10 +133,10 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
         }
 
         // Compare state digests
-        if exp.ts != expected_commit.ts {
+        if exp.commit_id != expected_commit.commit_id {
             return Err(format!(
-                "commit {}: ts mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.ts, expected_commit.ts
+                "commit {}: commit_id mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.commit_id, expected_commit.commit_id
             ));
         }
 
@@ -144,6 +144,13 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
             return Err(format!(
                 "commit {}: as mismatch\n  exported: {:?}\n  expected: {:?}",
                 i, exp.auth_state, expected_commit.auth_state
+            ));
+        }
+
+        if exp.cs != expected_commit.cs {
+            return Err(format!(
+                "commit {}: cs mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.cs, expected_commit.cs
             ));
         }
 
@@ -298,8 +305,8 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] ts={}, as={}, ps={}",
-            commit0.ts, commit0.auth_state, commit0.ps
+            "  [0] commit_id={}, as={}, ps={}",
+            commit0.commit_id, commit0.auth_state, commit0.ps
         );
     }
 
@@ -802,7 +809,7 @@ fn e2e_dynamic_edge_cases() {
 /// state derivation across all supported algorithms.
 #[test]
 fn e2e_multihash_round_trip() {
-    use cyphrpass::state::{compute_as, compute_ks, compute_ps};
+    use cyphrpass::state::{compute_as, compute_cs, compute_ks, compute_ps};
 
     let pool = load_pool();
     let intent = load_e2e_intents("multihash_coherence.toml");
@@ -911,10 +918,9 @@ fn e2e_multihash_round_trip() {
         );
         eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
 
-        // --- Step 4: Full AS/PS recomputation verification ---
-        // Recompute AS from KS + TS
-        let ts = principal.current_ts();
-        let recomputed_as = compute_as(&recomputed_ks, ts, None, active_algs);
+        // --- Step 4: Full AS/CS/PS recomputation verification ---
+        // Recompute AS from KS
+        let recomputed_as = compute_as(&recomputed_ks, None, active_algs);
 
         for &alg in active_algs {
             assert_eq!(
@@ -926,8 +932,12 @@ fn e2e_multihash_round_trip() {
             );
         }
 
-        // Recompute PS from AS
-        let recomputed_ps = compute_ps(&recomputed_as, principal.data_state(), None, active_algs);
+        // Recompute CS from AS + Commit ID
+        let commit_id = principal.current_commit_id();
+        let recomputed_cs = compute_cs(&recomputed_as, commit_id, active_algs);
+
+        // Recompute PS from CS
+        let recomputed_ps = compute_ps(&recomputed_cs, principal.data_state(), None, active_algs);
 
         for &alg in active_algs {
             assert_eq!(

@@ -113,15 +113,31 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] **Go**: Update `ComputeAS()` — remove `ts` parameter
    - [x] **Go**: Update `ComputePS()` — take `CommitState` instead of `AuthState`
 
-2. **Phase 2: Integration** — Wire new types through Principal and Commit
-   - [ ] **Rust**: Update `Principal` struct — add `cs: Option<CommitState>`, rename `ts` to `commit_id`
-   - [ ] **Rust**: Update `finalize_current_commit()` — compute CS between AS and PS
-   - [ ] **Rust**: Update `Commit` struct — add `cs: CommitState`, rename `ts` to `commit_id`
-   - [ ] **Rust**: Update `PendingCommit` — rename `compute_ts()` to `compute_commit_id()`
-   - [ ] **Rust**: Add `Principal.cs()` accessor
-   - [ ] **Rust**: Update `TransactionKind` variants — `pre: AuthState` → `pre: CommitState`
-   - [ ] **Rust**: Update `extract_pre()` — return `CommitState` instead of `AuthState`
-   - [ ] **Rust**: Update `pre` validation in `apply_verified` — compare against `self.cs`
+2. **Phase 2a: Core Integration (Rust)** — Wire new types through Principal and Commit
+   - [x] **Rust**: Update `Principal` struct — add `cs: Option<CommitState>`, rename `ts` to `commit_id`
+   - [x] **Rust**: Update `finalize_current_commit()` — compute CS between AS and PS
+   - [x] **Rust**: Update `Commit` struct — add `cs: CommitState`, rename `ts` to `commit_id`
+   - [x] **Rust**: Update `PendingCommit` — rename `compute_ts()` to `compute_commit_id()`
+   - [x] **Rust**: Add `Principal.cs()` accessor
+   - [x] **Rust**: Update `TransactionKind` variants — `pre: AuthState` → `pre: CommitState`
+   - [x] **Rust**: Update `extract_pre()` — return `CommitState` instead of `AuthState`
+   - [x] **Rust**: Update `pre` validation in `apply_verified` — compare against `self.cs`
+
+3. **Phase 2b: Downstream Integration (Rust)** — Storage, CLI, Test Fixtures
+
+   > [!WARNING]
+   > Scope creep: This phase was originally Phase 3/4 work but was performed continuously with Phase 2a.
+   - [x] **Storage**: Update `CommitEntry` struct and `export.rs`
+   - [x] **CLI**: Update `key` command `pre` extraction
+   - [x] **Fixtures**: Update `GoldenExpected` and `Intent` structs
+   - [x] **E2E**: Update `e2e.rs` references
+
+4. **Phase 2c: Downstream Verification (Rust)** — Verify the changes from 2b
+   - [x] **Unit Tests**: Verify `cargo test --workspace` passes (except golden data)
+   - [x] **CLI Verification**: Manual check of `cyphrpass-cli key` commands → **BUG FOUND** (Finding 1)
+   - [x] **E2E Verification**: Manual check of `e2e.rs` logic → **GAP FOUND** (Finding 3)
+
+5. **Phase 2d: Core Integration (Go)** — Wire new types (Pending)
    - [ ] **Go**: Update `Principal` struct — add `cs *CommitState`, rename `ts` fields
    - [ ] **Go**: Update `recomputeState()` — compute CS between AS and PS
    - [ ] **Go**: Add `(*Principal).CS()` accessor
@@ -129,14 +145,14 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [ ] **Go**: Update `pre` validation in `Apply` — compare against CS
    - [ ] **Go**: Rename `currentCommitCzds` references to use `CommitID` terminology
 
-3. **Phase 3: Cleanup & Verification** — Comment/doc updates, unit tests, compilation checks
+6. **Phase 3: Cleanup & Verification** — Comment/doc updates, unit tests, compilation checks
    - [ ] Update all doc comments with new terminology (TS → Commit ID, AS formulas)
    - [ ] Update Rust unit tests in `commit.rs` and `state.rs`
    - [ ] Update Go unit tests in `state_test.go`
    - [ ] Verify both `cargo test` and `go test ./...` compile (tests may still fail on golden fixtures)
    - [ ] Verify non-golden unit tests pass in both languages
 
-4. **Phase 4: Golden Fixture Regeneration** — Update test fixtures to match new state computation
+7. **Phase 4: Golden Fixture Regeneration** — Update test fixtures to match new state computation
    - [ ] Identify all golden fixture files in both languages
    - [ ] Update fixture generator(s) to use new computation hierarchy
    - [ ] Regenerate golden fixtures
@@ -172,9 +188,15 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 ## Technical Debt
 
-| Item                                            | Severity | Why Introduced | Follow-Up | Resolved |
-| :---------------------------------------------- | :------- | :------------- | :-------- | :------: |
-| (none currently — fixture regen is now Phase 4) | —        | —              | —         |    —     |
+| Item                                                | Severity | Why Introduced                                                  | Follow-Up                                                                                 | Resolved |
+| :-------------------------------------------------- | :------- | :-------------------------------------------------------------- | :---------------------------------------------------------------------------------------- | :------: |
+| CLI `add`/`revoke` missing `complete_transaction()` | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands |   [x]    |
+| Stale `pre` comments say "auth state"               | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                    |   [x]    |
+| `compare_commits` missing `cs` field check          | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                         |   [x]    |
+
+## Deviation Log
+
+- **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphrpass-storage`, `cyphrpass-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
 
 ## Retrospective
 

@@ -165,8 +165,8 @@ fn add(
 
     // Build pay JSON for key/create
     let now = current_timestamp();
-    // Get pre (auth state before transaction) in alg:digest format
-    let pre = principal.auth_state_tagged();
+    // Get pre (commit state before transaction) in alg:digest format
+    let pre = principal.commit_state_tagged();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -194,8 +194,9 @@ fn add(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal (auto-finalizes due to commit: true)
+    // Apply transaction to principal, then finalize the commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
+    principal.complete_transaction()?;
 
     // Store updated state
     let new_commits = export_commits(&principal);
@@ -261,8 +262,8 @@ fn revoke(
 
     // Build pay JSON for key/revoke
     let now = current_timestamp();
-    // Get pre (auth state before transaction) in alg:digest format
-    let pre = principal.auth_state_tagged();
+    // Get pre (commit state before transaction) in alg:digest format
+    let pre = principal.commit_state_tagged();
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -291,8 +292,9 @@ fn revoke(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal (auto-finalizes due to commit: true)
+    // Apply transaction to principal, then finalize the commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
+    principal.complete_transaction()?;
 
     // Store updated state
     let new_commits = export_commits(&principal);
