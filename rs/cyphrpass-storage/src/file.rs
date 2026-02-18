@@ -143,8 +143,9 @@ impl FileStore {
     ///
     /// Each commit is stored as a single JSON line containing:
     /// - `txs`: Array of transaction entries
-    /// - `ts`: Transaction State (base64url)
+    /// - `commit_id`: Commit ID (base64url)
     /// - `as`: Auth State (base64url)
+    /// - `cs`: Commit State (base64url)
     /// - `ps`: Principal State (base64url)
     pub fn append_commit(
         &self,

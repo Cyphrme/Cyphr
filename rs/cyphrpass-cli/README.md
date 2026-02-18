@@ -152,8 +152,9 @@ cyphrpass export --identity ABC123... --output my-identity.jsonl
 Identities are stored as JSONL files (one commit per line) in the storage directory. Each commit contains:
 
 - `txs`: Array of signed transactions
-- `ts`: Transaction State digest
+- `commit_id`: Commit ID digest
 - `as`: Auth State digest
+- `cs`: Commit State digest
 - `ps`: Principal State digest
 
 See [SPEC.md](../SPEC.md) for protocol details.

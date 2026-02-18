@@ -51,14 +51,16 @@ type GoldenKey struct {
 }
 
 // GoldenCommit is an atomic transaction bundle from a golden file.
-// Matches the Rust fixture format: {txs, ts, as, ps}.
+// Matches the Rust fixture format: {txs, commit_id, as, cs, ps}.
 type GoldenCommit struct {
 	// Txs contains the transactions in this commit.
 	Txs []json.RawMessage `json:"txs"`
-	// TS is the transaction state after this commit (base64url).
-	TS string `json:"ts,omitempty"`
+	// CommitID is the commit identity after this commit (base64url).
+	CommitID string `json:"commit_id,omitempty"`
 	// AS is the auth state after this commit (base64url).
 	AS string `json:"as,omitempty"`
+	// CS is the commit state after this commit (base64url).
+	CS string `json:"cs,omitempty"`
 	// PS is the principal state after this commit (base64url).
 	PS string `json:"ps,omitempty"`
 }
@@ -75,7 +77,9 @@ type GoldenExpected struct {
 	AS string `json:"as,omitempty"`
 	// PS is the expected principal state digest (first variant).
 	PS string `json:"ps,omitempty"`
-	// TS is the expected transaction state digest.
+	// CommitID is the expected commit ID digest.
+	CommitID string `json:"commit_id,omitempty"`
+	// TS is a backwards-compatible alias for CommitID (legacy golden files).
 	TS string `json:"ts,omitempty"`
 	// DS is the expected data state digest.
 	DS string `json:"ds,omitempty"`

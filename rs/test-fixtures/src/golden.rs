@@ -10,10 +10,10 @@
 //!
 //! The generator:
 //! 1. Creates a Principal from genesis keys (auto-promotion per spec)
-//! 2. For each transaction, captures `pre` from current auth_state
+//! 2. For each transaction, captures `pre` from current commit state
 //! 3. Builds and signs the Coz message
 //! 4. Applies the transaction to the Principal
-//! 5. Extracts final state digests (ks, as, ps, ts)
+//! 5. Extracts final state digests (ks, as, cs, ps, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphrpass_storage::CommitEntry;

@@ -149,12 +149,13 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] **Go**: Update `e2e_runner.go` — multihash coherence, `buildTransactionPay`
    - [x] **Go**: Add `CommitState.Tagged()` method for wire-format `pre` field
 
-6. **Phase 3: Cleanup & Verification** — Comment/doc updates, unit tests, compilation checks
-   - [ ] Update all doc comments with new terminology (TS → Commit ID, AS formulas)
-   - [ ] Update Rust unit tests in `commit.rs` and `state.rs`
-   - [ ] Update Go unit tests in `state_test.go`
-   - [ ] Verify both `cargo test` and `go test ./...` compile (tests may still fail on golden fixtures)
-   - [ ] Verify non-golden unit tests pass in both languages
+6. **Phase 3: Cleanup & Verification** — Comment/doc updates, compilation checks
+   - [x] Update all doc comments with new terminology (TS → Commit ID, AS formulas)
+   - [x] Verify Rust unit tests pass (`cargo test -p cyphrpass --lib` — 64/64)
+   - [x] Verify Go unit tests pass (`go test ./cyphrpass/...` — 26/26)
+   - [x] Verify both `cargo build --workspace` and `go build ./...` compile cleanly
+   - [x] Verify non-golden unit tests pass in both languages
+   - [x] Stale reference sweep: zero `TransactionState`/`ComputeTS`/`.TS()` hits
 
 7. **Phase 4: Golden Fixture Regeneration** — Update test fixtures to match new state computation
    - [ ] Identify all golden fixture files in both languages

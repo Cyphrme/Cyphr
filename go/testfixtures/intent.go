@@ -107,7 +107,7 @@ type ExpectedAssertions struct {
 	AS string `toml:"as,omitempty"`
 	// PS is expected principal state digest.
 	PS string `toml:"ps,omitempty"`
-	// TS is expected transaction state digest.
+	// TS is expected commit ID digest (legacy alias for commit_id).
 	TS string `toml:"ts,omitempty"`
 	// Error is expected error for error tests.
 	Error string `toml:"error,omitempty"`
