@@ -6,7 +6,7 @@ import "github.com/cyphrme/coz"
 // This function is intended ONLY for testing where signatures are validated
 // externally or cannot be generated (e.g., fixture-based tests).
 //
-// Production code should use VerifyTransaction + ApplyVerified instead.
+// Production code should use VerifyTransaction + ApplyTransaction instead.
 //
 // # Errors
 //

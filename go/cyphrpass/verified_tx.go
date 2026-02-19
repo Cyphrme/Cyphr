@@ -8,7 +8,7 @@ import (
 
 // VerifiedTx is a transaction that has been cryptographically verified.
 // It can only be created through Principal.VerifyTransaction.
-// This type ensures that ApplyVerified can never receive an unverified transaction.
+// This type ensures that ApplyTransaction can never receive an unverified transaction.
 type VerifiedTx struct {
 	tx     *Transaction // unexported: can only be constructed via VerifyTransaction
 	signer *Key         // the key that verified this transaction
@@ -110,20 +110,4 @@ func buildRawEntry(cz *coz.Coz, newKey *coz.Key) (json.RawMessage, error) {
 	}
 
 	return json.Marshal(entry)
-}
-
-// ApplyVerified applies a verified transaction as a single-transaction commit.
-//
-// This is a convenience wrapper around [Principal.ApplyTransaction].
-// For multi-transaction commits, use [Principal.BeginCommit] instead.
-//
-// # Errors
-//
-//   - ErrTimestampPast: Transaction timestamp is older than latest seen
-//   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current CS
-//   - ErrNoActiveKeys: Would leave principal with no active keys
-//   - ErrDuplicateKey: Adding key already in KS
-func (p *Principal) ApplyVerified(vt *VerifiedTx) (*Commit, error) {
-	return p.ApplyTransaction(vt)
 }

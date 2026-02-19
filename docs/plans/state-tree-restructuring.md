@@ -273,6 +273,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 | `unwrap()`/`expect()` panics in library code                                 | LOW      | Carried forward from pre-restructuring code                                                                         | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code         |   [ ]    |
 | Double `resolve_key` in `build_action_coz` after DRY refactor                | LOW      | `build_action_pay_json` calls `resolve_key` internally, then `build_action_coz` calls again for signing             | Refactor if signing API evolves to accept signer directly; optimizing now would complicate lifetimes |   [ ]    |
 | Unused `_alg` return from `build_action_pay_json`                            | LOW      | Helper returns `(Vec<u8>, String)` but alg unused at both call sites                                                | Remove second tuple element if no consumer materializes                                              |   [ ]    |
+| `RecordAction` recomputes PS inline (not through commit lifecycle)           | LOW      | Actions don't participate in commits per SPEC §4; they have their own DS/PS recomputation                           | Revisit if actions ever need commit bundling (unlikely per spec); may unify when spec evolves        |   [ ]    |
 
 ## Deviation Log
 

@@ -113,16 +113,6 @@ func ReplayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error 
 	return replayAction(principal, entry, index)
 }
 
-// ReplayEntryWithCommit replays a single entry.
-// Deprecated: Use [ReplayEntry] instead — commit boundaries are now managed
-// by [CommitBatch], not per-entry flags.
-func ReplayEntryWithCommit(principal *cyphrpass.Principal, entry *Entry, index int, _ bool) error {
-	if entry.IsTransaction() {
-		return replayTransaction(principal, entry, index)
-	}
-	return replayAction(principal, entry, index)
-}
-
 // replayTransaction replays a transaction entry.
 func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) error {
 	// Extract pay and sig bytes
@@ -168,7 +158,7 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 	// Note: IsCommit is derived from the payload's commit field during parsing.
 	// No external assignment needed - payload is source of truth (SPEC §4.2.1).
 
-	if _, err := principal.ApplyVerified(verifiedTx); err != nil {
+	if _, err := principal.ApplyTransaction(verifiedTx); err != nil {
 		return &LoadError{
 			Index:   index,
 			Message: fmt.Sprintf("apply failed: %v", err),

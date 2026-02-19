@@ -449,7 +449,7 @@ func (p *Principal) Actions() []*Action {
 }
 
 // applyTransactionInternal applies a transaction to mutate principal state.
-// This is an internal method; use ApplyVerified for the public API.
+// This is an internal method; use ApplyTransaction for the public API.
 //
 // Timestamp validation (SPEC §14.1):
 //   - Rejects if tx.Now < latestTimestamp (TimestampPast)

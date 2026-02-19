@@ -48,8 +48,8 @@ if err != nil {
     // Handle: ErrInvalidSignature, ErrUnknownKey, ErrKeyRevoked, etc.
 }
 
-// Apply verified transaction (safe API)
-err = principal.ApplyVerified(vtx)
+// Apply verified transaction as atomic commit
+commit, err := principal.ApplyTransaction(vtx)
 ```
 
 ### Record Actions (Level 4)
@@ -91,7 +91,8 @@ err := principal.RecordAction(action)
 | Method                            | Description                           |
 | --------------------------------- | ------------------------------------- |
 | `VerifyTransaction(coz, newKey)`  | Verify signature, return `VerifiedTx` |
-| `ApplyVerified(vtx)`              | Apply verified transaction (safe API) |
+| `ApplyTransaction(vtx)`           | Apply verified tx as atomic commit    |
+| `BeginCommit()`                   | Start multi-tx commit batch           |
 | `ApplyTransactionUnsafe(tx, key)` | Testing only—no signature check       |
 
 ### Keys
@@ -108,10 +109,10 @@ err := principal.RecordAction(action)
 ```go
 import "errors"
 
-err := principal.ApplyVerified(vtx)
+commit, err := principal.ApplyTransaction(vtx)
 switch {
 case errors.Is(err, cyphrpass.ErrInvalidPrior):
-    // Transaction pre doesn't match current AS
+    // Transaction pre doesn't match current CS
 case errors.Is(err, cyphrpass.ErrTimestampPast):
     // Transaction timestamp older than latest
 case errors.Is(err, cyphrpass.ErrDuplicateKey):
