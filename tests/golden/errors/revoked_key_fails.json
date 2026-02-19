@@ -38,8 +38,9 @@
           }
         }
       ],
-      "ts": "",
+      "commit_id": "",
       "as": "",
+      "cs": "",
       "ps": ""
     }
   ],
@@ -50,6 +51,7 @@
     "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "ps": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "cs": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "error": "KeyRevoked"
   }

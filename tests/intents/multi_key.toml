@@ -5,14 +5,12 @@
 name      = "add_third_key_to_dual_key_account"
 principal = ["alice", "bob"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "alice"
 target = "carol"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -23,14 +21,12 @@ level     = 3
 name      = "replace_one_of_two_keys"
 principal = ["alice", "bob"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/replace"
-
-[test.crypto]
 signer = "alice"
 target = "carol"
+typ    = "cyphr.me/key/replace"
 
 [test.expected]
 key_count = 2
@@ -41,14 +37,12 @@ level     = 3
 name      = "non_signer_adds_key"
 principal = ["alice", "bob"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "bob"
 target = "carol"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -59,14 +53,12 @@ level     = 3
 name      = "delete_from_triple_key_leaves_two"
 principal = ["alice", "bob", "carol"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/delete"
-
-[test.crypto]
 signer = "alice"
 target = "bob"
+typ    = "cyphr.me/key/delete"
 
 [test.expected]
 key_count = 2

@@ -1164,17 +1164,14 @@ impl<'a> Generator<'a> {
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
-        let commit_id = principal.current_commit_id().map(|cid| {
-            let d = cid
-                .get(first_alg)
-                .expect("CommitID must have digest for active alg");
-            format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d))
+        let commit_id = principal.current_commit_id().and_then(|cid| {
+            cid.get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
-        let cs = principal.cs().map(|cs_val| {
-            let d = cs_val
+        let cs = principal.cs().and_then(|cs_val| {
+            cs_val
                 .get(first_alg)
-                .expect("CommitState must have digest for active alg");
-            format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d))
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal

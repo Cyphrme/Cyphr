@@ -174,29 +174,29 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Add `cs` computation and emission to `build_expected_from_principal`
    - [x] Add `cs` field to `GoldenExpected` (Rust `golden.rs`)
    - [x] Fix DRY violation: `apply_action_to_principal` rebuilds pay JSON — reuse from `build_action_coz`
-   - [x] ~~Remove deprecated `entries` field from `Golden` struct (Rust)~~ *(already absent — resolved in 4a)*
-   - [x] ~~Simplify generator dispatch from 7-way to commit-based iteration~~ *(already commit-based — resolved in 4a)*
+   - [x] ~~Remove deprecated `entries` field from `Golden` struct (Rust)~~ _(already absent — resolved in 4a)_
+   - [x] ~~Simplify generator dispatch from 7-way to commit-based iteration~~ _(already commit-based — resolved in 4a)_
 
    **4c: Expected assertions & struct cleanup** — Add `cs`, remove deprecated fields
-   - [x] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`) *(done in 4a)*
-   - [x] Add `cs` to Go `ExpectedAssertions` (`intent.go`) *(done in 4a)*
-   - [x] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag) *(done in 4a)*
+   - [x] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`) _(done in 4a)_
+   - [x] Add `cs` to Go `ExpectedAssertions` (`intent.go`) _(done in 4a)_
+   - [x] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag) _(done in 4a)_
    - [x] Add `cs` to Go `GoldenExpected` (`golden.go`)
    - [x] Remove deprecated `Entries` field from Go `Golden` struct
    - [x] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
-   - [x] ~~Rewrite Go `intent.go` dispatch helpers for commit-based model~~ *(already done in 4a)*
+   - [x] ~~Rewrite Go `intent.go` dispatch helpers for commit-based model~~ _(already done in 4a)_
 
-   **4d: TOML file migration** — Migrate all intent/E2E files to new format *(must precede golden regen)*
-   - [ ] **Intent TOML files**: Migrate all 7 files to `[[test.commit]]` + `[[test.commit.tx]]` format
+   **4d: TOML file migration** — Migrate all intent/E2E files to new format _(must precede golden regen)_
+   - [x] **Intent TOML files**: Migrate all 7 files to `[[test.commit]]` + `[[test.commit.tx]]` format
    - [ ] **E2E TOML files**: Migrate all 5 files to new format
-   - [ ] **All TOML files**: Remove all `commit = true` fields
-   - [ ] **All TOML files**: Fix stale SPEC §7 references → §8
-   - [ ] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]`
+   - [x] **All TOML files**: Remove all `commit = true` fields _(intent files done; E2E pending)_
+   - [x] **All TOML files**: Fix stale SPEC §7 references → §8 _(intent files done; E2E pending)_
+   - [x] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]` _(intent files done; E2E pending)_
 
-   **4e: Golden regeneration** — Regenerate all fixtures *(after TOML migration)*
-   - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
-   - [ ] Verify golden JSON output includes `commit_id` and `cs` in expected
-   - [ ] Verify golden JSON uses `commits` format (not `entries`)
+   **4e: Golden regeneration** — Regenerate all fixtures _(after TOML migration)_
+   - [x] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
+   - [x] Verify golden JSON output includes `commit_id` and `cs` in expected
+   - [x] Verify golden JSON uses `commits` format (not `entries`)
 
    **4f: Consumer updates** — Update test consumers to verify CS
    - [ ] **Rust e2e tests**: Update golden consumers to verify `cs` field
@@ -246,20 +246,20 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 ## Technical Debt
 
-| Item                                                             | Severity | Why Introduced                                                  | Follow-Up                                                                                           | Resolved |
-| :--------------------------------------------------------------- | :------- | :-------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- | :------: |
-| CLI `add`/`revoke` missing `complete_transaction()`              | HIGH     | Auto-finalize removed during restructuring; callers not updated | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands           |   [x]    |
-| Stale `pre` comments say "auth state"                            | LOW      | Terminology change from AS→CS for `pre`                         | Update comments in `key.rs` L168, L264                                                              |   [x]    |
-| `compare_commits` missing `cs` field check                       | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated    | Add `cs` comparison in `e2e.rs` `compare_commits`                                                   |   [x]    |
-| `vtx.clone()` in `principal.rs` L780                             | LOW      | Borrow checker workaround during restructuring                  | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why            |   [ ]    |
-| Legacy intent bridge types (`PayIntent`, `CryptoIntent`, `StepIntent`) | MEDIUM   | Kept for generator `golden.rs` compatibility during Phase 4a     | Remove entirely in Phase 4b when generator is rewritten to use `CommitIntent`/`TxIntent`            |   [x]    |
-| Action unification deferred (`action: Option` + `action_step: Vec`) | MEDIUM   | TOML `[test.action]` (table) can't deserialize into `Vec`; should have used `[[test.action]]` and broken old format | Unify to `action: Vec<ActionIntent>` and update generator `action.as_ref()` → `action.first()`     |   [x]    |
-| Generator functions still named `generate_single_step`/`generate_multi_step` | LOW      | Cosmetic rename to `_commit` would add noise to type-migration diff | Rename in Phase 4b DRY cleanup                                                                      |   [ ]    |
-| `build_pay_json` unconditionally sets `commit=true`                  | LOW      | All current commits have 1 tx; correct for current invariant     | Revisit if multi-tx-per-commit tests are added                                                      |   [ ]    |
-| Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW      | Defensive coding; `current_as` is always provided in practice   | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
-| `unwrap()`/`expect()` panics in library code                     | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code        |   [ ]    |
-| Double `resolve_key` in `build_action_coz` after DRY refactor    | LOW      | `build_action_pay_json` calls `resolve_key` internally, then `build_action_coz` calls again for signing | Refactor if signing API evolves to accept signer directly; optimizing now would complicate lifetimes |   [ ]    |
-| Unused `_alg` return from `build_action_pay_json`                | LOW      | Helper returns `(Vec<u8>, String)` but alg unused at both call sites | Remove second tuple element if no consumer materializes                                             |   [ ]    |
+| Item                                                                         | Severity | Why Introduced                                                                                                      | Follow-Up                                                                                            | Resolved |
+| :--------------------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------- | :------: |
+| CLI `add`/`revoke` missing `complete_transaction()`                          | HIGH     | Auto-finalize removed during restructuring; callers not updated                                                     | Add `complete_transaction()` call after `verify_and_apply_transaction()` in both commands            |   [x]    |
+| Stale `pre` comments say "auth state"                                        | LOW      | Terminology change from AS→CS for `pre`                                                                             | Update comments in `key.rs` L168, L264                                                               |   [x]    |
+| `compare_commits` missing `cs` field check                                   | MEDIUM   | `cs` field added to `CommitEntry` but comparison not updated                                                        | Add `cs` comparison in `e2e.rs` `compare_commits`                                                    |   [x]    |
+| `vtx.clone()` in `principal.rs` L780                                         | LOW      | Borrow checker workaround during restructuring                                                                      | Verify if clone is needed; if not, revert to move. If needed, add comment explaining why             |   [ ]    |
+| Legacy intent bridge types (`PayIntent`, `CryptoIntent`, `StepIntent`)       | MEDIUM   | Kept for generator `golden.rs` compatibility during Phase 4a                                                        | Remove entirely in Phase 4b when generator is rewritten to use `CommitIntent`/`TxIntent`             |   [x]    |
+| Action unification deferred (`action: Option` + `action_step: Vec`)          | MEDIUM   | TOML `[test.action]` (table) can't deserialize into `Vec`; should have used `[[test.action]]` and broken old format | Unify to `action: Vec<ActionIntent>` and update generator `action.as_ref()` → `action.first()`       |   [x]    |
+| Generator functions still named `generate_single_step`/`generate_multi_step` | LOW      | Cosmetic rename to `_commit` would add noise to type-migration diff                                                 | Rename in Phase 4b DRY cleanup                                                                       |   [ ]    |
+| `build_pay_json` unconditionally sets `commit=true`                          | LOW      | All current commits have 1 tx; correct for current invariant                                                        | Revisit if multi-tx-per-commit tests are added                                                       |   [ ]    |
+| Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id`             | LOW      | Defensive coding; `current_as` is always provided in practice                                                       | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong  |   [ ]    |
+| `unwrap()`/`expect()` panics in library code                                 | LOW      | Carried forward from pre-restructuring code                                                                         | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code         |   [ ]    |
+| Double `resolve_key` in `build_action_coz` after DRY refactor                | LOW      | `build_action_pay_json` calls `resolve_key` internally, then `build_action_coz` calls again for signing             | Refactor if signing API evolves to accept signer directly; optimizing now would complicate lifetimes |   [ ]    |
+| Unused `_alg` return from `build_action_pay_json`                            | LOW      | Helper returns `(Vec<u8>, String)` but alg unused at both call sites                                                | Remove second tuple element if no consumer materializes                                              |   [ ]    |
 
 ## Deviation Log
 

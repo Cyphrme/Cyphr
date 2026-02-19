@@ -29,8 +29,9 @@
           "sig": "hL14UjeJh_3CLjwZB6M88YUSdhOhZnmUptRXUBUffWRslP_1XZu81nDDaCVGOryjpt0WgRa9t5ji9izEEVhURQ"
         }
       ],
-      "ts": "SHA-256:owE5Mspn9OG_w0wttH8nLDhZvmJQsx9V6qUI6aBqemw",
-      "as": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
+      "commit_id": "SHA-256:owE5Mspn9OG_w0wttH8nLDhZvmJQsx9V6qUI6aBqemw",
+      "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "cs": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
       "ps": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s"
     }
   ],
@@ -39,8 +40,10 @@
     "key_count": 1,
     "level": 3,
     "ks": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
+    "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ps": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
+    "commit_id": "SHA-256:owE5Mspn9OG_w0wttH8nLDhZvmJQsx9V6qUI6aBqemw",
+    "cs": "SHA-256:lxolk-Sh6psvd-Gpp56zBGOMOSOnBWV_nrX2l8nlT4s",
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI"
   }
 }

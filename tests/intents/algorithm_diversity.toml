@@ -5,14 +5,12 @@
 name      = "es384_account_adds_es256_key"
 principal = ["diana_es384"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "diana_es384"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2
@@ -23,14 +21,12 @@ level     = 3
 name      = "ed25519_account_adds_es256_key"
 principal = ["eve_ed25519"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "eve_ed25519"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2

@@ -27,14 +27,12 @@ principal = ["golden", "key_a"]
 revoke_at  = 1699999999
 revoke_key = "key_a"
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/delete"
-
-[test.crypto]
 signer = "key_a"
 target = "golden"
+typ    = "cyphr.me/key/delete"
 
 [test.expected]
 error = "KeyRevoked"
@@ -48,7 +46,7 @@ principal = ["golden", "key_a"]
 revoke_at  = 1699999999
 revoke_key = "key_a"
 
-[test.action]
+[[test.action]]
 msg    = "Action from revoked key"
 now    = 1700000001
 signer = "key_a"
@@ -66,15 +64,12 @@ error = "KeyRevoked"
 name      = "last_key_revoke_fails"
 principal = ["golden"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
 rvk    = 1700000000
-typ    = "cyphr.me/key/revoke"
-
-[test.crypto]
 signer = "golden"
-# No target = self-revoke
+typ    = "cyphr.me/key/revoke"
 
 [test.expected]
 error = "NoActiveKeys"
@@ -88,14 +83,12 @@ error = "NoActiveKeys"
 name      = "duplicate_key_fails"
 principal = ["golden"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "golden"
-target = "golden" # Trying to add golden again
+target = "golden"              # Trying to add golden again
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 error = "DuplicateKey"
@@ -108,14 +101,12 @@ error = "DuplicateKey"
 name      = "unknown_key_fails"
 principal = ["golden"]          # Only golden in principal
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
-signer = "key_a" # key_a is NOT in principal
+signer = "key_a"               # key_a is NOT in principal
 target = "key_b"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 error = "UnknownKey"
@@ -125,7 +116,7 @@ error = "UnknownKey"
 name      = "action_unknown_signer_fails"
 principal = ["golden"]                    # Only golden in principal
 
-[test.action]
+[[test.action]]
 msg    = "Action from unknown key"
 now    = 1700000001
 signer = "key_a"                   # key_a is NOT in principal
@@ -142,14 +133,12 @@ error = "UnknownKey"
 name      = "pre_mismatch_fails"
 principal = ["golden"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 # Override pre with wrong value (must be valid alg:digest format to test InvalidPrior)
 [test.override]
@@ -159,48 +148,44 @@ pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 error = "InvalidPrior"
 
 # ============================================================================
-# Timestamp past tests (multi-step, error on step 2)
+# Timestamp past tests (multi-commit, error on commit 2)
 # ============================================================================
 
 [[test]]
 name      = "timestamp_past_fails"
 principal = ["golden"]
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000100
-typ    = "cyphr.me/key/create"
-[test.step.crypto]
 signer = "golden"
 target = "key_a"
-
-[[test.step]]
-[test.step.pay]
-commit = true
-now    = 1700000050            # Earlier than step 1!
 typ    = "cyphr.me/key/create"
-[test.step.crypto]
+
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000050            # Earlier than commit 1!
 signer = "golden"
 target = "key_b"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 error = "TimestampPast"
 
-# Action timestamp past (multi-action, error on step 2)
+# Action timestamp past (multi-action, error on action 2)
 [[test]]
 name      = "action_timestamp_past_fails"
 principal = ["golden"]
 
-[[test.action_step]]
+[[test.action]]
 msg    = "First action"
 now    = 1700000100
 signer = "golden"
 typ    = "cyphr.me/action"
 
-[[test.action_step]]
+[[test.action]]
 msg    = "Second action with older timestamp"
-now    = 1700000050                           # Earlier than step 1!
+now    = 1700000050                           # Earlier than action 1!
 signer = "golden"
 typ    = "cyphr.me/action"
 

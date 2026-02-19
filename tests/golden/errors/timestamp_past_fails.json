@@ -29,8 +29,9 @@
           }
         }
       ],
-      "ts": "SHA-256:dhaQefOR8Ak12wzXftjiKz3hvMbjFXqK3DTsL5TsAMQ",
-      "as": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A",
+      "commit_id": "SHA-256:dhaQefOR8Ak12wzXftjiKz3hvMbjFXqK3DTsL5TsAMQ",
+      "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "cs": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A",
       "ps": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A"
     },
     {
@@ -53,8 +54,9 @@
           }
         }
       ],
-      "ts": "",
+      "commit_id": "",
       "as": "",
+      "cs": "",
       "ps": ""
     }
   ],
@@ -66,8 +68,10 @@
     "key_count": 2,
     "level": 3,
     "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A",
+    "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "ps": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A",
+    "commit_id": "SHA-256:dhaQefOR8Ak12wzXftjiKz3hvMbjFXqK3DTsL5TsAMQ",
+    "cs": "SHA-256:k7J_O9g3IRqlNRN2WfFzivmH_a80mixYprif47pcZ5A",
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "error": "TimestampPast"
   }

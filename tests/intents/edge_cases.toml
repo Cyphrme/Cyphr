@@ -1,11 +1,11 @@
 # Edge case tests for state ordering
-# Per SPEC §7 (State Calculation)
+# Per SPEC §8 (State Calculation)
 
 # ============================================================================
 # Genesis-only tests
 # ============================================================================
 
-# Test: Verify KS uses lexicographic byte sort, not string sort (SPEC §7.1)
+# Test: Verify KS uses lexicographic byte sort, not string sort (SPEC §8.1)
 [[test]]
 name      = "key_thumbprint_sort_order"
 principal = ["alice", "bob", "carol"]
@@ -14,7 +14,7 @@ principal = ["alice", "bob", "carol"]
 key_count = 3
 level     = 3
 
-# Test: Verify KS is idempotent regardless of key addition order (SPEC §7.2)
+# Test: Verify KS is idempotent regardless of key addition order (SPEC §8.2)
 [[test]]
 name      = "same_keys_different_order"
 principal = ["carol", "alice", "bob"]
@@ -27,24 +27,24 @@ level     = 3
 # Transaction tests
 # ============================================================================
 
-# Test: Transaction replay order affects TS (multi-step)
+# Test: Transaction replay order affects CommitID (multi-commit)
 [[test]]
 name      = "transaction_replay_order"
 principal = ["alice"]
 
-[[test.step]]
-crypto.signer = "alice"
-crypto.target = "bob"
-pay.commit    = true
-pay.now       = 1700000001
-pay.typ       = "cyphr.me/key/create"
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000001
+signer = "alice"
+target = "bob"
+typ    = "cyphr.me/key/create"
 
-[[test.step]]
-crypto.signer = "alice"
-crypto.target = "carol"
-pay.commit    = true
-pay.now       = 1700000002
-pay.typ       = "cyphr.me/key/create"
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000002
+signer = "alice"
+target = "carol"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -53,22 +53,20 @@ key_count = 3
 # Combined transaction + action tests
 # ============================================================================
 
-# Test: Transaction followed by action (SPEC §7.4, §7.5)
+# Test: Transaction followed by action (SPEC §8.4, §8.5)
 # Verifies combined state after key/create + action signed by newly added key
 [[test]]
 name      = "action_after_key_add"
 principal = ["alice"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000001
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "alice"
 target = "bob"
+typ    = "cyphr.me/key/create"
 
-[test.action]
+[[test.action]]
 msg    = "Action signed by newly added key"
 now    = 1700000002
 signer = "bob"
