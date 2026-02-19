@@ -24,14 +24,13 @@
         {
           "pay": {
             "alg": "ES256",
-            "commit": true,
             "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
             "now": 1700000000,
             "pre": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "h0UA5DYGNzJIqZHpLc9pH8ofECm_T8GhmBO6n9mmPW1DwkO9H9H5wtT-CEXeX5kMQOq6-5t2Y2DAePG8o3iU9g",
+          "sig": "1B_uZDgmbwVmY5v0NSsM-dYSggrN9PIoJMTN9rCv2uhlIBcFR-zxgPp4OD722hzxeqb7aRu_2yOJJ5zafpeU6Q",
           "key": {
             "alg": "ES256",
             "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
@@ -39,21 +38,21 @@
           }
         }
       ],
-      "commit_id": "SHA-256:MsKKTwY_dAVrZCgSrFgqNI4gx-mH7W1dTEUvQnaJf14",
+      "commit_id": "SHA-256:3HIqkoVvhmagCFdClccuWQLjTM0uRiOa5XZMfNxENUI",
       "as": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
-      "cs": "SHA-256:0WjzZzswCu5fau4z-7MHYS-cjjqUWG0aTIi9uaawnpk",
-      "ps": "SHA-256:0WjzZzswCu5fau4z-7MHYS-cjjqUWG0aTIi9uaawnpk"
+      "cs": "SHA-256:XCxG9-jc_ghEFaYd3RZbr5inNDr5YtanxW9iCeUa3sE",
+      "ps": "SHA-256:XCxG9-jc_ghEFaYd3RZbr5inNDr5YtanxW9iCeUa3sE"
     }
   ],
-  "digests": ["MsKKTwY_dAVrZCgSrFgqNI4gx-mH7W1dTEUvQnaJf14"],
+  "digests": ["3HIqkoVvhmagCFdClccuWQLjTM0uRiOa5XZMfNxENUI"],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
     "as": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
-    "ps": "SHA-256:0WjzZzswCu5fau4z-7MHYS-cjjqUWG0aTIi9uaawnpk",
-    "commit_id": "SHA-256:MsKKTwY_dAVrZCgSrFgqNI4gx-mH7W1dTEUvQnaJf14",
-    "cs": "SHA-256:0WjzZzswCu5fau4z-7MHYS-cjjqUWG0aTIi9uaawnpk",
+    "ps": "SHA-256:XCxG9-jc_ghEFaYd3RZbr5inNDr5YtanxW9iCeUa3sE",
+    "commit_id": "SHA-256:3HIqkoVvhmagCFdClccuWQLjTM0uRiOa5XZMfNxENUI",
+    "cs": "SHA-256:XCxG9-jc_ghEFaYd3RZbr5inNDr5YtanxW9iCeUa3sE",
     "pr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s"
   }
 }

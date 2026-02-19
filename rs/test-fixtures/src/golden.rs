@@ -238,9 +238,9 @@ impl<'a> Generator<'a> {
                 self.generate_single_action(test, &mut principal)
             }
         } else if test.commit.len() > 1 {
-            self.generate_multi_step(test, &mut principal)
+            self.generate_multi_commit(test, &mut principal)
         } else {
-            self.generate_single_step(test, &mut principal)
+            self.generate_single_commit(test, &mut principal)
         }
     }
 
@@ -464,7 +464,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Generate a single-commit golden test case.
-    fn generate_single_step(
+    fn generate_single_commit(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
@@ -533,7 +533,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Generate a multi-commit golden test case.
-    fn generate_multi_step(
+    fn generate_multi_commit(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
@@ -825,7 +825,7 @@ impl<'a> Generator<'a> {
         &self,
         action: &ActionIntent,
         test_name: &str,
-    ) -> Result<(Vec<u8>, String), Error> {
+    ) -> Result<Vec<u8>, Error> {
         let signer = self.resolve_key(&action.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
@@ -838,12 +838,10 @@ impl<'a> Generator<'a> {
         pay_map.insert("tmb".to_string(), Value::String(signer_tmb));
         pay_map.insert("typ".to_string(), Value::String(action.typ.clone()));
 
-        let pay_json = serde_json::to_vec(&pay_map).map_err(|e| Error::Generation {
+        serde_json::to_vec(&pay_map).map_err(|e| Error::Generation {
             name: test_name.to_string(),
             reason: format!("failed to serialize action pay: {}", e),
-        })?;
-
-        Ok((pay_json, signer.alg.clone()))
+        })
     }
 
     /// Build a GoldenCoz for an action.
@@ -852,7 +850,7 @@ impl<'a> Generator<'a> {
         action: &ActionIntent,
         test_name: &str,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
-        let (pay_json, _alg) = self.build_action_pay_json(action, test_name)?;
+        let pay_json = self.build_action_pay_json(action, test_name)?;
 
         // Resolve signer for signing
         let signer = self.resolve_key(&action.signer)?;
@@ -913,7 +911,7 @@ impl<'a> Generator<'a> {
         czd: coz::Czd,
         test_name: &str,
     ) -> Result<(), Error> {
-        let (pay_json, _alg) = self.build_action_pay_json(action, test_name)?;
+        let pay_json = self.build_action_pay_json(action, test_name)?;
 
         principal
             .verify_and_record_action(&pay_json, sig_bytes, czd)
@@ -975,18 +973,15 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // commit field — always true (every tx is within a CommitIntent)
-        fields.insert("commit".to_string(), Value::Bool(true));
-
         // id field handling depends on transaction type
         let is_principal_create = tx.typ.contains("principal/create");
         if is_principal_create {
-            // For principal/create, id is the current auth state (same as pre)
-            if let Some(as_val) = current_as {
-                fields.insert("id".to_string(), Value::String(as_val.to_string()));
-            } else if let Some(pre_val) = pre {
-                fields.insert("id".to_string(), Value::String(pre_val.to_string()));
-            }
+            // For principal/create, id is the current auth state
+            let as_val = current_as.ok_or_else(|| Error::Generation {
+                name: "build_pay_json".to_string(),
+                reason: "principal/create requires current_as for id field".to_string(),
+            })?;
+            fields.insert("id".to_string(), Value::String(as_val.to_string()));
         } else if let Some(target_name) = &tx.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
@@ -1284,7 +1279,7 @@ level = 3
 "#;
 
     #[test]
-    fn test_generate_single_step() {
+    fn test_generate_single_commit() {
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

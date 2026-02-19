@@ -14,14 +14,13 @@
         {
           "pay": {
             "alg": "ES256",
-            "commit": true,
             "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "now": 1700000000,
             "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "E6_7T9sqZKq7Is1L1rTRFLcQ76QWrLDMAwPISZzudLF5e4TXGfGX3ke5SQLiEYN9CJldwrAPus33YBLWFtJdUQ",
+          "sig": "IZHOf8bL86Slm8XvrNHcwLJSZ-Pcx8gsUxU3OiWJuoQZjRCn-i1fMeoaRS7s41HZSKAIuxOZZaXUOLH52nKQOA",
           "key": {
             "alg": "ES256",
             "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
@@ -35,7 +34,7 @@
       "ps": ""
     }
   ],
-  "digests": ["W6vVMXGVOGj_5vSku7EcVx0TEsAlhIps2dGLKfNBB5A"],
+  "digests": ["wKAagKHtBiTI0mjErJCOpoDvUEiBNMuJMbxLi4b_iH0"],
   "expected": {
     "key_count": 1,
     "level": 1,

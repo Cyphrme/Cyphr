@@ -19,14 +19,13 @@
         {
           "pay": {
             "alg": "ES256",
-            "commit": true,
             "id": "3N4zAlQv6-BOeO0hop_dB6GVfalTaT9CIRWxOfUOyRA",
             "now": 1700000000,
             "pre": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "UemCJxjC5cKjvjUoqFZiTttP2u7Y2dpI534BgXXwhS5Sgt0BFW_buzfOeTjgT29lWiv4inWSReO8cATsH1z4rQ",
+          "sig": "zmq_eyD2G9JO3uagRd3MugE2wao88m8lMeFVhO1u8mccLl-8Ga5XrlD_cZ0LlynrmxqHWTYrqrpLdHGX7yhRjw",
           "key": {
             "alg": "ES256",
             "pub": "4hgd7Obwttl3qlo5C9MU9jCLctesgtj8aUCGVgTKapBfmOxIgBFusQBIv1ylj1Fc3rd9XKy-mrrvRSP-HVhIfw",
@@ -34,21 +33,21 @@
           }
         }
       ],
-      "commit_id": "SHA-256:whamvPf8j7DvSE4O24MmDd11N0kzNCmGRHh_q0nWwPg",
+      "commit_id": "SHA-256:WakYVDdCBJGRaUA0ZmycWdtR_JyJqo9M10hyEX5Q_2Q",
       "as": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-      "cs": "SHA-256:goNuvtCIbzTSeLggkThn1sDDnidW5sxuGrPn0iuZsxc",
-      "ps": "SHA-256:goNuvtCIbzTSeLggkThn1sDDnidW5sxuGrPn0iuZsxc"
+      "cs": "SHA-256:9WDvKogNBCu6icd1L2VQsk9-IIa6XNj1I1taZK_2CBQ",
+      "ps": "SHA-256:9WDvKogNBCu6icd1L2VQsk9-IIa6XNj1I1taZK_2CBQ"
     }
   ],
-  "digests": ["whamvPf8j7DvSE4O24MmDd11N0kzNCmGRHh_q0nWwPg"],
+  "digests": ["WakYVDdCBJGRaUA0ZmycWdtR_JyJqo9M10hyEX5Q_2Q"],
   "expected": {
     "key_count": 3,
     "level": 3,
     "ks": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
     "as": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "ps": "SHA-256:goNuvtCIbzTSeLggkThn1sDDnidW5sxuGrPn0iuZsxc",
-    "commit_id": "SHA-256:whamvPf8j7DvSE4O24MmDd11N0kzNCmGRHh_q0nWwPg",
-    "cs": "SHA-256:goNuvtCIbzTSeLggkThn1sDDnidW5sxuGrPn0iuZsxc",
+    "ps": "SHA-256:9WDvKogNBCu6icd1L2VQsk9-IIa6XNj1I1taZK_2CBQ",
+    "commit_id": "SHA-256:WakYVDdCBJGRaUA0ZmycWdtR_JyJqo9M10hyEX5Q_2Q",
+    "cs": "SHA-256:9WDvKogNBCu6icd1L2VQsk9-IIa6XNj1I1taZK_2CBQ",
     "pr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc"
   }
 }

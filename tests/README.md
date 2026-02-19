@@ -91,15 +91,15 @@ For each JSON file in `golden/`:
 
 ### Test Categories
 
-| Category              | Path                          | Description                                       |
-| --------------------- | ----------------------------- | ------------------------------------------------- |
-| `mutations`           | `golden/mutations/`           | Transaction mutations (key/add, key/delete, etc.) |
-| `multi_key`           | `golden/multi_key/`           | Multi-key principal operations                    |
-| `algorithm_diversity` | `golden/algorithm_diversity/` | Cross-algorithm key management                    |
+| Category              | Path                          | Description                                          |
+| --------------------- | ----------------------------- | ---------------------------------------------------- |
+| `mutations`           | `golden/mutations/`           | Transaction mutations (key/add, key/delete, etc.)    |
+| `multi_key`           | `golden/multi_key/`           | Multi-key principal operations                       |
+| `algorithm_diversity` | `golden/algorithm_diversity/` | Cross-algorithm key management                       |
 | `state_computation`   | `golden/state_computation/`   | State digest verification (KS, CommitID, AS, CS, PS) |
-| `edge_cases`          | `golden/edge_cases/`          | Ordering, idempotency, combined operations        |
-| `actions`             | `golden/actions/`             | Level 4 action recording                          |
-| `errors`              | `golden/errors/`              | Error condition rejection tests                   |
+| `edge_cases`          | `golden/edge_cases/`          | Ordering, idempotency, combined operations           |
+| `actions`             | `golden/actions/`             | Level 4 action recording                             |
+| `errors`              | `golden/errors/`              | Error condition rejection tests                      |
 
 ### Setup Modifiers
 
@@ -309,29 +309,29 @@ error = "InvalidPrior"
 
 ### Intent Field Reference
 
-| Field                | Type     | Description                                      |
-| -------------------- | -------- | ------------------------------------------------ |
-| `name`               | string   | **Required.** Unique test identifier             |
-| `principal`          | string[] | **Required.** Genesis key names from pool        |
-| `setup.revoke_key`   | string   | Pre-revoke this key before test                  |
-| `setup.revoke_at`    | i64      | Revocation timestamp                             |
-| `commit[]`           | array    | Commit sequence; each contains `tx[]`            |
-| `commit.tx[].typ`    | string   | Transaction type (`cyphr.me/key/create`, etc.)   |
-| `commit.tx[].now`    | i64      | Transaction timestamp                            |
-| `commit.tx[].signer` | string   | Signing key name                                 |
-| `commit.tx[].target` | string   | Target key name (for key operations)             |
-| `commit.tx[].rvk`    | i64      | Revocation timestamp (for key/revoke)            |
-| `commit.tx[].msg`    | string   | Optional message field                           |
-| `action[]`           | array    | Action sequence (Level 4 data recording)         |
-| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)          |
-| `action[].now`       | i64      | Action timestamp                                 |
-| `action[].signer`    | string   | Action signer key name                           |
-| `action[].msg`       | string   | Action message content                           |
-| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)    |
-| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)      |
-| `expected.key_count` | int      | Expected active key count                        |
-| `expected.level`     | int      | Expected principal level (1-4)                   |
-| `expected.error`     | string   | Expected error name                              |
+| Field                | Type     | Description                                    |
+| -------------------- | -------- | ---------------------------------------------- |
+| `name`               | string   | **Required.** Unique test identifier           |
+| `principal`          | string[] | **Required.** Genesis key names from pool      |
+| `setup.revoke_key`   | string   | Pre-revoke this key before test                |
+| `setup.revoke_at`    | i64      | Revocation timestamp                           |
+| `commit[]`           | array    | Commit sequence; each contains `tx[]`          |
+| `commit.tx[].typ`    | string   | Transaction type (`cyphr.me/key/create`, etc.) |
+| `commit.tx[].now`    | i64      | Transaction timestamp                          |
+| `commit.tx[].signer` | string   | Signing key name                               |
+| `commit.tx[].target` | string   | Target key name (for key operations)           |
+| `commit.tx[].rvk`    | i64      | Revocation timestamp (for key/revoke)          |
+| `commit.tx[].msg`    | string   | Optional message field                         |
+| `action[]`           | array    | Action sequence (Level 4 data recording)       |
+| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)        |
+| `action[].now`       | i64      | Action timestamp                               |
+| `action[].signer`    | string   | Action signer key name                         |
+| `action[].msg`       | string   | Action message content                         |
+| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)  |
+| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)    |
+| `expected.key_count` | int      | Expected active key count                      |
+| `expected.level`     | int      | Expected principal level (1-4)                 |
+| `expected.error`     | string   | Expected error name                            |
 
 ---
 
