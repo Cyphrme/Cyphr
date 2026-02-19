@@ -75,9 +75,9 @@ func TestLoadGolden(t *testing.T) {
 		t.Errorf("Principal = %v, want [golden]", golden.Principal)
 	}
 
-	// Check entry count using helper (works with both commits and legacy entries)
-	if golden.EntryCount() != 1 {
-		t.Errorf("EntryCount = %d, want 1", golden.EntryCount())
+	// Check tx count using helper
+	if golden.TxCount() != 1 {
+		t.Errorf("TxCount = %d, want 1", golden.TxCount())
 	}
 
 	if !golden.IsGenesisOnly() == false {

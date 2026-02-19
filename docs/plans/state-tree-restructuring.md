@@ -181,10 +181,10 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`) *(done in 4a)*
    - [x] Add `cs` to Go `ExpectedAssertions` (`intent.go`) *(done in 4a)*
    - [x] Rename Go `ExpectedAssertions.TS` → `CommitID` (field + toml tag) *(done in 4a)*
-   - [ ] Add `cs` to Go `GoldenExpected` (`golden.go`)
-   - [ ] Remove deprecated `Entries` field from Go `Golden` struct
-   - [ ] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
-   - [ ] Rewrite Go `intent.go` dispatch helpers for commit-based model
+   - [x] Add `cs` to Go `GoldenExpected` (`golden.go`)
+   - [x] Remove deprecated `Entries` field from Go `Golden` struct
+   - [x] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
+   - [x] ~~Rewrite Go `intent.go` dispatch helpers for commit-based model~~ *(already done in 4a)*
 
    **4d: Golden regeneration** — Regenerate all fixtures
    - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`

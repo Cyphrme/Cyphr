@@ -26,7 +26,7 @@ type RunResult struct {
 //
 // The test flow is:
 //  1. Resolve genesis keys from pool
-//  2. Create entries from golden.Entries
+//  2. Flatten transactions from golden commits
 //  3. Call storage.LoadPrincipal to replay with verification
 //  4. Assert expected state matches actual state
 //
@@ -47,7 +47,7 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 	}
 
 	// Convert entries (flattening commits if present)
-	entries, err := convertEntries(golden.FlattenEntries())
+	entries, err := convertEntries(golden.FlattenTxs())
 	if err != nil {
 		result.Err = fmt.Errorf("failed to convert entries: %w", err)
 		return result
@@ -224,6 +224,28 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 					failures = append(failures, fmt.Sprintf("ps: got nil, want %s", expectedDigest))
 				} else if coz.B64(psDigest).String() != expectedDigest {
 					failures = append(failures, fmt.Sprintf("ps: got %s, want %s", coz.B64(psDigest).String(), expectedDigest))
+				}
+			}
+		}
+	}
+
+	// CS - parse alg:digest format and compare
+	if exp.CS != "" {
+		alg, expectedDigest := parseAlgDigest(exp.CS)
+		if alg == "" {
+			// Legacy format without prefix - skip verification
+		} else if p.CS() == nil {
+			failures = append(failures, fmt.Sprintf("cs: got nil, want %s:%s", alg, expectedDigest))
+		} else {
+			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("cs: invalid algorithm %s", alg))
+			} else {
+				csDigest := p.CS().Get(hashAlg)
+				if csDigest == nil {
+					failures = append(failures, fmt.Sprintf("cs: got nil, want %s", expectedDigest))
+				} else if coz.B64(csDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("cs: got %s, want %s", coz.B64(csDigest).String(), expectedDigest))
 				}
 			}
 		}

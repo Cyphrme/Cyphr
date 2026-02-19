@@ -22,10 +22,8 @@ type Golden struct {
 	Setup *GoldenSetup `json:"setup,omitempty"`
 	// GenesisKeys contains full key material for storage import.
 	GenesisKeys []GoldenKey `json:"genesis_keys,omitempty"`
-	// Commits contains atomic transaction bundles (new format).
+	// Commits contains atomic transaction bundles.
 	Commits []GoldenCommit `json:"commits,omitempty"`
-	// Entries contains storage-format entries (legacy format, deprecated).
-	Entries []json.RawMessage `json:"entries,omitempty"`
 	// Digests contains czd values parallel to entries.
 	Digests []string `json:"digests,omitempty"`
 	// Expected contains assertions about final state.
@@ -81,6 +79,8 @@ type GoldenExpected struct {
 	CommitID string `json:"commit_id,omitempty"`
 	// TS is a backwards-compatible alias for CommitID (legacy golden files).
 	TS string `json:"ts,omitempty"`
+	// CS is the expected commit state digest.
+	CS string `json:"cs,omitempty"`
 	// DS is the expected data state digest.
 	DS string `json:"ds,omitempty"`
 	// PR is the expected principal root.
@@ -139,7 +139,7 @@ func LoadGoldenDir(dir string) ([]*Golden, error) {
 
 // IsGenesisOnly returns true if this test has no transactions.
 func (g *Golden) IsGenesisOnly() bool {
-	return len(g.Commits) == 0 && len(g.Entries) == 0
+	return len(g.Commits) == 0
 }
 
 // IsErrorTest returns true if this test expects an error.
@@ -147,42 +147,31 @@ func (g *Golden) IsErrorTest() bool {
 	return g.Expected.Error != ""
 }
 
-// EntryCount returns the number of entries (from commits or legacy entries).
-func (g *Golden) EntryCount() int {
-	if len(g.Commits) > 0 {
-		count := 0
-		for _, c := range g.Commits {
-			count += len(c.Txs)
-		}
-		return count
+// TxCount returns the total number of transactions across all commits.
+func (g *Golden) TxCount() int {
+	count := 0
+	for _, c := range g.Commits {
+		count += len(c.Txs)
 	}
-	return len(g.Entries)
+	return count
 }
 
-// FlattenEntries returns all transaction entries from commits or legacy entries.
-func (g *Golden) FlattenEntries() []json.RawMessage {
-	if len(g.Commits) > 0 {
-		var entries []json.RawMessage
-		for _, c := range g.Commits {
-			entries = append(entries, c.Txs...)
-		}
-		return entries
+// FlattenTxs returns all transaction entries from all commits.
+func (g *Golden) FlattenTxs() []json.RawMessage {
+	var txs []json.RawMessage
+	for _, c := range g.Commits {
+		txs = append(txs, c.Txs...)
 	}
-	return g.Entries
+	return txs
 }
 
-// FlattenEntriesWithBoundaries returns all transaction entries and the indices
+// FlattenTxsWithBoundaries returns all transaction entries and the indices
 // of commit finalizer transactions (last tx of each commit).
-// For legacy entries without commits, returns nil for boundaries.
-func (g *Golden) FlattenEntriesWithBoundaries() (entries []json.RawMessage, finalizerIndices []int) {
-	if len(g.Commits) == 0 {
-		return g.Entries, nil
-	}
-
+func (g *Golden) FlattenTxsWithBoundaries() (txs []json.RawMessage, finalizerIndices []int) {
 	idx := 0
 	for _, c := range g.Commits {
 		for i, tx := range c.Txs {
-			entries = append(entries, tx)
+			txs = append(txs, tx)
 			// Last tx in this commit is the finalizer
 			if i == len(c.Txs)-1 {
 				finalizerIndices = append(finalizerIndices, idx)
@@ -190,5 +179,5 @@ func (g *Golden) FlattenEntriesWithBoundaries() (entries []json.RawMessage, fina
 			idx++
 		}
 	}
-	return entries, finalizerIndices
+	return txs, finalizerIndices
 }
