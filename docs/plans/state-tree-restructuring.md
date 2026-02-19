@@ -170,12 +170,12 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] **Go `intent.go`**: Remove legacy types and old fields
 
    **4b: Generator fixes** — Fix bugs and dead code in `golden.rs`
-   - [ ] Fix `commit_id` always-`None` bug (L1214: `principal.transactions().last().and(None)`)
-   - [ ] Add `cs` computation and emission to `build_expected_from_principal`
-   - [ ] Add `cs` field to `GoldenExpected` (Rust `golden.rs`)
-   - [ ] Fix DRY violation: `apply_action_to_principal` rebuilds pay JSON — reuse from `build_action_coz`
-   - [ ] Remove deprecated `entries` field from `Golden` struct (Rust)
-   - [ ] Simplify generator dispatch from 7-way to commit-based iteration
+   - [x] Fix `commit_id` always-`None` bug (L1214: `principal.transactions().last().and(None)`)
+   - [x] Add `cs` computation and emission to `build_expected_from_principal`
+   - [x] Add `cs` field to `GoldenExpected` (Rust `golden.rs`)
+   - [x] Fix DRY violation: `apply_action_to_principal` rebuilds pay JSON — reuse from `build_action_coz`
+   - [x] ~~Remove deprecated `entries` field from `Golden` struct (Rust)~~ *(already absent — resolved in 4a)*
+   - [x] ~~Simplify generator dispatch from 7-way to commit-based iteration~~ *(already commit-based — resolved in 4a)*
 
    **4c: Expected assertions & struct cleanup** — Add `cs`, remove deprecated fields
    - [x] Add `cs` to Rust `ExpectedAssertions` (`intent.rs`) *(done in 4a)*
@@ -258,6 +258,8 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 | `build_pay_json` unconditionally sets `commit=true`                  | LOW      | All current commits have 1 tx; correct for current invariant     | Revisit if multi-tx-per-commit tests are added                                                      |   [ ]    |
 | Dead `pre` fallback in `build_pay_json` for `PrincipalCreate.id` | LOW      | Defensive coding; `current_as` is always provided in practice   | Remove fallback branch or convert to error — `pre` is CS, not AS, so fallback is semantically wrong |   [ ]    |
 | `unwrap()`/`expect()` panics in library code                     | LOW      | Carried forward from pre-restructuring code                     | Replace with `Result` propagation per Rust persona; panics are inappropriate in library code        |   [ ]    |
+| Double `resolve_key` in `build_action_coz` after DRY refactor    | LOW      | `build_action_pay_json` calls `resolve_key` internally, then `build_action_coz` calls again for signing | Refactor if signing API evolves to accept signer directly; optimizing now would complicate lifetimes |   [ ]    |
+| Unused `_alg` return from `build_action_pay_json`                | LOW      | Helper returns `(Vec<u8>, String)` but alg unused at both call sites | Remove second tuple element if no consumer materializes                                             |   [ ]    |
 
 ## Deviation Log
 

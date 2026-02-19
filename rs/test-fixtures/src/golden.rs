@@ -109,6 +109,9 @@ pub struct GoldenExpected {
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
     pub commit_id: Option<String>,
+    /// Expected commit state digest: MR(AS, Commit ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cs: Option<String>,
     /// Expected data state digest (Level 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ds: Option<String>,
@@ -813,17 +816,19 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Build a GoldenCoz for an action.
-    fn build_action_coz(
+    /// Build the pay JSON for an action (canonical field order).
+    ///
+    /// Shared by `build_action_coz` (for golden output) and
+    /// `apply_action_to_principal` (for verification), ensuring
+    /// identical bytes in both paths.
+    fn build_action_pay_json(
         &self,
         action: &ActionIntent,
         test_name: &str,
-    ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
-        // Resolve signer key
+    ) -> Result<(Vec<u8>, String), Error> {
         let signer = self.resolve_key(&action.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
-        // Build pay JSON for action (canonical order)
         let mut pay_map: IndexMap<String, Value> = IndexMap::new();
         pay_map.insert("alg".to_string(), Value::String(signer.alg.clone()));
         if let Some(ref msg) = action.msg {
@@ -837,6 +842,20 @@ impl<'a> Generator<'a> {
             name: test_name.to_string(),
             reason: format!("failed to serialize action pay: {}", e),
         })?;
+
+        Ok((pay_json, signer.alg.clone()))
+    }
+
+    /// Build a GoldenCoz for an action.
+    fn build_action_coz(
+        &self,
+        action: &ActionIntent,
+        test_name: &str,
+    ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
+        let (pay_json, _alg) = self.build_action_pay_json(action, test_name)?;
+
+        // Resolve signer for signing
+        let signer = self.resolve_key(&action.signer)?;
 
         // Get private and public key bytes
         let prv = signer
@@ -894,23 +913,7 @@ impl<'a> Generator<'a> {
         czd: coz::Czd,
         test_name: &str,
     ) -> Result<(), Error> {
-        // Rebuild pay JSON (same as build_action_coz)
-        let signer = self.resolve_key(&action.signer)?;
-        let signer_tmb = signer.compute_tmb_b64()?;
-
-        let mut pay_map: IndexMap<String, Value> = IndexMap::new();
-        pay_map.insert("alg".to_string(), Value::String(signer.alg.clone()));
-        if let Some(ref msg) = action.msg {
-            pay_map.insert("msg".to_string(), Value::String(msg.clone()));
-        }
-        pay_map.insert("now".to_string(), Value::Number(action.now.into()));
-        pay_map.insert("tmb".to_string(), Value::String(signer_tmb));
-        pay_map.insert("typ".to_string(), Value::String(action.typ.clone()));
-
-        let pay_json = serde_json::to_vec(&pay_map).map_err(|e| Error::Generation {
-            name: test_name.to_string(),
-            reason: format!("failed to serialize action pay: {}", e),
-        })?;
+        let (pay_json, _alg) = self.build_action_pay_json(action, test_name)?;
 
         principal
             .verify_and_record_action(&pay_json, sig_bytes, czd)
@@ -1161,7 +1164,18 @@ impl<'a> Generator<'a> {
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
-        let commit_id = principal.transactions().last().and(None::<String>);
+        let commit_id = principal.current_commit_id().map(|cid| {
+            let d = cid
+                .get(first_alg)
+                .expect("CommitID must have digest for active alg");
+            format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d))
+        });
+        let cs = principal.cs().map(|cs_val| {
+            let d = cs_val
+                .get(first_alg)
+                .expect("CommitState must have digest for active alg");
+            format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d))
+        });
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
@@ -1215,6 +1229,7 @@ impl<'a> Generator<'a> {
                 auth_state: e.auth_state.clone().or(Some(auth_state)),
                 ps: e.ps.clone().or(Some(ps)),
                 commit_id: e.commit_id.clone().or(commit_id),
+                cs: e.cs.clone().or(cs),
                 ds: ds.clone(),
                 pr: Some(pr.clone()),
                 error: e.error.clone(),
@@ -1229,6 +1244,7 @@ impl<'a> Generator<'a> {
                 auth_state: Some(auth_state),
                 ps: Some(ps),
                 commit_id,
+                cs,
                 ds,
                 pr: Some(pr),
                 error: None,
