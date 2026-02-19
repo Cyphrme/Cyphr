@@ -199,22 +199,23 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Verify golden JSON uses `commits` format (not `entries`)
 
    **4f: Consumer updates** — Update test consumers to verify CS
-   - [ ] **Rust e2e tests**: Update golden consumers to verify `cs` field
-   - [ ] **Go golden tests**: Update `golden_test.go` to verify `CS`
-   - [ ] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs`
+   - [x] **Rust e2e tests**: Update golden consumers to verify `cs` field _(already done in Phase 2c)_
+   - [x] **Go golden tests**: Update `golden_test.go` to verify `CS` _(already done in Phase 4c — `checkExpected` in `runner.go`)_
+   - [x] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs` _(already done in Phase 2c)_
 
    **4g: Documentation** — Update README and terminology
-   - [ ] `tests/README.md`: Update golden format example (add `commit_id`, `cs`)
-   - [ ] `tests/README.md`: Update error table (`pre doesn't match current AS` → `CS`)
-   - [ ] `tests/README.md`: Update state categories (`KS, TS, AS, PS` → `KS, CommitID, AS, CS, PS`)
-   - [ ] `tests/README.md`: Update intent field reference table for new format
-   - [ ] `tests/README.md`: Remove `entries` format documentation
+   - [x] `tests/README.md`: Update golden format example (add `commit_id`, `cs`)
+   - [x] `tests/README.md`: Update error table (`pre doesn't match current AS` → `CS`)
+   - [x] `tests/README.md`: Update state categories (`KS, TS, AS, PS` → `KS, CommitID, AS, CS, PS`)
+   - [x] `tests/README.md`: Update intent field reference table for new format
+   - [x] `tests/README.md`: Remove `entries` format documentation
 
    **4h: Verification** — Full test suite
-   - [ ] `cargo test` — all tests including golden integration
-   - [ ] `go test ./...` — all tests including golden integration
-   - [ ] Both builds compile cleanly
+   - [x] `cargo test` — builds clean; 5/7 golden categories fail (ks mismatch — generator/runtime parity gap)
+   - [x] `go test ./...` — builds clean; 3 multi-commit golden tests fail (cs/ps mismatch)
+   - [x] Both builds compile cleanly
    - [ ] Verify no duplicate action tests remain (consolidate `actions.toml` tests 3-5)
+   - [ ] **NEW**: Resolve generator–runtime state computation parity gap (Phase 5 work)
 
 ## Verification
 

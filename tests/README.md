@@ -32,11 +32,11 @@ tests/
 
 For each JSON file in `golden/`:
 
-1. **Parse the fixture** — Load the JSON and extract `principal`, `genesis_keys`, `entries`, `digests`, `expected`
+1. **Parse the fixture** — Load the JSON and extract `principal`, `genesis_keys`, `commits`, `digests`, `expected`
 2. **Create Principal** — Use `genesis_keys` to create genesis (full key material provided)
-3. **Apply entries** — For each entry in `entries`, verify czd matches `digests[i]`, then apply
+3. **Apply commits** — For each commit in `commits`, process its `txs` array; verify czd matches `digests[i]`
 4. **Verify state** — Assert computed state matches `expected`
-5. **Handle errors** — If `expected.error` is set, verify the last entry fails with that error
+5. **Handle errors** — If `expected.error` is set, verify the last transaction fails with that error
 
 ### Golden File Format
 
@@ -51,21 +51,28 @@ For each JSON file in `golden/`:
   "genesis_keys": [
     {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
   ],
-  "entries": [
+  "commits": [
     {
-      "pay": {"typ": "cyphr.me/key/add", "now": 1700000000, ...},
-      "sig": "<base64url>",
-      "key": {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
+      "txs": [
+        {
+          "pay": {"typ": "cyphr.me/key/create", "now": 1700000000, ...},
+          "sig": "<base64url>",
+          "key": {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
+        }
+      ],
+      "cs": "<alg:base64url>"
     }
   ],
   "digests": ["<czd_base64url>"],
   "expected": {
     "key_count": 2,
     "level": 3,
-    "ks": "<base64url>",
-    "as": "<base64url>",
-    "ps": "<base64url>",
-    "pr": "<base64url>",
+    "ks": "<alg:base64url>",
+    "as": "<alg:base64url>",
+    "cs": "<alg:base64url>",
+    "ps": "<alg:base64url>",
+    "commit_id": "<alg:base64url>",
+    "pr": "<alg:base64url>",
     "ds": "<base64url>",
     "error": "ErrorName"
   }
@@ -74,13 +81,13 @@ For each JSON file in `golden/`:
 
 #### Field Descriptions
 
-| Field          | Description                                                     |
-| -------------- | --------------------------------------------------------------- |
-| `principal`    | Key names from pool (for reference)                             |
-| `genesis_keys` | Full key material for genesis creation                          |
-| `entries`      | Storage-format entries: `{pay, sig, key?}` in application order |
-| `digests`      | Coz digests (czd) parallel to entries, for verification         |
-| `expected`     | Expected state after all entries applied                        |
+| Field          | Description                                                                |
+| -------------- | -------------------------------------------------------------------------- |
+| `principal`    | Key names from pool (for reference)                                        |
+| `genesis_keys` | Full key material for genesis creation                                     |
+| `commits`      | Atomic commit bundles, each containing `txs[]` and a computed `cs` digest  |
+| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification     |
+| `expected`     | Expected state after all commits applied (includes `ks`, `as`, `cs`, `ps`) |
 
 ### Test Categories
 
@@ -89,7 +96,7 @@ For each JSON file in `golden/`:
 | `mutations`           | `golden/mutations/`           | Transaction mutations (key/add, key/delete, etc.) |
 | `multi_key`           | `golden/multi_key/`           | Multi-key principal operations                    |
 | `algorithm_diversity` | `golden/algorithm_diversity/` | Cross-algorithm key management                    |
-| `state_computation`   | `golden/state_computation/`   | State digest verification (KS, TS, AS, PS)        |
+| `state_computation`   | `golden/state_computation/`   | State digest verification (KS, CommitID, AS, CS, PS) |
 | `edge_cases`          | `golden/edge_cases/`          | Ordering, idempotency, combined operations        |
 | `actions`             | `golden/actions/`             | Level 4 action recording                          |
 | `errors`              | `golden/errors/`              | Error condition rejection tests                   |
@@ -107,7 +114,7 @@ Tests with `expected.error` verify that operations are correctly rejected:
 
 | Error                  | Trigger                                    |
 | ---------------------- | ------------------------------------------ |
-| `InvalidPrior`         | Transaction `pre` doesn't match current AS |
+| `InvalidPrior`         | Transaction `pre` doesn't match current CS |
 | `UnknownKey`           | Signer not in principal's key set          |
 | `KeyRevoked`           | Signer key is revoked                      |
 | `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)    |
@@ -163,116 +170,101 @@ key_count = 1
 level     = 1
 ```
 
-#### 2. Single Transaction Test
+#### 2. Single-Commit Transaction Test
 
 ```toml
 [[test]]
 name      = "key_add_increases_count"
 principal = ["golden"]
 
-[test.pay]
-typ = "cyphr.me/key/add"
-now = 1700000000
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000000
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2
 level     = 3
 ```
 
-#### 3. Multi-Step Transaction Test
+#### 3. Multi-Commit Transaction Test
 
 ```toml
 [[test]]
 name      = "transaction_sequence_replay"
 principal = ["golden"]
 
-[[test.step]]
-pay.typ       = "cyphr.me/key/add"
-pay.now       = 1700000001
-crypto.signer = "golden"
-crypto.target = "key_a"
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000001
+signer = "golden"
+target = "key_a"
+typ    = "cyphr.me/key/create"
 
-[[test.step]]
-pay.typ       = "cyphr.me/key/add"
-pay.now       = 1700000002
-crypto.signer = "golden"
-crypto.target = "key_b"
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000002
+signer = "golden"
+target = "key_b"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
 ```
 
-#### 4. Single Action Test (Level 4)
+#### 4. Action Test (Level 4)
 
-```toml
-[[test]]
-name      = "single_action_promotes_ds"
-principal = ["golden"]
-
-[test.action]
-typ    = "cyphr.me/action"
-now    = 1700000001
-signer = "golden"
-msg    = "First action"
-
-[test.expected]
-level = 4
-```
-
-#### 5. Multi-Action Test
+Single or multiple actions use the same `[[test.action]]` array-of-tables syntax.
 
 ```toml
 [[test]]
 name      = "multiple_actions_sorted"
 principal = ["golden"]
 
-[[test.action_step]]
-typ    = "cyphr.me/action"
+[[test.action]]
+msg    = "First action"
 now    = 1700000001
 signer = "golden"
-msg    = "First action"
-
-[[test.action_step]]
 typ    = "cyphr.me/action"
+
+[[test.action]]
+msg    = "Second action"
 now    = 1700000002
 signer = "golden"
-msg    = "Second action"
+typ    = "cyphr.me/action"
 
 [test.expected]
 level = 4
 ```
 
-#### 6. Combined Transaction + Action Test
+#### 5. Combined Transaction + Action Test
 
 ```toml
 [[test]]
 name      = "action_after_key_add"
 principal = ["alice"]
 
-[test.pay]
-typ = "cyphr.me/key/add"
-now = 1700000001
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000001
 signer = "alice"
 target = "bob"
+typ    = "cyphr.me/key/create"
 
-[test.action]
-typ    = "cyphr.me/action"
-now    = 1700000002
-signer = "bob"                 # Newly added key
+[[test.action]]
 msg    = "Action signed by newly added key"
+now    = 1700000002
+signer = "bob"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 2
 level     = 4
 ```
 
-#### 7. Error Test with Setup
+#### 6. Error Test with Setup
 
 ```toml
 [[test]]
@@ -283,35 +275,33 @@ principal = ["golden", "key_a"]
 revoke_key = "key_a"
 revoke_at  = 1699999999
 
-[test.pay]
-typ = "cyphr.me/key/delete"
-now = 1700000000
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000000
 signer = "key_a"
 target = "golden"
+typ    = "cyphr.me/key/delete"
 
 [test.expected]
 error = "KeyRevoked"
 ```
 
-#### 8. Error Test with Override
+#### 7. Error Test with Override
 
 ```toml
 [[test]]
 name      = "pre_mismatch_fails"
 principal = ["golden"]
 
-[test.pay]
-typ = "cyphr.me/key/add"
-now = 1700000000
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000000
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.override]
-pre = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
 error = "InvalidPrior"
@@ -319,28 +309,29 @@ error = "InvalidPrior"
 
 ### Intent Field Reference
 
-| Field                | Type     | Description                                   |
-| -------------------- | -------- | --------------------------------------------- |
-| `name`               | string   | **Required.** Unique test identifier          |
-| `principal`          | string[] | **Required.** Genesis key names from pool     |
-| `setup.revoke_key`   | string   | Pre-revoke this key before test               |
-| `setup.revoke_at`    | i64      | Revocation timestamp                          |
-| `pay.typ`            | string   | Transaction type (`cyphr.me/key/add`, etc.)   |
-| `pay.now`            | i64      | Transaction timestamp                         |
-| `pay.rvk`            | i64      | Revocation timestamp (for key/revoke)         |
-| `pay.msg`            | string   | Optional message field                        |
-| `crypto.signer`      | string   | Signing key name                              |
-| `crypto.target`      | string   | Target key name (for key operations)          |
-| `step[]`             | array    | Multi-step transaction sequence               |
-| `action.typ`         | string   | Action type (usually `cyphr.me/action`)       |
-| `action.now`         | i64      | Action timestamp                              |
-| `action.signer`      | string   | Action signer key name                        |
-| `action.msg`         | string   | Action message content                        |
-| `action_step[]`      | array    | Multi-action sequence                         |
-| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests) |
-| `expected.key_count` | int      | Expected active key count                     |
-| `expected.level`     | int      | Expected principal level (1-4)                |
-| `expected.error`     | string   | Expected error name                           |
+| Field                | Type     | Description                                      |
+| -------------------- | -------- | ------------------------------------------------ |
+| `name`               | string   | **Required.** Unique test identifier             |
+| `principal`          | string[] | **Required.** Genesis key names from pool        |
+| `setup.revoke_key`   | string   | Pre-revoke this key before test                  |
+| `setup.revoke_at`    | i64      | Revocation timestamp                             |
+| `commit[]`           | array    | Commit sequence; each contains `tx[]`            |
+| `commit.tx[].typ`    | string   | Transaction type (`cyphr.me/key/create`, etc.)   |
+| `commit.tx[].now`    | i64      | Transaction timestamp                            |
+| `commit.tx[].signer` | string   | Signing key name                                 |
+| `commit.tx[].target` | string   | Target key name (for key operations)             |
+| `commit.tx[].rvk`    | i64      | Revocation timestamp (for key/revoke)            |
+| `commit.tx[].msg`    | string   | Optional message field                           |
+| `action[]`           | array    | Action sequence (Level 4 data recording)         |
+| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)          |
+| `action[].now`       | i64      | Action timestamp                                 |
+| `action[].signer`    | string   | Action signer key name                           |
+| `action[].msg`       | string   | Action message content                           |
+| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)    |
+| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)      |
+| `expected.key_count` | int      | Expected active key count                        |
+| `expected.level`     | int      | Expected principal level (1-4)                   |
+| `expected.error`     | string   | Expected error name                              |
 
 ---
 
@@ -363,14 +354,14 @@ cargo run -p fixture-gen -- \
 
 | Category            | Tests  |
 | ------------------- | ------ |
-| mutations           | 7      |
+| mutations           | 6      |
 | multi_key           | 4      |
 | algorithm_diversity | 2      |
 | state_computation   | 9      |
 | edge_cases          | 4      |
 | actions             | 5      |
 | errors              | 10     |
-| **Total**           | **41** |
+| **Total**           | **40** |
 
 ---
 
@@ -386,13 +377,14 @@ In addition to golden tests, `tests/e2e/` contains **intent files** that are par
 
 ### E2E Intent Files
 
-| File                    | Tests  | Description                                |
-| ----------------------- | ------ | ------------------------------------------ |
-| `round_trip.toml`       | 5      | Export/import round-trip verification      |
-| `genesis_load.toml`     | 4      | Genesis creation and initial state         |
-| `edge_cases.toml`       | 4      | Algorithm diversity, large history, timing |
-| `error_conditions.toml` | 6      | Error rejection (broken chain, revoked)    |
-| **Total**               | **19** |                                            |
+| File                       | Tests  | Description                                |
+| -------------------------- | ------ | ------------------------------------------ |
+| `round_trip.toml`          | 5      | Export/import round-trip verification      |
+| `genesis_load.toml`        | 4      | Genesis creation and initial state         |
+| `edge_cases.toml`          | 4      | Algorithm diversity, large history, timing |
+| `error_conditions.toml`    | 6      | Error rejection (broken chain, revoked)    |
+| `multihash_coherence.toml` | 2      | Multi-algorithm state coherence (SPEC §14) |
+| **Total**                  | **21** |                                            |
 
 ### Running E2E Tests
 
@@ -410,10 +402,10 @@ cd rs && cargo test -p cyphrpass-storage --test e2e
 
 ---
 
-## Grand Total: 60 Integration Tests
+## Grand Total: 61 Integration Tests
 
 | Type         | Tests  |
 | ------------ | ------ |
-| Golden       | 41     |
-| E2E          | 19     |
-| **Combined** | **60** |
+| Golden       | 40     |
+| E2E          | 21     |
+| **Combined** | **61** |
