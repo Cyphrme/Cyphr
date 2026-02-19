@@ -188,7 +188,7 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
    **4d: TOML file migration** — Migrate all intent/E2E files to new format _(must precede golden regen)_
    - [x] **Intent TOML files**: Migrate all 7 files to `[[test.commit]]` + `[[test.commit.tx]]` format
-   - [ ] **E2E TOML files**: Migrate all 5 files to new format
+   - [x] **E2E TOML files**: Migrate all 5 files to new format
    - [x] **All TOML files**: Remove all `commit = true` fields _(intent files done; E2E pending)_
    - [x] **All TOML files**: Fix stale SPEC §7 references → §8 _(intent files done; E2E pending)_
    - [x] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]` _(intent files done; E2E pending)_

@@ -19,24 +19,18 @@ level     = 1
 name      = "load_explicit_genesis"
 principal = ["alice"]               # Start with single implicit key
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000001
-typ    = "cyphr.me/key/create"
-
-[test.step.crypto]
 signer = "alice"
 target = "bob"
+typ    = "cyphr.me/key/create"
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000002
-typ    = "cyphr.me/principal/create"
-
-[test.step.crypto]
 signer = "alice"
+typ    = "cyphr.me/principal/create"
 
 [test.expected]
 key_count = 2
@@ -48,14 +42,12 @@ level     = 3
 name      = "load_with_transactions"
 principal = ["golden"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2
@@ -66,7 +58,7 @@ level     = 3
 name      = "load_with_actions"
 principal = ["golden"]
 
-[test.action]
+[[test.action]]
 msg    = "Test action for load verification"
 now    = 1700000000
 signer = "golden"

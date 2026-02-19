@@ -15,13 +15,12 @@
 name      = "multihash_es384_plus_es256"
 principal = ["diana_es384"]
 
-[test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000000
 signer = "diana_es384"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2
@@ -32,13 +31,12 @@ level     = 3
 name      = "multihash_ed25519_plus_es256"
 principal = ["eve_ed25519"]
 
-[test.pay]
-now = 1700000000
-typ = "cyphr.me/key/create"
-
-[test.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000000
 signer = "eve_ed25519"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2

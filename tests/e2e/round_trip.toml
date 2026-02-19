@@ -4,48 +4,40 @@
 # Unlike integration tests, these are NOT pre-generated to golden files.
 # The test runner generates dynamically at test time.
 
-# Basic single-step round-trip
+# Basic single-commit round-trip
 [[test]]
 name      = "e2e_key_add"
 principal = ["golden"]
 
-[test.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000000
-typ    = "cyphr.me/key/create"
-
-[test.crypto]
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 2
 level     = 3
 
-# Multi-step transaction round-trip
+# Multi-commit transaction round-trip
 [[test]]
 name      = "e2e_multi_tx"
 principal = ["golden"]
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000001
-typ    = "cyphr.me/key/create"
-
-[test.step.crypto]
 signer = "golden"
 target = "key_a"
-
-[[test.step]]
-[test.step.pay]
-commit = true
-now    = 1700000002
 typ    = "cyphr.me/key/create"
 
-[test.step.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000002
 signer = "golden"
 target = "key_b"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -56,7 +48,7 @@ level     = 3
 name      = "e2e_single_action"
 principal = ["golden"]
 
-[test.action]
+[[test.action]]
 msg    = "E2E test action"
 now    = 1700000000
 signer = "golden"
@@ -72,34 +64,25 @@ level     = 4
 name      = "rt_multi_key_genesis"
 principal = ["alice"]              # Start with single implicit key
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000001
-typ    = "cyphr.me/key/create"
-
-[test.step.crypto]
 signer = "alice"
 target = "bob"
-
-[[test.step]]
-[test.step.pay]
-commit = true
-now    = 1700000002
-typ    = "cyphr.me/principal/create"
-
-[test.step.crypto]
-signer = "alice"
-
-[[test.step]]
-[test.step.pay]
-commit = true
-now    = 1700000003
 typ    = "cyphr.me/key/create"
 
-[test.step.crypto]
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000002
+signer = "alice"
+typ    = "cyphr.me/principal/create"
+
+[[test.commit]]
+[[test.commit.tx]]
+now    = 1700000003
 signer = "alice"
 target = "key_a"
+typ    = "cyphr.me/key/create"
 
 [test.expected]
 key_count = 3
@@ -110,26 +93,20 @@ level     = 3
 name      = "rt_key_revoke_cycle"
 principal = ["golden"]
 
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000001
+signer = "golden"
+target = "key_a"
 typ    = "cyphr.me/key/create"
 
-[test.step.crypto]
-signer = "golden"
-target = "key_a"
-
-[[test.step]]
-[test.step.pay]
-commit = true
+[[test.commit]]
+[[test.commit.tx]]
 now    = 1700000002
 rvk    = 1700000002
-typ    = "cyphr.me/key/revoke"
-
-[test.step.crypto]
 signer = "golden"
 target = "key_a"
+typ    = "cyphr.me/key/revoke"
 
 [test.expected]
 key_count = 1
