@@ -81,6 +81,8 @@ sibling of AS _under_ CS.
 - Update `Commit` struct (Rust): add `cs`, rename `ts` to `commit_id`
 - Update `pre` validation to compare against CS instead of AS
 - Add `Principal.CS()` accessor (Go) and `Principal.cs()` (Rust)
+- **Phase 5**: Redesign `Principal` API for explicit commit boundaries (Rust `PendingCommit` typestate; Go `CommitBatch` tx pattern)
+- **Phase 5**: Update storage import layers (`replayEntries` / `try_apply_entry`) to iterate and finalize commits
 
 ### Out of Scope
 
@@ -217,6 +219,15 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [ ] Verify no duplicate action tests remain (consolidate `actions.toml` tests 3-5)
    - [ ] **NEW**: Resolve generator–runtime state computation parity gap (Phase 5 work)
 
+8. **Phase 5: Commit API Restructuring**
+   _Sketch: `.sketches/2026-02-19-commit-api-redesign.md`_
+   - [ ] **Rust**: Introduce `PendingCommit<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
+   - [ ] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
+   - [ ] **Rust**: Update `cyphrpass-storage` import loop (`try_apply_entry`) to respect commit boundaries
+   - [ ] **Go**: Update `storage/import.go` loop (`replayEntries`) to respect commit boundaries
+   - [ ] **Both**: Refactor test consumers (golden runners) to explicitly handle multi-tx boundaries
+   - [ ] **Both**: Verify all tests pass, including golden categories that previously failed
+
 ## Verification
 
 - [ ] `cargo test -p cyphrpass --lib` passes (unit tests, excludes golden integration tests)
@@ -266,6 +277,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 - **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphrpass-storage`, `cyphrpass-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
 - **2026-02-19**: Phase ordering fix. TOML migration (was 4f) must precede golden regeneration (was 4d) because the generator can't parse old-format intent files after type restructuring. Reordered: 4d=TOML migration, 4e=golden regen, 4f=consumer updates.
+- **2026-02-19**: Phase 4h (Verification) revealed a pre-existing parity gap: test runners failed to finalize commit boundaries, causing state divergence. Investigation (.sketches/2026-02-19-commit-api-redesign.md) revealed a structural flaw in the `Principal` API where commits were implicitly opened but never auto-finalized. Added Phase 5 to redesign the Commit API to use language-idiomatic enforcement (Rust Typestate, Go database/sql Tx pattern) instead of trying to patch the test runners.
 
 ## Retrospective
 
