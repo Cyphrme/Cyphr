@@ -87,14 +87,6 @@ pub enum Error {
     UnsupportedAlgorithm(String),
 
     // === Commit lifecycle errors ===
-    /// Attempted to begin a commit while one is already in progress.
-    #[error("commit already in progress")]
-    CommitInProgress,
-
-    /// Attempted to finalize when no commit is pending.
-    #[error("no pending commit")]
-    NoPendingCommit,
-
     /// Attempted to finalize an empty commit (no transactions).
     #[error("empty commit")]
     EmptyCommit,

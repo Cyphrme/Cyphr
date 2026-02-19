@@ -194,9 +194,8 @@ fn add(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal, then finalize the commit.
+    // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
-    principal.complete_transaction()?;
 
     // Store updated state
     let new_commits = export_commits(&principal);
@@ -292,9 +291,8 @@ fn revoke(
     let czd =
         coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
 
-    // Apply transaction to principal, then finalize the commit.
+    // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
-    principal.complete_transaction()?;
 
     // Store updated state
     let new_commits = export_commits(&principal);

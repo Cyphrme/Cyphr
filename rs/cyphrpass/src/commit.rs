@@ -210,6 +210,159 @@ impl PendingCommit {
 }
 
 // ============================================================================
+// CommitScope
+// ============================================================================
+
+/// A scoped commit builder that holds an exclusive borrow of a `Principal`.
+///
+/// Created via [`Principal::begin_commit()`]. Transactions are applied with
+/// [`apply()`](Self::apply), and the commit is finalized by calling
+/// [`finalize()`](Self::finalize) which consumes the scope and returns a
+/// reference to the new [`Commit`].
+///
+/// # Typestate Enforcement
+///
+/// The borrow checker ensures that while a `CommitScope` exists:
+/// - No external code can read or mutate the `Principal`
+/// - Intermediate state (after apply but before finalize) is unobservable
+///
+/// This structurally prevents the "pending commit trap" where consumers
+/// forget to finalize after applying transactions.
+///
+/// # Single-Transaction Convenience
+///
+/// For the common case of applying a single transaction as an atomic commit,
+/// use [`Principal::apply_transaction()`] instead of creating a scope manually.
+///
+/// # Example
+///
+/// ```ignore
+/// // Multi-transaction commit:
+/// let mut scope = principal.begin_commit();
+/// scope.apply(vtx1)?;
+/// scope.apply(vtx2)?;
+/// let commit = scope.finalize()?;
+///
+/// // Single-transaction commit (convenience):
+/// let commit = principal.apply_transaction(vtx)?;
+/// ```
+#[must_use = "a CommitScope must be finalized via .finalize() to produce a Commit"]
+pub struct CommitScope<'a> {
+    principal: &'a mut crate::principal::Principal,
+    pending: PendingCommit,
+}
+
+impl<'a> CommitScope<'a> {
+    /// Create a new commit scope for the given principal.
+    ///
+    /// This is called by [`Principal::begin_commit()`].
+    pub(crate) fn new(principal: &'a mut crate::principal::Principal) -> Self {
+        let hash_alg = principal.hash_alg();
+        Self {
+            principal,
+            pending: PendingCommit::new(hash_alg),
+        }
+    }
+
+    /// Apply a verified transaction within this commit scope.
+    ///
+    /// The transaction mutates the principal's state eagerly (keys, timestamps,
+    /// etc.). The borrow checker ensures no external code can observe this
+    /// intermediate state.
+    ///
+    /// The transaction is accumulated in the pending commit for finalization.
+    ///
+    /// # Errors
+    ///
+    /// - `TimestampPast`: Transaction timestamp is older than latest seen
+    /// - `TimestampFuture`: Transaction timestamp is too far in the future
+    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
+    /// - `NoActiveKeys`: Would leave principal with no active keys
+    /// - `DuplicateKey`: Adding key already in KS
+    pub fn apply(&mut self, vtx: VerifiedTransaction) -> crate::error::Result<()> {
+        self.principal.apply_verified_internal(vtx.clone())?;
+        self.pending.push(vtx);
+        Ok(())
+    }
+
+    /// Finalize the commit scope, producing an immutable `Commit`.
+    ///
+    /// Consumes this scope and returns a reference to the newly created
+    /// `Commit` within the principal's auth ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyCommit` if no transactions were applied.
+    pub fn finalize(self) -> crate::error::Result<&'a Commit> {
+        self.principal.finalize_commit(self.pending)
+    }
+
+    /// Verify a transaction signature and apply it within this commit scope.
+    ///
+    /// This combines signature verification and application in one call,
+    /// analogous to `Principal::verify_and_apply_transaction` but within
+    /// a multi-transaction commit scope.
+    ///
+    /// # Arguments
+    ///
+    /// * `pay_json` - Raw JSON bytes of the Pay object
+    /// * `sig` - Signature bytes
+    /// * `czd` - Coz digest for this transaction
+    /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
+    pub fn verify_and_apply(
+        &mut self,
+        pay_json: &[u8],
+        sig: &[u8],
+        czd: coz::Czd,
+        new_key: Option<crate::key::Key>,
+    ) -> crate::error::Result<()> {
+        use crate::transaction::verify_transaction;
+
+        // Parse Pay to get signer thumbprint
+        let pay: coz::Pay =
+            serde_json::from_slice(pay_json).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let signer_tmb = pay
+            .tmb
+            .as_ref()
+            .ok_or(crate::error::Error::MalformedPayload)?;
+
+        // Signer must be an ACTIVE key (not revoked)
+        if !self.principal.is_key_active(signer_tmb) {
+            if self.principal.is_key_revoked(signer_tmb) {
+                return Err(crate::error::Error::KeyRevoked);
+            }
+            return Err(crate::error::Error::UnknownKey);
+        }
+
+        // Look up signer key
+        let signer_key = self
+            .principal
+            .get_key(signer_tmb)
+            .ok_or(crate::error::Error::UnknownKey)?;
+
+        // Verify signature and parse transaction
+        let vtx = verify_transaction(pay_json, sig, signer_key, czd, new_key)?;
+
+        // Apply within this scope
+        self.apply(vtx)
+    }
+
+    /// Get the principal's primary hash algorithm.
+    pub fn principal_hash_alg(&self) -> crate::state::HashAlg {
+        self.principal.hash_alg()
+    }
+    /// Get the number of transactions applied so far.
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Check if no transactions have been applied yet.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

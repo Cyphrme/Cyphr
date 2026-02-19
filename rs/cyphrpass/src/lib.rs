@@ -29,7 +29,7 @@ pub mod transaction;
 
 // Re-exports
 pub use action::Action;
-pub use commit::{Commit, PendingCommit};
+pub use commit::{Commit, CommitScope, PendingCommit};
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;

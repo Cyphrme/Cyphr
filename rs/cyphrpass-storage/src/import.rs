@@ -345,16 +345,20 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
 /// Replay commit bundles onto a principal (commit-based format).
 ///
 /// Each commit bundle contains multiple transactions that form an atomic unit.
-/// The embedded state digests (ts, as, ps) can be used for verification.
+/// Uses `CommitScope` to properly group transactions into commits.
 fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        // Note: We could use begin_commit/complete_transaction here for proper
-        // commit lifecycle, but for now we replay transactions directly
-        // as the wrap_as_commit() auto-wraps single transactions.
+        // Collect actions to replay after the commit scope is finalized.
+        // Actions don't participate in the commit lifecycle but may appear
+        // in the same bundle.
+        let mut deferred_actions: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
 
+        // Create a commit scope for this bundle's transactions
+        let mut scope = principal.begin_commit();
         let mut applied_tx_count = 0;
+
         for (tx_idx, tx_value) in commit.txs.iter().enumerate() {
             let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
 
@@ -385,12 +389,20 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                 // Transaction: extract key material if present
                 let new_key = extract_key_from_entry(tx_value);
 
-                // Compute czd for this entry
-                let czd = compute_czd(&pay_json, &sig, principal)?;
+                // Compute czd via the scope's hash algorithm
+                let alg = match scope.principal_hash_alg() {
+                    cyphrpass::state::HashAlg::Sha256 => "ES256",
+                    cyphrpass::state::HashAlg::Sha384 => "ES384",
+                    cyphrpass::state::HashAlg::Sha512 => "ES512",
+                };
+                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+                    .ok_or(LoadError::UnsupportedAlgorithm)?;
+                let czd =
+                    coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
 
-                // Apply transaction
-                principal
-                    .verify_and_apply_transaction(&pay_json, &sig, czd, new_key)
+                // Verify and apply within the scope
+                scope
+                    .verify_and_apply(&pay_json, &sig, czd, new_key)
                     .map_err(|e| match e {
                         cyphrpass::Error::InvalidSignature => LoadError::InvalidSignature {
                             index,
@@ -409,34 +421,36 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                     })?;
                 applied_tx_count += 1;
             } else {
-                // Action: compute czd and record
-                let czd = compute_czd(&pay_json, &sig, principal)?;
-
-                principal
-                    .verify_and_record_action(&pay_json, &sig, czd)
-                    .map_err(|e| match e {
-                        cyphrpass::Error::InvalidSignature => LoadError::InvalidSignature {
-                            index,
-                            message: "signature verification failed".into(),
-                        },
-                        cyphrpass::Error::UnknownKey => LoadError::UnknownSigner {
-                            index,
-                            tmb: pay
-                                .get("tmb")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("?")
-                                .into(),
-                        },
-                        other => LoadError::Protocol(other),
-                    })?;
+                // Action: defer until after scope is finalized
+                deferred_actions.push((index, pay_json, sig));
             }
         }
 
         if applied_tx_count > 0 {
-            // Finalize the commit after applying all its transactions
+            // Finalize the commit scope
+            scope.finalize().map_err(LoadError::Protocol)?;
+        } else {
+            // Drop scope without finalize — no transactions were applied
+            drop(scope);
+        }
+
+        // Replay deferred actions on the principal (outside the scope)
+        for (index, pay_json, sig) in deferred_actions {
+            let czd = compute_czd(&pay_json, &sig, principal)?;
+
             principal
-                .complete_transaction()
-                .map_err(LoadError::Protocol)?;
+                .verify_and_record_action(&pay_json, &sig, czd)
+                .map_err(|e| match e {
+                    cyphrpass::Error::InvalidSignature => LoadError::InvalidSignature {
+                        index,
+                        message: "signature verification failed".into(),
+                    },
+                    cyphrpass::Error::UnknownKey => LoadError::UnknownSigner {
+                        index,
+                        tmb: "?".into(),
+                    },
+                    other => LoadError::Protocol(other),
+                })?;
         }
     }
 

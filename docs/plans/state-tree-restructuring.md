@@ -221,11 +221,12 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
 8. **Phase 5: Commit API Restructuring**
    _Sketch: `.sketches/2026-02-19-commit-api-redesign.md`_
-   - [ ] **Rust**: Introduce `PendingCommit<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
+   - [x] **Rust**: Introduce `CommitScope<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
    - [ ] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
-   - [ ] **Rust**: Update `cyphrpass-storage` import loop (`try_apply_entry`) to respect commit boundaries
+   - [x] **Rust**: Update `cyphrpass-storage` import loop (`replay_commits`) to use CommitScope with deferred action handling
    - [ ] **Go**: Update `storage/import.go` loop (`replayEntries`) to respect commit boundaries
-   - [ ] **Both**: Refactor test consumers (golden runners) to explicitly handle multi-tx boundaries
+   - [x] **Rust**: Refactor test consumers (golden runners, CLI, internal tests) to use new commit API
+   - [ ] **Go**: Refactor test consumers to explicitly handle multi-tx boundaries
    - [ ] **Both**: Verify all tests pass, including golden categories that previously failed
 
 ## Verification
@@ -278,6 +279,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 - **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphrpass-storage`, `cyphrpass-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
 - **2026-02-19**: Phase ordering fix. TOML migration (was 4f) must precede golden regeneration (was 4d) because the generator can't parse old-format intent files after type restructuring. Reordered: 4d=TOML migration, 4e=golden regen, 4f=consumer updates.
 - **2026-02-19**: Phase 4h (Verification) revealed a pre-existing parity gap: test runners failed to finalize commit boundaries, causing state divergence. Investigation (.sketches/2026-02-19-commit-api-redesign.md) revealed a structural flaw in the `Principal` API where commits were implicitly opened but never auto-finalized. Added Phase 5 to redesign the Commit API to use language-idiomatic enforcement (Rust Typestate, Go database/sql Tx pattern) instead of trying to patch the test runners.
+- **2026-02-19**: Phase 5 Rust implementation used `CommitScope<'a>` instead of `PendingCommit<'a>` (plan name) to avoid collision with existing `PendingCommit` struct. Added `verify_and_apply()` and `principal_hash_alg()` to `CommitScope` — not in plan, but required because the scope's `&mut Principal` borrow prevents calling principal methods directly from storage import code. Added deferred action handling for `replay_commits` — actions in commit bundles can't be processed inside a `CommitScope`. Removed dead error variants `CommitInProgress` and `NoPendingCommit`.
 
 ## Retrospective
 

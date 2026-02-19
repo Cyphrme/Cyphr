@@ -1107,20 +1107,12 @@ impl<'a> Generator<'a> {
             reason: format!("failed to serialize pay: {}", e),
         })?;
 
-        // Apply transaction - this updates principal state
+        // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
         principal
             .verify_and_apply_transaction(&pay_json, sig_bytes, czd, new_key)
             .map_err(|e| Error::Generation {
                 name: test_name.to_string(),
                 reason: format!("transaction application failed: {}", e),
-            })?;
-
-        // Finalize commit — every tx in a CommitIntent is committed
-        principal
-            .complete_transaction()
-            .map_err(|e| Error::Generation {
-                name: test_name.to_string(),
-                reason: format!("transaction completion failed: {}", e),
             })?;
 
         Ok(())

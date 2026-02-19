@@ -6,7 +6,7 @@ use coz::Thumbprint;
 use indexmap::IndexMap;
 
 use crate::action::Action;
-use crate::commit::{Commit, PendingCommit};
+use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
@@ -38,8 +38,6 @@ pub struct AuthLedger {
     pub revoked: IndexMap<String, Key>,
     /// Finalized commits (atomic transaction bundles).
     pub commits: Vec<Commit>,
-    /// Pending commit being built (transitory state).
-    pub pending: Option<PendingCommit>,
 }
 
 /// Data ledger holding actions (Level 4+).
@@ -375,6 +373,11 @@ impl Principal {
         self.auth.keys.len()
     }
 
+    /// Check if a key has been revoked.
+    pub fn is_key_revoked(&self, tmb: &Thumbprint) -> bool {
+        self.auth.revoked.contains_key(&tmb.to_b64())
+    }
+
     /// Pre-revoke a key (for test setup).
     ///
     /// This moves the key from active to revoked set WITHOUT recomputing state.
@@ -406,11 +409,6 @@ impl Principal {
         self.auth.commits.iter()
     }
 
-    /// Get the current pending commit, if any.
-    pub fn current_commit(&self) -> Option<&PendingCommit> {
-        self.auth.pending.as_ref()
-    }
-
     /// Get the Commit ID of the last finalized commit.
     ///
     /// Returns `None` if no commits exist yet.
@@ -426,36 +424,49 @@ impl Principal {
         self.cs.as_ref()
     }
 
-    /// Begin a new commit bundle.
+    /// Begin a new commit scope.
     ///
-    /// Per SPEC §4.2.1, transactions are grouped into atomic commits.
-    /// Call this before adding transactions to a bundle, then call
-    /// `complete_transaction()` after the last coz.
+    /// Returns a `CommitScope` that holds an exclusive borrow of this principal.
+    /// Transactions are applied via `CommitScope::apply()`, and the commit is
+    /// finalized by calling `CommitScope::finalize()` which consumes the scope.
     ///
-    /// # Errors
+    /// The borrow checker ensures no external code can observe the principal's
+    /// intermediate state during the commit.
     ///
-    /// Returns `CommitInProgress` if a pending commit already exists.
-    pub fn begin_commit(&mut self) -> Result<()> {
-        if self.auth.pending.is_some() {
-            return Err(Error::CommitInProgress);
-        }
-        self.auth.pending = Some(PendingCommit::new(self.hash_alg));
-        Ok(())
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut scope = principal.begin_commit();
+    /// scope.apply(vtx1)?;
+    /// scope.apply(vtx2)?;
+    /// let commit = scope.finalize()?;
+    /// ```
+    pub fn begin_commit(&mut self) -> CommitScope<'_> {
+        CommitScope::new(self)
     }
 
-    /// Finalize the current pending commit.
+    /// Apply a single verified transaction as an atomic commit.
     ///
-    /// Moves the pending commit to the finalized commits list and
-    /// recomputes all state digests.
+    /// This is the convenience method for the common single-transaction case.
+    /// It internally creates a commit scope, applies the transaction, and
+    /// finalizes the commit in one call.
+    ///
+    /// For multi-transaction commits, use `begin_commit()` instead.
     ///
     /// # Errors
     ///
-    /// Returns `NoPendingCommit` if no commit is in progress.
-    /// Returns `EmptyCommit` if the pending commit has no transactions.
-    pub fn complete_transaction(&mut self) -> Result<&Commit> {
-        self.finalize_current_commit()?;
-        // Return reference to the just-added commit
-        Ok(self.auth.commits.last().expect("just pushed"))
+    /// - `TimestampPast`: Transaction timestamp is older than latest seen
+    /// - `TimestampFuture`: Transaction timestamp is too far in the future
+    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
+    /// - `NoActiveKeys`: Would leave principal with no active keys
+    /// - `DuplicateKey`: Adding key already in KS
+    pub fn apply_transaction(
+        &mut self,
+        vtx: crate::transaction::VerifiedTransaction,
+    ) -> Result<&Commit> {
+        let mut scope = self.begin_commit();
+        scope.apply(vtx)?;
+        scope.finalize()
     }
 
     /// Get all actions.
@@ -635,52 +646,43 @@ impl Principal {
     }
 
     // ========================================================================
-    // Transaction application
+    // Transaction application (internal)
     // ========================================================================
 
-    /// Apply a verified transaction to mutate principal state.
+    /// Apply a verified transaction to mutate principal state (internal).
     ///
-    /// This is the safe API for applying transactions. The transaction must have
-    /// been created through signature verification, which is enforced by the
-    /// `VerifiedTransaction` type.
+    /// Called by `CommitScope::apply()`. This mutates the principal eagerly;
+    /// the commit scope holds `&mut self` preventing external observation
+    /// of intermediate state.
     ///
     /// # Errors
     ///
     /// - `TimestampPast`: Transaction timestamp is older than latest seen
     /// - `TimestampFuture`: Transaction timestamp is too far in the future
-    /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
+    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
-    #[must_use = "transaction application may fail; handle the Result"]
-    pub fn apply_verified(
+    pub(crate) fn apply_verified_internal(
         &mut self,
         vtx: crate::transaction::VerifiedTransaction,
-    ) -> Result<&AuthState> {
-        self.apply_transaction_internal(vtx)
+    ) -> Result<()> {
+        self.apply_transaction_internal(vtx)?;
+        Ok(())
     }
 
-    /// Apply a transaction without prior signature verification.
+    /// Apply a transaction without prior signature verification (test-only).
     ///
-    /// This is internal-only. External code must use `verify_and_apply_transaction`
-    /// or `apply_verified` which enforce signature verification.
-    ///
-    /// # Errors
-    ///
-    /// - `TimestampPast`: Transaction timestamp is older than latest seen
-    /// - `TimestampFuture`: Transaction timestamp is too far in the future
-    /// - `InvalidPrior`: Transaction's `pre` doesn't match current Auth State
-    /// - `UnknownKey`: Signer key not in current KS
-    /// - `KeyRevoked`: Signer key has been revoked
-    /// - `NoActiveKeys`: Would leave principal with no active keys
+    /// Wraps the raw transaction in a VerifiedTransaction and applies it
+    /// as an atomic single-tx commit via the public API.
     #[cfg(test)]
-    pub(crate) fn apply_transaction(
+    pub(crate) fn apply_transaction_test(
         &mut self,
         tx: crate::transaction::Transaction,
         new_key: Option<Key>,
-    ) -> Result<&AuthState> {
+    ) -> Result<&Commit> {
         use crate::transaction::VerifiedTransaction;
         let vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
-        self.apply_transaction_internal(vtx)
+        self.apply_transaction(vtx)
     }
 
     /// Internal transaction application logic.
@@ -772,24 +774,15 @@ impl Principal {
             self.latest_timestamp = tx.now;
         }
 
-        // Add transaction to pending commit (unified pathway per SPEC §4.2.1)
-        // Auto-begin commit if none in progress
-        if self.auth.pending.is_none() {
-            self.auth.pending = Some(PendingCommit::new(self.hash_alg));
-        }
-        let pending = self.auth.pending.as_mut().unwrap();
-        pending.push(vtx.clone());
-
         Ok(&self.auth_state)
     }
 
-    /// Finalize the current pending commit with proper state recomputation.
+    /// Finalize a commit with proper state recomputation.
     ///
-    /// This is the internal finalization that recomputes all states after
-    /// mutations have been applied.
-    fn finalize_current_commit(&mut self) -> Result<()> {
-        let pending = self.auth.pending.take().ok_or(Error::NoPendingCommit)?;
-
+    /// This is called by `CommitScope::finalize()` with the accumulated
+    /// `PendingCommit`. Recomputes all state digests and appends the
+    /// finalized commit to the auth ledger.
+    pub(crate) fn finalize_commit(&mut self, pending: PendingCommit) -> Result<&Commit> {
         if pending.is_empty() {
             return Err(Error::EmptyCommit);
         }
@@ -826,14 +819,17 @@ impl Principal {
 
         self.auth.commits.push(commit);
 
-        Ok(())
+        Ok(self.auth.commits.last().expect("just pushed"))
     }
 
-    /// Verify signature and apply a transaction in one step.
+    /// Verify signature and apply a transaction as an atomic commit.
     ///
-    /// This is the primary method for processing incoming transactions.
-    /// It verifies the signature against the signer's key, parses the
-    /// transaction, and applies it atomically.
+    /// This is the primary method for processing incoming single-transaction
+    /// commits. It verifies the signature, parses the transaction, applies
+    /// the mutation, and finalizes the commit in one call.
+    ///
+    /// For multi-transaction commits, use `begin_commit()` with manual
+    /// scope control.
     ///
     /// # Arguments
     ///
@@ -847,7 +843,7 @@ impl Principal {
     /// - `InvalidSignature`: Signature doesn't verify
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
-    /// - `InvalidPrior`: `pre` doesn't match current AS
+    /// - `InvalidPrior`: `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no keys
     #[must_use = "transaction application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
@@ -856,7 +852,7 @@ impl Principal {
         sig: &[u8],
         czd: coz::Czd,
         new_key: Option<Key>,
-    ) -> Result<&AuthState> {
+    ) -> Result<&Commit> {
         use crate::transaction::verify_transaction;
 
         // Parse Pay to get signer thumbprint
@@ -879,8 +875,8 @@ impl Principal {
         // Verify signature and parse transaction
         let vtx = verify_transaction(pay_json, sig, signer_key, czd, new_key)?;
 
-        // Apply verified transaction
-        self.apply_verified(vtx)
+        // Apply as single-tx atomic commit
+        self.apply_transaction(vtx)
     }
 
     /// Verify that `pre` matches the expected prior Commit State.
@@ -1165,7 +1161,9 @@ mod tests {
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
-        principal.apply_transaction(tx, Some(key2.clone())).unwrap();
+        principal
+            .apply_transaction_test(tx, Some(key2.clone()))
+            .unwrap();
 
         assert_eq!(principal.active_key_count(), 2);
         assert!(principal.is_key_active(&key2.tmb));
@@ -1186,8 +1184,8 @@ mod tests {
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
-        principal.apply_transaction(tx, Some(key2)).unwrap();
-        principal.complete_transaction().unwrap(); // Required since auto-finalize removed
+        principal.apply_transaction_test(tx, Some(key2)).unwrap();
+        // apply_transaction_test auto-finalizes the commit
 
         let new_as = principal
             .auth_state()
@@ -1213,7 +1211,7 @@ mod tests {
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
 
-        let result = principal.apply_transaction(tx, Some(key2));
+        let result = principal.apply_transaction_test(tx, Some(key2));
         assert!(matches!(result, Err(Error::InvalidPrior)));
     }
 
@@ -1227,7 +1225,7 @@ mod tests {
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
-        principal.apply_transaction(tx, Some(key2)).unwrap();
+        principal.apply_transaction_test(tx, Some(key2)).unwrap();
 
         let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
         // PR is permanent, never changes
@@ -1329,7 +1327,7 @@ mod tests {
             raw: dummy_coz_json(),
         };
 
-        let result = principal.apply_transaction(tx, None);
+        let result = principal.apply_transaction_test(tx, None);
         assert!(matches!(result, Err(Error::NoActiveKeys)));
 
         // Key should still be active (no mutation occurred)
@@ -1361,7 +1359,7 @@ mod tests {
             raw: dummy_coz_json(),
         };
 
-        principal.apply_transaction(tx, None).unwrap();
+        principal.apply_transaction_test(tx, None).unwrap();
 
         assert_eq!(principal.active_key_count(), 1);
         assert!(principal.is_key_active(&key1.tmb));
@@ -1385,7 +1383,9 @@ mod tests {
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
         assert_eq!(tx.now, 2000);
 
-        principal.apply_transaction(tx, Some(key2.clone())).unwrap();
+        principal
+            .apply_transaction_test(tx, Some(key2.clone()))
+            .unwrap();
 
         // New key's first_seen should be set from tx.now
         let added_key = principal.get_key(&key2.tmb).unwrap();
@@ -1417,7 +1417,7 @@ mod tests {
             hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
-        principal.apply_transaction(tx, None).unwrap();
+        principal.apply_transaction_test(tx, None).unwrap();
 
         // key2 should be in revoked set, not active
         assert!(!principal.is_key_active(&key2.tmb));
@@ -1457,7 +1457,7 @@ mod tests {
             hash_alg: crate::state::HashAlg::Sha256,
             raw: dummy_coz_json(),
         };
-        principal.apply_transaction(tx, Some(key2)).unwrap();
+        principal.apply_transaction_test(tx, Some(key2)).unwrap();
 
         // Signer's last_used should now be 5000
         assert_eq!(principal.get_key(&key1.tmb).unwrap().last_used, Some(5000));
