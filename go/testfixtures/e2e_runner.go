@@ -315,7 +315,8 @@ func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]any, newKey *
 		return err
 	}
 
-	return principal.ApplyVerified(verifiedTx)
+	_, err = principal.ApplyVerified(verifiedTx)
+	return err
 }
 
 // signAndApplyAction signs an action and records it.

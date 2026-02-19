@@ -222,11 +222,11 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 8. **Phase 5: Commit API Restructuring**
    _Sketch: `.sketches/2026-02-19-commit-api-redesign.md`_
    - [x] **Rust**: Introduce `CommitScope<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
-   - [ ] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
+   - [x] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
    - [x] **Rust**: Update `cyphrpass-storage` import loop (`replay_commits`) to use CommitScope with deferred action handling
-   - [ ] **Go**: Update `storage/import.go` loop (`replayEntries`) to respect commit boundaries
+   - [x] **Go**: Update `storage/import.go` replay to use `ApplyVerified` (auto-finalizing single-tx commits)
    - [x] **Rust**: Refactor test consumers (golden runners, CLI, internal tests) to use new commit API
-   - [ ] **Go**: Refactor test consumers to explicitly handle multi-tx boundaries
+   - [x] **Go**: Refactor test consumers (`e2e_runner.go`, `principal_test.go`) to use new commit API
    - [ ] **Both**: Verify all tests pass, including golden categories that previously failed
 
 ## Verification

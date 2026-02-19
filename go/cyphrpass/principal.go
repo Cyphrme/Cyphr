@@ -83,10 +83,8 @@ type Principal struct {
 	hashAlg    HashAlg
 	activeAlgs []HashAlg // Per SPEC §14: algorithms derived from active keyset
 
-	// currentCommitCzds tracks transaction czds for the current commit.
-	// Per SPEC §4.2.1: Commit ID is computed from CURRENT commit's czds only.
-	// Reset after each commit finalizer.
-	currentCommitCzds []coz.B64
+	// commits stores finalized commit bundles.
+	commits []*Commit
 
 	// latestTimestamp tracks the most recent `now` value seen (SPEC §14.1).
 	// Used to reject timestamps in the past.
@@ -559,13 +557,9 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		p.latestTimestamp = tx.Now
 	}
 
-	// Record transaction and accumulate czd for per-commit Commit ID (SPEC §4.2.1)
+	// Record transaction in the flat history.
+	// Note: czd accumulation for commit boundaries is handled by CommitBatch.
 	p.auth.Transactions = append(p.auth.Transactions, tx)
-	p.currentCommitCzds = append(p.currentCommitCzds, tx.Czd)
-
-	if err := p.recomputeState(); err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -683,16 +677,39 @@ func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
 	}
 }
 
-// recomputeState recomputes all state digests after mutation.
+// BeginCommit starts a new commit batch.
 //
-// State hierarchy per SPEC §8:
+// Returns a CommitBatch that accumulates transactions. The caller MUST
+// call Finalize() to complete the commit, or abandon the batch.
 //
-//	KS = MR(thumbprints)
-//	Commit ID = MR(czds)       — current commit's transaction czds
-//	AS = MR(KS, RS?)           — RS not yet implemented (Level 5)
-//	CS = MR(AS, Commit ID)     — binds auth state to this commit
-//	PS = MR(CS, DS?)           — top-level principal state
-func (p *Principal) recomputeState() error {
+// For single-transaction commits, use [Principal.ApplyTransaction] instead.
+func (p *Principal) BeginCommit() *CommitBatch {
+	return &CommitBatch{
+		principal: p,
+		pending:   NewPendingCommit(p.hashAlg),
+	}
+}
+
+// ApplyTransaction applies a single verified transaction as an atomic commit.
+//
+// This is the primary convenience method for the common case (one tx = one commit).
+// Internally calls BeginCommit, Apply, and Finalize.
+func (p *Principal) ApplyTransaction(vt *VerifiedTx) (*Commit, error) {
+	batch := p.BeginCommit()
+	if err := batch.Apply(vt); err != nil {
+		return nil, err
+	}
+	return batch.Finalize()
+}
+
+// FinalizeCommit recomputes all state digests and produces an immutable Commit.
+//
+// This is called by CommitBatch.Finalize() — not typically called directly.
+func (p *Principal) FinalizeCommit(pending *PendingCommit) (*Commit, error) {
+	if pending.IsEmpty() {
+		return nil, ErrEmptyCommit
+	}
+
 	// Recompute KS from active keys
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
@@ -700,40 +717,61 @@ func (p *Principal) recomputeState() error {
 	}
 	ks, err := ComputeKS(thumbprints, nil, p.activeAlgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p.ks = ks
 
-	// Recompute Commit ID from current commit's transactions only (SPEC §4.2.1)
-	if len(p.currentCommitCzds) > 0 {
-		cid, err := ComputeCommitID(p.currentCommitCzds, nil, p.activeAlgs)
-		if err != nil {
-			return err
-		}
-		p.commitID = cid
+	// Compute Commit ID from this commit's transaction czds (SPEC §4.2.1)
+	cid, err := pending.ComputeCommitID()
+	if err != nil {
+		return nil, err
 	}
+	p.commitID = cid
 
 	// Recompute AS = MR(KS, RS?)
 	as, err := ComputeAS(p.ks, nil, p.activeAlgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p.as = as
 
 	// Recompute CS = MR(AS, Commit ID)
 	cs, err := ComputeCS(p.as, p.commitID, p.activeAlgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p.cs = &cs
 
 	// Recompute PS = MR(CS, DS?)
 	ps, err := ComputePS(cs, p.ds, nil, p.activeAlgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p.ps = ps
 
-	// PR never changes
-	return nil
+	// Finalize the pending commit into an immutable Commit
+	commit, err := pending.Finalize(p.as, cs, p.ps)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store finalized commit
+	p.commits = append(p.commits, commit)
+
+	return commit, nil
+}
+
+// Commits returns all finalized commits.
+func (p *Principal) Commits() []*Commit {
+	return p.commits
+}
+
+// IsKeyRevoked returns true if the key has been revoked.
+func (p *Principal) IsKeyRevoked(tmb coz.B64) bool {
+	for _, k := range p.auth.Revoked {
+		if bytes.Equal(k.Tmb, tmb) {
+			return true
+		}
+	}
+	return false
 }

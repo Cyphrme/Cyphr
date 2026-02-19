@@ -182,3 +182,68 @@ func (p *PendingCommit) IntoTransactions() []*Transaction {
 	p.raw = nil
 	return txs
 }
+
+// CommitBatch manages the lifecycle of a multi-transaction commit.
+//
+// Following the database/sql Tx pattern:
+//
+//	batch := principal.BeginCommit()
+//	batch.Apply(vtx1)    // eagerly mutates principal
+//	batch.Apply(vtx2)    // second tx sees tx1's mutations
+//	commit := batch.Finalize()  // recomputes state, produces Commit
+//
+// For single-transaction commits, use [Principal.ApplyTransaction] instead.
+//
+// Unlike Rust's CommitScope, Go has no borrow checker, so intermediate state
+// IS observable between Apply() and Finalize(). This matches the database/sql
+// convention: between Begin() and Commit(), the caller is responsible for
+// not reading stale data.
+type CommitBatch struct {
+	principal *Principal
+	pending   *PendingCommit
+}
+
+// Apply applies a verified transaction to this commit batch.
+//
+// The principal's state is eagerly mutated (key set, timestamps, etc.)
+// so that subsequent transactions within the same batch can see prior
+// mutations (e.g., tx₂ signed by a key added in tx₁).
+//
+// State recomputation (KS, AS, CS, PS) is deferred to [CommitBatch.Finalize].
+func (b *CommitBatch) Apply(vt *VerifiedTx) error {
+	if err := b.principal.applyTransactionInternal(vt.tx, vt.newKey); err != nil {
+		return err
+	}
+	b.pending.Push(vt.tx)
+	return nil
+}
+
+// VerifyAndApply verifies a Coz message and applies the resulting transaction.
+//
+// This is a convenience method for the storage import path, combining
+// [Principal.VerifyTransaction] and [CommitBatch.Apply].
+func (b *CommitBatch) VerifyAndApply(cz *coz.Coz, newKey *coz.Key) error {
+	vt, err := b.principal.VerifyTransaction(cz, newKey)
+	if err != nil {
+		return err
+	}
+	return b.Apply(vt)
+}
+
+// Finalize completes the commit batch, recomputing all state digests and
+// producing an immutable [Commit].
+//
+// Returns ErrEmptyCommit if no transactions were applied.
+func (b *CommitBatch) Finalize() (*Commit, error) {
+	return b.principal.FinalizeCommit(b.pending)
+}
+
+// Len returns the number of transactions applied so far.
+func (b *CommitBatch) Len() int {
+	return b.pending.Len()
+}
+
+// IsEmpty returns true if no transactions have been applied.
+func (b *CommitBatch) IsEmpty() bool {
+	return b.pending.IsEmpty()
+}

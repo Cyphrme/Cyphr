@@ -12,9 +12,10 @@ import "github.com/cyphrme/coz"
 //
 //   - ErrTimestampPast: Transaction timestamp is older than latest seen
 //   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current Auth State
+//   - ErrInvalidPrior: Transaction's pre doesn't match current CS
 //   - ErrNoActiveKeys: Would leave principal with no active keys
 //   - ErrDuplicateKey: Adding key already in KS
-func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) error {
-	return p.applyTransactionInternal(tx, newKey)
+func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*Commit, error) {
+	vt := &VerifiedTx{tx: tx, newKey: newKey}
+	return p.ApplyTransaction(vt)
 }

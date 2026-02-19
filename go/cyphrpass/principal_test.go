@@ -158,7 +158,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 
 	oldAS := append([]byte{}, p.AS().First()...)
 
-	err := p.ApplyTransactionUnsafe(tx, key2)
+	_, err := p.ApplyTransactionUnsafe(tx, key2)
 	if err != nil {
 		t.Fatalf("ApplyTransaction failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 		ID:     key2.Tmb,
 	}
 
-	err := p.ApplyTransactionUnsafe(tx, key2)
+	_, err := p.ApplyTransactionUnsafe(tx, key2)
 	if err != ErrInvalidPrior {
 		t.Errorf("expected ErrInvalidPrior, got %v", err)
 	}
@@ -217,7 +217,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 		Pre:    *p.CS(), // Unified pre semantics: all transactions require pre
 	}
 
-	err := p.ApplyTransactionUnsafe(tx, nil)
+	_, err := p.ApplyTransactionUnsafe(tx, nil)
 	if err != ErrNoActiveKeys {
 		t.Errorf("expected ErrNoActiveKeys, got %v", err)
 	}
@@ -246,7 +246,7 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 		Pre:    *p.CS(),
 		ID:     key2.Tmb,
 	}
-	p.ApplyTransactionUnsafe(tx, key2)
+	p.ApplyTransactionUnsafe(tx, key2) //nolint:errcheck
 
 	if !bytes.Equal(p.PR().First(), prBefore) {
 		t.Error("PR should never change")

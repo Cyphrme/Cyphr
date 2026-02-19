@@ -112,17 +112,18 @@ func buildRawEntry(cz *coz.Coz, newKey *coz.Key) (json.RawMessage, error) {
 	return json.Marshal(entry)
 }
 
-// ApplyVerified applies a verified transaction to mutate principal state.
-// This method can only be called with a VerifiedTx obtained from VerifyTransaction,
-// ensuring signature verification has already occurred.
+// ApplyVerified applies a verified transaction as a single-transaction commit.
+//
+// This is a convenience wrapper around [Principal.ApplyTransaction].
+// For multi-transaction commits, use [Principal.BeginCommit] instead.
 //
 // # Errors
 //
 //   - ErrTimestampPast: Transaction timestamp is older than latest seen
 //   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current Auth State
+//   - ErrInvalidPrior: Transaction's pre doesn't match current CS
 //   - ErrNoActiveKeys: Would leave principal with no active keys
 //   - ErrDuplicateKey: Adding key already in KS
-func (p *Principal) ApplyVerified(vt *VerifiedTx) error {
-	return p.applyTransactionInternal(vt.tx, vt.newKey)
+func (p *Principal) ApplyVerified(vt *VerifiedTx) (*Commit, error) {
+	return p.ApplyTransaction(vt)
 }
