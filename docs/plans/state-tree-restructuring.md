@@ -216,27 +216,27 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] `cargo test` — builds clean; 5/7 golden categories fail (ks mismatch — generator/runtime parity gap)
    - [x] `go test ./...` — builds clean; 3 multi-commit golden tests fail (cs/ps mismatch)
    - [x] Both builds compile cleanly
-   - [ ] Verify no duplicate action tests remain (consolidate `actions.toml` tests 3-5)
-   - [ ] **NEW**: Resolve generator–runtime state computation parity gap (Phase 5 work)
+   - [ ] Verify no duplicate action tests remain (consolidate `actions.toml` tests 3-5) — deferred to post-retro follow-up
+   - [x] **NEW**: Resolve generator–runtime state computation parity gap — **resolved by Phase 5** (CommitScope/CommitBatch enforce commit finalization; all golden tests pass)
 
 8. **Phase 5: Commit API Restructuring**
    _Sketch: `.sketches/2026-02-19-commit-api-redesign.md`_
    - [x] **Rust**: Introduce `CommitScope<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
    - [x] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
    - [x] **Rust**: Update `cyphrpass-storage` import loop (`replay_commits`) to use CommitScope with deferred action handling
-   - [x] **Go**: Update `storage/import.go` replay to use `ApplyVerified` (auto-finalizing single-tx commits)
+   - [x] **Go**: Update `storage/import.go` replay to use `ApplyTransaction` (auto-finalizing single-tx commits)
    - [x] **Rust**: Refactor test consumers (golden runners, CLI, internal tests) to use new commit API
    - [x] **Go**: Refactor test consumers (`e2e_runner.go`, `principal_test.go`) to use new commit API
-   - [ ] **Both**: Verify all tests pass, including golden categories that previously failed
+   - [x] **Both**: Verify all tests pass, including golden categories that previously failed
 
 ## Verification
 
-- [ ] `cargo test -p cyphrpass --lib` passes (unit tests, excludes golden integration tests)
-- [ ] `go test ./cyphrpass/...` passes (unit tests, package-level)
-- [ ] `go test ./storage/...` passes (storage tests)
-- [ ] Both `cargo build` and `go build ./...` compile cleanly
-- [ ] grep for stale `TransactionState` references returns zero hits (excluding golden fixtures)
-- [ ] Manual inspection: `finalize_current_commit()` and `recomputeState()` compute each state node using the correct inputs per SPEC §8 (`AS` from `KS`, `CS` from `AS`+`CommitID`, `PS` from `CS`)
+- [x] `cargo test -p cyphrpass --lib` passes (unit tests, excludes golden integration tests) — 64 passed
+- [x] `go test ./cyphrpass/...` passes (unit tests, package-level)
+- [x] `go test ./storage/...` passes (storage tests)
+- [x] Both `cargo build` and `go build ./...` compile cleanly
+- [x] grep for stale `TransactionState` references returns zero hits (excluding golden fixtures) — 2 hits are rename-history doc comments only
+- [x] Manual inspection: `finalize_commit()` (Rust) and `FinalizeCommit()` (Go) compute each state node using the correct inputs per SPEC §8 (`KS` from thumbprints, `Commit ID` from czds, `AS` from `KS`, `CS` from `AS`+`Commit ID`, `PS` from `CS`+`DS`)
 
 ### Commands
 
@@ -274,6 +274,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 | Double `resolve_key` in `build_action_coz` after DRY refactor                | LOW      | `build_action_pay_json` calls `resolve_key` internally, then `build_action_coz` calls again for signing             | Refactor if signing API evolves to accept signer directly; optimizing now would complicate lifetimes |   [ ]    |
 | Unused `_alg` return from `build_action_pay_json`                            | LOW      | Helper returns `(Vec<u8>, String)` but alg unused at both call sites                                                | Remove second tuple element if no consumer materializes                                              |   [ ]    |
 | `RecordAction` recomputes PS inline (not through commit lifecycle)           | LOW      | Actions don't participate in commits per SPEC §4; they have their own DS/PS recomputation                           | Revisit if actions ever need commit bundling (unlikely per spec); may unify when spec evolves        |   [ ]    |
+| Duplicate action tests in `actions.toml` (tests 3-5 ≈ test 1)                | LOW      | Expected format can't express PS-changed/last_used assertions; tests are structurally identical                     | Consolidate or enhance expected format to express property-level assertions                          |   [ ]    |
 
 ## Deviation Log
 
@@ -284,10 +285,65 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 ## Retrospective
 
-<!-- Filled after execution -->
+### Process
+
+**Plan evolution was significant but well-managed.** The original plan had 4 phases covering type renaming, integration, cleanup, and fixture regeneration. By completion, it had grown to 8 phases (~60 tasks) across 3 sketches and 22 commits. Every expansion was documented in the deviation log with rationale.
+
+Three structural replanning events occurred:
+
+1. **Phase 2 scope creep** (2026-02-17): Core integration (Phase 2a) naturally pulled in downstream consumers (storage, CLI, fixtures). This was the right call — the compiler errors cascaded and stopping mid-stream would have left a broken workspace. The plan was retrospectively restructured into Phases 2a–2d to capture the work honestly. _Lesson: downstream integration in typed languages is often inseparable from core changes; plan phases by compilation unit, not conceptual layer._
+
+2. **Phase 4 explosion** (2026-02-18): The sketch `fixture-format-alignment.md` surfaced 8 structural issues in the intent/golden pipeline that weren't visible until hands-on exploration. 4 generic Phase 4 items became 8 sub-phases with 35 tasks. The TOML format redesign (commit-first canonical form) was a significant design exercise recorded through EXPLORE→DIVERGE→CONVERGE in the sketch. _Lesson: fixture/format work is systematically underestimated because it touches every layer (authoring format, generator, output format, consumers, documentation). Budget 3-5x the initial estimate for format migrations._
+
+3. **Phase 5 emergence** (2026-02-19): Phase 4h verification revealed that golden test failures weren't fixture bugs — they were a fundamental API design flaw. The `Principal` API allowed transactions to be applied without finalizing commits, leaving state recomputation incomplete. The sketch `commit-api-redesign.md` explored 3 approaches (Typestate, Uniform Builder, Scoped Closure) and a nested design question (eager vs. buffered mutation). This produced the strongest result: language-idiomatic enforcement (Rust's borrow checker via `CommitScope<'a>`, Go's `database/sql` Tx pattern via `CommitBatch`). _Lesson: verification phases that surface structural defects are more valuable than phases that confirm expectations. Phase 5 would never have been conceived without Phase 4h's test failures._
+
+### Outcomes
+
+| Metric                | Value                                                             |
+| :-------------------- | :---------------------------------------------------------------- |
+| Commits               | 22 (1 plan doc + 21 implementation)                               |
+| Phases executed       | 8 (expanded from original 4)                                      |
+| Sketches produced     | 3 (branch realignment, fixture alignment, commit API redesign)    |
+| Conversation sessions | 4+ (spanning 2026-02-17 through 2026-02-19)                       |
+| Planned deliverables  | ~60                                                               |
+| Completed             | ~58                                                               |
+| Deferred              | 1 (action test consolidation — low-value, tracked in tech debt)   |
+| Technical debt items  | 13 total (4 resolved during execution, 9 open — all LOW severity) |
+| Test suite status     | Rust: 124+ tests pass, Go: 4 packages pass                        |
+
+**Key deliverables:**
+
+- State computation hierarchy aligned with SPEC §8 in both Go and Rust
+- `CommitState` type introduced as first-class state node
+- `pre` semantics unified to always reference CS
+- Commit API redesigned: `CommitScope<'a>` (Rust typestate), `CommitBatch` (Go database/sql Tx pattern)
+- TOML intent format migrated to commit-first canonical form
+- Golden fixtures regenerated with `commit_id` and `cs` fields
+- `tests/README.md` fully updated
+
+### Review Findings (/plan-review F1–F7)
+
+| ID  | Finding                                        | Disposition                                                     |
+| :-- | :--------------------------------------------- | :-------------------------------------------------------------- |
+| F1  | Action test consolidation unchecked (4h)       | Deferred — tracked as tech debt, post-retro follow-up           |
+| F2  | Parity gap item unchecked (4h)                 | Resolved — Phase 5 commit API enforcement eliminated root cause |
+| F3  | Phase 2 scope creep                            | Documented in deviation log; retrospectively replanned          |
+| F4  | Phase 4 estimation miss (4→35 tasks)           | Captured above as estimation lesson                             |
+| F5  | Orphaned unchecked items without debt tracking | Fixed — F1 added to debt table, F2 marked resolved              |
+| F6  | 48-file commit (3c46efa)                       | Acceptable — single logical change (format migration)           |
+| F7  | Stale "ApplyVerified" wording in plan          | Fixed — updated to `ApplyTransaction`                           |
+
+### Pipeline Improvements
+
+- **Sketch-driven discovery is essential for format work.** The fixture alignment sketch (1078 lines, 8 findings) prevented blind flailing during Phase 4. Without the systematic EXPLORE→DIVERGE→CONVERGE cycle, the TOML format redesign would have been ad hoc.
+- **Verification phases should be mandatory, not optional.** Phase 4h (verification) was the most valuable phase — it surfaced the commit boundary design flaw that became Phase 5. Plans should always end with a verification phase, even when "everything should just work."
+- **Deviation logs work.** All 4 deviation entries were accurate, timestamped, and actionable. This made the /plan-review cross-reference straightforward. Keep maintaining them.
+- **Phase granularity matters.** The original 4-phase plan was too coarse for Phase 4. Sub-phases (4a–4h) with explicit sketches and commit boundaries were necessary for tracking. For complex restructuring plans, budget sub-phases from the start.
 
 ## References
 
 - Sketch: `.sketches/2026-02-17-branch-realignment.md`
+- Sketch: `.sketches/2026-02-18-fixture-format-alignment.md`
+- Sketch: `.sketches/2026-02-19-commit-api-redesign.md`
 - SPEC: `SPEC.md` §8.3–8.5 (working tree, not committed)
 - Formal model: `docs/models/principal-state-model.md`
