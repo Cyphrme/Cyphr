@@ -186,22 +186,22 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    - [x] Remove Go `golden.go` legacy fallback methods (`FlattenEntries`, `EntryCount`, `IsGenesisOnly` Entries checks)
    - [x] ~~Rewrite Go `intent.go` dispatch helpers for commit-based model~~ *(already done in 4a)*
 
-   **4d: Golden regeneration** — Regenerate all fixtures
-   - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
-   - [ ] Verify golden JSON output includes `commit_id` and `cs` in expected
-   - [ ] Verify golden JSON uses `commits` format (not `entries`)
-
-   **4e: Consumer updates** — Update test consumers to verify CS
-   - [ ] **Rust e2e tests**: Update golden consumers to verify `cs` field
-   - [ ] **Go golden tests**: Update `golden_test.go` to verify `CS`
-   - [ ] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs`
-
-   **4f: TOML file migration** — Migrate all intent/E2E files to new format *(after all code changes)*
+   **4d: TOML file migration** — Migrate all intent/E2E files to new format *(must precede golden regen)*
    - [ ] **Intent TOML files**: Migrate all 7 files to `[[test.commit]]` + `[[test.commit.tx]]` format
    - [ ] **E2E TOML files**: Migrate all 5 files to new format
    - [ ] **All TOML files**: Remove all `commit = true` fields
    - [ ] **All TOML files**: Fix stale SPEC §7 references → §8
    - [ ] **All TOML files**: Unify actions — `[test.action]`/`[[test.action_step]]` → `[[test.action]]`
+
+   **4e: Golden regeneration** — Regenerate all fixtures *(after TOML migration)*
+   - [ ] Run `cargo run -p fixture-gen -- --pool ../tests/keys/pool.toml generate -r ../tests/intents/ ../tests/golden/`
+   - [ ] Verify golden JSON output includes `commit_id` and `cs` in expected
+   - [ ] Verify golden JSON uses `commits` format (not `entries`)
+
+   **4f: Consumer updates** — Update test consumers to verify CS
+   - [ ] **Rust e2e tests**: Update golden consumers to verify `cs` field
+   - [ ] **Go golden tests**: Update `golden_test.go` to verify `CS`
+   - [ ] **Go e2e runner**: Verify `e2e_runner.go` commit assertions include `cs`
 
    **4g: Documentation** — Update README and terminology
    - [ ] `tests/README.md`: Update golden format example (add `commit_id`, `cs`)
@@ -264,6 +264,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 ## Deviation Log
 
 - **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphrpass-storage`, `cyphrpass-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
+- **2026-02-19**: Phase ordering fix. TOML migration (was 4f) must precede golden regeneration (was 4d) because the generator can't parse old-format intent files after type restructuring. Reordered: 4d=TOML migration, 4e=golden regen, 4f=consumer updates.
 
 ## Retrospective
 
