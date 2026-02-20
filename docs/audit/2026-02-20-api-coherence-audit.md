@@ -797,33 +797,44 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 
 13. [ ] **[Rust `cyphrpass-cli`]** Extract ~350 lines of duplicated helpers (`load_key_from_keystore`, `extract_genesis_from_commits`, `parse_store`, `parse_principal_root`, `decode_b64`) into `commands/common.rs`. — _BUG-9, C.2_
 
+#### Go/Rust: Behavioral Correctness
+
+14. [ ] **[Go/Rust]** `addKey`/`add_key` must check the revoked set to prevent re-adding compromised keys. — _BUG-12, B.3_
+
 ### P2 — Medium (Parity gaps, moderate quality issues)
 
-14. [ ] **[Go `storage`]** Refactor import path to use `CommitBatch.VerifyAndApply` instead of separate `VerifyTransaction` + `ApplyTransaction` calls. — _C.1_
-15. [ ] **[Go `testfixtures`]** Refactor `e2e_runner.go` to use atomic `VerifyAndApply` rather than separate calls. — _D.10_
-16. [ ] **[Go `transaction.go`]** Document or refactor `TransactionKind` from a bare `int` to a more robust representation to prevent invalid states. — _B.1_
-17. [ ] **[Go `key.go`]** Disambiguate `Revocation.By` (currently `coz.B64` where `nil` and empty slice are confusable; consider newtype or pointer). — _B.2_
-18. [ ] **[Go `commit.go`]** Unexport `NewCommit` — only caller should be `FinalizeCommit`. Consider also unexporting `FinalizeCommit` if `CommitBatch.Finalize` is the canonical path. — _A.2_
-19. [ ] **[Go `storage/entry.go`]** Unexport `Entry.Raw` — callers should use `Bytes()` accessor for read access. Preserves bit-perfect invariant. — _B.4_
-20. [ ] **[Rust `cyphrpass-cli`]** De-duplicate key generation match arms (~320 lines across `init.rs`/`key.rs`). Use `coz::Alg` runtime dispatch or a macro. — _C.3_
-21. [ ] **[Go `state.go`]** Evaluate `DataState` inner type — Go uses `coz.B64` (raw bytes), Rust uses `coz::Cad`. Determine if Go should wrap a typed digest. — _D.3_
-22. [ ] **[Go/Rust]** Decide Go commit-based storage path. If needed, port `CommitEntry`, `load_principal_from_commits`, `Checkpoint`, `load_from_checkpoint` from Rust. — _D.6, DEV-1, DEV-2_
+15. [ ] **[Go `storage`]** Refactor import path to use `CommitBatch.VerifyAndApply` instead of separate `VerifyTransaction` + `ApplyTransaction` calls. — _C.1_
+16. [ ] **[Go `testfixtures`]** Refactor `e2e_runner.go` to use atomic `VerifyAndApply` rather than separate calls. — _D.10_
+17. [ ] **[Go `transaction.go`]** Document or refactor `TransactionKind` from a bare `int` to a more robust representation to prevent invalid states. — _B.1_
+18. [ ] **[Go `key.go`]** Disambiguate `Revocation.By` (currently `coz.B64` where `nil` and empty slice are confusable; consider newtype or pointer). — _B.2_
+19. [ ] **[Go `commit.go`]** Unexport `NewCommit` — only caller should be `FinalizeCommit`. Consider also unexporting `FinalizeCommit` if `CommitBatch.Finalize` is the canonical path. — _A.2_
+20. [ ] **[Go `storage/entry.go`]** Unexport `Entry.Raw` — callers should use `Bytes()` accessor for read access. Preserves bit-perfect invariant. — _B.4_
+21. [ ] **[Rust `cyphrpass-cli`]** De-duplicate key generation match arms (~320 lines across `init.rs`/`key.rs`). Use `coz::Alg` runtime dispatch or a macro. — _C.3_
+22. [ ] **[Go `state.go`]** Evaluate `DataState` inner type — Go uses `coz.B64` (raw bytes), Rust uses `coz::Cad`. Determine if Go should wrap a typed digest. — _D.3_
+23. [ ] **[Go/Rust]** Decide Go commit-based storage path. If needed, port `CommitEntry`, `load_principal_from_commits`, `Checkpoint`, `load_from_checkpoint` from Rust. — _D.6, DEV-1, DEV-2_
+24. [ ] **[Go/Rust]** Hoist `pre` verification to occur once before transaction dispatch (with self-revoke opt-out) to prevent silent invariant drops. — _C.3_
+25. [ ] **[Go/Rust]** Add missing negative tests (e.g., revoked key re-add BUG-12, genesis zero keys BUG-3/5, timestamp regression C.6). — _E.4_
+26. [ ] **[Go/Rust]** Add language-independent hand-computed reference vectors for state verification (JSON/TOML format). — _C.4, E.5_
+27. [ ] **[Go/Rust]** Settle Data Action pipeline design (shared vs separate) before storage refactoring to avoid double work. — _B.6, C.7_
 
 ### P3 — Low (Style, minor redundancies, low-risk improvements)
 
-23. [ ] **[Go `principal.go`/Rust]** Mark test helpers (`PreRevokeKey`, `active_keys_mut`) with `#[doc(hidden)]`, feature flag, or `Test` prefix. — _A.3_
-24. [ ] **[Go/Rust]** Consider aligning `VerifiedTx` → `VerifiedTransaction` naming cross-language. — _E.1_
-25. [ ] **[Go `storage/entry.go`]** Replace hand-rolled `containsKeyPrefix` with `strings.Contains(typ, "/key/")`. — _D.8_
-26. [ ] **[Go `testfixtures`]** Factor `checkExpected` repetitive verification blocks into a generic helper. — _B.5_
-27. [ ] **[Go `testfixtures`]** Resolve `PoolKey.Name` field redundancy. — _E.3 (GitHub Issue #2)_
-28. [ ] **[Go `key.go`]** Clarify documentation on why `Key.Rvk` exists alongside `Revocation.Rvk` to avoid shadowing confusion. — _B.3_
-29. [ ] **[Go `state.go`]** Re-export `HashAlg` directly from `coz` like Rust does to maintain strict cross-crate typing, rather than creating a local alias. — _D.4_
-30. [ ] **[Go `state.go`]** Make visibility symmetric: either both `DeriveHashAlgs` and `isSupportedAlg` should be public, or both private. — _E.3_
-31. [ ] **[Go `storage/entry.go`]** Document the asymmetric design choice to centralize `Entry` extractors in Go versus inline access in Rust. — _D.7_
-32. [ ] **[Go `testfixtures`]** Document that Go intentionally delegates golden fixture generation to Rust as the single source of truth. — _D.11_
-33. [ ] **[Rust `cyphrpass-cli`]** Add `cli::Error` enum wrapping keystore, storage, and cyphrpass errors (low priority — CLI is outermost layer). — _D.9, F.5_
-34. [ ] **[Rust `cyphrpass`]** Triage 3 `debug_assert!` occurrences in core (`state.rs:423`, `multihash.rs:43`, `commit.rs:52`): document unreachability or convert to `Result`. — _Phase 3 §3.1_
-35. [ ] **[Go `state.go`]** Reconcile `MultihashDigest` accessor patterns (`First()` vs `GetOrFirst()`) with Rust (`first_variant()` / `get_or_err()` returning `Result`). — _E.2_
+28. [ ] **[Go `principal.go`/Rust]** Mark test helpers (`PreRevokeKey`, `active_keys_mut`) with `#[doc(hidden)]`, feature flag, or `Test` prefix. — _A.3_
+29. [ ] **[Go/Rust]** Consider aligning `VerifiedTx` → `VerifiedTransaction` naming cross-language. — _E.1_
+30. [ ] **[Go `storage/entry.go`]** Replace hand-rolled `containsKeyPrefix` with `strings.Contains(typ, "/key/")`. — _D.8_
+31. [ ] **[Go `testfixtures`]** Factor `checkExpected` repetitive verification blocks into a generic helper. — _B.5_
+32. [ ] **[Go `testfixtures`]** Resolve `PoolKey.Name` field redundancy. — _E.3 (GitHub Issue #2)_
+33. [ ] **[Go `key.go`]** Clarify documentation on why `Key.Rvk` exists alongside `Revocation.Rvk` to avoid shadowing confusion. — _B.3_
+34. [ ] **[Go `state.go`]** Re-export `HashAlg` directly from `coz` like Rust does to maintain strict cross-crate typing, rather than creating a local alias. — _D.4_
+35. [ ] **[Go `state.go`]** Make visibility symmetric: either both `DeriveHashAlgs` and `isSupportedAlg` should be public, or both private. — _E.3_
+36. [ ] **[Go `storage/entry.go`]** Document the asymmetric design choice to centralize `Entry` extractors in Go versus inline access in Rust. — _D.7_
+37. [ ] **[Go `testfixtures`]** Document that Go intentionally delegates golden fixture generation to Rust as the single source of truth. — _D.11_
+38. [ ] **[Rust `cyphrpass-cli`]** Add `cli::Error` enum wrapping keystore, storage, and cyphrpass errors (low priority — CLI is outermost layer). — _D.9, F.5_
+39. [ ] **[Rust `cyphrpass`]** Triage 3 `debug_assert!` occurrences in core (`state.rs:423`, `multihash.rs:43`, `commit.rs:52`): document unreachability or convert to `Result`. — _Phase 3 §3.1_
+40. [ ] **[Go `state.go`]** Reconcile `MultihashDigest` accessor patterns (`First()` vs `GetOrFirst()`) with Rust (`first_variant()` / `get_or_err()` returning `Result`). — _E.2_
+41. [ ] **[Go/Rust]** Add tracking or assertions for level monotonicity (L3 floor) to prevent future regression if prune logic added. — _D.2 (I4)_
+42. [ ] **[Go/Rust]** Introduce basic property-based testing (fuzz state boundaries, MR associativity). — _E.1_
+43. [ ] **[Go/Rust]** Introduce standard fuzz targets for parsing/construction (`ParseTransaction`, `NewEntry`). — _E.2_
 
 ---
 
@@ -872,6 +883,7 @@ Bugs discovered during the audit that require code changes. Tracked here for res
 | BUG-9  | P1       | Rust `cyphrpass-cli` | ~350 lines of copy-pasted helpers across 5 command modules. Extract to `commands/common.rs`.                                                                                      | Open   |
 | BUG-10 | P1       | Go `commit.go`       | `Commit.SetRaw()` is a public mutator on a type documented as "immutable once finalized" (commit.go:16). Violates immutability invariant. Remove or make `pub(crate)` equivalent. | Open   |
 | BUG-11 | P1       | Go `commit.go`       | `Commit.Transactions()` returns `[]*Transaction` — mutable slice of mutable pointers to internal state. Same systemic pattern as BUG-6. Return copies or unexport fields.         | Open   |
+| BUG-12 | P1       | Go/Rust `principal`  | `addKey`/`add_key` does not check the revoked set — allows re-adding a compromised key. Fails I2 (revocation permanence). Add active-check to revoked set.                        | Open   |
 
 ---
 
