@@ -2,17 +2,14 @@
 
 Protocol Specification
 
-**Version**: Draft v0.1  
-**Status**: Work in Progress  
+**Version**: Draft v0.1  - Work in Progress  
 **Authors**: Zamicol and nrdxp
 
 Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
-QUICK AI Guidance:
-DO NOT USE EM DASH OR DASH. Use period, comma, semi-colon, and other sentence construction appropriately.
-DO NOT USE uppercase MAY, SHOULD, or MUST.  This isn't an IETF RFC.
 
 ---
+
 
 ## 1. Introduction
 
@@ -24,8 +21,7 @@ enables:
 - Multi-device key management with revocation.
 - Authenticated Atomic Actions (AAA) - individually signed, independently
   verifiable user actions.
-- Cryptographic primitive agnosticism via the Coz JSON specification, multihash,
-  and MHMR.
+- Cryptographic primitive agnosticism via the Coz, multihash, and MHMR.
 - Data Provenance.
 
 | Feature             | Cyphrpass                                   | Legacy Passwords/SSO          |
@@ -98,7 +94,7 @@ node referencing the prior commit.
 | **Action**          | -   | A signed coz, denoted by `typ`. Foundation of AAA     |
 | **trust anchor**    | -   | Last known valid state for a principal                |
 
-PR, PS, CS, AS, KS, RS, and DS are all Merkle root digest values.
+PR, PS, CS, AS, KS, RS, and DS are all Merkle root (MR) digest values.
 
 Each digest corresponds to a tree datastructure: Principal Tree (PT), Commit
 Tree (CT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT). (PT,
@@ -237,17 +233,17 @@ that's outside of the scope of this document.
 Public keys must be revealed for verification; nonces and other data structures
 may also need to be revealed during commits or other signing operations.
 
-#### 2.2.9 Embedded Principal and Embedded Nodes.
+#### 2.2.9 Embedded Principal and Embedded Nodes
 
-Cyphrpass is a recursive tree structure. An **embedded principal** is a full
-Cyphrpass identity embedded into another principal and an opaque node, which may
-be a AS, KS, nonce, or other node value, is an **embedded node**. See section
-on embedding.
+An **embedded node** is an external tree reference.   Its value may
+be a `tmb`, KS, AS, CS, PS, nonce, or other node value. An **embedded
+principal** is a full Cyphrpass identity embedded into another principal. See
+section Embedding.  
 
 #### 2.2.10 Witnesses and Oracle
 
 A **witness** is a client that keeps a copy of an external principal's state and
-transmit state through gossip.
+communicates state through gossip.
 
 An **oracle** is a witness with some degree of delegated trust by external
 clients. For example, a client may delegate some processing to an oracle for
@@ -257,8 +253,7 @@ appropriately processed.
 #### 2.2.11 Unrecoverable Principal
 
 A principal with no active keys and no viable recovery path within the protocol.
-Authentication, mutations, and recovery are impossible without out-of-band
-intervention. See Section Recovery.
+Authentication, transactions, and recovery are impossible. See Section Recovery.
 
 ### 2.3 Core Protocol Constraints
 #### 2.3.1 Coz Required Fields
@@ -279,38 +274,52 @@ And additionally for transaction cozies:
 
 #### 2.3.2 Protocol Guarantees
 
-The following properties hold for all conforming implementations. They are
-consequences of the protocol's structure and serve as testable invariants.
+The following properties are testable invariants for all conforming
+implementations.
 
 1. **Pre-state authorization.** A transaction's signing key must be active in
    the state before the commit is applied. A key created or revoked within the
    same commit does not affect authorization of that commit.
-
 2. **Commit State is append-only.** Commits are never removed from the chain.
-   (Data State is not necessarily append-only.)
+3. **Principal Root is immutable.** No operation can change a principal's root
+   (PR) identity.
 
-3. **Principal Root is immutable.** The genesis digest (PR) is preserved by all
-   transitions. No operation can change a principal's root identity.
+### 2.3.3 Authorization
 
-#### 2.3.3 AS/DS Duality
+Principal levels describe increasing complexity of a principal's state
+composition and are not an authorization input. Authorization is determined by
+which state components exist and what rules govern them. A transaction is
+authorized if and only if all three conditions hold:
 
-Auth State (AS) and Data State (DS) have fundamentally different structural
-properties:
+1. **Pre-state key**: The signing key must be active in the state *before* the
+   transaction is applied. A key added or revoked within the same commit does
+   not affect authorization of that commit's transactions.
+2. **Lifecycle gate**: The principal's current lifecycle state must permit the
+   operation. For example, a Frozen principal rejects all mutations; a Deleted
+   principal rejects everything. (See Principal Lifecycle States.)
+3. **Capability gate**: The principal must have the state components required
+   for the operation. Data actions require DS to exist. Rule operations require
+   RS to exist. At Level 5+, Rule State (RS) may define additional constraints;
+   weight thresholds, timelocks, or other conditions that must be satisfied for
+   the transaction to proceed.
+
+#### 2.3.4 AS/DS Duality
+
+DS is a general-purpose data transaction ledger. Applications (authorities) may
+impose additional structure. Auth State (AS) and Data State (DS) have
+fundamentally different structural properties:
 
 | Property             | Auth State (AS)                 | Data State (DS)                   |
 | :------------------- | :------------------------------ | :-------------------------------- |
 | Mutability           | Append-only (immutable history) | Mutable (deletable content)       |
-| Chain structure      | Hash-linked via `pre`           | No chain, ordered by `now`        |
+| Chain                | Linked via `pre`                | No chain                          |
 | Verification         | Replay from genesis             | Point-in-time snapshot only       |
-| State type           | Monotonic sequence of commits   | Non-monotonic bag of data actions |
-| Prescribed semantics | Full protocol semantics         | None (application-defined)        |
+| State type           | Monotonic sequence of commits   | Non-monotonic                     |
+| Semantics            | Full protocol semantics         | None (application-defined)        |
 
-DS is a general-purpose data transaction ledger. Applications may impose
-additional structure (including append-only chains) by referencing prior data
-action digests in application-defined fields. The protocol does not mandate any
-specific DS structure.
 
 ---
+
 
 ## 3. Feature Levels
 
@@ -354,18 +363,15 @@ specific DS structure.
 
 ### 3.5 Level 5: Rules (Weighted Permissions)
 
-- Introduces Rule State (RS) for access control
-- Each key has a weight (default: 1)
-- Transactions and actions have threshold requirements
-- Enables: M-of-N signing, tiered permissions, timelocks
-- RS is a digest component of AS (like KS)
-- Like all Cyphrpass values, it is sorted by digest value (bytes), not by label.
-
-Level 5 Key concepts:
-
-- **Weight**: Numeric value assigned to each key
-- **Threshold**: Minimum total weight required for an action
+- Introduces Rule State (RS) for access control with weights and timelocks.
+- **Weight**: Numeric value assigned to each key with minimum total weight
+  (threshold) required for an action
 - **Timelock**: Delay before certain actions take effect
+- Each key has a weight (default: 1)
+- Transactions and actions have threshold requirements, default of 1
+- Enables: M-of-N signing, tiered permissions, custom timelocks
+- RS is a digest component of AS (like KS) and is sorted by digest value
+  (bytes).
 
 ### 3.6 Level 6: Programmable VM
 
@@ -374,26 +380,6 @@ Level 5 Key concepts:
 - Enables: Complex conditional logic, programmable policies
 - VM execution produces a deterministic state transition
 - Use case: Smart contracts, complex organizational policies
-
-### 3.7 Authorization
-
-A transaction is authorized if and only if all three conditions hold:
-
-1. **Pre-state key**: The signing key must be active in the state *before* the
-   transaction is applied. A key added or revoked within the same commit does
-   not affect authorization of that commit's transactions.
-2. **Lifecycle gate**: The principal's current lifecycle state must permit the
-   operation. For example, a Frozen principal rejects all mutations; a Deleted
-   principal rejects everything. (See §10 Principal Lifecycle States.)
-3. **Capability gate**: The principal must have the state components required
-   for the operation. Data actions require DS to exist. Rule operations require
-   RS to exist. At Level 5+, Rule State (RS) may define additional constraints;
-   weight thresholds, timelocks, or other conditions that must be satisfied for
-   the transaction to proceed.
-
-Principal levels describe increasing complexity of a principal's state
-composition. They are not an authorization input; authorization is determined by
-which state components exist and what rules govern them.
 
 ---
 
@@ -1396,7 +1382,7 @@ threshold for AS mutation.
 
 ## 12 Embedding
 
-An embedding is a digest reference to a Cyphrpass node, such as a principal, CS,
+An embedding is a digest reference to an external node, such as a principal, CS,
 key, or key tree. Embedding is the mechanism by which Cyphrpass achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
@@ -1427,6 +1413,8 @@ The typical use for embedded principals is identity encapsulation, external
 recovery authorities, social recovery, organizational delegation, and disaster
 recovery. (See section Recovery.)
 
+An example of embedding an external principal into key state:
+
 ```text
 Principal State (PS0)
 │
@@ -1437,7 +1425,22 @@ Principal State (PS0)
 │   │   ├── Key State (KS0)
 │   │   │   │
 │   │   │   └── Embedded Principal (PS1) 
+```
 
+An example of embedding multiple external principal's  KS's into KS:
+
+```text
+Principal State (PS0)
+│
+├── Commit State (CS0)
+│   │
+│   ├── Auth State (AS0)
+│   │   │
+│   │   ├── Key State (KS0)
+│   │   │   
+│   │   ├── Key State (KS1) from principal 1
+│   │   │   
+│   │   ├── Key State (KS2) from principal 2
 ```
 
 ### 12.2 Conjunctive Authorization
@@ -2924,7 +2927,7 @@ special attention to items with natural ownership properties.
 
 #### 22.2.1 Ownership Right Semantics
 
-Perhaps:
+TODO Perhaps:
 ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
 
 `typ`s:
@@ -3164,12 +3167,6 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 ---
 
 ## 25. Test Vectors
-
-These golden test vectors enable implementation verification. All values use B64ut encoding.
-
-- `tmb` = SHA-256(canonical(`{"alg":"ES256","pub":"..."}`))
-- ES256 uses P-256 curve, SHA-256 for `tmb`
-
 ### 25.1 Golden Key "User Key 0" (ES256)
 
 ```json5
@@ -3226,7 +3223,9 @@ The canonical Coz test message with verified signature:
 }
 ```
 
-Computed digests, where `cad` = SHA-256(canonical(`pay`)), `czd` = SHA-256(`[cad, sig]`)
+Computed digests, where 
+- `cad` = SHA-256(canonical(`pay`)) 
+- `czd` = SHA-256(`[cad, sig]`)
 
 - `cad`: `XzrXMGnY0QFwAKkr43Hh-Ku3yUS8NVE0BdzSlMLSuTU`
 - `czd`: `xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo`
@@ -3241,8 +3240,9 @@ For a single-key account with the golden key:
 
 ```
 KS = tmb (implicit promotion)
-AS = KS (no CS, no RS)
-PS = AS (no DS)
+AS = KS (no RS)
+CS = AS (no commit)
+PS = CS (no DS)
 PR = PS = "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 ```
 
@@ -3261,8 +3261,8 @@ Language-agnostic test vectors are provided in `/test_vectors/`. Integration
 tests consuming these vectors should:
 
 1. **Validate fixture `pre` values**: Before applying a transaction, verify that
-   the fixture's `pre` field matches the implementation's computed Auth State.
-   If they differ, the test should fail immediately, indicating a fixture data
+   the fixture's `pre` field matches the implementation's computed AS.
+   If they differ, the test must fail immediately, indicating a fixture data
    error rather than an implementation bug.
 
 2. **Use fixture values directly**: Tests should use the `pre`, `czd`, and other
@@ -3284,7 +3284,7 @@ drift early.
 
 ## 26 Suggested API
 
-See also section "MSS".
+See also section "MSS" for `tip`, `patch`, and `push` endpoint definitions.
 
 Good practice for digest identifiers is prepending with Coz algorithm
 identifier, e.g. `SHA256:<B64-value>`.
@@ -3297,9 +3297,10 @@ Since cryptographic digests are suitable, all `GETS` may simply be looked up by 
 
 - `GET /e/<diget-value>`
 
-See §10.1 for `tip`, `patch`, and `push` endpoint definitions.
 
 ---
+
+
 ## Appendix
 
 ### Cyphrpass Applications
@@ -3329,27 +3330,28 @@ Algorithm governance is delegated to Coz. Weak algorithm sunsetting is handled
 by Coz and is inherited by Cyphrpass. Implementations should warn and
 appropriately remove support for deprecated algorithms.
 
-### Appendix 2: See also
-
-Ethereum wants to implement multihash:
-https://ethresear.ch/t/multihashing-in-ethereum-2-0/4745
-
-Merkle-tree-based verifiable logs
-
-- Keybase
-- Protocol Labs
-
-### Appendix 3: Prior Art
+### Appendix 2: Prior Art
 
 - Coz
 - Bitcoin
 - Ethereum
 - PGP
 - SSH
-- SSL
+- SSL/TLS
 - SSHSIG and signify (OpenBSD)
 - Secure Quick Reliable Login (SQRL) (https://www.grc.com/sqrl/sqrl.htm)
 
+### Appendix 3: See also
+
+- Ethereum multihash: https://ethresear.ch/t/multihashing-in-ethereum-2-0/4745
+- Merkle-tree-based verifiable logs (A merkle tree where new nodes are added to only one side.)
+- Keybase
+- Protocol Labs (Multiformats) 
+
+## QUICK AI Guidance:
+ - DO NOT USE EM DASH OR DASH. Use period, comma, semi-colon, and other sentence
+   construction appropriately.
+ - DO NOT USE uppercase MAY, SHOULD, or MUST.  This isn't an IETF RFC.
 
 ## TODO clean up items:  
 - NO EM DASH in the file other than in title names.
