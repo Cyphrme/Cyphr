@@ -920,7 +920,7 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
         // Recompute AS from KS
-        let recomputed_as = compute_as(&recomputed_ks, None, active_algs);
+        let recomputed_as = compute_as(&recomputed_ks, None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(
@@ -934,10 +934,11 @@ fn e2e_multihash_round_trip() {
 
         // Recompute CS from AS + Commit ID
         let commit_id = principal.current_commit_id();
-        let recomputed_cs = compute_cs(&recomputed_as, commit_id, active_algs);
+        let recomputed_cs = compute_cs(&recomputed_as, commit_id, active_algs).unwrap();
 
         // Recompute PS from CS
-        let recomputed_ps = compute_ps(&recomputed_cs, principal.data_state(), None, active_algs);
+        let recomputed_ps =
+            compute_ps(&recomputed_cs, principal.data_state(), None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(

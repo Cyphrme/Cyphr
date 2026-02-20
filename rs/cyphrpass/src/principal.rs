@@ -132,11 +132,11 @@ impl Principal {
         // KS = tmb (single key promotes)
         let ks = compute_ks(&[&key.tmb], None, &active_algs);
         // AS = KS (no Commit ID, promotes)
-        let auth_state = compute_as(&ks, None, &active_algs);
+        let auth_state = compute_as(&ks, None, &active_algs)?;
         // CS = promoted from AS at genesis (no prior commit)
-        let cs = compute_cs(&auth_state, None, &active_algs);
+        let cs = compute_cs(&auth_state, None, &active_algs)?;
         // PS = MR(CS, DS?) — at genesis DS is None
-        let ps = compute_ps(&cs, None, None, &active_algs);
+        let ps = compute_ps(&cs, None, None, &active_algs)?;
         // PR = first PS
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -185,11 +185,11 @@ impl Principal {
         let ks = compute_ks(&thumbprints, None, &active_algs);
 
         // AS = KS (no Commit ID yet)
-        let auth_state = compute_as(&ks, None, &active_algs);
+        let auth_state = compute_as(&ks, None, &active_algs)?;
         // CS = promoted from AS at genesis
-        let cs = compute_cs(&auth_state, None, &active_algs);
+        let cs = compute_cs(&auth_state, None, &active_algs)?;
         // PS = MR(CS, DS?)
-        let ps = compute_ps(&cs, None, None, &active_algs);
+        let ps = compute_ps(&cs, None, None, &active_algs)?;
         // PR frozen at genesis
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -252,9 +252,9 @@ impl Principal {
         let ks = compute_ks(&thumbprints, None, &active_algs);
 
         // CS = promoted from checkpoint AS (no commit history loaded)
-        let cs = compute_cs(&auth_state, None, &active_algs);
+        let cs = compute_cs(&auth_state, None, &active_algs)?;
         // PS = MR(CS, DS?) — no DS at checkpoint load
-        let ps = compute_ps(&cs, None, None, &active_algs);
+        let ps = compute_ps(&cs, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -307,23 +307,28 @@ impl Principal {
     ///
     /// At genesis (before any commits), returns the promoted Auth State value
     /// since CS == promoted(AS) at genesis.
-    pub fn commit_state_tagged(&self) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if the state digest has no variants.
+    pub fn commit_state_tagged(&self) -> Result<String> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
 
         // Use cs if available, otherwise fall back to promoted auth_state (genesis)
-        if let Some(cs) = &self.cs {
-            cs.get(first_alg)
-                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
-                .expect("CommitState must have at least one variant")
+        let bytes = if let Some(cs) = &self.cs {
+            cs.0.get_or_err(first_alg)?
         } else {
             // Genesis fallback: CS == promoted(AS)
-            self.auth_state
-                .get(first_alg)
-                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
-                .expect("AuthState must have at least one variant")
-        }
+            self.auth_state.0.get_or_err(first_alg)?
+        };
+
+        Ok(format!(
+            "{}:{}",
+            first_alg,
+            Base64UrlUnpadded::encode_string(bytes)
+        ))
     }
 
     /// Get the current Key State.
@@ -554,8 +559,8 @@ impl Principal {
         // Recompute PS = MR(CS, DS?)
         // CS doesn't change on action recording (only on commits), so use existing CS.
         // If CS is None (shouldn't happen after genesis), compute_ps would need it.
-        let cs_ref = self.cs.as_ref().expect("CS must exist after genesis");
-        self.ps = compute_ps(cs_ref, self.ds.as_ref(), None, &[self.hash_alg]);
+        let cs_ref = self.cs.as_ref().ok_or(Error::StateMismatch)?;
+        self.ps = compute_ps(cs_ref, self.ds.as_ref(), None, &[self.hash_alg])?;
 
         Ok(&self.ps)
     }
@@ -797,20 +802,18 @@ impl Principal {
         self.ks = compute_ks(&thumbprints, None, &self.active_algs);
 
         // Compute Commit ID from pending commit
-        let commit_id = pending
-            .compute_commit_id()
-            .expect("non-empty pending should produce Commit ID");
+        let commit_id = pending.compute_commit_id().ok_or(Error::EmptyCommit)?;
         self.commit_id = Some(commit_id.clone());
 
         // Compute AS from updated KS (AS = MR(KS, RS?) per SPEC §8.4)
-        self.auth_state = compute_as(&self.ks, None, &self.active_algs);
+        self.auth_state = compute_as(&self.ks, None, &self.active_algs)?;
 
         // Compute CS = MR(AS, Commit ID)
-        let cs = compute_cs(&self.auth_state, Some(&commit_id), &self.active_algs);
+        let cs = compute_cs(&self.auth_state, Some(&commit_id), &self.active_algs)?;
         self.cs = Some(cs.clone());
 
         // Compute PS = MR(CS, DS?)
-        self.ps = compute_ps(&cs, self.ds.as_ref(), None, &self.active_algs);
+        self.ps = compute_ps(&cs, self.ds.as_ref(), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
         let commit = pending
@@ -892,27 +895,12 @@ impl Principal {
         // Get the reference CS to compare against.
         // If self.cs is Some, use it; otherwise fall back to promoted auth_state for genesis.
         let current = if let Some(cs) = &self.cs {
-            cs.get(self.hash_alg)
-                .or_else(|| cs.0.variants().values().next().map(AsRef::as_ref))
-                .expect("CommitState must have at least one variant")
+            cs.0.get_or_err(self.hash_alg)?
         } else {
             // Genesis fallback: CS == promoted(AS)
-            self.auth_state
-                .get(self.hash_alg)
-                .or_else(|| {
-                    self.auth_state
-                        .0
-                        .variants()
-                        .values()
-                        .next()
-                        .map(AsRef::as_ref)
-                })
-                .expect("AuthState must have at least one variant")
+            self.auth_state.0.get_or_err(self.hash_alg)?
         };
-        let expected = pre
-            .get(self.hash_alg)
-            .or_else(|| pre.0.variants().values().next().map(AsRef::as_ref))
-            .expect("pre CommitState must have at least one variant");
+        let expected = pre.0.get_or_err(self.hash_alg)?;
         if current != expected {
             return Err(Error::InvalidPrior);
         }

@@ -606,26 +606,26 @@ pub fn compute_commit_id_tagged(
 ///
 /// - Only KS, no RS/nonce: AS = KS (implicit promotion)
 /// - Otherwise: AS = H(sort(KS, RS?, nonce?))
+///
+/// # Errors
+///
+/// Returns `EmptyMultihash` if the KeyState contains no variants.
 pub fn compute_as(
     ks: &KeyState,
     // rs: Option<&RuleState>,  // Level 5, not yet implemented
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
-) -> AuthState {
+) -> crate::error::Result<AuthState> {
     // Implicit promotion: only KS, nothing else
     // Clone the KeyState multihash directly
     if nonce.is_none() {
-        return AuthState(ks.0.clone());
+        return Ok(AuthState(ks.0.clone()));
     }
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        // Get KS variant for this algorithm, falling back to first available
-        let ks_bytes = ks
-            .get(alg)
-            .or_else(|| ks.0.variants().values().next().map(AsRef::as_ref))
-            .expect("KeyState must have at least one variant");
+        let ks_bytes = ks.0.get_or_err(alg)?;
 
         // Collect non-nil components
         let mut components: Vec<&[u8]> = vec![ks_bytes];
@@ -638,7 +638,7 @@ pub fn compute_as(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    AuthState(MultihashDigest::new(variants))
+    Ok(AuthState(MultihashDigest::new(variants)))
 }
 
 /// Compute Commit State — SPEC §8.5.
@@ -647,39 +647,33 @@ pub fn compute_as(
 ///
 /// - If commit_id is None (genesis / no transactions): CS promotes from AS
 /// - Otherwise: CS = H(sort(AS, CommitID)) for each algorithm
+///
+/// # Errors
+///
+/// Returns `EmptyMultihash` if AuthState or CommitID contains no variants.
 pub fn compute_cs(
     auth_state: &AuthState,
     commit_id: Option<&CommitID>,
     algs: &[HashAlg],
-) -> CommitState {
+) -> crate::error::Result<CommitState> {
     // Implicit promotion: no commit ID → CS = AS
-    if commit_id.is_none() {
-        return CommitState(auth_state.0.clone());
-    }
-
-    let cid = commit_id.unwrap();
+    let cid = match commit_id {
+        Some(cid) => cid,
+        None => return Ok(CommitState(auth_state.0.clone())),
+    };
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        // Get AS variant for this algorithm, falling back to first available
-        let as_bytes = auth_state
-            .get(alg)
-            .or_else(|| auth_state.0.variants().values().next().map(AsRef::as_ref))
-            .expect("AuthState must have at least one variant");
-
-        // Get CommitID variant for this algorithm, falling back to first available
-        let cid_bytes = cid
-            .get(alg)
-            .or_else(|| cid.0.variants().values().next().map(AsRef::as_ref))
-            .expect("CommitID must have at least one variant");
+        let as_bytes = auth_state.0.get_or_err(alg)?;
+        let cid_bytes = cid.0.get_or_err(alg)?;
 
         let components: Vec<&[u8]> = vec![as_bytes, cid_bytes];
         let digest = hash_sorted_concat_bytes(alg, &components);
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    CommitState(MultihashDigest::new(variants))
+    Ok(CommitState(MultihashDigest::new(variants)))
 }
 
 /// Compute Data State (SPEC §7.4).
@@ -715,26 +709,26 @@ pub fn compute_ds(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 /// - Otherwise: PS = H(sort(CS, DS?, nonce?)) for each algorithm
 ///
 /// Accepts multiple hash algorithms and produces a variant for each.
+///
+/// # Errors
+///
+/// Returns `EmptyMultihash` if the CommitState contains no variants.
 pub fn compute_ps(
     cs: &CommitState,
     ds: Option<&DataState>,
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
-) -> PrincipalState {
+) -> crate::error::Result<PrincipalState> {
     // Implicit promotion: only CS, nothing else
     // Clone the CommitState multihash directly
     if ds.is_none() && nonce.is_none() {
-        return PrincipalState(cs.0.clone());
+        return Ok(PrincipalState(cs.0.clone()));
     }
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        // Get CS variant for this algorithm, falling back to first available
-        let cs_bytes = cs
-            .get(alg)
-            .or_else(|| cs.0.variants().values().next().map(AsRef::as_ref))
-            .expect("CommitState must have at least one variant");
+        let cs_bytes = cs.0.get_or_err(alg)?;
 
         // Collect non-nil components
         let mut components: Vec<&[u8]> = vec![cs_bytes];
@@ -749,7 +743,7 @@ pub fn compute_ps(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    PrincipalState(MultihashDigest::new(variants))
+    Ok(PrincipalState(MultihashDigest::new(variants)))
 }
 
 // ============================================================================
@@ -816,7 +810,7 @@ mod tests {
         // Only KS, no RS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]);
+        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
 
         // AS should equal the KS variant for this algorithm
         assert_eq!(
@@ -829,11 +823,11 @@ mod tests {
     fn cs_with_commit_id_hashes() {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]);
+        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
         let czd = Czd::from_bytes(vec![10, 20, 30]);
         let cid = compute_commit_id(&[&czd], None, &[HashAlg::Sha256]).unwrap();
 
-        let cs = compute_cs(&auth_state, Some(&cid), &[HashAlg::Sha256]);
+        let cs = compute_cs(&auth_state, Some(&cid), &[HashAlg::Sha256]).unwrap();
 
         // Should be hashed combination
         let cs_bytes = cs.get(HashAlg::Sha256).unwrap();
@@ -846,9 +840,9 @@ mod tests {
         // Only CS (promoted from AS), no DS: PS = CS
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]);
-        let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]);
-        let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]);
+        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
+        let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]).unwrap();
 
         assert_eq!(
             ps.get(HashAlg::Sha256).unwrap(),
@@ -861,9 +855,9 @@ mod tests {
         // Level 1: PR = PS = CS = AS = KS = tmb
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
-        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]);
-        let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]);
-        let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]);
+        let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
+        let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]).unwrap();
         let pr = PrincipalRoot::from_initial(&ps);
 
         // All should be identical to tmb

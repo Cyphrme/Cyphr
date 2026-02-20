@@ -158,19 +158,31 @@ impl<'a> Generator<'a> {
     /// Format commit state as tagged digest string (alg:digest format).
     ///
     /// Delegates to Principal::commit_state_tagged().
-    fn format_commit_state_tagged(principal: &cyphrpass::Principal) -> String {
-        principal.commit_state_tagged()
+    fn format_commit_state_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
+        principal
+            .commit_state_tagged()
+            .map_err(|e| Error::Generation {
+                name: String::new(),
+                reason: format!("commit_state_tagged failed: {}", e),
+            })
     }
 
     /// Format auth state as tagged digest string (alg:digest format).
-    fn format_auth_state_tagged(principal: &cyphrpass::Principal) -> String {
-        // Assume first active algorithm for now (golden uses it)
+    fn format_auth_state_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
         let alg = principal.active_algs().first().unwrap();
         let digest = principal
             .auth_state()
-            .get(*alg) // Fix lint: dereference alg
-            .expect("principal must have auth state for active alg");
-        format!("{}:{}", alg, Base64UrlUnpadded::encode_string(digest))
+            .as_multihash()
+            .get_or_err(*alg)
+            .map_err(|e| Error::Generation {
+                name: String::new(),
+                reason: format!("auth_state digest failed: {}", e),
+            })?;
+        Ok(format!(
+            "{}:{}",
+            alg,
+            Base64UrlUnpadded::encode_string(digest)
+        ))
     }
 
     /// Generate golden test cases from an intent file.
@@ -487,10 +499,10 @@ impl<'a> Generator<'a> {
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = Self::format_commit_state_tagged(principal);
+                computed_pre = Self::format_commit_state_tagged(principal)?;
                 &computed_pre
             };
-        let computed_as = Self::format_auth_state_tagged(principal);
+        let computed_as = Self::format_auth_state_tagged(principal)?;
 
         // Build and sign coz message
         let (coz, sig_bytes, czd) =
@@ -555,8 +567,8 @@ impl<'a> Generator<'a> {
             })?;
 
             // Capture pre before this commit (alg:digest format)
-            let pre = Self::format_commit_state_tagged(principal);
-            let current_as = Self::format_auth_state_tagged(principal);
+            let pre = Self::format_commit_state_tagged(principal)?;
+            let current_as = Self::format_auth_state_tagged(principal)?;
 
             let (coz, sig_bytes, czd) = self
                 .build_golden_coz(tx, &test.name, Some(&pre), Some(&current_as))
@@ -647,8 +659,8 @@ impl<'a> Generator<'a> {
             })?;
 
         // Capture pre (auth state before transaction) in alg:digest format
-        let pre = Self::format_commit_state_tagged(principal);
-        let current_as = Self::format_auth_state_tagged(principal);
+        let pre = Self::format_commit_state_tagged(principal)?;
+        let current_as = Self::format_auth_state_tagged(principal)?;
 
         // Build and sign transaction coz message
         let (tx_coz, tx_sig_bytes, tx_czd) =

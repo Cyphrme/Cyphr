@@ -95,6 +95,35 @@ impl MultihashDigest {
     pub fn into_variants(self) -> BTreeMap<HashAlg, Box<[u8]>> {
         self.variants
     }
+
+    /// Get digest for a specific algorithm, falling back to the first available variant.
+    ///
+    /// This is the fallible replacement for the common pattern:
+    /// ```ignore
+    /// mh.get(alg).or_else(|| mh.variants().values().next().map(AsRef::as_ref)).expect("...")
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if no variants exist.
+    pub fn get_or_err(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
+        self.get(alg)
+            .or_else(|| self.variants.values().next().map(AsRef::as_ref))
+            .ok_or(crate::error::Error::EmptyMultihash)
+    }
+
+    /// Get the first available variant's bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if no variants exist.
+    pub fn first_variant(&self) -> crate::error::Result<&[u8]> {
+        self.variants
+            .values()
+            .next()
+            .map(AsRef::as_ref)
+            .ok_or(crate::error::Error::EmptyMultihash)
+    }
 }
 
 // ============================================================================

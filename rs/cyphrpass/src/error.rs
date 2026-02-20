@@ -72,6 +72,10 @@ pub enum Error {
     #[error("hash algorithm mismatch")]
     HashAlgMismatch,
 
+    /// MultihashDigest contains no variants (internal invariant violation).
+    #[error("empty multihash digest")]
+    EmptyMultihash,
+
     // === Action errors (§17.4) ===
     /// Action `typ` not permitted for this key (Level 5+).
     #[error("unauthorized action")]

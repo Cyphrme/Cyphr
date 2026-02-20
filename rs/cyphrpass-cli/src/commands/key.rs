@@ -166,7 +166,7 @@ fn add(
     // Build pay JSON for key/create
     let now = current_timestamp();
     // Get pre (commit state before transaction) in alg:digest format
-    let pre = principal.commit_state_tagged();
+    let pre = principal.commit_state_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -262,7 +262,7 @@ fn revoke(
     // Build pay JSON for key/revoke
     let now = current_timestamp();
     // Get pre (commit state before transaction) in alg:digest format
-    let pre = principal.commit_state_tagged();
+    let pre = principal.commit_state_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
