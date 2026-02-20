@@ -1406,3 +1406,270 @@ Based on the dependency graph above:
 ```
 
 Items 1-2 are prerequisites with downstream dependencies. Items 4 and 7 are independent and can be done in parallel. Items 5-6 are sequentially dependent on each other but independent of 1-3.
+
+---
+
+## Appendix D: Formal Invariant Coverage (I3–I6)
+
+> **Scope:** The formal model (`docs/models/principal-state-model.md`) defines 6 invariants. Appendix B verified I1 (pre-state authorization) and I2 (revocation permanence). This appendix covers the remaining four.
+
+### D.1 I3 — PR Immutability
+
+**Invariant:**
+
+```
+∀ transition s → s':
+  pr(s) = pr(s')
+```
+
+**Finding: PASS — Structurally enforced**
+
+PR is set exactly once at genesis and has no setter:
+
+- **Go** `Implicit` (principal.go:144): `pr = first PS`, stored as `p.pr`. No `SetPR` method exists. The `PR()` accessor returns a copy.
+- **Rust** `implicit` (principal.rs:140-141): `let pr = PrincipalRoot::from_initial(&ps)`. No `&mut` accessor exists for `pr`. The `pr()` accessor returns `&PrincipalRoot`.
+
+Neither `apply_transaction_internal` nor any commit path modifies PR. The only code paths that set PR are the genesis constructors (`implicit`, `explicit`, `from_checkpoint`).
+
+**Testing:** Implicitly tested by golden fixtures (PR is verified against expected values after transaction sequences). No explicit "PR doesn't change after mutation" test exists, but the structural enforcement makes this low-risk.
+
+---
+
+### D.2 I4 — Level Monotonicity (Partial)
+
+**Invariant:**
+
+```
+∀ transition s → s':
+  level(s) ∈ {1, 2} ⟹ level(s') ≥ level(s)    — L1/L2: up only
+  level(s) ≥ 3      ⟹ level(s') ≥ 3            — floor at L3
+```
+
+**Finding: WARN — Not enforced**
+
+Both implementations compute level as a pure function of current state with no monotonicity guard:
+
+**Go** `Level()` (principal.go:348-360):
+
+```go
+func (p *Principal) Level() Level {
+    if len(p.data.Actions) > 0 { return Level4 }
+    if len(p.auth.Keys) > 1 || len(p.auth.Transactions) > 0 { return Level3 }
+    return Level1
+}
+```
+
+**Rust** `level()` (principal.rs:482-495):
+
+```rust
+pub fn level(&self) -> Level {
+    if !self.data.actions.is_empty() { return Level::L4; }
+    if self.auth.keys.len() > 1 || !self.auth.commits.is_empty() { return Level::L3; }
+    Level::L1
+}
+```
+
+**Key observation:** Neither checks commit history for the L2 case. A single-key principal that has done a `key/replace` (L2 behavior) but has no remaining transactions in memory would report L1, not L2. More critically, removing transactions from history (if that were possible) could drop the reported level from L3 to L1, violating the L3 floor.
+
+**Practical risk:** Currently low — transactions are append-only (`auth.Transactions`/`auth.commits` never shrink), so the floor holds emergently. But it's not enforced structurally. If a future storage optimization prunes transaction history, level monotonicity would silently break.
+
+**Recommendation:** Consider tracking `max_level_reached` as a persistent field, or asserting monotonicity explicitly in the level computation.
+
+---
+
+### D.3 I5 — Observation Congruence
+
+**Invariant:**
+
+```
+∀ s₁, s₂ ∈ S:
+  ps(s₁) = ps(s₂) ⟹ s₁ ~_obs s₂
+```
+
+**Finding: NOT TESTED — Theoretical only**
+
+No test constructs two principals with different internal states that produce the same PS. This invariant is primarily a privacy property (promotion collapses distinct internals) and is more relevant to protocol analysis than implementation correctness.
+
+**Practical risk:** Low. This invariant says "you can't distinguish two principals by their PS alone if their states collapse identically." It's about what observers _can't_ see, not about what the code _must do_.
+
+**Recommendation:** Defer. Useful for property-based testing if/when that infrastructure is built (see Appendix E), but not a correctness concern.
+
+---
+
+### D.4 I6 — Fork Detection
+
+**Invariant:**
+
+```
+∀ witness w, state s:
+  fork_detected(w, s) ⟺ ∃ c₁, c₂ ∈ observed(w):
+    c₁.pre = c₂.pre ∧ c₁ ≠ c₂
+```
+
+**Finding: NOT IMPLEMENTED**
+
+Zero fork-related identifiers exist in either implementation. No `fork`, `conflict`, `diverge`, or equivalent concept appears in the Go or Rust codebase.
+
+The formal model defines fork detection as a local property (each witness has its own view). This implies fork detection is a consumer/service layer concern, not a core library concern. However, the library should provide the primitives:
+
+- **`pre` tracking per commit** — both implementations record `pre` in commits ✅
+- **Detecting duplicate `pre` values** — not implemented ❌
+- **Error type for fork** — not defined in either `Error` enum ❌
+
+**API structural readiness:** The `pre` field exists in both commit representations, so implementing "have I seen two commits with the same `pre`?" is straightforward. The `Errored` lifecycle state from the formal model (§1.2) would pair naturally with fork detection.
+
+**Recommendation:** When the `Errored` lifecycle state is implemented (B.1), fork detection should be part of the same workstream. The core library should at minimum provide a `detect_fork(commits: &[Commit]) -> Option<ForkEvidence>` utility, even if the policy decision (reject? accept longer chain?) is left to consumers.
+
+---
+
+### D.5 Invariant Coverage Summary
+
+| Invariant | Description             | Status                           | Risk                                   |
+| :-------- | :---------------------- | :------------------------------- | :------------------------------------- |
+| I1        | Pre-state authorization | ✅ PASS (B.2)                    | —                                      |
+| I2        | Revocation permanence   | ⚠️ WARN (B.3, BUG-12)            | P1                                     |
+| I3        | PR immutability         | ✅ PASS (structurally enforced)  | Low                                    |
+| I4        | Level monotonicity      | ⚠️ WARN (emergent, not enforced) | Low now, high if history pruning added |
+| I5        | Observation congruence  | 🔵 NOT TESTED (theoretical)      | Low                                    |
+| I6        | Fork detection          | ❌ NOT IMPLEMENTED               | High for multi-service deployments     |
+
+---
+
+## Appendix E: Verification Strategy Assessment
+
+> **Scope:** Assessment of the current testing strategy against the formal model's testability properties and engineering axiom requirements. Framed through the integral axiom's Culture (LL) quadrant — what norms and infrastructure support correctness?
+
+### E.1 Property-Based Testing — Absent
+
+**Zero** property-based testing infrastructure exists. No `proptest`, `quickcheck` (Rust), or `testing/quick` (Go) dependencies or tests found.
+
+The formal model explicitly identifies property-based testing candidates:
+
+| Invariant/Property         | Test Strategy                                                                         | Complexity |
+| :------------------------- | :------------------------------------------------------------------------------------ | :--------- |
+| Level function (§1.3)      | QuickCheck: generate random state, verify level ∈ {1..6}                              | Low        |
+| I1 (pre-state auth)        | Generate random key sets, verify signer must be in pre-state                          | Medium     |
+| I2 (revocation permanence) | Generate key→revoke→re-add sequences, verify rejection                                | Low        |
+| I4 (level monotonicity)    | Generate random transaction sequences, verify level never decreases below floor       | Medium     |
+| MHMR commutativity         | Generate random child digest orderings, verify MR is order-independent (sort handles) | Low        |
+
+**Recommendation:** Start with 2-3 low-complexity property tests (level function, revocation permanence, MHMR sort invariance). These would catch entire classes of bugs that example-based tests miss.
+
+### E.2 Fuzz Testing — Absent
+
+**Zero** fuzz testing. BUG-3 (`NewCommit` panics on empty) and BUG-5 (`NewMultihashDigest` panics on empty) are exactly the class of bugs that `go test -fuzz` and `cargo fuzz` catch systematically.
+
+**High-value fuzz targets:**
+
+| Target                           | Language | Input                           | Catches                          |
+| :------------------------------- | :------- | :------------------------------ | :------------------------------- |
+| `ParseTransaction`               | Go       | Arbitrary `TransactionPay` JSON | Panics, malformed field handling |
+| `Transaction::from_pay`          | Rust     | Arbitrary `Pay` JSON            | Error path coverage              |
+| `ParseTaggedDigest`              | Go       | Arbitrary strings               | Panic on malformed tagged digest |
+| `NewEntry` / `Entry::from_bytes` | Both     | Arbitrary byte sequences        | Storage layer robustness         |
+| `ComputeKS`                      | Go       | Empty/single/many thumbprints   | Implicit promotion edge cases    |
+
+### E.3 Golden Fixture Gaps
+
+The golden test framework (`golden_test.go`) documents 35+ scenarios across 7 test categories. Cross-referencing with the audit findings and formal invariants reveals unrealized or missing scenarios:
+
+**Documented but potentially unrealized:**
+
+- `other_revoke_by_peer` — references `TxOtherRevoke` which is dead code (BUG-1). If this golden exists, it tests removed functionality. If it doesn't exist, the comment is misleading.
+
+**Not covered by any golden:**
+
+- Revoked key re-add attempt (BUG-12 negative test)
+- Level monotonicity across transaction sequences (I4)
+- Cross-algorithm commit ID computation (BUG-7 scenario)
+- Non-atomic import recovery (item 20)
+- `pre` mismatch after partial commit failure (C.6 temporal atomicity)
+- Fork scenario: two commits with identical `pre` (I6)
+
+### E.4 Negative Testing Gaps
+
+The error category (`TestGolden_Errors`) covers 10 scenarios including invalid signatures, unknown signers, and revoked keys. Notable gaps:
+
+| Missing Negative Test               | Related Finding | Severity |
+| :---------------------------------- | :-------------- | :------- |
+| Revoked key re-add via `key/create` | BUG-12          | P1       |
+| Timestamp regression across commits | C.6             | P2       |
+| Genesis with zero keys              | BUG-3/BUG-5     | P1       |
+| Mutation on frozen principal        | B.1 (future)    | —        |
+| `pre` pointing to non-existent CS   | C.3             | P2       |
+
+### E.5 Hand-Computed Reference Vectors — Absent
+
+Reinforcing C.4: no test verifies MHMR computation against manually derived values. All state computation tests compare Go output to Rust-generated golden fixtures.
+
+**Recommendation:** Compute 3-5 reference vectors by hand from SPEC §9 and §20.5:
+
+1. Single-key KS (promotion: `KS = tmb`)
+2. Two-key KS (`KS = MR(sort(tmb₀, tmb₁))`)
+3. Single-transaction commit ID (promotion: `commit_id = czd`)
+4. Multi-transaction commit ID (`commit_id = MR(sort(czd₀, czd₁))`)
+5. Full state chain: `KS → AS → CS → PS` for a two-key, one-commit principal
+
+These should be in a language-independent format (JSON or TOML) consumed by both Go and Rust test suites.
+
+---
+
+## Appendix F: System Integration Notes (Charter Input)
+
+> **Scope:** Observations relevant to the System (LR) quadrant of the AQAL framework. These are not implementation bugs but architectural and ecosystem concerns that should inform charter-level planning. Intentionally lighter than previous appendices — this is a prompt for deeper exploration, not an exhaustive analysis.
+
+### F.1 Coz Library Coupling Surface
+
+Cyphrpass's Go API directly exposes Coz types in its public surface:
+
+- `coz.B64` appears in nearly every function signature (`ComputePS`, `ComputeCommitID`, `ParseTaggedDigest`, etc.)
+- `coz.Key` is the parameter type for `VerifyTransaction` and `addKey`
+- `coz.HshAlg` is aliased locally as `HashAlg` (item 29)
+
+Rust insulates better: `Thumbprint`, `Czd`, `Digest` are Cyphrpass-owned newtypes wrapping Coz primitives.
+
+**Charter concern:** If Coz undergoes a breaking API change (e.g., `B64` representation changes), Go's Cyphrpass must change its entire public API. Rust's newtype barrier absorbs this. Consider whether Go should adopt a similar insulation pattern, or whether the tight coupling is an intentional choice (single-organization control of both libraries).
+
+### F.2 Consumer Onboarding Path
+
+The current API surface requires consumers to understand:
+
+1. Genesis model (implicit vs. explicit, bootstrap sequencing)
+2. Transaction lifecycle (construct → verify → apply → commit)
+3. State computation hierarchy (KS → AS → CS → PS)
+4. Storage format (JSONL entries, bit-perfect preservation)
+
+No "getting started" example or minimal integration guide exists outside the test fixtures. The test fixture runner (`testfixtures/`) is comprehensive but oriented toward verification, not onboarding.
+
+**Charter concern:** As the protocol matures, a minimal "hello world" path (create principal → add key → verify state) would reduce adoption friction. This could be a standalone example crate/package or a doc-embedded walkthrough.
+
+### F.3 Protocol Versioning Strategy
+
+SPEC.md is "Draft v0.1." Neither implementation tracks protocol version in its types or wire format. Questions for charter exploration:
+
+- How will a v0.2 principal interact with a v0.1 service?
+- Should the genesis commit embed a protocol version?
+- Are there forward-compatibility affordances (unknown field tolerance, extension points)?
+- The `#[non_exhaustive]` decision (audit line 835) is one small facet of this broader question.
+
+### F.4 Multi-Service State Consistency
+
+The formal model's session types (§2.1–2.5) define login, MSS sync, resync, and state jumping protocols. None of these are implemented. When they are, the library will need:
+
+- State comparison primitives (`is_ahead_of`, `common_ancestor`)
+- Delta computation (`commits_since(anchor)`)
+- Conflict resolution policy (accept longer chain? require witness quorum?)
+
+The current storage layer's commit-based format (Rust `CommitEntry`, DEV-2) is a building block, but the synchronization primitives above it don't exist yet.
+
+**Charter concern:** The formal model's session types should directly inform the API design for these primitives. A `/model` pass applying session types to the implementation layer would be valuable before coding begins.
+
+### F.5 Algorithm Deprecation Path
+
+SPEC §20 states that when an algorithm is weakened, "Coz will mark it deprecated; principals should discontinue via key removal." Neither implementation has:
+
+- A mechanism to query whether a key's algorithm is deprecated
+- A migration path for principals whose only key uses a deprecated algorithm
+- Warnings or errors for deprecated algorithm usage
+
+This is future work, but the API should be designed to accommodate it. Currently, `HashAlg`/`HashAlg` types have no `is_deprecated()` method or equivalent.
