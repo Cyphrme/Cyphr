@@ -88,11 +88,9 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         let computed_pr = principal
             .pr()
             .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .first_variant()
             .map(|b| Base64UrlUnpadded::encode_string(b))
-            .expect("PrincipalRoot must have at least one variant");
+            .map_err(|e| format!("PR empty: {e}"))?;
         if computed_pr != identity {
             return Err(format!("PR mismatch: computed {} != {}", computed_pr, identity).into());
         }
@@ -139,11 +137,9 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     let computed_pr = principal
         .pr()
         .as_multihash()
-        .variants()
-        .values()
-        .next()
+        .first_variant()
         .map(|b| Base64UrlUnpadded::encode_string(b))
-        .expect("PrincipalRoot must have at least one variant");
+        .map_err(|e| format!("PR empty: {e}"))?;
     if computed_pr != identity {
         return Err(format!(
             "PR mismatch: computed {} != expected {}",
@@ -163,11 +159,9 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     let computed_ps = principal
         .ps()
         .as_multihash()
-        .variants()
-        .values()
-        .next()
+        .first_variant()
         .map(|b| Base64UrlUnpadded::encode_string(b))
-        .expect("PrincipalState must have at least one variant");
+        .map_err(|e| format!("PS empty: {e}"))?;
 
     // Parse stored ps which may be in "alg:digest" format
     let stored_ps_digest = last_commit.ps.split(':').last().unwrap_or(&last_commit.ps);

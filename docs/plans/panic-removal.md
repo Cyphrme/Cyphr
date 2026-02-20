@@ -124,15 +124,17 @@ With this helper, most `.get(alg).expect("must have variant")` patterns become
 - [x] Update function signatures: `compute_as`/`compute_cs`/`compute_ps` → `Result`, `commit_state_tagged` → `Result<String>`
 - [x] Update downstream callers (`golden.rs`, `key.rs`, `e2e.rs`)
 
-### Phase 2: Storage Crate (`cyphrpass-storage`)
+### Phase 2: Storage Crate (`cyphrpass-storage`) ✅
 
-- [ ] Convert `export.rs` production panics (serialization and state access)
-- [ ] Convert `file.rs` L47 panic
+- [x] Convert `export.rs` production panics → `ExportError` enum with `Result` propagation
+- [x] Convert `file.rs` L47 panic → `first_variant()` with `FileStoreError::EmptyDigest`
+- [x] Update `persist_entries` → `PersistError<S::Error>` for combined export+store errors
 
-### Phase 3: CLI Crate (`cyphrpass-cli`)
+### Phase 3: CLI Crate (`cyphrpass-cli`) ✅
 
-- [ ] Convert `tx.rs`, `init.rs`, `io.rs` state access panics to `anyhow` errors
-- [ ] Convert `key.rs` keystore access panics
+- [x] Convert `tx.rs` (3), `io.rs` (3), `init.rs` (1) state access panics → `first_variant()` + `?`
+- [x] Convert `key.rs` keystore access panics (2) → `?`
+- [x] Update `export_commits()` callers in `init.rs`, `key.rs` → `?`
 
 ## Verification
 

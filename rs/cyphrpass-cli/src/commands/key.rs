@@ -198,7 +198,7 @@ fn add(
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
 
     // Store updated state
-    let new_commits = export_commits(&principal);
+    let new_commits = export_commits(&principal)?;
     // Only append new commits (the ones after current)
     for commit in new_commits.iter().skip(commits.len()) {
         store.append_commit(principal.pr(), commit)?;
@@ -295,7 +295,7 @@ fn revoke(
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
 
     // Store updated state
-    let new_commits = export_commits(&principal);
+    let new_commits = export_commits(&principal)?;
     for commit in new_commits.iter().skip(commits.len()) {
         store.append_commit(principal.pr(), commit)?;
     }
@@ -343,23 +343,21 @@ fn list_keystore(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.output {
         OutputFormat::Json => {
-            let keys: Vec<_> = thumbprints
-                .iter()
-                .map(|tmb| {
-                    let key = keystore.get(tmb).unwrap();
-                    serde_json::json!({
-                        "tmb": tmb,
-                        "alg": key.alg,
-                        "tag": key.tag,
-                    })
-                })
-                .collect();
+            let mut keys = Vec::new();
+            for tmb in &thumbprints {
+                let key = keystore.get(tmb)?;
+                keys.push(serde_json::json!({
+                    "tmb": tmb,
+                    "alg": key.alg,
+                    "tag": key.tag,
+                }));
+            }
             println!("{}", serde_json::to_string_pretty(&keys)?);
         },
         OutputFormat::Table => {
             println!("Keys in keystore:");
             for tmb in thumbprints {
-                let key = keystore.get(tmb).unwrap();
+                let key = keystore.get(tmb)?;
                 let tag_str = key.tag.as_deref().unwrap_or("-");
                 println!("  {} ({}) [{}]", tmb, key.alg, tag_str);
             }

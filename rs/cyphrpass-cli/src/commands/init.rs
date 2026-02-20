@@ -58,16 +58,14 @@ pub fn run(
         principal
             .pr()
             .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .first_variant()
             .map(|b| Base64UrlUnpadded::encode_string(b))
-            .expect("PrincipalRoot must have at least one variant")
+            .map_err(|e| format!("PR empty: {e}"))?
     };
 
     // Store the identity
     let store = parse_store(&cli.store)?;
-    let commits = export_commits(&principal);
+    let commits = export_commits(&principal)?;
     for commit in &commits {
         store.append_commit(principal.pr(), commit)?;
     }

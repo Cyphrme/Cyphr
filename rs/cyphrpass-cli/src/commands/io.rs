@@ -88,11 +88,9 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
         use base64ct::{Base64UrlUnpadded, Encoding};
         let pr_b64 = pr
             .as_multihash()
-            .variants()
-            .values()
-            .next()
+            .first_variant()
             .map(|b| Base64UrlUnpadded::encode_string(b))
-            .expect("PrincipalRoot must have at least one variant");
+            .map_err(|e| format!("PR empty: {e}"))?;
         return Err(format!("identity {} already exists in storage", pr_b64).into());
     }
 
@@ -106,11 +104,9 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             let pr_b64 = pr
                 .as_multihash()
-                .variants()
-                .values()
-                .next()
+                .first_variant()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
-                .expect("PrincipalRoot must have at least one variant");
+                .map_err(|e| format!("PR empty: {e}"))?;
             let result = serde_json::json!({
                 "identity": pr_b64,
                 "input": input.display().to_string(),
@@ -123,11 +119,9 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             let pr_b64 = pr
                 .as_multihash()
-                .variants()
-                .values()
-                .next()
+                .first_variant()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
-                .expect("PrincipalRoot must have at least one variant");
+                .map_err(|e| format!("PR empty: {e}"))?;
             println!("Imported identity from {}", input.display());
             println!("  identity: {}", pr_b64);
             println!("  commits: {}", commits.len());

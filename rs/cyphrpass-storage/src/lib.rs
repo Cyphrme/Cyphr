@@ -26,7 +26,7 @@ mod export;
 mod file;
 mod import;
 
-pub use export::{export_commits, export_entries, persist_entries};
+pub use export::{ExportError, PersistError, export_commits, export_entries, persist_entries};
 pub use file::FileStore;
 pub use import::{
     Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal,

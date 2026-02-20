@@ -36,17 +36,19 @@ impl FileStore {
     }
 
     /// Get the file path for a principal's entry log.
-    fn path_for(&self, pr: &PrincipalRoot) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns `FileStoreError::EmptyDigest` if the PrincipalRoot has no variants.
+    fn path_for(&self, pr: &PrincipalRoot) -> Result<PathBuf, FileStoreError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Extract the first variant for the filename
         let pr_bytes = pr
             .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .expect("PrincipalRoot must have at least one variant");
+            .first_variant()
+            .map_err(|e| FileStoreError::EmptyDigest(e.to_string()))?;
         let filename = format!("{}.jsonl", Base64UrlUnpadded::encode_string(pr_bytes));
-        self.base_dir.join(filename)
+        Ok(self.base_dir.join(filename))
     }
 
     /// Ensure the base directory exists.
@@ -63,7 +65,7 @@ impl Store for FileStore {
 
     fn append_entry(&self, pr: &PrincipalRoot, entry: &Entry) -> Result<(), Self::Error> {
         self.ensure_dir()?;
-        let path = self.path_for(pr);
+        let path = self.path_for(pr)?;
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -78,7 +80,7 @@ impl Store for FileStore {
     }
 
     fn get_entries(&self, pr: &PrincipalRoot) -> Result<Vec<Entry>, Self::Error> {
-        let path = self.path_for(pr);
+        let path = self.path_for(pr)?;
 
         if !path.exists() {
             return Ok(vec![]);
@@ -130,7 +132,7 @@ impl Store for FileStore {
     }
 
     fn exists(&self, pr: &PrincipalRoot) -> Result<bool, Self::Error> {
-        Ok(self.path_for(pr).exists())
+        Ok(self.path_for(pr)?.exists())
     }
 }
 
@@ -153,7 +155,7 @@ impl FileStore {
         commit: &CommitEntry,
     ) -> Result<(), FileStoreError> {
         self.ensure_dir()?;
-        let path = self.path_for(pr);
+        let path = self.path_for(pr)?;
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -172,7 +174,7 @@ impl FileStore {
     ///
     /// Parses each line as a `CommitEntry` with embedded state digests.
     pub fn get_commits(&self, pr: &PrincipalRoot) -> Result<Vec<CommitEntry>, FileStoreError> {
-        let path = self.path_for(pr);
+        let path = self.path_for(pr)?;
 
         if !path.exists() {
             return Ok(vec![]);
@@ -227,6 +229,9 @@ pub enum FileStoreError {
         #[source]
         source: EntryError,
     },
+    /// State digest is empty.
+    #[error("empty state digest: {0}")]
+    EmptyDigest(String),
 }
 
 #[cfg(test)]

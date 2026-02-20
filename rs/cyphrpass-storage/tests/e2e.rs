@@ -190,7 +190,7 @@ fn rt_single_tx() {
         load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
 
     // Export entries from loaded principal
-    let exported = export_commits(&principal);
+    let exported = export_commits(&principal).unwrap();
 
     // Compare exported with original entries
     compare_commits(&exported, commits).expect("round-trip mismatch");
@@ -218,7 +218,7 @@ fn rt_multi_tx() {
 
     let principal =
         load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal);
+    let exported = export_commits(&principal).unwrap();
 
     compare_commits(&exported, commits).expect("round-trip mismatch");
 
@@ -244,7 +244,7 @@ fn rt_with_actions() {
 
     let principal =
         load_principal_from_commits(genesis, &commit_vec).expect("load_principal failed");
-    let exported = export_commits(&principal);
+    let exported = export_commits(&principal).unwrap();
 
     compare_commits(&exported, commits).expect("round-trip mismatch");
 
@@ -325,7 +325,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .unwrap_or_else(|e| panic!("{}: load_principal failed: {}", test.name, e));
 
     // Export and compare
-    let exported = export_commits(&principal);
+    let exported = export_commits(&principal).unwrap();
     compare_commits(&exported, commits)
         .unwrap_or_else(|e| panic!("{}: round-trip mismatch: {}", test.name, e));
 

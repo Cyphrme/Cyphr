@@ -7,6 +7,22 @@ use crate::{CommitEntry, Entry, Store};
 use cyphrpass::Principal;
 use serde_json::json;
 
+/// Errors that can occur during export.
+#[derive(Debug, thiserror::Error)]
+pub enum ExportError {
+    /// JSON serialization failed.
+    #[error("serialization error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Entry construction failed.
+    #[error("entry error: {0}")]
+    Entry(#[from] crate::EntryError),
+
+    /// State digest is empty (no algorithm variants).
+    #[error("empty state digest: {0}")]
+    EmptyDigest(#[from] cyphrpass::Error),
+}
+
 /// Export all entries from a Principal for storage (legacy flat format).
 ///
 /// Returns a vector of `Entry` that can be persisted to any `Store`.
@@ -17,22 +33,26 @@ use serde_json::json;
 ///
 /// **Note**: For commit-based storage, use `export_commits` instead.
 ///
+/// # Errors
+///
+/// Returns `ExportError` if serialization or state digest access fails.
+///
 /// # Example
 ///
 /// ```ignore
-/// let entries = export_entries(&principal);
+/// let entries = export_entries(&principal)?;
 /// for entry in entries {
 ///     store.append_entry(principal.pr(), &entry)?;
 /// }
 /// ```
-pub fn export_entries(principal: &Principal) -> Vec<Entry> {
+pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let mut entries = Vec::new();
 
     for tx in principal.transactions() {
         // Serialize complete CozJson {pay, sig}
-        let mut raw = serde_json::to_value(tx.raw()).expect("CozJson serialization cannot fail");
+        let mut raw = serde_json::to_value(tx.raw())?;
 
         // For key/create and key/replace, include the key material from the transaction
         if let Some(key) = tx.new_key() {
@@ -42,20 +62,25 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
                 "tmb": key.tmb.to_b64()
             });
             raw.as_object_mut()
-                .expect("CozJson is always an object")
+                .ok_or_else(|| {
+                    ExportError::Json(serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "CozJson is not an object",
+                    )))
+                })?
                 .insert("key".to_string(), key_json);
         }
 
         // Note: from_value serializes, which is fine for export (creating new entries)
-        entries.push(Entry::from_value(&raw).expect("valid entry"));
+        entries.push(Entry::from_value(&raw)?);
     }
 
     for action in principal.actions() {
-        let raw = serde_json::to_value(action.raw()).expect("CozJson serialization cannot fail");
-        entries.push(Entry::from_value(&raw).expect("valid entry"));
+        let raw = serde_json::to_value(action.raw())?;
+        entries.push(Entry::from_value(&raw)?);
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Export commits from a Principal for commit-based storage.
@@ -71,16 +96,20 @@ pub fn export_entries(principal: &Principal) -> Vec<Entry> {
 /// **Note**: Actions are not included in commits; they are stored separately
 /// or handled by the caller.
 ///
+/// # Errors
+///
+/// Returns `ExportError` if serialization or state digest access fails.
+///
 /// # Example
 ///
 /// ```ignore
 /// // Ignored: requires initialized Principal with commits (external context)
-/// let commits = export_commits(&principal);
+/// let commits = export_commits(&principal)?;
 /// for commit in commits {
 ///     file.write_line(&commit.to_json()?)?;
 /// }
 /// ```
-pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
+pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let mut commit_entries = Vec::new();
@@ -90,8 +119,7 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
 
         for tx in commit.transactions() {
             // Serialize complete CozJson {pay, sig}
-            let mut raw =
-                serde_json::to_value(tx.raw()).expect("CozJson serialization cannot fail");
+            let mut raw = serde_json::to_value(tx.raw())?;
 
             // For key/create and key/replace, include the key material
             if let Some(key) = tx.new_key() {
@@ -101,7 +129,12 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
                     "tmb": key.tmb.to_b64()
                 });
                 raw.as_object_mut()
-                    .expect("CozJson is always an object")
+                    .ok_or_else(|| {
+                        ExportError::Json(serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "CozJson is not an object",
+                        )))
+                    })?
                     .insert("key".to_string(), key_json);
             }
 
@@ -109,67 +142,79 @@ pub fn export_commits(principal: &Principal) -> Vec<CommitEntry> {
         }
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
-        // Use lexicographically first algorithm for deterministic ordering
-        let cid_mh = commit.commit_id().as_multihash();
-        let cid_alg = cid_mh
+        // Use first_variant() for deterministic, fallible access
+        let cid_bytes = commit.commit_id().as_multihash().first_variant()?;
+        let cid_alg = commit
+            .commit_id()
+            .as_multihash()
             .algorithms()
             .next()
-            .expect("CommitID must have at least one variant");
+            .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let commit_id = format!(
             "{}:{}",
             cid_alg,
-            Base64UrlUnpadded::encode_string(cid_mh.get(cid_alg).unwrap())
+            Base64UrlUnpadded::encode_string(cid_bytes)
         );
 
-        let as_mh = commit.auth_state().as_multihash();
-        let as_alg = as_mh
+        let as_bytes = commit.auth_state().as_multihash().first_variant()?;
+        let as_alg = commit
+            .auth_state()
+            .as_multihash()
             .algorithms()
             .next()
-            .expect("AuthState must have at least one variant");
-        let auth_state = format!(
-            "{}:{}",
-            as_alg,
-            Base64UrlUnpadded::encode_string(as_mh.get(as_alg).unwrap())
-        );
+            .ok_or(cyphrpass::Error::EmptyMultihash)?;
+        let auth_state = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
 
-        let cs_mh = commit.cs().as_multihash();
-        let cs_alg = cs_mh
+        let cs_bytes = commit.cs().as_multihash().first_variant()?;
+        let cs_alg = commit
+            .cs()
+            .as_multihash()
             .algorithms()
             .next()
-            .expect("CommitState must have at least one variant");
-        let cs = format!(
-            "{}:{}",
-            cs_alg,
-            Base64UrlUnpadded::encode_string(cs_mh.get(cs_alg).unwrap())
-        );
+            .ok_or(cyphrpass::Error::EmptyMultihash)?;
+        let cs = format!("{}:{}", cs_alg, Base64UrlUnpadded::encode_string(cs_bytes));
 
-        let ps_mh = commit.ps().as_multihash();
-        let ps_alg = ps_mh
+        let ps_bytes = commit.ps().as_multihash().first_variant()?;
+        let ps_alg = commit
+            .ps()
+            .as_multihash()
             .algorithms()
             .next()
-            .expect("PrincipalState must have at least one variant");
-        let ps = format!(
-            "{}:{}",
-            ps_alg,
-            Base64UrlUnpadded::encode_string(ps_mh.get(ps_alg).unwrap())
-        );
+            .ok_or(cyphrpass::Error::EmptyMultihash)?;
+        let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
 
         commit_entries.push(CommitEntry::new(txs, commit_id, auth_state, cs, ps));
     }
 
-    commit_entries
+    Ok(commit_entries)
 }
 
 /// Export entries and persist them to storage.
 ///
 /// This is a convenience function that combines export and storage.
-pub fn persist_entries<S: Store>(store: &S, principal: &Principal) -> Result<usize, S::Error> {
-    let entries = export_entries(principal);
+pub fn persist_entries<S: Store>(
+    store: &S,
+    principal: &Principal,
+) -> Result<usize, PersistError<S::Error>> {
+    let entries = export_entries(principal).map_err(PersistError::Export)?;
     let count = entries.len();
     for entry in entries {
-        store.append_entry(principal.pr(), &entry)?;
+        store
+            .append_entry(principal.pr(), &entry)
+            .map_err(PersistError::Store)?;
     }
     Ok(count)
+}
+
+/// Errors from persist_entries (combines export and store errors).
+#[derive(Debug, thiserror::Error)]
+pub enum PersistError<E: std::error::Error> {
+    /// Export failed.
+    #[error("export: {0}")]
+    Export(#[from] ExportError),
+    /// Store operation failed.
+    #[error("store: {0}")]
+    Store(E),
 }
 
 #[cfg(test)]
@@ -194,7 +239,7 @@ mod tests {
     fn export_implicit_genesis_no_entries() {
         // Implicit genesis has no transactions (identity emerges from key possession)
         let principal = Principal::implicit(make_test_key(0xAA)).unwrap();
-        let entries = export_entries(&principal);
+        let entries = export_entries(&principal).unwrap();
 
         // No transactions for implicit genesis
         assert_eq!(entries.len(), 0);

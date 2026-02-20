@@ -311,10 +311,13 @@ impl<'a> Generator<'a> {
     /// the current state digests at the time of action application.
     fn export_principal_commits(
         principal: &cyphrpass::Principal,
-    ) -> (Vec<CommitEntry>, Vec<String>) {
+    ) -> Result<(Vec<CommitEntry>, Vec<String>), Error> {
         use cyphrpass_storage::export_commits;
 
-        let mut commits = export_commits(principal);
+        let mut commits = export_commits(principal).map_err(|e| Error::Generation {
+            name: String::new(),
+            reason: format!("export_commits failed: {}", e),
+        })?;
 
         // Compute digests from transactions and actions
         let mut digests = Vec::new();
@@ -330,8 +333,10 @@ impl<'a> Generator<'a> {
             digests.push(action.czd().to_b64());
 
             // Serialize action's CozJson
-            let raw =
-                serde_json::to_value(action.raw()).expect("CozJson serialization cannot fail");
+            let raw = serde_json::to_value(action.raw()).map_err(|e| Error::Generation {
+                name: String::new(),
+                reason: format!("action serialization failed: {}", e),
+            })?;
 
             // Create pseudo-commit with current state
             // (actions don't change key state, only add data state)
@@ -341,9 +346,7 @@ impl<'a> Generator<'a> {
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
                     c.commit_id()
                         .as_multihash()
-                        .variants()
-                        .values()
-                        .next()
+                        .first_variant()
                         .map(|b| Base64UrlUnpadded::encode_string(b))
                         .unwrap_or_default()
                 })
@@ -351,18 +354,14 @@ impl<'a> Generator<'a> {
             let auth_state = principal
                 .auth_state()
                 .as_multihash()
-                .variants()
-                .values()
-                .next()
+                .first_variant()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
             let cs = principal
                 .cs()
                 .map(|c| {
                     c.as_multihash()
-                        .variants()
-                        .values()
-                        .next()
+                        .first_variant()
                         .map(|b| Base64UrlUnpadded::encode_string(b))
                         .unwrap_or_default()
                 })
@@ -370,16 +369,14 @@ impl<'a> Generator<'a> {
             let ps = principal
                 .ps()
                 .as_multihash()
-                .variants()
-                .values()
-                .next()
+                .first_variant()
                 .map(|b| Base64UrlUnpadded::encode_string(b))
                 .unwrap_or_default();
 
             commits.push(CommitEntry::new(vec![raw], commit_id, auth_state, cs, ps));
         }
 
-        (commits, digests)
+        Ok((commits, digests))
     }
 
     /// Convert a GoldenCoz to a CommitEntry for error tests.
@@ -527,7 +524,7 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, the transaction was not applied - add it manually
-        let (mut commits, mut digests) = Self::export_principal_commits(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
             commits.push(Self::coz_to_commit_entry(&coz));
             digests.push(coz.czd.clone());
@@ -597,7 +594,7 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, we need to combine exported entries with the failing entry
-        let (mut commits, mut digests) = Self::export_principal_commits(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test && !coz_sequence.is_empty() {
             // The last step was not applied - add it from coz_sequence
             let failing_coz = coz_sequence.last().unwrap();
@@ -696,7 +693,7 @@ impl<'a> Generator<'a> {
 
         // Build genesis_keys, entries, and digests using storage export logic
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
-        let (commits, digests) = Self::export_principal_commits(principal);
+        let (commits, digests) = Self::export_principal_commits(principal)?;
 
         Ok(Golden {
             name: test.name.clone(),
@@ -742,7 +739,7 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, the action was not applied - add it manually
-        let (mut commits, mut digests) = Self::export_principal_commits(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
             commits.push(Self::coz_to_commit_entry(&action_coz));
             digests.push(action_coz.czd.clone());
@@ -809,7 +806,7 @@ impl<'a> Generator<'a> {
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
         // For error tests, we need to combine exported entries with the failing entry
-        let (mut commits, mut digests) = Self::export_principal_commits(principal);
+        let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test && !action_sequence.is_empty() {
             // The last action was not applied - add it from action_sequence
             let failing_coz = action_sequence.last().unwrap();
