@@ -4,41 +4,15 @@
 
 This project uses [predicate](https://github.com/nrdxp/predicate) for agent configuration.
 
-**Installation Location:** `.agent/`
-
-### How Predicates Work
-
-**Predicates** are foundational rulesets. Any file placed directly in `.agent/predicates/` is **always active** — the agent must read and adhere to all of them unconditionally. These are the non-negotiable rules that govern agent behavior.
-
-**Fragments** are context-specific extensions stored in `.agent/predicates/fragments/`. These are **opt-in** — only fragments explicitly listed below as "active" are loaded, and typically only when relevant to the current task (e.g., load `rust.md` when working on Rust code).
-
-```
-.agent/
-├── predicates/
-│   ├── engineering.md         # Base engineering ruleset (always active)
-│   └── fragments/             # Context-specific extensions (opt-in)
-│       └── ...                # e.g., go.md, rust.md, depmap.md
-└── workflows/
-    └── ...                    # Task-specific workflows
-```
-
 > [!IMPORTANT]
-> The agent must read **all** files directly in `.agent/predicates/` before beginning work. These predicates are non-negotiable.
+> You **must** review [.agent/PREDICATE.md](.agent/PREDICATE.md) and follow its instructions before beginning work.
 
-**Active Fragments:**
+**Active Personas:**
 
 - `go.md` — Go idioms for the `go/` implementation
 - `rust.md` — Rust idioms for the `rs/` implementation
 - `depmap.md` — DepMap MCP server for dependency-aware code exploration
-- `integral.md` — Holistic problem-solving framework
 - `personalization.md` — User naming preferences
-
-**Available Workflows:**
-
-- `/ai-audit` — Audit code for AI-generated patterns
-- `/core` — C.O.R.E. structured interaction protocol
-- `/humanizer` — Remove AI writing patterns from text
-- `/predicate` — Re-read global rules; combats context drift
 
 ---
 
@@ -97,6 +71,7 @@ cargo run -p fixture-gen
 - **Rust:** Follow Rust idioms; see `rs/README.md`
 - **Formatting:** Use `treefmt` (configured in `treefmt.toml`)
 - **Naming:** Use canonical terminology from `SPEC.md` (Principal Root, Auth State, Data State, etc.)
+- **Error handling:** Library code must not panic; use `Result` propagation. `unwrap()`/`expect()` are acceptable only in test code.
 
 ---
 
@@ -104,25 +79,31 @@ cargo run -p fixture-gen
 
 ```
 Cyphrpass/
-├── SPEC.md           # Protocol specification (source of truth)
-├── go/               # Go implementation
-│   ├── principal/    # Core Principal logic
-│   ├── coz/         # Coz integration
-│   └── storage/     # Storage backends
-├── rs/               # Rust implementation
-│   ├── cyphrpass/    # Core crate
-│   ├── cyphrpass-storage/  # Storage crate
-│   └── test-fixtures/      # Fixture generation
-└── tests/            # Language-agnostic test vectors
-    ├── golden/       # Pre-computed golden fixtures
-    └── e2e/          # End-to-end intent files
+├── SPEC.md                 # Protocol specification (source of truth)
+├── docs/                   # Project documentation
+│   ├── models/             # Formal domain models
+│   └── plans/              # Durable implementation plans
+├── go/                     # Go implementation
+│   ├── cyphrpass/          # Core Principal logic
+│   ├── storage/            # Storage backends
+│   └── testfixtures/       # Test fixture loading
+├── rs/                     # Rust implementation
+│   ├── cyphrpass/          # Core crate (Principal, state, multihash)
+│   ├── cyphrpass-storage/  # Storage crate (FileStore, export/import)
+│   ├── cyphrpass-cli/      # CLI binary
+│   ├── test-fixtures/      # Golden fixture definitions
+│   └── fixture-gen/        # Fixture generation binary
+└── tests/                  # Language-agnostic test vectors
+    ├── golden/             # Pre-computed golden fixtures
+    └── e2e/                # End-to-end intent files
 ```
 
 Key abstractions:
 
 - **Principal** — Identity container (PR + state tree)
-- **Transaction** — Signed state mutation (key/add, key/revoke)
+- **Transaction** — Signed state mutation (key/create, key/revoke, etc.)
 - **Commit** — Atomic bundle of transactions with finality marker
+- **State types** — `AuthState = MR(KS, RS?)`, `CommitState = MR(AS, CommitID)`, `PrincipalState = MR(CS, DS?)` — the hierarchical Merkle tree that derives the observable PS
 
 ---
 
