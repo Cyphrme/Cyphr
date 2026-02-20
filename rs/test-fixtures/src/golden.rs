@@ -347,7 +347,7 @@ impl<'a> Generator<'a> {
                     c.commit_id()
                         .as_multihash()
                         .first_variant()
-                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .map(Base64UrlUnpadded::encode_string)
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
@@ -355,14 +355,14 @@ impl<'a> Generator<'a> {
                 .auth_state()
                 .as_multihash()
                 .first_variant()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
             let cs = principal
                 .cs()
                 .map(|c| {
                     c.as_multihash()
                         .first_variant()
-                        .map(|b| Base64UrlUnpadded::encode_string(b))
+                        .map(Base64UrlUnpadded::encode_string)
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
@@ -370,7 +370,7 @@ impl<'a> Generator<'a> {
                 .ps()
                 .as_multihash()
                 .first_variant()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
 
             commits.push(CommitEntry::new(vec![raw], commit_id, auth_state, cs, ps));

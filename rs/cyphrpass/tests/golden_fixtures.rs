@@ -39,9 +39,8 @@ fn parse_hash_alg(s: &str) -> Option<coz::HashAlg> {
 
 /// Parse algorithm-prefixed digest string (e.g., "SHA-256:abc123..." -> ("SHA-256", "abc123...")).
 fn parse_alg_digest(s: &str) -> Option<(String, String)> {
-    let mut parts = s.splitn(2, ':');
-    let alg = parts.next()?;
-    let digest = parts.next()?;
+    let (alg, digest) = s.split_once(':')?;
+
     Some((alg.to_string(), digest.to_string()))
 }
 

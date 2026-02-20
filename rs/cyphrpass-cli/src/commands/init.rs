@@ -59,7 +59,7 @@ pub fn run(
             .pr()
             .as_multihash()
             .first_variant()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .map_err(|e| format!("PR empty: {e}"))?
     };
 

@@ -102,13 +102,11 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
         .iter()
         .filter(|c| {
             // A commit is a transaction commit if its first tx has a transaction typ
-            c.txs.first().map_or(false, |tx| {
+            c.txs.first().is_some_and(|tx| {
                 tx.get("pay")
                     .and_then(|p| p.get("typ"))
                     .and_then(|t| t.as_str())
-                    .map_or(false, |typ| {
-                        typ.contains("/key/") || typ.contains("/principal/create")
-                    })
+                    .is_some_and(|typ| typ.contains("/key/") || typ.contains("/principal/create"))
             })
         })
         .collect();
@@ -867,11 +865,7 @@ fn e2e_multihash_round_trip() {
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
         // Recompute KS with all active algorithms
-        let recomputed_ks = compute_ks(
-            &thumbprints.iter().map(|t| *t).collect::<Vec<_>>(),
-            None,
-            active_algs,
-        );
+        let recomputed_ks = compute_ks(&thumbprints.to_vec(), None, active_algs);
 
         // Verify each algorithm variant matches
         for &alg in active_algs {

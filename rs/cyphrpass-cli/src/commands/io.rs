@@ -89,7 +89,7 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
         let pr_b64 = pr
             .as_multihash()
             .first_variant()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .map_err(|e| format!("PR empty: {e}"))?;
         return Err(format!("identity {} already exists in storage", pr_b64).into());
     }
@@ -105,7 +105,7 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             let pr_b64 = pr
                 .as_multihash()
                 .first_variant()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .map(Base64UrlUnpadded::encode_string)
                 .map_err(|e| format!("PR empty: {e}"))?;
             let result = serde_json::json!({
                 "identity": pr_b64,
@@ -120,7 +120,7 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             let pr_b64 = pr
                 .as_multihash()
                 .first_variant()
-                .map(|b| Base64UrlUnpadded::encode_string(b))
+                .map(Base64UrlUnpadded::encode_string)
                 .map_err(|e| format!("PR empty: {e}"))?;
             println!("Imported identity from {}", input.display());
             println!("  identity: {}", pr_b64);

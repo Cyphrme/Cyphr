@@ -89,7 +89,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
             .pr()
             .as_multihash()
             .first_variant()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .map(Base64UrlUnpadded::encode_string)
             .map_err(|e| format!("PR empty: {e}"))?;
         if computed_pr != identity {
             return Err(format!("PR mismatch: computed {} != {}", computed_pr, identity).into());
@@ -138,7 +138,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         .pr()
         .as_multihash()
         .first_variant()
-        .map(|b| Base64UrlUnpadded::encode_string(b))
+        .map(Base64UrlUnpadded::encode_string)
         .map_err(|e| format!("PR empty: {e}"))?;
     if computed_pr != identity {
         return Err(format!(
@@ -160,7 +160,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         .ps()
         .as_multihash()
         .first_variant()
-        .map(|b| Base64UrlUnpadded::encode_string(b))
+        .map(Base64UrlUnpadded::encode_string)
         .map_err(|e| format!("PS empty: {e}"))?;
 
     // Parse stored ps which may be in "alg:digest" format

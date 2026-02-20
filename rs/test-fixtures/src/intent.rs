@@ -186,7 +186,7 @@ impl TestIntent {
 
     /// Returns true if this test expects an error.
     pub fn is_error_test(&self) -> bool {
-        self.expected.as_ref().map_or(false, |e| e.error.is_some())
+        self.expected.as_ref().is_some_and(|e| e.error.is_some())
     }
 }
 
