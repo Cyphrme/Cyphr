@@ -19,9 +19,9 @@ import (
 // By storing the raw bytes, we preserve the original and extract `pay`
 // from the same source, ensuring bit-perfect fidelity.
 type Entry struct {
-	// Raw is the complete JSON entry as received.
+	// raw is the complete JSON entry as received.
 	// This is the immutable source of truth for this entry.
-	Raw json.RawMessage
+	raw json.RawMessage
 
 	// Now is the pay.now timestamp, extracted for ordering and filtering.
 	Now int64
@@ -43,7 +43,7 @@ func NewEntry(data []byte) (*Entry, error) {
 	copy(raw, data)
 
 	return &Entry{
-		Raw: raw,
+		raw: raw,
 		Now: now,
 	}, nil
 }
@@ -65,7 +65,7 @@ func NewEntryFromValue(v any) (*Entry, error) {
 //
 // This returns the exact bytes stored, suitable for I/O operations.
 func (e *Entry) Bytes() []byte {
-	return e.Raw
+	return e.raw
 }
 
 // PayBytes extracts the `pay` field as raw bytes, preserving exact byte sequence.
@@ -79,7 +79,7 @@ func (e *Entry) PayBytes() ([]byte, error) {
 		Pay json.RawMessage `json:"pay"`
 	}
 
-	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+	if err := json.Unmarshal(e.raw, &extractor); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -96,7 +96,7 @@ func (e *Entry) SigBytes() ([]byte, error) {
 		Sig string `json:"sig"`
 	}
 
-	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+	if err := json.Unmarshal(e.raw, &extractor); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -115,7 +115,7 @@ func (e *Entry) KeyJSON() (json.RawMessage, error) {
 		Key json.RawMessage `json:"key"`
 	}
 
-	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+	if err := json.Unmarshal(e.raw, &extractor); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
@@ -130,7 +130,7 @@ func (e *Entry) Typ() (string, error) {
 		} `json:"pay"`
 	}
 
-	if err := json.Unmarshal(e.Raw, &extractor); err != nil {
+	if err := json.Unmarshal(e.raw, &extractor); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
 

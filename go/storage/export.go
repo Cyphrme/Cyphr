@@ -25,13 +25,13 @@ func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 
 	// Export transactions in applied order
 	for _, tx := range principal.Transactions() {
-		if tx.Raw == nil {
+		if tx.Raw() == nil {
 			// Skip transactions without raw bytes (shouldn't happen in normal flow)
 			continue
 		}
 
 		entry := &Entry{
-			Raw: tx.Raw,
+			raw: tx.Raw(),
 			Now: tx.Now,
 		}
 		entries = append(entries, entry)
@@ -39,13 +39,13 @@ func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 
 	// Export actions in recorded order
 	for _, action := range principal.Actions() {
-		if action.Raw == nil {
+		if action.Raw() == nil {
 			// Skip actions without raw bytes (shouldn't happen in normal flow)
 			continue
 		}
 
 		entry := &Entry{
-			Raw: action.Raw,
+			raw: action.Raw(),
 			Now: action.Now,
 		}
 		entries = append(entries, entry)

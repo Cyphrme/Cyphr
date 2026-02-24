@@ -223,7 +223,7 @@ func replayAction(principal *cyphrpass.Principal, entry *Entry, index int) error
 	}
 
 	// Store raw bytes for future export
-	action.Raw = entry.Raw
+	action.SetRaw(entry.Bytes())
 
 	if err := principal.RecordAction(action); err != nil {
 		return &LoadError{

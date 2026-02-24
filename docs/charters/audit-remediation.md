@@ -71,8 +71,8 @@ and reason about correctness from the types alone.
    `Entry.Raw` (BUG-6, BUG-10, BUG-11, A.1, B.4). Unexport `NewCommit` and
    `FinalizeCommit` to enforce commit lifecycle through the API (A.2). One
    root cause, seven findings (Appendix C §C.1).
-   - Spawns: `.sketches/go-encapsulation-hardening.md`
-   - Status: Not Started
+   - Spawns: `.sketches/2026-02-24-go-encapsulation-hardening.md`
+   - Status: **Complete** (2026-02-24)
 
 4. **Rust CLI Deduplication & Error Typing** — Extract ~350 lines of duplicated
    helpers into `commands/common.rs`, de-duplicate key generation match arms,
@@ -152,7 +152,7 @@ The relevant P3 items and their expected resolution context:
 | E.1  | ~~`VerifiedTx` → `VerifiedTransaction`~~ — Won't fix: `Tx` is idiomatic Go, universally understood. | ~~WS2~~ Resolved    |
 | A.3  | `#[doc(hidden)]` on Rust test helpers                                                               | WS4 (CLI Dedup)     |
 | B.5  | Go `checkExpected` block refactoring                                                                | WS6 (Verification)  |
-| D.7  | `Entry` extractors: document async design                                                           | WS3 (Encapsulation) |
+| D.7  | `Entry` extractor asymmetry (Go has more than Rust)                                                 | WS4 (CLI Dedup)     |
 | D.4  | Accessor visibility symmetries                                                                      | WS3 (Encapsulation) |
 | E.2  | Rust accessor symmetries                                                                            | WS4 (CLI Dedup)     |
 | E.3  | Rust visibility consistency                                                                         | WS4 (CLI Dedup)     |

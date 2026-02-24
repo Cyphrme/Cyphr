@@ -117,8 +117,8 @@ func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 // Push adds a transaction to the pending commit.
 func (p *PendingCommit) Push(tx *Transaction) {
 	p.transactions = append(p.transactions, tx)
-	if tx.Raw != nil {
-		p.raw = append(p.raw, tx.Raw)
+	if tx.raw != nil {
+		p.raw = append(p.raw, tx.raw)
 	}
 }
 

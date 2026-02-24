@@ -82,7 +82,7 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 	if err != nil {
 		return nil, ErrMalformedPayload
 	}
-	tx.Raw = rawEntry
+	tx.raw = rawEntry
 
 	return &VerifiedTx{
 		tx:     tx,

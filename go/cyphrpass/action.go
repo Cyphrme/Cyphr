@@ -23,9 +23,20 @@ type Action struct {
 	// Czd is the Coz digest of this action.
 	Czd coz.B64
 
-	// Raw is the original CozJson bytes for this action.
+	// raw is the original CozJson bytes for this action.
 	// This field enables bit-perfect export for storage round-trips.
-	Raw json.RawMessage
+	raw json.RawMessage
+}
+
+// Raw returns the original CozJson bytes for this action.
+func (a *Action) Raw() json.RawMessage {
+	return a.raw
+}
+
+// SetRaw sets the raw JSON bytes for storage round-trips.
+// This is used during import to preserve bit-perfect fidelity.
+func (a *Action) SetRaw(raw json.RawMessage) {
+	a.raw = raw
 }
 
 // ParseAction creates an Action from a Coz pay object.

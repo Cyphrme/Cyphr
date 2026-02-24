@@ -370,7 +370,8 @@ func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cy
 		"pay": payObj,
 		"sig": signedCoz.Sig.String(),
 	}
-	action.Raw, _ = json.Marshal(cozJSON)
+	rawBytes, _ := json.Marshal(cozJSON)
+	action.SetRaw(rawBytes)
 
 	// Record action
 	return principal.RecordAction(action)

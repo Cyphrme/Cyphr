@@ -60,10 +60,15 @@ type Transaction struct {
 	// Rvk is the revocation timestamp (for revoke transactions).
 	Rvk int64
 
-	// Raw is the original CozJson bytes for this transaction.
+	// raw is the original CozJson bytes for this transaction.
 	// This field enables bit-perfect export for storage round-trips.
 	// It includes the complete {pay, sig, key?} structure.
-	Raw json.RawMessage
+	raw json.RawMessage
+}
+
+// Raw returns the original CozJson bytes for this transaction.
+func (t *Transaction) Raw() json.RawMessage {
+	return t.raw
 }
 
 // TransactionPay represents the payload fields for a Cyphrpass transaction.
