@@ -1,6 +1,6 @@
 //! Identity inspection command.
 
-use cyphrpass_storage::{FileStore, load_principal_from_commits};
+use cyphrpass_storage::load_principal_from_commits;
 
 use super::common::{
     extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
@@ -31,7 +31,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
         load_principal_from_commits(genesis, &commits)?
     } else {
         // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         load_principal_from_commits(genesis, &commits)?
     };
 

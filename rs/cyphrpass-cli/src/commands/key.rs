@@ -3,13 +3,13 @@
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphrpass::Key;
-use cyphrpass_storage::{FileStore, Genesis, export_commits, load_principal_from_commits};
+use cyphrpass_storage::{Genesis, export_commits, load_principal_from_commits};
 use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    current_timestamp, decode_b64, extract_genesis_from_commits, load_key_from_keystore,
-    parse_principal_root, parse_store,
+    current_timestamp, extract_genesis_from_commits, load_key_from_keystore, parse_principal_root,
+    parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
 use crate::{Cli, KeyCommands, OutputFormat};
@@ -142,7 +142,7 @@ fn add(
         load_principal_from_commits(genesis, &commits)?
     } else {
         // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         load_principal_from_commits(genesis, &commits)?
     };
 
@@ -254,7 +254,7 @@ fn revoke(
         load_principal_from_commits(genesis, &commits)?
     } else {
         // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         load_principal_from_commits(genesis, &commits)?
     };
 
@@ -388,7 +388,7 @@ fn list_identity(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Er
         let genesis = Genesis::Implicit(genesis_key);
         load_principal_from_commits(genesis, &commits)?
     } else {
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         load_principal_from_commits(genesis, &commits)?
     };
 

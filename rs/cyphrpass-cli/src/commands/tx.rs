@@ -130,7 +130,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         load_principal_from_commits(genesis, &commits)?
     } else {
         // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         load_principal_from_commits(genesis, &commits)?
     };
 
@@ -222,7 +222,7 @@ fn load_identity(
         Ok(load_principal_from_commits(genesis, &commits)?)
     } else {
         // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits)?;
+        let genesis = extract_genesis_from_commits(&commits, None)?;
         Ok(load_principal_from_commits(genesis, &commits)?)
     }
 }

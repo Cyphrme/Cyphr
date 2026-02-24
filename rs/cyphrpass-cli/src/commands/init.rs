@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use coz::Thumbprint;
 use cyphrpass::{Key, Principal};
-use cyphrpass_storage::{FileStore, export_commits};
+use cyphrpass_storage::export_commits;
 
 use super::common::{decode_b64, load_key_from_keystore, parse_store};
 use crate::keystore::{JsonKeyStore, KeyStore};
