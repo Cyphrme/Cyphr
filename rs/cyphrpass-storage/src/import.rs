@@ -149,22 +149,6 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
         },
     };
 
-    // Debug: show initial Principal state
-    eprintln!("  [load_principal] initial AS={}", {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        principal
-            .auth_state()
-            .as_multihash()
-            .variants()
-            .values()
-            .next()
-            .map(|b| Base64UrlUnpadded::encode_string(b))
-            .unwrap_or_default()
-    });
-    for k in principal.active_keys() {
-        eprintln!("  [load_principal] genesis_key tmb={}", k.tmb.to_b64());
-    }
-
     // Replay entries
     replay_entries(&mut principal, entries)?;
 
