@@ -1,8 +1,10 @@
 //! Transaction commands.
 
-use cyphrpass::Key;
-use cyphrpass_storage::{FileStore, Genesis, load_principal_from_commits};
+use cyphrpass_storage::{Genesis, load_principal_from_commits};
 
+use super::common::{
+    extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
+};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat, TxCommands};
 
@@ -149,11 +151,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify state digests from commits match computed state
-    // Note: Empty commits case is handled above at line 96, but we use
-    // defensive pattern here rather than unwrap for robustness.
     let Some(last_commit) = commits.last() else {
-        // This branch should be unreachable due to the earlier empty check,
-        // but we handle it gracefully rather than panicking.
         return Ok(());
     };
     let computed_ps = principal
@@ -227,107 +225,4 @@ fn load_identity(
         let genesis = extract_genesis_from_commits(&commits)?;
         Ok(load_principal_from_commits(genesis, &commits)?)
     }
-}
-
-/// Load a cyphrpass Key from keystore by thumbprint.
-fn load_key_from_keystore(
-    keystore: &JsonKeyStore,
-    tmb: &str,
-) -> Result<Key, Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use coz::Thumbprint;
-
-    let stored = keystore.get(tmb)?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(decode_b64(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
-}
-
-/// Extract genesis from stored commits.
-fn extract_genesis_from_commits(
-    commits: &[cyphrpass_storage::CommitEntry],
-) -> Result<Genesis, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    use coz::Thumbprint;
-
-    let first_commit = commits.first().ok_or("no commits")?;
-    let mut genesis_keys = Vec::new();
-
-    for tx_value in &first_commit.txs {
-        if let Some(key_obj) = tx_value.get("key") {
-            let alg = key_obj
-                .get("alg")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.alg")?;
-            let pub_b64 = key_obj
-                .get("pub")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.pub")?;
-            let tmb_b64 = key_obj
-                .get("tmb")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.tmb")?;
-
-            let pub_key =
-                Base64UrlUnpadded::decode_vec(pub_b64).map_err(|_| "invalid base64 in key.pub")?;
-            let tmb_bytes =
-                Base64UrlUnpadded::decode_vec(tmb_b64).map_err(|_| "invalid base64 in key.tmb")?;
-
-            genesis_keys.push(Key {
-                alg: alg.to_string(),
-                tmb: Thumbprint::from_bytes(tmb_bytes),
-                pub_key,
-                first_seen: 0,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            });
-        }
-    }
-
-    if genesis_keys.is_empty() {
-        return Err("cannot determine genesis keys from storage".into());
-    }
-
-    if genesis_keys.len() == 1 {
-        Ok(Genesis::Implicit(genesis_keys.remove(0)))
-    } else {
-        Ok(Genesis::Explicit(genesis_keys))
-    }
-}
-
-/// Parse the --store argument into a FileStore.
-fn parse_store(store_uri: &str) -> Result<FileStore, Box<dyn std::error::Error>> {
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
-    } else {
-        Err(format!("unsupported store URI: {store_uri}").into())
-    }
-}
-
-/// Parse a base64url principal root string into a PrincipalRoot.
-fn parse_principal_root(s: &str) -> Result<cyphrpass::PrincipalRoot, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes =
-        Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid principal root: {e}"))?;
-    Ok(cyphrpass::PrincipalRoot::from_bytes(bytes))
-}
-
-/// Decode base64url string to bytes.
-fn decode_b64(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid base64url: {e}").into())
 }

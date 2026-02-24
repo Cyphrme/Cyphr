@@ -6,6 +6,7 @@ use coz::Thumbprint;
 use cyphrpass::{Key, Principal};
 use cyphrpass_storage::{FileStore, export_commits};
 
+use super::common::{decode_b64, load_key_from_keystore, parse_store};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
 
@@ -95,29 +96,6 @@ pub fn run(
     Ok(())
 }
 
-/// Load a cyphrpass Key from keystore by thumbprint.
-fn load_key_from_keystore(
-    keystore: &JsonKeyStore,
-    tmb: &str,
-) -> Result<Key, Box<dyn std::error::Error>> {
-    let stored = keystore.get(tmb)?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(decode_b64(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
-}
-
 /// Generate a new key, store it in keystore, and return as cyphrpass Key.
 fn generate_and_store_key(cli: &Cli, algo: &str) -> Result<Key, Box<dyn std::error::Error>> {
     use coz::{ES256, ES384, ES512, Ed25519, SigningKey};
@@ -185,19 +163,4 @@ fn generate_and_store_key(cli: &Cli, algo: &str) -> Result<Key, Box<dyn std::err
         revocation: None,
         tag: None,
     })
-}
-
-/// Parse the --store argument into a FileStore.
-fn parse_store(store_uri: &str) -> Result<FileStore, Box<dyn std::error::Error>> {
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
-    } else {
-        Err(format!("unsupported store URI: {store_uri} (expected file:<path>)").into())
-    }
-}
-
-/// Decode base64url string to bytes.
-fn decode_b64(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid base64url: {e}").into())
 }

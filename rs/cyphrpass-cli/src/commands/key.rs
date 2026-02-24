@@ -1,7 +1,5 @@
 //! Key management commands.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphrpass::Key;
@@ -9,6 +7,10 @@ use cyphrpass_storage::{FileStore, Genesis, export_commits, load_principal_from_
 use indexmap::IndexMap;
 use serde_json::Value;
 
+use super::common::{
+    current_timestamp, decode_b64, extract_genesis_from_commits, load_key_from_keystore,
+    parse_principal_root, parse_store,
+};
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
 use crate::{Cli, KeyCommands, OutputFormat};
 
@@ -423,15 +425,8 @@ fn list_identity(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Er
 }
 
 // ============================================================================
-// Helpers
+// Helpers (key-specific)
 // ============================================================================
-
-fn current_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 fn generate_key_for_add(
     algo: &str,
@@ -523,85 +518,4 @@ fn generate_key_for_add(
         },
         _ => Err(format!("unknown algorithm: {algo}").into()),
     }
-}
-
-fn load_key_from_keystore(
-    keystore: &JsonKeyStore,
-    tmb: &str,
-) -> Result<Key, Box<dyn std::error::Error>> {
-    let stored = keystore.get(tmb)?;
-    let now = current_timestamp();
-
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
-}
-
-fn extract_genesis_from_commits(
-    commits: &[cyphrpass_storage::CommitEntry],
-) -> Result<Genesis, Box<dyn std::error::Error>> {
-    let first_commit = commits.first().ok_or("no commits")?;
-    let mut genesis_keys = Vec::new();
-
-    for tx_value in &first_commit.txs {
-        if let Some(key_obj) = tx_value.get("key") {
-            let alg = key_obj
-                .get("alg")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.alg")?;
-            let pub_b64 = key_obj
-                .get("pub")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.pub")?;
-            let tmb_b64 = key_obj
-                .get("tmb")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.tmb")?;
-
-            let pub_key =
-                Base64UrlUnpadded::decode_vec(pub_b64).map_err(|_| "invalid base64 in key.pub")?;
-            let tmb_bytes =
-                Base64UrlUnpadded::decode_vec(tmb_b64).map_err(|_| "invalid base64 in key.tmb")?;
-
-            genesis_keys.push(Key {
-                alg: alg.to_string(),
-                tmb: Thumbprint::from_bytes(tmb_bytes),
-                pub_key,
-                first_seen: 0,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            });
-        }
-    }
-
-    if genesis_keys.is_empty() {
-        return Err("cannot determine genesis keys from storage".into());
-    }
-
-    if genesis_keys.len() == 1 {
-        Ok(Genesis::Implicit(genesis_keys.remove(0)))
-    } else {
-        Ok(Genesis::Explicit(genesis_keys))
-    }
-}
-
-fn parse_store(store_uri: &str) -> Result<FileStore, Box<dyn std::error::Error>> {
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
-    } else {
-        Err(format!("unsupported store URI: {store_uri}").into())
-    }
-}
-
-fn parse_principal_root(s: &str) -> Result<cyphrpass::PrincipalRoot, Box<dyn std::error::Error>> {
-    let bytes =
-        Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid principal root: {e}"))?;
-    Ok(cyphrpass::PrincipalRoot::from_bytes(bytes))
 }

@@ -1,8 +1,10 @@
 //! Identity inspection command.
 
-use cyphrpass::Key;
-use cyphrpass_storage::{FileStore, Genesis, load_principal_from_commits};
+use cyphrpass_storage::{FileStore, load_principal_from_commits};
 
+use super::common::{
+    extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
+};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
 
@@ -25,7 +27,7 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
     } else if is_implicit_genesis {
         // Has commits + in keystore = implicit genesis with transactions
         let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
+        let genesis = cyphrpass_storage::Genesis::Implicit(genesis_key);
         load_principal_from_commits(genesis, &commits)?
     } else {
         // Not in keystore = explicit genesis (key embedded in commits)
@@ -84,143 +86,29 @@ pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Load a cyphrpass Key from keystore by thumbprint.
-fn load_key_from_keystore(
-    keystore: &JsonKeyStore,
-    tmb: &str,
-) -> Result<Key, Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use coz::Thumbprint;
-
-    let stored = keystore.get(tmb)?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(decode_b64(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
-}
-
-/// Extract genesis from stored commits.
-///
-/// Looks at the first commit to find the genesis key(s).
-fn extract_genesis_from_commits(
-    commits: &[cyphrpass_storage::CommitEntry],
-) -> Result<Genesis, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    use coz::Thumbprint;
-
-    // For genesis, we need to find the key material in the first commit
-    // The key is stored as a separate `key` field on the transaction
-    let first_commit = commits.first().ok_or("no commits")?;
-
-    let mut genesis_keys = Vec::new();
-
-    for tx_value in &first_commit.txs {
-        if let Some(key_obj) = tx_value.get("key") {
-            let alg = key_obj
-                .get("alg")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.alg")?;
-            let pub_b64 = key_obj
-                .get("pub")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.pub")?;
-            let tmb_b64 = key_obj
-                .get("tmb")
-                .and_then(|v| v.as_str())
-                .ok_or("missing key.tmb")?;
-
-            let pub_key =
-                Base64UrlUnpadded::decode_vec(pub_b64).map_err(|_| "invalid base64 in key.pub")?;
-            let tmb_bytes =
-                Base64UrlUnpadded::decode_vec(tmb_b64).map_err(|_| "invalid base64 in key.tmb")?;
-
-            genesis_keys.push(Key {
-                alg: alg.to_string(),
-                tmb: Thumbprint::from_bytes(tmb_bytes),
-                pub_key,
-                first_seen: 0,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            });
-        }
-    }
-
-    // If no key transactions in first commit, this is implicit genesis
-    // The PR itself is the key thumbprint
-    if genesis_keys.is_empty() {
-        return Err("cannot determine genesis keys from storage (no key material found)".into());
-    }
-
-    if genesis_keys.len() == 1 {
-        Ok(Genesis::Implicit(genesis_keys.remove(0)))
-    } else {
-        Ok(Genesis::Explicit(genesis_keys))
-    }
-}
-
-/// Parse the --store argument into a FileStore.
-fn parse_store(store_uri: &str) -> Result<FileStore, Box<dyn std::error::Error>> {
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
-    } else {
-        Err(format!("unsupported store URI: {store_uri} (expected file:<path>)").into())
-    }
-}
-
-/// Parse a base64url principal root string into a PrincipalRoot.
-fn parse_principal_root(s: &str) -> Result<cyphrpass::PrincipalRoot, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    let bytes =
-        Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid principal root: {e}"))?;
-    Ok(cyphrpass::PrincipalRoot::from_bytes(bytes))
-}
-
-/// Decode base64url string to bytes.
-fn decode_b64(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid base64url: {e}").into())
-}
+// ============================================================================
+// Display helpers (unique to inspect)
+// ============================================================================
 
 /// Format KeyState for display.
-///
-/// KeyState now holds a MultihashDigest; this extracts the first variant
-/// and encodes it as base64url for display.
 fn format_ks(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let ks = principal.key_state();
     let hash_alg = principal.hash_alg();
 
-    // Get the variant for the principal's hash algorithm
     ks.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
 /// Format AuthState for display.
-///
-/// AuthState now holds a MultihashDigest; this extracts the variant for
-/// the principal's hash algorithm and encodes it as base64url for display.
 fn format_as(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let auth_state = principal.auth_state();
     let hash_alg = principal.hash_alg();
 
-    // Get the variant for the principal's hash algorithm
     auth_state
         .get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
@@ -228,32 +116,24 @@ fn format_as(principal: &cyphrpass::Principal) -> String {
 }
 
 /// Format PrincipalState for display.
-///
-/// PrincipalState now holds a MultihashDigest; this extracts the variant for
-/// the principal's hash algorithm and encodes it as base64url for display.
 fn format_ps(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let ps = principal.ps();
     let hash_alg = principal.hash_alg();
 
-    // Get the variant for the principal's hash algorithm
     ps.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
 /// Format PrincipalRoot for display.
-///
-/// PrincipalRoot now holds a MultihashDigest; this extracts the variant for
-/// the principal's hash algorithm and encodes it as base64url for display.
 fn format_pr(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let pr = principal.pr();
     let hash_alg = principal.hash_alg();
 
-    // Get the variant for the principal's hash algorithm
     pr.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())

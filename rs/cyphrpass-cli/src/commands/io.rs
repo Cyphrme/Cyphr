@@ -5,8 +5,11 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use base64ct::{Base64UrlUnpadded, Encoding};
+use coz::Thumbprint;
+use cyphrpass::Key;
 use cyphrpass_storage::{CommitEntry, FileStore, Genesis, load_principal_from_commits};
 
+use super::common::{parse_principal_root, parse_store};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
 
@@ -133,36 +136,19 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
 }
 
 // ============================================================================
-// Helpers
+// Helpers (io-specific: keystore-aware genesis extraction)
 // ============================================================================
 
-fn parse_store(store_uri: &str) -> Result<FileStore, Box<dyn std::error::Error>> {
-    if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
-    } else {
-        Err(format!("unsupported store URI: {store_uri}").into())
-    }
-}
-
-fn parse_principal_root(s: &str) -> Result<cyphrpass::PrincipalRoot, Box<dyn std::error::Error>> {
-    let bytes =
-        Base64UrlUnpadded::decode_vec(s).map_err(|e| format!("invalid principal root: {e}"))?;
-    Ok(cyphrpass::PrincipalRoot::from_bytes(bytes))
-}
-
-/// Extract genesis from commits.
+/// Extract genesis from commits with keystore fallback.
 ///
-/// For import, we look at the first commit's first transaction to determine
-/// the signer (tmb field) which is the genesis key. We need the public key
-/// bytes which should be in the embedded 'key' field if this is a key/create
-/// transaction, OR we fallback to keystore lookup.
+/// Unlike `common::extract_genesis_from_commits`, this variant can fall back
+/// to the keystore when the signer's public key is not embedded in the commit.
+/// This is needed for import where the exported file may come from an implicit
+/// genesis identity.
 fn extract_genesis_from_commits(
     commits: &[CommitEntry],
     keystore: &JsonKeyStore,
 ) -> Result<Genesis, Box<dyn std::error::Error>> {
-    use coz::Thumbprint;
-    use cyphrpass::Key;
-
     let first_commit = commits.first().ok_or("no commits")?;
     let first_tx = first_commit
         .txs
@@ -176,22 +162,12 @@ fn extract_genesis_from_commits(
         .and_then(|v| v.as_str())
         .ok_or("missing pay.tmb")?;
 
-    // Look for embedded key matching the signer (for explicit genesis with signer == embedded key)
-    // Or look for the signer in the embedded key field
+    // Look for embedded key matching the signer
     if let Some(key_obj) = first_tx.get("key") {
         let key_tmb = key_obj.get("tmb").and_then(|v| v.as_str());
 
-        // If the embedded key IS the signer, this could be explicit genesis
-        // But usually for implicit genesis, signer != embedded key
-        // We need to check: is the signer's public key available?
-
-        // For now, try to find signer's public key:
-        // 1. Check if signer == embedded key (unlikely for implicit genesis first tx)
-        // 2. Check if there's a 'genesis' field (future)
-        // 3. Fallback to keystore
-
         if key_tmb == Some(signer_tmb) {
-            // Signer is the embedded key - explicit genesis or self-signed
+            // Signer is the embedded key
             let alg = key_obj
                 .get("alg")
                 .and_then(|v| v.as_str())
