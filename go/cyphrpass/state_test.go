@@ -169,7 +169,10 @@ func TestMultihashDigest_Variants(t *testing.T) {
 		HashSha256: bytes.Repeat([]byte{0xAA}, 32),
 		HashSha384: bytes.Repeat([]byte{0xBB}, 48),
 	}
-	mh := NewMultihashDigest(variants)
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Check variant access
 	if !bytes.Equal(mh.Get(HashSha256), variants[HashSha256]) {

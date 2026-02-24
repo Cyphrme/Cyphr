@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/cyphrme/coz"
 )
@@ -24,8 +25,7 @@ const (
 	TxKeyCreate TransactionKind = iota
 	TxKeyDelete
 	TxKeyReplace
-	TxSelfRevoke
-	TxOtherRevoke
+	TxRevoke
 	TxPrincipalCreate // SPEC §5.1 genesis finalization
 )
 
@@ -38,10 +38,8 @@ func (k TransactionKind) String() string {
 		return "key/delete"
 	case TxKeyReplace:
 		return "key/replace"
-	case TxSelfRevoke:
-		return "key/revoke (self)"
-	case TxOtherRevoke:
-		return "key/revoke (other)"
+	case TxRevoke:
+		return "key/revoke"
 	case TxPrincipalCreate:
 		return "principal/create"
 	default:
@@ -139,14 +137,11 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 		}
 
 	case TypKeyRevoke:
-		// Determine if self-revoke or other-revoke based on id presence
+		tx.Kind = TxRevoke
 		if pay.ID != "" {
-			tx.Kind = TxOtherRevoke
 			if err := tx.parseID(pay.ID); err != nil {
 				return nil, err
 			}
-		} else {
-			tx.Kind = TxSelfRevoke
 		}
 		// All revoke types require pre (unified pre semantics)
 		if err := tx.parsePre(pay.Pre); err != nil {
@@ -216,13 +211,21 @@ func (tx *Transaction) parseIDAsAuthState(id string) error {
 	return nil
 }
 
-// typSuffix returns the suffix of a typ string after the authority.
-// E.g., "cyphr.me/key/add" returns "key/add".
+// typSuffix extracts the transaction type suffix from a full typ string.
+// E.g., "cyphr.me/key/create" or "cyphr.me/cyphrpass/key/create" both return "key/create".
+// Uses suffix matching against known types for robustness against varying authority paths.
 func typSuffix(typ string) string {
-	for i := 0; i < len(typ); i++ {
-		if typ[i] == '/' {
-			return typ[i+1:]
+	known := []string{
+		TypKeyCreate,
+		TypKeyDelete,
+		TypKeyReplace,
+		TypKeyRevoke,
+		TypPrincipalCreate,
+	}
+	for _, suffix := range known {
+		if strings.HasSuffix(typ, suffix) {
+			return suffix
 		}
 	}
-	return typ
+	return ""
 }

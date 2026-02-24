@@ -63,7 +63,10 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 			result.Err = fmt.Errorf("setup.revoke_key failed: %w", err)
 			return result
 		}
-		principal.PreRevokeKey(signingKey.Tmb, test.Setup.RevokeAt)
+		if err := principal.PreRevokeKey(signingKey.Tmb, test.Setup.RevokeAt); err != nil {
+			result.Err = fmt.Errorf("pre-revoke key failed: %w", err)
+			return result
+		}
 	}
 
 	// Build and apply transactions/actions based on intent type

@@ -407,7 +407,9 @@ func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*stor
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert pool key %q: %w", setup.RevokeKey, err)
 		}
-		principal.PreRevokeKey(cozKey.Tmb, setup.RevokeAt)
+		if err := principal.PreRevokeKey(cozKey.Tmb, setup.RevokeAt); err != nil {
+			return nil, fmt.Errorf("pre-revoke key %q: %w", setup.RevokeKey, err)
+		}
 	}
 
 	// Replay entries (we need to use storage package internals)

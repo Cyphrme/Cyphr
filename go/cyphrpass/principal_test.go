@@ -209,7 +209,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 
 	// Level 1: single key, self-revoke should fail
 	tx := &Transaction{
-		Kind:   TxSelfRevoke,
+		Kind:   TxRevoke,
 		Signer: key.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xEE}, 32),

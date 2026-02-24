@@ -72,4 +72,7 @@ var (
 
 	// ErrEmptyCommit indicates an attempt to finalize a commit with no transactions.
 	ErrEmptyCommit = errors.New("cyphrpass: empty commit")
+
+	// ErrEmptyMultihash indicates an attempt to create a MultihashDigest with no variants.
+	ErrEmptyMultihash = errors.New("cyphrpass: empty multihash digest")
 )

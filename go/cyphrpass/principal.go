@@ -311,14 +311,14 @@ func (p *Principal) ActiveKeyCount() int {
 
 // PreRevokeKey moves a key from active to revoked set.
 // This is used for test setup to simulate a key that was revoked before test entries.
-// Panics if the key is not found in the active set.
-func (p *Principal) PreRevokeKey(tmb coz.B64, rvk int64) {
+// Returns ErrUnknownKey if the key is not found in the active set.
+func (p *Principal) PreRevokeKey(tmb coz.B64, rvk int64) error {
 	tmbStr := string(tmb.String())
 
 	// Find and remove from active set
 	idx, ok := p.auth.keyIdx[tmbStr]
 	if !ok {
-		panic("PreRevokeKey: key not found in active set")
+		return ErrUnknownKey
 	}
 
 	key := p.auth.Keys[idx]
@@ -335,6 +335,7 @@ func (p *Principal) PreRevokeKey(tmb coz.B64, rvk int64) {
 
 	// Add to revoked set
 	p.auth.Revoked = append(p.auth.Revoked, key)
+	return nil
 }
 
 // SetMaxClockSkew configures the maximum allowed clock skew for future timestamps.
@@ -469,8 +470,12 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		}
 	}
 
-	// Verify signer is an active key (except for self-revoke)
-	if tx.Kind != TxSelfRevoke {
+	// Verify signer is an active key (except for self-revoke, where
+	// the signer IS the key being revoked)
+	if tx.Kind == TxRevoke && len(tx.ID) == 0 {
+		// Self-revoke: signer revokes itself. Signer must be active but
+		// will be removed, so we verify below in the dispatch.
+	} else {
 		if !p.IsKeyActive(tx.Signer) {
 			// Check if key exists but is revoked
 			for _, k := range p.auth.Revoked {
@@ -496,7 +501,9 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		if p.IsKeyActive(tx.ID) {
 			return ErrDuplicateKey
 		}
-		p.addKey(newKey, tx.Now)
+		if err := p.addKey(newKey, tx.Now); err != nil {
+			return err
+		}
 
 	case TxKeyDelete:
 		if err := p.verifyPre(tx.Pre); err != nil {
@@ -517,23 +524,25 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 			return ErrMalformedPayload
 		}
 		// Atomic swap: add new key first, then remove signer
-		p.addKey(newKey, tx.Now)
+		if err := p.addKey(newKey, tx.Now); err != nil {
+			return err
+		}
 		// Remove signer directly (bypassing NoActiveKeys check since we just added)
 		p.removeKeyDirect(tx.Signer)
 
-	case TxSelfRevoke:
+	case TxRevoke:
 		if err := p.verifyPre(tx.Pre); err != nil {
 			return err
 		}
-		if err := p.revokeKey(tx.Signer, tx.Rvk, nil); err != nil {
-			return err
+		// Self-revoke: tx.ID is empty, target is the signer.
+		// Other-revoke: tx.ID is the target key.
+		target := tx.Signer
+		var by coz.B64
+		if len(tx.ID) > 0 {
+			target = tx.ID
+			by = tx.Signer
 		}
-
-	case TxOtherRevoke:
-		if err := p.verifyPre(tx.Pre); err != nil {
-			return err
-		}
-		if err := p.revokeKey(tx.ID, tx.Rvk, tx.Signer); err != nil {
+		if err := p.revokeKey(target, tx.Rvk, by); err != nil {
 			return err
 		}
 
@@ -577,7 +586,14 @@ func (p *Principal) verifyPre(pre CommitState) error {
 }
 
 // addKey adds a key to the active set.
-func (p *Principal) addKey(key *coz.Key, firstSeen int64) {
+// Returns ErrKeyRevoked if the key was previously revoked (invariant I2:
+// revocations are permanent).
+func (p *Principal) addKey(key *coz.Key, firstSeen int64) error {
+	// BUG-12 / I2: Reject re-adding a revoked key.
+	if p.IsKeyRevoked(key.Tmb) {
+		return ErrKeyRevoked
+	}
+
 	k := &Key{
 		Key:       key,
 		FirstSeen: firstSeen,
@@ -601,6 +617,7 @@ func (p *Principal) addKey(key *coz.Key, firstSeen int64) {
 			return string(p.activeAlgs[i]) < string(p.activeAlgs[j])
 		})
 	}
+	return nil
 }
 
 // removeKey removes a key from the active set (delete, not revoke).

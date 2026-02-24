@@ -320,7 +320,11 @@ func ComputeKS(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyState, 
 		variants[alg] = digest
 	}
 
-	return KeyState{NewMultihashDigest(variants)}, nil
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return KeyState{}, err
+	}
+	return KeyState{mh}, nil
 }
 
 // ComputeCommitID computes the Commit ID (formerly Transaction State) from czds (SPEC §8.5).
@@ -359,7 +363,11 @@ func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, 
 		variants[alg] = digest
 	}
 
-	cid := CommitID{NewMultihashDigest(variants)}
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return nil, err
+	}
+	cid := CommitID{mh}
 	return &cid, nil
 }
 
@@ -396,7 +404,11 @@ func ComputeAS(ks KeyState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
 		variants[alg] = digest
 	}
 
-	return AuthState{NewMultihashDigest(variants)}, nil
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return AuthState{}, err
+	}
+	return AuthState{mh}, nil
 }
 
 // ComputeCS computes Commit State (SPEC §8.5).
@@ -429,7 +441,11 @@ func ComputeCS(as AuthState, commitID *CommitID, algs []HashAlg) (CommitState, e
 		variants[alg] = digest
 	}
 
-	return CommitState{NewMultihashDigest(variants)}, nil
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return CommitState{}, err
+	}
+	return CommitState{mh}, nil
 }
 
 // ComputeDS computes Data State from action czds (SPEC §7.4).
@@ -498,5 +514,9 @@ func ComputePS(cs CommitState, ds *DataState, nonce coz.B64, algs []HashAlg) (Pr
 		variants[alg] = digest
 	}
 
-	return PrincipalState{NewMultihashDigest(variants)}, nil
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return PrincipalState{}, err
+	}
+	return PrincipalState{mh}, nil
 }

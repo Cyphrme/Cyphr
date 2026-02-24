@@ -30,10 +30,10 @@ type Commit struct {
 }
 
 // NewCommit creates a finalized commit from transactions and computed states.
-// Panics if transactions is empty.
-func NewCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) *Commit {
+// Returns ErrEmptyCommit if transactions is empty.
+func NewCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) (*Commit, error) {
 	if len(txs) == 0 {
-		panic("Commit must contain at least one transaction")
+		return nil, ErrEmptyCommit
 	}
 	return &Commit{
 		transactions: txs,
@@ -41,7 +41,7 @@ func NewCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthSt
 		cs:           cs,
 		as:           as,
 		ps:           ps,
-	}
+	}, nil
 }
 
 // Transactions returns the transactions in this commit.
@@ -169,7 +169,10 @@ func (p *PendingCommit) Finalize(as AuthState, cs CommitState, ps PrincipalState
 		return nil, err
 	}
 
-	commit := NewCommit(p.transactions, cid, cs, as, ps)
+	commit, err := NewCommit(p.transactions, cid, cs, as, ps)
+	if err != nil {
+		return nil, err
+	}
 	commit.SetRaw(p.raw)
 	return commit, nil
 }

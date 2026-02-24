@@ -15,11 +15,12 @@ type MultihashDigest struct {
 }
 
 // NewMultihashDigest creates a MultihashDigest from a map of variants.
-func NewMultihashDigest(variants map[HashAlg]coz.B64) MultihashDigest {
+// Returns ErrEmptyMultihash if variants is empty.
+func NewMultihashDigest(variants map[HashAlg]coz.B64) (MultihashDigest, error) {
 	if len(variants) == 0 {
-		panic("MultihashDigest must have at least one variant")
+		return MultihashDigest{}, ErrEmptyMultihash
 	}
-	return MultihashDigest{variants: variants}
+	return MultihashDigest{variants: variants}, nil
 }
 
 // FromSingleDigest creates a single-variant MultihashDigest.
