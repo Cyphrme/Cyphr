@@ -2,7 +2,6 @@ package cyphrpass
 
 import (
 	"bytes"
-	"fmt"
 	"sort"
 	"time"
 
@@ -417,7 +416,7 @@ func (p *Principal) RecordAction(action *Action) error {
 
 	// Recompute PS = MR(CS, DS?)
 	if p.cs == nil {
-		return fmt.Errorf("cannot recompute PS: no commit state")
+		return ErrNoCommitState
 	}
 	ps, err := ComputePS(*p.cs, p.ds, nil, p.activeAlgs)
 	if err != nil {
@@ -578,7 +577,7 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 // At genesis (before first commit), CS is promoted from AS, so pre = AS = CS.
 func (p *Principal) verifyPre(pre CommitState) error {
 	if p.cs == nil {
-		return fmt.Errorf("cannot verify pre: no commit state")
+		return ErrNoCommitState
 	}
 	if !bytes.Equal(p.cs.First(), pre.First()) {
 		return ErrInvalidPrior

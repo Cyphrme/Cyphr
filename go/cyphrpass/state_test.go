@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/cyphrme/coz"
@@ -254,37 +255,37 @@ func TestParseTaggedDigest_Invalid(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		wantErr string
+		wantErr error
 	}{
 		{
 			name:    "missing separator",
 			input:   "SHA-256U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-			wantErr: "missing ':'",
+			wantErr: ErrMalformedDigest,
 		},
 		{
 			name:    "unsupported algorithm",
 			input:   "MD5:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-			wantErr: "unsupported hash algorithm",
+			wantErr: ErrUnsupportedAlgorithm,
 		},
 		{
 			name:    "wrong length for SHA-256",
 			input:   "SHA-256:AAAA",
-			wantErr: "expected 32 bytes",
+			wantErr: ErrMalformedDigest,
 		},
 		{
 			name:    "wrong length for SHA-384",
 			input:   "SHA-384:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-			wantErr: "expected 48 bytes",
+			wantErr: ErrMalformedDigest,
 		},
 		{
 			name:    "invalid base64",
 			input:   "SHA-256:!!!invalid!!!",
-			wantErr: "base64 decode failed",
+			wantErr: nil, // wrapping error — just check err != nil
 		},
 		{
 			name:    "empty digest",
 			input:   "SHA-256:",
-			wantErr: "expected 32 bytes",
+			wantErr: ErrMalformedDigest,
 		},
 	}
 
@@ -294,8 +295,8 @@ func TestParseTaggedDigest_Invalid(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
-			if !contains(err.Error(), tt.wantErr) {
-				t.Errorf("error = %q, want containing %q", err.Error(), tt.wantErr)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %q, want errors.Is(%v)", err.Error(), tt.wantErr)
 			}
 		})
 	}

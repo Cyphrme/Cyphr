@@ -61,8 +61,8 @@ and reason about correctness from the types alone.
    modules with sentinel or typed errors so callers can distinguish failure
    modes via `errors.Is`/`errors.As` (BUG-4, F.2, F.4). This is a prerequisite
    for lifecycle states (Appendix C §C.2).
-   - Spawns: `.sketches/go-error-hardening.md`
-   - Status: Not Started
+   - Spawns: `.sketches/2026-02-24-go-error-hardening.md`
+   - Status: **Complete** (2026-02-24)
 
 3. **Go Encapsulation Hardening** — Address the systemic anti-pattern of
    returning internal collections by reference. Unexport `AuthLedger`/
@@ -147,16 +147,16 @@ P3 items are not chartered as independent work. Instead, when a workstream
 touches a file containing a P3 item, that item is resolved in the same commit.
 The relevant P3 items and their expected resolution context:
 
-| Item | Description                               | Expected During       |
-| :--- | :---------------------------------------- | :-------------------- |
-| E.1  | `VerifiedTx` → `VerifiedTransaction`      | WS2 (Error Hardening) |
-| A.3  | `#[doc(hidden)]` on Rust test helpers     | WS4 (CLI Dedup)       |
-| B.5  | Go `checkExpected` block refactoring      | WS6 (Verification)    |
-| D.7  | `Entry` extractors: document async design | WS3 (Encapsulation)   |
-| D.4  | Accessor visibility symmetries            | WS3 (Encapsulation)   |
-| E.2  | Rust accessor symmetries                  | WS4 (CLI Dedup)       |
-| E.3  | Rust visibility consistency               | WS4 (CLI Dedup)       |
-| A.A  | AI "what not why" comment cleanup         | Any workstream        |
+| Item | Description                                                                                         | Expected During     |
+| :--- | :-------------------------------------------------------------------------------------------------- | :------------------ |
+| E.1  | ~~`VerifiedTx` → `VerifiedTransaction`~~ — Won't fix: `Tx` is idiomatic Go, universally understood. | ~~WS2~~ Resolved    |
+| A.3  | `#[doc(hidden)]` on Rust test helpers                                                               | WS4 (CLI Dedup)     |
+| B.5  | Go `checkExpected` block refactoring                                                                | WS6 (Verification)  |
+| D.7  | `Entry` extractors: document async design                                                           | WS3 (Encapsulation) |
+| D.4  | Accessor visibility symmetries                                                                      | WS3 (Encapsulation) |
+| E.2  | Rust accessor symmetries                                                                            | WS4 (CLI Dedup)     |
+| E.3  | Rust visibility consistency                                                                         | WS4 (CLI Dedup)     |
+| A.A  | AI "what not why" comment cleanup                                                                   | Any workstream      |
 
 If a P3 item is not naturally encountered during any workstream, it remains
 open — but the expectation is that most will be resolved incidentally.

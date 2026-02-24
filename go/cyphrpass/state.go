@@ -94,7 +94,7 @@ func ParseHashAlg(s string) (HashAlg, error) {
 	case "SHA-512":
 		return HashSha512, nil
 	default:
-		return "", fmt.Errorf("unsupported hash algorithm: %s", s)
+		return "", ErrUnsupportedAlgorithm
 	}
 }
 
@@ -134,7 +134,7 @@ func ParseTaggedDigest(s string) (TaggedDigest, error) {
 		}
 	}
 	if idx == -1 {
-		return TaggedDigest{}, fmt.Errorf("invalid tagged digest format: missing ':' separator in %q", s)
+		return TaggedDigest{}, ErrMalformedDigest
 	}
 
 	algStr := s[:idx]
@@ -153,7 +153,7 @@ func ParseTaggedDigest(s string) (TaggedDigest, error) {
 	// Validate digest length matches algorithm
 	expectedLen := alg.DigestLength()
 	if len(digest) != expectedLen {
-		return TaggedDigest{}, fmt.Errorf("invalid tagged digest: expected %d bytes for %s, got %d", expectedLen, alg, len(digest))
+		return TaggedDigest{}, ErrMalformedDigest
 	}
 
 	return TaggedDigest{Alg: alg, Digest: digest}, nil
@@ -173,7 +173,7 @@ func (td TaggedDigest) MarshalJSON() ([]byte, error) {
 func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
 	// Remove quotes
 	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
-		return fmt.Errorf("invalid tagged digest JSON: expected quoted string")
+		return fmt.Errorf("invalid tagged digest JSON: %w", ErrMalformedDigest)
 	}
 	s := string(data[1 : len(data)-1])
 
