@@ -29,9 +29,9 @@ type Commit struct {
 	raw []json.RawMessage
 }
 
-// NewCommit creates a finalized commit from transactions and computed states.
+// newCommit creates a finalized commit from transactions and computed states.
 // Returns ErrEmptyCommit if transactions is empty.
-func NewCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) (*Commit, error) {
+func newCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) (*Commit, error) {
 	if len(txs) == 0 {
 		return nil, ErrEmptyCommit
 	}
@@ -84,8 +84,8 @@ func (c *Commit) Raw() []json.RawMessage {
 	return c.raw
 }
 
-// SetRaw sets the raw JSON messages for storage round-trips.
-func (c *Commit) SetRaw(raw []json.RawMessage) {
+// setRaw sets the raw JSON messages for storage round-trips.
+func (c *Commit) setRaw(raw []json.RawMessage) {
 	c.raw = raw
 }
 
@@ -169,11 +169,11 @@ func (p *PendingCommit) Finalize(as AuthState, cs CommitState, ps PrincipalState
 		return nil, err
 	}
 
-	commit, err := NewCommit(p.transactions, cid, cs, as, ps)
+	commit, err := newCommit(p.transactions, cid, cs, as, ps)
 	if err != nil {
 		return nil, err
 	}
-	commit.SetRaw(p.raw)
+	commit.setRaw(p.raw)
 	return commit, nil
 }
 
@@ -238,7 +238,7 @@ func (b *CommitBatch) VerifyAndApply(cz *coz.Coz, newKey *coz.Key) error {
 //
 // Returns ErrEmptyCommit if no transactions were applied.
 func (b *CommitBatch) Finalize() (*Commit, error) {
-	return b.principal.FinalizeCommit(b.pending)
+	return b.principal.finalizeCommit(b.pending)
 }
 
 // Len returns the number of transactions applied so far.

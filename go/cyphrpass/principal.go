@@ -42,8 +42,8 @@ func (l Level) String() string {
 	}
 }
 
-// AuthLedger holds keys and transactions.
-type AuthLedger struct {
+// authLedger holds keys and transactions.
+type authLedger struct {
 	// Keys maps thumbprint (b64 string) to active keys.
 	// Uses ordered map semantics via slice backing.
 	Keys   []*Key
@@ -56,8 +56,8 @@ type AuthLedger struct {
 	Transactions []*Transaction
 }
 
-// DataLedger holds actions (Level 4+).
-type DataLedger struct {
+// dataLedger holds actions (Level 4+).
+type dataLedger struct {
 	Actions []*Action
 }
 
@@ -77,8 +77,8 @@ type Principal struct {
 	cs       *CommitState // nil before first commit
 	ds       *DataState   // nil if no actions
 
-	auth       AuthLedger
-	data       DataLedger
+	auth       authLedger
+	data       dataLedger
 	hashAlg    HashAlg
 	activeAlgs []HashAlg // Per SPEC §14: algorithms derived from active keyset
 
@@ -151,7 +151,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
-		auth: AuthLedger{
+		auth: authLedger{
 			Keys:   []*Key{k},
 			keyIdx: map[string]int{string(key.Tmb.String()): 0},
 		},
@@ -220,7 +220,7 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
-		auth: AuthLedger{
+		auth: authLedger{
 			Keys:   wrappedKeys,
 			keyIdx: keyIdx,
 		},
@@ -298,9 +298,11 @@ func (p *Principal) IsKeyActive(tmb coz.B64) bool {
 	return ok
 }
 
-// ActiveKeys returns all active keys.
+// ActiveKeys returns a copy of all active keys.
 func (p *Principal) ActiveKeys() []*Key {
-	return p.auth.Keys
+	out := make([]*Key, len(p.auth.Keys))
+	copy(out, p.auth.Keys)
+	return out
 }
 
 // ActiveKeyCount returns the number of active keys.
@@ -432,20 +434,18 @@ func (p *Principal) ActionCount() int {
 	return len(p.data.Actions)
 }
 
-// Transactions returns all transactions in applied order.
-//
-// This accessor is used by storage.ExportEntries to serialize transaction history.
-// The returned slice is read-only; modifications will not affect the principal.
+// Transactions returns a copy of all transactions in applied order.
 func (p *Principal) Transactions() []*Transaction {
-	return p.auth.Transactions
+	out := make([]*Transaction, len(p.auth.Transactions))
+	copy(out, p.auth.Transactions)
+	return out
 }
 
-// Actions returns all actions in recorded order.
-//
-// This accessor is used by storage.ExportEntries to serialize action history.
-// The returned slice is read-only; modifications will not affect the principal.
+// Actions returns a copy of all actions in recorded order.
 func (p *Principal) Actions() []*Action {
-	return p.data.Actions
+	out := make([]*Action, len(p.data.Actions))
+	copy(out, p.data.Actions)
+	return out
 }
 
 // applyTransactionInternal applies a transaction to mutate principal state.
@@ -719,10 +719,10 @@ func (p *Principal) ApplyTransaction(vt *VerifiedTx) (*Commit, error) {
 	return batch.Finalize()
 }
 
-// FinalizeCommit recomputes all state digests and produces an immutable Commit.
+// finalizeCommit recomputes all state digests and produces an immutable Commit.
 //
 // This is called by CommitBatch.Finalize() — not typically called directly.
-func (p *Principal) FinalizeCommit(pending *PendingCommit) (*Commit, error) {
+func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	if pending.IsEmpty() {
 		return nil, ErrEmptyCommit
 	}

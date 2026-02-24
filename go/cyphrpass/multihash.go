@@ -90,7 +90,11 @@ func (m MultihashDigest) Clone() MultihashDigest {
 	return MultihashDigest{variants: variants}
 }
 
-// Variants returns the underlying map (for iteration).
+// Variants returns a copy of the underlying hash variant map.
 func (m MultihashDigest) Variants() map[HashAlg]coz.B64 {
-	return m.variants
+	out := make(map[HashAlg]coz.B64, len(m.variants))
+	for alg, digest := range m.variants {
+		out[alg] = digest
+	}
+	return out
 }
