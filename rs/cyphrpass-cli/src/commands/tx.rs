@@ -6,10 +6,10 @@ use super::common::{
     extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
-use crate::{Cli, OutputFormat, TxCommands};
+use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.
-pub fn run(cli: &Cli, command: &TxCommands) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(cli: &Cli, command: &TxCommands) -> crate::Result<()> {
     match command {
         TxCommands::List { identity } => list(cli, identity),
         TxCommands::Verify { identity } => verify(cli, identity),
@@ -17,7 +17,7 @@ pub fn run(cli: &Cli, command: &TxCommands) -> Result<(), Box<dyn std::error::Er
 }
 
 /// List transactions for an identity.
-fn list(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
     let principal = load_identity(cli, identity)?;
 
     let txs: Vec<_> = principal.transactions().collect();
@@ -72,7 +72,7 @@ fn list(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Verify transaction chain integrity for an identity.
-fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
 
@@ -92,9 +92,12 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| format!("PR empty: {e}"))?;
+            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
         if computed_pr != identity {
-            return Err(format!("PR mismatch: computed {} != {}", computed_pr, identity).into());
+            return Err(Error::Storage(format!(
+                "PR mismatch: computed {} != {}",
+                computed_pr, identity
+            )));
         }
 
         match cli.output {
@@ -141,13 +144,12 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         .as_multihash()
         .first_variant()
         .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| format!("PR empty: {e}"))?;
+        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
     if computed_pr != identity {
-        return Err(format!(
+        return Err(Error::Storage(format!(
             "PR mismatch: computed {} != expected {}",
             computed_pr, identity
-        )
-        .into());
+        )));
     }
 
     // Verify state digests from commits match computed state
@@ -159,17 +161,16 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
         .as_multihash()
         .first_variant()
         .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| format!("PS empty: {e}"))?;
+        .map_err(|e| Error::Storage(format!("PS empty: {e}")))?;
 
     // Parse stored ps which may be in "alg:digest" format
     let stored_ps_digest = last_commit.ps.split(':').last().unwrap_or(&last_commit.ps);
 
     if computed_ps != stored_ps_digest {
-        return Err(format!(
+        return Err(Error::Storage(format!(
             "PS mismatch: computed {} != stored {}",
             computed_ps, stored_ps_digest
-        )
-        .into());
+        )));
     }
 
     let tx_count: usize = principal.transactions().count();
@@ -198,10 +199,7 @@ fn verify(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Load identity from storage or keystore.
-fn load_identity(
-    cli: &Cli,
-    identity: &str,
-) -> Result<cyphrpass::Principal, Box<dyn std::error::Error>> {
+fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphrpass::Principal> {
     let store = parse_store(&cli.store)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let pr = parse_principal_root(identity)?;

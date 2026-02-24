@@ -187,6 +187,13 @@ first audit the model for correctness. The recommended sequence is:
 3. **Implementation charter** — build lifecycle, fork detection, and Level 5+
    features on the audited model and remediated API.
 
+## Tech Debt
+
+| ID   | Severity | Area         | Description                                                                                                                                                                | Introduced   |
+| ---- | -------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| TD-1 | LOW      | Rust CLI     | `Error::Storage(String)` is a catch-all for errors that don't fit other typed variants. Could be refined into more specific variants as patterns emerge.                   | WS4 Commit 3 |
+| TD-2 | LOW      | Rust Storage | `FileStoreError` was re-exported from `cyphrpass-storage` to support `#[from]` in `cli::Error`. If storage error types are refactored, this re-export should be revisited. | WS4 Commit 3 |
+
 ## References
 
 - Audit: [2026-02-20-api-coherence-audit.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/audit/2026-02-20-api-coherence-audit.md)

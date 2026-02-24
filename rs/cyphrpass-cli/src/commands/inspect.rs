@@ -9,7 +9,7 @@ use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
-pub fn run(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let pr = parse_principal_root(identity)?;

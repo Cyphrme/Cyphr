@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn run(cli: Cli) -> cyphrpass_cli::Result<()> {
     match &cli.command {
         Commands::Init { algo, key, keys } => {
             commands::init::run(&cli, algo, key.as_deref(), keys.as_deref())

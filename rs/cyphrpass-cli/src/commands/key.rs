@@ -1,21 +1,18 @@
 //! Key management commands.
 
-use base64ct::{Base64UrlUnpadded, Encoding};
-use coz::Thumbprint;
-use cyphrpass::Key;
 use cyphrpass_storage::{Genesis, export_commits, load_principal_from_commits};
 use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    current_timestamp, extract_genesis_from_commits, load_key_from_keystore, parse_principal_root,
-    parse_store,
+    current_timestamp, extract_genesis_from_commits, generate_key, load_key_from_keystore,
+    parse_principal_root, parse_store,
 };
-use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
-use crate::{Cli, KeyCommands, OutputFormat};
+use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::{Cli, Error, KeyCommands, OutputFormat};
 
 /// Run a key subcommand.
-pub fn run(cli: &Cli, command: &KeyCommands) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
     match command {
         KeyCommands::Generate { algo, tag } => generate(cli, algo, tag.as_deref()),
         KeyCommands::Add {
@@ -33,62 +30,10 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> Result<(), Box<dyn std::error::E
 }
 
 /// Generate a new keypair and store it in the keystore.
-fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    use coz::{ES256, ES384, ES512, Ed25519, SigningKey};
-
+fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
 
-    // Generate keypair based on algorithm
-    let (tmb, stored_key) = match algo {
-        "ES256" => {
-            let key = SigningKey::<ES256>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: tag.map(String::from),
-            };
-            (tmb, stored)
-        },
-        "ES384" => {
-            let key = SigningKey::<ES384>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: tag.map(String::from),
-            };
-            (tmb, stored)
-        },
-        "ES512" => {
-            let key = SigningKey::<ES512>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: tag.map(String::from),
-            };
-            (tmb, stored)
-        },
-        "Ed25519" => {
-            let key = SigningKey::<Ed25519>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: tag.map(String::from),
-            };
-            (tmb, stored)
-        },
-        _ => {
-            return Err(format!("unknown algorithm: {algo}").into());
-        },
-    };
-
+    let (tmb, stored_key, _key) = generate_key(algo, tag)?;
     keystore.store(&tmb, stored_key)?;
     keystore.save()?;
 
@@ -115,12 +60,7 @@ fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> Result<(), Box<dyn std:
 }
 
 /// Add a key to an identity.
-fn add(
-    cli: &Cli,
-    identity: &str,
-    key_tmb: Option<&str>,
-    signer_tmb: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
@@ -155,7 +95,7 @@ fn add(
         None => {
             // Generate new key (use same algorithm as signer)
             let signer_stored = keystore.get(signer_tmb)?;
-            let (tmb, stored, key) = generate_key_for_add(&signer_stored.alg)?;
+            let (tmb, stored, key) = generate_key(&signer_stored.alg, None)?;
             keystore.store(&tmb, stored)?;
             keystore.save()?;
             (tmb, key)
@@ -191,10 +131,10 @@ fn add(
         &signer_stored.prv_key,
         &signer_stored.pub_key,
     )
-    .ok_or("signing failed")?;
+    .ok_or_else(|| Error::Signing("signing failed".into()))?;
 
-    let czd =
-        coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
+        .ok_or_else(|| Error::Signing("czd computation failed".into()))?;
 
     // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
@@ -227,12 +167,7 @@ fn add(
 }
 
 /// Revoke a key from an identity.
-fn revoke(
-    cli: &Cli,
-    identity: &str,
-    key_tmb: &str,
-    signer_tmb: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
@@ -288,10 +223,10 @@ fn revoke(
         &signer_stored.prv_key,
         &signer_stored.pub_key,
     )
-    .ok_or("signing failed")?;
+    .ok_or_else(|| Error::Signing("signing failed".into()))?;
 
-    let czd =
-        coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).ok_or("czd computation failed")?;
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
+        .ok_or_else(|| Error::Signing("czd computation failed".into()))?;
 
     // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
     principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
@@ -323,7 +258,7 @@ fn revoke(
 }
 
 /// List keys - from keystore if identity is None, from identity if provided.
-fn list(cli: &Cli, identity: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn list(cli: &Cli, identity: Option<&str>) -> crate::Result<()> {
     match identity {
         None => list_keystore(cli),
         Some(pr) => list_identity(cli, pr),
@@ -331,7 +266,7 @@ fn list(cli: &Cli, identity: Option<&str>) -> Result<(), Box<dyn std::error::Err
 }
 
 /// List all keys in the keystore.
-fn list_keystore(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn list_keystore(cli: &Cli) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let thumbprints = keystore.list();
 
@@ -370,7 +305,7 @@ fn list_keystore(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// List keys for an identity.
-fn list_identity(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
@@ -422,100 +357,4 @@ fn list_identity(cli: &Cli, identity: &str) -> Result<(), Box<dyn std::error::Er
     }
 
     Ok(())
-}
-
-// ============================================================================
-// Helpers (key-specific)
-// ============================================================================
-
-fn generate_key_for_add(
-    algo: &str,
-) -> Result<(String, StoredKey, Key), Box<dyn std::error::Error>> {
-    use coz::{ES256, ES384, ES512, Ed25519, SigningKey};
-
-    let now = current_timestamp();
-
-    match algo {
-        "ES256" => {
-            let key = SigningKey::<ES256>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: None,
-            };
-            let cyphrpass_key = Key {
-                alg: algo.to_string(),
-                tmb: Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb)?),
-                pub_key: stored.pub_key.clone(),
-                first_seen: now,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            };
-            Ok((tmb, stored, cyphrpass_key))
-        },
-        "ES384" => {
-            let key = SigningKey::<ES384>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: None,
-            };
-            let cyphrpass_key = Key {
-                alg: algo.to_string(),
-                tmb: Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb)?),
-                pub_key: stored.pub_key.clone(),
-                first_seen: now,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            };
-            Ok((tmb, stored, cyphrpass_key))
-        },
-        "ES512" => {
-            let key = SigningKey::<ES512>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: None,
-            };
-            let cyphrpass_key = Key {
-                alg: algo.to_string(),
-                tmb: Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb)?),
-                pub_key: stored.pub_key.clone(),
-                first_seen: now,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            };
-            Ok((tmb, stored, cyphrpass_key))
-        },
-        "Ed25519" => {
-            let key = SigningKey::<Ed25519>::generate();
-            let tmb = key.thumbprint().to_b64();
-            let stored = StoredKey {
-                alg: algo.to_string(),
-                pub_key: key.verifying_key().public_key_bytes().to_vec(),
-                prv_key: key.private_key_bytes(),
-                tag: None,
-            };
-            let cyphrpass_key = Key {
-                alg: algo.to_string(),
-                tmb: Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb)?),
-                pub_key: stored.pub_key.clone(),
-                first_seen: now,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            };
-            Ok((tmb, stored, cyphrpass_key))
-        },
-        _ => Err(format!("unknown algorithm: {algo}").into()),
-    }
 }

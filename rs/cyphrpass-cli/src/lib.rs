@@ -13,6 +13,61 @@ use clap::{Parser, Subcommand, ValueEnum};
 pub mod commands;
 pub mod keystore;
 
+/// CLI error type. Replaces `Box<dyn Error>` throughout the CLI crate.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// I/O error.
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+
+    /// Keystore operation failed.
+    #[error("{0}")]
+    Keystore(#[from] keystore::Error),
+
+    /// Core cyphrpass protocol error.
+    #[error("{0}")]
+    Cyphrpass(#[from] cyphrpass::Error),
+
+    /// JSON serialization/deserialization error.
+    #[error("{0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Base64 decoding error.
+    #[error("invalid base64url: {0}")]
+    Base64(#[from] base64ct::Error),
+
+    /// A required field was missing from a JSON object.
+    #[error("missing field: {0}")]
+    MissingField(&'static str),
+
+    /// Invalid argument or option value.
+    #[error("{0}")]
+    InvalidArgument(String),
+
+    /// Cryptographic signing or verification failed.
+    #[error("{0}")]
+    Signing(String),
+
+    /// Storage layer error (file store operations).
+    #[error("{0}")]
+    Storage(String),
+
+    /// File store error.
+    #[error("{0}")]
+    FileStore(#[from] cyphrpass_storage::FileStoreError),
+
+    /// Load error (importing/replaying commits).
+    #[error("{0}")]
+    Load(#[from] cyphrpass_storage::LoadError),
+
+    /// Export error (serializing principal to commits).
+    #[error("{0}")]
+    Export(#[from] cyphrpass_storage::ExportError),
+}
+
+/// CLI result type alias.
+pub type Result<T> = std::result::Result<T, Error>;
+
 /// Cyphrpass identity protocol CLI.
 #[derive(Parser)]
 #[command(name = "cyphrpass", version, about, long_about = None)]

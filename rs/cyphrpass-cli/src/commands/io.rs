@@ -8,10 +8,10 @@ use cyphrpass_storage::{CommitEntry, load_principal_from_commits};
 
 use super::common::{extract_genesis_from_commits, parse_principal_root, parse_store};
 use crate::keystore::JsonKeyStore;
-use crate::{Cli, OutputFormat};
+use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
-pub fn export(cli: &Cli, identity: &str, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_root(identity)?;
 
@@ -19,7 +19,9 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> Result<(), Box<dyn st
     let commits = store.get_commits(&pr)?;
 
     if commits.is_empty() {
-        return Err("no commits found for identity (genesis-only state cannot be exported)".into());
+        return Err(Error::Storage(
+            "no commits found for identity (genesis-only state cannot be exported)".into(),
+        ));
     }
 
     // Write commits to JSONL file
@@ -52,7 +54,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> Result<(), Box<dyn st
 }
 
 /// Run the import command.
-pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
 
@@ -66,13 +68,13 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
         if line.trim().is_empty() {
             continue;
         }
-        let commit: CommitEntry =
-            serde_json::from_str(&line).map_err(|e| format!("line {}: {}", line_num + 1, e))?;
+        let commit: CommitEntry = serde_json::from_str(&line)
+            .map_err(|e| Error::Storage(format!("line {}: {}", line_num + 1, e)))?;
         commits.push(commit);
     }
 
     if commits.is_empty() {
-        return Err("no commits found in file".into());
+        return Err(Error::Storage("no commits found in file".into()));
     }
 
     // Determine genesis from first commit
@@ -90,8 +92,11 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| format!("PR empty: {e}"))?;
-        return Err(format!("identity {} already exists in storage", pr_b64).into());
+            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+        return Err(Error::Storage(format!(
+            "identity {} already exists in storage",
+            pr_b64
+        )));
     }
 
     // Store commits
@@ -106,7 +111,7 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| format!("PR empty: {e}"))?;
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
             let result = serde_json::json!({
                 "identity": pr_b64,
                 "input": input.display().to_string(),
@@ -121,7 +126,7 @@ pub fn import(cli: &Cli, input: &Path) -> Result<(), Box<dyn std::error::Error>>
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| format!("PR empty: {e}"))?;
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
             println!("Imported identity from {}", input.display());
             println!("  identity: {}", pr_b64);
             println!("  commits: {}", commits.len());
