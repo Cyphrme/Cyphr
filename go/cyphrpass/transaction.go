@@ -19,32 +19,19 @@ const (
 )
 
 // TransactionKind represents the type of auth mutation.
-type TransactionKind int
+type TransactionKind string
 
 const (
-	TxKeyCreate TransactionKind = iota
-	TxKeyDelete
-	TxKeyReplace
-	TxRevoke
-	TxPrincipalCreate // SPEC §5.1 genesis finalization
+	TxKeyCreate       TransactionKind = "key/create"
+	TxKeyDelete       TransactionKind = "key/delete"
+	TxKeyReplace      TransactionKind = "key/replace"
+	TxRevoke          TransactionKind = "key/revoke"
+	TxPrincipalCreate TransactionKind = "principal/create" // SPEC §5.1 genesis finalization
 )
 
 // String returns the string representation of a TransactionKind.
 func (k TransactionKind) String() string {
-	switch k {
-	case TxKeyCreate:
-		return "key/create"
-	case TxKeyDelete:
-		return "key/delete"
-	case TxKeyReplace:
-		return "key/replace"
-	case TxRevoke:
-		return "key/revoke"
-	case TxPrincipalCreate:
-		return "principal/create"
-	default:
-		return "unknown"
-	}
+	return string(k)
 }
 
 // Transaction is a parsed auth mutation.

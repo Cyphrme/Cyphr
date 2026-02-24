@@ -537,10 +537,11 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		// Self-revoke: tx.ID is empty, target is the signer.
 		// Other-revoke: tx.ID is the target key.
 		target := tx.Signer
-		var by coz.B64
+		var by *coz.B64
 		if len(tx.ID) > 0 {
 			target = tx.ID
-			by = tx.Signer
+			signer := coz.B64(tx.Signer)
+			by = &signer
 		}
 		if err := p.revokeKey(target, tx.Rvk, by); err != nil {
 			return err
@@ -658,7 +659,7 @@ func (p *Principal) removeKeyAtIndex(idx int) {
 }
 
 // revokeKey moves a key from active to revoked.
-func (p *Principal) revokeKey(tmb coz.B64, rvk int64, by coz.B64) error {
+func (p *Principal) revokeKey(tmb coz.B64, rvk int64, by *coz.B64) error {
 	tmbStr := string(tmb.String())
 	idx, ok := p.auth.keyIdx[tmbStr]
 	if !ok {

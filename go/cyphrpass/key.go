@@ -9,8 +9,8 @@ type Revocation struct {
 	Rvk int64
 
 	// By is the thumbprint of the key that performed the revocation.
-	// nil for self-revoke.
-	By coz.B64
+	// nil for self-revoke, non-nil for other-revoke.
+	By *coz.B64
 }
 
 // Key extends coz.Key with Cyphrpass lifecycle tracking.

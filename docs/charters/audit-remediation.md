@@ -54,8 +54,8 @@ and reason about correctness from the types alone.
    Also address type representation gaps: constrain `TransactionKind` beyond
    bare `int` (B.1), disambiguate `Revocation.By` nil-vs-empty semantics (B.2),
    and evaluate `DataState` inner type (`coz.B64` vs `Cad`) (D.3).
-   - Spawns: `.sketches/go-correctness-safety.md`
-   - Status: Not Started
+   - Spawns: `.sketches/2026-02-24-go-correctness-safety.md`
+   - Status: **Complete** (2026-02-24)
 
 2. **Go Error Hardening** — Replace all `fmt.Errorf` usages in core and state
    modules with sentinel or typed errors so callers can distinguish failure
