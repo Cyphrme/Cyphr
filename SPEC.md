@@ -83,8 +83,36 @@ Principal State (PS)
 │   ├── Key State (KS) ────────── [Public Keys]
 │   │
 │   └── Rule State (RS) ───────── [Permissions & Thresholds]
+|
+├── Data State (DS) ───────────── [Data Actions]
 │
 └── Commit ID ─────────────────── [Auth State Mutation]
+
+
+
+
+```text
+Principal State (PS)
+│
+├──CS
+|   |
+|   ├── Auth State (AS) ───────────── [Authentication]
+│      │
+│      ├── Key State (KS) ────────── [Public Keys]
+│      │
+│      └── Rule State (RS) ───────── [Permissions & Thresholds]
+    |
+    ├── Data State (DS) ───────────── [Data Actions]
+│
+└── Commit ID ─────────────────── [Auth State Mutation]
+
+```
+
+
+
+
+
+
 
 ```
 
@@ -424,7 +452,7 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
     "now": 1623132000,
     "tmb": "<signing key tmb>", // Existing key
     "typ": "<authority>/key/create",
-    "pre": "<target (current) PS>",
+    "pre": "<target PS>",
     "id": "<new key's tmb>",
   },
   "sig": "<b64ut>",
@@ -446,15 +474,94 @@ consisting of one coz.
 
 A Principal finalizes a commit by publishing the commit.
 
-### 4.2.1 Data Tree Inclusion
+### 4.2 Commit Finality // TODO thinking complete this out.
+
+commit:true
+commit:AS     <- Tree in git.
+Pre:(PS)      <- equivalent to parent in git
+
+A commit is finalized by having the targeted `commit:AS` appear in the last coz
+of the transaction.
+
+To prevent client misbehavior, finality may be used as a proof of error (See
+section Proof of Error)
+
+
+The mutations defined by commit result in a new AS which commit must reference.
+
+
+```json5
+<coz 1>,
+<coz 2>,
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1736893000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/ds/create",
+    "pre": "<target PS>",
+    "id": "<computed new DS = MR(DT)>",
+    "commit":"AS/CS" // One line commit design
+  },
+  "sig": "<b64ut>"
+}
+```
+
+TODO alternatively:
+```json
+{
+  "pay": { // Separate commit data structure design
+    "alg": "ES256",
+    "now": 1736893000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphrpass/commit/create",
+    "pre": "<target PS>",
+    "commit":"AS/CS"
+  },
+  "sig": "<b64ut>"
+}
+
+// Outer wrap
+// List
+```
+
+### 4.3 Data Action
+
+Data Actions are stateless signed messages. Data actions are not transactions
+and do not mutate AS. Data actions are simply messages signed by an authorized
+key without chain structure:
+
+- No prior field required (no `pre`)
+- DS is computed from action `czd`s.
+- Ordered by `now` and if needed lexical as tie-breaker.
+
+This keeps actions lightweight for common use cases (comments, posts, etc.).
+
+A data action is a signed Coz message representing a user action, recorded in DS:
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/comment/create",
+    "msg": "Hello, world!"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+### 4.4.1 Data Tree Inclusion
 DT is a binary Merkle Tree that stores user actions.  DT allows tree
 reorganization, node deletion, and node omission; an intentionally broad design
 allowing implementations to accommodate diverse applications.  Tree nodes may
 represent various applications. Various data `typ`s may define their own
 required fields as defined by an authority.
 
-Like all nodes, DT is first set to empty, and AS is implicitly promoted to PS.
-To explicitly include a particular DS into PS, a DS transaction is signed:
+Like all nodes, DT/DS is first set to empty, and AS is implicitly promoted to
+PS. To explicitly include a particular DS into PS, a DS transaction is signed,
+which updates the value for DS in the Principal State Tree:
 
 ```json5
 {
@@ -463,14 +570,14 @@ To explicitly include a particular DS into PS, a DS transaction is signed:
     "now": 1736893000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/ds/create",
-    "pre": "<prior PS>",
-    "id": "<computed new DT MR (DS)>"
+    "pre": "<target PS>",
+    "id": "<computed new DS = MR(DT)>"
   },
   "sig": "<b64ut>"
 }
 ```
 
-#### 4.2.2 DT Organization
+#### 4.4.2 DT Organization
 
 As a Merkle Tree, DT provides broad flexibility. Nodes may represent Merkle
 DAGs, Map/Trie-Based Structures (e.g., Sorted Merkle Maps, Merkle Patricia
@@ -479,6 +586,42 @@ hybrid/pluggable approaches. Clients may implement DT in append-only mode,
 maintain subtrees per application or per account, and handle deletion via
 tombstones or direct removal. DT organization for specific application is beyond
 the scope of this document.
+
+By default, data actions are ordered by `now`, and secondly by lexographical
+order, in the Merkle tree. // TODO
+By default DT's sort keys are `now` and secondarily `czd`.
+
+### 4.5 Nonce, Embedding, and Opaque Node Transaction
+
+Cyphrpass permits nonces, embeddings, or otherwise opaque nodes anywhere in the
+Principal Tree. Nonces are indistinguishable from other digest values unless
+revealed by the client. A new PS may be generated by signing a transaction
+nonce.
+
+To delete a nonce, a `nonce/delete` is signed.
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphrpass/nonce/create",
+    "nonce": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
+  },
+  "sig": "<b64ut>" 
+}
+```
+
+#### 4.6 Nonce path
+
+Nonces, or otherwise opaque nodes, may be inserted anywhere in the state tree.
+`typ` species the path for insertion.  A `nonce/delete`, where `id` == nonce
+removes the nonce.
+
+`cyphrpass/nonce/create`    // Principal (Root)
+`cyphrpass/AT/nonce/create` // Nonce is inserted at the root of AT.
+`cyphrpass/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
 
 
 ---
@@ -570,7 +713,7 @@ material, but `tmb` is signed within the coz.
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key.
         "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
-      "sig": "<b64ut>", // TODO actual sig
+      "sig": "<b64ut>", 
     },
     {
       "pay": {
@@ -578,10 +721,10 @@ material, but `tmb` is signed within the coz.
         "now": 1736893000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
-        "id": "", // TODO calc AS which is tmb MR
+        "id": "<b64ut>", 
         "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // Genesis Key
       },
-      "sig": "<source sig>",
+      "sig": "<b64ut>",
     },
   ],
   "keys": [ // Public keys material
@@ -672,22 +815,22 @@ previously. This construction is good practice.
     "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
     "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
   },
-  "sig": "<b64ut>" // TODO actual sig
+  "sig": "<b64ut>"
 }
 ```
 
 #### 6.2 `key/delete` - Remove a Key (Level 3+)
 
-Removes a key from KS without marking it as compromised. Unlike `key/revoke`,
-`key/delete` does not invalidate the key itself, it only removes it from KS,
+Removes a key from KT without marking it as compromised. Unlike `key/revoke`,
+`key/delete` does not invalidate the key itself, it only removes it from KT,
 which is useful for graceful key retirement (e.g., decommissioning a device)
 when the key was never compromised.
 
-If a key is deleted, any action signed with that key _after_ it has been removed
+If a key is deleted, any action signed with that key after it has been removed
 from the principal is ignored. Only actions that were signed while the key was
-still active in the Key State (KS) are respected. Past signatures from previous
-active periods remain valid even after the key is no longer active, provided
-they were created while the key was in KS.
+still active in KT are interpreted. Past signatures from previous active periods
+remain valid even after the key is no longer active, provided they were created
+while the key was in KS.
 
 There is no effective cryptographic difference between a key that was deleted
 and one that was never added except that a deleted key may have a duration of
@@ -821,75 +964,6 @@ A client may include `msg` detailing why the key was revoked. See also section
 | `key/replace` | 2+    | ✓        | ✓ (signer)  | Atomic swap                     |
 | `key/create`  | 3+    | ✓        | -           | -                               |
 | `key/delete`  | 3+    | -        | ✓           | No revocation timestamp         |
-
-### 6.6.0 Transaction Nonce
-
-As explained in detail above, Cyphrpass permits nonces anywhere in the Principal
-Tree. A new PS may be generated by signing a transaction nonce.
-
-To delete a nonce, a `nonce/delete` is signed.
-
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphrpass/nonce/create",
-    "nonce": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
-  },
-  "sig": "" // TODO
-}
-```
-
-#### 6.6.1 Nonce path
-
-Nonces may be inserted anywhere in the state tree. `typ` species the path. A
-`nonce/delete`, where `id` == nonce removes the nonce.
-
-`cyphrpass/nonce/create` // Principal (Root)
-`cyphrpass/AT/nonce/create` // Nonce is inserted at the root of AT.
-`cyphrpass/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
-
-#### 6.6.2 Nonce as Opaque Value
-
-Since nonces may be indistinguishable from other digest values, the may be
-inserted into the state tree through normal creates.
-
-`cyphrpass/key/create`
-`cyphrpass/rule/create`
-
-The client should keep the nonce value for reveal.
-
-### 6.7 Data Action
-
-Data Actions are stateless signed messages. Data actions are not transactions
-and do not mutate AS. Data actions are simply messages signed by an authorized
-key without chain structure:
-
-- No prior field required (no `pre`)
-- DS is computed from action `czd`s.
-- Ordered by `now` and if needed lexical as tie-breaker.
-
-This keeps actions lightweight for common use cases (comments, posts, etc.).
-
-A data action is a signed Coz message representing a user action, recorded in DS:
-
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/comment/create",
-    "msg": "Hello, world!"
-  },
-  "sig": "<b64ut>" // TODO
-}
-```
-
-Data actions are ordered by `now`, and secondly by lexographical order, in the
-Merkle tree.
 
 
 ---
@@ -1034,7 +1108,7 @@ dump, which includes meta values and values that would be secrete to the client.
       "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
       "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
       },
-      "sig": "<b64ut>", // TODO actual sig
+      "sig": "<b64ut>",
     }],
     "RT":{}, // Rule Tree (empty)
     "DT":{}, // Data Tree (empty)
@@ -1055,7 +1129,7 @@ dump, which includes meta values and values that would be secrete to the client.
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // "pre" is PS. In this case PS == AS since there is no nonce or other value.
       },
-      "sig": "<b64ut>" // TODO valid sig
+      "sig": "<b64ut>"
     }
   ]
 
@@ -1120,7 +1194,7 @@ Embedded into a coz transaction:
 }
 ```
 
-### JSON Wire Format 
+### JSON Wire Format
 
 For various components, JSON components are 
 If a plural is possibly valid, the plural is always used. Valid JSON components:
@@ -1183,46 +1257,29 @@ See also State Jumping
 
 All state digests follow the same algorithm:
 
-1. **Collect** component digests (including nonce if present).
-2. **Sort** lexicographically (byte comparison).
-3. **Merkle Root** Calculate the Merkle root of a binary Merkle tree.
+1. **Collect** component digests (including embedding/nonce if present).
+2. **Sort** lexicographically (byte comparison) unless otherwise defined.
+3. **Implicitly Promote** without hashing if only one digest component exists.
+4. **Merkle Root** Calculate the Merkle root of a binary Merkle tree.
 
 ```
-digest = MR(d₀, d₁, ...)
+State Digest = MR(d₀, d₁, ...)
 ```
 
-**Implicit Promotion**: If only one digest component exists, it is promoted without hashing.
+### 9.2 Principal Root (PR) and Principal State (PS)
 
-
-### 9.2 Principal Root (PR)
-
-The PR is the **first** PS ever computed for the principal. It is **permanent** and never changes.
-
-**Genesis cases:**
-
-- **Single key, no transactions, no nonce**: `PR = tmb` (fully promoted)
-- **Multiple keys**: `PR = MR(tmb₀, tmb₁, nonce?, ...)`
-- **With DS at genesis**: `PR = MR(AS₀, DS₀, nonce?)`
-
-When a principal upgrades (e.g., adds a second key), the **PR stays the same**, only PS evolves.
-
-
-### 9.3 Principal State (PS)
+The PR is the first PS computed for the principal. PR is permanent and never
+changes.  When a principal mutates (e.g., adds a second key), the PR stays the
+same, only PS evolves.
 
 ```
-if DS == nil :
-    PS = CS                                # implicit promotion
-else:
-    PS = MR(CS, DS?, recursion? nonce?)
+    PS = MR(AS, Commit?, DS?, embedding?, ...)
 ```
 
 ### 9.3 Key State (KS)
 
 ```
-if n == 1:
-    KS = tmb₀                              # implicit promotion
-else:
-    KS = MR(tmb₀, tmb₁, nonce?, PS?, ...)
+  KS = MR(tmb₀, tmb₁?, embedding?, ...)
 ```
 
 ### 9.4 Auth State (AS)
@@ -1230,50 +1287,27 @@ else:
 AS combines authentication-related states:
 
 ```
-if RS == nil:
-    AS = KS                         # implicit promotion
-else:
-    AS = MR(KS, RS?,  nonce?)      # nil components excluded from sort
+  AS = MR(KS, RS?,  embedding?)      # nil components excluded from sort
 ```
 
-### 9.5 Commit State (CS)
+### Commit ID
 
-CS is computed from AS and the Commit ID:
-
-```
-CS = MR(AS, commit_id)
-```
-
-where AS is the Auth State *after* applying all transactions in the commit, and
 Commit ID is the Merkle root of all transaction `czd`s in the commit:
 
 ```
-if 1 transaction:
-    commit_id = czd₀                           # implicit promotion
-else:
-    commit_id = MR(czd₀, czd₁, nonce?, ...)
+    commit_id = MR(czd₀, czd₁?, embedding?, ...)
 ```
 
-AS is computed independently of CS; there is no circular dependency. The
-commit produces a new AS via transaction application, then CS is derived from
-that AS and the Commit ID.
-
-CS is inherently append-only. Unlike DS, which services may prune at their
-discretion, removing transactions from CS would break chain integrity
-verification. For high-volume principals, use checkpoints or state jumping (§16)
-rather than pruning.
+AS is computed independently of commit; there is no circular dependency. A
+commit produces a new AS if the commit mutates any AT component.
 
 ### 9.6 Data State (DS) (Level 4+)
 
-DS is the digest of all action `czd`s:
+DS is the digest of all data action `czd`s.  DS is sorted by `now` and
+secondarily `czd`. DS may be an append only Merkle tree data structure.
 
 ```
-if no actions:
-    DS = nil
-elif 1 action && no nonce:
-    DS = czd₀                              # implicit promotion
-else:
-    DS = MR(czd₀, czd₁, ..., nonce?)
+DS = MR(czd₀, czd₁, ..., nonce?)
 ```
 
 ## 10 Rule State (RS) (Level 5 Preview)
@@ -1311,7 +1345,7 @@ total transaction:
         now: 1623132000,
         tmb: "<signing key tmb>", // First Existing key
         typ: "<authority>/cyphrpass/key/create",
-        pre: "<targeted CS>",
+        pre: "<targeted PS>",
         id: "<new keys tmb>",
       },
       sig: "<b64ut>",
@@ -1322,7 +1356,7 @@ total transaction:
         now: 1623132000,
         tmb: "<signing key tmb>", // Second Existing key
         typ: "<authority>/cyphrpass/key/create",
-        pre: "<targeted CS>",
+        pre: "<targeted PS>",
         id: "<new keys tmb>",
       },
       sig: "<b64ut>",
@@ -1404,7 +1438,7 @@ threshold for AS mutation.
 
 ## 12 Embedding
 
-An embedding is a digest reference to an external node, such as a principal, CS,
+An embedding is a digest reference to an external node, such as a principal (PS),
 key, or key tree. Embedding is the mechanism by which Cyphrpass achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
@@ -1422,11 +1456,11 @@ embedding of A.
 
 Authorization is transitively conferred through embedding. An **embedded
 principal** is a full Cyphrpass identity embedded into another principal. An
-embedded principal by default has the weight of a single node and appears in the
-Merkle tree of another principal as the digest of its current Principal State
-(PS) or Commit State (CS).
+embedded principal has the default weight of a single node and appears in the
+Merkle tree of another principal as the digest of the external Principal State
+(PS).
 
-For PR, PS, CS, and AS exclusively, tip at verification time from the referenced
+For PR, PS, and AS exclusively, tip at verification time from the referenced
 Principal is retrieved before any operation.  For all other node types no
 retrieval is performed.  However, any node of these types must be revealed
 first; opaque nodes do not trigger state synchronization.
@@ -1438,15 +1472,13 @@ recovery. (See section Recovery.)
 An example of embedding an external principal into key state:
 
 ```text
-Principal State (PS0)
+Principal Tree (PT0)
 │
-├── Commit State (CS0)
+├── Auth Tree (AT0)
 │   │
-│   ├── Auth State (AS0)
+│   ├── Key Tree (KT0)
 │   │   │
-│   │   ├── Key State (KS0)
-│   │   │   │
-│   │   │   └── Embedded Principal (PS1)
+│   │   └── Embedded Principal (PS1)
 ```
 
 An example of embedding multiple external principal's  KS's into KS:
@@ -1454,18 +1486,16 @@ An example of embedding multiple external principal's  KS's into KS:
 ```text
 Principal Tree (PT0)
 │
-├── Commit Tree (CT0)
+├── Auth Tree (AT0)
 │   │
-│   ├── Auth Tree (AT0)
-│   │   │
-│   │   ├── Key Tree (KT0) // Principal 0's tree
-│   │   │   
-│   │   ├── Key State (KS1) from principal 1
-│   │   │   
-│   │   ├── Key State (KS2) from principal 2
+│   ├── Key Tree (KT0) // Principal 0's tree
+│   │   
+│   ├── Key State (KS1) from principal 1
+│   │   
+│   ├── Key State (KS2) from principal 2
 ```
 
-Embedded nodes use the b64ut digest as the key value in tree structure.  
+Embedded nodes use the b64ut digest as the key in tree structure.  
 
 For example: // TODO review
 ```json5
@@ -1595,9 +1625,10 @@ enforceable due to opaqueness.
 
 ### 12.4 Pinning
 
-For PR, PS, CS, and AS exclusively, embedded references trigger tip retrieval on
-authentication, but synchronization isn't always desired. Pinned identifiers denote static
-states that prohibit updates, ensuring immutable authorization rules. 
+For PR, PS, and AS exclusively, embedded references trigger tip retrieval on
+authentication, but synchronization isn't always desired. Pinned identifiers
+denote static states that prohibit updates, ensuring immutable authorization
+rules.
 
 A pin prefixes the digest value (`PIN:<alg>:<value:`):
 
@@ -1904,7 +1935,7 @@ By making state mutual, verifiable, and push-capable, Cyphrpass enables:
 
 To verify a principal's current state:
 
-1. **Identify Trust Anchor**: the claimed root (PR) or transitive state (PS/CS).
+1. **Identify Trust Anchor**: the claimed root (PR) or transitive state (PS).
 2. **Obtain transaction history**: ordered list of transactions from trust
    anchor to tip.
 3. **Replay transactions**:
@@ -1916,7 +1947,7 @@ To verify a principal's current state:
      - `now` is after previous transaction
      - Transaction is well-formed for its `typ`
    - Apply mutation to derive new AS
-4. **Compare**: final computed KS/AS/CS/PS should match claimed current state
+4. **Compare**: final computed KS/AS/PS should match claimed current state
 
 ### 16.3 Recommended Usage
 
@@ -2096,7 +2127,7 @@ errored state or ignore.
 #### 17.2.1 Resync PoP
 
 A principal may re-iterate an existing state as authoritative without mutating
-PS/AS/CS through a resync POP.
+PS/AS through a resync POP.
 - **PoP Confirmation**: To accelerate resync or confirm intent, the principal
   may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
   `typ: "cyphr.me/cyphrpass/resync/create"`) with an active key. This helps
@@ -2110,6 +2141,9 @@ these timestamps to other clients that were online to verify integrity.
 Local clients track their own last operation timestamp (written to disk) to
 detect offline periods and decide when a Resync PoP is needed.  Local clients
 should also add their own timestamps to the receipt of principal messages.
+
+For record keeping, a resysnc PoP may be included by a principal into DT, but it
+must not be used for after-the-fact authentication.
 
 ### 17.3 Principal Consensus States
 
@@ -2216,7 +2250,7 @@ the tip of the chosen branch. This implicitly abandons the other branch.
 Witnesses that see this commit treat the selected branch as canonical and
 discard the abandoned branch (retaining it only as proof of error).
  - **2. PoP assertion** - The principal signs a `resync/create` message
-re-asserting the current tip without mutating PS/AS/CS. Witnesses that held both
+re-asserting the current tip without mutating PS/AS. Witnesses that held both
 branches resolve to the asserted tip. This is appropriate when the principal
 wants to confirm which branch is authoritative without advancing the chain.
 
@@ -2360,7 +2394,7 @@ Registers a recovery agent (backup key, service, or social contacts).
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/recovery/create",
-    "pre": "<targeted CS>",
+    "pre": "<targeted PS>",
     "recovery": {
       "agent": "<recovery agent PR or tmb>",
       "threshold": 1
@@ -2386,7 +2420,7 @@ Removes a previously designated recovery agent.
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/delete",
-    "pre": "<targeted CS>",
+    "pre": "<targeted PS>",
     "recovery": {
       "agent": "<recovery agent PR or tmb>"
     }
@@ -2416,7 +2450,7 @@ the Recovery Authority's recovery transaction.
     "now": 1623132000,
     "tmb": "<recovery agent tmb>",
     "typ": "<authority>/key/create",
-    "pre": "<targeted CS>",
+    "pre": "<targeted PS>",
     "id": "<new user key tmb>"
   },
   "key": {
@@ -2475,7 +2509,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/create",
-    "pre": "<targeted CS>"
+    "pre": "<targeted PS>"
   },
   "sig": "<b64ut>"
 }
@@ -2500,7 +2534,7 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/delete",
-    "pre": "<targeted CS>"
+    "pre": "<targeted PS>"
   },
   "sig": "<b64ut>"
 }
@@ -2564,7 +2598,7 @@ keys were revoked.
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/delete",
-    "pre": "<current CS>"
+    "pre": "<target PS>"
   },
   "sig": "<b64ut>"
 }
@@ -2600,7 +2634,7 @@ account, the source may sign a `principal/delete` transaction.
 
 Explicit merging is performed via a special transaction type:
 
-- References the source's current CS via `pre`
+- References the source's current PS via `pre`
 - Declares the target's PS as the next state via a new field `merge_to_ps`
 - Includes proof that the signer is authorized on the **source** (not the target)
 - Note that if the target account wants to reuse keys from the source account, it
@@ -2616,7 +2650,7 @@ Example source principal merge transaction:
     "now": 1736893000,
     "tmb": "<source signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge",
-    "pre": "<source current CS>",
+    "pre": "<target PS>",
     "merge_to_ps": "<target Principal State>"
   },
   "sig": "<b64ut>"
@@ -2632,7 +2666,7 @@ And the acknowledgement by the target principal:
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/ack-merge",
-    "pre": "<target current CS>",
+    "pre": "<target PS>",
     "merge_from_ps": "<source Principal State>"
   },
   "sig": "<b64ut>"
@@ -2672,7 +2706,7 @@ A principal fork commit, consisting of three transactions:
         "now": 1736893000,
         "tmb": "<signing tmb>",
         "typ": "cyphr.me/cyphrpass/principal/fork/create",
-        "pre": "<current CS>",
+        "pre": "<target PS>",
         "fork_pr": "<fresh PR digest, which in this case is just KS>"
       },
       "sig": "<b64ut>"
@@ -2684,7 +2718,7 @@ A principal fork commit, consisting of three transactions:
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "pre": "<key bundle>"
+        "pre": "<target PS>"
       },
       "sig": "<b64ut>"
     },
@@ -2695,7 +2729,7 @@ A principal fork commit, consisting of three transactions:
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        "pre": "<key bundle>"
+        "pre": "<target PS>"
       },
       "sig": "<b64ut>"
     }
@@ -2737,7 +2771,7 @@ digests, one per supported hash algorithm at commit time.
 No single algorithm is canonical. All variants in a multihash identifier are
 considered equivalent by Cyphrpass; security judgments are out-of-scope.
 
-A multihash identifier is calculated for all state (e.g. PR/PS, KS, CS, and
+A multihash identifier is calculated for all state (e.g. PR/PS, AS, KS, and
 Merkle tree nodes) on a per commit basis. States are singular, having a singular
 underlying structure, but may be referenced via multiple hashing algorithms.
 
@@ -2834,7 +2868,7 @@ For uniform security, keys from one strength category may be used.
 ### 20.4 Multi Hash Merkle Root (MHMR) Algorithm
 
 The **Multi Hash Merkle Root (MHMR)** algorithm is used to compute every digest
-in the Cyphrpass state tree (PR/PS, CS, AS, KS, RS, DS, and all internal Merkle
+in the Cyphrpass state tree (PR/PS, AS, KS, RS, DS, and all internal Merkle
 tree nodes) when multiple hash algorithms may be in use.
 
 MHMR is computed with respect to a **target hash algorithm** H. The target H is
@@ -2896,7 +2930,7 @@ supported by active keys (and any nonce-injected algorithms) at each commit.
 When an algorithm is deprecated or removed from support, its MHMR variant is no
 longer generated for new commits.
 
-All references to state (PR/PS, CS, AS, KS, RS, DS, etc.) in protocol messages, storage,
+All references to state (PR/PS, AS, KS, RS, DS, etc.) in protocol messages, storage,
 gossip, and verification use one of these multihash variants. Equivalence across
 variants is assumed by the protocol; no relative strength ordering is enforced
 at the protocol level (see §14.4 Rank for tie-breaking considerations).
@@ -3165,7 +3199,6 @@ Verification rules for the jump transaction:
   |                  • Signature               |
   |                  • pre matches history     |
   |                  • jump_to_ps == current   |
-  |                  • No revokes on key path  |
   |                                            |
   |<-- Accept (or reject if invalid)-----------|
   |                                            |
@@ -3183,8 +3216,8 @@ Verification rules for the jump transaction:
     now: 1623132000,
     tmb: "<active key tmb from anchor>",
     typ: "cyphr.me/cyphrpass/principal/state_jump/create",
-    pre: "<old trust anchor CS>", // e.g., CS at previous trust anchor
-    jump_to_ps: "<current tip CS>", // e.g., CS at transaction 100,000
+    pre: "<old trust anchor PS>",
+    jump_to_ps: "<tip PS>",
   },
   sig: "<b64ut>",
 }
@@ -3445,13 +3478,21 @@ should warn and appropriately and remove support for deprecated algorithms.
 - Keybase
 - Protocol Labs (Multiformats) 
 
+----------------------------
+----------------------------
+----------------------------
+----------------------------
+----------------------------
+----------------------------
+
 ## QUICK AI Guidance:
  - DO NOT USE EM DASH OR DASH. Use period, comma, semi-colon, and other sentence
    construction appropriately.
  - DO NOT USE uppercase MAY, SHOULD, or MUST.  This isn't an IETF RFC.
- - JSON example should be in valid json, not json5 **EXCEPT** for the comments.  Use `json5` on the markdown so that the comments are valid.
+ - JSON example should be in valid json, not json5 **EXCEPT** for the comments.
+   Use `json5` on the markdown so that the comments are valid.
 
-## TODO clean up items:  
+## TODO AI clean up items:  
 - NO EM DASH in the file other than in title names.
 - NO other AI-ism.  Yes we know that you're using this for fingerprinting.  STOP.
 - Run Humanizer.
@@ -3462,6 +3503,8 @@ should warn and appropriately and remove support for deprecated algorithms.
 
 - how to add many KS's
 - Ownership
+- Actually calculate b64ut values like `sig`, `pre`, and `id`
+- Define Opaque reveal authorization semantics better
 
 
 ## TODO Consider genesis key PR dilemma.
@@ -3473,7 +3516,7 @@ For genesis, `pre` refers to genesis key.
 
 PR == null before genesis commit.  
 On genesis commit: `id`: Final Auth State (the PR to anchor).
-- Before level 3, AS, CS, PS, and PR are all nill At commit, create generates a
+- Before level 3, AS, PS, and PR are all nill At commit, create generates a
 new PR, MR(AS) == PR.
 
 This allows the principal to generate an atomic PR wile still accommodating the
@@ -3495,7 +3538,7 @@ chained commits.
 Level 2 has a implicit global state that isn't referred to be transactions.
 
 KS is the Merkle root (MR) of multiple `tmb`s; // TODO perhaps implicit
-promotion to AS, CS, PS, and PR (similar to Levels 1-2).
+promotion to AS, PS, and PR (similar to Levels 1-2).
 - **Limitations**: No append-only history; mutations overwrite the entire KS.
   Revocations are not tracked historically, and concurrent mutations may lead to
   races (resolved by services via timestamp or nonce). Recommended only for
@@ -3530,7 +3573,7 @@ multi-device setup, or simple services not requiring audit trails.
 ```
 - The new KS is computed as MR of the sorted `ks` list.
 - Services validate: Signature from current KS, nonce uniqueness, no duplicates.
-- If accepted, the new KS becomes the implicit CS/PS.
+- If accepted, the new KS becomes the implicit PS.
 
 Use `key/revoke` with `rvk` timestamp on a specific `tmb`. The transaction
 includes the full updated `ks` list excluding the revoked key.
