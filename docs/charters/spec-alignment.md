@@ -48,7 +48,7 @@ targets the code as it existed at the time of the audit — it does not attempt
 to incorporate spec changes that arrived after the audit was written.
 
 - Plan: [audit-remediation.md](../plans/audit-remediation.md)
-- Status: WS1-4 complete, WS5-7 remaining
+- Status: WS1-4 complete, WS5-7 remaining (WS6-7 aligned with machine specs)
 
 ### 2. Machine Spec Formulation
 
@@ -60,7 +60,7 @@ the machine specs are the normative bridge between it and the implementations.
 
 - Documents: `docs/specs/` (6 documents by protocol concern)
 - Sketch: [2026-03-02-machine-spec.md](../../.sketches/2026-03-02-machine-spec.md)
-- Status: `state-tree.md` formalized; remaining 5 in progress
+- Status: Complete — 6 documents, 158 constraints. VERIFY scrutiny done.
 
 ### 3. Model Review
 

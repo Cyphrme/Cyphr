@@ -80,12 +80,31 @@ deficiencies.
 
 ### Phase 4: Verification & Invariants (Not Started)
 
-- [ ] **WS6** — Hand-computed reference vectors (§C.4, §E.5), negative tests
-      for BUG-12 / timestamp regression (§E.4), fuzz/property-test evaluation
-      (§E.1, §E.2), I5 observation congruence coverage.
-- [ ] **WS7** — Hoist `pre` verification (C.3), settle data action pipeline
-      (C.7, B.6), `latestTimestamp` atomicity (C.6), structural I4 enforcement.
-      Depends on WS5 storage decisions.
+> **Note (2026-03-06):** WS6-7 are now anchored against the machine-oriented
+> specification documents (`docs/specs/*.md`, 158 named constraints) produced
+> during charter item 2. Constraint IDs replace or supplement the original
+> audit item references as the primary test anchors.
+
+- [ ] **WS6: Verification Infrastructure** — Build spec-anchored test vectors
+      and negative tests using machine spec constraint IDs as anchors:
+  - **State tree:** Golden fixtures verifying `[deterministic-state]`,
+    `[mr-sort-order]`, `[implicit-promotion]`, `[conversion]`, and
+    `[mhmr-computation]` parity across Go and Rust (supersedes §C.4, §E.5)
+  - **Transactions:** Negative tests for `[no-orphan-pre]`,
+    `[no-unauthorized-transaction]`, `[no-revoke-non-self]` (supersedes §E.4)
+  - **Consensus:** Timestamp regression tests anchored to
+    `[timestamp-monotonic]` and `[timestamp-tolerance]` (supplements BUG-12)
+  - **Cross-cutting:** Fuzz/property-test evaluation (§E.1, §E.2),
+    I5 observation congruence coverage
+- [ ] **WS7: Structural Invariant Improvements** — Enforce machine spec
+      constraints structurally rather than by convention:
+  - Hoist `pre` verification to align with `[commit-pre-chain]` and
+    `[no-orphan-pre]` (C.3)
+  - Settle data action pipeline against `[data-action-stateless]` and
+    `[data-action-no-pre]` (C.7, B.6)
+  - `latestTimestamp` atomicity per `[timestamp-monotonic]` (C.6)
+  - Structural I4 enforcement
+  - Depends on WS5 storage decisions
 
 ## Boy-Scout Policy (P3)
 
@@ -114,13 +133,14 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 - [x] WS1-4: `go test ./...` all pass; `cargo test --workspace` all 125 pass
 - [x] WS1-4: Zero `Box<dyn Error>` in CLI code, zero `SigningKey::generate` in commands/, zero `fmt.Errorf` in core
 - [ ] WS5: Cross-language golden fixture parity
-- [ ] WS6: Spec-anchored reference vectors pass in both languages
-- [ ] WS7: `pre` hoisting verified by existing test suite + new negative tests
+- [ ] WS6: Spec-anchored reference vectors (keyed to machine spec constraint IDs) pass in both languages
+- [ ] WS7: `pre` hoisting and structural invariants verified against `[commit-pre-chain]`, `[data-action-stateless]`, `[timestamp-monotonic]`
 
 ## References
 
 - AUDIT: [2026-02-20-api-coherence-audit.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/audit/2026-02-20-api-coherence-audit.md)
 - CHARTER: [spec-alignment.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/charters/spec-alignment.md)
+- MACHINE SPECS: [docs/specs/](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/) (158 constraints across 6 documents)
 - SKETCHES: `.sketches/2026-02-24-go-*.md`, `.sketches/2026-02-24-rust-cli-deduplication.md`
 
 [audit]: ../audit/2026-02-20-api-coherence-audit.md
