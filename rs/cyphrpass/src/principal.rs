@@ -130,7 +130,7 @@ impl Principal {
         let active_algs = vec![hash_alg];
 
         // KS = tmb (single key promotes)
-        let ks = compute_ks(&[&key.tmb], None, &active_algs);
+        let ks = compute_ks(&[&key.tmb], None, &active_algs)?;
         // AS = KS (no Commit ID, promotes)
         let auth_state = compute_as(&ks, None, &active_algs)?;
         // CS = promoted from AS at genesis (no prior commit)
@@ -182,7 +182,7 @@ impl Principal {
 
         // Collect thumbprints for KS computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, &active_algs);
+        let ks = compute_ks(&thumbprints, None, &active_algs)?;
 
         // AS = KS (no Commit ID yet)
         let auth_state = compute_as(&ks, None, &active_algs)?;
@@ -249,7 +249,7 @@ impl Principal {
 
         // Compute KS from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, &active_algs);
+        let ks = compute_ks(&thumbprints, None, &active_algs)?;
 
         // CS = promoted from checkpoint AS (no commit history loaded)
         let cs = compute_cs(&auth_state, None, &active_algs)?;
@@ -799,7 +799,7 @@ impl Principal {
 
         // Recompute KS from current (post-mutation) key set
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_ks(&thumbprints, None, &self.active_algs);
+        self.ks = compute_ks(&thumbprints, None, &self.active_algs)?;
 
         // Compute Commit ID from pending commit
         let commit_id = pending.compute_commit_id().ok_or(Error::EmptyCommit)?;
@@ -816,9 +816,7 @@ impl Principal {
         self.ps = compute_ps(&cs, self.ds.as_ref(), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending
-            .finalize(self.auth_state.clone(), cs, self.ps.clone())
-            .ok_or(Error::EmptyCommit)?;
+        let commit = pending.finalize(self.auth_state.clone(), cs, self.ps.clone())?;
 
         self.auth.commits.push(commit);
 

@@ -416,24 +416,31 @@ fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 ///
 /// The `algs` slice specifies which hash algorithms to include in the multihash.
 /// For single-algorithm keysets, pass a single-element slice.
-pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, algs: &[HashAlg]) -> KeyState {
+///
+/// # Errors
+///
+/// Returns `NoActiveKeys` if `algs` is empty.
+pub fn compute_ks(
+    thumbprints: &[&Thumbprint],
+    nonce: Option<&[u8]>,
+    algs: &[HashAlg],
+) -> crate::error::Result<KeyState> {
     use crate::multihash::MultihashDigest;
     use std::collections::BTreeMap;
 
-    debug_assert!(
-        !algs.is_empty(),
-        "compute_ks requires at least one algorithm"
-    );
+    if algs.is_empty() {
+        return Err(crate::error::Error::NoActiveKeys);
+    }
 
     // Implicit promotion: single key, no nonce
     // The thumbprint becomes the single-variant multihash
     if thumbprints.len() == 1 && nonce.is_none() {
         // Use the first algorithm for the promoted thumbprint
         let alg = algs[0];
-        return KeyState(MultihashDigest::from_single(
+        return Ok(KeyState(MultihashDigest::from_single(
             alg,
             thumbprints[0].as_bytes().to_vec(),
-        ));
+        )));
     }
 
     // Collect components
@@ -449,7 +456,7 @@ pub fn compute_ks(thumbprints: &[&Thumbprint], nonce: Option<&[u8]>, algs: &[Has
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    KeyState(MultihashDigest::new(variants))
+    Ok(KeyState(MultihashDigest::new(variants)?))
 }
 
 /// Compute Commit ID (formerly Transaction State) — SPEC §8.5.
@@ -491,7 +498,7 @@ pub fn compute_commit_id(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    Some(CommitID(MultihashDigest::new(variants)))
+    Some(CommitID(MultihashDigest::new(variants).ok()?))
 }
 
 /// A czd tagged with its source hash algorithm.
@@ -597,7 +604,7 @@ pub fn compute_commit_id_tagged(
         variants.insert(target_alg, digest.into_boxed_slice());
     }
 
-    Some(CommitID(MultihashDigest::new(variants)))
+    Some(CommitID(MultihashDigest::new(variants).ok()?))
 }
 
 /// Compute Auth State — SPEC §8.4.
@@ -638,7 +645,7 @@ pub fn compute_as(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    Ok(AuthState(MultihashDigest::new(variants)))
+    Ok(AuthState(MultihashDigest::new(variants)?))
 }
 
 /// Compute Commit State — SPEC §8.5.
@@ -673,7 +680,7 @@ pub fn compute_cs(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    Ok(CommitState(MultihashDigest::new(variants)))
+    Ok(CommitState(MultihashDigest::new(variants)?))
 }
 
 /// Compute Data State (SPEC §7.4).
@@ -743,7 +750,7 @@ pub fn compute_ps(
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    Ok(PrincipalState(MultihashDigest::new(variants)))
+    Ok(PrincipalState(MultihashDigest::new(variants)?))
 }
 
 // ============================================================================
@@ -758,7 +765,7 @@ mod tests {
     fn ks_single_key_promotion() {
         // Single key: KS = tmb (no hashing), stored as single-variant multihash
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
 
         // Should have exactly one variant
         assert_eq!(ks.0.len(), 1);
@@ -771,7 +778,7 @@ mod tests {
         // Multiple keys: KS = H(sort(tmb₀, tmb₁))
         let tmb1 = Thumbprint::from_bytes(vec![1, 2, 3]);
         let tmb2 = Thumbprint::from_bytes(vec![4, 5, 6]);
-        let ks = compute_ks(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]).unwrap();
 
         let digest = ks.get(HashAlg::Sha256).unwrap();
         // Should be hashed SHA-256 output
@@ -784,7 +791,7 @@ mod tests {
         // Single key with nonce: still hashes (no promotion)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let nonce = vec![0xAA, 0xBB];
-        let ks = compute_ks(&[&tmb], Some(&nonce), &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], Some(&nonce), &[HashAlg::Sha256]).unwrap();
 
         let digest = ks.get(HashAlg::Sha256).unwrap();
         assert_eq!(digest.len(), 32);
@@ -809,7 +816,7 @@ mod tests {
     fn as_promotion_from_ks() {
         // Only KS, no RS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
 
         // AS should equal the KS variant for this algorithm
@@ -822,7 +829,7 @@ mod tests {
     #[test]
     fn cs_with_commit_id_hashes() {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
         let czd = Czd::from_bytes(vec![10, 20, 30]);
         let cid = compute_commit_id(&[&czd], None, &[HashAlg::Sha256]).unwrap();
@@ -839,7 +846,7 @@ mod tests {
     fn ps_promotion_from_cs() {
         // Only CS (promoted from AS), no DS: PS = CS
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
-        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
         let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]).unwrap();
         let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]).unwrap();
@@ -854,7 +861,7 @@ mod tests {
     fn full_promotion_chain() {
         // Level 1: PR = PS = CS = AS = KS = tmb
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]);
+        let ks = compute_ks(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_state = compute_as(&ks, None, &[HashAlg::Sha256]).unwrap();
         let cs = compute_cs(&auth_state, None, &[HashAlg::Sha256]).unwrap();
         let ps = compute_ps(&cs, None, None, &[HashAlg::Sha256]).unwrap();
@@ -890,7 +897,7 @@ mod tests {
 
         // Compute KS with all three algorithms active
         let all_algs = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512];
-        let ks = compute_ks(&[&tmb_es256, &tmb_es384, &tmb_ed25519], None, &all_algs);
+        let ks = compute_ks(&[&tmb_es256, &tmb_es384, &tmb_ed25519], None, &all_algs).unwrap();
 
         // Verify all algorithm variants are present
         let sha256_variant = ks.get(HashAlg::Sha256);

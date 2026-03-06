@@ -35,16 +35,14 @@ pub struct MultihashDigest {
 impl MultihashDigest {
     /// Create from raw variants map.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics in debug builds if `variants` is empty.
-    #[must_use]
-    pub fn new(variants: BTreeMap<HashAlg, Box<[u8]>>) -> Self {
-        debug_assert!(
-            !variants.is_empty(),
-            "MultihashDigest must have at least one variant"
-        );
-        Self { variants }
+    /// Returns `EmptyMultihash` if `variants` is empty.
+    pub fn new(variants: BTreeMap<HashAlg, Box<[u8]>>) -> crate::error::Result<Self> {
+        if variants.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        Ok(Self { variants })
     }
 
     /// Create from a single-algorithm digest.
@@ -151,7 +149,7 @@ mod tests {
         variants.insert(HashAlg::Sha256, vec![0u8; 32].into_boxed_slice());
         variants.insert(HashAlg::Sha384, vec![1u8; 48].into_boxed_slice());
 
-        let mh = MultihashDigest::new(variants);
+        let mh = MultihashDigest::new(variants).unwrap();
 
         assert_eq!(mh.len(), 2);
         assert!(mh.contains(HashAlg::Sha256));
@@ -165,7 +163,7 @@ mod tests {
         variants.insert(HashAlg::Sha512, vec![0u8; 64].into_boxed_slice());
         variants.insert(HashAlg::Sha256, vec![0u8; 32].into_boxed_slice());
 
-        let mh = MultihashDigest::new(variants);
+        let mh = MultihashDigest::new(variants).unwrap();
         let algs: Vec<_> = mh.algorithms().collect();
 
         // BTreeMap orders by key, HashAlg derives Ord

@@ -38,28 +38,26 @@ pub struct Commit {
 impl Commit {
     /// Create a new finalized commit from transactions and computed states.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `transactions` is empty. Use `PendingCommit::finalize` for
-    /// the normal flow which validates this invariant.
+    /// Returns `EmptyCommit` if `transactions` is empty.
     pub(crate) fn new(
         transactions: Vec<VerifiedTransaction>,
         commit_id: CommitID,
         auth_state: AuthState,
         cs: CommitState,
         ps: PrincipalState,
-    ) -> Self {
-        debug_assert!(
-            !transactions.is_empty(),
-            "Commit must contain at least one transaction"
-        );
-        Self {
+    ) -> crate::error::Result<Self> {
+        if transactions.is_empty() {
+            return Err(crate::error::Error::EmptyCommit);
+        }
+        Ok(Self {
             transactions,
             commit_id,
             auth_state,
             cs,
             ps,
-        }
+        })
     }
 
     /// Get the transactions in this commit.
@@ -173,15 +171,15 @@ impl PendingCommit {
     ///
     /// # Errors
     ///
-    /// Returns `None` if no transactions exist.
+    /// Returns `EmptyCommit` if no transactions exist.
     pub fn finalize(
         self,
         auth_state: AuthState,
         cs: CommitState,
         ps: PrincipalState,
-    ) -> Option<Commit> {
+    ) -> crate::error::Result<Commit> {
         if self.transactions.is_empty() {
-            return None;
+            return Err(crate::error::Error::EmptyCommit);
         }
 
         // Compute Commit ID from all transaction czds with algorithm tagging
@@ -190,15 +188,10 @@ impl PendingCommit {
             .iter()
             .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
             .collect();
-        let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])?;
+        let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
+            .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Some(Commit::new(
-            self.transactions,
-            commit_id,
-            auth_state,
-            cs,
-            ps,
-        ))
+        Commit::new(self.transactions, commit_id, auth_state, cs, ps)
     }
 
     /// Consume the pending commit and return the transactions.
@@ -459,7 +452,7 @@ mod tests {
         ));
 
         let commit = pending.finalize(auth_state.clone(), cs.clone(), ps.clone());
-        assert!(commit.is_some());
+        assert!(commit.is_ok());
 
         let commit = commit.unwrap();
         assert_eq!(commit.len(), 1);
@@ -490,7 +483,7 @@ mod tests {
 
         let result = pending.finalize(auth_state, cs, ps);
         assert!(
-            result.is_some(),
+            result.is_ok(),
             "finalize should succeed without finalizer marker"
         );
     }
@@ -513,7 +506,7 @@ mod tests {
         ));
 
         let result = pending.finalize(auth_state, cs, ps);
-        assert!(result.is_none(), "should fail when empty");
+        assert!(result.is_err(), "should fail when empty");
     }
 
     #[test]

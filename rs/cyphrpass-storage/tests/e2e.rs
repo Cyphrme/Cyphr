@@ -865,7 +865,7 @@ fn e2e_multihash_round_trip() {
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
         // Recompute KS with all active algorithms
-        let recomputed_ks = compute_ks(&thumbprints.to_vec(), None, active_algs);
+        let recomputed_ks = compute_ks(&thumbprints.to_vec(), None, active_algs).unwrap();
 
         // Verify each algorithm variant matches
         for &alg in active_algs {

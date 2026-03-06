@@ -71,12 +71,13 @@ deficiencies.
      deduped key gen via `common::generate_key()`. `key.rs` 522→309 lines.
      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-02-24-rust-cli-deduplication.md)
 
-### Phase 3: Cross-Implementation Parity (Not Started)
+### Phase 3: Cross-Implementation Parity (Complete)
 
-- [ ] **WS5** — Port `ComputeCommitIDTagged` to Go (BUG-7, DEV-3), refactor
-      Go import/test paths to use atomic `VerifyAndApply` (C.1, D.10), decide Go
-      commit-based storage question (DEV-1, DEV-2), replace Rust `debug_assert!`
-      with `Result` returns.
+- [x] **WS5** — Ported `ComputeCommitIDTagged` to Go (BUG-7, DEV-3), refactored
+      Go import/test paths to use atomic `VerifyAndApply` (C.1, D.10), converted
+      3 Rust `debug_assert!` to `Result` returns (R3, S2-1). DEV-1/DEV-2 (Go
+      commit-based storage) deferred to charter item 4 pending spec finalization.
+      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-03-02-machine-spec.md)
 
 ### Phase 4: Verification & Invariants (Not Started)
 
@@ -123,16 +124,17 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 
 ## Tech Debt
 
-| ID   | Severity | Area         | Description                                                                                                        | Introduced   |
-| :--- | :------- | :----------- | :----------------------------------------------------------------------------------------------------------------- | :----------- |
-| TD-1 | LOW      | Rust CLI     | `Error::Storage(String)` catch-all — refine into specific variants as patterns emerge                              | WS4 Commit 3 |
-| TD-2 | LOW      | Rust Storage | `FileStoreError` re-exported from `cyphrpass-storage` for `#[from]` use — revisit if storage errors are refactored | WS4 Commit 3 |
-| TD-3 | LOW      | Go State     | `ComputeCommitIDTagged` not wired into `PendingCommit.ComputeCommitID` — wire when Go supports multi-alg keysets   | WS5 Commit 1 |
+| ID   | Severity | Area         | Description                                                                                                               | Introduced   |
+| :--- | :------- | :----------- | :------------------------------------------------------------------------------------------------------------------------ | :----------- |
+| TD-1 | LOW      | Rust CLI     | `Error::Storage(String)` catch-all — refine into specific variants as patterns emerge                                     | WS4 Commit 3 |
+| TD-2 | LOW      | Rust Storage | `FileStoreError` re-exported from `cyphrpass-storage` for `#[from]` use — revisit if storage errors are refactored        | WS4 Commit 3 |
+| TD-3 | LOW      | Go Commit    | `PendingCommit.ComputeCommitID` uses single genesis `hashAlg` not `activeAlgs` — wire `ComputeCommitIDTagged` when needed | WS5 Commit 1 |
 
 ## Verification
 
 - [x] WS1-4: `go test ./...` all pass; `cargo test --workspace` all 125 pass
 - [x] WS1-4: Zero `Box<dyn Error>` in CLI code, zero `SigningKey::generate` in commands/, zero `fmt.Errorf` in core
+- [x] WS5: `go test ./...` (4 packages), `cargo test --workspace` (125 tests) — all pass
 - [ ] WS5: Cross-language golden fixture parity
 - [ ] WS6: Spec-anchored reference vectors (keyed to machine spec constraint IDs) pass in both languages
 - [ ] WS7: `pre` hoisting and structural invariants verified against `[commit-pre-chain]`, `[data-action-stateless]`, `[timestamp-monotonic]`
