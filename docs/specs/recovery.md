@@ -43,6 +43,14 @@ active keys remain, (2) no designated recovery agents or fallback mechanisms are
 present or able to act, (3) AS cannot be mutated, and (4) recovery is impossible
 within the protocol (requires sideband intervention). All four conditions MUST
 hold for the state to be classified as unrecoverable.
+
+> **Note:** "Unrecoverable" is a **descriptive classification** for human
+> operators, not a protocol state flag that gates recovery transactions. Per
+> SPEC.md §18.4.1, "the unrecoverable state may not be definitively known or
+> verifiable by the protocol." Witnesses MUST accept valid recovery signatures
+> from designated recovery agents regardless of whether the principal is
+> considered unrecoverable.
+
 `VERIFIED: agent-check`
 
 **[recovery-proactive]**: Self-recovery mechanisms MUST be established before

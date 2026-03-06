@@ -75,7 +75,10 @@ recovery/escalation.
 
 **[timestamp-tolerance]**: Witnesses MUST reject messages where `now` is
 outside ±360 seconds (default) of the witness's time. Future-dated messages
-MUST be rejected. This tolerance is configurable but MUST have a defined bound.
+MUST be rejected. This tolerance is configurable per witness and represents
+**local witness policy**, not a global protocol invariant — different witnesses
+MAY use different tolerances. The protocol-enforced hard constraint is
+[timestamp-monotonic].
 `VERIFIED: agent-check`
 
 **[timestamp-monotonic]**: Witnesses MUST track the latest known timestamp per
