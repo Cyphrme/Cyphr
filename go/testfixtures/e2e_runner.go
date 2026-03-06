@@ -312,13 +312,12 @@ func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]any, newKey *
 		Sig: sig,
 	}
 
-	// Verify and apply
-	verifiedTx, err := principal.VerifyTransaction(signedCoz, newKey)
-	if err != nil {
+	// Verify and apply atomically via CommitBatch (audit D.10)
+	batch := principal.BeginCommit()
+	if err := batch.VerifyAndApply(signedCoz, newKey); err != nil {
 		return err
 	}
-
-	_, err = principal.ApplyTransaction(verifiedTx)
+	_, err = batch.Finalize()
 	return err
 }
 

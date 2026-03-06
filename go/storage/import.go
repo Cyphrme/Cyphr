@@ -146,9 +146,9 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 		Sig: sigBytes,
 	}
 
-	// Verify and apply transaction
-	verifiedTx, err := principal.VerifyTransaction(cz, newKey)
-	if err != nil {
+	// Verify and apply atomically via CommitBatch (audit C.1)
+	batch := principal.BeginCommit()
+	if err := batch.VerifyAndApply(cz, newKey); err != nil {
 		return &LoadError{
 			Index:   index,
 			Message: fmt.Sprintf("verification failed: %v", err),
@@ -158,10 +158,10 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 	// Note: IsCommit is derived from the payload's commit field during parsing.
 	// No external assignment needed - payload is source of truth (SPEC §4.2.1).
 
-	if _, err := principal.ApplyTransaction(verifiedTx); err != nil {
+	if _, err := batch.Finalize(); err != nil {
 		return &LoadError{
 			Index:   index,
-			Message: fmt.Sprintf("apply failed: %v", err),
+			Message: fmt.Sprintf("finalize failed: %v", err),
 		}
 	}
 

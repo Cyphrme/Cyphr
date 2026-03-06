@@ -127,6 +127,7 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 | :--- | :------- | :----------- | :----------------------------------------------------------------------------------------------------------------- | :----------- |
 | TD-1 | LOW      | Rust CLI     | `Error::Storage(String)` catch-all — refine into specific variants as patterns emerge                              | WS4 Commit 3 |
 | TD-2 | LOW      | Rust Storage | `FileStoreError` re-exported from `cyphrpass-storage` for `#[from]` use — revisit if storage errors are refactored | WS4 Commit 3 |
+| TD-3 | LOW      | Go State     | `ComputeCommitIDTagged` not wired into `PendingCommit.ComputeCommitID` — wire when Go supports multi-alg keysets   | WS5 Commit 1 |
 
 ## Verification
 

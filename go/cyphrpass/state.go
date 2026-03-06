@@ -371,6 +371,91 @@ func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, 
 	return &cid, nil
 }
 
+// TaggedCzd is a czd tagged with its source hash algorithm.
+//
+// Used for cross-algorithm state computation where czds from different
+// signing algorithms need to be converted to a common hash algorithm
+// (SPEC §14.2).
+type TaggedCzd struct {
+	Czd coz.B64 // Raw czd bytes.
+	Alg HashAlg // Hash algorithm that produced this czd (from signing key).
+}
+
+// ConvertTo converts this czd to the target algorithm.
+// If source and target algorithms match, returns the raw bytes.
+// Otherwise, re-hashes the czd bytes with the target algorithm (SPEC §14.2).
+func (tc TaggedCzd) ConvertTo(target HashAlg) (coz.B64, error) {
+	if tc.Alg == target {
+		return tc.Czd, nil
+	}
+	return coz.Hash(coz.HshAlg(target), tc.Czd)
+}
+
+// ComputeCommitIDTagged computes the Commit ID with cross-algorithm conversion (SPEC §14.2).
+//
+// Like ComputeCommitID, but accepts czds tagged with their source algorithm.
+// When computing a target hash variant, czds from different algorithms are
+// converted (re-hashed) to the target algorithm.
+//
+// Returns nil if no transactions.
+func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
+	if len(czds) == 0 {
+		return nil, nil
+	}
+	if len(algs) == 0 {
+		algs = []HashAlg{HashSha256}
+	}
+
+	// Implicit promotion: single czd, no nonce
+	if len(czds) == 1 && len(nonce) == 0 {
+		targetAlg := algs[0]
+		converted, err := czds[0].ConvertTo(targetAlg)
+		if err != nil {
+			return nil, err
+		}
+		cid := CommitID{FromSingleDigest(targetAlg, converted)}
+		return &cid, nil
+	}
+
+	// Compute hash for each target algorithm variant
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, targetAlg := range algs {
+		// Convert each czd to target algorithm
+		converted := make([][]byte, 0, len(czds)+1)
+		for _, tc := range czds {
+			c, err := tc.ConvertTo(targetAlg)
+			if err != nil {
+				return nil, err
+			}
+			converted = append(converted, c)
+		}
+
+		// Add nonce if present
+		if len(nonce) > 0 {
+			converted = append(converted, nonce)
+		}
+
+		// Sort and hash
+		slices.SortFunc(converted, bytes.Compare)
+		var buf bytes.Buffer
+		for _, c := range converted {
+			buf.Write(c)
+		}
+		digest, err := coz.Hash(coz.HshAlg(targetAlg), buf.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		variants[targetAlg] = digest
+	}
+
+	mh, err := NewMultihashDigest(variants)
+	if err != nil {
+		return nil, err
+	}
+	cid := CommitID{mh}
+	return &cid, nil
+}
+
 // ComputeAS computes Auth State from KS (SPEC §8.4).
 // AS = MR(KS, RS?) — authentication state derived from the keyset.
 // If no nonce (and no RS), AS = KS (implicit promotion).
