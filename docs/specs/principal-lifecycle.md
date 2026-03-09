@@ -66,7 +66,7 @@ does not have a PR.
 `VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.2/§5.1`
 
 **[level-3-multi-key]**: A Level 3+ principal MUST support multiple concurrent
-keys. PS = MR(CommitID, AS, ...), CS = MR(AS, ...). Initial PS equals PR.
+keys. CS = MR(AS, ...), PS = MR(AS, CommitID, ...). Initial PS equals PR.
 Any active key MAY perform `key/create`, `key/delete`, or `key/revoke` on any
 other key (subject to Level 5+ rules).
 `VERIFIED: agent-check — updated 2026-03-09 per A-3, SPEC §3.3`

@@ -300,8 +300,8 @@ governance is delegated to Coz").
 | [pr-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)      |
 | [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                     |
 | [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                             |
-| [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.7                             |
-| [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.7, §4.5                       |
+| [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.8                             |
+| [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.8, §4.6                       |
 | [mhmr-equivalence]                | agent-check | pass   | Explicit in SPEC.md §20.4, §20.6                       |
 | [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2  |
 | [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)     |
@@ -325,7 +325,7 @@ governance is delegated to Coz").
   for identical inputs. This is the foundational parity requirement.
 - **Implicit promotion**: Implementations MUST handle the single-child case
   before computing any Merkle root. This is a common source of bugs — the
-  single-key Level 1/2 case where `tmb` promotes all the way to PR.
+  single-key Level 1/2 case where `tmb` promotes all the way to PS.
 - **Conversion order**: [conversion] specifies H(child_bytes), not
   H(H(child_bytes)). Double-hashing during conversion is a specification
   violation.

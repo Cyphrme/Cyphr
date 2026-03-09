@@ -192,12 +192,12 @@ only, not replay-from-genesis.
 
 **[genesis-bootstrap]**: Genesis MUST follow the bootstrap model: the first
 key exists without a transaction (Level 1+ identity: `tmb` == KS == AS == PS
-== PR via implicit promotion). Additional keys, rules, or other AT components
+via implicit promotion). Additional keys, rules, or other AT components
 MUST be added via transactions that reference `pre` = the current PS. Genesis
 is finalized by a `principal/create` transaction.
 
 - **PRE**: No principal exists for this key identity.
-- **POST**: PR is established and immutable. Commit chain begins.
+- **POST**: PR is established and immutable (Level 3+ only). Commit chain begins.
   `VERIFIED: agent-check`
 
 **[genesis-pre-continuity]**: Every transaction in a genesis commit, including
@@ -372,10 +372,10 @@ included `pre`.
 | Constraint                    | Method      | Result | Detail                                              |
 | :---------------------------- | :---------- | :----- | :-------------------------------------------------- |
 | [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                          |
-| [transaction-pre-required]    | agent-check | pass   | Explicit in SPEC.md §2.3.1                          |
-| [data-action-no-pre]          | agent-check | pass   | Explicit in SPEC.md §4.3                            |
-| [authorization-triple]        | agent-check | pass   | Explicit in SPEC.md §2.3.3                          |
-| [pre-mutation-key-rule]       | agent-check | pass   | Explicit in SPEC.md §2.3.3 item 1                   |
+| [transaction-pre-required]    | agent-check | pass   | SPEC.md §7.1 (updated 2026-03-09)                   |
+| [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                   |
+| [authorization-triple]        | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)                  |
+| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §3 item 1 (relocated from §2.3.3)           |
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
