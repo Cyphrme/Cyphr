@@ -42,7 +42,8 @@ their identities or allow unauthorized parties to take over accounts.
 active keys remain, (2) no designated recovery agents or fallback mechanisms are
 present or able to act, (3) AS cannot be mutated, and (4) recovery is impossible
 within the protocol (requires sideband intervention). All four conditions MUST
-hold for the state to be classified as unrecoverable.
+hold for the state to be classified as unrecoverable. Note: some data actions
+MAY still be possible even in an unrecoverable state (SPEC.md §2.2.11).
 
 > **Note:** "Unrecoverable" is a **descriptive classification** for human
 > operators, not a protocol state flag that gates recovery transactions. Per
@@ -51,7 +52,7 @@ hold for the state to be classified as unrecoverable.
 > from designated recovery agents regardless of whether the principal is
 > considered unrecoverable.
 
-`VERIFIED: agent-check`
+`VERIFIED: agent-check — updated 2026-03-09 per A-5`
 
 **[recovery-proactive]**: Self-recovery mechanisms MUST be established before
 key loss or revocation. None of the protocol's recovery mechanisms can prevent
@@ -222,7 +223,7 @@ investigates, without irreversibly revoking keys.
 
 | Constraint                     | Method      | Result | Detail                          |
 | :----------------------------- | :---------- | :----- | :------------------------------ |
-| [unrecoverable-definition]     | agent-check | pass   | Explicit in SPEC.md §18         |
+| [unrecoverable-definition]     | agent-check | pass   | SPEC.md §18, §2.2.11 (data action caveat) |
 | [recovery-proactive]           | agent-check | pass   | Explicit in SPEC.md §18         |
 | [level-recovery-matrix]        | agent-check | pass   | Explicit in SPEC.md §18.2       |
 | [fallback-field]               | agent-check | pass   | Explicit in SPEC.md §18.4       |

@@ -47,6 +47,7 @@ TYPE TransactionCoz = Coz & { pay: { pre: Digest } }      -- transaction cozies 
 TYPE DataActionCoz  = Coz                                  -- no `pre` required
 TYPE Commit         = List<TransactionCoz>                 -- ≥1 transaction cozies
 TYPE GenesisCommit  = Commit & { keys: List<PublicKey> }   -- includes key material
+TYPE CS             = Digest                               -- Commit State (PT minus CommitID)
 
 -- Key lifecycle
 TYPE KeyVerb        = "key/create" | "key/delete" | "key/replace" | "key/revoke"
@@ -66,14 +67,15 @@ rejected. (Coz itself makes all fields optional; Cyphrpass constrains this.)
 
 **[transaction-pre-required]**: Transaction cozies (those that mutate AT and
 advance the commit chain) MUST additionally contain `pre` in `pay`, referencing
-the targeted Principal State for mutation. Cozies without `pre` are not
-transactions (except naked revokes — see [revoke-naked]).
-`VERIFIED: agent-check`
+the targeted Principal Tree (PT), as denoted by PS, for mutation (SPEC.md §7.1).
+Cozies without `pre` are not transactions (except naked revokes — see
+[revoke-naked]).
+`VERIFIED: agent-check — updated 2026-03-09 per A-2, A-4`
 
 **[data-action-no-pre]**: Data action cozies MUST NOT contain `pre`. Data
-actions are stateless signed messages that do not mutate AS and are not part
+actions are stateless signed messages that do not mutate AT and are not part
 of the commit chain.
-`VERIFIED: agent-check`
+`VERIFIED: agent-check — updated 2026-03-09 per B-5 (AS→AT)`
 
 #### Authorization
 
@@ -88,14 +90,14 @@ three conditions hold:
 3. **Capability gate**: The principal MUST have the state components required
    for the operation (e.g., DT must exist for data actions, RT for rule
    operations).
-   `VERIFIED: agent-check`
+   `VERIFIED: agent-check — citation updated 2026-03-09 per A-1 (§2.3.3→§3)`
 
 **[pre-mutation-key-rule]**: Authorization is evaluated against the key state
 that existed _before_ any transactions in the current commit are applied. Keys
 added during a commit MUST NOT authorize other transactions in that same commit.
 Keys revoked or deleted during a commit MUST still authorize their own
 containing transactions if they were active before the commit.
-`VERIFIED: agent-check`
+`VERIFIED: agent-check — citation updated 2026-03-09 per A-1 (§2.3.3→§3)`
 
 #### Commit Chain
 
@@ -114,8 +116,22 @@ transactions into a transaction bundle for a commit.
 `VERIFIED: agent-check`
 
 **[commit-id-computation]**: Commit ID MUST be computed as MR(czd₀, czd₁, ...)
-of all transaction cozies in the commit, per `state-tree.md` [state-computation].
-`VERIFIED: agent-check`
+of all transaction cozies in the commit. Cozies MUST be processed in **array
+order** (the order they appear in `txs`), not lexical sort order. This is an
+exception to `state-tree.md` [mr-sort-order].
+`VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
+
+**[commit-finality]**: A commit is finalized by having `"commit":<CS>` appear in
+the last coz of the commit (SPEC.md §4.2). CS is computed as all PT components
+except CommitID: `CS = MR(AS, DS?, embedding?, ...)`. The `commit` field serves
+as the forward-reference finality signal. See `state-tree.md` State Formulas.
+`VERIFIED: agent-check — new 2026-03-09 per B-1, R-1`
+
+**[commit-field-required]**: The last coz in a commit MUST contain the `commit`
+field in `pay` with its value set to the computed CS. Cozies that are not the
+last in a commit MAY omit the `commit` field. A commit without a `commit` field
+in its final coz MUST be rejected as incomplete.
+`VERIFIED: agent-check — new 2026-03-09 per S-1`
 
 #### `typ` Grammar
 
@@ -138,6 +154,18 @@ Replaying an already-applied coz MUST be ignored and produce no state change.
 target item (key, rule, principal) already exists, the operation MUST return
 error `DUPLICATE`.
 `VERIFIED: agent-check`
+
+**[transaction-id-required]**: Transaction cozies MUST contain `id` in `pay`,
+identifying the target noun. For example, for `key/create`, `id` is the key's
+`tmb`. (SPEC.md §7.1)
+`VERIFIED: agent-check — new 2026-03-09 per S-3`
+
+#### Wire Format
+
+**[wire-format-plurals]**: JSON wire format MUST use plural field names. The
+singular forms `tx`, `key`, and `coz` are prohibited. Valid fields: `txs`,
+`keys`, `cozies`. (SPEC.md JSON Wire Format)
+`VERIFIED: agent-check — new 2026-03-09 per S-2`
 
 #### Timestamp
 
@@ -182,11 +210,12 @@ MUST reference the first key's `tmb` (which is PS via implicit promotion).
   `VERIFIED: agent-check`
 
 **[genesis-finality]**: Genesis MUST be finalized by a `principal/create`
-transaction with `id` set to the computed Auth State (the PR to anchor).
+transaction with `id` set to the computed Principal State (PS), which at genesis
+is the Principal Root (PR).
 
 - **PRE**: All genesis mutations (key additions, etc.) are included.
 - **POST**: PR = the `id` field of `principal/create`. Principal is created.
-  `VERIFIED: agent-check`
+  `VERIFIED: agent-check — updated 2026-03-09 per B-3 (AS→PS), SPEC §5.1`
 
 #### Key Lifecycle
 
@@ -251,11 +280,11 @@ active period MUST be ignored.
 #### Data Actions
 
 **[data-action-stateless]**: Data actions are stateless signed messages. They
-MUST NOT mutate AS. They do not participate in the commit chain.
+MUST NOT mutate AT. They do not participate in the commit chain.
 
 - **PRE**: Signing key MUST be active in KS.
-- **POST**: Action is recorded in DT (if DT exists). No AS change.
-  `VERIFIED: agent-check`
+- **POST**: Action is recorded in DT (if DT exists). No AT change.
+  `VERIFIED: agent-check — updated 2026-03-09 per B-5 (AS→AT)`
 
 **[ds-inclusion]**: To include DS into PS, a `ds/create` transaction MUST be
 signed, updating the DS component in the principal state tree. Without this
@@ -297,22 +326,17 @@ match the key being revoked MUST be rejected. Revokes MUST be self-signed.
 `VERIFIED: agent-check`
 
 > [!NOTE]
-> **PLACEHOLDER — Commit Finality**: SPEC.md §4.2 describes commit finality
-> semantics but is marked TODO with two alternative designs: (a) inline
-> `commit:AS` field in the last coz, or (b) a separate `commit/create`
-> transaction type. The mechanism by which a commit is considered finalized is
-> not yet stable enough to formalize. Both designs share the invariant that the
-> computed AS MUST appear as a commitment, but the encoding differs.
-> Revisit when §4.2 is resolved.
+> **PLACEHOLDER — Commit Finality (partially resolved)**: The commit finality
+> mechanism is now resolved: inline `"commit":<CS>` in the last coz (see
+> [commit-finality], [commit-field-required]). However, the exact behavior when
+> `commit` appears in cozies other than the last one is not specified. Is it
+> ignored? Rejected?
 
-> [!NOTE]
-> **PLACEHOLDER — Transaction Ordering Within Commit**: SPEC.md describes
-> transactions as "bundled" in a commit but does not explicitly specify
-> ordering semantics within the bundle. Commit ID is MR(czd₀, czd₁, ...),
-> which via [mr-sort-order] from `state-tree.md` implies lexical byte sorting
-> of czds. Whether application/evaluation order matters (beyond authorization
-> being evaluated pre-mutation) is not fully specified.
-> See sketch gap #1.
+**[intra-commit-ordering]**: Transactions within a commit MUST be applied in
+**array order** (the order they appear in the `txs` array). This ordering is
+also used for Commit ID computation (per [commit-id-computation]). Application
+order determines the final state when operations on the same target are present.
+`VERIFIED: agent-check — new 2026-03-09 per array-order decision`
 
 ### Behavioral Properties
 
@@ -355,17 +379,20 @@ included `pre`.
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
-| [commit-id-computation]       | agent-check | pass   | Explicit in SPEC.md §9 Commit ID                    |
+| [commit-id-computation]       | agent-check | pass   | SPEC.md §9; array order per decision           |
+| [commit-finality]             | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                  |
+| [commit-field-required]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                  |
 | [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
-| [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.1                        |
-| [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.4                            |
-| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.5                            |
+| [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
+| [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                            |
+| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.6                            |
+| [transaction-id-required]     | agent-check | pass   | SPEC.md §7.1 (new 2026-03-09)                  |
 | [timestamp-range]             | agent-check | pass   | Explicit in SPEC.md §6.4 (inherited from Coz)       |
 | [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                            |
 | [genesis-pre-continuity]      | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-finality]            | agent-check | pass   | Explicit in SPEC.md §5.1                            |
+| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PS, updated 2026-03-09)       |
 | [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                            |
 | [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                            |
 | [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                            |
@@ -373,16 +400,18 @@ included `pre`.
 | [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                            |
-| [data-action-stateless]       | agent-check | pass   | Explicit in SPEC.md §4.3                            |
-| [ds-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.4.1                          |
-| [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.6                            |
+| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AS→AT, updated 2026-03-09)       |
+| [ds-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
+| [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                            |
 | [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                    |
-| [no-unauthorized-transaction] | agent-check | pass   | Follows from §2.3.3                                 |
+| [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                     |
 | [no-self-revoke-recovery]     | agent-check | pass   | Explicit in SPEC.md §3.1                            |
 | [no-revoke-non-self]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]    |
 | [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pr-immutable]           |
 | [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
+| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)      |
+| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)          |
 
 ## Implications
 
@@ -415,13 +444,11 @@ included `pre`.
 
 ### Open Questions (for Zami / sketch)
 
-1. **Commit finality mechanism** (placeholder above): Which design — inline
-   `commit:AS` or separate `commit/create`? Both seem viable.
-2. **Transaction ordering within commit** (placeholder above): Does evaluation
-   order matter beyond the pre-mutation authorization rule?
-3. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
+1. **Commit field in non-last coz**: §4.2 says `"commit":<CS>` appears in the
+   "last coz". What happens if it appears in an earlier coz? Ignored? Rejected?
+2. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
    Is the public key material always required alongside `key/create`, or can
    it be transmitted via sideband?
-4. **Naked revoke and error state**: §6.4 says a naked revoke puts the principal
+3. **Naked revoke and error state**: §6.4 says a naked revoke puts the principal
    in an error state. Is this the same concept as the `Errored` lifecycle state
    in §11, or something different?

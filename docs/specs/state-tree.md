@@ -48,6 +48,7 @@ TYPE MultihashId  = Map<HashAlg, Digest>             -- one variant per supporte
 -- State identifiers (all are Digest values computed via MR)
 TYPE PR = Digest    -- Principal Root (immutable, first PS)
 TYPE PS = Digest    -- Principal State (top-level, evolves per commit)
+TYPE CS = Digest    -- Commit State (PT components excluding CommitID)
 TYPE AS = Digest    -- Auth State
 TYPE KS = Digest    -- Key State
 TYPE RS = Digest    -- Rule State (Level 5+)
@@ -74,14 +75,16 @@ encodings MUST be rejected.
 as b64ut, providing both addressing and integrity of the reference.
 `VERIFIED: agent-check`
 
-**[mr-sort-order]**: When computing a Merkle root, child digests MUST be sorted
-in lexical byte order (opaque byte comparison). This order MUST be used unless
-explicitly overridden by a section-specific rule.
-`VERIFIED: agent-check`
+**[mr-sort-order]**: When computing a Merkle root for state tree nodes (KS, AS,
+PS, DS), child digests MUST be sorted in lexical byte order (opaque byte
+comparison). **Exception:** Commit ID computation uses array order (see
+`transactions.md` [commit-id-computation]).
+`VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
 
-**[pr-immutable]**: The Principal Root (PR) MUST NOT change after genesis. PR is
-the first PS computed for the principal. No operation MAY alter it.
-`VERIFIED: agent-check`
+**[pr-immutable]**: The Principal Root (PR) MUST NOT change after genesis
+(Level 3+). PR is the first PS computed at genesis commit. No operation MAY
+alter it. Levels 1–2 do not have a PR (see [level-1-2-identity]).
+`VERIFIED: agent-check — updated 2026-03-09 per B-2`
 
 **[alg-alignment]**: Inside a coz, all digest references in `pay` (including
 `id`, `tmb`, nonces) MUST be aligned with the hash algorithm associated with
@@ -122,9 +125,9 @@ level without additional hashing. Promotion MUST be applied recursively.
   `VERIFIED: agent-check`
 
 **Corollary — [level-1-2-identity]**: For Levels 1 and 2 (single-key
-principals): `tmb` == KS == AS == PS == PR at genesis, via recursive implicit
-promotion of the single key's thumbprint.
-`VERIFIED: agent-check`
+principals): `tmb` == KS == AS == PS via recursive implicit promotion of the
+single key's thumbprint. Levels 1–2 do not have PR (no commit chain exists).
+`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §5.1`
 
 **[state-computation]**: When computing a new state digest after a mutation:
 
@@ -195,11 +198,11 @@ entirely, not represented as empty.)
 > the boundary conditions for "first introduction" of DT/RT need confirmation
 > from Zami. See sketch gap #7.
 
-**[no-circular-state]**: AS MUST be computed independently of Commit ID. There
-MUST NOT be a circular dependency between AS computation and commit computation.
-(SPEC.md §9 Commit ID: "AS is computed independently of commit; there is no
-circular dependency.")
-`VERIFIED: agent-check`
+**[no-circular-state]**: The state computation dependency graph MUST be acyclic.
+AS feeds into CS and PS, but MUST NOT depend on CommitID or CS. The dependency
+order is: KS → AS → CS (excludes CommitID), CommitID (from czds) → PS (includes
+CommitID). (SPEC.md §4.2: CS = PT components except CommitID; §3.3: CS = MR(AS, ...)).
+`VERIFIED: agent-check — rewritten 2026-03-09 per B-4, §4.2/§3.3`
 
 **[no-non-canonical-b64ut]**: A b64ut string that uses padding characters (`=`),
 non-URL-safe characters (`+`, `/`), or non-canonical encoding MUST be rejected.
@@ -240,25 +243,23 @@ constrained by the invariants and transitions above.
 ```
 KS       = MR(tmb₀, tmb₁?, embedding?, nonce?, ...)
 AS       = MR(KS, RS?, embedding?, ...)                -- nil components excluded
+CS       = MR(AS, DS?, embedding?, ...)                 -- Level 3+, PT minus CommitID
 DS       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`
-CommitID = MR(czd₀, czd₁?, embedding?, ...)             -- czds of transaction cozies in commit
+CommitID = MR(czd₀, czd₁?, embedding?, ...)             -- array order (not lexical sort)
 PS       = MR(AS, CommitID?, DS?, embedding?, ...)       -- CommitID absent at Level 1-2
-PR       = first PS (immutable after genesis)
+PR       = first PS at genesis commit (Level 3+ only, immutable)
 ```
 
-> [!NOTE]
-> **PLACEHOLDER — Commit Finality**: SPEC.md §4.2 describes commit finality
-> semantics but is marked TODO with two alternative designs (inline
-> `commit:AS` field vs separate `commit/create` transaction type). The
-> relationship between CommitID, AS, and finality signaling is not yet stable
-> enough to formalize. Revisit when §4.2 is resolved.
+**Commit Finality (resolved):** A commit is finalized by having
+`"commit":<CS>` appear in the last coz of the commit (SPEC.md §4.2). CS is
+computed from all PT components except CommitID. This serves as the
+forward-reference finality signal (analogous to git's tree root in a commit).
+See `transactions.md` [commit-finality].
 
 > [!NOTE]
-> **PLACEHOLDER — DS Sort Order**: SPEC.md §9.6 states DS is "sorted by `now`
-> and secondarily `czd`", while §4.4.2 has a TODO note ("By default DT's sort
-> keys are `now` and secondarily `czd`"). This overrides the general
-> [mr-sort-order] (lexical byte order) for DS specifically. The override is
-> noted but marked as potentially still in flux.
+> **DS Sort Order**: SPEC.md §9.6 states DS is "sorted by `now` and secondarily
+> `czd`". This overrides the general [mr-sort-order] (lexical byte order) for
+> DS specifically.
 
 ## Algorithm Mapping
 
@@ -295,21 +296,21 @@ governance is delegated to Coz").
 | :-------------------------------- | :---------- | :----- | :----------------------------------------------------- |
 | [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2        |
 | [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                             |
-| [mr-sort-order]                   | agent-check | pass   | Explicit in SPEC.md §9.1 step 2                        |
-| [pr-immutable]                    | agent-check | pass   | Explicit in SPEC.md §2.3.2 and §9.2                    |
+| [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision |
+| [pr-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)      |
 | [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                     |
 | [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                             |
 | [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.7                             |
 | [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.7, §4.5                       |
 | [mhmr-equivalence]                | agent-check | pass   | Explicit in SPEC.md §20.4, §20.6                       |
 | [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2  |
-| [level-1-2-identity]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §3.1                       |
+| [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)     |
 | [state-computation]               | agent-check | pass   | Explicit in SPEC.md §9.1 (four-step algorithm)         |
 | [conversion]                      | agent-check | pass   | Explicit in SPEC.md §20.2                              |
 | [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                              |
 | [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                              |
 | [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)       |
-| [no-circular-state]               | agent-check | pass   | Explicit in SPEC.md §9 (Commit ID section)             |
+| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CS/PS definitions            |
 | [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical") |
 | [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules               |
 | [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                         |
@@ -355,9 +356,6 @@ governance is delegated to Coz").
    introduced (Level 4, Level 5), what is its initial representation? Is it
    absent (excluded from MR) until explicitly created, or does it start as
    some sentinel?
-2. **DS sort override**: The `now`-then-`czd` sort for DS overrides the general
-   lexical byte sort. Is this the final design, or is it still under
-   consideration (§4.4.2 has a TODO marker)?
-3. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
+2. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
    nonce inject an algorithm that no key supports and no conversion path
    exists for? What are the bounds?

@@ -55,19 +55,21 @@ TYPE IsErrored      = Boolean   -- fork detected or chain invalid
 #### Feature Level Capabilities
 
 **[level-1-static]**: A Level 1 principal MUST have exactly one key that never
-changes. No commit chain exists. `tmb` == KS == AS == PS == PR via implicit
-promotion.
-`VERIFIED: agent-check`
+changes. No commit chain exists. `tmb` == KS == AS == PS via implicit
+promotion. Level 1 does not have a PR.
+`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.1/§5.1`
 
 **[level-2-single-key]**: A Level 2 principal MUST have exactly one active key
 at any time. Key changes are performed via `key/replace` (atomic swap) only.
-No commit chain exists.
-`VERIFIED: agent-check`
+No commit chain exists. `tmb` == KS == AS == PS via implicit promotion. Level 2
+does not have a PR.
+`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.2/§5.1`
 
 **[level-3-multi-key]**: A Level 3+ principal MUST support multiple concurrent
-keys. PS = MR(CommitID, AS). Any active key MAY perform `key/create`,
-`key/delete`, or `key/revoke` on any other key (subject to Level 5+ rules).
-`VERIFIED: agent-check`
+keys. PS = MR(CommitID, AS, ...), CS = MR(AS, ...). Initial PS equals PR.
+Any active key MAY perform `key/create`, `key/delete`, or `key/revoke` on any
+other key (subject to Level 5+ rules).
+`VERIFIED: agent-check — updated 2026-03-09 per A-3, SPEC §3.3`
 
 **[level-4-data-tree]**: A Level 4+ principal MUST support Data Tree (DT) for
 user actions. Data actions (AAA) are recorded in DT and signed by active keys.
@@ -76,8 +78,8 @@ user actions. Data actions (AAA) are recorded in DT and signed by active keys.
 **[level-not-authorization]**: Principal levels describe state composition
 complexity and MUST NOT be used as an authorization input. Authorization is
 determined by which state components exist and what rules govern them (per
-`transactions.md` [authorization-triple]).
-`VERIFIED: agent-check`
+`transactions.md` [authorization-triple], SPEC.md §3).
+`VERIFIED: agent-check — citation updated 2026-03-09 per A-1`
 
 #### Lifecycle State Definitions
 
@@ -259,11 +261,11 @@ keys once all are revoked/deleted and no recovery path exists.
 
 | Constraint                      | Method      | Result | Detail                               |
 | :------------------------------ | :---------- | :----- | :----------------------------------- |
-| [level-1-static]                | agent-check | pass   | Explicit in SPEC.md §3.1             |
-| [level-2-single-key]            | agent-check | pass   | Explicit in SPEC.md §3.2             |
-| [level-3-multi-key]             | agent-check | pass   | Explicit in SPEC.md §3.3             |
+| [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no PR)                |
+| [level-2-single-key]            | agent-check | pass   | SPEC.md §3.2, §5.1 (no PR)                |
+| [level-3-multi-key]             | agent-check | pass   | SPEC.md §3.3 (CS/PS formulas)             |
 | [level-4-data-tree]             | agent-check | pass   | Explicit in SPEC.md §3.4             |
-| [level-not-authorization]       | agent-check | pass   | Explicit in SPEC.md §2.3.3           |
+| [level-not-authorization]       | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)        |
 | [lifecycle-derived-from-state]  | agent-check | pass   | Explicit in SPEC.md §11              |
 | [lifecycle-state-matrix]        | agent-check | pass   | Explicit in SPEC.md §11.2            |
 | [errored-orthogonal]            | agent-check | pass   | Explicit in SPEC.md §11.1            |
