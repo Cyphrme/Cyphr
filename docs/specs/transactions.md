@@ -190,14 +190,16 @@ only, not replay-from-genesis.
 
 #### Genesis
 
-**[genesis-bootstrap]**: Genesis MUST follow the bootstrap model: the first
-key exists without a transaction (Level 1+ identity: `tmb` == KS == AS == PS
-via implicit promotion). Additional keys, rules, or other AT components
-MUST be added via transactions that reference `pre` = the current PS. Genesis
-is finalized by a `principal/create` transaction.
+**[genesis-bootstrap]**: For Level 3+ principals, genesis MUST follow the
+bootstrap model: the first key exists without a transaction (implicit `tmb` ==
+KS == AS == PS). Additional keys, rules, or components MUST be added via
+transactions that reference `pre` = the current PS. The explicit commit genesis
+is finalized by a `principal/create` transaction. Level 1 and 2 principals have
+an implicit genesis with no transactions or commit chain.
 
 - **PRE**: No principal exists for this key identity.
-- **POST**: PR is established and immutable (Level 3+ only). Commit chain begins.
+- **POST**: For Level 3+, PR is established and immutable, and the commit chain
+  begins. For Levels 1-2, PR does not exist.
   `VERIFIED: agent-check`
 
 **[genesis-pre-continuity]**: Every transaction in a genesis commit, including
@@ -209,11 +211,12 @@ MUST reference the first key's `tmb` (which is PS via implicit promotion).
 - **POST**: Each transaction targets the same PS, maintaining chain continuity.
   `VERIFIED: agent-check`
 
-**[genesis-finality]**: Genesis MUST be finalized by a `principal/create`
-transaction with `id` set to the computed Principal State (PS), which at genesis
-is the Principal Root (PR).
+**[genesis-finality]**: Level 3+ genesis MUST be finalized by a
+`principal/create` transaction with `id` set to the computed Principal State
+(PS), which at genesis becomes the Principal Root (PR). Level 1-2 principals DO
+NOT use `principal/create`.
 
-- **PRE**: All genesis mutations (key additions, etc.) are included.
+- **PRE**: All genesis mutations (key additions, etc.) are included (Level 3+).
 - **POST**: PR = the `id` field of `principal/create`. Principal is created.
   `VERIFIED: agent-check — updated 2026-03-09 per B-3 (AS→PS), SPEC §5.1`
 
