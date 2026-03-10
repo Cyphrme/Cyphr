@@ -926,13 +926,20 @@ fn e2e_multihash_round_trip() {
             );
         }
 
-        // Recompute CS from AS + Commit ID
-        let commit_id = principal.current_commit_id();
-        let recomputed_cs = compute_cs(&recomputed_as, commit_id, active_algs).unwrap();
+        // Recompute CS from AS + DS?
+        let _recomputed_cs =
+            compute_cs(&recomputed_as, principal.data_state(), active_algs).unwrap();
 
-        // Recompute PS from CS
-        let recomputed_ps =
-            compute_ps(&recomputed_cs, principal.data_state(), None, active_algs).unwrap();
+        // Recompute PS from AS + CommitID? + DS?
+        let commit_id = principal.current_commit_id();
+        let recomputed_ps = compute_ps(
+            &recomputed_as,
+            commit_id,
+            principal.data_state(),
+            None,
+            active_algs,
+        )
+        .unwrap();
 
         for &alg in active_algs {
             assert_eq!(

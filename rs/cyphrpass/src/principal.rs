@@ -133,10 +133,10 @@ impl Principal {
         let ks = compute_ks(&[&key.tmb], None, &active_algs)?;
         // AS = KS (no Commit ID, promotes)
         let auth_state = compute_as(&ks, None, &active_algs)?;
-        // CS = promoted from AS at genesis (no prior commit)
+        // CS = promoted from AS at genesis (no DS)
         let cs = compute_cs(&auth_state, None, &active_algs)?;
-        // PS = MR(CS, DS?) — at genesis DS is None
-        let ps = compute_ps(&cs, None, None, &active_algs)?;
+        // PS = AS (no CommitID or DS at genesis)
+        let ps = compute_ps(&auth_state, None, None, None, &active_algs)?;
         // PR = first PS
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -186,10 +186,10 @@ impl Principal {
 
         // AS = KS (no Commit ID yet)
         let auth_state = compute_as(&ks, None, &active_algs)?;
-        // CS = promoted from AS at genesis
+        // CS = promoted from AS at genesis (no DS)
         let cs = compute_cs(&auth_state, None, &active_algs)?;
-        // PS = MR(CS, DS?)
-        let ps = compute_ps(&cs, None, None, &active_algs)?;
+        // PS = AS (no CommitID or DS at genesis)
+        let ps = compute_ps(&auth_state, None, None, None, &active_algs)?;
         // PR frozen at genesis
         let pr = PrincipalRoot::from_initial(&ps);
 
@@ -251,10 +251,10 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let ks = compute_ks(&thumbprints, None, &active_algs)?;
 
-        // CS = promoted from checkpoint AS (no commit history loaded)
+        // CS = promoted from checkpoint AS (no DS at checkpoint load)
         let cs = compute_cs(&auth_state, None, &active_algs)?;
-        // PS = MR(CS, DS?) — no DS at checkpoint load
-        let ps = compute_ps(&cs, None, None, &active_algs)?;
+        // PS = AS (no CommitID or DS at checkpoint)
+        let ps = compute_ps(&auth_state, None, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -556,11 +556,14 @@ impl Principal {
         let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
         self.ds = compute_ds(&czds, None, self.hash_alg);
 
-        // Recompute PS = MR(CS, DS?)
-        // CS doesn't change on action recording (only on commits), so use existing CS.
-        // If CS is None (shouldn't happen after genesis), compute_ps would need it.
-        let cs_ref = self.cs.as_ref().ok_or(Error::StateMismatch)?;
-        self.ps = compute_ps(cs_ref, self.ds.as_ref(), None, &[self.hash_alg])?;
+        // Recompute PS = MR(AS, CommitID?, DS?)
+        self.ps = compute_ps(
+            &self.auth_state,
+            self.commit_id.as_ref(),
+            self.ds.as_ref(),
+            None,
+            &[self.hash_alg],
+        )?;
 
         Ok(&self.ps)
     }
@@ -808,12 +811,18 @@ impl Principal {
         // Compute AS from updated KS (AS = MR(KS, RS?) per SPEC §8.4)
         self.auth_state = compute_as(&self.ks, None, &self.active_algs)?;
 
-        // Compute CS = MR(AS, Commit ID)
-        let cs = compute_cs(&self.auth_state, Some(&commit_id), &self.active_algs)?;
+        // Compute CS = MR(AS, DS?) — PT minus CommitID
+        let cs = compute_cs(&self.auth_state, self.ds.as_ref(), &self.active_algs)?;
         self.cs = Some(cs.clone());
 
-        // Compute PS = MR(CS, DS?)
-        self.ps = compute_ps(&cs, self.ds.as_ref(), None, &self.active_algs)?;
+        // Compute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
+        self.ps = compute_ps(
+            &self.auth_state,
+            Some(&commit_id),
+            self.ds.as_ref(),
+            None,
+            &self.active_algs,
+        )?;
 
         // Finalize the pending commit with computed states
         let commit = pending.finalize(self.auth_state.clone(), cs, self.ps.clone())?;
@@ -880,24 +889,14 @@ impl Principal {
         self.apply_transaction(vtx)
     }
 
-    /// Verify that `pre` matches the expected prior Commit State.
+    /// Verify that `pre` matches the expected prior Principal State.
     ///
-    /// Per SPEC §4, the `pre` field references the previous commit's CS.
-    /// At genesis (no prior commits), CS is implicitly promoted from AS,
+    /// Per SPEC §4, the `pre` field references the previous PS.
+    /// At genesis (no prior commits), PS is implicitly promoted from AS,
     /// so `pre` is compared against the promoted auth_state.
-    ///
-    /// **Current implementation**: Validates against current CS (or promoted AS
-    /// at genesis). Full dual-layer chaining (commit-level + transaction-level)
-    /// will be implemented when the pending commit flow is wired.
-    fn verify_pre(&self, pre: &CommitState) -> Result<()> {
-        // Get the reference CS to compare against.
-        // If self.cs is Some, use it; otherwise fall back to promoted auth_state for genesis.
-        let current = if let Some(cs) = &self.cs {
-            cs.0.get_or_err(self.hash_alg)?
-        } else {
-            // Genesis fallback: CS == promoted(AS)
-            self.auth_state.0.get_or_err(self.hash_alg)?
-        };
+    fn verify_pre(&self, pre: &PrincipalState) -> Result<()> {
+        // Get the reference PS to compare against.
+        let current = self.ps.0.get_or_err(self.hash_alg)?;
         let expected = pre.0.get_or_err(self.hash_alg)?;
         if current != expected {
             return Err(Error::InvalidPrior);
@@ -1091,7 +1090,7 @@ mod tests {
     // ========================================================================
 
     fn make_key_add_tx(
-        pre: &CommitState,
+        pre: &PrincipalState,
         new_key: &Key,
         signer: &Thumbprint,
     ) -> crate::transaction::Transaction {
@@ -1103,7 +1102,7 @@ mod tests {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         // Create dummy raw CozJson for test transactions
-        let cs_bytes = pre
+        let ps_bytes = pre
             .get(HashAlg::Sha256)
             .or_else(|| {
                 pre.as_multihash()
@@ -1112,14 +1111,14 @@ mod tests {
                     .next()
                     .map(AsRef::as_ref)
             })
-            .expect("CommitState must have at least one variant");
+            .expect("PrincipalState must have at least one variant");
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(cs_bytes),
+                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
                 "id": new_key.tmb.to_b64()
             }),
             sig: vec![0; 64],
@@ -1143,7 +1142,7 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1166,7 +1165,7 @@ mod tests {
             .get(principal.hash_alg())
             .unwrap()
             .to_vec();
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1190,7 +1189,7 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Wrong pre value
-        let wrong_pre = CommitState(MultihashDigest::from_single(
+        let wrong_pre = PrincipalState(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xFF; 32],
         ));
@@ -1207,7 +1206,7 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
@@ -1302,7 +1301,7 @@ mod tests {
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
 
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
 
         let tx = Transaction {
             kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
@@ -1334,7 +1333,7 @@ mod tests {
 
         use crate::transaction::{Transaction, TransactionKind};
 
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
 
         let tx = Transaction {
             kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
@@ -1361,7 +1360,7 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
         let mut key2 = make_test_key(0x22);
         key2.first_seen = 0; // Caller may not set this
 
@@ -1392,7 +1391,7 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
 
         // Revoke key2 (self-revoke)
         let tx = Transaction {
@@ -1426,7 +1425,7 @@ mod tests {
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
         // Apply a key/create transaction with now=5000
-        let pre = principal.cs().unwrap().clone();
+        let pre = principal.ps().clone();
         let key2 = make_test_key(0x22);
 
         use coz::Czd;

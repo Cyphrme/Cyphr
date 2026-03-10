@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthState, CommitState};
+use crate::state::{AuthState, PrincipalState};
 
 // ============================================================================
 // Transaction Types (SPEC §4.2)
@@ -32,24 +32,24 @@ pub mod typ {
 pub enum TransactionKind {
     /// Create a new key (Level 3+) - SPEC §4.2.1
     KeyCreate {
-        /// Previous Commit State.
-        pre: CommitState,
+        /// Previous Principal State.
+        pre: PrincipalState,
         /// Thumbprint of key being created.
         id: Thumbprint,
     },
 
     /// Remove key without invalidation (Level 3+) - SPEC §4.2.2
     KeyDelete {
-        /// Previous Commit State.
-        pre: CommitState,
+        /// Previous Principal State.
+        pre: PrincipalState,
         /// Thumbprint of key being deleted.
         id: Thumbprint,
     },
 
     /// Atomic key swap (Level 2+) - SPEC §4.2.3
     KeyReplace {
-        /// Previous Commit State.
-        pre: CommitState,
+        /// Previous Principal State.
+        pre: PrincipalState,
         /// Thumbprint of new key.
         id: Thumbprint,
     },
@@ -57,18 +57,18 @@ pub enum TransactionKind {
     /// Self-revoke (Level 1+) - SPEC §4.2.4
     /// Per protocol simplification, revoke requires `pre` like all other coz.
     SelfRevoke {
-        /// Previous Commit State.
-        pre: CommitState,
+        /// Previous Principal State.
+        pre: PrincipalState,
         /// Revocation timestamp.
         rvk: i64,
     },
 
     /// Principal creation (explicit genesis finalization) - SPEC §5.1
     ///
-    /// Finalizes explicit genesis. `pre` references current Commit State.
+    /// Finalizes explicit genesis. `pre` references current Principal State.
     PrincipalCreate {
-        /// Previous Commit State (required per implicit first key model).
-        pre: CommitState,
+        /// Previous Principal State (required per implicit first key model).
+        pre: PrincipalState,
         /// Final Auth State bundle identifier (becomes PR).
         id: AuthState,
     },
@@ -205,10 +205,10 @@ impl Transaction {
         }
     }
 
-    /// Extract `pre` field (previous Commit State) from pay.extra.
+    /// Extract `pre` field (previous Principal State) from pay.extra.
     ///
     /// Expects `alg:digest` format (e.g., `SHA-256:U5XUZots...`).
-    fn extract_pre(pay: &Pay) -> Result<CommitState> {
+    fn extract_pre(pay: &Pay) -> Result<PrincipalState> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
@@ -218,7 +218,7 @@ impl Transaction {
         // Parse tagged digest (validates algorithm and length)
         let tagged: TaggedDigest = pre_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(CommitState(MultihashDigest::from_single(
+        Ok(PrincipalState(MultihashDigest::from_single(
             tagged.alg(),
             tagged.as_bytes().to_vec(),
         )))
