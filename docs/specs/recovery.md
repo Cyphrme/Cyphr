@@ -221,33 +221,33 @@ investigates, without irreversibly revoking keys.
 
 ## Verification
 
-| Constraint                     | Method      | Result | Detail                          |
-| :----------------------------- | :---------- | :----- | :------------------------------ |
+| Constraint                     | Method      | Result | Detail                                    |
+| :----------------------------- | :---------- | :----- | :---------------------------------------- |
 | [unrecoverable-definition]     | agent-check | pass   | SPEC.md §18, §2.2.11 (data action caveat) |
-| [recovery-proactive]           | agent-check | pass   | Explicit in SPEC.md §18         |
-| [level-recovery-matrix]        | agent-check | pass   | Explicit in SPEC.md §18.2       |
-| [fallback-field]               | agent-check | pass   | Explicit in SPEC.md §18.4       |
-| [fallback-not-in-tmb]          | agent-check | pass   | Explicit in SPEC.md §18.4       |
-| [level-2-fallback-restriction] | agent-check | pass   | Explicit in SPEC.md §18.4       |
-| [recovery-agent-registration]  | agent-check | pass   | Explicit in SPEC.md §18.5.1     |
-| [recovery-agent-deletion]      | agent-check | pass   | Explicit in SPEC.md §18.5.2     |
-| [recovery-agent-authorization] | agent-check | pass   | Explicit in SPEC.md §18.6       |
-| [social-recovery-threshold]    | agent-check | pass   | Explicit in SPEC.md §18.8       |
-| [freeze-global]                | agent-check | pass   | Explicit in SPEC.md §18.9       |
-| [self-freeze]                  | agent-check | pass   | Explicit in SPEC.md §18.9.1     |
-| [external-freeze]              | agent-check | pass   | Explicit in SPEC.md §18.9.2     |
-| [external-freeze-delegation]   | agent-check | pass   | Explicit in SPEC.md §18.10      |
-| [no-retroactive-undo]          | agent-check | pass   | Explicit in SPEC.md §18.12      |
-| [revoke-forward-only]          | agent-check | pass   | Explicit in SPEC.md §18.12      |
-| [disown-no-as-mutation]        | agent-check | pass   | Explicit in SPEC.md §18.12      |
-| [recovery-flow]                | agent-check | pass   | Explicit in SPEC.md §18.6       |
-| [freeze-transition]            | agent-check | pass   | Follows from §18.9              |
-| [unfreeze-transition]          | agent-check | pass   | Follows from §18.9.3            |
-| [no-retroactive-rewrite]       | agent-check | pass   | Follows from §18.12             |
-| [no-unregistered-recovery]     | agent-check | pass   | Follows from §18.5              |
-| [no-undelegated-freeze]        | agent-check | pass   | Follows from §18.10             |
-| [recovery-sovereignty]         | agent-check | pass   | Explicit in §18 design intent   |
-| [freeze-defensive]             | agent-check | pass   | Explicit in §18.9 design intent |
+| [recovery-proactive]           | agent-check | pass   | Explicit in SPEC.md §18                   |
+| [level-recovery-matrix]        | agent-check | pass   | Explicit in SPEC.md §18.2                 |
+| [fallback-field]               | agent-check | pass   | Explicit in SPEC.md §18.4                 |
+| [fallback-not-in-tmb]          | agent-check | pass   | Explicit in SPEC.md §18.4                 |
+| [level-2-fallback-restriction] | agent-check | pass   | Explicit in SPEC.md §18.4                 |
+| [recovery-agent-registration]  | agent-check | pass   | Explicit in SPEC.md §18.5.1               |
+| [recovery-agent-deletion]      | agent-check | pass   | Explicit in SPEC.md §18.5.2               |
+| [recovery-agent-authorization] | agent-check | pass   | Explicit in SPEC.md §18.6                 |
+| [social-recovery-threshold]    | agent-check | pass   | Explicit in SPEC.md §18.8                 |
+| [freeze-global]                | agent-check | pass   | Explicit in SPEC.md §18.9                 |
+| [self-freeze]                  | agent-check | pass   | Explicit in SPEC.md §18.9.1               |
+| [external-freeze]              | agent-check | pass   | Explicit in SPEC.md §18.9.2               |
+| [external-freeze-delegation]   | agent-check | pass   | Explicit in SPEC.md §18.10                |
+| [no-retroactive-undo]          | agent-check | pass   | Explicit in SPEC.md §18.12                |
+| [revoke-forward-only]          | agent-check | pass   | Explicit in SPEC.md §18.12                |
+| [disown-no-as-mutation]        | agent-check | pass   | Explicit in SPEC.md §18.12                |
+| [recovery-flow]                | agent-check | pass   | Explicit in SPEC.md §18.6                 |
+| [freeze-transition]            | agent-check | pass   | Follows from §18.9                        |
+| [unfreeze-transition]          | agent-check | pass   | Follows from §18.9.3                      |
+| [no-retroactive-rewrite]       | agent-check | pass   | Follows from §18.12                       |
+| [no-unregistered-recovery]     | agent-check | pass   | Follows from §18.5                        |
+| [no-undelegated-freeze]        | agent-check | pass   | Follows from §18.10                       |
+| [recovery-sovereignty]         | agent-check | pass   | Explicit in §18 design intent             |
+| [freeze-defensive]             | agent-check | pass   | Explicit in §18.9 design intent           |
 
 ## Implications
 

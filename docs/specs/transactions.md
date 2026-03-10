@@ -67,7 +67,7 @@ rejected. (Coz itself makes all fields optional; Cyphrpass constrains this.)
 
 **[transaction-pre-required]**: Transaction cozies (those that mutate AT and
 advance the commit chain) MUST additionally contain `pre` in `pay`, referencing
-the targeted Principal Tree (PT), as denoted by PS, for mutation (SPEC.md §7.1).
+the targeted Principal Tree (PT), as denoted by PS, for mutation (SPEC.md §4.3).
 Cozies without `pre` are not transactions (except naked revokes — see
 [revoke-naked]).
 `VERIFIED: agent-check — updated 2026-03-09 per A-2, A-4`
@@ -157,7 +157,7 @@ error `DUPLICATE`.
 
 **[transaction-id-required]**: Transaction cozies MUST contain `id` in `pay`,
 identifying the target noun. For example, for `key/create`, `id` is the key's
-`tmb`. (SPEC.md §7.1)
+`tmb`. (SPEC.md §4.3)
 `VERIFIED: agent-check — new 2026-03-09 per S-3`
 
 #### Wire Format
@@ -375,27 +375,27 @@ included `pre`.
 | Constraint                    | Method      | Result | Detail                                              |
 | :---------------------------- | :---------- | :----- | :-------------------------------------------------- |
 | [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                          |
-| [transaction-pre-required]    | agent-check | pass   | SPEC.md §7.1 (updated 2026-03-09)                   |
+| [transaction-pre-required]    | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                   |
 | [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                   |
 | [authorization-triple]        | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)                  |
 | [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §3 item 1 (relocated from §2.3.3)           |
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
-| [commit-id-computation]       | agent-check | pass   | SPEC.md §9; array order per decision           |
-| [commit-finality]             | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                  |
-| [commit-field-required]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                  |
+| [commit-id-computation]       | agent-check | pass   | SPEC.md §9; array order per decision                |
+| [commit-finality]             | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
+| [commit-field-required]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
 | [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
 | [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
 | [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                            |
-| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.6                            |
-| [transaction-id-required]     | agent-check | pass   | SPEC.md §7.1 (new 2026-03-09)                  |
+| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.5                            |
+| [transaction-id-required]     | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                   |
 | [timestamp-range]             | agent-check | pass   | Explicit in SPEC.md §6.4 (inherited from Coz)       |
 | [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                            |
 | [genesis-pre-continuity]      | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PS, updated 2026-03-09)       |
+| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PS, updated 2026-03-09)            |
 | [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                            |
 | [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                            |
 | [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                            |
@@ -403,7 +403,7 @@ included `pre`.
 | [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                            |
-| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AS→AT, updated 2026-03-09)       |
+| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AS→AT, updated 2026-03-09)            |
 | [ds-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
 | [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                            |
 | [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                    |
@@ -413,8 +413,8 @@ included `pre`.
 | [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]    |
 | [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pr-immutable]           |
 | [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
-| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)      |
-| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)          |
+| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)           |
+| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)               |
 
 ## Implications
 

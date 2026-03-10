@@ -261,11 +261,11 @@ keys once all are revoked/deleted and no recovery path exists.
 
 | Constraint                      | Method      | Result | Detail                               |
 | :------------------------------ | :---------- | :----- | :----------------------------------- |
-| [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no PR)                |
-| [level-2-single-key]            | agent-check | pass   | SPEC.md §3.2, §5.1 (no PR)                |
-| [level-3-multi-key]             | agent-check | pass   | SPEC.md §3.3 (CS/PS formulas)             |
+| [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no PR)           |
+| [level-2-single-key]            | agent-check | pass   | SPEC.md §3.2, §5.1 (no PR)           |
+| [level-3-multi-key]             | agent-check | pass   | SPEC.md §3.3 (CS/PS formulas)        |
 | [level-4-data-tree]             | agent-check | pass   | Explicit in SPEC.md §3.4             |
-| [level-not-authorization]       | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)        |
+| [level-not-authorization]       | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)   |
 | [lifecycle-derived-from-state]  | agent-check | pass   | Explicit in SPEC.md §11              |
 | [lifecycle-state-matrix]        | agent-check | pass   | Explicit in SPEC.md §11.2            |
 | [errored-orthogonal]            | agent-check | pass   | Explicit in SPEC.md §11.1            |

@@ -292,29 +292,29 @@ governance is delegated to Coz").
 
 ## Verification
 
-| Constraint                        | Method      | Result | Detail                                                 |
-| :-------------------------------- | :---------- | :----- | :----------------------------------------------------- |
-| [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2        |
-| [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                             |
+| Constraint                        | Method      | Result | Detail                                                         |
+| :-------------------------------- | :---------- | :----- | :------------------------------------------------------------- |
+| [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2                |
+| [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                                     |
 | [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision |
-| [pr-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)      |
-| [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                     |
-| [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                             |
-| [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.8                             |
-| [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.8, §4.6                       |
-| [mhmr-equivalence]                | agent-check | pass   | Explicit in SPEC.md §20.4, §20.6                       |
-| [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2  |
-| [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)     |
-| [state-computation]               | agent-check | pass   | Explicit in SPEC.md §9.1 (four-step algorithm)         |
-| [conversion]                      | agent-check | pass   | Explicit in SPEC.md §20.2                              |
-| [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                              |
-| [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                              |
-| [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)       |
-| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CS/PS definitions            |
-| [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical") |
-| [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules               |
-| [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                         |
-| [mhmr-no-rehash-children]         | agent-check | pass   | Explicit in SPEC.md §20.5 step 3, Important Properties |
+| [pr-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                       |
+| [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                             |
+| [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                                     |
+| [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.8                                     |
+| [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.8, §4.6                               |
+| [mhmr-equivalence]                | agent-check | pass   | Explicit in SPEC.md §20.4, §20.6                               |
+| [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2          |
+| [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)                      |
+| [state-computation]               | agent-check | pass   | Explicit in SPEC.md §9.1 (four-step algorithm)                 |
+| [conversion]                      | agent-check | pass   | Explicit in SPEC.md §20.2                                      |
+| [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                                      |
+| [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                                      |
+| [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)               |
+| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CS/PS definitions                            |
+| [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical")         |
+| [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules                       |
+| [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                                 |
+| [mhmr-no-rehash-children]         | agent-check | pass   | Explicit in SPEC.md §20.5 step 3, Important Properties         |
 
 ## Implications
 
