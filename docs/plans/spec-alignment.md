@@ -112,28 +112,28 @@ changes from stable sections §1-11 only.
    ID hashing order, and `pre` type. Most structurally impactful; must
    land first because every downstream computation depends on correct
    state values.
-   - [ ] **WS-A: CS/PS Restructure + `pre` Migration**
-     - [ ] Go: Update `ComputeCS()` — remove `commitID` param, add `ds *DataState`
-     - [ ] Go: Update `ComputePS()` — remove `cs CommitState` param, add `as AuthState`, `commitID *CommitID` (keep `ds`)
-     - [ ] Go: Update `finalizeCommit()` — compute CS and PS in parallel from AS (not sequentially)
-     - [ ] Go: Update `RecordAction()` — recompute PS from AS directly (not from CS)
-     - [ ] Go: Update doc comments on `CommitState` ("PT minus CommitID"), `PrincipalState` ("includes CommitID")
-     - [ ] Go: Change `Transaction.Pre` from `CommitState` to `PrincipalState`
-     - [ ] Go: Update `verifyPre()` — compare against `p.ps` (not `p.cs`)
-     - [ ] Go: Update all test `Pre:` constructions from `*p.CS()` to `p.PS()`
-     - [ ] Rust: Mirror CS/PS signature changes in `state.rs`
-     - [ ] Rust: Change `pre` field in all `TransactionKind` variants from `CommitState` to `PrincipalState`
-     - [ ] Rust: Update `verify_pre()` — compare against PS
-     - [ ] Rust: Update `extract_pre()` to return `PrincipalState`
-     - [ ] Rust: Update doc comments
-     - [ ] Both: `go test ./...` and `cargo test --workspace` pass
-   - [ ] **WS-B: Commit ID Array Order**
-     - [ ] Go: Add `hashConcatBytes()` (concatenate without sorting)
-     - [ ] Go: Update `ComputeCommitID()` to use `hashConcatBytes`
-     - [ ] Rust: Add `hash_concat_bytes()` (concatenate without sorting)
-     - [ ] Rust: Update `compute_commit_id()` to use `hash_concat_bytes`
-     - [ ] Both: Sorted variant (`hashSortedConcatBytes`) preserved for state tree
-     - [ ] Both: `go test ./...` and `cargo test --workspace` pass
+   - [x] **WS-A: CS/PS Restructure + `pre` Migration** _(2026-03-10)_
+     - [x] Go: Update `ComputeCS()` — remove `commitID` param, add `ds *DataState`
+     - [x] Go: Update `ComputePS()` — remove `cs CommitState` param, add `as AuthState`, `commitID *CommitID` (keep `ds`)
+     - [x] Go: Update `finalizeCommit()` — compute CS and PS in parallel from AS (not sequentially)
+     - [x] Go: Update `RecordAction()` — recompute PS from AS directly (not from CS)
+     - [x] Go: Update doc comments on `CommitState` ("PT minus CommitID"), `PrincipalState` ("includes CommitID")
+     - [x] Go: Change `Transaction.Pre` from `CommitState` to `PrincipalState`
+     - [x] Go: Update `verifyPre()` — compare against `p.ps` (not `p.cs`)
+     - [x] Go: Update all test `Pre:` constructions from `*p.CS()` to `p.PS()`
+     - [x] Rust: Mirror CS/PS signature changes in `state.rs`
+     - [x] Rust: Change `pre` field in all `TransactionKind` variants from `CommitState` to `PrincipalState`
+     - [x] Rust: Update `verify_pre()` — compare against PS
+     - [x] Rust: Update `extract_pre()` to return `PrincipalState`
+     - [x] Rust: Update doc comments
+     - [x] Both: `go test ./...` and `cargo test --workspace` pass
+   - [x] **WS-B: Commit ID Array Order** _(2026-03-10)_
+     - [x] Go: Add `hashConcatBytes()` (concatenate without sorting)
+     - [x] Go: Update `ComputeCommitID()` to use `hashConcatBytes`
+     - [x] Rust: Add `hash_concat_bytes()` (concatenate without sorting)
+     - [x] Rust: Update `compute_commit_id()` to use `hash_concat_bytes`
+     - [x] Both: Sorted variant (`hashSortedConcatBytes`) preserved for state tree
+     - [x] Both: `go test ./...` and `cargo test --workspace` pass
 
 2. **Phase 2: Identity Corrections** — Fix PR optionality and genesis
    finality semantics. Independent of Phase 1 in concept but may share
@@ -177,7 +177,7 @@ changes from stable sections §1-11 only.
 
 ## Verification
 
-- [ ] Phase 1: `go test ./...` and `cargo test --workspace` pass after CS/PS + array-order + pre migration
+- [x] Phase 1: `go test ./...` and `cargo test --workspace` pass after CS/PS + array-order + pre migration _(2026-03-10: core unit tests pass; golden fixtures expected-fail pending WS6)_
 - [ ] Phase 2: `go test ./...` and `cargo test --workspace` pass after PR + genesis
 - [ ] Phase 3: `go test ./...` and `cargo test --workspace` pass after CommitBuilder + verification
 - [ ] Cross-cutting: Both implementations produce identical PS/CS for same inputs (parity)
@@ -205,9 +205,10 @@ cargo test --workspace
   Populated during execution. Empty at plan creation.
 -->
 
-| Item                                                      | Severity | Why Introduced | Follow-Up                          | Resolved |
-| :-------------------------------------------------------- | :------- | :------------- | :--------------------------------- | :------: |
-| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired | LOW      | Pre-existing   | Wire when Level 5+ multikey needed |          |
+| Item                                                      | Severity | Why Introduced                  | Follow-Up                                       | Resolved |
+| :-------------------------------------------------------- | :------- | :------------------------------ | :---------------------------------------------- | :------: |
+| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed              |          |
+| Golden fixtures stale after Phase 1 formula changes       | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6) |          |
 
 ## Deviation Log
 
@@ -215,8 +216,10 @@ cargo test --workspace
   Populated during execution. Empty at plan creation.
 -->
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit  | Planned                                | Actual                                                    | Rationale                                                                     |
+| :------ | :------------------------------------- | :-------------------------------------------------------- | :---------------------------------------------------------------------------- |
+| Go WS-A | CS/PS swap only                        | + `ErrNoCommitState` removal, + `PrincipalState.Tagged()` | Dead code per cruft constraint; Tagged() needed by e2e runner for `pre` field |
+| Go WS-A | Update `ComputeCommitIDTagged` in WS-B | Also updated in WS-A commit scope                         | Same file, cleaner to ship together                                           |
 
 ## Retrospective
 

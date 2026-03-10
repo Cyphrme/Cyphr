@@ -383,6 +383,36 @@ fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     }
 }
 
+/// Compute `H(components...)` in array order (no sort).
+///
+/// Used for CommitID where transaction order is significant (SPEC §8.5).
+fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+    // Hash based on algorithm — no sort, preserve insertion order
+    match alg {
+        HashAlg::Sha256 => {
+            let mut h = Sha256::new();
+            for c in components {
+                h.update(c);
+            }
+            h.finalize().to_vec()
+        },
+        HashAlg::Sha384 => {
+            let mut h = Sha384::new();
+            for c in components {
+                h.update(c);
+            }
+            h.finalize().to_vec()
+        },
+        HashAlg::Sha512 => {
+            let mut h = Sha512::new();
+            for c in components {
+                h.update(c);
+            }
+            h.finalize().to_vec()
+        },
+    }
+}
+
 /// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
 ///
 /// Used when converting a czd from one algorithm to another.
@@ -466,7 +496,7 @@ pub fn compute_ks(
 ///
 /// - No transactions: CommitID = None
 /// - Single transaction, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = MR(sort(czd₀, czd₁, nonce?, ...))
+/// - Otherwise: CommitID = H(czd₀ ‖ czd₁ ‖ nonce? ‖ ...) — array order, no sort
 pub fn compute_commit_id(
     czds: &[&Czd],
     nonce: Option<&[u8]>,
@@ -492,10 +522,10 @@ pub fn compute_commit_id(
         components.push(n);
     }
 
-    // Compute hash for each algorithm variant
+    // Compute hash for each algorithm variant (array order, no sort)
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let digest = hash_sorted_concat_bytes(alg, &components);
+        let digest = hash_concat_bytes(alg, &components);
         variants.insert(alg, digest.into_boxed_slice());
     }
 
@@ -543,7 +573,7 @@ impl<'a> TaggedCzd<'a> {
 ///
 /// - No transactions: CommitID = None
 /// - Single transaction, no nonce: CommitID = czd (implicit promotion)
-/// - Otherwise: CommitID = MR(sort(converted_czd₀, converted_czd₁, nonce?, ...))
+/// - Otherwise: CommitID = H(converted_czd₀ ‖ converted_czd₁ ‖ nonce? ‖ ...) — array order
 pub fn compute_commit_id_tagged(
     czds: &[TaggedCzd<'_>],
     nonce: Option<&[u8]>,
@@ -567,41 +597,16 @@ pub fn compute_commit_id_tagged(
     let mut variants = BTreeMap::new();
     for &target_alg in algs {
         // Convert each czd to target algorithm
-        let mut converted: Vec<Vec<u8>> = czds.iter().map(|tc| tc.convert_to(target_alg)).collect();
+        let converted: Vec<Vec<u8>> = czds.iter().map(|tc| tc.convert_to(target_alg)).collect();
 
         // Add nonce if present
+        let mut components: Vec<&[u8]> = converted.iter().map(|v| v.as_slice()).collect();
         if let Some(n) = nonce {
-            converted.push(n.to_vec());
+            components.push(n);
         }
 
-        // Sort and hash
-        converted.sort();
-        let digest = match target_alg {
-            HashAlg::Sha256 => {
-                use coz::sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                for c in &converted {
-                    h.update(c);
-                }
-                h.finalize().to_vec()
-            },
-            HashAlg::Sha384 => {
-                use coz::sha2::{Digest, Sha384};
-                let mut h = Sha384::new();
-                for c in &converted {
-                    h.update(c);
-                }
-                h.finalize().to_vec()
-            },
-            HashAlg::Sha512 => {
-                use coz::sha2::{Digest, Sha512};
-                let mut h = Sha512::new();
-                for c in &converted {
-                    h.update(c);
-                }
-                h.finalize().to_vec()
-            },
-        };
+        // Hash in array order (no sort — CommitID preserves transaction order)
+        let digest = hash_concat_bytes(target_alg, &components);
         variants.insert(target_alg, digest.into_boxed_slice());
     }
 

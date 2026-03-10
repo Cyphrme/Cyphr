@@ -300,6 +300,23 @@ func hashSortedConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
 	return coz.Hash(coz.HshAlg(alg), buf.Bytes())
 }
 
+// hashConcatBytes implements array-order digest: concatenate in insertion order,
+// then hash. Used for CommitID where transaction order is significant (SPEC §8.5).
+func hashConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
+	if len(components) == 0 {
+		return nil, nil
+	}
+
+	// Concatenate in array order (no sort)
+	var buf bytes.Buffer
+	for _, c := range components {
+		buf.Write(c)
+	}
+
+	// Hash using the specified algorithm
+	return coz.Hash(coz.HshAlg(alg), buf.Bytes())
+}
+
 // ComputeKS computes Key State from thumbprints (SPEC §7.2).
 // If only one thumbprint with no nonce, KS = tmb (implicit promotion).
 // Computes one variant per algorithm in algs.
@@ -372,7 +389,7 @@ func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		digest, err := hashSortedConcatBytes(alg, components...)
+		digest, err := hashConcatBytes(alg, components...)
 		if err != nil {
 			return nil, err
 		}
@@ -451,13 +468,8 @@ func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*Co
 			converted = append(converted, nonce)
 		}
 
-		// Sort and hash
-		slices.SortFunc(converted, bytes.Compare)
-		var buf bytes.Buffer
-		for _, c := range converted {
-			buf.Write(c)
-		}
-		digest, err := coz.Hash(coz.HshAlg(targetAlg), buf.Bytes())
+		// Hash in array order (no sort — CommitID preserves transaction order)
+		digest, err := hashConcatBytes(targetAlg, converted...)
 		if err != nil {
 			return nil, err
 		}
