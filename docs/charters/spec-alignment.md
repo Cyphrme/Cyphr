@@ -60,7 +60,7 @@ the machine specs are the normative bridge between it and the implementations.
 
 - Documents: `docs/specs/` (6 documents by protocol concern)
 - Sketch: [2026-03-02-machine-spec.md](../../.sketches/2026-03-02-machine-spec.md)
-- Status: Complete — 6 documents, 158 constraints. VERIFY scrutiny done.
+- Status: Complete — 6 documents, 145 constraints (realigned 2026-03-09 against `305631b`)
 
 ### 3. Model Review
 
@@ -88,6 +88,10 @@ largest and least-defined item in the sequence. It covers at minimum:
 
 This work is inherently incremental. Sections are implemented as they stabilize
 in the spec, not as a monolithic batch. Each coherent batch gets its own plan.
+
+- Plan: [spec-alignment.md](../plans/spec-alignment.md)
+- Stability: §1-11 declared stable (Zami, 2026-03-09); §12+ deferred
+- Status: Plan drafted, pending approval
 
 ### 5. Verification Infrastructure
 

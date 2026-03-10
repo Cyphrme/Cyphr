@@ -82,12 +82,21 @@ deficiencies.
 ### Phase 4: Verification & Invariants (Not Started)
 
 > **Note (2026-03-06):** WS6-7 are now anchored against the machine-oriented
-> specification documents (`docs/specs/*.md`, 158 named constraints) produced
+> specification documents (`docs/specs/*.md`, 145 named constraints) produced
 > during charter item 2. Constraint IDs replace or supplement the original
 > audit item references as the primary test anchors.
+>
+> **Note (2026-03-09):** Zami declares §1-11 "rock solid". Machine specs
+> realigned against SPEC.md `305631b` (15 divergence items resolved, 6 new
+> constraints added). WS6-7 are **gated on** the spec alignment
+> implementation plan (`docs/plans/spec-alignment.md`) completing Phase 1-2.
+> Golden fixtures cannot be generated until CS/PS/PR implementations are
+> corrected.
 
 - [ ] **WS6: Verification Infrastructure** — Build spec-anchored test vectors
-      and negative tests using machine spec constraint IDs as anchors:
+      and negative tests using machine spec constraint IDs as anchors.
+      **Blocked on:** `spec-alignment.md` Phase 1-2 completion (golden fixtures
+      require correct CS/PS/PR computation).
   - **State tree:** Golden fixtures verifying `[deterministic-state]`,
     `[mr-sort-order]`, `[implicit-promotion]`, `[conversion]`, and
     `[mhmr-computation]` parity across Go and Rust (supersedes §C.4, §E.5)
@@ -105,7 +114,7 @@ deficiencies.
     `[data-action-no-pre]` (C.7, B.6)
   - `latestTimestamp` atomicity per `[timestamp-monotonic]` (C.6)
   - Structural I4 enforcement
-  - Depends on WS5 storage decisions
+  - Depends on WS5 storage decisions and `spec-alignment.md` completion
 
 ## Boy-Scout Policy (P3)
 
@@ -135,7 +144,7 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 - [x] WS1-4: `go test ./...` all pass; `cargo test --workspace` all 125 pass
 - [x] WS1-4: Zero `Box<dyn Error>` in CLI code, zero `SigningKey::generate` in commands/, zero `fmt.Errorf` in core
 - [x] WS5: `go test ./...` (4 packages), `cargo test --workspace` (125 tests) — all pass
-- [ ] WS5: Cross-language golden fixture parity
+- [x] WS5: Cross-language golden fixture parity (same TOML fixtures, both verify KS/AS/PS/key_count/level)
 - [ ] WS6: Spec-anchored reference vectors (keyed to machine spec constraint IDs) pass in both languages
 - [ ] WS7: `pre` hoisting and structural invariants verified against `[commit-pre-chain]`, `[data-action-stateless]`, `[timestamp-monotonic]`
 
@@ -143,7 +152,8 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 
 - AUDIT: [2026-02-20-api-coherence-audit.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/audit/2026-02-20-api-coherence-audit.md)
 - CHARTER: [spec-alignment.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/charters/spec-alignment.md)
-- MACHINE SPECS: [docs/specs/](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/) (158 constraints across 6 documents)
+- MACHINE SPECS: [docs/specs/](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/) (145 constraints across 6 documents)
+- SPEC ALIGNMENT PLAN: [spec-alignment.md](spec-alignment.md)
 - SKETCHES: `.sketches/2026-02-24-go-*.md`, `.sketches/2026-02-24-rust-cli-deduplication.md`
 
 [audit]: ../audit/2026-02-20-api-coherence-audit.md
