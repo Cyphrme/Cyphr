@@ -76,9 +76,6 @@ var (
 	// ErrEmptyMultihash indicates an attempt to create a MultihashDigest with no variants.
 	ErrEmptyMultihash = errors.New("cyphrpass: empty multihash digest")
 
-	// ErrNoCommitState indicates an operation requires commit state but none exists.
-	ErrNoCommitState = errors.New("cyphrpass: no commit state")
-
 	// ErrMalformedDigest indicates a tagged digest string is malformed
 	// (missing separator, wrong length, or invalid JSON encoding).
 	ErrMalformedDigest = errors.New("cyphrpass: malformed digest")

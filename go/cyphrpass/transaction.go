@@ -37,7 +37,7 @@ func (k TransactionKind) String() string {
 // Transaction is a parsed auth mutation.
 //
 // Transactions mutate Auth State and form a chain via the Pre field.
-// Pre references the prior Commit State (CS) per SPEC §8.5.
+// Pre references the prior Principal State (PS) per SPEC §4.3.
 type Transaction struct {
 	// Kind is the type of transaction.
 	Kind TransactionKind
@@ -51,8 +51,8 @@ type Transaction struct {
 	// Czd is the Coz digest of this transaction.
 	Czd coz.B64
 
-	// Pre is the prior Commit State (required for all transaction types).
-	Pre CommitState
+	// Pre is the prior Principal State (required for all transaction types).
+	Pre PrincipalState
 
 	// ID is the target key thumbprint (for add/delete/replace/other-revoke).
 	ID coz.B64
@@ -170,8 +170,8 @@ func (tx *Transaction) parsePre(pre string) error {
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	// Create single-variant CommitState from tagged digest
-	tx.Pre = CommitState{FromSingleDigest(tagged.Alg, tagged.Digest)}
+	// Create single-variant PrincipalState from tagged digest
+	tx.Pre = PrincipalState{FromSingleDigest(tagged.Alg, tagged.Digest)}
 	return nil
 }
 

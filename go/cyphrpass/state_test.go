@@ -75,19 +75,15 @@ func TestComputeAS_ImplicitPromotion(t *testing.T) {
 }
 
 func TestComputePS_ImplicitPromotion(t *testing.T) {
-	// SPEC §8.3: Only CS (promoted from AS), no DS, no nonce → PS = CS
+	// SPEC §8.3: Only AS, no CommitID, no DS, no nonce → PS = AS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	as := AuthState{FromSingleDigest(HashSha256, goldenTmb)}
-	cs, err := ComputeCS(as, nil, algs)
-	if err != nil {
-		t.Fatalf("ComputeCS: %v", err)
-	}
-	ps, err := ComputePS(cs, nil, nil, algs)
+	ps, err := ComputePS(as, nil, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(ps.First(), cs.First()) {
-		t.Errorf("PS should promote from CS: got %x, want %x", ps.First(), cs.First())
+	if !bytes.Equal(ps.First(), as.First()) {
+		t.Errorf("PS should promote from AS: got %x, want %x", ps.First(), as.First())
 	}
 }
 
@@ -106,7 +102,7 @@ func TestImplicitGenesisSingleKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeCS: %v", err)
 	}
-	ps, err := ComputePS(cs, nil, nil, algs)
+	ps, err := ComputePS(as, nil, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputePS: %v", err)
 	}

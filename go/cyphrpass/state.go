@@ -31,7 +31,9 @@ type AuthState struct {
 	MultihashDigest
 }
 
-// CommitState (CS) binds an Auth State to a specific commit: MR(AS, CommitID) (SPEC §8.5).
+// CommitState (CS) is the Principal Tree minus CommitID: MR(AS, DS?) (SPEC §8.5).
+// CS captures all non-commit-specific state. CommitID is excluded to avoid
+// circular dependencies (CS is embedded in cozies before CommitID is known).
 type CommitState struct {
 	MultihashDigest
 }
@@ -52,7 +54,8 @@ func (d DataState) Bytes() coz.B64 {
 	return d.digest
 }
 
-// PrincipalState (PS) is the current top-level state: MR(CS, DS?) or promoted (SPEC §8.3).
+// PrincipalState (PS) is the current top-level state: MR(AS, CommitID?, DS?) (SPEC §8.3).
+// PS includes CommitID directly, unlike CS which excludes it.
 type PrincipalState struct {
 	MultihashDigest
 }
@@ -210,8 +213,21 @@ func (s AuthState) Tagged() string {
 // Tagged returns the CommitState as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
-// This is the canonical format for the `pre` field in transactions.
 func (s CommitState) Tagged() string {
+	algs := s.Algorithms()
+	if len(algs) == 0 {
+		return ""
+	}
+	firstAlg := algs[0]
+	digest := s.Get(firstAlg)
+	return fmt.Sprintf("%s:%s", firstAlg, digest.String())
+}
+
+// Tagged returns the PrincipalState as an algorithm-prefixed digest string.
+// Format: "ALG:base64url" (e.g., "SHA-256:digest...").
+// Uses the lexicographically first algorithm for deterministic output.
+// This is the canonical format for the `pre` field in transactions.
+func (s PrincipalState) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
 		return ""
@@ -497,11 +513,12 @@ func ComputeAS(ks KeyState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
 }
 
 // ComputeCS computes Commit State (SPEC §8.5).
-// CS = MR(AS, Commit ID) — binds an auth state to a specific commit.
-// If commitID is nil (genesis / no transactions), CS promotes from AS.
-func ComputeCS(as AuthState, commitID *CommitID, algs []HashAlg) (CommitState, error) {
-	// Implicit promotion: no commit ID → CS = AS
-	if commitID == nil {
+// CS = MR(AS, DS?) — the Principal Tree minus CommitID.
+// CommitID is excluded from CS to avoid circular dependencies.
+// If ds is nil (no actions), CS promotes from AS.
+func ComputeCS(as AuthState, ds *DataState, algs []HashAlg) (CommitState, error) {
+	// Implicit promotion: only AS, no DS
+	if ds == nil {
 		return CommitState{as.Clone()}, nil
 	}
 
@@ -512,13 +529,9 @@ func ComputeCS(as AuthState, commitID *CommitID, algs []HashAlg) (CommitState, e
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		// Get AS variant for this algorithm, falling back to first available
 		asBytes := as.GetOrFirst(alg)
 
-		// Get CommitID variant for this algorithm, falling back to first available
-		cidBytes := commitID.GetOrFirst(alg)
-
-		components := [][]byte{asBytes, cidBytes}
+		components := [][]byte{asBytes, ds.Bytes()}
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
 			return CommitState{}, err
@@ -564,27 +577,30 @@ func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataState, error) {
 	return &ds, nil
 }
 
-// ComputePS computes Principal State from CS and optional DS (SPEC §8.3).
-// PS = MR(CS, DS?) — top-level state derived from commit state.
-// If DS is nil with no nonce, PS = CS (implicit promotion).
-func ComputePS(cs CommitState, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
-	// Implicit promotion: only CS, no DS, no nonce
-	if ds == nil && len(nonce) == 0 {
-		return PrincipalState{cs.Clone()}, nil
+// ComputePS computes Principal State (SPEC §8.3).
+// PS = MR(AS, CommitID?, DS?) — top-level state including CommitID directly.
+// PS is computed from raw components, NOT from CS.
+// If commitID is nil and ds is nil with no nonce, PS = AS (implicit promotion).
+func ComputePS(as AuthState, commitID *CommitID, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
+	// Implicit promotion: only AS, nothing else
+	if commitID == nil && ds == nil && len(nonce) == 0 {
+		return PrincipalState{as.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = cs.Algorithms()
+		algs = as.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		// Get CS variant for this algorithm, falling back to first available
-		csBytes := cs.GetOrFirst(alg)
+		asBytes := as.GetOrFirst(alg)
 
 		// Collect non-nil components
-		components := [][]byte{csBytes}
+		components := [][]byte{asBytes}
+		if commitID != nil {
+			components = append(components, commitID.GetOrFirst(alg))
+		}
 		if ds != nil {
 			components = append(components, ds.Bytes())
 		}

@@ -128,14 +128,14 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// CS = AS (no commit ID at genesis, promotes)
+	// CS = AS (no DS at genesis, promotes)
 	cs, err := ComputeCS(as, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = CS (no DS, promotes)
-	ps, err := ComputePS(cs, nil, nil, algs)
+	// PS = AS (no CommitID or DS at genesis, promotes)
+	ps, err := ComputePS(as, nil, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -197,14 +197,14 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// CS = AS (no commit ID at genesis, promotes)
+	// CS = AS (no DS at genesis, promotes)
 	cs, err := ComputeCS(as, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = CS (no DS, promotes)
-	ps, err := ComputePS(cs, nil, nil, algs)
+	// PS = AS (no CommitID or DS at genesis, promotes)
+	ps, err := ComputePS(as, nil, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -416,11 +416,8 @@ func (p *Principal) RecordAction(action *Action) error {
 	}
 	p.ds = ds
 
-	// Recompute PS = MR(CS, DS?)
-	if p.cs == nil {
-		return ErrNoCommitState
-	}
-	ps, err := ComputePS(*p.cs, p.ds, nil, p.activeAlgs)
+	// Recompute PS = MR(AS, CommitID?, DS?)
+	ps, err := ComputePS(p.as, p.commitID, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -573,13 +570,10 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 	return nil
 }
 
-// verifyPre checks that the transaction's pre matches current CS.
-// At genesis (before first commit), CS is promoted from AS, so pre = AS = CS.
-func (p *Principal) verifyPre(pre CommitState) error {
-	if p.cs == nil {
-		return ErrNoCommitState
-	}
-	if !bytes.Equal(p.cs.First(), pre.First()) {
+// verifyPre checks that the transaction's pre matches current PS.
+// At genesis (before first commit), PS is promoted from AS, so pre = AS = PS.
+func (p *Principal) verifyPre(pre PrincipalState) error {
+	if !bytes.Equal(p.ps.First(), pre.First()) {
 		return ErrInvalidPrior
 	}
 	return nil
@@ -738,13 +732,6 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ks = ks
 
-	// Compute Commit ID from this commit's transaction czds (SPEC §4.2.1)
-	cid, err := pending.ComputeCommitID()
-	if err != nil {
-		return nil, err
-	}
-	p.commitID = cid
-
 	// Recompute AS = MR(KS, RS?)
 	as, err := ComputeAS(p.ks, nil, p.activeAlgs)
 	if err != nil {
@@ -752,15 +739,22 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.as = as
 
-	// Recompute CS = MR(AS, Commit ID)
-	cs, err := ComputeCS(p.as, p.commitID, p.activeAlgs)
+	// Compute Commit ID from this commit's transaction czds (SPEC §4.2.1)
+	cid, err := pending.ComputeCommitID()
+	if err != nil {
+		return nil, err
+	}
+	p.commitID = cid
+
+	// Recompute CS = MR(AS, DS?) — PT minus CommitID
+	cs, err := ComputeCS(p.as, p.ds, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
 	p.cs = &cs
 
-	// Recompute PS = MR(CS, DS?)
-	ps, err := ComputePS(cs, p.ds, nil, p.activeAlgs)
+	// Recompute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
+	ps, err := ComputePS(p.as, p.commitID, p.ds, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}

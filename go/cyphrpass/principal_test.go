@@ -152,7 +152,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    *p.CS(),
+		Pre:    p.PS(),
 		ID:     key2.Tmb,
 	}
 
@@ -187,7 +187,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 	p, _ := Implicit(key1)
 
 	key2 := makeTestCozKey(0x22)
-	wrongPre := CommitState{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
+	wrongPre := PrincipalState{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
 	tx := &Transaction{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
@@ -214,7 +214,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xEE}, 32),
 		Rvk:    2000,
-		Pre:    *p.CS(), // Unified pre semantics: all transactions require pre
+		Pre:    p.PS(), // Unified pre semantics: all transactions require pre
 	}
 
 	_, err := p.ApplyTransactionUnsafe(tx, nil)
@@ -243,7 +243,7 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    *p.CS(),
+		Pre:    p.PS(),
 		ID:     key2.Tmb,
 	}
 	p.ApplyTransactionUnsafe(tx, key2) //nolint:errcheck

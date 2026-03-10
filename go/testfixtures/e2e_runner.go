@@ -146,10 +146,7 @@ func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent,
 	}
 
 	// Build pay object
-	if principal.CS() == nil {
-		return fmt.Errorf("principal has no commit state")
-	}
-	payObj := buildTransactionPay(tx, signerKey.Tmb, *principal.CS())
+	payObj := buildTransactionPay(tx, signerKey.Tmb, principal.PS())
 
 	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
@@ -252,7 +249,7 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentCS cyphrpass.CommitState) map[string]any {
+func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalState) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
@@ -260,14 +257,14 @@ func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentCS cyphrpass.Co
 		"now": tx.Now,
 	}
 
-	// Add pre field (current commit state) for transactions that need it
+	// Add pre field (current principal state) for transactions that need it
 	if strings.Contains(tx.Typ, "key/create") ||
 		strings.Contains(tx.Typ, "key/add") ||
 		strings.Contains(tx.Typ, "key/delete") ||
 		strings.Contains(tx.Typ, "key/replace") ||
 		strings.Contains(tx.Typ, "key/revoke") ||
 		strings.Contains(tx.Typ, "principal/create") {
-		payObj["pre"] = currentCS.Tagged()
+		payObj["pre"] = currentPS.Tagged()
 	}
 
 	// Add rvk field if present
@@ -628,8 +625,8 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Step 5: Recompute CS = MR(AS, Commit ID) and verify variants
-	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.CommitID(), activeAlgs)
+	// Step 5: Recompute CS = MR(AS, DS?) and verify variants
+	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.DS(), activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute CS: %w", err)
 		return result
@@ -656,8 +653,8 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Step 6: Recompute PS = MR(CS, DS?) and verify variants
-	recomputedPS, err := cyphrpass.ComputePS(recomputedCS, reimported.DS(), nil, activeAlgs)
+	// Step 6: Recompute PS = MR(AS, CommitID?, DS?) and verify variants
+	recomputedPS, err := cyphrpass.ComputePS(recomputedAS, reimported.CommitID(), reimported.DS(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute PS: %w", err)
 		return result
