@@ -258,10 +258,12 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 			hashAlg, err := cyphrpass.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
+			} else if p.PR() == nil {
+				failures = append(failures, fmt.Sprintf("pr: got nil, want %s:%s", alg, expectedDigest))
 			} else {
 				prDigest := p.PR().Get(hashAlg)
 				if prDigest == nil {
-					failures = append(failures, fmt.Sprintf("pr: got nil, want %s", expectedDigest))
+					failures = append(failures, fmt.Sprintf("pr: got nil variant, want %s", expectedDigest))
 				} else if coz.B64(prDigest).String() != expectedDigest {
 					failures = append(failures, fmt.Sprintf("pr: got %s, want %s", coz.B64(prDigest).String(), expectedDigest))
 				}

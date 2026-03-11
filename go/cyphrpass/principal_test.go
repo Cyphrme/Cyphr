@@ -22,9 +22,9 @@ func TestImplicit_SingleKey(t *testing.T) {
 		t.Fatalf("Implicit failed: %v", err)
 	}
 
-	// Level 1: PR = PS = AS = KS = tmb (implicit promotion)
-	if !bytes.Equal(p.PR().First(), key.Tmb) {
-		t.Errorf("PR != tmb")
+	// Level 1: PR is nil (no principal/create at L1)
+	if p.PR() != nil {
+		t.Errorf("PR should be nil at Level 1")
 	}
 	if !bytes.Equal(p.PS().First(), key.Tmb) {
 		t.Errorf("PS != tmb")
@@ -63,9 +63,9 @@ func TestExplicit_MultiKey(t *testing.T) {
 		t.Fatalf("Explicit failed: %v", err)
 	}
 
-	// PR should NOT equal either single tmb (it's a hash)
-	if bytes.Equal(p.PR().First(), key1.Tmb) || bytes.Equal(p.PR().First(), key2.Tmb) {
-		t.Error("PR should be hash of sorted thumbprints, not a single tmb")
+	// PR should be nil (not yet established — needs principal/create)
+	if p.PR() != nil {
+		t.Error("PR should be nil before principal/create")
 	}
 
 	// Should have 2 active keys
@@ -89,19 +89,21 @@ func TestExplicit_EmptyKeys(t *testing.T) {
 	}
 }
 
-func TestPR_IsImmutable(t *testing.T) {
+func TestPR_IsNilAtLevel1(t *testing.T) {
 	key := makeTestCozKey(0xCC)
 	p, _ := Implicit(key)
 
-	prBefore := append([]byte{}, p.PR().First()...)
+	// PR is nil at Level 1 (no principal/create)
+	if p.PR() != nil {
+		t.Error("PR should be nil at Level 1")
+	}
 
-	// Modify PS (simulate state change)
-	// In practice we'd apply a transaction, but for this test just verify the reference
+	// PS still exists and is stable
+	psBefore := append([]byte{}, p.PS().First()...)
 	ps := p.PS()
-	_ = ps // PS may change but PR should not
-
-	if !bytes.Equal(p.PR().First(), prBefore) {
-		t.Error("PR should be immutable")
+	_ = ps
+	if !bytes.Equal(p.PS().First(), psBefore) {
+		t.Error("PS should be stable")
 	}
 }
 
@@ -125,9 +127,9 @@ func TestImplicit_GoldenKey(t *testing.T) {
 		t.Fatalf("Implicit failed: %v", err)
 	}
 
-	// At Level 1, PR = PS = AS = KS = tmb
-	if p.PR().String() != goldenTmbB64 {
-		t.Errorf("PR = %s, want %s", p.PR().String(), goldenTmbB64)
+	// At Level 1, PR is nil, PS = AS = KS = tmb
+	if p.PR() != nil {
+		t.Error("PR should be nil at Level 1")
 	}
 	if p.PS().String() != goldenTmbB64 {
 		t.Errorf("PS = %s, want %s", p.PS().String(), goldenTmbB64)
@@ -231,11 +233,14 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 	}
 }
 
-func TestPR_UnchangedAfterTransaction(t *testing.T) {
+func TestPR_StillNilAfterTransaction(t *testing.T) {
 	key1 := makeTestCozKey(0x11)
 	p, _ := Implicit(key1)
 
-	prBefore := append([]byte{}, p.PR().First()...)
+	// PR is nil at L1
+	if p.PR() != nil {
+		t.Fatal("PR should be nil before principal/create")
+	}
 
 	key2 := makeTestCozKey(0x22)
 	tx := &Transaction{
@@ -248,8 +253,9 @@ func TestPR_UnchangedAfterTransaction(t *testing.T) {
 	}
 	p.ApplyTransactionUnsafe(tx, key2) //nolint:errcheck
 
-	if !bytes.Equal(p.PR().First(), prBefore) {
-		t.Error("PR should never change")
+	// PR should still be nil (no principal/create was issued)
+	if p.PR() != nil {
+		t.Error("PR should still be nil without principal/create")
 	}
 }
 

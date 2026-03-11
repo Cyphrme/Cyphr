@@ -138,19 +138,20 @@ changes from stable sections §1-11 only.
 2. **Phase 2: Identity Corrections** — Fix PR optionality and genesis
    finality semantics. Independent of Phase 1 in concept but may share
    call sites in `principal.go`/`principal.rs`.
-   - [ ] **WS-C: L1/2 PR Removal**
-     - [ ] Go: Change `pr` field to `*PrincipalRoot` (nilable)
-     - [ ] Go: Only set `pr` at Level 3+ in genesis and import flows
-     - [ ] Go: Update `PR()` accessor to return `*PrincipalRoot`
-     - [ ] Go: Update callers that assume PR is always present
+   - [/] **WS-C: L1/2 PR Removal** _(Go done 2026-03-11, Rust pending)_
+     - [x] Go: Change `pr` field to `*PrincipalRoot` (nilable)
+     - [x] Go: Only set `pr` at principal/create (not in constructors)
+     - [x] Go: Update `PR()` accessor to return `*PrincipalRoot`
+     - [x] Go: Update callers that assume PR is always present
      - [ ] Rust: Wrap `pr` field in `Option<PrincipalRoot>`
      - [ ] Rust: Only set at Level 3+ in genesis and import flows
      - [ ] Rust: Update accessor to return `Option<&PrincipalRoot>`
      - [ ] Both: `go test ./...` and `cargo test --workspace` pass
-   - [ ] **WS-D: Genesis Finality**
-     - [ ] Verify genesis `id` assertion already uses PS (likely correct via promotion)
-     - [ ] Update any stale comments referencing AS where PS is meant
-     - [ ] Verify golden fixture values still hold (AS == PS at genesis w/o DS)
+   - [/] **WS-D: Genesis Finality** _(Go done 2026-03-11, Rust pending)_
+     - [x] Go: Genesis `id` assertion uses PS (was AS)
+     - [x] Go: PR frozen at TxPrincipalCreate, not in constructors
+     - [ ] Rust: Mirror genesis id and PR freeze changes
+     - [ ] Verify golden fixture values still hold
      - [ ] Both: `go test ./...` and `cargo test --workspace` pass
 
 3. **Phase 3: Commit Finality Plumbing** — Introduce CommitBuilder API

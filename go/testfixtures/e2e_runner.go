@@ -679,12 +679,14 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Step 6: PR only has genesis algorithm variant (native-only)
-	genesisAlg := reimported.HashAlg()
-	prVariant := reimported.PR().Get(genesisAlg)
-	if prVariant == nil {
-		result.Failures = append(result.Failures, fmt.Sprintf(
-			"PR should have genesis algorithm %s variant", genesisAlg))
+	// Step 6: PR check — nil for L1/L2, has genesis variant for L3+
+	if reimported.PR() != nil {
+		genesisAlg := reimported.HashAlg()
+		prVariant := reimported.PR().Get(genesisAlg)
+		if prVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf(
+				"PR should have genesis algorithm %s variant", genesisAlg))
+		}
 	}
 
 	// Also verify expected state if provided

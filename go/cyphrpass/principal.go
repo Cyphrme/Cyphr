@@ -64,12 +64,12 @@ type dataLedger struct {
 // Principal represents a self-sovereign identity in the Cyphrpass protocol.
 //
 // A Principal has:
-//   - Permanent root (PR) set at genesis, never changes
+//   - Permanent root (PR) set at principal/create (Level 3+), nil for L1/L2
 //   - Evolving state (PS) as keys, transactions, and actions change
 //   - Auth ledger tracking keys and transactions
 //   - Data ledger tracking actions (Level 4+)
 type Principal struct {
-	pr       PrincipalRoot
+	pr       *PrincipalRoot // nil until principal/create establishes it (SPEC §5.1)
 	ps       PrincipalState
 	ks       KeyState
 	commitID *CommitID // nil if no transactions
@@ -98,7 +98,8 @@ type Principal struct {
 // Implicit creates a principal with implicit genesis (single key).
 //
 // Per SPEC §3.2: "Identity emerges from first key possession"
-//   - PR = PS = AS = KS = tmb (fully promoted)
+//   - PS = AS = KS = tmb (fully promoted)
+//   - PR is nil (L1/L2 have no PR per SPEC §5.1)
 //
 // This is the Level 1/2 genesis path.
 func Implicit(key *coz.Key) (*Principal, error) {
@@ -140,11 +141,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// PR = first PS
-	pr := NewPrincipalRoot(ps)
-
 	p := &Principal{
-		pr:         pr,
 		ps:         ps,
 		ks:         ks,
 		as:         as,
@@ -163,7 +160,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 // Explicit creates a principal with explicit genesis (multiple keys).
 //
 // Per SPEC §3.2: Multi-key accounts require explicit genesis
-//   - PR = H(sort(tmb₀, tmb₁, ...))
+//   - PR is nil at construction (established by principal/create)
 //
 // This is the Level 3+ genesis path.
 func Explicit(keys []*coz.Key) (*Principal, error) {
@@ -209,11 +206,7 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// PR frozen at genesis
-	pr := NewPrincipalRoot(ps)
-
 	return &Principal{
-		pr:         pr,
 		ps:         ps,
 		ks:         ks,
 		as:         as,
@@ -227,8 +220,10 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 	}, nil
 }
 
-// PR returns the Principal Root (permanent identifier).
-func (p *Principal) PR() PrincipalRoot {
+// PR returns the Principal Root, or nil if not yet established (L1/L2).
+//
+// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+func (p *Principal) PR() *PrincipalRoot {
 	return p.pr
 }
 
@@ -544,15 +539,17 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		}
 
 	case TxPrincipalCreate:
-		// SPEC §5.1: Genesis finalization. Verify pre matches AS and id matches AS.
+		// SPEC §5.1: Genesis finalization. Verify pre and id matches PS.
 		if err := p.verifyPre(tx.Pre); err != nil {
 			return err
 		}
-		// id must equal current AS (self-referential for genesis finalization)
-		if !bytes.Equal(tx.ID, p.as.First()) {
+		// id must equal current PS (SPEC §5.1:609 — "id: Final PS = PR")
+		if !bytes.Equal(tx.ID, p.ps.First()) {
 			return ErrMalformedPayload
 		}
-		// No state mutation needed; transaction is recorded for chain continuity
+		// Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
+		pr := NewPrincipalRoot(p.ps)
+		p.pr = &pr
 	}
 
 	// Update signer's last_used timestamp

@@ -12,17 +12,17 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 type Store interface {
 	// AppendEntry appends a signed entry (transaction or action) to the log.
 	// The entry must be a valid signed Coz JSON message.
-	AppendEntry(pr cyphrpass.PrincipalRoot, entry *Entry) error
+	AppendEntry(pr *cyphrpass.PrincipalRoot, entry *Entry) error
 
 	// GetEntries returns all entries for a principal in storage order.
-	GetEntries(pr cyphrpass.PrincipalRoot) ([]*Entry, error)
+	GetEntries(pr *cyphrpass.PrincipalRoot) ([]*Entry, error)
 
 	// GetEntriesRange returns entries with pagination/filtering.
 	// Supports transaction patches for checkpoint-based sync.
-	GetEntriesRange(pr cyphrpass.PrincipalRoot, opts *QueryOpts) ([]*Entry, error)
+	GetEntriesRange(pr *cyphrpass.PrincipalRoot, opts *QueryOpts) ([]*Entry, error)
 
 	// Exists checks if a principal exists in storage.
-	Exists(pr cyphrpass.PrincipalRoot) (bool, error)
+	Exists(pr *cyphrpass.PrincipalRoot) (bool, error)
 }
 
 // QueryOpts provides common query parameters for filtered retrieval.
