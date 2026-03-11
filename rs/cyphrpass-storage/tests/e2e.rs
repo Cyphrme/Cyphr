@@ -565,8 +565,10 @@ fn e2e_checkpoint_load() {
 
     // Create principal with single key (implicit genesis)
     let principal = cyphrpass::Principal::implicit(key.clone()).expect("implicit failed");
-    let pr = principal.pr().clone();
     let initial_as = principal.auth_state().clone();
+
+    // L1 principal has no PR
+    assert!(principal.pr().is_none(), "L1 principal should have no PR");
 
     // Create checkpoint at genesis
     let checkpoint = Checkpoint {
@@ -575,17 +577,16 @@ fn e2e_checkpoint_load() {
         attestor: None,
     };
 
-    // Load from checkpoint with no additional entries
-    let loaded = load_from_checkpoint(pr.clone(), checkpoint, &[]).expect("load failed");
+    // Load from checkpoint with no additional entries (no PR for L1)
+    let loaded = load_from_checkpoint(None, checkpoint, &[]).expect("load failed");
 
-    // Verify PR matches
-    assert_eq!(
-        loaded.pr().get(loaded.hash_alg()).unwrap(),
-        pr.get(cyphrpass::HashAlg::Sha256).unwrap(),
-        "checkpoint_matches_pr: PR mismatch"
+    // Verify PR is still None for L1
+    assert!(
+        loaded.pr().is_none(),
+        "checkpoint_matches_pr: L1 should have no PR"
     );
 
-    eprintln!("  ✓ checkpoint_matches_pr");
+    eprintln!("  ✓ checkpoint_matches_pr (L1: no PR)");
 
     // Test checkpoint_with_suffix is implicitly tested by round-trip tests
     // that load entries after genesis - the load_principal path is the same
@@ -900,17 +901,20 @@ fn e2e_multihash_round_trip() {
             eprintln!("    ✓ {:?} variant present (KS/AS/PS)", alg);
         }
 
-        // PR is immutable from genesis - only has genesis algorithm variant (native-only)
-        // This is per design decision: PR is derived once at genesis, not recomputed
-        let genesis_alg = principal.hash_alg();
-        let principal_pr = principal.pr().get(genesis_alg);
-        assert!(
-            principal_pr.is_some(),
-            "{}: PR should have genesis algorithm {:?} variant",
-            test.name,
-            genesis_alg
-        );
-        eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
+        // PR check: None for L1/L2, has genesis variant for L3+
+        if let Some(pr) = principal.pr() {
+            let genesis_alg = principal.hash_alg();
+            let principal_pr = pr.get(genesis_alg);
+            assert!(
+                principal_pr.is_some(),
+                "{}: PR should have genesis algorithm {:?} variant",
+                test.name,
+                genesis_alg
+            );
+            eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
+        } else {
+            eprintln!("    ✓ PR is None (L1/L2 principal)");
+        }
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
         // Recompute AS from KS

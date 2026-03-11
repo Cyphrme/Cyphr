@@ -56,22 +56,31 @@ pub fn run(
         },
     };
 
-    // Get PR for output
-    let pr = {
+    // Get identity string for output: PR if available, else PS
+    let identity_str = {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        principal
-            .pr()
-            .as_multihash()
-            .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
+        if let Some(pr) = principal.pr() {
+            pr.as_multihash()
+                .first_variant()
+                .map(Base64UrlUnpadded::encode_string)
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
+        } else {
+            principal
+                .ps()
+                .as_multihash()
+                .first_variant()
+                .map(Base64UrlUnpadded::encode_string)
+                .map_err(|e| Error::Storage(format!("PS empty: {e}")))?
+        }
     };
 
-    // Store the identity
+    // Store the identity (only if PR is set — L3+ explicit genesis)
     let store = parse_store(&cli.store)?;
-    let commits = export_commits(&principal)?;
-    for commit in &commits {
-        store.append_commit(principal.pr(), commit)?;
+    if let Some(pr_ref) = principal.pr() {
+        let commits = export_commits(&principal)?;
+        for commit in &commits {
+            store.append_commit(pr_ref, commit)?;
+        }
     }
 
     // Output result
@@ -79,14 +88,14 @@ pub fn run(
         OutputFormat::Json => {
             let keys: Vec<_> = principal.active_keys().map(|k| k.tmb.to_b64()).collect();
             let output = serde_json::json!({
-                "pr": pr,
+                "pr": identity_str,
                 "keys": keys,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
             println!("Created identity");
-            println!("  pr: {pr}");
+            println!("  pr: {identity_str}");
             println!("  keys:");
             for key in principal.active_keys() {
                 let tag_str = key.tag.as_deref().unwrap_or("-");

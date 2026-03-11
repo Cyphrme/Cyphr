@@ -1172,7 +1172,7 @@ impl<'a> Generator<'a> {
         let ds = principal.data_state().map(|d| d.0.to_b64());
         let pr = principal
             .pr()
-            .get(first_alg)
+            .and_then(|pr_val| pr_val.get(first_alg))
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
         let level = principal.level() as u8;

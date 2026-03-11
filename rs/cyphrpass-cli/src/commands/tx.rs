@@ -85,19 +85,20 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let key = load_key_from_keystore(&keystore, identity)?;
         let principal = cyphrpass::Principal::implicit(key)?;
 
-        // Verify PR matches
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        let computed_pr = principal
-            .pr()
-            .as_multihash()
-            .first_variant()
-            .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-        if computed_pr != identity {
-            return Err(Error::Storage(format!(
-                "PR mismatch: computed {} != {}",
-                computed_pr, identity
-            )));
+        // Verify PR matches (L1 has no PR)
+        if let Some(pr) = principal.pr() {
+            use coz::base64ct::{Base64UrlUnpadded, Encoding};
+            let computed_pr = pr
+                .as_multihash()
+                .first_variant()
+                .map(Base64UrlUnpadded::encode_string)
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+            if computed_pr != identity {
+                return Err(Error::Storage(format!(
+                    "PR mismatch: computed {} != {}",
+                    computed_pr, identity
+                )));
+            }
         }
 
         match cli.output {
@@ -139,17 +140,18 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     // Verify PR matches
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let computed_pr = principal
-        .pr()
-        .as_multihash()
-        .first_variant()
-        .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-    if computed_pr != identity {
-        return Err(Error::Storage(format!(
-            "PR mismatch: computed {} != expected {}",
-            computed_pr, identity
-        )));
+    if let Some(pr) = principal.pr() {
+        let computed_pr = pr
+            .as_multihash()
+            .first_variant()
+            .map(Base64UrlUnpadded::encode_string)
+            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+        if computed_pr != identity {
+            return Err(Error::Storage(format!(
+                "PR mismatch: computed {} != expected {}",
+                computed_pr, identity
+            )));
+        }
     }
 
     // Verify state digests from commits match computed state

@@ -82,7 +82,9 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     // Verify by loading the principal (this replays and verifies all transactions)
     let principal = load_principal_from_commits(genesis, &commits)?;
-    let pr = principal.pr();
+    let pr = principal
+        .pr()
+        .expect("imported principal must have PR (Level 3+)");
 
     // Check if identity already exists in storage
     let existing = store.get_commits(pr).unwrap_or_default();

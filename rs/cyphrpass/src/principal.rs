@@ -72,13 +72,13 @@ pub enum Level {
 /// A Cyphrpass Principal (self-sovereign identity).
 ///
 /// Represents a single identity with:
-/// - Permanent root (PR) set at genesis
+/// - Permanent root (PR) set at principal/create (Level 3+), None for L1/L2
 /// - Evolving state (PS) as keys and transactions change
 /// - Auth ledger tracking keys and transactions
 #[derive(Debug, Clone)]
 pub struct Principal {
-    /// Principal Root - permanent, set at genesis.
-    pr: PrincipalRoot,
+    /// Principal Root - None until principal/create establishes it (SPEC §5.1).
+    pr: Option<PrincipalRoot>,
     /// Current Principal State.
     ps: PrincipalState,
     /// Current Key State.
@@ -115,7 +115,8 @@ impl Principal {
     /// Create a principal with implicit genesis (single key).
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
-    /// - `PR = PS = AS = KS = tmb` (fully promoted)
+    /// - `PS = AS = KS = tmb` (fully promoted)
+    /// - PR is None (L1/L2 have no PR per SPEC §5.1)
     ///
     /// This is the Level 1/2 genesis path.
     ///
@@ -137,14 +138,12 @@ impl Principal {
         let cs = compute_cs(&auth_state, None, &active_algs)?;
         // PS = AS (no CommitID or DS at genesis)
         let ps = compute_ps(&auth_state, None, None, None, &active_algs)?;
-        // PR = first PS
-        let pr = PrincipalRoot::from_initial(&ps);
 
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64, key);
 
         Ok(Self {
-            pr,
+            pr: None, // L1/L2 has no PR (SPEC §5.1)
             ps,
             ks,
             commit_id: None,
@@ -166,7 +165,7 @@ impl Principal {
     /// Create a principal with explicit genesis (multiple keys).
     ///
     /// Per SPEC §3.2: Multi-key accounts require explicit genesis
-    /// - `PR = H(sort(tmb₀, tmb₁, ...))`
+    /// - PR is None at construction (established by principal/create)
     ///
     /// This is the Level 3+ genesis path.
     pub fn explicit(keys: Vec<Key>) -> Result<Self> {
@@ -190,8 +189,6 @@ impl Principal {
         let cs = compute_cs(&auth_state, None, &active_algs)?;
         // PS = AS (no CommitID or DS at genesis)
         let ps = compute_ps(&auth_state, None, None, None, &active_algs)?;
-        // PR frozen at genesis
-        let pr = PrincipalRoot::from_initial(&ps);
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -199,7 +196,7 @@ impl Principal {
         }
 
         Ok(Self {
-            pr,
+            pr: None, // Not yet established (needs principal/create)
             ps,
             ks,
             commit_id: None,
@@ -233,7 +230,7 @@ impl Principal {
     /// Returns `NoActiveKeys` if `keys` is empty.
     /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
     pub fn from_checkpoint(
-        pr: PrincipalRoot,
+        pr: Option<PrincipalRoot>,
         auth_state: AuthState,
         keys: Vec<Key>,
     ) -> Result<Self> {
@@ -285,9 +282,11 @@ impl Principal {
     // Accessors
     // ========================================================================
 
-    /// Get the Principal Root (permanent identifier).
-    pub fn pr(&self) -> &PrincipalRoot {
-        &self.pr
+    /// Get the Principal Root, or None if not yet established (L1/L2).
+    ///
+    /// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+    pub fn pr(&self) -> Option<&PrincipalRoot> {
+        self.pr.as_ref()
     }
 
     /// Get the current Principal State.
@@ -764,13 +763,14 @@ impl Principal {
             },
             TransactionKind::PrincipalCreate { pre, id } => {
                 // Genesis finalization (SPEC §5.1)
-                // Verify that `pre` matches the current Auth State (chain continuity)
+                // Verify that `pre` matches the current PS (chain continuity)
                 self.verify_pre(pre)?;
-                // Verify that `id` matches the computed Auth State (becomes PR)
-                if *id != self.auth_state {
+                // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
+                if id.0 != self.ps.0 {
                     return Err(Error::StateMismatch);
                 }
-                // No state mutation needed — AS is already established via implicit key + key/create txs
+                // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
+                self.pr = Some(PrincipalRoot::from_initial(&self.ps));
             },
         }
 
@@ -1013,11 +1013,8 @@ mod tests {
         let key = make_test_key(0xAA);
         let principal = Principal::implicit(key.clone()).unwrap();
 
-        // Level 1: PR = PS = AS = KS = tmb
-        assert_eq!(
-            principal.pr().get(principal.hash_alg()).unwrap(),
-            key.tmb.as_bytes()
-        );
+        // Level 1: PR is None (no principal/create at L1)
+        assert!(principal.pr().is_none(), "PR should be None at Level 1");
         assert_eq!(
             principal.ps().get(principal.hash_alg()).unwrap(),
             key.tmb.as_bytes()
@@ -1049,14 +1046,10 @@ mod tests {
         let key2 = make_test_key(0x22);
         let principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        // PR should NOT equal either single tmb (it's a hash)
-        assert_ne!(
-            principal.pr().get(principal.hash_alg()).unwrap(),
-            key1.tmb.as_bytes()
-        );
-        assert_ne!(
-            principal.pr().get(principal.hash_alg()).unwrap(),
-            key2.tmb.as_bytes()
+        // PR should be None (not yet established — needs principal/create)
+        assert!(
+            principal.pr().is_none(),
+            "PR should be None before principal/create"
         );
 
         // Should have 2 active keys
@@ -1075,14 +1068,16 @@ mod tests {
     }
 
     #[test]
-    fn pr_is_immutable_across_reference() {
+    fn pr_is_none_at_level1() {
         let key = make_test_key(0xCC);
         let principal = Principal::implicit(key).unwrap();
 
-        // PR should be the same as PS at genesis
-        let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        // PR is None at Level 1 (no principal/create)
+        assert!(principal.pr().is_none(), "PR should be None at Level 1");
+
+        // PS still exists and is stable
         let ps_bytes = principal.ps().get(principal.hash_alg()).unwrap().to_vec();
-        assert_eq!(pr_bytes, ps_bytes);
+        assert!(!ps_bytes.is_empty());
     }
 
     // ========================================================================
@@ -1201,20 +1196,27 @@ mod tests {
     }
 
     #[test]
-    fn pr_unchanged_after_transaction() {
+    fn pr_still_none_after_transaction() {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        // PR is None at L1
+        assert!(
+            principal.pr().is_none(),
+            "PR should be None before principal/create"
+        );
+
         let pre = principal.ps().clone();
         let key2 = make_test_key(0x22);
         let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal.apply_transaction_test(tx, Some(key2)).unwrap();
 
-        let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        // PR is permanent, never changes
-        assert_eq!(pr_before, pr_after);
+        // PR should still be None (no principal/create was issued)
+        assert!(
+            principal.pr().is_none(),
+            "PR should still be None without principal/create"
+        );
     }
 
     // ========================================================================

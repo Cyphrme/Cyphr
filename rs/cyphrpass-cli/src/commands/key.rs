@@ -143,7 +143,10 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     let new_commits = export_commits(&principal)?;
     // Only append new commits (the ones after current)
     for commit in new_commits.iter().skip(commits.len()) {
-        store.append_commit(principal.pr(), commit)?;
+        store.append_commit(
+            principal.pr().expect("key add requires PR (Level 3+)"),
+            commit,
+        )?;
     }
 
     match cli.output {
@@ -234,7 +237,10 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     // Store updated state
     let new_commits = export_commits(&principal)?;
     for commit in new_commits.iter().skip(commits.len()) {
-        store.append_commit(principal.pr(), commit)?;
+        store.append_commit(
+            principal.pr().expect("key revoke requires PR (Level 3+)"),
+            commit,
+        )?;
     }
 
     match cli.output {

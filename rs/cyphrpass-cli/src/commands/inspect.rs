@@ -131,10 +131,11 @@ fn format_ps(principal: &cyphrpass::Principal) -> String {
 fn format_pr(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let pr = principal.pr();
     let hash_alg = principal.hash_alg();
 
-    pr.get(hash_alg)
+    principal
+        .pr()
+        .and_then(|pr| pr.get(hash_alg))
         .map(Base64UrlUnpadded::encode_string)
-        .unwrap_or_else(|| "<no variant>".to_string())
+        .unwrap_or_else(|| "<none>".to_string())
 }

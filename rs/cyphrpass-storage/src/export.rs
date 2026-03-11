@@ -200,7 +200,12 @@ pub fn persist_entries<S: Store>(
     let count = entries.len();
     for entry in entries {
         store
-            .append_entry(principal.pr(), &entry)
+            .append_entry(
+                principal
+                    .pr()
+                    .expect("persist_entries requires PR (Level 3+)"),
+                &entry,
+            )
             .map_err(PersistError::Store)?;
     }
     Ok(count)

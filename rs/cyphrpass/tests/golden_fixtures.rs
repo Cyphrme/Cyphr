@@ -242,7 +242,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                     .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
                 let actual_pr = principal
                     .pr()
-                    .get(hash_alg)
+                    .and_then(|pr_val| pr_val.get(hash_alg))
                     .map(Base64UrlUnpadded::encode_string)
                     .unwrap_or_default();
                 assert_eq!(actual_pr, expected_digest, "{}: pr mismatch", test_name);

@@ -25,13 +25,13 @@ pub enum Genesis {
     /// Implicit genesis: single key, no transaction required.
     ///
     /// Per SPEC §5.1: "Identity emerges from first key possession"
-    /// - `PR = PS = AS = KS = tmb`
+    /// - `PS = AS = KS = tmb` (PR is None at L1/L2)
     Implicit(Key),
 
     /// Explicit genesis: multiple keys established at creation.
     ///
     /// Per SPEC §5.1: "Multi-key accounts require explicit genesis"
-    /// - `PR = H(sort(tmb₀, tmb₁, ...))`
+    /// - PR is established by principal/create
     Explicit(Vec<Key>),
 }
 
@@ -183,7 +183,7 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 /// let principal = load_from_checkpoint(pr, checkpoint, &entries)?;
 /// ```
 pub fn load_from_checkpoint(
-    expected_pr: PrincipalRoot,
+    expected_pr: Option<PrincipalRoot>,
     checkpoint: Checkpoint,
     entries: &[Entry],
 ) -> Result<Principal, LoadError> {
@@ -511,15 +511,12 @@ mod tests {
     #[test]
     fn load_implicit_genesis_no_entries() {
         let key = make_test_key(0xAA);
-        let expected_tmb = key.tmb.clone();
+        let _expected_tmb = key.tmb.clone();
 
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
-        // Implicit genesis: PR = tmb
-        assert_eq!(
-            principal.pr().get(principal.hash_alg()).unwrap(),
-            expected_tmb.as_bytes()
-        );
+        // Implicit genesis: PR is None at L1
+        assert!(principal.pr().is_none(), "PR should be None at L1");
         assert_eq!(principal.active_key_count(), 1);
     }
 
@@ -531,7 +528,11 @@ mod tests {
         let principal =
             load_principal(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[]).unwrap();
 
-        // Explicit genesis: PR = H(sort(tmb1, tmb2))
+        // Explicit genesis: PR is None (needs principal/create)
+        assert!(
+            principal.pr().is_none(),
+            "PR should be None before principal/create"
+        );
         assert_eq!(principal.active_key_count(), 2);
         assert!(principal.is_key_active(&key1.tmb));
         assert!(principal.is_key_active(&key2.tmb));
@@ -558,7 +559,7 @@ mod tests {
             attestor: None,
         };
 
-        let result = load_from_checkpoint(pr, checkpoint, &[]);
+        let result = load_from_checkpoint(Some(pr), checkpoint, &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 }
