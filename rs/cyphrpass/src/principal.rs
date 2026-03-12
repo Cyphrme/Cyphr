@@ -775,17 +775,40 @@ impl Principal {
 
     /// Apply a transaction without prior signature verification (test-only).
     ///
-    /// Wraps the raw transaction in a VerifiedTransaction and applies it
-    /// as an atomic single-tx commit via the public API.
+    /// This helper computes commit_state post-mutation (per SPEC §4.4) since
+    /// test transactions don't go through the signing path.
     #[cfg(test)]
     pub(crate) fn apply_transaction_test(
         &mut self,
-        tx: crate::transaction::Transaction,
+        mut tx: crate::transaction::Transaction,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
+        use crate::commit::PendingCommit;
+        use crate::state::{compute_as, compute_cs, compute_ks, derive_hash_algs};
         use crate::transaction::VerifiedTransaction;
-        let vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
-        self.apply_transaction(vtx)
+
+        // Apply mutation eagerly (same as apply_verified_internal)
+        let vtx = VerifiedTransaction::from_transaction_unsafe(tx.clone(), new_key.clone());
+        self.apply_verified_internal(vtx)?;
+
+        // Compute CS from post-mutation state
+        let key_refs: Vec<&Key> = self.auth.keys.values().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+        let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        let ks = compute_ks(&thumbprints, None, &active_algs)?;
+        let auth_state = compute_as(&ks, None, &active_algs)?;
+        let cs = compute_cs(&auth_state, self.ds.as_ref(), &active_algs)?;
+
+        // Inject commit_state into the transaction
+        tx.commit_state = Some(cs);
+
+        // Create the final VerifiedTransaction with commit_state
+        let final_vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
+
+        // Finalize as single-tx commit
+        let mut pending = PendingCommit::new(self.hash_alg());
+        pending.push(final_vtx);
+        self.finalize_commit(pending)
     }
 
     /// Internal transaction application logic.
@@ -892,17 +915,17 @@ impl Principal {
             return Err(Error::EmptyCommit);
         }
 
-        // Validate commit field placement: only last tx may have it
+        // Validate commit field placement: only last tx may have it,
+        // and last tx MUST have it (SPEC §4.4).
         let txs = pending.transactions();
         for (i, vtx) in txs.iter().enumerate() {
             let is_last = i == txs.len() - 1;
             if vtx.commit_state().is_some() && !is_last {
                 return Err(Error::CommitNotLast);
             }
-            // NOTE: MissingCommit (last tx without commit field) is NOT enforced here.
-            // It will be enforced once the creation path (CommitBuilder) injects
-            // commit:<CS> into the last coz. Until then, existing code produces
-            // transactions without commit fields.
+            if vtx.commit_state().is_none() && is_last {
+                return Err(Error::MissingCommit);
+            }
         }
 
         // Re-derive active algorithms from ALL current keys

@@ -6,16 +6,45 @@ import "github.com/cyphrme/coz"
 // This function is intended ONLY for testing where signatures are validated
 // externally or cannot be generated (e.g., fixture-based tests).
 //
-// Production code should use VerifyTransaction + ApplyTransaction instead.
+// It computes commit_state post-mutation (per SPEC §4.4) since test
+// transactions don't go through the signing path.
 //
 // # Errors
 //
 //   - ErrTimestampPast: Transaction timestamp is older than latest seen
 //   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current CS
+//   - ErrInvalidPrior: Transaction's pre doesn't match current PS
 //   - ErrNoActiveKeys: Would leave principal with no active keys
 //   - ErrDuplicateKey: Adding key already in KS
 func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*Commit, error) {
-	vt := &VerifiedTx{tx: tx, newKey: newKey}
-	return p.ApplyTransaction(vt)
+	// Apply mutation eagerly
+	if err := p.applyTransactionInternal(tx, newKey); err != nil {
+		return nil, err
+	}
+
+	// Compute CS from post-mutation state
+	thumbprints := make([]coz.B64, len(p.auth.Keys))
+	for i, k := range p.auth.Keys {
+		thumbprints[i] = k.Tmb
+	}
+	ks, err := ComputeKS(thumbprints, nil, p.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+	as, err := ComputeAS(ks, nil, p.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+	cs, err := ComputeCS(as, p.ds, p.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Inject commit_state into transaction
+	tx.CommitCS = &cs
+
+	// Finalize as single-tx commit
+	pending := NewPendingCommit(p.hashAlg)
+	pending.Push(tx)
+	return p.finalizeCommit(pending)
 }

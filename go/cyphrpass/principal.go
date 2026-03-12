@@ -723,16 +723,17 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		return nil, ErrEmptyCommit
 	}
 
-	// Validate commit field placement: only last tx may have it
+	// Validate commit field placement: only last tx may have it,
+	// and last tx MUST have it (SPEC §4.4).
 	txs := pending.Transactions()
 	for i, tx := range txs {
 		isLast := i == len(txs)-1
 		if tx.CommitCS != nil && !isLast {
 			return nil, ErrCommitNotLast
 		}
-		// NOTE: MissingCommit (last tx without commit field) is NOT enforced here.
-		// It will be enforced once the creation path (CommitBuilder) injects
-		// commit:<CS> into the last coz.
+		if tx.CommitCS == nil && isLast {
+			return nil, ErrMissingCommit
+		}
 	}
 
 	// Recompute KS from active keys
