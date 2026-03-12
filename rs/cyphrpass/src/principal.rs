@@ -66,48 +66,148 @@ pub enum Level {
 }
 
 // ============================================================================
-// Principal
+// Principal — Enum-based type safety for PR (Approach C)
 // ============================================================================
+
+/// Shared internal state for all Principal variants.
+///
+/// Every field *except* PR lives here. PR is structurally absent for Nascent
+/// principals and structurally present for Established ones — invalid states
+/// are unrepresentable.
+///
+/// # Visibility
+///
+/// `pub` to satisfy `Deref<Target = PrincipalCore>` on `Principal`.
+/// All fields are `pub(crate)` — external code cannot access them.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PrincipalCore {
+    /// Current Principal State.
+    pub(crate) ps: PrincipalState,
+    /// Current Key State.
+    pub(crate) ks: KeyState,
+    /// Current Commit ID (Merkle root of last commit's transactions).
+    pub(crate) commit_id: Option<CommitID>,
+    /// Current Commit State: MR(AS, Commit ID).
+    pub(crate) cs: Option<CommitState>,
+    /// Current Auth State.
+    pub(crate) auth_state: AuthState,
+    /// Current Data State (Level 4+).
+    pub(crate) ds: Option<DataState>,
+    /// Auth ledger.
+    pub(crate) auth: AuthLedger,
+    /// Data ledger (Level 4+).
+    pub(crate) data: DataLedger,
+    /// Primary hash algorithm (from first key's alg).
+    pub(crate) hash_alg: HashAlg,
+    /// Active hash algorithms derived from current active keys (SPEC §14).
+    pub(crate) active_algs: Vec<HashAlg>,
+    /// Latest timestamp seen (SPEC §14.1).
+    pub(crate) latest_timestamp: i64,
+    /// Maximum allowed future timestamp (seconds from server time).
+    pub(crate) max_clock_skew: i64,
+}
+
+impl Default for PrincipalCore {
+    /// Placeholder default — only used for `std::mem::take()` during
+    /// the Nascent → Established transition. Never observable externally.
+    fn default() -> Self {
+        Self {
+            ps: PrincipalState::default(),
+            ks: KeyState::default(),
+            commit_id: None,
+            cs: None,
+            auth_state: AuthState::default(),
+            ds: None,
+            auth: AuthLedger::default(),
+            data: DataLedger::default(),
+            hash_alg: HashAlg::Sha256,
+            active_algs: Vec::new(),
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+        }
+    }
+}
+
+/// Internal variant: tracks whether PR has been established.
+///
+/// - **Nascent**: L1/L2 — no PR exists. Cannot fabricate one.
+/// - **Established**: L3+ — PR is frozen from initial PS. Cannot remove it.
+#[derive(Debug, Clone)]
+enum PrincipalKind {
+    /// Pre-genesis-finalization: no PR field at all.
+    Nascent(PrincipalCore),
+    /// Post-principal/create: PR is structurally required.
+    Established {
+        core: PrincipalCore,
+        pr: PrincipalRoot,
+    },
+}
+
+impl Default for PrincipalKind {
+    fn default() -> Self {
+        Self::Nascent(PrincipalCore::default())
+    }
+}
 
 /// A Cyphrpass Principal (self-sovereign identity).
 ///
-/// Represents a single identity with:
-/// - Permanent root (PR) set at principal/create (Level 3+), None for L1/L2
-/// - Evolving state (PS) as keys and transactions change
-/// - Auth ledger tracking keys and transactions
+/// # Type Safety
+///
+/// PR is represented via an internal enum:
+/// - **Nascent** (L1/L2): PR does not exist — cannot be forged.
+/// - **Established** (L3+): PR is frozen — cannot be removed.
+///
+/// All shared state is accessed via `Deref<Target = PrincipalCore>`, so
+/// `self.ps`, `self.ks`, etc. work transparently in all code paths.
 #[derive(Debug, Clone)]
-pub struct Principal {
-    /// Principal Root - None until principal/create establishes it (SPEC §5.1).
-    pr: Option<PrincipalRoot>,
-    /// Current Principal State.
-    ps: PrincipalState,
-    /// Current Key State.
-    ks: KeyState,
-    /// Current Commit ID (Merkle root of last commit's transactions).
-    commit_id: Option<CommitID>,
-    /// Current Commit State: MR(AS, Commit ID).
-    cs: Option<CommitState>,
-    /// Current Auth State.
-    auth_state: AuthState,
-    /// Current Data State (Level 4+).
-    ds: Option<DataState>,
-    /// Auth ledger.
-    auth: AuthLedger,
-    /// Data ledger (Level 4+).
-    data: DataLedger,
-    /// Primary hash algorithm (from first key's alg).
-    hash_alg: HashAlg,
-    /// Active hash algorithms derived from current active keys (SPEC §14).
-    active_algs: Vec<HashAlg>,
-    /// Latest timestamp seen (SPEC §14.1).
-    /// Used to reject timestamps in the past.
-    latest_timestamp: i64,
-    /// Maximum allowed future timestamp (seconds from server time).
-    /// Set to 0 to disable future timestamp checking.
-    max_clock_skew: i64,
+pub struct Principal(PrincipalKind);
+
+// Deref delegates field access to PrincipalCore transparently.
+// This means `self.ps`, `self.ks`, `self.auth_state`, etc. all
+// resolve automatically — zero changes needed in existing methods.
+impl std::ops::Deref for Principal {
+    type Target = PrincipalCore;
+    fn deref(&self) -> &PrincipalCore {
+        match &self.0 {
+            PrincipalKind::Nascent(core) => core,
+            PrincipalKind::Established { core, .. } => core,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Principal {
+    fn deref_mut(&mut self) -> &mut PrincipalCore {
+        match &mut self.0 {
+            PrincipalKind::Nascent(core) => core,
+            PrincipalKind::Established { core, .. } => core,
+        }
+    }
 }
 
 impl Principal {
+    // ========================================================================
+    // Internal helpers
+    // ========================================================================
+
+    /// Transition from Nascent to Established by freezing PR.
+    ///
+    /// This is the only code path that can create an Established principal.
+    /// Called exclusively from the PrincipalCreate transaction handler.
+    fn establish_pr(&mut self, pr: PrincipalRoot) -> Result<()> {
+        let old = std::mem::take(&mut self.0);
+        match old {
+            PrincipalKind::Nascent(core) => {
+                self.0 = PrincipalKind::Established { core, pr };
+                Ok(())
+            },
+            est @ PrincipalKind::Established { .. } => {
+                self.0 = est; // restore
+                Err(Error::StateMismatch) // already established
+            },
+        }
+    }
+
     // ========================================================================
     // Genesis constructors
     // ========================================================================
@@ -116,7 +216,7 @@ impl Principal {
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
     /// - `PS = AS = KS = tmb` (fully promoted)
-    /// - PR is None (L1/L2 have no PR per SPEC §5.1)
+    /// - PR is absent (L1/L2 have no PR per SPEC §5.1)
     ///
     /// This is the Level 1/2 genesis path.
     ///
@@ -142,8 +242,7 @@ impl Principal {
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64, key);
 
-        Ok(Self {
-            pr: None, // L1/L2 has no PR (SPEC §5.1)
+        Ok(Self(PrincipalKind::Nascent(PrincipalCore {
             ps,
             ks,
             commit_id: None,
@@ -159,13 +258,13 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
-        })
+        })))
     }
 
     /// Create a principal with explicit genesis (multiple keys).
     ///
     /// Per SPEC §3.2: Multi-key accounts require explicit genesis
-    /// - PR is None at construction (established by principal/create)
+    /// - PR is absent at construction (established by principal/create)
     ///
     /// This is the Level 3+ genesis path.
     pub fn explicit(keys: Vec<Key>) -> Result<Self> {
@@ -195,8 +294,7 @@ impl Principal {
             key_map.insert(k.tmb.to_b64(), k);
         }
 
-        Ok(Self {
-            pr: None, // Not yet established (needs principal/create)
+        Ok(Self(PrincipalKind::Nascent(PrincipalCore {
             ps,
             ks,
             commit_id: None,
@@ -212,7 +310,7 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
-        })
+        })))
     }
 
     /// Create a principal from a trusted checkpoint.
@@ -258,8 +356,7 @@ impl Principal {
             key_map.insert(k.tmb.to_b64(), k);
         }
 
-        Ok(Self {
-            pr,
+        let core = PrincipalCore {
             ps,
             ks,
             commit_id: None,
@@ -275,6 +372,11 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
+        };
+
+        Ok(match pr {
+            Some(pr) => Self(PrincipalKind::Established { core, pr }),
+            None => Self(PrincipalKind::Nascent(core)),
         })
     }
 
@@ -285,8 +387,12 @@ impl Principal {
     /// Get the Principal Root, or None if not yet established (L1/L2).
     ///
     /// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+    /// For Established principals, this always returns `Some`.
     pub fn pr(&self) -> Option<&PrincipalRoot> {
-        self.pr.as_ref()
+        match &self.0 {
+            PrincipalKind::Established { pr, .. } => Some(pr),
+            PrincipalKind::Nascent(_) => None,
+        }
     }
 
     /// Get the current Principal State.
@@ -770,7 +876,8 @@ impl Principal {
                     return Err(Error::StateMismatch);
                 }
                 // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
-                self.pr = Some(PrincipalRoot::from_initial(&self.ps));
+                // establish_pr() is the ONLY code path that transitions Nascent → Established.
+                self.establish_pr(PrincipalRoot::from_initial(&self.ps))?;
             },
         }
 

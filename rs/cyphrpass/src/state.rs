@@ -20,7 +20,7 @@ use crate::multihash::MultihashDigest;
 /// Single key with no nonce: KS = tmb (implicit promotion).
 ///
 /// Now holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyState(pub crate::multihash::MultihashDigest);
 
 impl KeyState {
@@ -44,7 +44,7 @@ impl KeyState {
 /// the identity of a commit rather than a state-tree node.
 ///
 /// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitID(pub crate::multihash::MultihashDigest);
 
 impl CommitID {
@@ -66,7 +66,7 @@ impl CommitID {
 /// Authentication state: `AS = MR(KS, RS?)` or promoted if only KS.
 ///
 /// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AuthState(pub MultihashDigest);
 
 impl AuthState {
@@ -90,7 +90,7 @@ impl AuthState {
 /// circular dependencies (CS is embedded in cozies before CommitID is known).
 ///
 /// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitState(pub MultihashDigest);
 
 impl CommitState {
@@ -124,7 +124,7 @@ impl DataState {
 ///
 /// Current top-level state: `PS = MR(AS, CommitID?, DS?)`.
 /// PS includes CommitID directly, unlike CS which excludes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrincipalState(pub MultihashDigest);
 
 impl PrincipalState {

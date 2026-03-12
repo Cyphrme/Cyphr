@@ -69,7 +69,10 @@ type dataLedger struct {
 //   - Auth ledger tracking keys and transactions
 //   - Data ledger tracking actions (Level 4+)
 type Principal struct {
-	pr       *PrincipalRoot // nil until principal/create establishes it (SPEC §5.1)
+	// pr is nil until principal/create establishes it (SPEC §5.1).
+	// INVARIANT: only TxPrincipalCreate sets this field. Field privacy
+	// prevents external construction — Go equivalent of Rust's enum Approach C.
+	pr       *PrincipalRoot
 	ps       PrincipalState
 	ks       KeyState
 	commitID *CommitID // nil if no transactions
@@ -223,6 +226,8 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 // PR returns the Principal Root, or nil if not yet established (L1/L2).
 //
 // PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+// INVARIANT: pr is set exclusively by TxPrincipalCreate. Field privacy
+// enforces this — external code cannot construct a Principal with a forged PR.
 func (p *Principal) PR() *PrincipalRoot {
 	return p.pr
 }

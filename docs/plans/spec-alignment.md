@@ -138,23 +138,38 @@ changes from stable sections §1-11 only.
 2. **Phase 2: Identity Corrections** — Fix PR optionality and genesis
    finality semantics. Independent of Phase 1 in concept but may share
    call sites in `principal.go`/`principal.rs`.
-   - [/] **WS-C: L1/2 PR Removal** _(Go done 2026-03-11, Rust pending)_
+   - [x] **WS-C: L1/2 PR Removal** _(Go 2026-03-11, Rust 2026-03-12)_
      - [x] Go: Change `pr` field to `*PrincipalRoot` (nilable)
      - [x] Go: Only set `pr` at principal/create (not in constructors)
      - [x] Go: Update `PR()` accessor to return `*PrincipalRoot`
      - [x] Go: Update callers that assume PR is always present
-     - [ ] Rust: Wrap `pr` field in `Option<PrincipalRoot>`
-     - [ ] Rust: Only set at Level 3+ in genesis and import flows
-     - [ ] Rust: Update accessor to return `Option<&PrincipalRoot>`
-     - [ ] Both: `go test ./...` and `cargo test --workspace` pass
-   - [/] **WS-D: Genesis Finality** _(Go done 2026-03-11, Rust pending)_
+     - [x] Rust: Wrap `pr` field in `Option<PrincipalRoot>`
+     - [x] Rust: Only set at Level 3+ in genesis and import flows
+     - [x] Rust: Update accessor to return `Option<&PrincipalRoot>`
+     - [x] Rust: Update 13 files across cyphrpass, cyphrpass-storage, cyphrpass-cli, test-fixtures
+     - [x] Both: `go test ./...` and `cargo test --workspace` unit tests pass
+   - [x] **WS-D: Genesis Finality** _(Go 2026-03-11, Rust 2026-03-12)_
      - [x] Go: Genesis `id` assertion uses PS (was AS)
      - [x] Go: PR frozen at TxPrincipalCreate, not in constructors
-     - [ ] Rust: Mirror genesis id and PR freeze changes
-     - [ ] Verify golden fixture values still hold
-     - [ ] Both: `go test ./...` and `cargo test --workspace` pass
+     - [x] Rust: PrincipalCreate handler checks `id` against PS, freezes PR
+     - [ ] Verify golden fixture values still hold (blocked on pre-field semantics — see Tech Debt)
+     - [x] Both: `go test ./...` and `cargo test --workspace` unit tests pass
 
-3. **Phase 3: Commit Finality Plumbing** — Introduce CommitBuilder API
+3. **Phase 2.5: PR Type Safety (Approach C)** — Refine `Option<PrincipalRoot>` from Phase 2
+   into an enum-based representation that makes invalid PR states unrepresentable.
+   - [x] **Rust: Enum-based PR enforcement** _(2026-03-12)_
+     - [x] Extract `PrincipalCore` (12 shared fields)
+     - [x] Define `PrincipalKind` enum: `Nascent(PrincipalCore)` | `Established{core, pr}`
+     - [x] Impl `Deref`/`DerefMut` for transparent field access
+     - [x] Add `establish_pr()` as sole Nascent → Established transition
+     - [x] Add `Default` to `MultihashDigest` + 5 state newtypes (for `std::mem::take`)
+     - [x] Update constructors + PrincipalCreate handler
+     - [x] `cargo test --workspace` — 64 unit tests pass
+   - [x] **Go: Invariant documentation** _(2026-03-12)_
+     - [x] Enhanced `pr` field + `PR()` accessor docs with sealed-construction invariant
+     - [x] `go test ./...` passes
+
+4. **Phase 3: Commit Finality Plumbing** — Introduce CommitBuilder API
    and wire `commit` field verification. Depends on Phase 1 (CS must be
    correctly computed to embed in cozies).
    - [ ] **WS-E: CommitBuilder API + `commit` Field Verification**
@@ -179,7 +194,8 @@ changes from stable sections §1-11 only.
 ## Verification
 
 - [x] Phase 1: `go test ./...` and `cargo test --workspace` pass after CS/PS + array-order + pre migration _(2026-03-10: core unit tests pass; golden fixtures expected-fail pending WS6)_
-- [ ] Phase 2: `go test ./...` and `cargo test --workspace` pass after PR + genesis
+- [x] Phase 2: `go test ./...` and `cargo test --workspace` unit tests pass after PR + genesis _(2026-03-12: all unit tests pass; golden fixtures expected-fail pending pre-field fix + WS6)_
+- [x] Phase 2.5: Enum-based PR enforcement verified _(2026-03-12: 64/64 Rust unit tests, Go tests pass)_
 - [ ] Phase 3: `go test ./...` and `cargo test --workspace` pass after CommitBuilder + verification
 - [ ] Cross-cutting: Both implementations produce identical PS/CS for same inputs (parity)
 - [ ] Post-plan: Golden fixture regeneration via `cargo run -p fixture-gen` (deferred to WS6)
@@ -206,11 +222,12 @@ cargo test --workspace
   Populated during execution. Empty at plan creation.
 -->
 
-| Item                                                      | Severity | Why Introduced                  | Follow-Up                                       | Resolved |
-| :-------------------------------------------------------- | :------- | :------------------------------ | :---------------------------------------------- | :------: |
-| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed              |          |
-| Golden fixtures stale after Phase 1 formula changes       | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6) |          |
-| `export.go` doc comment example uses value-type PR        | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                           |          |
+| Item                                                              | Severity | Why Introduced                  | Follow-Up                                           | Resolved |
+| :---------------------------------------------------------------- | :------- | :------------------------------ | :-------------------------------------------------- | :------: |
+| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired         | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed                  |          |
+| Golden fixtures stale after Phase 1 formula changes               | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6)     |          |
+| `export.go` doc comment example uses value-type PR                | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                               |          |
+| `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre |          |
 
 ## Deviation Log
 
@@ -218,11 +235,12 @@ cargo test --workspace
   Populated during execution. Empty at plan creation.
 -->
 
-| Commit    | Planned                                | Actual                                                    | Rationale                                                                     |
-| :-------- | :------------------------------------- | :-------------------------------------------------------- | :---------------------------------------------------------------------------- |
-| Go WS-A   | CS/PS swap only                        | + `ErrNoCommitState` removal, + `PrincipalState.Tagged()` | Dead code per cruft constraint; Tagged() needed by e2e runner for `pre` field |
-| Go WS-A   | Update `ComputeCommitIDTagged` in WS-B | Also updated in WS-A commit scope                         | Same file, cleaner to ship together                                           |
-| Go WS-C/D | PR field + tests only                  | + `Store` interface `PrincipalRoot` → `*PrincipalRoot`    | Structurally required for type-level PR optionality                           |
+| Commit      | Planned                                | Actual                                                    | Rationale                                                                     |
+| :---------- | :------------------------------------- | :-------------------------------------------------------- | :---------------------------------------------------------------------------- |
+| Go WS-A     | CS/PS swap only                        | + `ErrNoCommitState` removal, + `PrincipalState.Tagged()` | Dead code per cruft constraint; Tagged() needed by e2e runner for `pre` field |
+| Go WS-A     | Update `ComputeCommitIDTagged` in WS-B | Also updated in WS-A commit scope                         | Same file, cleaner to ship together                                           |
+| Go WS-C/D   | PR field + tests only                  | + `Store` interface `PrincipalRoot` → `*PrincipalRoot`    | Structurally required for type-level PR optionality                           |
+| Rust WS-C/D | Option<PrincipalRoot> only             | + Approach C enum refactor (Phase 2.5)                    | User-driven: Option allows invalid states; enum eliminates them               |
 
 ## Retrospective
 

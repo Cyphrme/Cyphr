@@ -32,6 +32,15 @@ pub struct MultihashDigest {
     variants: BTreeMap<HashAlg, Box<[u8]>>,
 }
 
+impl Default for MultihashDigest {
+    /// Empty multihash — used only as a placeholder during internal state transitions.
+    fn default() -> Self {
+        Self {
+            variants: BTreeMap::new(),
+        }
+    }
+}
+
 impl MultihashDigest {
     /// Create from raw variants map.
     ///
