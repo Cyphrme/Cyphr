@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthState, PrincipalState};
+use crate::state::{AuthState, CommitState, PrincipalState};
 
 // ============================================================================
 // Transaction Types (SPEC §4.2)
@@ -108,6 +108,11 @@ pub struct Transaction {
     /// Hash algorithm associated with the signing key.
     /// Used for cross-algorithm state computation (MHMR).
     pub(crate) hash_alg: crate::state::HashAlg,
+    /// Commit state from `commit` field (present on terminal coz only).
+    ///
+    /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
+    /// where CS = MR(AS, DS?). None for non-terminal transactions.
+    pub(crate) commit_state: Option<CommitState>,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
 }
@@ -134,12 +139,14 @@ impl Transaction {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
+        let commit_state = Self::extract_commit(pay)?;
         Ok(Self {
             kind,
             signer,
             now,
             czd,
             hash_alg,
+            commit_state,
             raw,
         })
     }
@@ -172,6 +179,13 @@ impl Transaction {
     /// Get the hash algorithm associated with the signing key.
     pub fn hash_alg(&self) -> crate::state::HashAlg {
         self.hash_alg
+    }
+
+    /// Get the commit state if this is a terminal (finalizing) transaction.
+    ///
+    /// Per SPEC §4.4, only the last coz in a commit has `"commit":<CS>`.
+    pub fn commit_state(&self) -> Option<&CommitState> {
+        self.commit_state.as_ref()
     }
 
     /// Parse the transaction kind from typ and payload fields.
@@ -255,6 +269,32 @@ impl Transaction {
             tagged.alg(),
             tagged.as_bytes().to_vec(),
         )))
+    }
+
+    /// Extract optional `commit` field (Commit State for finality).
+    ///
+    /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
+    /// in `alg:digest` format. Returns `Ok(None)` if the field is absent.
+    fn extract_commit(pay: &Pay) -> Result<Option<CommitState>> {
+        use crate::multihash::MultihashDigest;
+        use crate::state::TaggedDigest;
+
+        let Some(commit_value) = pay.extra.get("commit") else {
+            return Ok(None);
+        };
+
+        // commit: true is the legacy boolean form — ignore it (not CS)
+        if commit_value.is_boolean() {
+            return Ok(None);
+        }
+
+        let commit_str = commit_value.as_str().ok_or(Error::MalformedPayload)?;
+        let tagged: TaggedDigest = commit_str.parse().map_err(|_| Error::MalformedPayload)?;
+
+        Ok(Some(CommitState(MultihashDigest::from_single(
+            tagged.alg(),
+            tagged.as_bytes().to_vec(),
+        ))))
     }
 }
 

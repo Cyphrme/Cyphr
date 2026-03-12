@@ -723,6 +723,18 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		return nil, ErrEmptyCommit
 	}
 
+	// Validate commit field placement: only last tx may have it
+	txs := pending.Transactions()
+	for i, tx := range txs {
+		isLast := i == len(txs)-1
+		if tx.CommitCS != nil && !isLast {
+			return nil, ErrCommitNotLast
+		}
+		// NOTE: MissingCommit (last tx without commit field) is NOT enforced here.
+		// It will be enforced once the creation path (CommitBuilder) injects
+		// commit:<CS> into the last coz.
+	}
+
 	// Recompute KS from active keys
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
@@ -754,6 +766,14 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		return nil, err
 	}
 	p.cs = &cs
+
+	// Validate commit field matches independently computed CS
+	lastTx := txs[len(txs)-1]
+	if lastTx.CommitCS != nil {
+		if lastTx.CommitCS.Tagged() != cs.Tagged() {
+			return nil, ErrCommitMismatch
+		}
+	}
 
 	// Recompute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
 	ps, err := ComputePS(p.as, p.commitID, p.ds, nil, p.activeAlgs)

@@ -73,6 +73,18 @@ var (
 	// ErrEmptyCommit indicates an attempt to finalize a commit with no transactions.
 	ErrEmptyCommit = errors.New("cyphrpass: empty commit")
 
+	// ErrCommitNotLast indicates a commit field appeared on a non-terminal coz.
+	// Per SPEC §4.4, commit MUST only appear on the last coz.
+	ErrCommitNotLast = errors.New("cyphrpass: commit field on non-terminal transaction")
+
+	// ErrMissingCommit indicates the terminal coz is missing the required commit field.
+	// Per SPEC §4.4, the last coz MUST include "commit":<CS>.
+	ErrMissingCommit = errors.New("cyphrpass: missing commit field on terminal transaction")
+
+	// ErrCommitMismatch indicates the commit field value does not match independently computed CS.
+	// Per SPEC §4.4, the commit value must equal MR(AS, DS?).
+	ErrCommitMismatch = errors.New("cyphrpass: commit state mismatch")
+
 	// ErrEmptyMultihash indicates an attempt to create a MultihashDigest with no variants.
 	ErrEmptyMultihash = errors.New("cyphrpass: empty multihash digest")
 

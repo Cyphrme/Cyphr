@@ -892,6 +892,19 @@ impl Principal {
             return Err(Error::EmptyCommit);
         }
 
+        // Validate commit field placement: only last tx may have it
+        let txs = pending.transactions();
+        for (i, vtx) in txs.iter().enumerate() {
+            let is_last = i == txs.len() - 1;
+            if vtx.commit_state().is_some() && !is_last {
+                return Err(Error::CommitNotLast);
+            }
+            // NOTE: MissingCommit (last tx without commit field) is NOT enforced here.
+            // It will be enforced once the creation path (CommitBuilder) injects
+            // commit:<CS> into the last coz. Until then, existing code produces
+            // transactions without commit fields.
+        }
+
         // Re-derive active algorithms from ALL current keys
         // (SPEC §14: union of all active keys' algorithms)
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
@@ -911,6 +924,13 @@ impl Principal {
         // Compute CS = MR(AS, DS?) — PT minus CommitID
         let cs = compute_cs(&self.auth_state, self.ds.as_ref(), &self.active_algs)?;
         self.cs = Some(cs.clone());
+
+        // Validate commit field matches independently computed CS
+        if let Some(claimed_cs) = txs.last().unwrap().commit_state() {
+            if claimed_cs != &cs {
+                return Err(Error::CommitMismatch);
+            }
+        }
 
         // Compute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
         self.ps = compute_ps(
@@ -1225,6 +1245,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
+            commit_state: None,
             raw,
         }
     }
@@ -1408,6 +1429,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
+            commit_state: None,
             raw: dummy_coz_json(),
         };
 
@@ -1440,6 +1462,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
+            commit_state: None,
             raw: dummy_coz_json(),
         };
 
@@ -1499,6 +1522,7 @@ mod tests {
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
+            commit_state: None,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction_test(tx, None).unwrap();
@@ -1539,6 +1563,7 @@ mod tests {
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
+            commit_state: None,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction_test(tx, Some(key2)).unwrap();

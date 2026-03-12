@@ -95,6 +95,24 @@ pub enum Error {
     #[error("empty commit")]
     EmptyCommit,
 
+    /// `commit` field appears on a non-terminal coz in the commit array.
+    ///
+    /// Per SPEC §4.4, `commit` MUST only appear on the last coz.
+    #[error("commit field on non-terminal transaction")]
+    CommitNotLast,
+
+    /// Terminal coz is missing the required `commit` field.
+    ///
+    /// Per SPEC §4.4, the last coz MUST include `"commit":<CS>`.
+    #[error("missing commit field on terminal transaction")]
+    MissingCommit,
+
+    /// `commit` field value does not match independently computed CS.
+    ///
+    /// Per SPEC §4.4, the `commit` value must equal `MR(AS, DS?)`.
+    #[error("commit state mismatch")]
+    CommitMismatch,
+
     /// External reference to transitory (unfinalized) commit state.
     ///
     /// Per SPEC §4.2.1, transitory state during a pending commit cannot
