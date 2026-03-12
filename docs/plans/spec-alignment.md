@@ -222,12 +222,13 @@ cargo test --workspace
   Populated during execution. Empty at plan creation.
 -->
 
-| Item                                                              | Severity | Why Introduced                  | Follow-Up                                           | Resolved |
-| :---------------------------------------------------------------- | :------- | :------------------------------ | :-------------------------------------------------- | :------: |
-| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired         | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed                  |          |
-| Golden fixtures stale after Phase 1 formula changes               | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6)     |          |
-| `export.go` doc comment example uses value-type PR                | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                               |          |
-| `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre |    ✅    |
+| Item                                                              | Severity | Why Introduced                  | Follow-Up                                                               | Resolved |
+| :---------------------------------------------------------------- | :------- | :------------------------------ | :---------------------------------------------------------------------- | :------: |
+| TD-3 (from audit plan): `ComputeCommitIDTagged` not wired         | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed                                      |          |
+| Golden fixtures stale after Phase 1 formula changes               | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6)                         |    ✅    |
+| `export.go` doc comment example uses value-type PR                | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                                                   |          |
+| `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre                     |    ✅    |
+| CLI integration tests panic on L1 key add (`.expect()` on PR)     | MEDIUM   | PR optionality (WS-C/Phase 2.5) | Update CLI tests to use L3+ principals or precede with principal/create |          |
 
 ## Deviation Log
 

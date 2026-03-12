@@ -165,24 +165,6 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Format auth state as tagged digest string (alg:digest format).
-    fn format_auth_state_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
-        let alg = principal.active_algs().first().unwrap();
-        let digest = principal
-            .auth_state()
-            .as_multihash()
-            .get_or_err(*alg)
-            .map_err(|e| Error::Generation {
-                name: String::new(),
-                reason: format!("auth_state digest failed: {}", e),
-            })?;
-        Ok(format!(
-            "{}:{}",
-            alg,
-            Base64UrlUnpadded::encode_string(digest)
-        ))
-    }
-
     /// Generate golden test cases from an intent file.
     ///
     /// Each test in the intent becomes a golden test case.
@@ -487,7 +469,7 @@ impl<'a> Generator<'a> {
                 ),
             })?;
 
-        // Capture pre (auth state before transaction) in alg:digest format
+        // Capture pre (principal state before transaction) in alg:digest format
         // Use override.pre if specified (for InvalidPrior tests)
         let computed_pre;
         let pre: &str =
@@ -497,11 +479,9 @@ impl<'a> Generator<'a> {
                 computed_pre = Self::format_ps_tagged(principal)?;
                 &computed_pre
             };
-        let computed_as = Self::format_auth_state_tagged(principal)?;
 
         // Build and sign coz message
-        let (coz, sig_bytes, czd) =
-            self.build_golden_coz(tx, &test.name, Some(pre), Some(&computed_as))?;
+        let (coz, sig_bytes, czd) = self.build_golden_coz(tx, &test.name, Some(pre))?;
 
         // Check if this is an error test
         let is_error_test = test
@@ -563,14 +543,13 @@ impl<'a> Generator<'a> {
 
             // Capture pre before this commit (alg:digest format)
             let pre = Self::format_ps_tagged(principal)?;
-            let current_as = Self::format_auth_state_tagged(principal)?;
 
-            let (coz, sig_bytes, czd) = self
-                .build_golden_coz(tx, &test.name, Some(&pre), Some(&current_as))
-                .map_err(|e| Error::Generation {
-                    name: test.name.clone(),
-                    reason: format!("commit {}: {}", i + 1, e),
-                })?;
+            let (coz, sig_bytes, czd) =
+                self.build_golden_coz(tx, &test.name, Some(&pre))
+                    .map_err(|e| Error::Generation {
+                        name: test.name.clone(),
+                        reason: format!("commit {}: {}", i + 1, e),
+                    })?;
 
             // Apply transaction (skip last commit for error tests)
             if !(is_last_commit && is_error_test) {
@@ -653,13 +632,11 @@ impl<'a> Generator<'a> {
                 ),
             })?;
 
-        // Capture pre (auth state before transaction) in alg:digest format
+        // Capture pre (principal state before transaction) in alg:digest format
         let pre = Self::format_ps_tagged(principal)?;
-        let current_as = Self::format_auth_state_tagged(principal)?;
 
         // Build and sign transaction coz message
-        let (tx_coz, tx_sig_bytes, tx_czd) =
-            self.build_golden_coz(tx, &test.name, Some(&pre), Some(&current_as))?;
+        let (tx_coz, tx_sig_bytes, tx_czd) = self.build_golden_coz(tx, &test.name, Some(&pre))?;
 
         // Apply transaction to principal
         self.apply_transaction_to_principal(
@@ -938,14 +915,13 @@ impl<'a> Generator<'a> {
         tx: &TxIntent,
         test_name: &str,
         pre: Option<&str>,
-        current_as: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer key
         let signer = self.resolve_key(&tx.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build pay JSON with derived fields (including pre)
-        let pay_json = self.build_pay_json(tx, &signer.alg, &signer_tmb, pre, current_as)?;
+        let pay_json = self.build_pay_json(tx, &signer.alg, &signer_tmb, pre)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
@@ -973,7 +949,6 @@ impl<'a> Generator<'a> {
         alg: &str,
         tmb: &str,
         pre: Option<&str>,
-        current_as: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
         let mut fields: IndexMap<String, Value> = IndexMap::new();
 
@@ -983,12 +958,14 @@ impl<'a> Generator<'a> {
         // id field handling depends on transaction type
         let is_principal_create = tx.typ.contains("principal/create");
         if is_principal_create {
-            // For principal/create, id is the current auth state
-            let as_val = current_as.ok_or_else(|| Error::Generation {
+            // For principal/create, id is the current PS (SPEC §5.1: "id: Final PS = PR").
+            // pre is the PS-tagged value, which equals PS at this point since
+            // principal/create doesn't mutate state — it only freezes PR.
+            let ps_val = pre.ok_or_else(|| Error::Generation {
                 name: "build_pay_json".to_string(),
-                reason: "principal/create requires current_as for id field".to_string(),
+                reason: "principal/create requires pre (PS) for id field".to_string(),
             })?;
-            fields.insert("id".to_string(), Value::String(as_val.to_string()));
+            fields.insert("id".to_string(), Value::String(ps_val.to_string()));
         } else if let Some(target_name) = &tx.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
