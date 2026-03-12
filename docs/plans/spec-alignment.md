@@ -227,7 +227,7 @@ cargo test --workspace
 | TD-3 (from audit plan): `ComputeCommitIDTagged` not wired         | LOW      | Pre-existing                    | Wire when Level 5+ multikey needed                  |          |
 | Golden fixtures stale after Phase 1 formula changes               | MEDIUM   | CS/PS swap + array-order change | Regenerate via `cargo run -p fixture-gen` (WS6)     |          |
 | `export.go` doc comment example uses value-type PR                | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                               |          |
-| `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre |          |
+| `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre |    ✅    |
 
 ## Deviation Log
 

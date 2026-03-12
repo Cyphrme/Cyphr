@@ -107,8 +107,8 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
 
     // Build pay JSON for key/create
     let now = current_timestamp();
-    // Get pre (commit state before transaction) in alg:digest format
-    let pre = principal.commit_state_tagged()?;
+    // Get pre (principal state before transaction) in alg:digest format
+    let pre = principal.ps_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -201,8 +201,8 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
 
     // Build pay JSON for key/revoke
     let now = current_timestamp();
-    // Get pre (commit state before transaction) in alg:digest format
-    let pre = principal.commit_state_tagged()?;
+    // Get pre (principal state before transaction) in alg:digest format
+    let pre = principal.ps_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));

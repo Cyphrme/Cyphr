@@ -155,16 +155,14 @@ impl<'a> Generator<'a> {
         Self { pool }
     }
 
-    /// Format commit state as tagged digest string (alg:digest format).
+    /// Format principal state as tagged digest string (alg:digest format).
     ///
-    /// Delegates to Principal::commit_state_tagged().
-    fn format_commit_state_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
-        principal
-            .commit_state_tagged()
-            .map_err(|e| Error::Generation {
-                name: String::new(),
-                reason: format!("commit_state_tagged failed: {}", e),
-            })
+    /// Delegates to Principal::ps_tagged() — the canonical `pre` format.
+    fn format_ps_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
+        principal.ps_tagged().map_err(|e| Error::Generation {
+            name: String::new(),
+            reason: format!("ps_tagged failed: {}", e),
+        })
     }
 
     /// Format auth state as tagged digest string (alg:digest format).
@@ -496,7 +494,7 @@ impl<'a> Generator<'a> {
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = Self::format_commit_state_tagged(principal)?;
+                computed_pre = Self::format_ps_tagged(principal)?;
                 &computed_pre
             };
         let computed_as = Self::format_auth_state_tagged(principal)?;
@@ -564,7 +562,7 @@ impl<'a> Generator<'a> {
             })?;
 
             // Capture pre before this commit (alg:digest format)
-            let pre = Self::format_commit_state_tagged(principal)?;
+            let pre = Self::format_ps_tagged(principal)?;
             let current_as = Self::format_auth_state_tagged(principal)?;
 
             let (coz, sig_bytes, czd) = self
@@ -656,7 +654,7 @@ impl<'a> Generator<'a> {
             })?;
 
         // Capture pre (auth state before transaction) in alg:digest format
-        let pre = Self::format_commit_state_tagged(principal)?;
+        let pre = Self::format_ps_tagged(principal)?;
         let current_as = Self::format_auth_state_tagged(principal)?;
 
         // Build and sign transaction coz message

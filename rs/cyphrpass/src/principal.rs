@@ -405,29 +405,19 @@ impl Principal {
         &self.auth_state
     }
 
-    /// Get the current Commit State as a tagged digest string (alg:digest format).
+    /// Get the current Principal State as a tagged digest string (alg:digest format).
     ///
     /// Uses the lexicographically first algorithm from active_algs for deterministic output.
-    /// This is the canonical format for the `pre` field in transactions.
-    ///
-    /// At genesis (before any commits), returns the promoted Auth State value
-    /// since CS == promoted(AS) at genesis.
+    /// This is the canonical format for the `pre` field in transactions (SPEC §4.3).
     ///
     /// # Errors
     ///
     /// Returns `EmptyMultihash` if the state digest has no variants.
-    pub fn commit_state_tagged(&self) -> Result<String> {
+    pub fn ps_tagged(&self) -> Result<String> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
-
-        // Use cs if available, otherwise fall back to promoted auth_state (genesis)
-        let bytes = if let Some(cs) = &self.cs {
-            cs.0.get_or_err(first_alg)?
-        } else {
-            // Genesis fallback: CS == promoted(AS)
-            self.auth_state.0.get_or_err(first_alg)?
-        };
+        let bytes = self.ps.0.get_or_err(first_alg)?;
 
         Ok(format!(
             "{}:{}",
