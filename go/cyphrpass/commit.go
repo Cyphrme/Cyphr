@@ -250,3 +250,108 @@ func (b *CommitBatch) Len() int {
 func (b *CommitBatch) IsEmpty() bool {
 	return b.pending.IsEmpty()
 }
+
+// FinalizeWithCommit signs the last transaction with commit:<CS> and finalizes.
+//
+// This is the creation-path API (Option A). It:
+//  1. Applies the last tx mutation from the pay fields
+//  2. Computes CS = MR(AS', DS') from post-mutation state
+//  3. Injects "commit":<CS> into the pay
+//  4. Signs the complete pay via the provided coz.Key
+//  5. Computes czd and creates the final transaction
+//  6. Pushes to pending and calls finalizeCommit
+//
+// The pay must be a map[string]any with all fields except "commit".
+// The signerKey must include private key material for signing.
+func (b *CommitBatch) FinalizeWithCommit(
+	pay map[string]any,
+	signerKey *coz.Key,
+	newKey *coz.Key,
+) (*Commit, error) {
+	// 1. Parse pay into TransactionPay to determine mutation kind
+	payBytes, err := json.Marshal(pay)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	var txPay TransactionPay
+	if err := json.Unmarshal(payBytes, &txPay); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// Create preliminary tx with placeholder czd to apply mutation
+	placeholderCzd := coz.B64(make([]byte, 32))
+	tx, err := ParseTransaction(&txPay, placeholderCzd)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply mutation eagerly (newKey is *coz.Key, matching internal API)
+	if err := b.principal.applyTransactionInternal(tx, newKey); err != nil {
+		return nil, err
+	}
+
+	// 2. Compute CS post-mutation
+	thumbprints := make([]coz.B64, len(b.principal.auth.Keys))
+	for i, k := range b.principal.auth.Keys {
+		thumbprints[i] = k.Tmb
+	}
+	ks, err := ComputeKS(thumbprints, nil, b.principal.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+	as, err := ComputeAS(ks, nil, b.principal.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+	cs, err := ComputeCS(as, b.principal.ds, b.principal.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Inject commit:<CS> into pay
+	pay["commit"] = cs.Tagged()
+
+	// 4. Serialize and sign
+	payBytes, err = json.Marshal(pay)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	digest, err := coz.Hash(signerKey.Alg.Hash(), payBytes)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	sig, err := signerKey.Sign(digest)
+	if err != nil {
+		return nil, ErrInvalidSignature
+	}
+
+	// 5. Compute czd via coz metadata
+	signedCoz := &coz.Coz{
+		Pay: payBytes,
+		Sig: sig,
+	}
+	if err := signedCoz.Meta(); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// 6. Parse the real transaction (with commit field and real czd)
+	txPay.Commit = cs.Tagged()
+	realTx, err := ParseTransaction(&txPay, signedCoz.Czd)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store raw bytes for bit-perfect export
+	rawEntry, err := buildRawEntry(signedCoz, newKey)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
+	realTx.raw = rawEntry
+
+	// 7. Push to pending and finalize
+	b.pending.Push(realTx)
+	return b.principal.finalizeCommit(b.pending)
+}

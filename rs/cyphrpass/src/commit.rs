@@ -353,6 +353,116 @@ impl<'a> CommitScope<'a> {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// Finalize the commit by signing the last transaction with `commit:<CS>`.
+    ///
+    /// This is the creation-path API (Option A). It:
+    /// 1. Parses the unsigned pay to determine the mutation
+    /// 2. Applies the mutation eagerly
+    /// 3. Computes CS = MR(AS', DS') from post-mutation state
+    /// 4. Injects `"commit":<CS>` into the pay (in lexicographic key order)
+    /// 5. Signs the complete pay via `coz::sign_json`
+    /// 6. Computes czd from the signed message
+    /// 7. Creates the final Transaction with commit_state
+    /// 8. Pushes to pending and calls finalize_commit
+    ///
+    /// # Arguments
+    ///
+    /// * `pay` - Pay fields as a JSON Value (object, without `commit` key)
+    /// * `alg` - Algorithm string (e.g. "ES256")
+    /// * `prv_key` - Private key bytes
+    /// * `pub_key` - Public key bytes
+    /// * `new_key` - Optional new key for KeyCreate/KeyReplace
+    ///
+    /// # Errors
+    ///
+    /// - `MalformedPayload`: Pay missing required fields
+    /// - `InvalidPrior`: `pre` doesn't match current PS
+    /// - Signing failures (from coz)
+    pub fn finalize_with_commit(
+        mut self,
+        mut pay: serde_json::Value,
+        alg: &str,
+        prv_key: &[u8],
+        pub_key: &[u8],
+        new_key: Option<crate::key::Key>,
+    ) -> crate::error::Result<&'a Commit> {
+        use crate::state::{
+            compute_as, compute_cs, compute_ks, derive_hash_algs, hash_alg_from_str,
+        };
+        use crate::transaction::{Transaction, VerifiedTransaction};
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        // 1. Parse pay to get mutation kind
+        let parsed_pay: coz::Pay = serde_json::from_value(pay.clone())
+            .map_err(|_| crate::error::Error::MalformedPayload)?;
+        let hash_alg = hash_alg_from_str(alg)?;
+
+        // 2. Create a preliminary Transaction (with placeholder czd) to apply mutation
+        let placeholder_czd = coz::Czd::from_bytes(vec![0u8; 32]);
+        let placeholder_raw = coz::CozJson {
+            pay: pay.clone(),
+            sig: vec![],
+        };
+        let prelim_tx =
+            Transaction::from_pay(&parsed_pay, placeholder_czd, hash_alg, placeholder_raw)?;
+        let prelim_vtx = VerifiedTransaction::from_parts(prelim_tx, new_key.clone());
+
+        // Apply mutation (verify_pre, key mutations, etc.)
+        self.principal.apply_verified_internal(prelim_vtx)?;
+
+        // 3. Compute CS post-mutation
+        let key_refs: Vec<&crate::key::Key> = self.principal.auth.keys.values().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+
+        let thumbprints: Vec<&coz::Thumbprint> =
+            self.principal.auth.keys.values().map(|k| &k.tmb).collect();
+        let ks = compute_ks(&thumbprints, None, &active_algs)?;
+        let auth_state = compute_as(&ks, None, &active_algs)?;
+        let cs = compute_cs(&auth_state, self.principal.ds.as_ref(), &active_algs)?;
+
+        // 4. Inject commit:<CS> into pay as alg:b64(digest) tagged string
+        let first_alg = active_algs
+            .first()
+            .copied()
+            .ok_or(crate::error::Error::EmptyMultihash)?;
+        let cs_bytes = cs.0.get_or_err(first_alg)?;
+        let cs_tagged = format!(
+            "{}:{}",
+            first_alg,
+            Base64UrlUnpadded::encode_string(cs_bytes)
+        );
+
+        if let Some(obj) = pay.as_object_mut() {
+            obj.insert("commit".to_string(), serde_json::Value::String(cs_tagged));
+        } else {
+            return Err(crate::error::Error::MalformedPayload);
+        }
+
+        // 5. Serialize and sign
+        let pay_json =
+            serde_json::to_vec(&pay).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let (sig_bytes, cad) = coz::sign_json(&pay_json, alg, prv_key, pub_key)
+            .ok_or(crate::error::Error::InvalidSignature)?;
+
+        // 6. Compute czd
+        let czd =
+            coz::czd_for_alg(&cad, &sig_bytes, alg).ok_or(crate::error::Error::InvalidSignature)?;
+
+        // 7. Create the real Transaction (with commit_state and real czd)
+        let raw = coz::CozJson {
+            pay: pay.clone(),
+            sig: sig_bytes,
+        };
+        let real_pay: coz::Pay =
+            serde_json::from_value(pay).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let final_tx = Transaction::from_pay(&real_pay, czd, hash_alg, raw)?;
+        let final_vtx = VerifiedTransaction::from_parts(final_tx, new_key);
+
+        // 8. Push to pending and finalize
+        self.pending.push(final_vtx);
+        self.principal.finalize_commit(self.pending)
+    }
 }
 
 // ============================================================================

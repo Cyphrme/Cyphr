@@ -326,16 +326,24 @@ impl VerifiedTransaction {
         self.new_key.as_ref()
     }
 
+    /// Create a VerifiedTransaction from its constituent parts.
+    ///
+    /// This is used by the creation path (`CommitScope::finalize_with_commit`)
+    /// where the transaction is signed internally by the builder.
+    /// The caller is responsible for ensuring the transaction is valid.
+    pub(crate) fn from_parts(tx: Transaction, new_key: Option<Key>) -> Self {
+        Self { tx, new_key }
+    }
+
     /// Create a VerifiedTransaction without signature verification.
     ///
     /// # Safety
     ///
     /// This method bypasses signature verification and should ONLY be used
-    /// for testing or when signatures are validated externally.
-    /// Production code should use [`verify`] instead.
+    /// for testing. Production code should use [`verify`] or [`from_parts`].
     #[cfg(test)]
     pub(crate) fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
-        Self { tx, new_key }
+        Self::from_parts(tx, new_key)
     }
 }
 

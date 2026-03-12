@@ -173,22 +173,22 @@ changes from stable sections §1-11 only.
    and wire `commit` field verification. Depends on Phase 1 (CS must be
    correctly computed to embed in cozies).
    - [ ] **WS-E: CommitBuilder API + `commit` Field Verification**
-     - [ ] **CommitBuilder (creation path):** New API that manages the commit lifecycle:
+     - [x] **CommitBuilder (creation path):** New API that manages the commit lifecycle:
        1. Accepts transactions, accumulating mutations
        2. On finalize: computes CS from post-mutation state (AS', DS')
        3. Injects `commit:<CS>` into last coz payload
        4. Signs last coz (deferred signing — only the last coz is delayed)
        5. Computes CommitID from all czds (including signed last coz)
        6. Computes PS from AS', CommitID, DS'
-     - [ ] Go: Implement `CommitBuilder` (evolve from `CommitBatch`)
-     - [ ] Rust: Implement `CommitBuilder` (evolve from `CommitScope`)
-     - [ ] **Verification/import path:** Detect and validate `commit` during array processing:
-       - [ ] Coz with `commit` → mark as final
-       - [ ] Error if cozies remain after `commit` coz (`COMMIT_NOT_LAST`)
-       - [ ] Error if array ends without `commit` (`MISSING_COMMIT`)
-       - [ ] Error if `commit` value ≠ independently computed CS (`COMMIT_MISMATCH`)
-     - [ ] Go: Add error sentinels for the 3 new error conditions
-     - [ ] Rust: Add error variants for the 3 new error conditions
+     - [x] Go: Implement `CommitBuilder` (evolve from `CommitBatch`)
+     - [x] Rust: Implement `CommitBuilder` (evolve from `CommitScope`)
+     - [x] **Verification/import path:** Detect and validate `commit` during array processing:
+       - [x] Coz with `commit` → mark as final
+       - [x] Error if cozies remain after `commit` coz (`COMMIT_NOT_LAST`)
+       - [ ] Error if array ends without `commit` (`MISSING_COMMIT`) — deferred until creation path injects commit fields
+       - [x] Error if `commit` value ≠ independently computed CS (`COMMIT_MISMATCH`)
+     - [x] Go: Add error sentinels for the 3 new error conditions
+     - [x] Rust: Add error variants for the 3 new error conditions
      - [ ] Both: `go test ./...` and `cargo test --workspace` pass
 
 ## Verification
@@ -229,6 +229,7 @@ cargo test --workspace
 | `export.go` doc comment example uses value-type PR                | LOW      | PR → \*PrincipalRoot (WS-C)     | Fix in next doc sweep                                                   |          |
 | `pre` field semantics: fixture-gen uses CS, verify_pre expects PS | HIGH     | Surfaced during WS-C/D Rust     | Fix fixture-gen to use PS-tagged, or fix verify_pre                     |    ✅    |
 | CLI integration tests panic on L1 key add (`.expect()` on PR)     | MEDIUM   | PR optionality (WS-C/Phase 2.5) | Update CLI tests to use L3+ principals or precede with principal/create |          |
+| MissingCommit not enforced in finalize_commit                     | MEDIUM   | Phase 4, Step 1                 | Enforce once creation path (CommitBuilder) injects commit:<CS>          |          |
 
 ## Deviation Log
 
