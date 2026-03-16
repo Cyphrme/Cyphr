@@ -282,3 +282,69 @@ synchronization.
 
  well as
 ensuring that the targeted PT is calculated correctly, 
+
+Merging is performed via a special transaction type, `principal/merge` 
+
+
+Multihash identifiers are calculated for all state on a per commit basis.  For a
+particular commit, for each algorithm referenced by the principal a digest value is calculated.
+States are singular, having a singular underlying
+structure, but may be referenced via multiple hashing algorithms. For a
+particular commit, for each algorithm supported by any key, nonce, or embedding
+in KT, a digest value is calculated. When only one algorithm is used by a
+principal, the multihash has only one variant. When multiple algorithms are
+used, the multihash has many variants. 
+Instead of identifiers being tightly coupled to a single digest, identifiers are
+coupled to a 
+
+
+For example, if the set of keys supports SHA-256 and SHA-384, then both a
+SHA-256 and a SHA-384 digest is calculated. If the keys support only SHA-256,
+then only a SHA-256 digest is calculated.
+
+A nonce (or multiple nonces) can be used to inject a specific digest algorithm
+variant into the multihash identifier, even when no key supports that algorithm
+natively. This is because a nonce itself is associated with a hashing algorithm
+or multihash identifier.
+
+(PR/PS, AS, KS, RS, DS, and all internal Merkle tree
+nodes) when multiple hash algorithms are in use. 
+
+
+
+  
+
+
+The MHMR design achieves three simultaneous goals:
+
+1. Cryptographic pluggability without algorithm lock-in
+2. Support for embedded principals and recursive structures
+3. Backward- and forward-compatibility during algorithm transitions
+
+All references to state (PR/PS, AS, KS, RS, DS, etc.) in protocol messages, storage,
+gossip, and verification use one of these multihash variants. 
+
+
+  A multihash identifier for a node therefore consists of one digest per
+  supported H at the time of the commit.
+- All MHMR variants are considered equivalent references to the same logical
+  state.
+  Clients compute MHMR variants for every hash algorithm
+currently supported by active algorithms at each commit.
+
+
+combines two principal histories,
+
+
+
+An example of embedding an external principal into key state:
+
+```text
+Principal Tree (PT0)
+│
+├── Auth Tree (AT0)
+│   │
+│   ├── Key Tree (KT0)
+│   │   │
+│   │   └── Embedded Principal (PS1)
+```
