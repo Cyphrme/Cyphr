@@ -9,7 +9,7 @@ use super::common::{
     parse_principal_root, parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
-use crate::{Cli, Error, KeyCommands, OutputFormat};
+use crate::{Cli, KeyCommands, OutputFormat};
 
 /// Run a key subcommand.
 pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
@@ -105,14 +105,12 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
-    // Build pay JSON for key/create
+    // Build pay Value for key/create (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
-    // Get pre (principal state before transaction) in alg:digest format
     let pre = principal.ps_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
-    pay_map.insert("commit".to_string(), Value::Bool(true));
     pay_map.insert("id".to_string(), Value::String(new_key_tmb.clone()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("pre".to_string(), Value::String(pre));
@@ -122,22 +120,17 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
         Value::String("cyphr.me/key/create".to_string()),
     );
 
-    let pay_json = serde_json::to_vec(&pay_map)?;
+    let pay_value: Value = serde_json::to_value(&pay_map)?;
 
-    // Sign with coz
-    let (sig_bytes, cad) = coz::sign_json(
-        &pay_json,
+    // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
+    let scope = principal.begin_commit();
+    scope.finalize_with_commit(
+        pay_value,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
-    )
-    .ok_or_else(|| Error::Signing("signing failed".into()))?;
-
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
-        .ok_or_else(|| Error::Signing("czd computation failed".into()))?;
-
-    // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
-    principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, Some(new_key.clone()))?;
+        Some(new_key.clone()),
+    )?;
 
     // Store updated state
     let new_commits = export_commits(&principal)?;
@@ -199,14 +192,12 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
-    // Build pay JSON for key/revoke
+    // Build pay Value for key/revoke (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
-    // Get pre (principal state before transaction) in alg:digest format
     let pre = principal.ps_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
-    pay_map.insert("commit".to_string(), Value::Bool(true));
     pay_map.insert("id".to_string(), Value::String(key_tmb.to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("pre".to_string(), Value::String(pre));
@@ -217,22 +208,17 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
         Value::String("cyphr.me/key/revoke".to_string()),
     );
 
-    let pay_json = serde_json::to_vec(&pay_map)?;
+    let pay_value: Value = serde_json::to_value(&pay_map)?;
 
-    // Sign with coz
-    let (sig_bytes, cad) = coz::sign_json(
-        &pay_json,
+    // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
+    let scope = principal.begin_commit();
+    scope.finalize_with_commit(
+        pay_value,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
-    )
-    .ok_or_else(|| Error::Signing("signing failed".into()))?;
-
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
-        .ok_or_else(|| Error::Signing("czd computation failed".into()))?;
-
-    // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
-    principal.verify_and_apply_transaction(&pay_json, &sig_bytes, czd, None)?;
+        None,
+    )?;
 
     // Store updated state
     let new_commits = export_commits(&principal)?;

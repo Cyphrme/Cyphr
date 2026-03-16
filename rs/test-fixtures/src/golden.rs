@@ -1237,40 +1237,6 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Apply a transaction to the principal.
-    fn apply_transaction_to_principal(
-        &self,
-        principal: &mut cyphrpass::Principal,
-        tx: &TxIntent,
-        coz: &GoldenCoz,
-        sig_bytes: &[u8],
-        czd: coz::Czd,
-        test_name: &str,
-    ) -> Result<(), Error> {
-        // Get new key for key/create operations
-        let new_key = if let Some(target_name) = &tx.target {
-            Some(self.pool_key_to_cyphrpass_key(target_name)?)
-        } else {
-            None
-        };
-
-        // Serialize pay back to JSON for verify_and_apply
-        let pay_json = serde_json::to_vec(&coz.pay).map_err(|e| Error::Generation {
-            name: test_name.to_string(),
-            reason: format!("failed to serialize pay: {}", e),
-        })?;
-
-        // Apply transaction — verify_and_apply_transaction auto-finalizes as single-tx commit.
-        principal
-            .verify_and_apply_transaction(&pay_json, sig_bytes, czd, new_key)
-            .map_err(|e| Error::Generation {
-                name: test_name.to_string(),
-                reason: format!("transaction application failed: {}", e),
-            })?;
-
-        Ok(())
-    }
-
     /// Resolve a key reference to a pool key.
     fn resolve_key(&self, name: &str) -> Result<&PoolKey, Error> {
         self.pool.get(name).ok_or_else(|| Error::KeyRef {

@@ -99,6 +99,10 @@ pub enum LoadError {
     /// Unsupported cryptographic algorithm.
     #[error("unsupported algorithm")]
     UnsupportedAlgorithm,
+
+    /// Invalid key material (e.g., base64 decode failure).
+    #[error("invalid key material: {field}: {message}")]
+    InvalidKeyMaterial { field: String, message: String },
 }
 
 /// Determine if a typ string represents a transaction (not an action).
@@ -378,7 +382,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                 // Transaction: consume next key from commit-level keys if this
                 // is a key-introducing type (key/create, key/replace)
                 let new_key = if is_key_introducing_typ(typ) {
-                    key_iter.next().map(key_entry_to_key)
+                    key_iter.next().map(key_entry_to_key).transpose()?
                 } else {
                     None
                 };
@@ -457,13 +461,22 @@ fn is_key_introducing_typ(typ: &str) -> bool {
 }
 
 /// Convert a commit-level KeyEntry to a Principal Key.
-fn key_entry_to_key(entry: &KeyEntry) -> Key {
+fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).unwrap_or_default();
-    let tmb_bytes = Base64UrlUnpadded::decode_vec(&entry.tmb).unwrap_or_default();
+    let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).map_err(|e| {
+        LoadError::InvalidKeyMaterial {
+            field: "pub".into(),
+            message: e.to_string(),
+        }
+    })?;
+    let tmb_bytes =
+        Base64UrlUnpadded::decode_vec(&entry.tmb).map_err(|e| LoadError::InvalidKeyMaterial {
+            field: "tmb".into(),
+            message: e.to_string(),
+        })?;
 
-    Key {
+    Ok(Key {
         alg: entry.alg.clone(),
         tmb: Thumbprint::from_bytes(tmb_bytes),
         pub_key,
@@ -471,7 +484,7 @@ fn key_entry_to_key(entry: &KeyEntry) -> Key {
         last_used: None,
         revocation: None,
         tag: entry.tag.clone(),
-    }
+    })
 }
 
 /// Extract key material from a per-entry embedded `key` field.
