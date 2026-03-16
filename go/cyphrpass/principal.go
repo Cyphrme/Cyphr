@@ -768,10 +768,21 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.cs = &cs
 
-	// Validate commit field matches independently computed CS
+	// Validate commit field matches independently computed CS.
+	// The tx's CommitCS is a single-variant multihash (signer's algorithm only).
+	// We must compare against the computed CS at that specific algorithm,
+	// not via Tagged() which uses the lex-first algorithm and would fail
+	// in cross-algorithm scenarios (e.g., ES384 signer on SHA-256+SHA-384 principal).
 	lastTx := txs[len(txs)-1]
 	if lastTx.CommitCS != nil {
-		if lastTx.CommitCS.Tagged() != cs.Tagged() {
+		txAlgs := lastTx.CommitCS.Algorithms()
+		if len(txAlgs) == 0 {
+			return nil, ErrCommitMismatch
+		}
+		txAlg := txAlgs[0]
+		txDigest := lastTx.CommitCS.Get(txAlg)
+		computedDigest := cs.Get(txAlg)
+		if computedDigest == nil || !bytes.Equal(txDigest, computedDigest) {
 			return nil, ErrCommitMismatch
 		}
 	}
