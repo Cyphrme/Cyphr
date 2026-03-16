@@ -46,13 +46,19 @@ type GoldenKey struct {
 	Pub string `json:"pub"`
 	// Tmb is the thumbprint (base64url).
 	Tmb string `json:"tmb"`
+	// Tag is an optional human-readable label.
+	Tag string `json:"tag,omitempty"`
+	// Now is an optional creation timestamp.
+	Now int64 `json:"now,omitempty"`
 }
 
 // GoldenCommit is an atomic transaction bundle from a golden file.
-// Matches the Rust fixture format: {txs, commit_id, as, cs, ps}.
+// Matches the Rust fixture format: {txs, keys, commit_id, as, cs, ps}.
 type GoldenCommit struct {
 	// Txs contains the transactions in this commit.
 	Txs []json.RawMessage `json:"txs"`
+	// Keys contains key material introduced in this commit (SPEC §5.2/§5.3).
+	Keys []GoldenKey `json:"keys"`
 	// CommitID is the commit identity after this commit (base64url).
 	CommitID string `json:"commit_id,omitempty"`
 	// AS is the auth state after this commit (base64url).
@@ -163,6 +169,89 @@ func (g *Golden) FlattenTxs() []json.RawMessage {
 		txs = append(txs, c.Txs...)
 	}
 	return txs
+}
+
+// FlattenTxsWithKeys returns all transaction entries from all commits,
+// with commit-level keys re-injected into key-introducing transactions.
+//
+// The Go storage layer reads key material from per-entry embedded "key"
+// fields (Entry.KeyJSON()). Since keys are now stored at commit level,
+// this method re-injects them before flattening so the storage layer
+// can consume them without modification.
+func (g *Golden) FlattenTxsWithKeys() ([]json.RawMessage, error) {
+	var txs []json.RawMessage
+	for _, c := range g.Commits {
+		keyIdx := 0
+		for _, tx := range c.Txs {
+			// Check if this tx is key-introducing
+			typ, err := extractTyp(tx)
+			if err != nil {
+				txs = append(txs, tx)
+				continue
+			}
+
+			if isKeyIntroducing(typ) && keyIdx < len(c.Keys) {
+				// Re-inject key into tx JSON
+				injected, err := injectKey(tx, c.Keys[keyIdx])
+				if err != nil {
+					return nil, fmt.Errorf("inject key into tx: %w", err)
+				}
+				txs = append(txs, injected)
+				keyIdx++
+			} else {
+				txs = append(txs, tx)
+			}
+		}
+	}
+	return txs, nil
+}
+
+// extractTyp extracts pay.typ from a raw JSON transaction.
+func extractTyp(tx json.RawMessage) (string, error) {
+	var extractor struct {
+		Pay struct {
+			Typ string `json:"typ"`
+		} `json:"pay"`
+	}
+	if err := json.Unmarshal(tx, &extractor); err != nil {
+		return "", err
+	}
+	return extractor.Pay.Typ, nil
+}
+
+// isKeyIntroducing returns true if the transaction type introduces new key material.
+func isKeyIntroducing(typ string) bool {
+	for i := 0; i+11 <= len(typ); i++ {
+		if typ[i:i+11] == "/key/create" {
+			return true
+		}
+	}
+	for i := 0; i+12 <= len(typ); i++ {
+		if typ[i:i+12] == "/key/replace" {
+			return true
+		}
+	}
+	return false
+}
+
+// injectKey embeds a GoldenKey into a raw JSON transaction as a "key" field.
+func injectKey(tx json.RawMessage, key GoldenKey) (json.RawMessage, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(tx, &obj); err != nil {
+		return nil, err
+	}
+
+	keyJSON, err := json.Marshal(map[string]any{
+		"alg": key.Alg,
+		"pub": key.Pub,
+		"tmb": key.Tmb,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	obj["key"] = keyJSON
+	return json.Marshal(obj)
 }
 
 // FlattenTxsWithBoundaries returns all transaction entries and the indices

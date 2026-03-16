@@ -95,10 +95,11 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
    - [ ] Run `cargo test -p cyphrpass` — all unit tests pass
 
 3. **Phase 3: Consumer Updates** — Go + Rust consumers parse aligned golden JSON
-   - [ ] Add `Keys []GoldenKey` to `GoldenCommit` struct (Go)
-   - [ ] Update `convertEntries()` to parse keys from commit-level `Keys`
-   - [ ] Run `go test ./...` — all golden tests pass
-   - [ ] Run `cargo test` (full workspace) — all tests pass
+   - [x] Add `Keys []GoldenKey` to `GoldenCommit` struct (Go)
+   - [x] Add `FlattenTxsWithKeys()` key injection method (Go)
+   - [x] Update runner to call `FlattenTxsWithKeys()` (Go)
+   - [ ] Run `go test ./...` — all golden tests pass (blocked on fixture regeneration)
+   - [ ] Run `cargo test` (full workspace) — all tests pass (blocked on fixture regeneration)
 
 ## Verification
 
@@ -113,6 +114,8 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
 
 | Item | Severity | Why Introduced | Follow-Up | Resolved |
 | :--- | :------- | :------------- | :-------- | :------: |
+| `injectKey()` re-serializes tx JSON via `map[string]json.RawMessage` round-trip | HIGH | Bridge pattern for Go storage layer which expects per-entry embedded key | Phase 2: Go runner switches to commit-based replay, eliminating FlattenTxsWithKeys entirely | |
+| `key_entry_to_key()` uses `unwrap_or_default()` on base64 decode | MEDIUM | Return type is `Key` not `Result<Key>` — threading Result ripples through `replay_commits()` | Error audit pass on import path | |
 
 ## Deviation Log
 

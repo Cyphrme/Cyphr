@@ -46,8 +46,13 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 		return result
 	}
 
-	// Convert entries (flattening commits if present)
-	entries, err := convertEntries(golden.FlattenTxs())
+	// Convert entries (flattening commits with key injection)
+	flatTxs, err := golden.FlattenTxsWithKeys()
+	if err != nil {
+		result.Err = fmt.Errorf("failed to flatten txs with keys: %w", err)
+		return result
+	}
+	entries, err := convertEntries(flatTxs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to convert entries: %w", err)
 		return result
