@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cyphrpass::Principal;
 use cyphrpass::key::Key;
-use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
+use test_fixtures::{Golden, GoldenExpected, KeyEntry, Pool, PoolKey};
 
 // ============================================================================
 // Test helpers
@@ -74,11 +74,13 @@ fn cad_to_b64(cad: &coz::Cad) -> String {
 
 /// Apply a storage-format entry {pay, sig, key?} to Principal.
 /// Verifies that computed czd matches expected_czd.
+/// `commit_keys` provides commit-level keys for key/create and key/replace.
 fn try_apply_entry(
     principal: &mut Principal,
     entry: &serde_json::Value,
     expected_czd: &str,
     test_name: &str,
+    commit_keys: &[KeyEntry],
 ) -> Result<(), cyphrpass::error::Error> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -108,33 +110,26 @@ fn try_apply_entry(
         test_name
     );
 
-    // Extract key if present
-    let new_key = entry.get("key").map(|key_val| {
-        let alg = key_val
-            .get("alg")
-            .and_then(|v| v.as_str())
-            .expect("key missing alg");
-        let pub_b64 = key_val
-            .get("pub")
-            .and_then(|v| v.as_str())
-            .expect("key missing pub");
-        let tmb_b64 = key_val
-            .get("tmb")
-            .and_then(|v| v.as_str())
-            .expect("key missing tmb");
-
-        let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).expect("invalid key pub base64");
-        let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).expect("invalid key tmb base64");
-
-        Key {
-            alg: alg.to_string(),
-            tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-            pub_key: pub_bytes,
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+    // Look up new key from commit-level keys[] by matching pay.id to key.tmb
+    let new_key = pay.get("id").and_then(|id_val| {
+        let id_str = id_val.as_str()?;
+        commit_keys.iter().find_map(|ke| {
+            if ke.tmb == id_str {
+                let pub_bytes = Base64UrlUnpadded::decode_vec(&ke.pub_key).ok()?;
+                let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb).ok()?;
+                Some(Key {
+                    alg: ke.alg.clone(),
+                    tmb: coz::Thumbprint::from_bytes(tmb_bytes),
+                    pub_key: pub_bytes,
+                    first_seen: 0,
+                    last_used: None,
+                    revocation: None,
+                    tag: None,
+                })
+            } else {
+                None
+            }
+        })
     });
 
     // Determine if this is a transaction or action based on typ field
@@ -406,7 +401,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 let czd = &digests[digest_idx];
                 digest_idx += 1;
 
-                match try_apply_entry(&mut principal, tx, czd, &fixture.name) {
+                match try_apply_entry(&mut principal, tx, czd, &fixture.name, &commit.keys) {
                     Ok(()) => {
                         if is_last_tx {
                             if let Some(err) = expected_error {

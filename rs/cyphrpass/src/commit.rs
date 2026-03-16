@@ -422,19 +422,21 @@ impl<'a> CommitScope<'a> {
         let cs = compute_cs(&auth_state, self.principal.ds.as_ref(), &active_algs)?;
 
         // 4. Inject commit:<CS> into pay as alg:b64(digest) tagged string
-        let first_alg = active_algs
-            .first()
-            .copied()
-            .ok_or(crate::error::Error::EmptyMultihash)?;
-        let cs_bytes = cs.0.get_or_err(first_alg)?;
+        // Per Coz semantics, digest references in pay align with the signer's algorithm.
+        let signer_hash_alg = hash_alg_from_str(alg)?;
+        let cs_bytes = cs.0.get_or_err(signer_hash_alg)?;
         let cs_tagged = format!(
             "{}:{}",
-            first_alg,
+            signer_hash_alg,
             Base64UrlUnpadded::encode_string(cs_bytes)
         );
 
         if let Some(obj) = pay.as_object_mut() {
             obj.insert("commit".to_string(), serde_json::Value::String(cs_tagged));
+            // Re-sort keys for Coz canonical ordering.
+            // serde_json with `preserve_order` appends new keys at the end;
+            // we need lexicographic order for deterministic serialization.
+            obj.sort_keys();
         } else {
             return Err(crate::error::Error::MalformedPayload);
         }

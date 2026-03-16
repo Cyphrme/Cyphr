@@ -26,6 +26,7 @@ pub mod golden;
 pub mod intent;
 pub mod pool;
 
+pub use cyphrpass_storage::{CommitEntry, KeyEntry};
 pub use error::Error;
 pub use golden::{Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, GoldenSetup, generate};
 pub use intent::Intent;

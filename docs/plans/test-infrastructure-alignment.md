@@ -98,24 +98,28 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
    - [x] Add `Keys []GoldenKey` to `GoldenCommit` struct (Go)
    - [x] Add `FlattenTxsWithKeys()` key injection method (Go)
    - [x] Update runner to call `FlattenTxsWithKeys()` (Go)
-   - [ ] Run `go test ./...` — all golden tests pass (blocked on fixture regeneration)
-   - [ ] Run `cargo test` (full workspace) — all tests pass (blocked on fixture regeneration)
+   - [ ] Run `go test ./...` — all golden tests pass (blocked on Go finalize_commit fix)
+   - [x] Run `cargo test` (full workspace) — 64 unit + 7 golden pass
 
 ## Verification
 
-- [ ] `cargo test -p cyphrpass-storage` — storage round-trip tests pass
-- [ ] `cargo run -p fixture-gen` — fixture generation succeeds
-- [ ] `cargo test` — full Rust workspace passes
-- [ ] `go test ./...` — full Go test suite passes
-- [ ] Spot-check golden JSON: top-level `keys[]` present, no embedded `key` per-tx
-- [ ] Spot-check golden JSON: `txs` field name unchanged, `tag`/`now` present on keys
+- [x] `cargo test -p cyphrpass-storage` — storage round-trip tests pass
+- [x] `cargo run -p fixture-gen` — fixture generation succeeds (21 tests from 5 intents)
+- [x] `cargo test` — full Rust workspace passes (64 unit + 7 golden)
+- [ ] `go test ./...` — full Go test suite passes (blocked on Go cross-alg + missing commit)
+- [x] Spot-check golden JSON: top-level `keys[]` present, no embedded `key` per-tx
+- [x] Spot-check golden JSON: `txs` field name unchanged, `tag`/`now` present on keys
+- [x] Spot-check golden JSON: `commit` field present with canonical ordering (`alg, commit, id, ...`)
 
 ## Technical Debt
 
-| Item | Severity | Why Introduced | Follow-Up | Resolved |
-| :--- | :------- | :------------- | :-------- | :------: |
-| `injectKey()` re-serializes tx JSON via `map[string]json.RawMessage` round-trip | HIGH | Bridge pattern for Go storage layer which expects per-entry embedded key | Phase 2: Go runner switches to commit-based replay, eliminating FlattenTxsWithKeys entirely | |
-| `key_entry_to_key()` uses `unwrap_or_default()` on base64 decode | MEDIUM | Return type is `Key` not `Result<Key>` — threading Result ripples through `replay_commits()` | Error audit pass on import path | |
+| Item                                                                            | Severity | Why Introduced                                                                               | Follow-Up                                                                                   | Resolved |
+| :------------------------------------------------------------------------------ | :------- | :------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------ | :------: |
+| `injectKey()` re-serializes tx JSON via `map[string]json.RawMessage` round-trip | HIGH     | Bridge pattern for Go storage layer which expects per-entry embedded key                     | Phase 2: Go runner switches to commit-based replay, eliminating FlattenTxsWithKeys entirely |          |
+| `key_entry_to_key()` uses `unwrap_or_default()` on base64 decode                | MEDIUM   | Return type is `Key` not `Result<Key>` — threading Result ripples through `replay_commits()` | Error audit pass on import path                                                             |          |
+| `apply_transaction_to_principal()` is dead code in generator                    | LOW      | All generators refactored to CommitScope; method no longer called                            | Remove once error test path is confirmed stable                                             |          |
+| Go `finalize_commit` cross-alg CS comparison uses full struct equality          | HIGH     | Same bug as Rust (now fixed): fails when commit uses different alg than principal's first    | Step 7 of this plan — per-variant comparison                                                |          |
+| CLI integration tests fail: missing commit field                                | HIGH     | CLI `key add`/`key create` don't inject commit field into terminal transactions              | Update CLI command implementations to use `finalize_with_commit`                            |          |
 
 ## Deviation Log
 

@@ -949,9 +949,14 @@ impl Principal {
         self.cs = Some(cs.clone());
 
         // Validate commit field matches independently computed CS
+        // Compare per-variant (the claimed CS from pay may contain a single
+        // algorithm variant while the computed CS is multi-variant).
         if let Some(claimed_cs) = txs.last().unwrap().commit_state() {
-            if claimed_cs != &cs {
-                return Err(Error::CommitMismatch);
+            for (alg, claimed_bytes) in claimed_cs.0.variants() {
+                let computed_bytes = cs.0.get_or_err(*alg)?;
+                if claimed_bytes.as_ref() != computed_bytes {
+                    return Err(Error::CommitMismatch);
+                }
             }
         }
 
