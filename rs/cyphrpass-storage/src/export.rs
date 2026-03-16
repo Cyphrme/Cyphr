@@ -3,9 +3,8 @@
 //! These functions bridge the `cyphrpass` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use crate::{CommitEntry, Entry, Store};
+use crate::{CommitEntry, Entry, KeyEntry, Store};
 use cyphrpass::Principal;
-use serde_json::json;
 
 /// Errors that can occur during export.
 #[derive(Debug, thiserror::Error)]
@@ -46,30 +45,11 @@ pub enum ExportError {
 /// }
 /// ```
 pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     let mut entries = Vec::new();
 
     for tx in principal.transactions() {
-        // Serialize complete CozJson {pay, sig}
-        let mut raw = serde_json::to_value(tx.raw())?;
-
-        // For key/create and key/replace, include the key material from the transaction
-        if let Some(key) = tx.new_key() {
-            let key_json = json!({
-                "alg": key.alg,
-                "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-                "tmb": key.tmb.to_b64()
-            });
-            raw.as_object_mut()
-                .ok_or_else(|| {
-                    ExportError::Json(serde_json::Error::io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "CozJson is not an object",
-                    )))
-                })?
-                .insert("key".to_string(), key_json);
-        }
+        // Serialize complete CozJson {pay, sig} — no key embedding
+        let raw = serde_json::to_value(tx.raw())?;
 
         // Note: from_value serializes, which is fine for export (creating new entries)
         entries.push(Entry::from_value(&raw)?);
@@ -116,29 +96,23 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
 
     for commit in principal.commits() {
         let mut txs = Vec::new();
+        let mut keys = Vec::new();
 
         for tx in commit.transactions() {
-            // Serialize complete CozJson {pay, sig}
-            let mut raw = serde_json::to_value(tx.raw())?;
-
-            // For key/create and key/replace, include the key material
-            if let Some(key) = tx.new_key() {
-                let key_json = json!({
-                    "alg": key.alg,
-                    "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-                    "tmb": key.tmb.to_b64()
-                });
-                raw.as_object_mut()
-                    .ok_or_else(|| {
-                        ExportError::Json(serde_json::Error::io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "CozJson is not an object",
-                        )))
-                    })?
-                    .insert("key".to_string(), key_json);
-            }
-
+            // Serialize complete CozJson {pay, sig} — no key embedding
+            let raw = serde_json::to_value(tx.raw())?;
             txs.push(raw);
+
+            // Collect key material at commit level
+            if let Some(key) = tx.new_key() {
+                keys.push(KeyEntry {
+                    alg: key.alg.clone(),
+                    pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
+                    tmb: key.tmb.to_b64(),
+                    tag: key.tag.clone(),
+                    now: Some(key.first_seen),
+                });
+            }
         }
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
@@ -183,7 +157,7 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
 
-        commit_entries.push(CommitEntry::new(txs, commit_id, auth_state, cs, ps));
+        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_state, cs, ps));
     }
 
     Ok(commit_entries)
@@ -227,6 +201,7 @@ mod tests {
     use super::*;
     use coz::Thumbprint;
     use cyphrpass::Key;
+    use serde_json::json;
 
     fn make_test_key(id: u8) -> Key {
         Key {

@@ -7,7 +7,7 @@
 //! Supports both legacy flat format (one tx per line) and commit-based format
 //! (one commit bundle per line).
 
-use crate::{CommitEntry, Entry};
+use crate::{CommitEntry, Entry, KeyEntry};
 use coz::Thumbprint;
 use cyphrpass::state::{AuthState, PrincipalRoot};
 use cyphrpass::{Key, Principal};
@@ -330,6 +330,8 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
 ///
 /// Each commit bundle contains multiple transactions that form an atomic unit.
 /// Uses `CommitScope` to properly group transactions into commits.
+/// Key material is read from the commit-level `keys[]` array, not from
+/// per-tx embedded fields.
 fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -342,6 +344,9 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
         // Create a commit scope for this bundle's transactions
         let mut scope = principal.begin_commit();
         let mut applied_tx_count = 0;
+
+        // Iterator over commit-level keys — consumed by key-introducing txs
+        let mut key_iter = commit.keys.iter();
 
         for (tx_idx, tx_value) in commit.txs.iter().enumerate() {
             let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
@@ -370,8 +375,13 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
             let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
             if is_transaction_typ(typ) {
-                // Transaction: extract key material if present
-                let new_key = extract_key_from_entry(tx_value);
+                // Transaction: consume next key from commit-level keys if this
+                // is a key-introducing type (key/create, key/replace)
+                let new_key = if is_key_introducing_typ(typ) {
+                    key_iter.next().map(key_entry_to_key)
+                } else {
+                    None
+                };
 
                 // Compute czd via the scope's hash algorithm
                 let alg = match scope.principal_hash_alg() {
@@ -441,7 +451,34 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
     Ok(())
 }
 
-/// Extract key material from entry (for key/create, key/replace).
+/// Returns true if a transaction type introduces new key material.
+fn is_key_introducing_typ(typ: &str) -> bool {
+    typ.contains("/key/create") || typ.contains("/key/replace")
+}
+
+/// Convert a commit-level KeyEntry to a Principal Key.
+fn key_entry_to_key(entry: &KeyEntry) -> Key {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).unwrap_or_default();
+    let tmb_bytes = Base64UrlUnpadded::decode_vec(&entry.tmb).unwrap_or_default();
+
+    Key {
+        alg: entry.alg.clone(),
+        tmb: Thumbprint::from_bytes(tmb_bytes),
+        pub_key,
+        first_seen: entry.now.unwrap_or(0),
+        last_used: None,
+        revocation: None,
+        tag: entry.tag.clone(),
+    }
+}
+
+/// Extract key material from a per-entry embedded `key` field.
+///
+/// Used by `replay_entries()` (legacy flat format) where key material
+/// is embedded in each transaction entry. For commit-based format,
+/// use `key_entry_to_key()` with commit-level `keys[]` instead.
 fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 

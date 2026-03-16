@@ -16,7 +16,7 @@
 //! 5. Extracts final state digests (ks, as, cs, ps, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphrpass_storage::CommitEntry;
+use cyphrpass_storage::{CommitEntry, KeyEntry};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -353,7 +353,14 @@ impl<'a> Generator<'a> {
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
 
-            commits.push(CommitEntry::new(vec![raw], commit_id, auth_state, cs, ps));
+            commits.push(CommitEntry::new(
+                vec![raw],
+                vec![],
+                commit_id,
+                auth_state,
+                cs,
+                ps,
+            ));
         }
 
         Ok((commits, digests))
@@ -366,26 +373,31 @@ impl<'a> Generator<'a> {
     /// Note: For error tests, the state digests are meaningless since the
     /// transaction failed validation. We use empty strings as placeholders.
     fn coz_to_commit_entry(coz: &GoldenCoz) -> CommitEntry {
-        // Build JSON object for the failing transaction
-        let mut tx_json = serde_json::json!({
+        // Build JSON object for the failing transaction (no embedded key)
+        let tx_json = serde_json::json!({
             "pay": serde_json::from_str::<Value>(coz.pay.get()).expect("valid pay JSON"),
             "sig": coz.sig,
         });
 
-        if let Some(ref key) = coz.key {
-            tx_json.as_object_mut().unwrap().insert(
-                "key".to_string(),
-                serde_json::json!({
-                    "alg": key.alg,
-                    "pub": key.pub_key,
-                    "tmb": key.tmb
-                }),
-            );
-        }
+        // Move key to commit-level keys[] if present
+        let keys = coz
+            .key
+            .as_ref()
+            .map(|k| {
+                vec![KeyEntry {
+                    alg: k.alg.clone(),
+                    pub_key: k.pub_key.clone(),
+                    tmb: k.tmb.clone(),
+                    tag: None,
+                    now: None,
+                }]
+            })
+            .unwrap_or_default();
 
         // Wrap as a single-transaction commit with placeholder state digests
         CommitEntry::new(
             vec![tx_json],
+            keys,
             String::new(), // commit_id placeholder for error tests
             String::new(), // as placeholder for error tests
             String::new(), // cs placeholder for error tests

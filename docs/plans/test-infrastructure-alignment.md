@@ -82,11 +82,11 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
 
 1. **Phase 1: Wire Format Alignment** — `CommitEntry` keys extraction + export/import
    - [ ] Define `KeyEntry` struct: `alg`, `pub`, `tmb`, `tag?`, `now?`
-   - [ ] Add `keys: Vec<KeyEntry>` to `CommitEntry` (with `#[serde(default)]`)
-   - [ ] Update `export_commits()`: collect new keys at commit level into `keys[]`, stop embedding `key` per-tx
-   - [ ] Update `import.rs`: `extract_key_from_entry()` reads from commit-level `keys[]` via new parameter
-   - [ ] Update `replay_commits()` to pass keys from `CommitEntry.keys` to transaction processing
-   - [ ] Run `cargo test -p cyphrpass-storage` — all pass
+   - [x] Add `keys: Vec<KeyEntry>` to `CommitEntry` (no backward compat)
+   - [x] Update `export_commits()`: collect new keys at commit level into `keys[]`, stop embedding `key` per-tx
+   - [x] Update `import.rs`: `replay_commits()` reads from commit-level `keys[]` via iterator
+   - [x] Update `test-fixtures/golden.rs`: `coz_to_commit_entry()` uses commit-level `KeyEntry`
+   - [x] Run `cargo test -p cyphrpass-storage` — 16/16 unit tests pass
 
 2. **Phase 2: Generator Refactor** — Use `CommitScope` for coz construction
    - [ ] Replace `build_pay_json()` + `sign_pay()` with `CommitScope::finalize_with_commit()` in generator
@@ -116,8 +116,9 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
 
 ## Deviation Log
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit   | Planned                       | Actual                    | Rationale                                                         |
+| :------- | :---------------------------- | :------------------------ | :---------------------------------------------------------------- |
+| Phase 1a | `#[serde(default)]` on `keys` | No backward compat guards | Pre-alpha policy: old format is dead, deserialization should fail |
 
 ## Retrospective
 

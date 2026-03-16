@@ -192,10 +192,34 @@ impl Entry {
     }
 }
 
+/// Key material for a commit (SPEC §6).
+///
+/// Keys are stored at commit level per SPEC §5.2/§5.3, not embedded
+/// per-transaction. Optional fields (`tag`, `now`) are semantically
+/// optional — not all keys have human-readable labels or creation
+/// timestamps at export time.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KeyEntry {
+    /// Algorithm identifier (e.g., "ES256").
+    pub alg: String,
+    /// Public key (base64url-encoded).
+    #[serde(rename = "pub")]
+    pub pub_key: String,
+    /// Key thumbprint (base64url-encoded).
+    pub tmb: String,
+    /// Optional human-readable label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Optional creation timestamp (maps to Key.first_seen).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<i64>,
+}
+
 /// A stored commit bundle for the commit-based JSONL format.
 ///
 /// Each line in the JSONL file represents one finalized commit containing:
-/// - `txs`: Array of transaction entries (each with pay, sig, and optional key)
+/// - `txs`: Array of transaction entries (signed coz messages)
+/// - `keys`: Key material introduced in this commit (SPEC §5.2/§5.3)
 /// - `commit_id`: Commit ID (Merkle root of commit's transaction czds)
 /// - `as`: Auth State (derived from KS)
 /// - `cs`: Commit State (derived from AS and Commit ID)
@@ -207,6 +231,8 @@ impl Entry {
 pub struct CommitEntry {
     /// Transaction entries in this commit bundle.
     pub txs: Vec<serde_json::Value>,
+    /// Key material introduced in this commit.
+    pub keys: Vec<KeyEntry>,
     /// Commit ID (per-commit Merkle root of transaction czds).
     #[serde(alias = "ts")]
     pub commit_id: String,
@@ -214,7 +240,6 @@ pub struct CommitEntry {
     #[serde(rename = "as")]
     pub auth_state: String,
     /// Commit State: MR(AS, Commit ID).
-    #[serde(default)]
     pub cs: String,
     /// Principal State after this commit.
     pub ps: String,
@@ -224,6 +249,7 @@ impl CommitEntry {
     /// Create a new commit entry from components.
     pub fn new(
         txs: Vec<serde_json::Value>,
+        keys: Vec<KeyEntry>,
         commit_id: String,
         auth_state: String,
         cs: String,
@@ -231,6 +257,7 @@ impl CommitEntry {
     ) -> Self {
         Self {
             txs,
+            keys,
             commit_id,
             auth_state,
             cs,
