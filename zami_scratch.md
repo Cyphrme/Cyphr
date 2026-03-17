@@ -467,3 +467,7 @@ public-key verification contained entirely within the message itself.
   }]
 }
 ```
+
+
+ forward state (`fwd`) through
+`commit`.

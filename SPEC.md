@@ -41,8 +41,8 @@ it enables:
 
 ### 2.1 Levels and State Tree
 
-The **principal tree** consists of data nodes representing user authentication
-and and user data.
+The **principal tree** (PT) consists of nodes representing user authentication
+components and and user data.
 
 ```text
 Principal Tree (PT)
@@ -56,7 +56,7 @@ Principal Tree (PT)
 └── Data Tree (DT) ───────────── [Data Actions]
 ```
 
-The **principal state** is a hierarchical structure of cryptographic Merkle
+The **principal state** (PS) is a hierarchical structure of cryptographic Merkle
 roots representing the complete state of a Principal (identity) at a particular
 commit.
 
@@ -71,22 +71,21 @@ Principal State (PS)
 |
 ├── Data State (DS) ───────────── [Data Actions]
 │
-└── Commit State (CS) ──────────── [Auth State Mutation]
+└── Commit State (CS) ─────────── [Auth State Mutations]
 ```
 
 The **commit chain** tracks principal state over time.  Each commit mutates PT
-and includes a reference to the prior principal state PS.  CS is calculated as
-all PS components except for the commit id.
+and includes a reference to the prior PS the forward PT.
 
 ```text
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +----------------+
  |                | Commit |                | Commit |                | (Future)
- |     [PR]       | =====> | PS(Commit, CS) | =====> | PS(Commit, CS) | ==> 
- |                |        |      |         |        |      |         |
- +----------------+        +------V---------+        +------V---------+
-         ^                        |    ^                    |    ^
-         + <------(pre)-----------+    +-------(pre)--------+    +-------(pre)--
+ |     [PR]       | =====> | PS(AS, DS, CS) | =====> | PS(AS, DS, CS) | ==> 
+ |                |        |            |   |        |            |   |
+ +----------------+        +------------V---+        +------------V---+
+                 ^                      |  ^                      |  ^
+                 + <--(pre)-------------+  +<--(pre)--------------+  +<--(pre)--
 ```
 
 ### 2.2 Terminology
@@ -96,21 +95,20 @@ all PS components except for the commit id.
 | ------------------- | --- | ------------------------------------------------ |
 | **Principal**       | -   | An identity in Cyphrpass, replaces "account"     |
 | **Principal Root**  | PR  | The initial, permanent principal identifier      |
-| **Principal State** | PS  | Top-level digest. `MR(AS, DS, Commit, ...)`      |
+| **Principal State** | PS  | Top-level digest. `MR(AS, DS, CS, ...)`          |
 | **Auth State**      | AS  | Authentication state `MR(KS, RS, ...)`           |
 | **Key State**       | KS  | Merkle root of key `tmb`s  `MR(tmb₁, tmb₂, ...)` |
-| **Rule State**      | RS  | Merkle root of rules (Level 5)                   |
-| **Data State**      | DS  | Merkle root of user data actions (Level 4+)      |
+| **Rule State**      | RS  | Merkle root of rules                             |
+| **Data State**      | DS  | Merkle root of user data actions                 |
+| **Commit State**    | CS  | Merkle root of transactions `MR(TS,TCS)`         |
 | **Tip**             | -   | The latest PS (digest identifier)                |
-| **Commit ID**       | -   | Ordered Merkle root of all `czd` in a commit     |
-| **Commit State**    | CS  | Merkle root of all PS components except commit   |
 | **Action**          | -   | A signed coz, denoted by `typ`. Foundation of AAA|
 | **trust anchor**    | -   | Last known valid state for a principal           |
 
-PR, PS, AS, KS, RS, and DS are all MultiHash Merkle root (MHMR) digest values.
-Each digest identifier corresponds to a tree datastructure: Principal Tree (PT),
-Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT). (PT, AT, KT, RT,
-DT). 
+PR, PS, AS, KS, RS, DS, and CS are all MultiHash Merkle root (MHMR) digest
+values. Each digest identifier corresponds to a tree datastructure: Principal
+Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT). (PT,
+AT, KT, RT, DT) or in the case of CS, the commit chain.
 
 An action is denoted by the `typ` of a signed coz. "Action" is the hypernym of
 "transaction" and "data action". Concrete types like keys, rules, user comments,
@@ -146,7 +144,7 @@ meaning.
 A commit is a finalized bundle of cozies that mutate PT and result in a new PS.
 A commit consist of one to many transactions, denoted by `typ`, and transactions
 themselves consist of one to many cozies.  Commits are chained using references
-to prior commits through `pre` and refer to the forward state through `commit`.
+to prior principal states (`pre`) and are finalized by a commit transaction.
 
 #### 2.2.5 Implicit Promotion
 
@@ -282,7 +280,7 @@ authorized if and only if all three conditions hold:
 ### 3.3 Level 3: Commit (Multi-Key)
 
 - Multiple concurrent keys with equal authority
-- PS = MR(commit ID, AS, ...), CS = MR(AS, ...)
+- PS = MR(AS, DS, CS, ...), CS = MR(TS, TCS)
 - Initial PS is equal to PR
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
@@ -293,7 +291,7 @@ authorized if and only if all three conditions hold:
 - Enables Authenticated Atomic Actions (AAA)
 - Data actions (comments, posts, etc.) recorded in DT
 
-### 3.5 Level 5: Rules 
+### 3.5 Level 5: Rules
 
 - Introduces Rule Tree (RT) for access control with weights (weighted
   permissions) and timelocks.
@@ -333,7 +331,7 @@ principal and never changes.  When a principal mutates (e.g., adds a second
 key), the PR remains permanent, only PS evolves.
 
 ```
-    PS = MR(AS, Commit?, DS?, embedding?, ...)
+  PS = MR(AS, CS, DS?, embedding?, ...)
 ```
 
 #### 3.7.2 Key State
@@ -351,16 +349,7 @@ Auth State (AS) combines authentication-related states:
   AS = MR(KS, RS?,  embedding?)      # nil components excluded from sort
 ```
 
-#### 3.7.4 Commit ID 
-
-Commit ID (Level 3+) is the Merkle root of all commit transaction `czd`s ordered
-by position as given by the principal:
-
-```
-    commit_id = MR(czd₀, czd₁?, ...)
-```
-
-#### 3.7.5 Data State
+#### 3.7.4 Data State
 
 Data State (DS) (Level 4+) is the digest of all data action `czd`s.  By default,
 DS is sorted by `now` and secondarily `czd`. DS may be an append only Merkle
@@ -369,6 +358,39 @@ tree data structure.
 ```
 DS = MR(czd₀, czd₁, ..., nonce?)
 ```
+
+#### 3.7.5 Commit State // TODO reread
+
+CS (Level 3+) is calculated as all transaction components MR(TS, TCS). TS
+contains mutation transaction cozies and TCS contains commit transaction cozies.
+
+CS is one of the three normal components for PS, so that PS = MR(AS, DS, CS).
+
+TS is the Merkle root of all mutation transaction `czd`s, `txs`, ordered by
+position as given by the principal.  TCS is the Merkle root of all commit
+transaction `czd`s, `txc`, ordered by position as given by the principal.
+
+On commit the field `commit` is equal to PTS, which is the Merkle root of the
+prior Principal state, `pre`, the forward principal tree `fwd` and TS.  PTS is
+all principal components, prior, forward, and `txs`, excluding `txc`. Why? A
+commit cannot refer to itself (a signature cannot sign itself), so instead its
+signature covers everything except the commit transaction itself.
+
+```
+  CS  = MR(TS, TCS)
+  TS  = MR(czd₀, czd₁?, ...)
+  TCS = MR(czd₀, czd₁?, ...)
+  PTS = MR(pre, fwd, TS)
+```
+
+Also: 
+- `pre`: The prior Principal State  (PS). 
+- `fwd`: The forward Principal Tree (PT).
+
+Note that `pre` refers to PS while `fwd` refers to PT.  This is because a commit
+cannot refer to itself.  After the commit is finalized, PS is calculable, but a
+"forward PS" isn't calculable since that would require commit to refer to
+itself.
 
 
 ---
@@ -451,6 +473,7 @@ including the last commit (commit id). A commit is finalized with
 `"commit":<CS>` appearing in the last coz. For example, in a three coz commit,
 `"commit":<CS>` appears in the last coz:
 
+// TODO
 ```json
 {"txs":[
   {<coz 1>},
@@ -588,7 +611,7 @@ material, but `tmb` is signed within the coz.
 
 ```json5
 {
-  "txs": [{
+  "txs": [{ // Mutation Transactions
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
@@ -607,27 +630,16 @@ material, but `tmb` is signed within the coz.
       },
       "sig": "<b64ut>",
       }],
-  "txc":[{
+  "txc":[{ // Commit Transaction
     "pay":{
         "alg": "ES256",
         "now": 1736893000,
         "typ": "cyphr.me/cyphrpass/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        // Commit
-        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // Prior state is the genesis key
-        "commit":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // In this case, CS = MR(tmb₁)
+        "commit":"<b64ut>" // PTS
       },
       "sig": "<b64ut>"
   }],
-  "meta":{
-    "forward_PT":"<b64ut>",
-    "TS":"<b64ut>",
-    "TCS":"<b64ut>",
-    "CS": "<b64ut>", // == (PT,TS) PTS (Principal transaction State) 
-    // // TODO Rename CS to PTS, then later new CS resulting in  PS = AS, DS, CS
-    "commit_id":"<b64ut>" // == CS once done with the current commit. // TODO commit_id = MR(TS, TCS)
-    // PS = AS, DS, CS
-  },
   "keys": [{ // key public material
     "tag": "User Key 0",
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -637,6 +649,43 @@ material, but `tmb` is signed within the coz.
   }]
 }
 ```
+
+
+```json5
+{"tx_meta":{
+    "pre": "<b64ut>", // prior (source) PS
+    "TS":  "<b64ut>",  // ordered MR(txs)
+    "TCS": "<b64ut>", // Ordered MR(txc)
+    "forward_PT":"<b64ut>", // MR (PT)
+    "commit":"<b64ut>",// Exactly equal to PTS
+    "PTS": "<b64ut>", // == (past_ps (pre), forward PT, TS) PTS (Principal transaction State)
+    // // TODO Rename CS to PTS, then later new CS resulting in  PS = AS, DS, CS
+    "CS":"<b64ut>", // CS = MR(TS, TCS)
+    "txs_order": [czds...],
+    "txc_order": [czds...]
+    // PS = AS, DS, CS
+    // forward PT is explicitly included.  It is just a digest so clients may implicitly accept forward PT without calculation, although they should calculate forward PT. 
+}}
+```
+
+Calculation Overhead:
+Number of MR root digests in a commit:
+ - Pre (Past PS)
+ - TS
+ - TXC
+ - Forward PT
+ - PTS 
+
+Not cacheable (always have to recalculate at the time of a commit):
+ - TS
+ - TXC
+ - Forward PT
+ - PTS
+
+Don't need 
+ - Forward CS. 
+
+
 
 // TODO txs and txc are ordered. 
 
