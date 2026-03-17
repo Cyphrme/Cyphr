@@ -120,7 +120,7 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
 | `apply_transaction_to_principal()` is dead code in generator                    | LOW      | All generators refactored to CommitScope; method no longer called                            | Remove once error test path is confirmed stable                                    |    ✓     |
 | Go `finalize_commit` cross-alg CS comparison uses full struct equality          | HIGH     | Same bug as Rust (now fixed): fails when commit uses different alg than principal's first    | Step 7 of this plan — per-variant comparison                                       |    ✓     |
 | CLI `key add`/`key revoke` use `"commit": true` placeholder                     | HIGH     | CLI did not use CommitScope; manual pay construction skipped CS computation                  | Migrated to `finalize_with_commit`; now fails at `pr().expect()` for L1 identities |    ✓     |
-| CLI `pr().expect()` panics on L1 implicit genesis identities                    | MEDIUM   | `export_commits` path assumes L3+ (PR exists); L1/L2 have no PR                              | Return error or support L1/L2 key-add flow without PR                              |          |
+| CLI `pr().expect()` panics on L1 implicit genesis identities                    | MEDIUM   | `export_commits` path assumes L3+ (PR exists); L1/L2 have no PR                              | Use identity-derived PR from `parse_principal_root` instead                        |    ✓     |
 
 ## Deviation Log
 
