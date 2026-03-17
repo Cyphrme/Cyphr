@@ -461,7 +461,7 @@ impl<'a> CommitScope<'a> {
         let final_tx = Transaction::from_pay(&real_pay, czd, hash_alg, raw)?;
         let final_vtx = VerifiedTransaction::from_parts(final_tx, new_key);
 
-        // 8. Push to pending and finalize
+        // 9. Push to pending sequence
         self.pending.push(final_vtx);
         self.principal.finalize_commit(self.pending)
     }
@@ -693,5 +693,26 @@ mod tests {
         // Commit ID should be Merkle root of all 3 transaction czds
         let cid = commit.commit_id();
         assert_eq!(cid.get(HashAlg::Sha256).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn test_cozjson_serialization() {
+        let mut pay = json!({"typ": "test", "now": 1234});
+        pay.as_object_mut()
+            .unwrap()
+            .insert("commit".to_string(), json!("SHA-256:abc"));
+
+        // Use coz::CozJson directly to see if it drops the field!
+        let raw = coz::CozJson {
+            pay: pay.clone(),
+            sig: vec![0, 1, 2],
+        };
+
+        let out = serde_json::to_string(&raw).unwrap();
+        assert!(
+            out.contains("commit"),
+            "coz::CozJson serialization dropped 'commit'! Output: {}",
+            out
+        );
     }
 }

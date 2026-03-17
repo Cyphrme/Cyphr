@@ -351,7 +351,11 @@ func (b *CommitBatch) FinalizeWithCommit(
 	}
 	realTx.raw = rawEntry
 
-	// 7. Push to pending and finalize
+	// 7. Replace the placeholder tx in principal.auth.Transactions
+	lastIdx := len(b.principal.auth.Transactions) - 1
+	b.principal.auth.Transactions[lastIdx] = realTx
+
+	// 8. Push to pending and finalize
 	b.pending.Push(realTx)
 	return b.principal.finalizeCommit(b.pending)
 }

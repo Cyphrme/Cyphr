@@ -137,6 +137,21 @@ func (e *Entry) Typ() (string, error) {
 	return extractor.Pay.Typ, nil
 }
 
+// HasCommit returns true if the entry's pay has a "commit" field (indicating terminal coz).
+func (e *Entry) HasCommit() (bool, error) {
+	var extractor struct {
+		Pay struct {
+			Commit string `json:"commit"`
+		} `json:"pay"`
+	}
+
+	if err := json.Unmarshal(e.raw, &extractor); err != nil {
+		return false, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	return extractor.Pay.Commit != "", nil
+}
+
 // IsTransaction returns true if this entry is a transaction (key mutation).
 // Per SPEC: transactions have typ containing "/key/".
 func (e *Entry) IsTransaction() bool {

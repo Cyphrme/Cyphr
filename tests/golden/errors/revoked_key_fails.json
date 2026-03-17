@@ -29,12 +29,14 @@
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/key/delete"
           },
-          "sig": "yQMUzRNvU2lDxcCY78Sxb3cvxgEgS8m451_6I5_-hWZ9_HuVVvQGKtbf5bWMgBcOMSnhIWrUyg1BvR8nDx79Og",
-          "key": {
-            "alg": "ES256",
-            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-          }
+          "sig": "yQMUzRNvU2lDxcCY78Sxb3cvxgEgS8m451_6I5_-hWZ9_HuVVvQGKtbf5bWMgBcOMSnhIWrUyg1BvR8nDx79Og"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
         }
       ],
       "commit_id": "",
@@ -51,7 +53,7 @@
     "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "ps": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "cs": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pr": "",
     "error": "KeyRevoked"
   }
 }

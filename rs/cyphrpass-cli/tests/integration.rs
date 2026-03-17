@@ -162,7 +162,11 @@ fn test_export_import_roundtrip() {
         .arg(&export_path);
 
     let output = cmd.output().expect("import failed");
-    assert!(output.status.success(), "import should succeed");
+    assert!(
+        output.status.success(),
+        "import should succeed, but got stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // 5. List keys from imported store to verify (field is "active_keys")
     let mut cmd = Command::new(&cli.binary);
@@ -251,8 +255,8 @@ fn test_inspect_genesis() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // All state digests should equal PR at genesis
-    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
+    // At genesis, PR is not yet established
+    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
     assert_eq!(inspect["ps"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["ks"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["as"].as_str().unwrap(), genesis_tmb);
@@ -279,8 +283,8 @@ fn test_inspect_after_transactions() {
     // Inspect after transaction
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PR should still be genesis, but other states should change
-    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
+    // PR is still <none> until a principal/create transaction establishes it
+    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
         genesis_tmb,

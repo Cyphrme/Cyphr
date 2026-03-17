@@ -1436,13 +1436,14 @@ level = 3
         assert_eq!(pay["now"], 1700000000);
         assert!(pay.get("pre").is_some(), "pre should be populated");
 
-        // Verify sig and key are populated
+        // Verify sig and keys are populated
         assert!(tx.get("sig").is_some(), "tx should have sig");
-        let key = tx.get("key").expect("key/create tx should include key");
-        assert_eq!(key["alg"], "ES256");
-        assert!(key.get("tmb").is_some(), "key should have tmb");
-
-        // Verify czd digest is populated
+        let key = commit
+            .keys
+            .first()
+            .expect("commit should include tracked key");
+        assert_eq!(key.alg, "ES256");
+        assert_eq!(key.tmb.to_string().len(), 43); // approximate thumbprint check
         assert!(!digests[0].is_empty(), "czd should be populated");
 
         // Verify expected state was computed

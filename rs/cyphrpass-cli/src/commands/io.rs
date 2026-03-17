@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use cyphrpass_storage::{CommitEntry, load_principal_from_commits};
+use cyphrpass_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{extract_genesis_from_commits, parse_principal_root, parse_store};
 use crate::keystore::JsonKeyStore;
@@ -81,13 +81,22 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let genesis = extract_genesis_from_commits(&commits, Some(&keystore))?;
 
     // Verify by loading the principal (this replays and verifies all transactions)
-    let principal = load_principal_from_commits(genesis, &commits)?;
-    let pr = principal
-        .pr()
-        .expect("imported principal must have PR (Level 3+)");
+    let principal = load_principal_from_commits(genesis.clone(), &commits)?;
+    // For Level 2 identities (no PR established), use the genesis thumbprint
+    let pr = match principal.pr() {
+        Some(pr) => pr.clone(),
+        None => match &genesis {
+            Genesis::Implicit(k) => cyphrpass::PrincipalRoot::from_bytes(k.tmb.as_bytes().to_vec()),
+            Genesis::Explicit(_) => {
+                return Err(Error::Storage(
+                    "explicit genesis must establish a PR".into(),
+                ));
+            },
+        },
+    };
 
     // Check if identity already exists in storage
-    let existing = store.get_commits(pr).unwrap_or_default();
+    let existing = store.get_commits(&pr).unwrap_or_default();
     if !existing.is_empty() {
         use base64ct::{Base64UrlUnpadded, Encoding};
         let pr_b64 = pr
@@ -103,7 +112,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     // Store commits
     for commit in &commits {
-        store.append_commit(pr, commit)?;
+        store.append_commit(&pr, commit)?;
     }
 
     match cli.output {

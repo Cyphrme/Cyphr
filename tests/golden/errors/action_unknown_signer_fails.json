@@ -22,6 +22,7 @@
           "sig": "RuO5qQ6XV69k-bywYP8rs6RcIbP9CHlFubnInga-p14gZjD2Jzd872MVqi6aj1hAOgBtmgZS40Q-iwEZu1sv1Q"
         }
       ],
+      "keys": [],
       "commit_id": "",
       "as": "",
       "cs": "",
@@ -36,7 +37,7 @@
     "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ps": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "cs": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "",
     "error": "UnknownKey"
   }
 }

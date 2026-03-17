@@ -20,12 +20,14 @@
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "IZHOf8bL86Slm8XvrNHcwLJSZ-Pcx8gsUxU3OiWJuoQZjRCn-i1fMeoaRS7s41HZSKAIuxOZZaXUOLH52nKQOA",
-          "key": {
-            "alg": "ES256",
-            "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-          }
+          "sig": "IZHOf8bL86Slm8XvrNHcwLJSZ-Pcx8gsUxU3OiWJuoQZjRCn-i1fMeoaRS7s41HZSKAIuxOZZaXUOLH52nKQOA"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
         }
       ],
       "commit_id": "",
@@ -42,7 +44,7 @@
     "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ps": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "cs": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "",
     "error": "DuplicateKey"
   }
 }

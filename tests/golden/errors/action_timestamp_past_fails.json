@@ -22,6 +22,7 @@
           "sig": "8NfZThNijJsm-WCq7wgcd4UM0KQ0JKdHJOqKAOCjZ7QlB1lCvkLYhsG9ctH10fWsjAjMQy0TeS1itrKJtKCRNA"
         }
       ],
+      "keys": [],
       "commit_id": "",
       "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "cs": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
@@ -40,6 +41,7 @@
           "sig": "pb4OJ53Y4eh71pxP7-fFOR3-u7FFAlD0szBSZfGInwwfDVmxSt6XL3HKei-F-msNTBNgITaKqvdI6pYYcfwjUg"
         }
       ],
+      "keys": [],
       "commit_id": "",
       "as": "",
       "cs": "",
@@ -58,7 +60,7 @@
     "ps": "SHA-256:EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4",
     "cs": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ds": "PRvGYsC5BcfyNwAEjIhSv50Qs3MD8z_XVhmb-Fya1iE",
-    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "",
     "error": "TimestampPast"
   }
 }

@@ -466,12 +466,9 @@ func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*stor
 		}
 	}
 
-	// Replay entries (we need to use storage package internals)
-	// Use storage.LoadPrincipalWithEntries if available, or replay manually
-	for i, entry := range entries {
-		if err := storage.ReplayEntry(principal, entry, i); err != nil {
-			return nil, err
-		}
+	// Replay entries using the batch-aware ReplayEntries
+	if err := storage.ReplayEntries(principal, entries); err != nil {
+		return nil, err
 	}
 
 	return principal, nil

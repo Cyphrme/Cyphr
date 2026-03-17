@@ -14,35 +14,40 @@
         {
           "pay": {
             "alg": "ES256",
+            "commit": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000000,
             "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/key/create"
           },
-          "sig": "rG7yzaPz6bvWCYfYxeuFkPoXtlvk1LoTdL1ovsbeHxkZrr4IfhF5jd6figKL0e4b_I5oM55gV5ktM_qmAUbUtQ",
-          "key": {
-            "alg": "ES256",
-            "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-            "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE"
-          }
+          "sig": "P7S_h0fanx7FpBjUgNrniU1ZyRQHJzIQn8ewAXGVrcsFepitriYDWEPXMvqNWapFsdb3IyHomdVFfMolAAoGvQ"
         }
       ],
-      "commit_id": "SHA-256:amSSfU2m4l5c1eVeCUY_hp0Ukqg8w6bOce17_RHuLt8",
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
+          "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
+          "tag": "User Key A (ES256)",
+          "now": 0
+        }
+      ],
+      "commit_id": "SHA-256:nYjxMR6re7O6B1EUzVj7yjAWR-tdz7e4XImXCTXnaOU",
       "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-      "cs": "SHA-256:_4i1lIFsrVhrqXKLbiv-oNmDBeinkU8z0urhVk5E9Ko",
-      "ps": "SHA-256:_4i1lIFsrVhrqXKLbiv-oNmDBeinkU8z0urhVk5E9Ko"
+      "cs": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+      "ps": "SHA-256:_njRk27xqpQLnKZ5SGh__kBS5QGLkublJJRrkVeryIU"
     }
   ],
-  "digests": ["amSSfU2m4l5c1eVeCUY_hp0Ukqg8w6bOce17_RHuLt8"],
+  "digests": ["nYjxMR6re7O6B1EUzVj7yjAWR-tdz7e4XImXCTXnaOU"],
   "expected": {
     "key_count": 2,
     "level": 3,
     "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "ps": "SHA-256:_4i1lIFsrVhrqXKLbiv-oNmDBeinkU8z0urhVk5E9Ko",
-    "commit_id": "SHA-256:amSSfU2m4l5c1eVeCUY_hp0Ukqg8w6bOce17_RHuLt8",
-    "cs": "SHA-256:_4i1lIFsrVhrqXKLbiv-oNmDBeinkU8z0urhVk5E9Ko",
-    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    "ps": "SHA-256:_njRk27xqpQLnKZ5SGh__kBS5QGLkublJJRrkVeryIU",
+    "commit_id": "SHA-256:nYjxMR6re7O6B1EUzVj7yjAWR-tdz7e4XImXCTXnaOU",
+    "cs": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pr": ""
   }
 }

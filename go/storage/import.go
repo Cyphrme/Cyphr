@@ -86,35 +86,64 @@ func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, err
 	}
 
 	// Replay entries
-	if err := replayEntries(principal, entries); err != nil {
+	if err := ReplayEntries(principal, entries); err != nil {
 		return nil, err
 	}
 
 	return principal, nil
 }
 
-// replayEntries replays entries onto a principal (shared logic).
-func replayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
+// ReplayEntries replays entries onto a principal.
+// This is exported for use by testfixtures package for setup-aware loading.
+// It processes entries sequentially, properly batching transactions into atomic commits.
+func ReplayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
+	var batch *cyphrpass.CommitBatch
+
 	for i, entry := range entries {
-		if err := ReplayEntry(principal, entry, i); err != nil {
+		// Determine if transaction or action
+		if !entry.IsTransaction() {
+			if batch != nil {
+				return fmt.Errorf("entry %d: action encountered while batch is open", i)
+			}
+			if err := replayAction(principal, entry, i); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if batch == nil {
+			batch = principal.BeginCommit()
+		}
+
+		if err := replayTransactionToBatch(batch, entry, i); err != nil {
 			return err
 		}
+
+		hasCommit, err := entry.HasCommit()
+		if err != nil {
+			return fmt.Errorf("entry %d: %w", i, err)
+		}
+
+		if hasCommit {
+			if _, err := batch.Finalize(); err != nil {
+				return &LoadError{
+					Index:   i,
+					Message: fmt.Sprintf("finalize failed: %v", err),
+				}
+			}
+			batch = nil
+		}
 	}
+
+	if batch != nil {
+		return fmt.Errorf("unexpected end of entry stream with open commit batch")
+	}
+
 	return nil
 }
 
-// ReplayEntry replays a single entry onto a principal.
-// This is exported for use by testfixtures package for setup-aware loading.
-func ReplayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error {
-	// Determine if transaction or action
-	if entry.IsTransaction() {
-		return replayTransaction(principal, entry, index)
-	}
-	return replayAction(principal, entry, index)
-}
-
-// replayTransaction replays a transaction entry.
-func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) error {
+// replayTransactionToBatch replays a transaction entry into an active commit batch.
+func replayTransactionToBatch(batch *cyphrpass.CommitBatch, entry *Entry, index int) error {
 	// Extract pay and sig bytes
 	payBytes, err := entry.PayBytes()
 	if err != nil {
@@ -147,7 +176,6 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 	}
 
 	// Verify and apply atomically via CommitBatch (audit C.1)
-	batch := principal.BeginCommit()
 	if err := batch.VerifyAndApply(cz, newKey); err != nil {
 		return &LoadError{
 			Index:   index,
@@ -155,16 +183,7 @@ func replayTransaction(principal *cyphrpass.Principal, entry *Entry, index int) 
 		}
 	}
 
-	// Note: IsCommit is derived from the payload's commit field during parsing.
-	// No external assignment needed - payload is source of truth (SPEC §4.2.1).
-
-	if _, err := batch.Finalize(); err != nil {
-		return &LoadError{
-			Index:   index,
-			Message: fmt.Sprintf("finalize failed: %v", err),
-		}
-	}
-
+	// Note: Finalization is handled by the caller when they detect terminal coz.
 	return nil
 }
 

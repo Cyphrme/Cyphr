@@ -23,6 +23,7 @@
           "sig": "F9z-xoa9lx9GwNj4WBZ0PgaiiTbzrbWoJL5GCPtXNq9NXVWJHxd-IP0Rj9xgBl9rDBcL0LDmls3VdSU41wsazA"
         }
       ],
+      "keys": [],
       "commit_id": "",
       "as": "",
       "cs": "",
@@ -37,7 +38,7 @@
     "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ps": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "cs": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "",
     "error": "NoActiveKeys"
   }
 }

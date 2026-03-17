@@ -133,8 +133,34 @@ func resolveGenesisFromNames(pool *Pool, names []string) ([]*coz.Key, error) {
 	return keys, nil
 }
 
-// applySingleCommit applies a single transaction from a TxIntent.
+// applySingleCommit applies a single transaction commit.
 func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent, override *OverrideIntent) error {
+	batch := principal.BeginCommit()
+	return applyTxToBatch(pool, principal, batch, tx, override, true)
+}
+
+// applyMultiCommit applies multiple commits.
+func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
+	for i, commit := range test.Commit {
+		batch := principal.BeginCommit()
+		for j, tx := range commit.Tx {
+			// Apply override only to the last tx of the last commit
+			var override *OverrideIntent
+			if i == len(test.Commit)-1 && j == len(commit.Tx)-1 {
+				override = test.Override
+			}
+			isFinal := j == len(commit.Tx)-1
+			if err := applyTxToBatch(pool, principal, batch, &tx, override, isFinal); err != nil {
+				return fmt.Errorf("commit %d tx %d: %w", i, j, err)
+			}
+		}
+	}
+	return nil
+}
+
+// applyTxToBatch builds a transaction payload and applies it to the active commit batch.
+// If isFinal is true, it finalizes the commit with the commit:<CS> injection.
+func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass.CommitBatch, tx *TxIntent, override *OverrideIntent, isFinal bool) error {
 	// Get signer key
 	signerPool := pool.Get(tx.Signer)
 	if signerPool == nil {
@@ -145,7 +171,9 @@ func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent,
 		return fmt.Errorf("signer key: %w", err)
 	}
 
-	// Build pay object
+	// Build pay object (pre field will be overridden dynamically if we are in a batch,
+	// but the test intent generator computes it before batch modifications are readable.
+	// The cyphrpass Go implementation expects pre to be generated correctly by e2e runner)
 	payObj := buildTransactionPay(tx, signerKey.Tmb, principal.PS())
 
 	// Handle target key for key/create (SPEC verb naming)
@@ -186,30 +214,42 @@ func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent,
 		}
 	}
 
-	// Handle principal/create: id is self-referential (current AS)
+	// Handle principal/create: id is self-referential (current PS)
 	if strings.Contains(tx.Typ, "principal/create") {
-		payObj["id"] = principal.AS().Tagged()
+		payObj["id"] = principal.PS().Tagged()
 	}
+
+	// Inject 'alg' field for both final and non-final transactions
+	payObj["alg"] = string(signerKey.Alg)
 
 	// Sign and apply
-	return signAndApplyTransaction(signerKey, payObj, targetKey, principal)
-}
-
-// applyMultiCommit applies multiple commits.
-func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
-	for i, commit := range test.Commit {
-		for j, tx := range commit.Tx {
-			// Apply override only to the last tx of the last commit
-			var override *OverrideIntent
-			if i == len(test.Commit)-1 && j == len(commit.Tx)-1 {
-				override = test.Override
-			}
-			if err := applySingleCommit(pool, principal, &tx, override); err != nil {
-				return fmt.Errorf("commit %d tx %d: %w", i, j, err)
-			}
-		}
+	if isFinal {
+		_, err := batch.FinalizeWithCommit(payObj, signerKey, targetKey)
+		return err
 	}
-	return nil
+
+	// Non-final transaction: sign normally without 'commit' field
+	payBytes, err := json.Marshal(payObj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal pay: %w", err)
+	}
+
+	digest, err := coz.Hash(signerKey.Alg.Hash(), payBytes)
+	if err != nil {
+		return fmt.Errorf("failed to hash pay: %w", err)
+	}
+
+	sig, err := signerKey.Sign(digest)
+	if err != nil {
+		return fmt.Errorf("failed to sign: %w", err)
+	}
+
+	signedCoz := &coz.Coz{
+		Pay: payBytes,
+		Sig: sig,
+	}
+
+	return batch.VerifyAndApply(signedCoz, targetKey)
 }
 
 // applySingleAction applies a single action.
@@ -280,43 +320,7 @@ func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentPS cyphrpass.Pr
 	return payObj
 }
 
-// signAndApplyTransaction signs a pay object and applies it to principal.
-func signAndApplyTransaction(signerKey *coz.Key, payObj map[string]any, newKey *coz.Key, principal *cyphrpass.Principal) error {
-	// Set correct alg from signer
-	payObj["alg"] = string(signerKey.Alg)
-
-	// Serialize pay to JSON - this is the exact bytes that will be signed
-	payBytes, err := json.Marshal(payObj)
-	if err != nil {
-		return fmt.Errorf("failed to marshal pay: %w", err)
-	}
-
-	// Hash the payload using the key's hash algorithm
-	digest, err := coz.Hash(signerKey.Alg.Hash(), payBytes)
-	if err != nil {
-		return fmt.Errorf("failed to hash pay: %w", err)
-	}
-
-	// Sign the digest
-	sig, err := signerKey.Sign(digest)
-	if err != nil {
-		return fmt.Errorf("failed to sign: %w", err)
-	}
-
-	// Create Coz with exact payload bytes
-	signedCoz := &coz.Coz{
-		Pay: payBytes,
-		Sig: sig,
-	}
-
-	// Verify and apply atomically via CommitBatch (audit D.10)
-	batch := principal.BeginCommit()
-	if err := batch.VerifyAndApply(signedCoz, newKey); err != nil {
-		return err
-	}
-	_, err = batch.Finalize()
-	return err
-}
+// (signAndApplyTransaction was removed and functionality merged into applyTxToBatch)
 
 // signAndApplyAction signs an action and records it.
 func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cyphrpass.Principal) error {
