@@ -348,3 +348,122 @@ Principal Tree (PT0)
 │   │   │
 │   │   └── Embedded Principal (PS1)
 ```
+
+
+AAA has two distinguishing properties: A payload expressing an atomic intent and
+public-key verification contained entirely within the message itself.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```json5
+{
+  "txa": [{
+      "pay": {
+        "alg": "ES256",
+        "now": 1623132000,
+        "typ": "cyphr.me/cyphrpass/key/create",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
+      },
+      "sig": "<b64ut>"
+      },{
+      "pay": {
+        "alg": "ES256",
+        "now": 1736893000,
+        "typ": "cyphr.me/cyphrpass/principal/create",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PR
+      },
+      "sig": "<b64ut>",
+      }],
+  "txc":[{
+    "pay":{
+        "alg": "ES256",
+        "now": 1736893000,
+        "typ": "cyphr.me/cyphrpass/commit/create",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        // Commit
+        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // Prior state is the genesis key
+        "commit":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // In this case, CS = MR(tmb₁)
+      },
+      "sig": "<b64ut>"
+  }],
+  "meta":{
+    "forward_PT":"<b64ut>",
+    "txa_mr":"<b64ut>",
+    "txc_mr":"<b64ut>",
+    "commit_id":"<b64ut>"
+  },
+  "keys": [{ // key public material
+    "tag": "User Key 0",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "alg": "ES256",
+    "now": 1623132000,
+    "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+  }]
+}
+```
+
+
+```json5
+{
+  "txs": [{
+    "pay": {
+      "alg": "ES256",
+      "now": 1623132000,
+      "typ": "cyphr.me/cyphrpass/key/create",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+      "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
+    },
+    "sig": "<b64ut>"
+    },{
+    "pay": {
+      "alg": "ES256",
+      "now": 1736893000,
+      "typ": "cyphr.me/cyphrpass/principal/create",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // ID == PR
+    },
+    "sig": "<b64ut>",
+    },{
+    "pay":{
+        "alg": "ES256",
+        "now": 1736893000,
+        "typ": "cyphr.me/cyphrpass/commit/create",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        // Commit
+        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // Prior state is the genesis key
+        "commit":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // In this case, CS = MR(tmb₁)
+      },
+      "sig": "<b64ut>"
+  }],
+  "meta":{
+    "forward_PT":"<b64ut>",
+    "txa_mr":"<b64ut>",
+    "txc_mr":"<b64ut>",
+    "commit_id":"<b64ut>"
+  },
+  "keys": [{ // key public material
+    "tag": "User Key 0",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "alg": "ES256",
+    "now": 1623132000,
+    "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+  }]
+}
+```
