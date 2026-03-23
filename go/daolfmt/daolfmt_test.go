@@ -207,3 +207,229 @@ func TestCountTrailingOnes(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Proof tests
+// ---------------------------------------------------------------------------
+
+func ceilLog2(n uint64) int {
+	if n <= 1 {
+		return 0
+	}
+	return bits.Len64(n - 1)
+}
+
+// I-SOUND (formal model §4.4): a correctly generated inclusion proof
+// always verifies.
+func TestISoundInclusionProofsVerify(t *testing.T) {
+	h := SimpleHasher{}
+	for n := uint64(1); n <= 17; n++ {
+		log := buildLog(n)
+		root := log.Root()
+		for m := uint64(0); m < n; m++ {
+			proof, err := log.InclusionProof(m)
+			if err != nil {
+				t.Fatalf("n=%d m=%d: InclusionProof error: %v", n, m, err)
+			}
+			leafHash := h.Leaf([]byte(fmt.Sprintf("leaf-%d", m)))
+			if !VerifyInclusion(h, leafHash, proof, root) {
+				t.Fatalf("I-SOUND failed: n=%d, m=%d", n, m)
+			}
+		}
+	}
+}
+
+// K-SOUND (formal model §5.4): a correctly generated consistency proof
+// always verifies.
+func TestKSoundConsistencyProofsVerify(t *testing.T) {
+	h := SimpleHasher{}
+	for n := uint64(2); n <= 17; n++ {
+		log := buildLog(n)
+		newRoot := log.Root()
+		for m := uint64(1); m < n; m++ {
+			proof, err := log.ConsistencyProof(m)
+			if err != nil {
+				t.Fatalf("n=%d m=%d: ConsistencyProof error: %v", n, m, err)
+			}
+			oldRoot := buildLog(m).Root()
+			if !VerifyConsistency(h, proof, oldRoot, newRoot) {
+				t.Fatalf("K-SOUND failed: n=%d, m=%d", n, m)
+			}
+		}
+	}
+}
+
+// Inclusion proof rejects a tampered leaf hash.
+func TestInclusionRejectsWrongLeaf(t *testing.T) {
+	h := SimpleHasher{}
+	log := buildLog(8)
+	root := log.Root()
+	proof, err := log.InclusionProof(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongLeaf := h.Leaf([]byte("wrong"))
+	if VerifyInclusion(h, wrongLeaf, proof, root) {
+		t.Fatal("should reject wrong leaf")
+	}
+}
+
+// Inclusion proof rejects a wrong root.
+func TestInclusionRejectsWrongRoot(t *testing.T) {
+	h := SimpleHasher{}
+	log := buildLog(8)
+	proof, err := log.InclusionProof(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafHash := h.Leaf([]byte("leaf-3"))
+	wrongRoot := h.Leaf([]byte("wrong"))
+	if VerifyInclusion(h, leafHash, proof, wrongRoot) {
+		t.Fatal("should reject wrong root")
+	}
+}
+
+// Consistency proof rejects a wrong old root.
+func TestConsistencyRejectsWrongOldRoot(t *testing.T) {
+	h := SimpleHasher{}
+	log := buildLog(8)
+	newRoot := log.Root()
+	proof, err := log.ConsistencyProof(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongOldRoot := h.Leaf([]byte("wrong"))
+	if VerifyConsistency(h, proof, wrongOldRoot, newRoot) {
+		t.Fatal("should reject wrong old root")
+	}
+}
+
+// Consistency proof rejects a wrong new root.
+func TestConsistencyRejectsWrongNewRoot(t *testing.T) {
+	h := SimpleHasher{}
+	log := buildLog(8)
+	proof, err := log.ConsistencyProof(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := buildLog(4).Root()
+	wrongNewRoot := h.Leaf([]byte("wrong"))
+	if VerifyConsistency(h, proof, oldRoot, wrongNewRoot) {
+		t.Fatal("should reject wrong new root")
+	}
+}
+
+// I-SIZE (§4.4): |PATH(m, D_n)| ≤ ⌈log₂(n)⌉.
+func TestInclusionProofSizeBounded(t *testing.T) {
+	for n := uint64(1); n <= 33; n++ {
+		log := buildLog(n)
+		maxLen := ceilLog2(n)
+		for m := uint64(0); m < n; m++ {
+			proof, err := log.InclusionProof(m)
+			if err != nil {
+				t.Fatalf("n=%d m=%d: error: %v", n, m, err)
+			}
+			if len(proof.Path) > maxLen {
+				t.Fatalf("I-SIZE violated: n=%d m=%d, path len %d > ceil_log2 %d",
+					n, m, len(proof.Path), maxLen)
+			}
+		}
+	}
+}
+
+// K-SIZE (§5.4): |PROOF(m, D_n)| ≤ ⌈log₂(n)⌉ + 1.
+func TestConsistencyProofSizeBounded(t *testing.T) {
+	for n := uint64(2); n <= 33; n++ {
+		log := buildLog(n)
+		maxLen := ceilLog2(n) + 1
+		for m := uint64(1); m < n; m++ {
+			proof, err := log.ConsistencyProof(m)
+			if err != nil {
+				t.Fatalf("n=%d m=%d: error: %v", n, m, err)
+			}
+			if len(proof.Path) > maxLen {
+				t.Fatalf("K-SIZE violated: n=%d m=%d, path len %d > ceil_log2+1 %d",
+					n, m, len(proof.Path), maxLen)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error-case tests
+// ---------------------------------------------------------------------------
+
+func TestInclusionProofEmptyTree(t *testing.T) {
+	log := New[[8]byte](SimpleHasher{})
+	_, err := log.InclusionProof(0)
+	if err == nil {
+		t.Fatal("expected error for empty tree")
+	}
+}
+
+func TestInclusionProofOutOfBounds(t *testing.T) {
+	log := buildLog(5)
+	_, err := log.InclusionProof(5)
+	if err == nil {
+		t.Fatal("expected error for out-of-bounds index")
+	}
+	_, err = log.InclusionProof(100)
+	if err == nil {
+		t.Fatal("expected error for far out-of-bounds index")
+	}
+}
+
+func TestConsistencyProofEmptyTree(t *testing.T) {
+	log := New[[8]byte](SimpleHasher{})
+	_, err := log.ConsistencyProof(0)
+	if err == nil {
+		t.Fatal("expected error for empty tree")
+	}
+}
+
+func TestConsistencyProofOldSizeZero(t *testing.T) {
+	log := buildLog(5)
+	_, err := log.ConsistencyProof(0)
+	if err == nil {
+		t.Fatal("expected error for old_size=0")
+	}
+}
+
+func TestConsistencyProofOldSizeGeNewSize(t *testing.T) {
+	log := buildLog(5)
+	_, err := log.ConsistencyProof(5)
+	if err == nil {
+		t.Fatal("expected error for old_size == new_size")
+	}
+	_, err = log.ConsistencyProof(10)
+	if err == nil {
+		t.Fatal("expected error for old_size > new_size")
+	}
+}
+
+// Verifier rejects invalid index directly.
+func TestVerifyInclusionRejectsBadIndex(t *testing.T) {
+	h := SimpleHasher{}
+	proof := &InclusionProof[[8]byte]{Index: 5, TreeSize: 5}
+	if VerifyInclusion(h, h.Leaf([]byte("x")), proof, h.Empty()) {
+		t.Fatal("should reject index >= tree_size")
+	}
+}
+
+// Verifier rejects invalid old_size directly.
+func TestVerifyConsistencyRejectsOldSizeZero(t *testing.T) {
+	h := SimpleHasher{}
+	proof := &ConsistencyProof[[8]byte]{OldSize: 0, NewSize: 5}
+	if VerifyConsistency(h, proof, h.Empty(), h.Empty()) {
+		t.Fatal("should reject old_size=0")
+	}
+}
+
+// Verifier rejects old_size >= new_size.
+func TestVerifyConsistencyRejectsOldGeNew(t *testing.T) {
+	h := SimpleHasher{}
+	proof := &ConsistencyProof[[8]byte]{OldSize: 5, NewSize: 5}
+	if VerifyConsistency(h, proof, h.Empty(), h.Empty()) {
+		t.Fatal("should reject old_size >= new_size")
+	}
+}
