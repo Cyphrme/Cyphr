@@ -97,7 +97,7 @@ impl<H: TreeHasher> Log<H> {
     }
 
     /// Current number of leaves in the log.
-    #[must_use]
+    #[must_use = "returns the current leaf count without modifying the log"]
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -106,7 +106,7 @@ impl<H: TreeHasher> Log<H> {
     ///
     /// For an empty tree, returns `H.empty`. For a non-empty tree, folds
     /// the frontier stack right-to-left per §3.3.
-    #[must_use]
+    #[must_use = "returns the root hash without modifying the log"]
     pub fn root(&self) -> H::Digest {
         if self.size == 0 {
             return self.hasher.empty();
@@ -141,7 +141,6 @@ impl<H: TreeHasher> Log<H> {
     ///
     /// The proof demonstrates that the leaf at `index` exists in the current
     /// tree. Verify with [`verify_inclusion`](crate::verify_inclusion).
-    #[must_use]
     pub fn inclusion_proof(&self, index: u64) -> Result<InclusionProof<H::Digest>, Error> {
         if self.size == 0 {
             return Err(Error::EmptyTree);
@@ -166,7 +165,6 @@ impl<H: TreeHasher> Log<H> {
     /// The proof demonstrates that the tree at `old_size` is a prefix of
     /// the current tree. Verify with
     /// [`verify_consistency`](crate::verify_consistency).
-    #[must_use]
     pub fn consistency_proof(&self, old_size: u64) -> Result<ConsistencyProof<H::Digest>, Error> {
         if self.size == 0 {
             return Err(Error::EmptyTree);
