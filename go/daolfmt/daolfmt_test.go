@@ -2,6 +2,7 @@ package daolfmt
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/bits"
 	"testing"
@@ -362,48 +363,48 @@ func TestConsistencyProofSizeBounded(t *testing.T) {
 func TestInclusionProofEmptyTree(t *testing.T) {
 	log := New[[8]byte](SimpleHasher{})
 	_, err := log.InclusionProof(0)
-	if err == nil {
-		t.Fatal("expected error for empty tree")
+	if !errors.Is(err, ErrEmptyTree) {
+		t.Fatalf("expected ErrEmptyTree, got %v", err)
 	}
 }
 
 func TestInclusionProofOutOfBounds(t *testing.T) {
 	log := buildLog(5)
 	_, err := log.InclusionProof(5)
-	if err == nil {
-		t.Fatal("expected error for out-of-bounds index")
+	if !errors.Is(err, ErrIndexOutOfBounds) {
+		t.Fatalf("expected ErrIndexOutOfBounds, got %v", err)
 	}
 	_, err = log.InclusionProof(100)
-	if err == nil {
-		t.Fatal("expected error for far out-of-bounds index")
+	if !errors.Is(err, ErrIndexOutOfBounds) {
+		t.Fatalf("expected ErrIndexOutOfBounds, got %v", err)
 	}
 }
 
 func TestConsistencyProofEmptyTree(t *testing.T) {
 	log := New[[8]byte](SimpleHasher{})
 	_, err := log.ConsistencyProof(0)
-	if err == nil {
-		t.Fatal("expected error for empty tree")
+	if !errors.Is(err, ErrEmptyTree) {
+		t.Fatalf("expected ErrEmptyTree, got %v", err)
 	}
 }
 
 func TestConsistencyProofOldSizeZero(t *testing.T) {
 	log := buildLog(5)
 	_, err := log.ConsistencyProof(0)
-	if err == nil {
-		t.Fatal("expected error for old_size=0")
+	if !errors.Is(err, ErrInvalidOldSize) {
+		t.Fatalf("expected ErrInvalidOldSize, got %v", err)
 	}
 }
 
 func TestConsistencyProofOldSizeGeNewSize(t *testing.T) {
 	log := buildLog(5)
 	_, err := log.ConsistencyProof(5)
-	if err == nil {
-		t.Fatal("expected error for old_size == new_size")
+	if !errors.Is(err, ErrInvalidOldSize) {
+		t.Fatalf("expected ErrInvalidOldSize, got %v", err)
 	}
 	_, err = log.ConsistencyProof(10)
-	if err == nil {
-		t.Fatal("expected error for old_size > new_size")
+	if !errors.Is(err, ErrInvalidOldSize) {
+		t.Fatalf("expected ErrInvalidOldSize, got %v", err)
 	}
 }
 
