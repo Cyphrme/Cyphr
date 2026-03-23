@@ -3,6 +3,7 @@ members = [
   "cyphrpass",
   "cyphrpass-storage",
   "cyphrpass-cli",
+  "daolfmt",
   "test-fixtures",
   "fixture-gen",
 ]
