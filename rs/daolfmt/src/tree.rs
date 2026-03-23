@@ -5,16 +5,27 @@ use crate::proof::{ConsistencyProof, InclusionProof};
 
 /// Hash abstraction for the Merkle tree.
 ///
-/// Defines the three operations required by the tree: leaf hashing,
-/// interior node hashing, and the empty-tree hash. The tree is fully
+/// Defines the three operations required by the tree. The tree is fully
 /// generic over this trait — callers provide the concrete hash
 /// implementation.
 ///
+/// # Model Mapping
+///
+/// | Trait method | Formal model (§1) | Operation                    |
+/// |:-------------|:-------------------|:-----------------------------|
+/// | [`leaf`]     | `H.leaf(d)`        | `H(0x00 \|\| data)`         |
+/// | [`node`]     | `H.node(l, r)`     | `H(0x01 \|\| left \|\| right)` |
+/// | [`empty`]    | `H.empty`          | `H("")`                      |
+///
+/// [`leaf`]: TreeHasher::leaf
+/// [`node`]: TreeHasher::node
+/// [`empty`]: TreeHasher::empty
+///
 /// # Domain Separation (C-DOMAIN)
 ///
-/// Implementations **must** ensure `hash_leaf(d) ≠ hash_children(l, r)`
-/// for all inputs. The standard approach is to prepend `0x00` for leaves
-/// and `0x01` for interior nodes before hashing (RFC 9162 §2.1).
+/// Implementations **must** ensure `leaf(d) ≠ node(l, r)` for all inputs.
+/// The standard approach is to prepend `0x00` for leaves and `0x01` for
+/// interior nodes before hashing (RFC 9162 §2.1).
 pub trait TreeHasher {
     /// The digest type produced by this hasher.
     ///
@@ -22,13 +33,13 @@ pub trait TreeHasher {
     type Digest: Clone + Eq + Debug;
 
     /// Hash a leaf entry: `H(0x00 || data)`.
-    fn hash_leaf(&self, data: &[u8]) -> Self::Digest;
+    fn leaf(&self, data: &[u8]) -> Self::Digest;
 
-    /// Hash two children: `H(0x01 || left || right)`.
-    fn hash_children(&self, left: &Self::Digest, right: &Self::Digest) -> Self::Digest;
+    /// Hash two child nodes: `H(0x01 || left || right)`.
+    fn node(&self, left: &Self::Digest, right: &Self::Digest) -> Self::Digest;
 
-    /// Hash of the empty string: `H("")`. Used as the root of an empty tree.
-    fn hash_empty(&self) -> Self::Digest;
+    /// Hash of the empty string: `H("")`. Root of an empty tree.
+    fn empty(&self) -> Self::Digest;
 }
 
 /// A dense, append-only, left-filled Merkle tree (RFC 9162 §2.1).
@@ -37,7 +48,7 @@ pub trait TreeHasher {
 /// operations. It supports O(1) amortized appends via a frontier stack
 /// and O(1) root extraction.
 ///
-/// Leaf hashes are retained for future proof generation.
+/// Leaf hashes are retained for proof generation.
 pub struct Log<H: TreeHasher> {
     hasher: H,
     /// Stored leaf hashes for proof generation.
@@ -65,18 +76,19 @@ impl<H: TreeHasher> Log<H> {
     /// §3.2: push the leaf hash, then merge complete pairs by counting
     /// trailing ones in the pre-increment size.
     pub fn append(&mut self, data: &[u8]) -> u64 {
-        let hash = self.hasher.hash_leaf(data);
+        let hash = self.hasher.leaf(data);
         self.leaves.push(hash.clone());
         self.stack.push(hash);
 
         let merge_count = count_trailing_ones(self.size);
         for _ in 0..merge_count {
-            // Safety: merge_count is bounded by the number of trailing 1-bits
-            // in self.size, which guarantees at least 2 elements on the stack
-            // for each merge iteration.
+            // Structure-guarded: merge_count is bounded by the number of
+            // trailing 1-bits in self.size, which guarantees at least 2
+            // elements on the stack for each merge iteration.
+            // See: lib.rs § Panic Policy.
             let right = self.stack.pop().expect("stack underflow in merge");
             let left = self.stack.pop().expect("stack underflow in merge");
-            self.stack.push(self.hasher.hash_children(&left, &right));
+            self.stack.push(self.hasher.node(&left, &right));
         }
 
         let index = self.size;
@@ -85,26 +97,31 @@ impl<H: TreeHasher> Log<H> {
     }
 
     /// Current number of leaves in the log.
+    #[must_use]
     pub fn size(&self) -> u64 {
         self.size
     }
 
     /// Current root hash of the log.
     ///
-    /// For an empty tree, returns `H.empty`. For a non-empty tree, merges
+    /// For an empty tree, returns `H.empty`. For a non-empty tree, folds
     /// the frontier stack right-to-left per §3.3.
+    #[must_use]
     pub fn root(&self) -> H::Digest {
         if self.size == 0 {
-            return self.hasher.hash_empty();
+            return self.hasher.empty();
         }
 
-        let mut r = self.stack.clone();
-        while r.len() > 1 {
-            let right = r.pop().expect("stack underflow in root");
-            let left = r.pop().expect("stack underflow in root");
-            r.push(self.hasher.hash_children(&left, &right));
-        }
-        r.pop().expect("stack empty after merge")
+        // Zero-alloc fold: iterate the stack in reverse, accumulating
+        // node hashes from right to left.
+        self.stack
+            .iter()
+            .rev()
+            .cloned()
+            .reduce(|acc, left| self.hasher.node(&left, &acc))
+            // Structure-guarded: size > 0 guarantees a non-empty stack.
+            // See: lib.rs § Panic Policy.
+            .expect("non-empty tree has non-empty stack")
     }
 
     /// Returns a reference to the hasher.
@@ -114,22 +131,17 @@ impl<H: TreeHasher> Log<H> {
 
     /// Returns the number of entries in the frontier stack.
     ///
-    /// Exposed for testing invariant A-STACK: `stack_len() == popcount(size)`.
-    #[doc(hidden)]
-    pub fn stack_len(&self) -> usize {
+    /// Used for testing invariant A-STACK: `stack_len() == popcount(size)`.
+    #[cfg(test)]
+    fn stack_len(&self) -> usize {
         self.stack.len()
-    }
-
-    /// Returns a reference to the stored leaf hashes.
-    #[doc(hidden)]
-    pub fn leaf_hashes(&self) -> &[H::Digest] {
-        &self.leaves
     }
 
     /// Generate an inclusion proof for the leaf at `index` (formal model §4.2).
     ///
     /// The proof demonstrates that the leaf at `index` exists in the current
     /// tree. Verify with [`verify_inclusion`](crate::verify_inclusion).
+    #[must_use]
     pub fn inclusion_proof(&self, index: u64) -> Result<InclusionProof<H::Digest>, Error> {
         if self.size == 0 {
             return Err(Error::EmptyTree);
@@ -154,6 +166,7 @@ impl<H: TreeHasher> Log<H> {
     /// The proof demonstrates that the tree at `old_size` is a prefix of
     /// the current tree. Verify with
     /// [`verify_consistency`](crate::verify_consistency).
+    #[must_use]
     pub fn consistency_proof(&self, old_size: u64) -> Result<ConsistencyProof<H::Digest>, Error> {
         if self.size == 0 {
             return Err(Error::EmptyTree);
@@ -228,17 +241,17 @@ impl<H: TreeHasher> Log<H> {
 /// Batch Merkle Tree Hash per formal model §2.1.
 ///
 /// Computes the root hash of an ordered list of leaf hashes using the
-/// recursive definition. Used in tests to verify A-EQUIV against the
-/// incremental construction.
-pub fn mth<H: TreeHasher>(hasher: &H, leaves: &[H::Digest]) -> H::Digest {
+/// recursive definition. Used internally for proof generation and in
+/// tests for A-EQUIV verification.
+pub(crate) fn mth<H: TreeHasher>(hasher: &H, leaves: &[H::Digest]) -> H::Digest {
     match leaves.len() {
-        0 => hasher.hash_empty(),
+        0 => hasher.empty(),
         1 => leaves[0].clone(),
         n => {
             let k = largest_pow2_lt(n);
             let left = mth(hasher, &leaves[..k]);
             let right = mth(hasher, &leaves[k..]);
-            hasher.hash_children(&left, &right)
+            hasher.node(&left, &right)
         },
     }
 }
@@ -284,5 +297,38 @@ mod tests {
         assert_eq!(count_trailing_ones(0b0101), 1);
         assert_eq!(count_trailing_ones(0b0111), 3);
         assert_eq!(count_trailing_ones(0b1010), 0);
+    }
+
+    /// A-STACK (formal model §3.4): after each append, the frontier stack
+    /// has exactly popcount(size) entries.
+    #[test]
+    fn a_stack_popcount_invariant() {
+        struct SimpleHasher;
+        impl TreeHasher for SimpleHasher {
+            type Digest = u64;
+            fn leaf(&self, data: &[u8]) -> u64 {
+                data.iter().fold(0u64, |acc, &b| acc.wrapping_add(b as u64))
+            }
+            fn node(&self, left: &u64, right: &u64) -> u64 {
+                left.wrapping_mul(31).wrapping_add(*right)
+            }
+            fn empty(&self) -> u64 {
+                0
+            }
+        }
+
+        let mut log = Log::new(SimpleHasher);
+        for i in 0u64..64 {
+            log.append(format!("leaf-{i}").as_bytes());
+            let expected = log.size.count_ones() as usize;
+            assert_eq!(
+                log.stack_len(),
+                expected,
+                "A-STACK failed at size={}: stack_len={}, popcount={}",
+                log.size,
+                log.stack_len(),
+                expected
+            );
+        }
     }
 }

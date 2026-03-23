@@ -9,17 +9,8 @@
 
 mod common;
 
-use common::SimpleHasher;
-use daolfmt::{Log, TreeHasher, mth, verify_consistency, verify_inclusion};
-
-/// Helper: build a log with n leaves.
-fn build_log(n: u64) -> Log<SimpleHasher> {
-    let mut log = Log::new(SimpleHasher);
-    for i in 0..n {
-        log.append(format!("leaf-{i}").as_bytes());
-    }
-    log
-}
+use common::{SimpleHasher, build_log};
+use daolfmt::{Log, TreeHasher, verify_consistency, verify_inclusion};
 
 // ---------------------------------------------------------------------------
 // I-SOUND: Generated inclusion proofs verify correctly.
@@ -34,7 +25,8 @@ fn i_sound_inclusion_proofs_verify() {
         let root = log.root();
         for m in 0..n {
             let proof = log.inclusion_proof(m).expect("proof generation failed");
-            let leaf_hash = log.leaf_hashes()[m as usize].clone();
+            // Compute leaf hash via the hasher directly (public API).
+            let leaf_hash = SimpleHasher.leaf(format!("leaf-{m}").as_bytes());
             assert!(
                 verify_inclusion(&SimpleHasher, &leaf_hash, &proof, &root),
                 "I-SOUND failed: n={n}, m={m}"
@@ -56,7 +48,9 @@ fn k_sound_consistency_proofs_verify() {
         let new_root = log.root();
         for m in 1..n {
             let proof = log.consistency_proof(m).expect("proof generation failed");
-            let old_root = mth(&SimpleHasher, &log.leaf_hashes()[..m as usize]);
+            // Compute old root by building a separate log of size m (public API).
+            let old_log = build_log(m);
+            let old_root = old_log.root();
             assert!(
                 verify_consistency(&SimpleHasher, &proof, &old_root, &new_root),
                 "K-SOUND failed: m={m}, n={n}"
@@ -75,7 +69,7 @@ fn inclusion_rejects_wrong_leaf() {
     let log = build_log(8);
     let root = log.root();
     let proof = log.inclusion_proof(3).unwrap();
-    let wrong_hash = SimpleHasher.hash_leaf(b"not-the-right-leaf");
+    let wrong_hash = SimpleHasher.leaf(b"not-the-right-leaf");
     assert!(
         !verify_inclusion(&SimpleHasher, &wrong_hash, &proof, &root),
         "should reject wrong leaf hash"
@@ -87,8 +81,8 @@ fn inclusion_rejects_wrong_leaf() {
 fn inclusion_rejects_wrong_root() {
     let log = build_log(8);
     let proof = log.inclusion_proof(3).unwrap();
-    let leaf_hash = log.leaf_hashes()[3].clone();
-    let wrong_root = SimpleHasher.hash_leaf(b"wrong-root");
+    let leaf_hash = SimpleHasher.leaf(b"leaf-3");
+    let wrong_root = SimpleHasher.leaf(b"wrong-root");
     assert!(
         !verify_inclusion(&SimpleHasher, &leaf_hash, &proof, &wrong_root),
         "should reject wrong root"
@@ -101,7 +95,7 @@ fn consistency_rejects_wrong_old_root() {
     let log = build_log(8);
     let new_root = log.root();
     let proof = log.consistency_proof(4).unwrap();
-    let wrong_old_root = SimpleHasher.hash_leaf(b"wrong-old-root");
+    let wrong_old_root = SimpleHasher.leaf(b"wrong-old-root");
     assert!(
         !verify_consistency(&SimpleHasher, &proof, &wrong_old_root, &new_root),
         "should reject wrong old root"
@@ -113,8 +107,9 @@ fn consistency_rejects_wrong_old_root() {
 fn consistency_rejects_wrong_new_root() {
     let log = build_log(8);
     let proof = log.consistency_proof(4).unwrap();
-    let old_root = mth(&SimpleHasher, &log.leaf_hashes()[..4]);
-    let wrong_new_root = SimpleHasher.hash_leaf(b"wrong-new-root");
+    let old_log = build_log(4);
+    let old_root = old_log.root();
+    let wrong_new_root = SimpleHasher.leaf(b"wrong-new-root");
     assert!(
         !verify_consistency(&SimpleHasher, &proof, &old_root, &wrong_new_root),
         "should reject wrong new root"
@@ -211,8 +206,8 @@ fn verify_inclusion_rejects_bad_index() {
         tree_size: 5,
         path: vec![],
     };
-    let leaf_hash = SimpleHasher.hash_leaf(b"x");
-    let root = SimpleHasher.hash_empty();
+    let leaf_hash = SimpleHasher.leaf(b"x");
+    let root = SimpleHasher.empty();
     assert!(!verify_inclusion(&SimpleHasher, &leaf_hash, &proof, &root));
 }
 
@@ -225,7 +220,7 @@ fn verify_consistency_rejects_old_size_zero() {
         new_size: 5,
         path: vec![],
     };
-    let root = SimpleHasher.hash_empty();
+    let root = SimpleHasher.empty();
     assert!(!verify_consistency(&SimpleHasher, &proof, &root, &root));
 }
 
@@ -238,7 +233,7 @@ fn verify_consistency_rejects_old_ge_new() {
         new_size: 5,
         path: vec![],
     };
-    let root = SimpleHasher.hash_empty();
+    let root = SimpleHasher.empty();
     assert!(!verify_consistency(&SimpleHasher, &proof, &root, &root));
 }
 

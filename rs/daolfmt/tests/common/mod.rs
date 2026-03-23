@@ -22,14 +22,14 @@ pub struct SimpleHasher;
 impl TreeHasher for SimpleHasher {
     type Digest = [u8; 8];
 
-    fn hash_leaf(&self, data: &[u8]) -> [u8; 8] {
+    fn leaf(&self, data: &[u8]) -> [u8; 8] {
         let mut buf = Vec::with_capacity(1 + data.len());
         buf.push(0x00);
         buf.extend_from_slice(data);
         fnv1a(&buf)
     }
 
-    fn hash_children(&self, left: &[u8; 8], right: &[u8; 8]) -> [u8; 8] {
+    fn node(&self, left: &[u8; 8], right: &[u8; 8]) -> [u8; 8] {
         let mut buf = Vec::with_capacity(1 + 8 + 8);
         buf.push(0x01);
         buf.extend_from_slice(left);
@@ -37,7 +37,16 @@ impl TreeHasher for SimpleHasher {
         fnv1a(&buf)
     }
 
-    fn hash_empty(&self) -> [u8; 8] {
+    fn empty(&self) -> [u8; 8] {
         fnv1a(&[])
     }
+}
+
+/// Build a log with n leaves using sequential leaf data.
+pub fn build_log(n: u64) -> daolfmt::Log<SimpleHasher> {
+    let mut log = daolfmt::Log::new(SimpleHasher);
+    for i in 0..n {
+        log.append(format!("leaf-{i}").as_bytes());
+    }
+    log
 }
