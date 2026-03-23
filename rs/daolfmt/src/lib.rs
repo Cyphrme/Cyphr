@@ -23,7 +23,9 @@
 //! ```
 
 mod error;
+mod proof;
 mod tree;
 
 pub use error::Error;
+pub use proof::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};
 pub use tree::{Log, TreeHasher, mth};

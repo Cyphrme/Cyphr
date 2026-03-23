@@ -7,55 +7,10 @@
 //! - **A-STACK**: stack size equals popcount(n)
 //! - **Determinism**: same inputs → same root
 
+mod common;
+
+use common::SimpleHasher;
 use daolfmt::{Log, TreeHasher, mth};
-
-// ---------------------------------------------------------------------------
-// SimpleHasher: a deterministic, domain-separating test hasher.
-//
-// Uses FNV-1a (64-bit) as the mixing function. Not cryptographically
-// secure — only deterministic and domain-separating, which is sufficient
-// for testing A-EQUIV and A-STACK.
-// ---------------------------------------------------------------------------
-
-const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-const FNV_PRIME: u64 = 0x00000100000001B3;
-
-fn fnv1a(data: &[u8]) -> [u8; 8] {
-    let mut hash = FNV_OFFSET;
-    for &byte in data {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash.to_be_bytes()
-}
-
-struct SimpleHasher;
-
-impl TreeHasher for SimpleHasher {
-    type Digest = [u8; 8];
-
-    fn hash_leaf(&self, data: &[u8]) -> [u8; 8] {
-        // H(0x00 || data) — domain separation
-        let mut buf = Vec::with_capacity(1 + data.len());
-        buf.push(0x00);
-        buf.extend_from_slice(data);
-        fnv1a(&buf)
-    }
-
-    fn hash_children(&self, left: &[u8; 8], right: &[u8; 8]) -> [u8; 8] {
-        // H(0x01 || left || right) — domain separation
-        let mut buf = Vec::with_capacity(1 + 8 + 8);
-        buf.push(0x01);
-        buf.extend_from_slice(left);
-        buf.extend_from_slice(right);
-        fnv1a(&buf)
-    }
-
-    fn hash_empty(&self) -> [u8; 8] {
-        // H("")
-        fnv1a(&[])
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests

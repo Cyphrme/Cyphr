@@ -1,5 +1,8 @@
 use std::fmt::Debug;
 
+use crate::Error;
+use crate::proof::{ConsistencyProof, InclusionProof};
+
 /// Hash abstraction for the Merkle tree.
 ///
 /// Defines the three operations required by the tree: leaf hashing,
@@ -122,6 +125,104 @@ impl<H: TreeHasher> Log<H> {
     pub fn leaf_hashes(&self) -> &[H::Digest] {
         &self.leaves
     }
+
+    /// Generate an inclusion proof for the leaf at `index` (formal model §4.2).
+    ///
+    /// The proof demonstrates that the leaf at `index` exists in the current
+    /// tree. Verify with [`verify_inclusion`](crate::verify_inclusion).
+    pub fn inclusion_proof(&self, index: u64) -> Result<InclusionProof<H::Digest>, Error> {
+        if self.size == 0 {
+            return Err(Error::EmptyTree);
+        }
+        if index >= self.size {
+            return Err(Error::IndexOutOfBounds {
+                index,
+                tree_size: self.size,
+            });
+        }
+        let path = self.path(index as usize, &self.leaves);
+        Ok(InclusionProof {
+            index,
+            tree_size: self.size,
+            path,
+        })
+    }
+
+    /// Generate a consistency proof from `old_size` to the current size
+    /// (formal model §5.2).
+    ///
+    /// The proof demonstrates that the tree at `old_size` is a prefix of
+    /// the current tree. Verify with
+    /// [`verify_consistency`](crate::verify_consistency).
+    pub fn consistency_proof(&self, old_size: u64) -> Result<ConsistencyProof<H::Digest>, Error> {
+        if self.size == 0 {
+            return Err(Error::EmptyTree);
+        }
+        if old_size == 0 || old_size >= self.size {
+            return Err(Error::InvalidOldSize {
+                old_size,
+                new_size: self.size,
+            });
+        }
+        let path = self.subproof(old_size as usize, &self.leaves, true);
+        Ok(ConsistencyProof {
+            old_size,
+            new_size: self.size,
+            path,
+        })
+    }
+
+    /// PATH algorithm for inclusion proofs (formal model §4.2).
+    ///
+    /// Recursively computes the sibling hashes from leaf `m` to the root.
+    fn path(&self, m: usize, leaves: &[H::Digest]) -> Vec<H::Digest> {
+        let n = leaves.len();
+        if n == 1 {
+            // P-BASE: single leaf, no siblings needed.
+            return Vec::new();
+        }
+        let k = largest_pow2_lt(n);
+        if m < k {
+            // P-LEFT: leaf is in the left (complete) subtree.
+            let mut result = self.path(m, &leaves[..k]);
+            result.push(mth(&self.hasher, &leaves[k..]));
+            result
+        } else {
+            // P-RIGHT: leaf is in the right subtree.
+            let mut result = self.path(m - k, &leaves[k..]);
+            result.push(mth(&self.hasher, &leaves[..k]));
+            result
+        }
+    }
+
+    /// SUBPROOF algorithm for consistency proofs (formal model §5.2).
+    ///
+    /// Recursively computes the intermediate hashes proving that the
+    /// first `m` leaves are a prefix of the `leaves` slice.
+    fn subproof(&self, m: usize, leaves: &[H::Digest], b: bool) -> Vec<H::Digest> {
+        let n = leaves.len();
+        if m == n {
+            if b {
+                // C-SAME: old tree equals current subtree, flag is true.
+                return Vec::new();
+            } else {
+                // C-HASH: old tree equals current subtree, flag is false.
+                return vec![mth(&self.hasher, leaves)];
+            }
+        }
+        let k = largest_pow2_lt(n);
+        if m <= k {
+            // C-LEFT: old size fits within left subtree.
+            let mut result = self.subproof(m, &leaves[..k], b);
+            result.push(mth(&self.hasher, &leaves[k..]));
+            result
+        } else {
+            // C-RIGHT: old size exceeds left subtree.
+            let mut result = self.subproof(m - k, &leaves[k..], false);
+            result.push(mth(&self.hasher, &leaves[..k]));
+            result
+        }
+    }
 }
 
 /// Batch Merkle Tree Hash per formal model §2.1.
@@ -145,7 +246,7 @@ pub fn mth<H: TreeHasher>(hasher: &H, leaves: &[H::Digest]) -> H::Digest {
 /// Largest power of 2 strictly less than n (formal model §2.2).
 ///
 /// Defined for n > 1. Panics if n ≤ 1.
-fn largest_pow2_lt(n: usize) -> usize {
+pub(crate) fn largest_pow2_lt(n: usize) -> usize {
     assert!(n > 1, "largest_pow2_lt requires n > 1, got {n}");
     // 2^(floor(log2(n - 1)))
     1 << (usize::BITS - 1 - (n - 1).leading_zeros())
