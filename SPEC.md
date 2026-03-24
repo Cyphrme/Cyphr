@@ -47,41 +47,46 @@ components and and user data.
 ```text
 Principal Tree (PT)
 │
-├── Auth Tree (AT) ───────────── [Authentication]
+├──State Tree (ST)
 │   │
-│   ├── Key Tree (KT) ────────── [Public Keys]
-│   │
-│   └── Rule Tree (RT) ───────── [Permissions & Thresholds]
-| 
-└── Data Tree (DT) ───────────── [Data Actions]
+│   ├─── Auth Tree (AT) ───────────── [Authentication]
+│   │    │
+│   │    ├── Key Tree (KT) ────────── [Public Keys]
+│   │    │
+│   │    └── Rule Tree (RT) ───────── [Permissions & Thresholds]
+|   │
+│   └─── Data Tree (DT) ───────────── [Data Actions]
+│
+└── Commit Tree (CT) ──────────────── [State Mutations]
 ```
 
-The **principal state** (PS) is a hierarchical structure of cryptographic Merkle
+The **principal state** (PR) is a hierarchical structure of cryptographic Merkle
 roots representing the complete state of a Principal (identity) at a particular
-commit.
+commit. The first PR is the PG // TODO
 
 ```text
-Principal State (PS)
+Principal State (PR)
 │
-├── Auth State (AS) ───────────── [Authentication]
-│   │
-│   ├── Key State (KS) ────────── [Public Keys]
-│   │
-│   └── Rule State (RS) ───────── [Permissions & Thresholds]
-|
-├── Data State (DS) ───────────── [Data Actions]
+ State Root SR
+     ├── Auth Root (AR) ───────────── [Authentication]
+  │   │
+   │   ├── Key Root (KR) ────────── [Public Keys]
+   │   │
+   │   └── Rule Root (RR) ───────── [Permissions & Thresholds]
+    |
+    ├── Data Root (DR) ───────────── [Data Actions]
 │
-└── Commit State (CS) ─────────── [Auth State Mutations]
+└── Commit Root (CR) ─────────── [State Mutations] 
 ```
 
 The **commit chain** tracks principal state over time.  Each commit mutates PT
-and includes a reference to the prior PS the forward PT.
+and includes a reference to the prior PS and the forward PT.
 
 ```text
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +----------------+
  |                | Commit |                | Commit |                | (Future)
- |     [PR]       | =====> | PS(AS, DS, CS) | =====> | PS(AS, DS, CS) | ==> 
+ | PR(AS, DS, CS) | =====> | PS(AS, DS, CS) | =====> | PS(AS, DS, CS) | ==> 
  |                |        |            |   |        |            |   |
  +----------------+        +------------V---+        +------------V---+
                  ^                      |  ^                      |  ^
@@ -107,47 +112,43 @@ and includes a reference to the prior PS the forward PT.
 
 PR, PS, AS, KS, RS, DS, and CS are all MultiHash Merkle root (MHMR) digest
 values. Each digest identifier corresponds to a tree datastructure: Principal
-Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT). (PT,
+Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT) (PT,
 AT, KT, RT, DT) or in the case of CS, the commit chain.
 
 An action is denoted by the `typ` of a signed coz. "Action" is the hypernym of
 "transaction" and "data action". Concrete types like keys, rules, user comments,
 and binary files are not actions, but the cozies used to authorize are actions.
 
-
 #### 2.2.2 Digest
-
-A digest is the binary output of a cryptographic hashing algorithm.
-
-All identifiers (digests) inside a coz must aligned with algorithm (`alg`) in
-`pay` unless otherwise explicitly labeled. When referred to alone outside a coz,
-good practice for digest identifiers is prepending with the Coz algorithm
-identifier, e.g. `SHA256:<b64ut_value>`.  Without explicit algorithm labeling, a
-system is as strong as the weakest supported hashing algorithm.  Systems may
-leverage previously identified digests from being misinterpreted or reused;
-explicit algorithm prefixes may not always be strictly required in practice.
-
-Digest binary values are encoded as **b64ut** ("Base64 URI canonical Truncated",
-RFC 4648 base64 URL alphabet and encoding method, errors on non-canonical
-encodings, and no padding).
+A digest is the binary output of a cryptographic hashing algorithm. Digest
+values are encoded as **b64ut** ("Base64 URI canonical Truncated", RFC 4648
+base64 URL alphabet and encoding method, errors on non-canonical encodings, and
+no padding). All digest values are opaque bytes; a sequence of bytes are treated
+as a whole unit without internal structural or meaning.
 
 #### 2.2.3 Identifier
-
 All identifiers are cryptographic digest Content IDentifiers (CID's) encoded as
-b64ut and provide addressing and integrity of the reference. For MRs, if order
-is not otherwise given, lexical byte order is used. Values are opaque bytes; a
-sequence of bytes are treated as a whole unit without internal structural or
-meaning.
+b64ut and provide addressing and integrity of the reference. Following Coz
+semantics, all digest identifiers inside a coz must aligned with algorithm
+ (`alg`) in `pay` unless explicitly labeled.  For example, the algorithm for the
+`id` of the new key must be `SHA256`, aligning with alg `ES256`.
 
-#### 2.2.4 Commit
+#### 2.2.4 Nonce
+A **nonce** is a unique, high-entropy value used to add entropy, obscure
+content, and/or ensure uniqueness. See section Nonce.
 
-A commit is a finalized bundle of cozies that mutate PT and result in a new PS.
-A commit consist of one to many transactions, denoted by `typ`, and transactions
-themselves consist of one to many cozies.  Commits are chained using references
-to prior principal states (`pre`) and are finalized by a commit transaction.
+#### 2.2.5 Merkle Root
+A **Merkle tree** (MT) is a binary hash tree where each leaf is a hash of data
+and each non-leaf node is the hash of its two children, culminating in a single
+**Merkle root** (MR). CT uses a verifiable data structure, specifically a
+Merkle, Append-Only, Log Tree, (**MALT**), densely and left filled. See section
+Commit. 
 
-#### 2.2.5 Implicit Promotion
+#### 2.2.6 Commit
+A commit is a finalized bundle of transaction cozies that mutate PT and result
+in a new PS. See section commit.
 
+#### 2.2.7 Implicit Promotion
 A value is **implicitly promoted** to the parent without additional hashing when
 a tree component has only one node. Promotion is recursive; items deep in a tree
 can be promoted to the root level. For example:
@@ -157,30 +158,24 @@ can be promoted to the root level. For example:
 - No DS present: AS is promoted to PS.
 - Only KS present (no RS): KS is promoted to AS.
 
-#### 2.2.6 Authenticated Atomic Action
+#### 2.2.8 Authenticated Atomic Action
 Authenticated Atomic Action (AAA) is an individual, self-verifiable, discrete
 operation. AAA supersedes trust traditionally delegated to centralized services.
 See section [Authenticated Atomic Action](#71-authenticated-atomic-action). 
 
-#### 2.2.7 Embedding
+#### 2.2.9 Embedding
 An **embedded node** is an external tree reference.   Its value may be a `tmb`,
 KS, AS, PS, nonce, or other node value. An **embedded principal** is a full
 Cyphrpass identity embedded into another principal. See section
 [Embedding](#10-embedding).
 
-#### 2.2.8 Nonce
-In Cyphrpass a **nonce** is a high-entropy value used to add entropy, obscure
-content, and/or ensure uniqueness. Unless explicitly labeled, Cyphrpass is
-unable to distinguish a nonce from any other node type such as an embedding. One
-or more cryptographic nonces may be included at any level of the state tree.
-
-#### 2.2.9 Reveal
+#### 2.2.10 Reveal
 **Reveal** is the process by which obfuscated structures, i.e. opaque nodes, are
 made transparent. Public keys must be revealed for verification; embeddings,
 nonces, and other data structures may also need revealing during commits or
 other signing operations.
 
-#### 2.2.10 Witnesses and Oracle
+#### 2.2.11 Witnesses
 A **witness** is a client that keeps a copy of an external principal's state and
 communicates state through gossip.
 
@@ -189,10 +184,9 @@ clients. For example, a client may delegate some processing to an oracle for
 state jumping, where the oracle is trusted that the commits in the jump were
 appropriately processed.
 
-#### 2.2.11 Unrecoverable Principal
-A principal with no keys capable of mutating principal state and no viable
-recovery path within the protocol.  Transactions and recovery are impossible,
-although some data actions may still be possible. See section [Recovery](#RecoveryTODO).
+#### 2.2.12 Unrecoverable Principal
+A principal with no keys capable of meaningfully mutating AT and no viable
+recovery path within the protocol.  See section [Unrecoverable](#Unrecoverable).
 
 ### 2.3 Core Protocol Constraints
 #### 2.3.1 Coz Required Fields
@@ -272,13 +266,14 @@ authorized if and only if all three conditions hold:
 
 ### 3.2 Level 2: Key Replacement
 
-- Single replaceable key. `key/replace` swaps current key for new key.
+- Introduces key replacement. `key/replace` swaps current key for new key.
 - No commit
 - `tmb` == KS == AS == PS
 - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 
 ### 3.3 Level 3: Commit (Multi-Key)
 
+- Introduces the Commit Tree (CT).
 - Multiple concurrent keys with equal authority
 - PS = MR(AS, DS, CS, ...), CS = MR(TS, TCS)
 - Initial PS is equal to PR
@@ -318,7 +313,8 @@ Node Canonical Digest Algorithm: all state digests follow the same algorithm:
 2. **Sort** lexicographically (byte comparison) unless otherwise defined.  If
    sort order is otherwise defined, lexical is the tie breaker.
 3. **Implicitly Promote** without hashing if only one digest component exists.
-4. **Merkle Root** Calculate the Merkle root of a binary Merkle tree.
+4. **Merkle Root** Calculate the Merkle root of a binary Merkle tree. If order
+is not otherwise given, lexical byte order is used.  
 
 ```
 State Digest = MR(d₀, d₁, ...)
@@ -351,30 +347,31 @@ Auth State (AS) combines authentication-related states:
 
 #### 3.7.4 Data State
 
-Data State (DS) (Level 4+) is the digest of all data action `czd`s.  By default,
-DS is sorted by `now` and secondarily `czd`. DS may be an append only Merkle
-tree data structure.
+Data State (DS) (Level 4+) is the digest of all data action `czd`s.  DS is
+sorted by `now` and secondarily `czd`.
 
 ```
 DS = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-#### 3.7.5 Commit State // TODO reread
+#### 3.7.5 Commit State
 
 CS (Level 3+) is calculated as all transaction components MR(TS, TCS). TS
-contains mutation transaction cozies and TCS contains commit transaction cozies.
+contains mutation transactions, denoted by `txs`, and TCS contains commit
+transaction cozies, denoted by `txc`. Both are the Merkle root of all related
+`czd`s ordered by position as given by the principal. Mutation cozies must be
+grouped by transaction.
 
 CS is one of the three normal components for PS, so that PS = MR(AS, DS, CS).
 
-TS is the Merkle root of all mutation transaction `czd`s, `txs`, ordered by
-position as given by the principal.  TCS is the Merkle root of all commit
-transaction `czd`s, `txc`, ordered by position as given by the principal.
-
 On commit the field `commit` is equal to PTS, which is the Merkle root of the
-prior Principal state, `pre`, the forward principal tree `fwd` and TS.  PTS is
-all principal components, prior, forward, and `txs`, excluding `txc`. Why? A
-commit cannot refer to itself (a signature cannot sign itself), so instead its
-signature covers everything except the commit transaction itself.
+prior Principal state, `pre`, the forward AT and DT `fwd`, and TS.  PTS is all
+principal components, prior, forward, and `txs`, excluding `txc`. Why? A commit
+cannot refer to itself (a signature cannot sign itself), so instead its
+signature covers everything except the commit transaction itself.  For the same
+reason, `pre` refers to PS while `fwd` refers to PT// TODO incorrect. After the commit is
+finalized, PS is calculable, but a "forward PS" isn't calculable since that
+would require commit to refer to itself. After commit, PS is calculated.
 
 ```
   CS  = MR(TS, TCS)
@@ -383,14 +380,23 @@ signature covers everything except the commit transaction itself.
   PTS = MR(pre, fwd, TS)
 ```
 
-Also: 
-- `pre`: The prior Principal State  (PS). 
-- `fwd`: The forward Principal Tree (PT).
+Since clients need additional internal state of verification, other digests are also enumerated:
+- `txs`: [coz, ...] Mutation transactions.
+- `txc`: [coz, ...] Commit transaction.
 
-Note that `pre` refers to PS while `fwd` refers to PT.  This is because a commit
-cannot refer to itself.  After the commit is finalized, PS is calculable, but a
-"forward PS" isn't calculable since that would require commit to refer to
-itself.
+- `pre`: <b64ut> The prior Principal State (PS), the state the commit is mutating
+- `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
+- `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order.
+- `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
+- `pts`: <b64ut> (Principal transaction state) (pre, fwd, TS) // TODO fixme
+- `trans`: <b64ut> Commit transaction field, value is equal to PTS. arrow
+
+// TODO TIM don't worry about the naming on these just yet. 
+- `TMR`: <b64ut>,  MR(txs)  // TODO THINK MR
+- `TCR`: <b64ut>,  MR(txs)  // CR
+- `TR`: <b64ut> MR(TS, TCS) // TODO Talk about "Transaction Root"
+- `CS`: malt(TR₀, TR₁...) // TODO Talk about.
+- `CT`: malt(TR₀, TR₁...)
 
 
 ---
@@ -398,20 +404,24 @@ itself.
 
 ## 4 Commit
 
-A **commit** is an ordered, finalized atomic bundle that mutates PT.  Commits
-contain one or more transactions, which themselves contain one or more cozies,
-and form a chain via the `pre` field. Many mutations may occur per commit and
-are applied one-by-one using a given order as dictated by the principal. Unlike
-other systems, there are no minting fees, gas, or need for a global ledger.
+A **commit** is an ordered, finalized atomic bundle that mutates PT.  A commit
+consist of one to many transactions, denoted by `typ`, and transactions
+themselves consist of one to many cozies, and form a chain via `pre`. Many
+mutations may occur per commit and are applied one-by-one using a given order as
+dictated by the principal. Unlike other systems, there are no minting fees, gas,
+or need for a global ledger.
+
+For example, a transaction may have three transaction: one transaction for
+`key/update`, signed by two keys and consisting two cozies, one for
+`key/create`, signed by one key and consisting of one coz, and a
+`commit/create`, finalizing the commit.  
 
 ### 4.1 Transaction
 
 A transaction consists of one or more signed cozies that results in a mutation
-of the Principal Tree (PT). All transactions contained in a particular commit
-contain an identical `pre`. All related cozies for a particular transaction
+of the Principal Tree (PT).  All cozies for a particular transaction
 contain an identical `typ`, which defines intent.  Clients verify transactions
-based on the principal's auth tree (AT). 
-For example, `typ` may be `<authority>/key/create` or similar key mutation type.
+based on the principal's auth tree (AT).
 
 ```json5
 {
@@ -426,32 +436,11 @@ For example, `typ` may be `<authority>/key/create` or similar key mutation type.
 }
 ```
 
-Following Coz semantics, all digest references in `pay`, such as `id`, must
-align with `alg` unless explicitly labeled. For example, the algorithm for the
-`id` of the new key must be `SHA256`, aligning with alg `ES256`, unless
-explicitly labeled.
+Transaction order by default is denoted by order in `txs`, and may be explicitly
+denoted by `txs_order`.  Even though inter-transaction coz ordering is not
+relevant for mutation, transaction order may potentially impact mutation. 
 
-### 4.2 Transaction Bundle
-
-Many transactions, consisting of one to many cozies, may be included in a single
-commit. `pre` groups cozies and transactions into a transaction bundle for a
-commit. Commit id is the positionally ordered Merkle root of all commit `czd`s.
-
-// TODO The mutations defined by a commit
-results in a new CS which the field `commit` references.
-
-
-For example, a transaction bundle may have two transaction: one transaction for
-`key/update`, signed by two keys and consisting two cozies, and one for
-`key/create`, signed by one key and consisting of one coz.  The commit id is
-`MR(coz₁, coz₂, coz₃)`.
-
-Transaction coz order is denoted by order in `txs`.  Even though
-inter-transaction coz ordering is not relevant for mutation, transaction order
-may potentially impact mutation. For that reason coz order must be known in
-order to calculate the appropriate commit id and targeted PT.
-
-### 4.3 Required Fields
+### 4.2 Required Fields
 
 In addition to Cyphrpass required fields, transactions have the following
 required fields.
@@ -461,57 +450,75 @@ required fields.
   commit's mutation.)
 
 
-### 4.4 Commit Finality
-A commit has two references, 
-
-- `pre` which refers to the prior principal state (PS), and 
-- `commit` which refers to the forward targeted principal tree for the
-principal, the **commit state** (CS). 
+### 4.3 Commit Finality
+Commits are chained by reference to prior principal states, the forward tree,
+and are finalized by a commit transaction.  A commit id is equal to `pts`.
 
 CS is the MR of all components of PT except the commit ID.  PS is the MR of PT
 including the last commit (commit id). A commit is finalized with
-`"commit":<CS>` appearing in the last coz. For example, in a three coz commit,
-`"commit":<CS>` appears in the last coz:
+`"commit":<pts>` appearing in the last coz. For example, in a three coz commit,
+`"commit":<pts>` appears in the last coz:
 
-// TODO
 ```json
-{"txs":[
-  {<coz 1>},
-  {<coz 2>},
-  {
-    "pay": {
-      "alg": "ES256",
-      "now": 1736893000,
-      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "typ": "cyphr.me/cyphrpass/ds/create",
-      "id": "<DS>",
-
-
-      "pre": "<target PS>",
-      "commit":"<CS>"
-    },
-    "sig": "<b64ut>"
-  }
-]}
+{"txc":[{ // Commit Transaction
+    "pay":{
+        "alg": "ES256",
+        "now": 1736893000,
+        "typ": "cyphr.me/cyphrpass/commit/create",
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "trans":"<b64ut>" // past state, new state, mutation // Transition arrow
+      },
+      "sig": "<b64ut>"
+  }]
+}
 ```
 
 To prevent client misbehavior, finality may be used as a proof of error (see
 section Proof of Error).
 
-### 4.5 Trust Anchor
+### 4.4 Trust Anchor
 For a Cyphrpass client, the last known trusted state for a particular principal
 is the **trust anchor**, ASₐ. The ordered sequence of transactions linking two
 known Auth States ASₐ → ASₓ is called the **`tx_path`**. The transactions that
 must actually be fetched and verified to move from ASₐ to ASₓ form the
 `tx_patch` (Δ). (See also section Checkpoint and State Jumping.)
 
-### 4.6 Comparison to `git`
-Cyphrpass's design is similar to git.
+### 4.5 Comparison to `git`
+In git, commits are digest of metadata objects, including fields like author and
+date, but critically parent and commit tree.  Cyphrpass's design parallel these
+critical git components
   - `"commit":<CS>` is equivalent to the git tree root, which is referenced in
-    the git commit.
+    the git commit. // TODO not true newest design, but I think it is equivalent
+    to `fwd`.
   - `"pre":<PS>` is equivalent to parent in git. `pre` is implemented as a
     Merkle DAG (instead of a simple binary Merkle tree) where `pre` is a list of
     parents (see section Explicit Fork).
+
+
+### 4.6 Commit Tree
+
+The Commit Tree (CT) is a MALT. New commits are appended sequentially from the
+left, maintaining a dense prefix with no gaps, following the growth pattern used
+in RFC 6962.
+
+
+New commits are appended sequentially from the left, maintaining a dense prefix
+with no gaps, following the growth pattern used in RFC 6962.
+
+
+
+// TODO think about this: The resulting Merkle root after each append contributes to the Commit State (CS).
+
+Append only. Commits are assigned an order.  (sequence numbers starting
+from 0.) The Merkle root after incorporating commit N becomes (a component
+of) Commit State CS_N. Clients obtain inclusion proofs for specific commits and
+consistency proofs between known roots using standard Merkle path proofs.
+Implementations may choose to expose the tree via tiled static storage for
+efficiency (as in modern transparency log designs), but this is an
+implementation detail and does not change the cryptographic commitments or proof
+formats.
+
+
 
 ### 4.7 Data
 #### 4.7.1 Data Action
@@ -566,7 +573,7 @@ transaction is signed, which updates the value of DS in the PS tree:
 As a Merkle Tree, DT provides broad flexibility. Nodes may represent Merkle
 DAGs, Map/Trie-Based Structures (e.g., Sorted Merkle Maps, Merkle Patricia
 Tries, Verkle Trees), Sparse Merkle Trees, History/Versioned Merkle Trees, or
-hybrid/pluggable approaches. Clients may implement DT in append-only mode,
+hybrid/pluggable approaches. Clients may implement DT in DAOLFMT mode,
 maintain subtrees per application or per account, and handle deletion via
 tombstones or direct removal. DT organization for specific applications is
 beyond the scope of this document. Principal may construct DT as an append only,
@@ -654,9 +661,13 @@ material, but `tmb` is signed within the coz.
 ```json5
 {"tx_meta":{
     "pre": "<b64ut>", // prior (source) PS
+    "fwd":"<b64ut>", // forward tree, MR(PT)
+
     "TS":  "<b64ut>",  // ordered MR(txs)
-    "TCS": "<b64ut>", // Ordered MR(txc)
-    "forward_PT":"<b64ut>", // MR (PT)
+
+    "fps":"<b64ut>", // Forward principal state. // TODO think about calling this just ps
+    "TCS": "<b64ut>", // Ordered MR(txc)  // TODO consider list digest instead of Merkle Root. NO, bad idea because 1. uniformity and 2. the MR algo is logarithmic itself. 
+
     "commit":"<b64ut>",// Exactly equal to PTS
     "PTS": "<b64ut>", // == (past_ps (pre), forward PT, TS) PTS (Principal transaction State)
     // // TODO Rename CS to PTS, then later new CS resulting in  PS = AS, DS, CS
@@ -1429,8 +1440,8 @@ embedding of A.
 ### 10.1 Nonce, Embedding, and Opaque Nodes
 Cyphrpass permits nonces, embeddings, or otherwise opaque nodes anywhere in the
 Principal Tree. Embeddings are indistinguishable from other digest values unless
-revealed by the client.  To delete a embedding or nonce, a `*/nonce/delete` is
-signed.
+revealed by the client.  One or more nonces may be included at any level of the
+state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
 
 ```json
 {
@@ -1457,8 +1468,10 @@ state tree. `typ` specifies the path for insertion.  A `nonce/delete`, where
 
 
 ### 10.2 Nonce
-
-Nonces are used in Cyphrpass for a few purposes:
+Although used with a slightly different connotation in the broader industry, in
+Cyphrpass a **nonce** is a unique, high-entropy value. Unless explicitly labeled
+or revealed, Cyphrpass is unable to distinguish a nonce from any other node type
+such as an embedding. Nonces serve a few purposes:
 
 - **Obfuscation**: Nonces are indistinguishable from key thumbprints and
   other digest values, so observers cannot determine the true count
@@ -1483,11 +1496,11 @@ Design notes:
   values are calculated from a prior value. (See section Conversion.)
 
 Unlike systems that rely on incrementing counters to enforce “used only once”
-behavior, Cyphrpass is distributed and cannot guarantee sequential uniqueness
-across principals. Instead, a sufficiently large random value provides
-probabilistic uniqueness that is guaranteed in practice. As an aside,
-cryptographic signatures and other identifiers may act as an entropy source, but
-that's outside of the scope of this document.
+(nonce meaning "number used once") behavior, Cyphrpass is distributed and cannot
+guarantee sequential uniqueness across principals. Instead, a sufficiently large
+random value provides probabilistic uniqueness that is guaranteed in practice.
+As an aside outside of scope, cryptographic signatures and other identifiers may
+also act as entropy sources.
 
 ### 10.3 Embedded Principal
 
@@ -1713,13 +1726,17 @@ the principal deleted. This ensures that no new principal may be created reusing
 existing principal keys.
 
 ### 11.3 Unrecoverable
-**Unrecoverable** is a partially ambiguous classification: the principal cannot
-mutate AS (`¬CanMutateAS`) and is not deleted, but whether data actions remain
-possible is not connoted. Once `CanDataAction` is evaluated, an unrecoverable
-principal resolves to either **Zombie** (data actions still possible) or
-**Dead** (nothing possible).
+An **unrecoverable** principal is where recovery is impossible within the
+Cyphrpass protocol rules. Transactions and recovery are impossible, although
+some data actions may still be possible.  Unrecoverable is a partially ambiguous
+classification: the principal cannot mutate AS (`¬CanMutateAS`) and is not
+deleted, but whether data actions remain possible is not connoted. Once
+`CanDataAction` is evaluated, an unrecoverable principal resolves to either
+**Zombie** (data actions still possible) or **Dead** (nothing possible).
 
-`CanMutateAS` is not monotonic in key count at Level 5+. A principal
+
+
+Not that `CanMutateAS` is not monotonic in key count at Level 5+. A principal
 with active keys may still have `¬CanMutateAS` if no key combination meets the
 threshold for AT mutation.
 
@@ -2020,11 +2037,11 @@ Equivalence across multihash algorithm variants is assumed by the protocol and
 no relative strength ordering is enforced at the protocol level. When multiple
 algorithms are supported, there may be a tie at the time of conversion.
 Cyphrpass provides a default rank. Rank is a tiebreaker only and not a security
-indicator. Misuse can have security implications.
+indicator. Misuse may have security implications.
 
 Perhaps in the future, principals may set a rank order via
-`cyphrpass/alg/rank/create` transaction (stored in AS as a rule), but for now
-this is out-of-scope. 
+`cyphrpass/alg/rank/create` transaction (stored as a rule), but for now
+this is out-of-scope.
 
 ### 12.5 Algorithm Incompatibility
 
@@ -2041,128 +2058,17 @@ verify or interpret the cryptographic material. If such an operation is
 attempted using an unsupported algorithm, the services are incompatible.
 
 
----
+# Extended
 
+The following sections contain advice, exposition, non-normative, or additions
+to the core Cyphrpass protocol.
 
-## 15. Storage
-
-### 15.1 Client/Principal Storage
-
-Cyphrpass distinguishes between several storage contexts. Clients are
-categorized as **thin**, **fat**, or **full**, based on storage capacity:
-
-**Thin clients** rely on services for state resolution and only the private key
-is essential. **Fat clients** store exhaustive auth history. **Full clients**
-store exhaustive auth history and action data for offline verification and
-maximum sovereignty.
-
-Storing PR, public keys, and Tip is good practice to store locally,
-but could be retrieved from a service.
-
-**Thin Client** (browser, IoT):
-
-| Data         | Required | Notes                |
-| ------------ | -------- | -------------------- |
-| Private keys | ✓        | Never transmitted    |
-| Transactions | Optional | Full audit trail     |
-| Actions      | Optional | Application-specific |
-
-**Fat Client** (desktop app, trusted device):
-
-| Data         | Required | Notes                |
-| ------------ | -------- | -------------------- |
-| Private keys | ✓        | Never transmitted    |
-| Transactions | ✓        | Full audit trail     |
-| Actions      | Optional | Application-specific |
-
-**Full Client** (desktop app, trusted device):
-
-| Data         | Required | Notes                |
-| ------------ | -------- | -------------------- |
-| Private keys | ✓        | Never transmitted    |
-| Transactions | ✓        | Full audit trail     |
-| Actions      | ✓        | Application-specific |
-
-### 15.2 Third-Party Service Storage
-
-Services that interact with principals store:
-
-| Data                | Purpose                |
-| ------------------- | ---------------------- |
-| PR                  | Principal identity     |
-| Current PS (Tip)    | State verification     |
-| Active public keys  | Signature verification |
-| Transaction history | Full audit trail       |
-| Actions (DS)        | Application data       |
-
-Service operations:
-
-- **Pruning**: Services may discard irrelevant user data (old actions, etc.).
-- **Key recovery**: Services may assist in recovery (see "Disaster Recovery").
-- **State resolution**: Services can provide transaction history for principals
-  to verify.
-
-**Trust model:** Services are optional. Principals can self-host or use multiple
-services. Full verification is always possible with transaction history.
-
-### 15.3 Storage API (Non-Normative)
-
-This section is informative only. Implementations may use any storage mechanism
-appropriate to their deployment context.
-
-#### 15.3.1 Action Export Format
-
-The recommended export format is newline-delimited JSON (JSONL).  Transactions
-are saved to one file `transactions.jsonl` and data actions to
-`data_actions.jsonl`. Entries with `typ` prefix `<authority>/cyphrpass/*` are
-authentication transactions; all others are data actions.
-
-```jsonl
-{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
-{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
-```
-
-```jsonl
-{"typ":"cyphr.me/comment/create","pay":{...},"sig":"..."}
-```
-
-Past entries are not modified (unless invalid fork or data action removal) and
-each line is a complete, signed Coz message. 
-
-
-### 15.3.2 Blob Store
-
-While full blob storage is out of scope, it is recommended that Blobs are stored
-as binary files with the file name being the digest value, following Coz
-semantics. For multihash support, an index file or file pointers may be used. 
-
-#### 15.3.3 Storage Capabilities
-
-Storage backends provide:
-
-- **Append**: Store signed entries for a principal
-- **Retrieve**: Fetch entries (all or filtered by time range)
-- **Existence check**: Determine if a principal exists
-
-Semantic operations (verification, state computation, key validity) are handled
-by the Cyphrpass protocol layer, not storage.
-
-### 15.4 Append Only Verifiable Logs
-
-Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
-Each commit references the prior via pre and is anchored in the Merkle root
-(MR), enabling efficient verification of history without full chain replay. This
-supports tamper-evident auditing and is useful for compliance requirements, such
-as regulatory record-keeping or forensic analysis.  This may be implemented as a
-truly append only data structure or as a mutatable data structure, where events
-like forks, requiring chain selection, may be deleted (mutatable) or marked as
-discarded (immutable implementation).
 
 
 ---
 
 
-## 16 Mutual State Synchronization (MSS)
+## 13 Mutual State Synchronization (MSS)
 
 Cyphrpass enables symmetric, bidirectional state awareness that eliminates the
 one-sided dependency inherent in traditional password-based or federated
@@ -2203,7 +2109,7 @@ By making state mutual, verifiable, and push-capable, Cyphrpass enables:
 - Recovery without manual per-service intervention.
 - Programmable, symmetric trust between users and services.
 
-#### 16.1 Core Properties of MSS
+#### 13.1 Core Properties of MSS
 
 | Property                     | Description                                                 | Benefit vs. Legacy Systems                                  |
 | ---------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
@@ -2213,7 +2119,7 @@ By making state mutual, verifiable, and push-capable, Cyphrpass enables:
 | **Service as principal**     | Service exposes its own state via API or public chain.      | Bypasses CA/email dependency for service identity.          |
 | **Double-entry analogy**     | Not a single ledger, parties may track each other's state   | Stronger auditability and fraud/spoofing/evasion detection. |
 
-### 16.2 State Resolution and Verification by a Third Party 
+### 13.2 State Resolution and Verification by a Third Party 
 
 To verify a principal's current state:
 
@@ -2231,7 +2137,7 @@ To verify a principal's current state:
    - Apply mutation to derive new AS
 4. **Compare**: final computed KS/AS/PS should match claimed current state
 
-### 16.3 Recommended Usage
+### 13.3 Recommended Usage
 
 MSS makes authentication quicker by allowing clients to push state to services
 before authentication. When a client mutates their own state, they may push the
@@ -2244,7 +2150,8 @@ mutations to all registered third parties.
   reconciles if needed.
 
 
-### 16.4 MSS API Operations (Non-Normative)
+### 13.4 MSS API 
+(Non-Normative)
 
 Cyphrpass's `typ` system builds a ready to use API. However, there are a few
 endpoints not enumerated by `typ`, such as synchronization. Services should
@@ -2277,7 +2184,7 @@ clients in sync. See also section `API`.
 - If service-reported tip equals the client's local PS, state is synced.
 - On mismatch, client pushes delta or service requests missing patch.
 
-### 16.5.1 Witness Registration
+### 13.5.1 Witness Registration
 A principal may have many clients.  The principal signs a message to inform
 clients of the registration of external witnesses, which themselves are
 represented as principals.  This message is not included in AS, and is instead
@@ -2288,7 +2195,7 @@ may be included in DS as a data action, so that PS may remain unmodified.
 This message is transported to the external witness for registration. The
 witness is removed with a `delete`.
 
-### 16.5.2 MSS Registration Example
+### 13.5.2 MSS Registration Example
 
 Example ledger displaying remote state synchronization. Local Principal `X` is
 at tip `State3`.
@@ -2307,13 +2214,13 @@ After successful syncing:
 | B         | State3       | Y       |
 | C         | State3       | Y       |
 
-### 16.6 Witness Timestamps
+### 13.6 Witness Timestamps
 Clients should record their own "first_seen" if the oracle has a date after
 receipt.  If external witness timestamps are out of expected range, clients
 should also record external witness timestamps.  This allows MSS to detect
 conflict, dishonest behavior, and bugs.
 
-### 16.7 Gossip
+### 13.7 Gossip
 Unlike existing gossip protocols, like Cassandra, where there is no authority on
 a particular piece of data, Principals are the authority over their own state.
 
@@ -2328,6 +2235,294 @@ Clients may have an principal identity separate from the principal itself in
 that a principal's primary client may be registered as a witness itself.
 
 ---
+
+
+
+
+
+## 18 Recovery
+
+### 18.1 Sideband
+Simple devices and services using Level 1 should define sideband recovery. A
+Level 1 principal can self-revoke, but this results in a dead principal where
+recovery requires sideband intervention. Devices and services should define
+sideband recovery method where a new key is created and services are updated
+with a reference to this key.Although out of compliance with this specification,
+services without a sideband recovery method may ignore revokes to preclude an
+unrecoverable state. Note that sideband recovery results in a new Principal
+identity.
+
+**Sideband Recovery Example** Use SSH access to the device with the
+unrecoverable principal, delete the old key, replace it with a new key, and
+update the public key on services that communicate to that device.
+
+### 18.2 Recovery Mechanisms
+
+When a principal loses access to all active keys, or the account is otherwise in
+an **unrecoverable state** recovery mechanisms allow regaining control.
+
+There are two main mechanisms:
+
+- **Self Recovery**, various methods of backup. For user self management.
+- **External Recovery** Where some permissions are delegated to an external
+  account, a **Recovery Authority**. This may be social recovery or third-party service.
+
+Level 1 doesn't support recovery. Any recovery is accomplished through sideband.
+Level 2 supports recovery but only atomic swaps. The recovery key can replace the existing key.
+Level 3+ supports recovery and can add new keys.
+
+### 18.3 Self-Recovery Mechanisms
+
+| Mechanism         | Description                            | Trust Model  |
+| ----------------- | -------------------------------------- | ------------ |
+| **Backup Key**    | Backup key stored in a secure location | User custody |
+| **Paper wallet**  | Backup key printed/stored offline      | User custody |
+| **Hardware key**  | Hardware key device (U2F-Zero, solo1)  | User custody |
+| **Airgapped key** | Cold storage, never online             | User custody |
+
+
+
+#### 18.4.1 Recovery Validity 
+
+Ideally, recovery agents only act when the account is in an unrecoverable state,
+however, the unrecoverable state may not be definitively known or verifiable by
+the protocol, such as in the case with lost keys.
+
+Principals should create recovery circumstances carefully. The protocol does not
+enumerate these conditions here; they are defined by principal rules at the time
+of the attempted recovery.
+
+### 18.5 Recovery Transactions
+
+#### 18.5.1 `cyphrpass/recovery/create` — Register Fallback
+
+Registers a recovery agent (backup key, service, or social contacts).
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphrpass/recovery/create",
+    "pre": "<targeted PS>",
+    "recovery": {
+      "agent": "<recovery agent PR or tmb>",
+      "threshold": 1
+    }
+  },
+  "sig": "<b64ut>"
+}
+```
+
+**Fields (within `recovery` object):**
+
+- `agent`: PR of service, tmb of backup key, or array of contact PRs
+- `threshold`: For social recovery, M-of-N threshold (default: 1)
+
+#### 18.5.2 `recovery/delete` — Remove Fallback
+
+Removes a previously designated recovery agent.
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/recovery/delete",
+    "pre": "<targeted PS>",
+    "recovery": {
+      "agent": "<recovery agent PR or tmb>"
+    }
+  },
+  "sig": "<b64ut>"
+}
+```
+
+### 18.6 Recovery Flow
+
+When a principal is locked out:
+
+0. **User generates a new account with a fresh PS**
+1. **User contacts recovery agent** (out-of-band)
+2. **Agent verifies identity** (method varies by agent type)
+3. **Agent signs a Recovery Initialization transaction** for the new user key:
+
+This initializes a new Principal State (PS) that is manually linked to the
+previous state by the Recovery Authority. The new PS is not cryptographically
+linked to the previous state, but it is manually linked to the original PR by
+the Recovery Authority's recovery transaction.
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<recovery agent tmb>",
+    "typ": "<authority>/key/create",
+    "pre": "<targeted PS>",
+    "id": "<new user key tmb>"
+  },
+  "key": {
+    /* new user key */
+  },
+  "sig": "<b64ut>"
+}
+```
+
+Because the agent was designated via `cyphrpass/recovery/create`, their `key/create` is valid even though no regular user key signed it.
+
+### 18.7 External Recovery
+External recovery is accomplished through embedded principals, where some
+permissions are delegated to an external account. 
+
+External recovery delegates recovery authority to an external principal. The
+recovery agent verifies identity out-of-band and signs a recovery transaction on
+behalf of the locked-out user.
+
+| Mechanism               | Description             | Trust Model       |
+| ----------------------- | ----------------------- | ----------------- |
+| **Social recovery**     | M-of-N trusted contacts | Distributed trust |
+| **Third-party service** | Verification service    | Service trust     |
+
+### 18.8 Social Recovery
+
+For social recovery, multiple contacts signs the same `key/create` transaction.
+When `threshold` signatures are collected, the transaction is valid.  For
+example, 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
+
+### 18.9 Freeze
+
+A **freeze** is a global protocol state where valid transactions are temporarily
+rejected to prevent unauthorized changes during a potential compromise. A freeze
+halts all key mutations (`key/*`) and may restrict other actions depending on
+service policy. Freezes are global and apply to all principal actions.
+
+#### 18.9.1 Self-Freeze
+
+A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
+
+- **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
+- **Effect**: Stops all mutations until unfrozen.
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphrpass/freeze/create",
+    "pre": "<targeted PS>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+A designated **Recovery Authority** may initiate a freeze based on heuristics
+(irregular activity) or out-of-band communication (user phone call).
+
+- **Mechanism**: Recovery agent signs `cyphrpass/freeze/create`.
+- **Effect**: Same as self-freeze.
+- **Trust**: The principal explicitly delegates this power to the authority via
+  `cyphrpass/recovery/create`.
+
+#### 18.9.3 Unfreeze (Thaw)
+To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
+
+```json5
+{
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphrpass/freeze/delete",
+    "pre": "<targeted PS>"
+  },
+  "sig": "<b64ut>"
+}
+```
+
+- Self-freeze can be unfrozen by active keys.
+- External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
+
+### 18.10 Security Considerations
+
+- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period.
+- **Revocation:** Backup keys can be revoked if compromised.
+- **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
+- **Freeze abuse:** External freeze authority requires explicit delegation and trust
+
+### 18.12 Retroactivity (Reversion, Retrospection)
+
+Retroactivity is undoing actions to a given timestamp. This is a complex issue
+for services.  
+
+Unlike Git, and outside of consensus, Cyphrpass does not use reversion, that is
+undoing past actions.  Instead, clients should mutate their state using the
+appropriate verbs, `create` and `delete`, as needed for a targeted state. 
+
+For example, even though a `key/revoke` can be postdated to the time of an
+attack, Cyphrpass should interpret transaction based on current `now` and not
+`rvk`.
+
+If an attacker gains access to keys and is able to sign actions unauthorized by
+the agent represented by the Principal, when the Principal regains control, they
+may want to undo these actions.  Instead of retrospectively marking revokes,
+Principals must explicitly mutate their state forward.  
+
+**Retrospection Attack**: An attacker uses retroactivity to undo legitimate
+Principal actions.
+
+As a matter of bookkeeping, a client may mark past actions as disowned,
+expressing the intent of the Principal to mark that action as unintentional.
+However disowning does not mutate AS.
+
+
+---
+
+
+
+
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## 17 Consensus
@@ -2557,358 +2752,132 @@ rather than absolute trusted time.
 ---
 
 
-## 18. Recovery
+## 15. Storage
 
-## Resync and Recovering from Trust Anchor (Last Known Good State)
+### 15.1 Client/Principal Storage
 
-When a third party is out of sync or divergent from the principal state, the
-third party may recover from the the trust anchor, resync.  See section
-Consensus Resync.
+Cyphrpass distinguishes between several storage contexts. Clients are
+categorized as **thin**, **fat**, or **full**, based on storage capacity:
 
-An unrecoverable principal is where:
+**Thin clients** rely on services for state resolution and only the private key
+is essential. **Fat clients** store exhaustive auth history. **Full clients**
+store exhaustive auth history and action data for offline verification and
+maximum sovereignty.
 
-- No useful active keys remain (all revoked or otherwise inaccessible),
-- No designated recovery agents or fallback mechanisms are present or able to
-  act,
-- The principal AS cannot be mutated. No new transactions are possible via the
-  protocol (although some data actions may be possible),
-- And recovery is impossible within the Cyphrpass protocol rules (i.e.,
-  requires sideband intervention).
+Storing PR, public keys, and Tip is good practice to store locally,
+but could be retrieved from a service.
 
-For unrecoverable principals, none of the self-recovery mechanisms listed can prevent or reverse an
-unrecoverable principal state once it has occurred, they must be established
-before key loss/revocation.
+**Thin Client** (browser, IoT):
 
-**Level 1 and Unrecoverable**
-A Level 1 key can self-revoke, but this results in DEAD (permanent lockout).
-Recovery requires sideband intervention defined by the implementor
-or service (see Section 10.1).
+| Data         | Required | Notes                |
+| ------------ | -------- | -------------------- |
+| Private keys | ✓        | Never transmitted    |
+| Transactions | Optional | Full audit trail     |
+| Actions      | Optional | Application-specific |
 
-Level 1 implementors have two options:
+**Fat Client** (desktop app, trusted device):
 
-1. The proper option is sideband recovery. Devices and services should define
-   sideband recovery method.
-2. Ignore the revoke. This is bad practice, but some simple services may not
-   define a sideband method.
+| Data         | Required | Notes                |
+| ------------ | -------- | -------------------- |
+| Private keys | ✓        | Never transmitted    |
+| Transactions | ✓        | Full audit trail     |
+| Actions      | Optional | Application-specific |
 
-Simple devices and services using Level 1 should define sideband recovery.
-Although it's recommended against, services without a sideband method may want
-to ignore revokes so that an unrecoverable state isn't possible.
+**Full Client** (desktop app, trusted device):
 
-**Sideband Recovery Examples** An example of sideband recovery would be having
-physical access or SSH access to the device with the unrecoverable principal,
-deleting the old key replacing it with a new key, and updating the public key on
-services that communicate to that device.
+| Data         | Required | Notes                |
+| ------------ | -------- | -------------------- |
+| Private keys | ✓        | Never transmitted    |
+| Transactions | ✓        | Full audit trail     |
+| Actions      | ✓        | Application-specific |
 
-### 18.2 Recovery Mechanisms
+### 15.2 Third-Party Service Storage
 
-When a principal loses access to all active keys, or the account is otherwise in
-an **unrecoverable state** recovery mechanisms allow regaining control.
+Services that interact with principals store:
 
-There are two main mechanisms:
+| Data                | Purpose                |
+| ------------------- | ---------------------- |
+| PR                  | Principal identity     |
+| Current PS (Tip)    | State verification     |
+| Active public keys  | Signature verification |
+| Transaction history | Full audit trail       |
+| Actions (DS)        | Application data       |
 
-- **Self Recovery**, various methods of backup. For user self management.
-- **External Recovery** Where some permissions are delegated to an external
-  account, a **Recovery Authority**. This may be social recovery or third-party service.
+Service operations:
 
-Level 1 doesn't support recovery. Any recovery is accomplished through sideband.
-Level 2 supports recovery but only atomic swaps. The recovery key can replace the existing key.
-Level 3+ supports recovery and can add new keys.
+- **Pruning**: Services may discard irrelevant user data (old actions, etc.).
+- **Key recovery**: Services may assist in recovery (see "Disaster Recovery").
+- **State resolution**: Services can provide transaction history for principals
+  to verify.
 
-### 18.3 Self-Recovery Mechanisms
+**Trust model:** Services are optional. Principals can self-host or use multiple
+services. Full verification is always possible with transaction history.
 
-| Mechanism         | Description                            | Trust Model  |
-| ----------------- | -------------------------------------- | ------------ |
-| **Backup Key**    | Backup key stored in a secure location | User custody |
-| **Paper wallet**  | Backup key printed/stored offline      | User custody |
-| **Hardware key**  | Hardware key device (U2F-Zero, solo1)  | User custody |
-| **Airgapped key** | Cold storage, never online             | User custody |
+### 15.3 Storage API (Non-Normative)
 
-### 18.4 Implicit Fallback (Single-Key Accounts)
+This section is informative only. Implementations may use any storage mechanism
+appropriate to their deployment context.
 
-For implicit (single-key) accounts, a `fallback` field may be included at key creation:
+#### 15.3.1 Action Export Format
 
-```json5
-{
-  "alg": "ES256",
-  "pub": "<b64ut>",
-  "tmb": "<b64ut>",
-  "fallback": "<backup key tmb>"
-}
+The recommended export format is newline-delimited JSON (JSONL).  Transactions
+are saved to one file `transactions.jsonl` and data actions to
+`data_actions.jsonl`. Entries with `typ` prefix `<authority>/cyphrpass/*` are
+authentication transactions; all others are data actions.
+
+```jsonl
+{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
 ```
 
-**Fallback types by level:**
-| Level | Fallback Value | Description |
-| ----- | -------------- | ---------------------------------------------------------- |
-| 1 | — | No recovery support (static key) |
-| 2 | `tmb` | Backup key thumbprint |
-| 3+ | `PS` | External Principal recovery agent (with rules or defaults) |
-
-**Notes:**
-
-- The `fallback` field is not included in `tmb`'s calculation (allows changing
-  fallback without changing identity)
-- Assumes a trusted initial setup
-- **Level 2 Restriction**: Level 2 accounts only support **atomic swap**
-  (`key/replace`). The fallback functionality must adhere to this, replacing the
-  lost key rather than complying with `key/create` like Level 3+.
-
-#### 18.4.1 Recovery Validity 
-
-Ideally, recovery agents only act when the account is in an unrecoverable state,
-however, the unrecoverable state may not be definitively known or verifiable by
-the protocol, such as in the case with lost keys.
-
-Principals should create recovery circumstances carefully. The protocol does not
-enumerate these conditions here; they are defined by principal rules at the time
-of the attempted recovery.
-
-### 18.5 Recovery Transactions
-
-#### 18.5.1 `cyphrpass/recovery/create` — Register Fallback
-
-Registers a recovery agent (backup key, service, or social contacts).
-
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/recovery/create",
-    "pre": "<targeted PS>",
-    "recovery": {
-      "agent": "<recovery agent PR or tmb>",
-      "threshold": 1
-    }
-  },
-  "sig": "<b64ut>"
-}
+```jsonl
+{"typ":"cyphr.me/comment/create","pay":{...},"sig":"..."}
 ```
 
-**Fields (within `recovery` object):**
-
-- `agent`: PR of service, tmb of backup key, or array of contact PRs
-- `threshold`: For social recovery, M-of-N threshold (default: 1)
-
-#### 18.5.2 `recovery/delete` — Remove Fallback
-
-Removes a previously designated recovery agent.
-
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/recovery/delete",
-    "pre": "<targeted PS>",
-    "recovery": {
-      "agent": "<recovery agent PR or tmb>"
-    }
-  },
-  "sig": "<b64ut>"
-}
-```
-
-### 18.6 Recovery Flow
-
-When a principal is locked out:
-
-0. **User generates a new account with a fresh PS**
-1. **User contacts recovery agent** (out-of-band)
-2. **Agent verifies identity** (method varies by agent type)
-3. **Agent signs a Recovery Initialization transaction** for the new user key:
-
-This initializes a new Principal State (PS) that is manually linked to the
-previous state by the Recovery Authority. The new PS is not cryptographically
-linked to the previous state, but it is manually linked to the original PR by
-the Recovery Authority's recovery transaction.
-
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "<recovery agent tmb>",
-    "typ": "<authority>/key/create",
-    "pre": "<targeted PS>",
-    "id": "<new user key tmb>"
-  },
-  "key": {
-    /* new user key */
-  },
-  "sig": "<b64ut>"
-}
-```
-
-Because the agent was designated via `cyphrpass/recovery/create`, their `key/create` is valid even though no regular user key signed it.
-
-### 18.7 External Recovery
-External recovery is accomplished through embedded principals, where some
-permissions are delegated to an external account. 
-
-External recovery delegates recovery authority to an external principal. The
-recovery agent verifies identity out-of-band and signs a recovery transaction on
-behalf of the locked-out user.
-
-| Mechanism               | Description             | Trust Model       |
-| ----------------------- | ----------------------- | ----------------- |
-| **Social recovery**     | M-of-N trusted contacts | Distributed trust |
-| **Third-party service** | Verification service    | Service trust     |
-
-### 18.8 Social Recovery
-
-For social recovery, multiple contacts sign:
-
-- Each contact signs the same `key/create` transaction
-- When `threshold` signatures are collected, the transaction is valid
-- Contacts are identified by their PR
+Past entries are not modified (unless invalid fork or data action removal) and
+each line is a complete, signed Coz message. 
 
-**Example:** 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
 
-### 18.9 Account Freeze
+### 15.3.2 Blob Store
 
-A **freeze** is a global protocol state where valid transactions are temporarily
-rejected to prevent unauthorized changes during a potential compromise. A freeze
-halts all key mutations (`key/*`) and may restrict other actions depending on
-service policy.
+While full blob storage is out of scope, it is recommended that Blobs are stored
+as binary files with the file name being the digest value, following Coz
+semantics. For multihash support, an index file or file pointers may be used. 
 
-Freezes are **global** — they apply to the principal across all services that
-observe the freeze state.
+#### 15.3.3 Storage Capabilities
 
-#### 18.9.1 Self-Freeze
+Storage backends provide:
 
-A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
+- **Append**: Store signed entries for a principal
+- **Retrieve**: Fetch entries (all or filtered by time range)
+- **Existence check**: Determine if a principal exists
 
-- **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
-- **Effect**: Stops all mutations until unfrozen.
+Semantic operations (verification, state computation, key validity) are handled
+by the Cyphrpass protocol layer, not storage.
 
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/freeze/create",
-    "pre": "<targeted PS>"
-  },
-  "sig": "<b64ut>"
-}
-```
+### 15.4 Append Only Verifiable Logs
 
-A designated **Recovery Authority** may initiate a freeze based on heuristics
-(irregular activity) or out-of-band communication (user phone call).
+Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
+Each commit references the prior via pre and is anchored in the Merkle root
+(MR), enabling efficient verification of history without full chain replay. This
+supports tamper-evident auditing and is useful for compliance requirements, such
+as regulatory record-keeping or forensic analysis.  This may be implemented as a
+truly append only data structure or as a mutatable data structure, where events
+like forks, requiring chain selection, may be deleted (mutatable) or marked as
+discarded (immutable implementation).
 
-- **Mechanism**: Recovery agent signs `cyphrpass/freeze/create`.
-- **Effect**: Same as self-freeze.
-- **Trust**: The principal explicitly delegates this power to the authority via
-  `cyphrpass/recovery/create`.
 
-#### 18.9.3 Unfreeze (Thaw)
-To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 
-```json5
-{
-  "pay": {
-    "alg": "ES256",
-    "now": 1623132000,
-    "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/freeze/delete",
-    "pre": "<targeted PS>"
-  },
-  "sig": "<b64ut>"
-}
-```
 
-- Self-freeze can be unfrozen by active keys.
-- External freeze requires the Recovery Authority to thaw (or the principal after a timeout, if configured)
 
-### 18.10 Security Considerations
 
-- **Timelocks (Level 5+):** Recovery can have a mandatory waiting period.
-- **Revocation:** Backup keys can be revoked if compromised.
-- **Multiple agents:** A principal may designate multiple fallback mechanisms, including M-of-N threshold requirements
-- **Freeze abuse:** External freeze authority requires explicit delegation and trust
 
-### 18.12 Retroactivity (Reversion, Retrospection)
 
-Retroactivity is undoing actions to a given timestamp. This is a complex issue
-for services.  
 
-Unlike Git, and outside of consensus, Cyphrpass does not use reversion, that is
-undoing past actions.  Instead, clients should mutate their state using the
-appropriate verbs, `create` and `delete`, as needed for a targeted state. 
 
-For example, even though a `key/revoke` can be postdated to the time of an
-attack, Cyphrpass should interpret transaction based on current `now` and not
-`rvk`.
 
-If an attacker gains access to keys and is able to sign actions unauthorized by
-the agent represented by the Principal, when the Principal regains control, they
-may want to undo these actions.  Instead of retrospectively marking revokes,
-Principals must explicitly mutate their state forward.  
 
-**Retrospection Attack**: An attacker uses retroactivity to undo legitimate
-Principal actions.
 
-As a matter of bookkeeping, a client may mark past actions as disowned,
-expressing the intent of the Principal to mark that action as unintentional.
-However disowning does not mutate AS.
-
-
----
-
-
-
-
----
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Extended
-
-These sections contain advice, exposition, or additions to the core Cyphrpass protocol.
-
-**Sharing Keys**: Nothing in Cyphrpass stops various principals from sharing keys,
-as long as genesis does not result in the same PR. Any set of keys that has not
-been revoked may be used to create a new PR, this includes reusing keys from the
-source principal. The fork may declare new keys or reuse existing keys.
 
 ## 14. Authentication
 
@@ -3044,8 +3013,24 @@ without a central authority.
 
 
 
-## Exposition
-### 7.4 HTTP and `typ`:  Unified Intent + Resource + Verb Descriptor
+# Exposition
+
+### Sharing Keys
+Nothing in Cyphrpass stops various principals from sharing keys,
+as long as genesis does not result in the same PR. Any set of keys that has not
+been revoked may be used to create a new PR, this includes reusing keys from the
+source principal. The fork may declare new keys or reuse existing keys.
+
+
+### Digest Labeling
+When referred to alone outside a coz, good practice for digest identifiers is
+prepending with the Coz algorithm identifier, e.g. `SHA256:<b64ut_value>`.
+Without explicit algorithm labeling, a system is as strong as the weakest
+supported hashing algorithm.  Systems may leverage previously identified digests
+from being misinterpreted or reused; explicit algorithm prefixes may not always
+be strictly required in practice.
+
+### HTTP and `typ`:  Unified Intent + Resource + Verb Descriptor
 Cyphrpass's `typ` is an alternative to HTTP semantics. `typ` is not just a
 naming convention, it's a deliberate design choice that rethinks invoking
 actions, addressing resources, and expressing intent in a cryptographically

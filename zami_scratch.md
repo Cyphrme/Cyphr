@@ -471,3 +471,65 @@ public-key verification contained entirely within the message itself.
 
  forward state (`fwd`) through
 `commit`.
+
+
+
+
+
+
+
+### 18.1 Resync and Recovering from Trust Anchor (Last Known Good State) // TODO WTF
+
+When a third party is out of sync or divergent from the principal state, the
+third party may recover from the the trust anchor.
+
+- No useful active keys remain (all revoked, inaccessible, or lack appropriate permissions to meaningfully mutate AT.)
+- No designated recovery agents or fallback mechanisms are present or able to
+  act
+- The principal AS cannot be mutated. No new transactions are possible via the
+  protocol (although some data actions may be possible)
+
+For unrecoverable principals, none of the self-recovery mechanisms listed can prevent or reverse an
+unrecoverable principal state once it has occurred, they must be established
+before key loss/revocation.
+
+
+### 18.4 Implicit Fallback (Single-Key Accounts) 
+
+For implicit (single-key) accounts, a `fallback` field may be included at key creation:
+
+```json5
+{
+  "alg": "ES256",
+  "pub": "<b64ut>",
+  "tmb": "<b64ut>",
+  "fallback": "<backup key tmb>"
+}
+```
+
+**Fallback types by level:**
+| Level | Fallback Value | Description |
+| ----- | -------------- | --------------------------------------------------- |
+| 1 | — | No recovery support (static key) |
+| 2 | `tmb` | Backup key thumbprint |
+| 3+ | `PS` | External Principal recovery agent (with rules or defaults) |
+
+**Notes:**
+
+- The `fallback` field is not included in `tmb`'s calculation (allows changing
+  fallback without changing identity)
+- Assumes a trusted initial setup
+- **Level 2 Restriction**: Level 2 accounts only support **atomic swap**
+  (`key/replace`). The fallback functionality must adhere to this, replacing the
+  lost key rather than complying with `key/create` like Level 3+.
+
+
+
+
+.  Commits
+contain one or more transactions, which themselves contain one or more cozies
+
+
+
+
+
