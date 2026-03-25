@@ -42,7 +42,7 @@ it enables:
 ### 2.1 Levels and State Tree
 
 The **principal tree** (PT) consists of nodes representing user authentication
-components and and user data.
+components and user data.
 
 ```text
 Principal Tree (PT)
@@ -60,12 +60,12 @@ Principal Tree (PT)
 └── Commit Tree (CT) ──────────────── [State Mutations]
 ```
 
-The **principal state** (PR) is a hierarchical structure of cryptographic Merkle
+The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
 roots representing the complete state of a Principal (identity) at a particular
-commit. The first PR is the PG // TODO
+commit. The first PR is the PG. // TODO ZAMI: clarify PG (Principal Genesis) definition here
 
 ```text
-Principal State (PR)
+Principal Root (PR)
 │
  State Root SR
      ├── Auth Root (AR) ───────────── [Authentication]
@@ -79,14 +79,15 @@ Principal State (PR)
 └── Commit Root (CR) ─────────── [State Mutations] 
 ```
 
-The **commit chain** tracks principal state over time.  Each commit mutates PT
-and includes a reference to the prior PS and the forward PT.
+The **commit chain** tracks principal root over time.  Each commit mutates PT
+and includes a reference to the prior PR and the forward PT.
+// TODO ZAMI: Should SR (State Root) be introduced as an intermediate level in formulas? (PR = MR(SR, CR) where SR = MR(AR, DR))
 
 ```text
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +----------------+
  |                | Commit |                | Commit |                | (Future)
- | PR(AS, DS, CS) | =====> | PS(AS, DS, CS) | =====> | PS(AS, DS, CS) | ==> 
+ | PG(AR, DR, CR) | =====> | PR(AR, DR, CR) | =====> | PR(AR, DR, CR) | ==> 
  |                |        |            |   |        |            |   |
  +----------------+        +------------V---+        +------------V---+
                  ^                      |  ^                      |  ^
@@ -99,21 +100,21 @@ and includes a reference to the prior PS and the forward PT.
 | Term                | Abv | Definition                                       |
 | ------------------- | --- | ------------------------------------------------ |
 | **Principal**       | -   | An identity in Cyphrpass, replaces "account"     |
-| **Principal Root**  | PR  | The initial, permanent principal identifier      |
-| **Principal State** | PS  | Top-level digest. `MR(AS, DS, CS, ...)`          |
-| **Auth State**      | AS  | Authentication state `MR(KS, RS, ...)`           |
-| **Key State**       | KS  | Merkle root of key `tmb`s  `MR(tmb₁, tmb₂, ...)` |
-| **Rule State**      | RS  | Merkle root of rules                             |
-| **Data State**      | DS  | Merkle root of user data actions                 |
-| **Commit State**    | CS  | Merkle root of transactions `MR(TS,TCS)`         |
-| **Tip**             | -   | The latest PS (digest identifier)                |
+| **Principal Genesis**  | PG  | The initial, permanent principal identifier      |
+| **Principal Root** | PR  | Top-level digest. `MR(AR, DR, CR, ...)`          |
+| **Auth Root**      | AR  | Authentication state `MR(KR, RR, ...)`           |
+| **Key Root**       | KR  | Merkle root of key `tmb`s  `MR(tmb₁, tmb₂, ...)` |
+| **Rule Root**      | RR  | Merkle root of rules                             |
+| **Data Root**      | DR  | Merkle root of user data actions                 |
+| **Commit Root**    | CR  | Merkle root of transactions `MR(TS,TCS)`         |
+| **Tip**             | -   | The latest PR (digest identifier)                |
 | **Action**          | -   | A signed coz, denoted by `typ`. Foundation of AAA|
 | **trust anchor**    | -   | Last known valid state for a principal           |
 
-PR, PS, AS, KS, RS, DS, and CS are all MultiHash Merkle root (MHMR) digest
+PG, PR, AR, KR, RR, DR, and CR are all MultiHash Merkle root (MHMR) digest
 values. Each digest identifier corresponds to a tree datastructure: Principal
 Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT) (PT,
-AT, KT, RT, DT) or in the case of CS, the commit chain.
+AT, KT, RT, DT) or in the case of CR, the commit chain.
 
 An action is denoted by the `typ` of a signed coz. "Action" is the hypernym of
 "transaction" and "data action". Concrete types like keys, rules, user comments,
@@ -146,17 +147,17 @@ Commit.
 
 #### 2.2.6 Commit
 A commit is a finalized bundle of transaction cozies that mutate PT and result
-in a new PS. See section commit.
+in a new PR. See section commit.
 
 #### 2.2.7 Implicit Promotion
 A value is **implicitly promoted** to the parent without additional hashing when
 a tree component has only one node. Promotion is recursive; items deep in a tree
 can be promoted to the root level. For example:
 
-- Single key: `tmb` is promoted to KS, then AS, then PS, which equals PR on
+- Single key: `tmb` is promoted to KR, then AR, then PR, which equals PG on
   genesis.
-- No DS present: AS is promoted to PS.
-- Only KS present (no RS): KS is promoted to AS.
+- No DR present: AR is promoted to PR.
+- Only KR present (no RR): KR is promoted to AR.
 
 #### 2.2.8 Authenticated Atomic Action
 Authenticated Atomic Action (AAA) is an individual, self-verifiable, discrete
@@ -165,7 +166,7 @@ See section [Authenticated Atomic Action](#71-authenticated-atomic-action).
 
 #### 2.2.9 Embedding
 An **embedded node** is an external tree reference.   Its value may be a `tmb`,
-KS, AS, PS, nonce, or other node value. An **embedded principal** is a full
+KR, AR, PR, nonce, or other node value. An **embedded principal** is a full
 Cyphrpass identity embedded into another principal. See section
 [Embedding](#10-embedding).
 
@@ -204,7 +205,7 @@ fields:
 
 1. **Commits are append-only**: Commits are never removed from the chain and
    implicit forks are prohibited by the protocol. See section Implicit Forks.
-2. **Principal Root (PR) is immutable**: No operation can change a PR.
+2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
 
 #### 2.3.3 AT/DT Duality
 
@@ -261,22 +262,22 @@ authorized if and only if all three conditions hold:
 
 - Single key, never changes
 - No commit
-- `tmb` == KS == AS == PS
+- `tmb` == KR == AR == PR
 - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 
 ### 3.2 Level 2: Key Replacement
 
 - Introduces key replacement. `key/replace` swaps current key for new key.
 - No commit
-- `tmb` == KS == AS == PS
+- `tmb` == KR == AR == PR
 - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 
 ### 3.3 Level 3: Commit (Multi-Key)
 
 - Introduces the Commit Tree (CT).
 - Multiple concurrent keys with equal authority
-- PS = MR(AS, DS, CS, ...), CS = MR(TS, TCS)
-- Initial PS is equal to PR
+- PR = MR(AR, DR, CR, ...), CR = MR(TS, TCS)
+- Initial PR is equal to PG
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
 
@@ -295,7 +296,7 @@ authorized if and only if all three conditions hold:
 - Keys and actions have a default weight of 1.
 - A **timelock** is a delay before certain actions take effect.
 - Enables M-of-N signing, tiered permissions, custom timelocks
-- RS is a component of AS.
+- RR is a component of AR.
 
 ### 3.6 Level 6: VM
 
@@ -320,61 +321,61 @@ is not otherwise given, lexical byte order is used.
 State Digest = MR(d₀, d₁, ...)
 ```
 
-#### 3.7.1 Principal State
+#### 3.7.1 Principal Root
 
-The Principal Root (PR) is the first Principal State (PS) computed for the
+The Principal Genesis (PG) is the first Principal Root (PR) computed for the
 principal and never changes.  When a principal mutates (e.g., adds a second
-key), the PR remains permanent, only PS evolves.
+key), the PG remains permanent, only PR evolves.
 
 ```
-  PS = MR(AS, CS, DS?, embedding?, ...)
+  PR = MR(AR, CR, DR?, embedding?, ...)
 ```
 
-#### 3.7.2 Key State
-Key State (KS) is calculated as:
+#### 3.7.2 Key Root
+Key Root (KR) is calculated as:
 
 ```
-  KS = MR(tmb₀, tmb₁?, embedding?, ...)
+  KR = MR(tmb₀, tmb₁?, embedding?, ...)
 ```
 
-#### 3.7.3 Auth State
+#### 3.7.3 Auth Root
 
-Auth State (AS) combines authentication-related states:
+Auth Root (AR) combines authentication-related states:
 
 ```
-  AS = MR(KS, RS?,  embedding?)      # nil components excluded from sort
+  AR = MR(KR, RR?,  embedding?)      # nil components excluded from sort
 ```
 
-#### 3.7.4 Data State
+#### 3.7.4 Data Root
 
-Data State (DS) (Level 4+) is the digest of all data action `czd`s.  DS is
+Data Root (DR) (Level 4+) is the digest of all data action `czd`s.  DR is
 sorted by `now` and secondarily `czd`.
 
 ```
-DS = MR(czd₀, czd₁, ..., nonce?)
+DR = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-#### 3.7.5 Commit State
+#### 3.7.5 Commit Root
 
-CS (Level 3+) is calculated as all transaction components MR(TS, TCS). TS
+CR (Level 3+) is calculated as all transaction components MR(TS, TCS). TS
 contains mutation transactions, denoted by `txs`, and TCS contains commit
 transaction cozies, denoted by `txc`. Both are the Merkle root of all related
 `czd`s ordered by position as given by the principal. Mutation cozies must be
 grouped by transaction.
 
-CS is one of the three normal components for PS, so that PS = MR(AS, DS, CS).
+CR is one of the three normal components for PR, so that PR = MR(AR, DR, CR).
 
 On commit the field `commit` is equal to PTS, which is the Merkle root of the
-prior Principal state, `pre`, the forward AT and DT `fwd`, and TS.  PTS is all
+prior principal root, `pre`, the forward AT and DT `fwd`, and TS.  PTS is all
 principal components, prior, forward, and `txs`, excluding `txc`. Why? A commit
 cannot refer to itself (a signature cannot sign itself), so instead its
 signature covers everything except the commit transaction itself.  For the same
-reason, `pre` refers to PS while `fwd` refers to PT// TODO incorrect. After the commit is
-finalized, PS is calculable, but a "forward PS" isn't calculable since that
-would require commit to refer to itself. After commit, PS is calculated.
+reason, `pre` refers to PR while `fwd` refers to PT// TODO incorrect. After the commit is
+finalized, PR is calculable, but a "forward PR" isn't calculable since that
+would require commit to refer to itself. After commit, PR is calculated.
 
 ```
-  CS  = MR(TS, TCS)
+  CR  = MR(TS, TCS)
   TS  = MR(czd₀, czd₁?, ...)
   TCS = MR(czd₀, czd₁?, ...)
   PTS = MR(pre, fwd, TS)
@@ -384,7 +385,7 @@ Since clients need additional internal state of verification, other digests are 
 - `txs`: [coz, ...] Mutation transactions.
 - `txc`: [coz, ...] Commit transaction.
 
-- `pre`: <b64ut> The prior Principal State (PS), the state the commit is mutating
+- `pre`: <b64ut> The prior Principal Root (PR), the state the commit is mutating
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
 - `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order.
 - `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
@@ -395,7 +396,7 @@ Since clients need additional internal state of verification, other digests are 
 - `TMR`: <b64ut>,  MR(txs)  // TODO THINK MR
 - `TCR`: <b64ut>,  MR(txs)  // CR
 - `TR`: <b64ut> MR(TS, TCS) // TODO Talk about "Transaction Root"
-- `CS`: malt(TR₀, TR₁...) // TODO Talk about.
+- `CR`: malt(TR₀, TR₁...) // TODO Talk about.
 - `CT`: malt(TR₀, TR₁...)
 
 
@@ -445,16 +446,16 @@ relevant for mutation, transaction order may potentially impact mutation.
 In addition to Cyphrpass required fields, transactions have the following
 required fields.
 
-- `pre`: The prior Principal Tree (PT), as denoted by PS, to mutate. At genesis,
-  PS equals AS via implicit promotion. (`commit` refers to the CS after the
+- `pre`: The prior Principal Tree (PT), as denoted by PR, to mutate. At genesis,
+  PR equals AR via implicit promotion. (`commit` refers to the CR after the
   commit's mutation.)
 
 
 ### 4.3 Commit Finality
-Commits are chained by reference to prior principal states, the forward tree,
+Commits are chained by reference to prior principal roots, the forward tree,
 and are finalized by a commit transaction.  A commit id is equal to `pts`.
 
-CS is the MR of all components of PT except the commit ID.  PS is the MR of PT
+CR is the MR of all components of PT except the commit ID.  PR is the MR of PT
 including the last commit (commit id). A commit is finalized with
 `"commit":<pts>` appearing in the last coz. For example, in a three coz commit,
 `"commit":<pts>` appears in the last coz:
@@ -479,7 +480,7 @@ section Proof of Error).
 ### 4.4 Trust Anchor
 For a Cyphrpass client, the last known trusted state for a particular principal
 is the **trust anchor**, ASₐ. The ordered sequence of transactions linking two
-known Auth States ASₐ → ASₓ is called the **`tx_path`**. The transactions that
+known Auth Roots ASₐ → ASₓ is called the **`tx_path`**. The transactions that
 must actually be fetched and verified to move from ASₐ to ASₓ form the
 `tx_patch` (Δ). (See also section Checkpoint and State Jumping.)
 
@@ -487,10 +488,10 @@ must actually be fetched and verified to move from ASₐ to ASₓ form the
 In git, commits are digest of metadata objects, including fields like author and
 date, but critically parent and commit tree.  Cyphrpass's design parallel these
 critical git components
-  - `"commit":<CS>` is equivalent to the git tree root, which is referenced in
+  - `"commit":<CR>` is equivalent to the git tree root, which is referenced in
     the git commit. // TODO not true newest design, but I think it is equivalent
     to `fwd`.
-  - `"pre":<PS>` is equivalent to parent in git. `pre` is implemented as a
+  - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
     Merkle DAG (instead of a simple binary Merkle tree) where `pre` is a list of
     parents (see section Explicit Fork).
 
@@ -507,11 +508,11 @@ with no gaps, following the growth pattern used in RFC 6962.
 
 
 
-// TODO think about this: The resulting Merkle root after each append contributes to the Commit State (CS).
+// TODO think about this: The resulting Merkle root after each append contributes to the Commit Root (CR).
 
 Append only. Commits are assigned an order.  (sequence numbers starting
 from 0.) The Merkle root after incorporating commit N becomes (a component
-of) Commit State CS_N. Clients obtain inclusion proofs for specific commits and
+of) Commit Root CS_N. Clients obtain inclusion proofs for specific commits and
 consistency proofs between known roots using standard Merkle path proofs.
 Implementations may choose to expose the tree via tiled static storage for
 efficiency (as in modern transparency log designs), but this is an
@@ -528,7 +529,7 @@ recorded in DT.  Data actions are not transactions and do not mutate AT.
 Actions are lightweight for common use cases (comments, posts, etc.).
 
 - No prior field (no `pre`).
-- DS is computed from action `czd`s.
+- DR is computed from action `czd`s.
 - Ordered by `now` and if needed lexical as tie-breaker.
 
 ```json5
@@ -552,9 +553,9 @@ particular principals may implement more strictly.  Tree nodes may
 represent various applications. Various data `typ`s may define their own
 required fields as defined by an authority.
 
-**Data Tree Inclusion**: Like all nodes, DT/DS is first set to empty, causing AS
-to be implicitly promoted to PS. To explicitly include DS into PS, a DS
-transaction is signed, which updates the value of DS in the PS tree:
+**Data Tree Inclusion**: Like all nodes, DT/DR is first set to empty, causing AR
+to be implicitly promoted to PR. To explicitly include DR into PR, a DR
+transaction is signed, which updates the value of DR in the PR tree:
 
 ```json
 {
@@ -563,7 +564,7 @@ transaction is signed, which updates the value of DS in the PS tree:
     "now": 1736893000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/ds/create",
-    "id":  "<computed new DS = MR(DT)>"
+    "id":  "<computed new DR = MR(DT)>"
   },
   "sig": "<b64ut>"
 }
@@ -573,7 +574,7 @@ transaction is signed, which updates the value of DS in the PS tree:
 As a Merkle Tree, DT provides broad flexibility. Nodes may represent Merkle
 DAGs, Map/Trie-Based Structures (e.g., Sorted Merkle Maps, Merkle Patricia
 Tries, Verkle Trees), Sparse Merkle Trees, History/Versioned Merkle Trees, or
-hybrid/pluggable approaches. Clients may implement DT in DAOLFMT mode,
+hybrid/pluggable approaches. Clients may implement DT in MALT mode,
 maintain subtrees per application or per account, and handle deletion via
 tombstones or direct removal. DT organization for specific applications is
 beyond the scope of this document. Principal may construct DT as an append only,
@@ -589,14 +590,14 @@ verifiable data structure.
 A principal is created (genesis) by its **genesis key**.
 
 Levels 1 and 2 are implicitly created while Levels 3+ have an explicit commit
-genesis.  PR only exists after the genesis commit; levels 1 and 2 do not have a
-PR.
+genesis.  PG only exists after the genesis commit; levels 1 and 2 do not have a
+PG.
 
 **Levels 1 and 2**
 
 - Multikey is not supported. The principal exists with a single key. 
-- No commit or PR exists.
-- `PS` == `tmb` of the single key (via implicit promotion, `tmb` == KS == AS == PS).
+- No commit or PG exists.
+- `PR` == `tmb` of the single key (via implicit promotion, `tmb` == KR == AR == PR).
 
 **Commit Genesis (Levels 3+)**
 A commit genesis explicitly creates a stateful principal. Commit genesis uses a
@@ -604,12 +605,12 @@ bootstrap model, gracefully upgrading from levels 1 and 2 to level 3.  Every
 transaction, including genesis transactions, requires `pre`, maintaining chain
 continuity from the genesis key.
 
-1. First key is level 1+ and exists without a transaction. `tmb` == KS == AS == PS
-2. Additional keys, rules, or any other AS component requires
-   transactions with `pre` referencing the current PS. For example, if the first
+1. First key is level 1+ and exists without a transaction. `tmb` == KR == AR == PR
+2. Additional keys, rules, or any other AR component requires
+   transactions with `pre` referencing the current PR. For example, if the first
    commit adds a second key, `key/create` contains `pre` referring to the first
    key's `tmb`.
-3. `principal/create` finalizes the genesis commit. This establishes PR and
+3. `principal/create` finalizes the genesis commit. This establishes PG and
    marks the principal as created.
 
 ### 5.2 Single Key Genesis
@@ -633,7 +634,7 @@ material, but `tmb` is signed within the coz.
         "now": 1736893000,
         "typ": "cyphr.me/cyphrpass/principal/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PR
+        "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG
       },
       "sig": "<b64ut>",
       }],
@@ -660,28 +661,28 @@ material, but `tmb` is signed within the coz.
 
 ```json5
 {"tx_meta":{
-    "pre": "<b64ut>", // prior (source) PS
+    "pre": "<b64ut>", // prior (source) PR
     "fwd":"<b64ut>", // forward tree, MR(PT)
 
     "TS":  "<b64ut>",  // ordered MR(txs)
 
-    "fps":"<b64ut>", // Forward principal state. // TODO think about calling this just ps
-    "TCS": "<b64ut>", // Ordered MR(txc)  // TODO consider list digest instead of Merkle Root. NO, bad idea because 1. uniformity and 2. the MR algo is logarithmic itself. 
+    "fps":"<b64ut>", // Forward principal root. // TODO think about calling this just ps
+    "TCS": "<b64ut>", // Ordered MR(txc)
 
     "commit":"<b64ut>",// Exactly equal to PTS
     "PTS": "<b64ut>", // == (past_ps (pre), forward PT, TS) PTS (Principal transaction State)
-    // // TODO Rename CS to PTS, then later new CS resulting in  PS = AS, DS, CS
-    "CS":"<b64ut>", // CS = MR(TS, TCS)
+    // // TODO Rename CR to PTS, then later new CR resulting in  PR = AR, DR, CR
+    "CR":"<b64ut>", // CR = MR(TS, TCS)
     "txs_order": [czds...],
     "txc_order": [czds...]
-    // PS = AS, DS, CS
+    // PR = AR, DR, CR
     // forward PT is explicitly included.  It is just a digest so clients may implicitly accept forward PT without calculation, although they should calculate forward PT. 
 }}
 ```
 
 Calculation Overhead:
 Number of MR root digests in a commit:
- - Pre (Past PS)
+ - Pre (Past PR)
  - TS
  - TXC
  - Forward PT
@@ -694,18 +695,18 @@ Not cacheable (always have to recalculate at the time of a commit):
  - PTS
 
 Don't need 
- - Forward CS. 
+ - Forward CR. 
 
 
 
-// TODO txs and txc are ordered. 
+
 
 ### 5.3 Multi-Key Genesis
 
 - A genesis key constructs AT by adding itself and other components.
-- At genesis there are no prior commits, so AS is promoted to PS via implicit
-  promotion. AS = MR(KS) when only keys are present, or MR(KS, RS) if rules
-  exist. For example, with two keys: AS = MR(tmb₀, tmb₁).
+- At genesis there are no prior commits, so AR is promoted to PR via implicit
+  promotion. AR = MR(KR) when only keys are present, or MR(KR, RR) if rules
+  exist. For example, with two keys: AR = MR(tmb₀, tmb₁).
 - Finally, the principal is created by `principal/create`.
 
 ```json5
@@ -716,7 +717,7 @@ Don't need
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
         "typ": "cyphr.me/cyphrpass/key/create",
-        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted PS.  At genesis, PS == AS == KS == first key's tmb.
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted PR.  At genesis, PR == AR == KR == first key's tmb.
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
     },{ // Second Key
       "pay": {
@@ -735,7 +736,7 @@ Don't need
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
         "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Genesis Key
-        "commit":"<CS>" // In this case, MR(tmb₁, tmb₂)
+        "commit":"<CR>" // In this case, MR(tmb₁, tmb₂)
       },
       "sig": "<b64ut>",
     },
@@ -794,7 +795,7 @@ Example public key:
 
 #### 6.1 `key/create` - Add a Key (Level 3+)
 
-Adds a new key to KS for an existing principal.
+Adds a new key to KR for an existing principal.
 
 Note that `key` is included in the JSON payload, but not the signed payload, as
 reference for client. The key may be transmitted through sideband or known
@@ -811,7 +812,7 @@ included in `txs`.
       "now": 1623132000,
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
       "typ": "cyphr.me/cyphrpass/key/create",
-      "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted PS.  At genesis, PS == AS == KS == first key's tmb.
+      "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted PR.  At genesis, PR == AR == KR == first key's tmb.
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
     },
     "sig": "<b64ut>"
@@ -837,7 +838,7 @@ If a key is deleted, any action signed with that key after it has been removed
 from the principal is ignored. Only actions that were signed while the key was
 still active in KT are interpreted. Past signatures from previous active periods
 remain valid even after the key is no longer active, provided they were created
-while the key was in KS.
+while the key was in KR.
 
 There is no effective cryptographic difference between a key that was deleted
 and one that was never added except that a deleted key may have a duration of
@@ -850,7 +851,7 @@ that signed at least one action so that the client can cryptographically verify
 its own chain.
 
 **Key Active Period**: The time span during which a key is present and active in
-the Key State (KS), and therefore authorized to sign new actions, for the
+the Key Root (KR), and therefore authorized to sign new actions, for the
 principal. A key may have multiple successive active periods if it is deleted
 and later re-added (each re-addition starts a new active period).
 
@@ -863,7 +864,7 @@ and later re-added (each re-addition starts a new active period).
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/delete",
-    "pre": "<targeted PS>",
+    "pre": "<targeted PR>",
     "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
   "sig": "<b64ut>"
@@ -874,7 +875,7 @@ and later re-added (each re-addition starts a new active period).
 
 `key/replace` removes the signing key and adds a new key atomically. Maintains
 single-key invariant for Level 2 devices. For level 2, `pre` is the `tmb` of the
-previous key (AS == KS == tmb).
+previous key (AR == KR == tmb).
 
 
 ```json5
@@ -885,7 +886,7 @@ previous key (AS == KS == tmb).
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
     "typ": "cyphr.me/cyphrpass/key/replace",
     "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
-    "pre": "<targeted PS>" // In the case of level 2, PS is the previous `tmb`
+    "pre": "<targeted PR>" // In the case of level 2, PR is the previous `tmb`
   },
   "key": {
     "alg": "ES256",
@@ -930,7 +931,7 @@ Example Naked Revoke:
 
 Note that `pre` is not required for a revoke. This is termed a **naked revoke**.
 Third parties may sign the revoke, declaring the key compromised, without any
-other knowledge of the principal state, and Cyphrpass must appropriately
+other knowledge of the principal root, and Cyphrpass must appropriately
 interpret this event.
 
 A revoke without a `pre`, or a revoke with a `pre` but without a subsequent
@@ -939,7 +940,7 @@ recovery, but in sort, when a principal receives a naked revoke, it should sign
 a revoke including `pre` and a subsequent `key/delete` to remove the key from
 the account for error recovery.
 
-A revoke without a `pre` does not mutate PS. If a principal itself wants to
+A revoke without a `pre` does not mutate PR. If a principal itself wants to
 initiate a key revoke, it should sign a revoke with `pre` and a subsequent
 `delete`, removing the key from the account.
 
@@ -953,7 +954,7 @@ A client may include `msg` detailing why the key was revoked. See also section
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/key/revoke",
-    "pre": "<targeted PS>",
+    "pre": "<targeted PR>",
     "rvk": 1623132000,
     "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
   },
@@ -1016,7 +1017,7 @@ of these core components: `auth` (authority), `act` (action), `noun`, and
   (e.g., `user/image`).
 - **verb**: The final unit, the operation to perform.
 
-Cyphrpass recommends that the authority be either a domain or a PR/PS. When a
+Cyphrpass recommends that the authority be either a domain or a PG/PR. When a
 domain is used as authority, that domain should provide a Cyphrpass identity.
 
 Example: `"cyphr.me/user/image/create"`
@@ -1120,19 +1121,19 @@ the secretes.
 ```json5
 {
   "Principal_Tag":"Example Account",
-  "PR":   "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // PR (permanent genesis digest)
-  "PS":   "dYkP9mL2vNx8rQjW7tYfK3cB5nJHs6vPqRtL8xZmA2k=", // Current Principal State
+  "PG":   "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // PG (permanent genesis digest)
+  "PR":   "dYkP9mL2vNx8rQjW7tYfK3cB5nJHs6vPqRtL8xZmA2k=", // Current Principal Root
 
   // Digest Meta
-  "PRE":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Prior Principal State
-  "AS":"", // Auth State
-  "KS":"", // Key State
-  "RS":"", // Rule State
-  "DS":"", // Data State
+  "PRE":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Prior Principal Root
+  "AR":"", // Auth Root
+  "KR":"", // Key Root
+  "RR":"", // Rule Root
+  "DR":"", // Data Root
 
 // The actual Principal Tree, at the point of this commit
 "PT":{
-  "AT":{   // Auth State
+  "AT":{   // Auth Root
     "KT": {
       "keys": [{
         "tag": "User Key 0",
@@ -1160,7 +1161,7 @@ the secretes.
       "typ": "cyphr.me/cyphrpass/key/create",
       "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-      "commit": "<CS>"
+      "commit": "<CR>"
       }],
     "RT":{}, // Rule Tree (empty)
     "DT":{}, // Data Tree (empty)
@@ -1179,7 +1180,7 @@ the secretes.
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // "pre" is PS. In this case PS == AS since there is no nonce or other value.
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // "pre" is PR. In this case PR == AR since there is no nonce or other value.
       },
       "sig": "<b64ut>"
     }
@@ -1191,18 +1192,18 @@ the secretes.
 ```
 
 ### 8.2 Declarative Transaction
-Instead of imperatively mutating or creating principal state, state may be
+Instead of imperatively mutating or creating principal root, state may be
 exhaustively declared in JSON. All client secretes are stripped before signing.
 (The Go/Rust implementation accomplishes this by using types that preclude
 secretes.)
 
-Since declarative transaction enumerate the full principal state, they
+Since declarative transaction enumerate the full principal root, they
 inherently act as checkpoints (see section Checkpoint). As always, the
 declarative structure is compactified according to Coz.
 
 `cyphrpass/principal/checkpoint/create`
 
-Example declarative principal.  Note that RS (RT) is omitted on empty:
+Example declarative principal.  Note that RR (RT) is omitted on empty:
 
 ```json5
 {
@@ -1237,8 +1238,8 @@ Embedded into a coz transaction:
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphrpass/checkpoint/create",
-    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Links to prior PS for chain integrity
-    "id": "<b64UT>", // The computed AS of the declared state
+    "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Links to prior PR for chain integrity
+    "id": "<b64UT>", // The computed AR of the declared state
     "PT": {...}
   },
   "sig": "<b64ut>"
@@ -1252,7 +1253,7 @@ state at a particular point in the chain, and once verified, allows verification
 from the checkpoint forward without needing to fetch or replay earlier parts of
 the history.
 
-For a particular commit, each state digest (PS, AS) encapsulates the full state
+For a particular commit, each state digest (PR, AR) encapsulates the full state
 tree (PT, AT).  Checkpoints do not rely on prior history to reconstruct AT 
 as all required material is included. Genesis is the foundational checkpoint;
 services should cache later checkpoints to reduce chain length for verification.
@@ -1285,8 +1286,8 @@ Valid JSON components:
 ---
 
 
-## 9 Rule State
-Level 5 introduces the Rule State (RS), which denotes **weighs** and
+## 9 Rule Root
+Level 5 introduces the Rule Root (RR), which denotes **weighs** and
 **timelocks**.  Level 6 introduces virtual machine (**VM**) execution, where
 rules may be defined in bytecode and executed by a designated virtual machine.
 
@@ -1314,7 +1315,7 @@ First, rules are defined:
 }
 ```
 
-The rule is added to RS via a `rule/create` transaction.
+The rule is added to RR via a `rule/create` transaction.
 
 ```json 
 {
@@ -1346,7 +1347,7 @@ signed for a valid total transaction:
         "now": 1623132000,
         "tmb": "<signing key tmb>", // First Existing key
         "typ": "<authority>/cyphrpass/key/create",
-        "pre": "<targeted PS>",
+        "pre": "<targeted PR>",
         "id": "<new keys tmb>",
       },
       "sig": "<b64ut>",
@@ -1357,7 +1358,7 @@ signed for a valid total transaction:
         "now": 1623132000,
         "tmb": "<signing key tmb>", // Second Existing key
         "typ": "<authority>/cyphrpass/key/create",
-        "pre": "<targeted PS>",
+        "pre": "<targeted PR>",
         "id": "<new keys tmb>",
       },
       "sig": "<b64ut>",
@@ -1423,13 +1424,13 @@ Virtual machine may or may not be Turing complete.
 
 
 ## 10 Embedding
-An embedding is a digest reference to an external node, such as a principal (PS),
+An embedding is a digest reference to an external node, such as a principal (PR),
 key, or key tree. Embedding is the mechanism by which Cyphrpass achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
 The default weight of an embedded node is one, regardless of how man children
 that node contains. Like all nodes, an embedded node may be assigned a different
-weight by a rule (RS). For example, a principal embedded into KS by default has
+weight by a rule (RR). For example, a principal embedded into KR by default has
 a weight of one regardless of how nodes are weighed for the embedded principal.
 
 On cyclic imports, embedding stops recursion at the point of cycle, preventing
@@ -1462,7 +1463,7 @@ Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
 state tree. `typ` specifies the path for insertion.  A `nonce/delete`, where
 `id` == nonce removes the nonce.
 
-`cyphrpass/nonce/create`    // Principal Root
+`cyphrpass/nonce/create`    // Principal Genesis
 `cyphrpass/AT/nonce/create` // Nonce is inserted at the root of AT.
 `cyphrpass/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
 
@@ -1507,10 +1508,10 @@ also act as entropy sources.
 Authorization is transitively conferred through embedding. An **embedded
 principal** is a full Cyphrpass identity embedded into another principal. An
 embedded principal has the default weight of a single node and appears in the
-Merkle tree of another principal as the digest of the external Principal State
-(PS).
+Merkle tree of another principal as the digest of the external Principal Root
+(PR).
 
-For PR, PS, and AS exclusively, tip at verification time from the referenced
+For PG, PR, and AR exclusively, tip at verification time from the referenced
 principal is retrieved before any operation.  For all other node types no
 retrieval is performed.  However, any node of these types must be revealed
 first; opaque nodes do not trigger state synchronization.
@@ -1520,7 +1521,7 @@ recovery authorities, social recovery, organizational delegation, and disaster
 recovery. (See section Recovery.)
 
 
-An example of embedding multiple external principal's KS's into KS:
+An example of embedding multiple external principal's KR's into KR:
 
 ```text
 Principal Tree (PT0)
@@ -1529,9 +1530,9 @@ Principal Tree (PT0)
 │   │
 │   ├── Key Tree (KT0) // Principal 0's tree
 │   │   
-│   ├── Key State (KS1) from principal 1
+│   ├── Key Root (KS1) from principal 1
 │   │   
-│   ├── Key State (KS2) from principal 2
+│   ├── Key Root (KS2) from principal 2
 ```
 
 Embedded nodes use the b64ut digest as the key in tree structure.  
@@ -1601,7 +1602,7 @@ Thought Experiment: Labeled Objects. No `keys` label, digest labels for all node
 PT: Object
 AT: Object
 CT: Object
-DS: Object (Label should be digest of node)
+DR: Object (Label should be digest of node)
 KT: Array
 RT: Array
 Commit: digest
@@ -1615,7 +1616,7 @@ Labels:
 PT: Object
 AT: Object
 CT: Object
-DS: Object (Label should be digest of node)
+DR: Object (Label should be digest of node)
 KT: Object
 RT: Object
 Commit: digest
@@ -1638,28 +1639,28 @@ Example external non-opaque embedding:
 ### 10.5 Conjunctive Authorization
 
 To sign/act as a primary principal, an embedded principal must produce a valid
-signature according to its own rules (its own AS). Authorization involving an
+signature according to its own rules (its own AR). Authorization involving an
 embedded principal is conjunctive:
 
 - Transaction must be valid according to the embedded principal’s own rules (its
-  KS/RS), and
+  KR/RR), and
 - The act of using that embedded principal must be authorized by the primary
   principal’s rules.
 
-Example: when a Principal(B) or AS(B) is embedded into a KS(A), embedded
+Example: when a Principal(B) or AR(B) is embedded into a KR(A), embedded
 principal is treated as one logical key (with a default weight of 1), but the
 internal authorization depends on Principal(B)
 
 ### 10.6 Meaningful Embeddings
 
 All nodes may be embedded into other nodes, but embeddings may not always be
-meaningful. For example, a Rule State (RS) embedded into a Key State carries no
+meaningful. For example, a Rule Root (RR) embedded into a Key Root carries no
 meaning. Clients should discourage such practice, but this may not be
 enforceable due to opaqueness.
 
 ### 10.7 Pinning
 
-For PR, PS, and AS exclusively, embedded references trigger tip retrieval on
+For PG, PR, and AR exclusively, embedded references trigger tip retrieval on
 authentication, but synchronization isn't always desired. Pinned identifiers
 denote static states that prohibit updates, ensuring immutable authorization
 rules.
@@ -1709,10 +1710,10 @@ Flags combine into 6 principal base states.
   unfrozen via `freeze/delete`. No mutations until unfrozen.
 - **Deleted**: The principal signed `principal/delete`. No new transactions or
   actions (including data actions) are possible.
-- **Zombie**: (Level 4+) AS mutation is impossible (`¬CanMutateAS`), but data
+- **Zombie**: (Level 4+) AR mutation is impossible (`¬CanMutateAS`), but data
   actions are still possible. Example: `key/create` requires 2 weight points,
   but only one key exists with weight 1. `comment/create` requires default 1,
-  so comments are still possible but AS mutation is impossible.
+  so comments are still possible but AR mutation is impossible.
 - **Dead**: No transactions or actions possible at all. No active keys remain.
   Dead is a consequence of any condition that leaves the principal with no keys
   and no data action capability.
@@ -1729,7 +1730,7 @@ existing principal keys.
 An **unrecoverable** principal is where recovery is impossible within the
 Cyphrpass protocol rules. Transactions and recovery are impossible, although
 some data actions may still be possible.  Unrecoverable is a partially ambiguous
-classification: the principal cannot mutate AS (`¬CanMutateAS`) and is not
+classification: the principal cannot mutate AR (`¬CanMutateAS`) and is not
 deleted, but whether data actions remain possible is not connoted. Once
 `CanDataAction` is evaluated, an unrecoverable principal resolves to either
 **Zombie** (data actions still possible) or **Dead** (nothing possible).
@@ -1754,7 +1755,7 @@ existing keys (unless those keys were revoked).
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/delete",
-    "pre": "<target PS>"
+    "pre": "<target PR>"
   },
   "sig": "<b64ut>"
 }
@@ -1779,16 +1780,16 @@ Fork / Merge Terminology
   append-only & single-tip rules (prohibited)
 
 Related to merging is **full delegation** is where the source account deletes
-all keys and adds the PS of the target.
+all keys and adds the PR of the target.
 
 #### 11.5.1
 Merging where a **source** adopts the state of another principal, the
-**target**, consolidating histories while preserving the targets's original PR
+**target**, consolidating histories while preserving the targets's original PG
 (Level 3+).
 
 The source signs a `principal/merge` transaction where the source is denoted via
-`pre` and the target's PS is denoted via `merge_to_ps`. The target accepts the
-merge by signing a `principal/merge-ack` transaction containing the PS of the
+`pre` and the target's PR is denoted via `merge_to_ps`. The target accepts the
+merge by signing a `principal/merge-ack` transaction containing the PR of the
 source. Optionally, the source may delete all keys and/or sign a
 `principal/delete`.
 
@@ -1808,7 +1809,7 @@ Example source principal merge transaction:
     "tmb": "<source signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge",
     "pre": "<list of source's PSs>",
-    "merge_to_ps": "<target Principal State>"
+    "merge_to_ps": "<target Principal Root>"
   },
   "sig": "<b64ut>"
 }
@@ -1823,8 +1824,8 @@ And the merge acknowledgement by the target principal:
     "now": 1736893000,
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge-ack",
-    "pre": "<target PS>",
-    "merge_from_ps": "<list of source Principal State>"
+    "pre": "<target PR>",
+    "merge_from_ps": "<list of source Principal Root>"
   },
   "sig": "<b64ut>"
 }
@@ -1837,10 +1838,10 @@ merging in their state.
 ### 11.5.2 Fork
 Forking is where one principal, the **source**, creates a new principal, the
 **target**, effectively splitting identities while preserving the source's
-original PR and a new PR for the target. A fork is created by signing
+original PG and a new PG for the target. A fork is created by signing
 `cyphrpass/principal/fork/create`, `cyphrpass/principal/create` (for atomic
 orthogonality), and adding at least one key. This transaction bundle is
-equivalent to a genesis transaction. In the case of a fork, CS is calculated as
+equivalent to a genesis transaction. In the case of a fork, CR is calculated as
 TODO and `pre` is the source.
 
 For "bad faith" forking (invalid fork), see section "Consensus".
@@ -1857,7 +1858,7 @@ Example principal fork, consisting of two transactions:
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "pre": "<source PS>",
+        "pre": "<source PR>",
       },
       "sig": "<b64ut>"
     },
@@ -1868,7 +1869,7 @@ Example principal fork, consisting of two transactions:
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
         "id": "<b64ut>", 
-        "pre":"<source PS>",
+        "pre":"<source PR>",
       },
       "sig": "<b64ut>",
     }
@@ -1878,8 +1879,8 @@ Example principal fork, consisting of two transactions:
         "now": 1736893000,
         "tmb": "<signing tmb>",
         "typ": "cyphr.me/cyphrpass/principal/fork/create",
-        "pre": "<source PS>",
-        "fork_pr": "<fresh PR digest, which in this case is just KS>",
+        "pre": "<source PR>",
+        "fork_pr": "<fresh PG digest, which in this case is just KR>",
         "commit":"<commit>"
       },
       "sig": "<b64ut>"
@@ -1916,7 +1917,7 @@ security judgments are out-of-scope.
 
 In summary:
 
-- PR, PS, AS, KS and nodes in the Merkle trees are referenced by multihash
+- PG, PR, AR, KR and nodes in the Merkle trees are referenced by multihash
   identifiers, with one variant per hash algorithm.
 - Digests are computed for all hashing algorithms referenced in KT (keys, embeddings).
 - When an  algorithm primitive is removed, its hash is no longer computed. When
@@ -1985,7 +1986,7 @@ node level and the parent node isn't required to know of the child node's
 conversion.
 
 For example, in a Merkle tree with a SHA-384 node (A) and SHA-256 node (B), a
-SHA-384 root is: MR_SHA384(SHA384(A), B)—B's value is fed into the hashing
+SHA-384 root is: MR_SHA384(SHA384(A), B). B's value is fed into the hashing
 algorithm first before being inputted into the MR.
 
 As a consequence of this design, for each algorithm, every node may have an
@@ -2123,19 +2124,19 @@ By making state mutual, verifiable, and push-capable, Cyphrpass enables:
 
 To verify a principal's current state:
 
-1. **Identify Trust Anchor**: the claimed root (PR) or transitive state (PS).
+1. **Identify Trust Anchor**: the claimed root (PG) or transitive state (PR).
 2. **Obtain transaction history**: ordered list of transactions from trust
    anchor to tip.
 3. **Replay transactions**:
    - Start with trust anchor
    - For each transaction, verify:
      - Signature is valid
-     - `tmb` belongs to a key in current KS
+     - `tmb` belongs to a key in current KR
      - Principal lifecycle state permits the operation
      - `now` is after previous transaction
      - Transaction is well-formed for its `typ`
-   - Apply mutation to derive new AS
-4. **Compare**: final computed KS/AS/PS should match claimed current state
+   - Apply mutation to derive new AR
+4. **Compare**: final computed KR/AR/PR should match claimed current state
 
 ### 13.3 Recommended Usage
 
@@ -2162,14 +2163,14 @@ clients in sync. See also section `API`.
 **tip**
 
 - `GET /tip?pr=<principal-root>`
-  Returns the service's view of the tip (or latest known AS/PS digest) for the principal.
+  Returns the service's view of the tip (or latest known AR/PR digest) for the principal.
 
 **patch** - Returns the service's view for the principal.
 
 - `GET /patch?pr=<principal-root>&from=<ps>&to=<target-ps>` - Full form
-- `GET /patch?from=<ps>` - From PS to current
-- `GET /patch?pr=<principal-root>` from PR to current
-- `GET /patch?pr=<principal-root>from=<ps>` from PS, for particular PR, to current
+- `GET /patch?from=<ps>` - From PR to current
+- `GET /patch?pr=<principal-root>` from PG to current
+- `GET /patch?pr=<principal-root>from=<ps>` from PR, for particular PG, to current
 - `GET /patch?from=<ps>&to=<target-ps-or-empty>` - Range
 
 `to` is optional and on omission is `tip`.
@@ -2181,16 +2182,16 @@ clients in sync. See also section `API`.
 
 **Synchronization check:**
 
-- If service-reported tip equals the client's local PS, state is synced.
+- If service-reported tip equals the client's local PR, state is synced.
 - On mismatch, client pushes delta or service requests missing patch.
 
 ### 13.5.1 Witness Registration
 A principal may have many clients.  The principal signs a message to inform
 clients of the registration of external witnesses, which themselves are
-represented as principals.  This message is not included in AS, and is instead
-may be included in DS as a data action, so that PS may remain unmodified. 
+represented as principals.  This message is not included in AR, and is instead
+may be included in DR as a data action, so that PR may remain unmodified. 
 
-`cyphr.me/cyphrpass/witness/register/create`: Value of the Principal's PR.
+`cyphr.me/cyphrpass/witness/register/create`: Value of the Principal's PG.
 
 This message is transported to the external witness for registration. The
 witness is removed with a `delete`.
@@ -2305,9 +2306,9 @@ Registers a recovery agent (backup key, service, or social contacts).
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/recovery/create",
-    "pre": "<targeted PS>",
+    "pre": "<targeted PR>",
     "recovery": {
-      "agent": "<recovery agent PR or tmb>",
+      "agent": "<recovery agent PG or tmb>",
       "threshold": 1
     }
   },
@@ -2317,7 +2318,7 @@ Registers a recovery agent (backup key, service, or social contacts).
 
 **Fields (within `recovery` object):**
 
-- `agent`: PR of service, tmb of backup key, or array of contact PRs
+- `agent`: PG of service, tmb of backup key, or array of contact PRs
 - `threshold`: For social recovery, M-of-N threshold (default: 1)
 
 #### 18.5.2 `recovery/delete` — Remove Fallback
@@ -2331,9 +2332,9 @@ Removes a previously designated recovery agent.
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/recovery/delete",
-    "pre": "<targeted PS>",
+    "pre": "<targeted PR>",
     "recovery": {
-      "agent": "<recovery agent PR or tmb>"
+      "agent": "<recovery agent PG or tmb>"
     }
   },
   "sig": "<b64ut>"
@@ -2344,14 +2345,14 @@ Removes a previously designated recovery agent.
 
 When a principal is locked out:
 
-0. **User generates a new account with a fresh PS**
+0. **User generates a new account with a fresh PR**
 1. **User contacts recovery agent** (out-of-band)
 2. **Agent verifies identity** (method varies by agent type)
 3. **Agent signs a Recovery Initialization transaction** for the new user key:
 
-This initializes a new Principal State (PS) that is manually linked to the
-previous state by the Recovery Authority. The new PS is not cryptographically
-linked to the previous state, but it is manually linked to the original PR by
+This initializes a new Principal Root (PR) that is manually linked to the
+previous state by the Recovery Authority. The new PR is not cryptographically
+linked to the previous state, but it is manually linked to the original PG by
 the Recovery Authority's recovery transaction.
 
 ```json5
@@ -2361,7 +2362,7 @@ the Recovery Authority's recovery transaction.
     "now": 1623132000,
     "tmb": "<recovery agent tmb>",
     "typ": "<authority>/key/create",
-    "pre": "<targeted PS>",
+    "pre": "<targeted PR>",
     "id": "<new user key tmb>"
   },
   "key": {
@@ -2413,7 +2414,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/create",
-    "pre": "<targeted PS>"
+    "pre": "<targeted PR>"
   },
   "sig": "<b64ut>"
 }
@@ -2437,7 +2438,7 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
     "now": 1623132000,
     "tmb": "<signing key tmb>",
     "typ": "<authority>/cyphrpass/freeze/delete",
-    "pre": "<targeted PS>"
+    "pre": "<targeted PR>"
   },
   "sig": "<b64ut>"
 }
@@ -2476,7 +2477,7 @@ Principal actions.
 
 As a matter of bookkeeping, a client may mark past actions as disowned,
 expressing the intent of the Principal to mark that action as unintentional.
-However disowning does not mutate AS.
+However disowning does not mutate AR.
 
 
 ---
@@ -2582,16 +2583,16 @@ security distributed systems.
 tip by fetching and verifying the delta (tx_patch) and may be triggered manually
 or automatically.
 
-1. **Select Trust Anchor**  Select trust anchor (trusted PS, AS, or PR).
+1. **Select Trust Anchor**  Select trust anchor (trusted PR, AR, or PG).
 2. **Fetch Delta (Patch)** Request minimal patch with GET
-   /patch?from=<anchor-PS>&to=<tip-or-empty> or GET
-   /patch?pr=<PR>&from=<anchor-PS>.
+   /patch?from=<anchor-PR>&to=<tip-or-empty> or GET
+   /patch?pr=<PG>&from=<anchor-PR>.
 3. **Verify Patch**  Independently verify the patch for valid pre chaining,
    signing keys that were active with no revocation in path, computed
-   intermediate and final PS that match claims, correct timestamps, thresholds
+   intermediate and final PR that match claims, correct timestamps, thresholds
    (Level 5+), and no forks.
 4. **Apply and Progress Trust Anchor**  On success, apply patch, update local
-   state, and promote new PS to trust anchor.
+   state, and promote new PR to trust anchor.
 
 Witnesses should use an exponential backoff cooldown for repeated resync
 attempts to prevent denial-of-service. Clients should gossip tip to other
@@ -2604,7 +2605,7 @@ errored state or ignore.
 #### 17.2.1 Resync PoP
 
 A principal may re-iterate an existing state as authoritative without mutating
-PS/AS through a resync POP.
+PR/AR through a resync POP.
 - **PoP Confirmation**: To accelerate resync or confirm intent, the principal
   may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
   `typ: "cyphr.me/cyphrpass/resync/create"`) with an active key. This helps
@@ -2612,7 +2613,7 @@ PS/AS through a resync POP.
 
 Resync PoP is also useful for expired timestamps.  When a client has been
 offline, but the principal issue a transaction a while ago, a Resync PoP may
-confirm current possession without mutating PS.  Clients should also gossip
+confirm current possession without mutating PR.  Clients should also gossip
 these timestamps to other clients that were online to verify integrity.
 
 Local clients track their own last operation timestamp (written to disk) to
@@ -2624,7 +2625,7 @@ must not be used for after-the-fact authentication.
 
 ### 17.3 Principal Consensus States
 
-In addition to principal base states (see "Principal States" for base states
+In addition to principal base states (see "Principal Roots" for base states
 like Active, Errored, etc.) witnesses independently track principal consensus
 states. Witnesses may escalate ignored/resync errors to error state after
 repeated failures (e.g., >3 attempts).
@@ -2673,7 +2674,7 @@ Errors:
 - `MULTIHASH_MISMATCH`: Computed digests do not match claimed values.
 - `CHAIN_BROKEN`: Cannot calculate tip from prior trust anchor.
 - `INVALID_PRIOR`: `pre` chain invalid or incomplete.
-- `UNKNOWN_KEY`: `tmb` not in KS.
+- `UNKNOWN_KEY`: `tmb` not in KR.
 - `UNKNOWN_ALG`: Unsupported algorithm.
 - `MESSAGE_TOO_LARGE`: Payload exceeds limits.
 - `TIMESTAMP_PAST`: `now` < latest known timestamp.
@@ -2685,14 +2686,14 @@ Errors:
 - `JUMP_INVALID`: State jump fails (e.g., revoked key in path).
 - `INVALID_FORK`: Conflicting commits (see below).
 - `DUPLICATE`: `*/create` for existing items. Cyphrpass `create` rejects duplicates.
-- `STATE_MISMATCH`: Computed PS/AS differs from claimed.
+- `STATE_MISMATCH`: Computed PR/AR differs from claimed.
 
 
 ### 17.4 Consensus and Witnesses
 
 Cyphrpass assumes a single linear chain per principal. An invalid fork occurs
-when two or more conflicting commits reference the same pre (prior AS),
-violating this assumption. // TODO merge this sentence with fork section. 
+when two or more conflicting commits reference the same pre (prior PR),
+violating this assumption.
 
 - Ignoring the message
 - Escalation (e.g., freeze the principal temporarily until resolved) or
@@ -2726,12 +2727,12 @@ the tip of the chosen branch. This implicitly abandons the other branch.
 Witnesses that see this commit treat the selected branch as canonical and
 discard the abandoned branch (retaining it only as proof of error).
  - **2. PoP assertion** - The principal signs a `resync/create` message
-re-asserting the current tip without mutating PS/AS. Witnesses that held both
+re-asserting the current tip without mutating PR/AR. Witnesses that held both
 branches resolve to the asserted tip. This is appropriate when the principal
 wants to confirm which branch is authoritative without advancing the chain.
 
 In both cases, the abandoned branch's transactions become permanently invalid.
-Keys that were only added in the abandoned branch are not part of KS. Witnesses
+Keys that were only added in the abandoned branch are not part of KR. Witnesses
 transition the principal's consensus state from Error back to Active upon
 observing a valid resolution.
 
@@ -2764,7 +2765,7 @@ is essential. **Fat clients** store exhaustive auth history. **Full clients**
 store exhaustive auth history and action data for offline verification and
 maximum sovereignty.
 
-Storing PR, public keys, and Tip is good practice to store locally,
+Storing PG, public keys, and Tip is good practice to store locally,
 but could be retrieved from a service.
 
 **Thin Client** (browser, IoT):
@@ -2797,11 +2798,11 @@ Services that interact with principals store:
 
 | Data                | Purpose                |
 | ------------------- | ---------------------- |
-| PR                  | Principal identity     |
-| Current PS (Tip)    | State verification     |
+| PG                  | Principal identity     |
+| Current PR (Tip)    | State verification     |
 | Active public keys  | Signature verification |
 | Transaction history | Full audit trail       |
-| Actions (DS)        | Application data       |
+| Actions (DR)        | Application data       |
 
 Service operations:
 
@@ -2907,7 +2908,7 @@ To authenticate to a service:
 2. Principal signs the challenge with an authorized key
 3. Service verifies:
    - Signature is valid
-   - `tmb` belongs to an active key in principal's KS
+   - `tmb` belongs to an active key in principal's KR
    - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
      etc.)
    - Challenge matches the one issued (prevents replay)
@@ -2931,7 +2932,7 @@ To authenticate to a service:
 1. Principal signs a login request with current `now` timestamp
 2. Service verifies:
    - Signature is valid
-   - `tmb` belongs to an active key in principal's KS
+   - `tmb` belongs to an active key in principal's KR
    - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
      etc.)
    - `now` is within acceptable window (e.g., ±60 seconds of server time)
@@ -2968,7 +2969,7 @@ After successful PoP, the service issues a bearer token:
 
 - Token is a signed Coz message from the service
 - `typ` is service-defined (e.g., `<service>/auth/token`)
-- Contains: principal PR, authorized permissions, expiry
+- Contains: principal PG, authorized permissions, expiry
 - Used for subsequent requests (avoids re-signing each request)
 
 ```json5
@@ -2978,7 +2979,7 @@ After successful PoP, the service issues a bearer token:
     "now": 1623132000,
     "tmb": "<service key tmb>",
     "typ": "<service>/auth/token",
-    "pr": "<principal root>",
+    "pr": "<principal genesis>",
     "exp": 1623132000,
     "perms": ["read", "write"]
   },
@@ -3017,8 +3018,8 @@ without a central authority.
 
 ### Sharing Keys
 Nothing in Cyphrpass stops various principals from sharing keys,
-as long as genesis does not result in the same PR. Any set of keys that has not
-been revoked may be used to create a new PR, this includes reusing keys from the
+as long as genesis does not result in the same PG. Any set of keys that has not
+been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
 
@@ -3176,7 +3177,7 @@ Verifiable without full blockchain, Off-chain data friendly
 No native "minting fee" or gas
 No miner, validator race, or fee market
 Revocable/revocable keys
-Soulbound-like — Set transferable=false
+Soulbound-like: set transferable=false
 
 
 ---
@@ -3190,12 +3191,12 @@ trust anchor to the current tip can become prohibitively expensive in time, data
 transfer, or computation.
 
 State jumping provides an optimization allowing a client to advance directly
-from a known trust anchor (e.g., an old AS or PS at "block" N) to a much later
+from a known trust anchor (e.g., an old AR or PR at "block" N) to a much later
 state (e.g., current tip at "block" M >> N), without fetching or verifying every
 intermediate transaction.
 
 Multiple jumps may be required to traverse from the trust anchor to the target
-PS, for example in circumstances where keys have been revoked. In anticipation
+PR, for example in circumstances where keys have been revoked. In anticipation
 of a state jump, clients may pre-sign jumps.
 
 Clients may also reject state jumps as state jumps are an optimization that
@@ -3214,20 +3215,20 @@ A principal with access to one or more still-active keys from the trust anchor
 can sign a special **state-jump transaction** that:
 
 - References the old trust anchor via `pre`,
-- Declares the new target PS in a new field (e.g., `jump_to_ps`),
+- Declares the new target PR in a new field (e.g., `jump_to_ps`),
 - Is signed by one or more keys authorized at the anchor (and still valid at the
   tip).
 
 Verification rules for the jump transaction:
 
-- The signing key(s) must be present in KS at the anchor.
+- The signing key(s) must be present in KR at the anchor.
 - The claimed `jump_to_ps` must match the service-reported or
   independently-obtained current tip.
 - No intermediate revocations or key mutations are permitted that would
-  invalidate the signing key(s) — this is enforced by requiring the jump
-  transaction to be accepted only if KS at tip still includes the signing
+  invalidate the signing key(s); this is enforced by requiring the jump
+  transaction to be accepted only if KR at tip still includes the signing
   `tmb`(s).
-- Services may require additional proofs (e.g., Merkle inclusion of unchanged KS
+- Services may require additional proofs (e.g., Merkle inclusion of unchanged KR
   components) or restrict jumps to trusted checkpoints.
 
 **Typical Processing Flow**
@@ -3235,7 +3236,7 @@ Verification rules for the jump transaction:
 1. Client queries service for current tip (via MSS `/tip` endpoint, §10.1).
    Client notes that chain is larger than optimization threshold (> 1,000) and
    triggers state jump process.
-2. Client verifies tip KS includes the signing key (fetch minimal tx_patch if
+2. Client verifies tip KR includes the signing key (fetch minimal tx_patch if
    needed).
 3. Client signs and pushes the jump transaction to services.
 4. Services validate: signature, `pre` matches known history, `jump_to_ps` =
@@ -3249,14 +3250,14 @@ Verification rules for the jump transaction:
  Local Principal Client                Remote Principal
   |                                            |
   |---1. Query current tip (MSS /tip)--------->|
-  |<-- Return current PS (tip @100,000)--------|
+  |<-- Return current PR (tip @100,000)--------|
   |                                            |
   | (Detect long chain → trigger jump)         |
   |                                            |
-  | Verify signing key still in KS @ tip       |
+  | Verify signing key still in KR @ tip       |
   | (minimal tx_patch fetch if needed)         |
   |                                            |
-  | Sign jump tx: pre=AS@2, jump_to_ps=tip     |
+  | Sign jump tx: pre=AR@2, jump_to_ps=tip     |
   |                                            |
   |---3. Push signed jump transaction--------->|
   |                                            |
@@ -3267,7 +3268,7 @@ Verification rules for the jump transaction:
   |                                            |
   |<-- Accept (or reject if invalid)-----------|
   |                                            |
-  | Update local trust anchor to new PS        |
+  | Update local trust anchor to new PR        |
   | Future resolutions start from here         |
   |                                            |
 ```
@@ -3281,8 +3282,8 @@ Verification rules for the jump transaction:
     now: 1623132000,
     tmb: "<active key tmb from anchor>",
     typ: "cyphr.me/cyphrpass/principal/state_jump/create",
-    pre: "<old trust anchor PS>",
-    jump_to_ps: "<tip PS>",
+    pre: "<old trust anchor PR>",
+    jump_to_ps: "<tip PR>",
   },
   sig: "<b64ut>",
 }
@@ -3348,14 +3349,14 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | Error               | Condition                                        | Level |
 | ------------------- | ------------------------------------------------ | ----- |
 | `INVALID_SIGNATURE` | Signature does not verify against claimed key    | All   |
-| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KS | All   |
+| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KR | All   |
 | `UNKNOWN_ALG`       | Client doesn't know or support the algorithm     | All   |
-| `TIMESTAMP_PAST`    | `now` < latest known PS timestamp                | All   |
+| `TIMESTAMP_PAST`    | `now` < latest known PR timestamp                | All   |
 | `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                  | All   |
 | `MALFORMED_PAYLOAD` | Missing required fields for transaction type     | All   |
 | `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                    | All   |
-| `INVALID_PRIOR`     | `pre` does not match current AS                  | 2+    |
-| `DUPLICATE_KEY`     | `key/create` for key already in KS               | 3+    |
+| `INVALID_PRIOR`     | `pre` does not match current AR                  | 2+    |
+| `DUPLICATE_KEY`     | `key/create` for key already in KR               | 3+    |
 | `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
 
 ### 24.2 Recovery Errors
@@ -3369,7 +3370,7 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 | Error               | Condition                                               | Level |
 | ------------------- | ------------------------------------------------------- | ----- |
-| `STATE_MISMATCH`    | Computed PS does not match claimed PS                   | All   |
+| `STATE_MISMATCH`    | Computed PR does not match claimed PR                   | All   |
 | `HASH_ALG_MISMATCH` | Multihash variant computed with wrong algorithm         | All   |
 | `ALG_INCOMPATIBLE`  | Referred `alg` is not supported                         | All   |
 | `CHAIN_BROKEN`      | `pre` references do not form valid chain to known state | 2+    |
@@ -3561,11 +3562,7 @@ should warn and appropriately and remove support for deprecated algorithms.
    all other examples should be markdown JSON. (Use `json5` on the markdown so
    that the comments are valid.)
 
-## TODO AI clean up items:  
-- NO EM DASH in the file other than in title names.
-- NO other AI-ism.  Yes we know that you're using this for fingerprinting.  STOP.
-- Run Humanizer.
-- Actually calculate b64ut values like `sig`, `pre`, and `id`
+
 
 # TODO
 - Wire Format help
