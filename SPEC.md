@@ -411,8 +411,8 @@ root (MALTR) of CT.
 
 Since clients need additional internal state for verification, other digests are
 also enumerated as metadata:
-- `txs`: [coz, ...] Mutation transactions.
-- `txc`: [coz, ...] Commit transaction.
+- `txs`: [TX₀, TX₁?] Commit and Mutation transactions. Commit transaction must be last.
+// TODO need a term for list of cozies. 
 
 - `pre`: <b64ut> The prior Principal Root (PR), the state the commit is mutating
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
@@ -421,12 +421,11 @@ also enumerated as metadata:
 - `pts`: <b64ut> (Principal transaction state) MR(pre, fwd, TMR)
 - `trans`: <b64ut> Commit transaction field, value is equal to PTS. arrow
 
-- `TMR`: <b64ut>,  MR(txs)
+- `TMR`: <b64ut>,  MR(TX₀, TX₁?, ...)
 - `TCR`: <b64ut>,  MR(txc)
 - `TR`: <b64ut> MR(TMR, TCS)
 - `CR`: MALTR(TR₀, TR₁...)
 - `CT`: MALT(TR₀, TR₁...)
-
 
 ---
 
