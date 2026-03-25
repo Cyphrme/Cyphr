@@ -47,17 +47,17 @@ components and user data.
 ```text
 Principal Tree (PT)
 │
-├── State Tree (ST) ────────────────── [State]
-│    │
-│    ├─── Auth Tree (AT) ───────────── [Authentication]
-│    │    │
-│    │    ├── Key Tree (KT) ────────── [Public Keys]
-│    │    │
-│    │    └── Rule Tree (RT) ───────── [Permissions & Thresholds]
-|    │
-│    └─── Data Tree (DT) ───────────── [Data Actions]
+├── State Tree (ST) ───────────────── [State]
+│   │
+│   ├── Auth Tree (AT) ────────────── [Authentication]
+│   │   │
+│   │   ├── Key Tree (KT) ─────────── [Public Keys]
+│   │   │
+│   │   └── Rule Tree (RT) ────────── [Permissions & Thresholds]
+|   │
+│   └─── Data Tree (DT) ───────────── [Data Actions]
 │
-└── Commit Tree (CT) ───────────────── [State Mutations]
+└── Commit Tree (CT) ──────────────── [State Mutations]
 ```
 
 The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
@@ -67,17 +67,17 @@ commit. The first PR is the Principal Genesis (PG).
 ```text
 Principal Root (PR)
 │
-├ State Root SR
+├── State Root (SR) ───────────────── [State]
 │   │
-│   ├── Auth Root (AR) ───────────── [Authentication]
-│      │
-│      ├── Key Root (KR) ────────── [Public Keys]
-│      │
-│      └── Rule Root (RR) ───────── [Permissions & Thresholds]
-|
+│   ├── Auth Root (AR) ────────────── [Authentication]
+│   │   │
+│   │   ├── Key Root (KR) ─────────── [Public Keys]
+│   │   │
+│   │   └── Rule Root (RR) ────────── [Permissions & Thresholds]
+|   │
 │   └─── Data Root (DR) ───────────── [Data Actions]
 │
-└── Commit Root (CR) ─────────── [State Mutations] 
+└── Commit Root (CR) ──────────────── [State Mutations] 
 ```
 
 The **commit chain** tracks principal root over time.  Each commit mutates PT
@@ -97,20 +97,20 @@ and includes a reference to the prior PR and the forward PT.
 ### 2.2 Terminology
 #### 2.2.1 Core Terminology
 
-| Term                | Abv | Definition                                       |
-| ------------------- | --- | ------------------------------------------------ |
-| **Principal**       | -   | An identity in Cyphrpass, replaces "account"     |
-| **Principal Genesis** | PG  | The initial, permanent principal identifier      |
-| **Principal Root** | PR  | Top-level digest. `MR(AR, DR, CR, ...)`          |
-| SR // TODO
-| **Auth Root**      | AR  | Authentication state `MR(KR, RR, ...)`           |
-| **Key Root**       | KR  | Merkle root of key `tmb`s  `MR(tmb₁, tmb₂, ...)` |
-| **Rule Root**      | RR  | Merkle root of rules                             |
-| **Data Root**      | DR  | Merkle root of user data actions                 |
-| **Commit Root**    | CR  | Merkle root of transactions `MR(TS,TCS)`         |
-| **Tip**             | -   | The latest PR (digest identifier)                |
-| **Action**          | -   | A signed coz, denoted by `typ`. Foundation of AAA|
-| **trust anchor**    | -   | Last known valid state for a principal           |
+| Term                 | Abv | Definition                                      |
+| -------------------- | --- | ------------------------------------------------|
+| **Principal**        | -   | An identity in Cyphrpass, replaces "account"    |
+| **Principal Genesis**| PG  | The initial, permanent principal identifier     |
+| **Principal Root**   | PR  | Top-level digest. `MR(AR, DR, CR, ...)`         |
+| **State Root**       | SR  | Principal non-commit state. `MR(AR, DR)`        |
+| **Auth Root**        | AR  | Authentication state `MR(KR, RR, ...)`          |
+| **Key Root**         | KR  | Merkle root of keys  `MR(tmb₁, tmb₂, ...)`      |
+| **Rule Root**        | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`    |
+| **Data Root**        | DR  | Merkle root of user data actions                |
+| **Commit Root**      | CR  | Merkle root of transactions `MR(TS,TCS)`        |
+| **Tip**              | -   | The latest PR (digest identifier)               |
+| **Action**           | -   | A signed coz identified by `typ`, basis of AAA  |
+| **trust anchor**     | -   | Last known valid state for a principal          |
 
 PG, PR, SR, AR, KR, RR, DR, and CR are all MultiHash Merkle root (MHMR) digest
 values. Each digest identifier corresponds to a tree datastructure: Principal
@@ -345,6 +345,13 @@ Key Root (KR) is calculated as:
 
 ```
   KR = MR(tmb₀, tmb₁?, embedding?, ...)
+```
+
+#### 3.7.3 Rule Root
+Rule Root (RR) is calculated as:
+
+```
+  RR = MR(rule₀, rule₁?, ...)
 ```
 
 #### 3.7.4 Auth Root
