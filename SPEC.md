@@ -47,47 +47,47 @@ components and user data.
 ```text
 Principal Tree (PT)
 │
-├──State Tree (ST)
-│   │
-│   ├─── Auth Tree (AT) ───────────── [Authentication]
-│   │    │
-│   │    ├── Key Tree (KT) ────────── [Public Keys]
-│   │    │
-│   │    └── Rule Tree (RT) ───────── [Permissions & Thresholds]
-|   │
-│   └─── Data Tree (DT) ───────────── [Data Actions]
+├── State Tree (ST) ────────────────── [State]
+│    │
+│    ├─── Auth Tree (AT) ───────────── [Authentication]
+│    │    │
+│    │    ├── Key Tree (KT) ────────── [Public Keys]
+│    │    │
+│    │    └── Rule Tree (RT) ───────── [Permissions & Thresholds]
+|    │
+│    └─── Data Tree (DT) ───────────── [Data Actions]
 │
-└── Commit Tree (CT) ──────────────── [State Mutations]
+└── Commit Tree (CT) ───────────────── [State Mutations]
 ```
 
 The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
 roots representing the complete state of a Principal (identity) at a particular
-commit. The first PR is the PG. // TODO ZAMI: clarify PG (Principal Genesis) definition here
+commit. The first PR is the Principal Genesis (PG).
 
 ```text
 Principal Root (PR)
 │
- State Root SR
-     ├── Auth Root (AR) ───────────── [Authentication]
-  │   │
-   │   ├── Key Root (KR) ────────── [Public Keys]
-   │   │
-   │   └── Rule Root (RR) ───────── [Permissions & Thresholds]
-    |
-    ├── Data Root (DR) ───────────── [Data Actions]
+├ State Root SR
+│   │
+│   ├── Auth Root (AR) ───────────── [Authentication]
+│      │
+│      ├── Key Root (KR) ────────── [Public Keys]
+│      │
+│      └── Rule Root (RR) ───────── [Permissions & Thresholds]
+|
+│   └─── Data Root (DR) ───────────── [Data Actions]
 │
 └── Commit Root (CR) ─────────── [State Mutations] 
 ```
 
 The **commit chain** tracks principal root over time.  Each commit mutates PT
 and includes a reference to the prior PR and the forward PT.
-// TODO ZAMI: Should SR (State Root) be introduced as an intermediate level in formulas? (PR = MR(SR, CR) where SR = MR(AR, DR))
 
 ```text
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +----------------+
  |                | Commit |                | Commit |                | (Future)
- | PG(AR, DR, CR) | =====> | PR(AR, DR, CR) | =====> | PR(AR, DR, CR) | ==> 
+ |    PG(SR, CR)  | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)   | ==> 
  |                |        |            |   |        |            |   |
  +----------------+        +------------V---+        +------------V---+
                  ^                      |  ^                      |  ^
@@ -100,8 +100,9 @@ and includes a reference to the prior PR and the forward PT.
 | Term                | Abv | Definition                                       |
 | ------------------- | --- | ------------------------------------------------ |
 | **Principal**       | -   | An identity in Cyphrpass, replaces "account"     |
-| **Principal Genesis**  | PG  | The initial, permanent principal identifier      |
+| **Principal Genesis** | PG  | The initial, permanent principal identifier      |
 | **Principal Root** | PR  | Top-level digest. `MR(AR, DR, CR, ...)`          |
+| SR // TODO
 | **Auth Root**      | AR  | Authentication state `MR(KR, RR, ...)`           |
 | **Key Root**       | KR  | Merkle root of key `tmb`s  `MR(tmb₁, tmb₂, ...)` |
 | **Rule Root**      | RR  | Merkle root of rules                             |
@@ -111,7 +112,7 @@ and includes a reference to the prior PR and the forward PT.
 | **Action**          | -   | A signed coz, denoted by `typ`. Foundation of AAA|
 | **trust anchor**    | -   | Last known valid state for a principal           |
 
-PG, PR, AR, KR, RR, DR, and CR are all MultiHash Merkle root (MHMR) digest
+PG, PR, SR, AR, KR, RR, DR, and CR are all MultiHash Merkle root (MHMR) digest
 values. Each digest identifier corresponds to a tree datastructure: Principal
 Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT) (PT,
 AT, KT, RT, DT) or in the case of CR, the commit chain.
@@ -331,14 +332,22 @@ key), the PG remains permanent, only PR evolves.
   PR = MR(AR, CR, DR?, embedding?, ...)
 ```
 
-#### 3.7.2 Key Root
+#### 3.7.2 State Root 
+State Root (SR) is calculated as:
+
+```
+  SR = MR(DT, AT, embedding?, ...)
+```
+
+
+#### 3.7.3 Key Root
 Key Root (KR) is calculated as:
 
 ```
   KR = MR(tmb₀, tmb₁?, embedding?, ...)
 ```
 
-#### 3.7.3 Auth Root
+#### 3.7.4 Auth Root
 
 Auth Root (AR) combines authentication-related states:
 
@@ -346,7 +355,7 @@ Auth Root (AR) combines authentication-related states:
   AR = MR(KR, RR?,  embedding?)      # nil components excluded from sort
 ```
 
-#### 3.7.4 Data Root
+#### 3.7.5 Data Root
 
 Data Root (DR) (Level 4+) is the digest of all data action `czd`s.  DR is
 sorted by `now` and secondarily `czd`.
@@ -355,33 +364,43 @@ sorted by `now` and secondarily `czd`.
 DR = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-#### 3.7.5 Commit Root
+#### 3.7.6 Commit Root
+// TODO ZAMI: Should SR (State Root) be introduced as an intermediate level in
+formulas? (PR = MR(SR, CR) where SR = MR(AR, DR))
+// TODO TX awareness.  Transactions should be explicitly denoted?
 
-CR (Level 3+) is calculated as all transaction components MR(TS, TCS). TS
+CR (Level 3+) is calculated as all transaction components MR(TMR, TCS). TMR
 contains mutation transactions, denoted by `txs`, and TCS contains commit
 transaction cozies, denoted by `txc`. Both are the Merkle root of all related
-`czd`s ordered by position as given by the principal. Mutation cozies must be
-grouped by transaction.
+`czd`s ordered by position as given by the principal. The order of mutation
+cozies must be grouped by transaction; interlacing cozies related to different
+transaction is prohibited because cozies out of order are interpreted as
+separate transactions.
 
-CR is one of the three normal components for PR, so that PR = MR(AR, DR, CR).
+CR is one of the two normal components for PR, so that PR = MR(SR, CR).
 
 On commit the field `commit` is equal to PTS, which is the Merkle root of the
-prior principal root, `pre`, the forward AT and DT `fwd`, and TS.  PTS is all
+prior principal root, `pre`, the forward AT and DT `fwd`, and TMR.  PTS is all
 principal components, prior, forward, and `txs`, excluding `txc`. Why? A commit
 cannot refer to itself (a signature cannot sign itself), so instead its
 signature covers everything except the commit transaction itself.  For the same
-reason, `pre` refers to PR while `fwd` refers to PT// TODO incorrect. After the commit is
+reason, `pre` refers to PR while `fwd` refers to ST. After the commit is
 finalized, PR is calculable, but a "forward PR" isn't calculable since that
 would require commit to refer to itself. After commit, PR is calculated.
 
 ```
-  CR  = MR(TS, TCS)
-  TS  = MR(czd₀, czd₁?, ...)
-  TCS = MR(czd₀, czd₁?, ...)
-  PTS = MR(pre, fwd, TS)
+  TX₀ = MR(czd₀, czd₁?, ...) // TODO make sure this is talked about.
+  TMR = MR(TX₀, TX₁?, ...)
+  TCR = MR(czd₀, czd₁?, ...)
+  TR  = MR(TMR, TCS)
+
+  CR = MALTR(TR₀, TR₁...)
+
+  PTS = MR(pre, fwd, TMR) // TODO think about "PTS" naming. 
 ```
 
-Since clients need additional internal state of verification, other digests are also enumerated:
+Since clients need additional internal state of verification, other digests are
+also enumerated:
 - `txs`: [coz, ...] Mutation transactions.
 - `txc`: [coz, ...] Commit transaction.
 
@@ -389,15 +408,14 @@ Since clients need additional internal state of verification, other digests are 
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
 - `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order.
 - `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
-- `pts`: <b64ut> (Principal transaction state) (pre, fwd, TS) // TODO fixme
+- `pts`: <b64ut> (Principal transaction state) (pre, fwd, TMR)
 - `trans`: <b64ut> Commit transaction field, value is equal to PTS. arrow
 
-// TODO TIM don't worry about the naming on these just yet. 
-- `TMR`: <b64ut>,  MR(txs)  // TODO THINK MR
-- `TCR`: <b64ut>,  MR(txs)  // CR
-- `TR`: <b64ut> MR(TS, TCS) // TODO Talk about "Transaction Root"
-- `CR`: malt(TR₀, TR₁...) // TODO Talk about.
-- `CT`: malt(TR₀, TR₁...)
+- `TMR`: <b64ut>,  MR(txs)
+- `TCR`: <b64ut>,  MR(txc)
+- `TR`: <b64ut> MR(TMR, TCS)
+- `CR`: MALTR(TR₀, TR₁...)
+- `CT`: MALT(TR₀, TR₁...)
 
 
 ---
@@ -439,7 +457,7 @@ based on the principal's auth tree (AT).
 
 Transaction order by default is denoted by order in `txs`, and may be explicitly
 denoted by `txs_order`.  Even though inter-transaction coz ordering is not
-relevant for mutation, transaction order may potentially impact mutation. 
+relevant for mutation, transaction order may potentially impact mutation.
 
 ### 4.2 Required Fields
 
@@ -619,7 +637,9 @@ material, but `tmb` is signed within the coz.
 
 ```json5
 {
-  "txs": [{ // Mutation Transactions
+  "txs": [// Transaction array
+    [// TX0
+      { // Mutation transactions
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
@@ -628,7 +648,9 @@ material, but `tmb` is signed within the coz.
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
       },
       "sig": "<b64ut>"
-      },{
+      }
+      ],[// TX1
+      {
       "pay": {
         "alg": "ES256",
         "now": 1736893000,
@@ -637,7 +659,7 @@ material, but `tmb` is signed within the coz.
         "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG
       },
       "sig": "<b64ut>",
-      }],
+      }]], // Close TX1 and close transaction array.
   "txc":[{ // Commit Transaction
     "pay":{
         "alg": "ES256",
