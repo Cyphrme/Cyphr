@@ -388,19 +388,29 @@ reason, `pre` refers to PR while `fwd` refers to ST. After the commit is
 finalized, PR is calculable, but a "forward PR" isn't calculable since that
 would require commit to refer to itself. After commit, PR is calculated.
 
+For mutation transactions, all related coz's `czd` are rooted, which is the
+identifier for the transaction.  Then all mutation transaction identifiers are
+rooted, which gives the transaction mutation root (TMR). 
+
+For the commit transaction, since there is only ever one transaction per commit,
+the transaction commit root (TCR) is calculated directly from coz's `czd`.
+
+Then the TMR and TCR are rooted, which yields the transaction root, TR.
+
+Each TR is a node in the commit tree (CT), and the CR is calculated as the MALT
+root (MALTR) of CT. 
+
 ```
-  TX₀ = MR(czd₀, czd₁?, ...) // TODO make sure this is talked about.
+  TX₀ = MR(czd₀, czd₁?, ...)
   TMR = MR(TX₀, TX₁?, ...)
   TCR = MR(czd₀, czd₁?, ...)
   TR  = MR(TMR, TCS)
 
   CR = MALTR(TR₀, TR₁...)
-
-  PTS = MR(pre, fwd, TMR) // TODO think about "PTS" naming. 
 ```
 
-Since clients need additional internal state of verification, other digests are
-also enumerated:
+Since clients need additional internal state for verification, other digests are
+also enumerated as metadata:
 - `txs`: [coz, ...] Mutation transactions.
 - `txc`: [coz, ...] Commit transaction.
 
@@ -408,7 +418,7 @@ also enumerated:
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
 - `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order.
 - `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
-- `pts`: <b64ut> (Principal transaction state) (pre, fwd, TMR)
+- `pts`: <b64ut> (Principal transaction state) MR(pre, fwd, TMR)
 - `trans`: <b64ut> Commit transaction field, value is equal to PTS. arrow
 
 - `TMR`: <b64ut>,  MR(txs)
