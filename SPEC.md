@@ -412,14 +412,14 @@ root (MALTR) of CT.
 Since clients need additional internal state for verification, other digests are
 also enumerated as metadata:
 - `txs`: [TX₀, TX₁?] Commit and Mutation transactions. Commit transaction must be last.
-// TODO need a term for list of cozies. 
+// TODO need a term for list of cozies. It's a meta field since the crypto is already covered.
 
 - `pre`: <b64ut> The prior Principal Root (PR), the state the commit is mutating
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
-- `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order.
+- `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order. // TODO think
 - `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
 - `pts`: <b64ut> (Principal transaction state) MR(pre, fwd, TMR)
-- `trans`: <b64ut> Commit transaction field, value is equal to PTS. arrow
+- `trans`: <b64ut> Commit transaction field, value is equal to PTS. // TODO think arrow
 
 - `TMR`: <b64ut>,  MR(TX₀, TX₁?, ...)
 - `TCR`: <b64ut>,  MR(txc)
@@ -646,8 +646,7 @@ material, but `tmb` is signed within the coz.
 
 ```json5
 {
-  "txs": [// Transaction array
-    [// TX0
+  "txs": [[// Transaction array, TX0
       { // Mutation transactions
       "pay": {
         "alg": "ES256",
@@ -657,8 +656,7 @@ material, but `tmb` is signed within the coz.
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
       },
       "sig": "<b64ut>"
-      }
-      ],[// TX1
+      }],[// TX1
       {
       "pay": {
         "alg": "ES256",
@@ -668,8 +666,7 @@ material, but `tmb` is signed within the coz.
         "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG
       },
       "sig": "<b64ut>",
-      }]], // Close TX1 and close transaction array.
-  "txc":[{ // Commit Transaction
+      }],[// TX2 (Commit Transaction)
     "pay":{
         "alg": "ES256",
         "now": 1736893000,
@@ -678,7 +675,7 @@ material, but `tmb` is signed within the coz.
         "commit":"<b64ut>" // PTS
       },
       "sig": "<b64ut>"
-  }],
+  ]],
   "keys": [{ // key public material
     "tag": "User Key 0",
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
