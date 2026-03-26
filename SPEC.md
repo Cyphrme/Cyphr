@@ -101,7 +101,7 @@ and includes a reference to the prior PR and the forward PT.
 | -------------------- | --- | ------------------------------------------------|
 | **Principal**        | -   | An identity in Cyphrpass, replaces "account"    |
 | **Principal Genesis**| PG  | The initial, permanent principal identifier     |
-| **Principal Root**   | PR  | Top-level digest. `MR(AR, DR, CR, ...)`         |
+| **Principal Root**   | PR  | Top-level digest. `MR(SR, CR, ...)`              |
 | **State Root**       | SR  | Principal non-commit state. `MR(AR, DR)`        |
 | **Auth Root**        | AR  | Authentication state `MR(KR, RR, ...)`          |
 | **Key Root**         | KR  | Merkle root of keys  `MR(tmb₁, tmb₂, ...)`      |
@@ -328,7 +328,7 @@ principal and never changes.  When a principal mutates (e.g., adds a second
 key), the PG remains permanent, only PR evolves.
 
 ```
-  PR = MR(AR, CR, DR?, embedding?, ...)
+  PR = MR(SR, CR, embedding?, ...)
 ```
 
 #### 3.7.2 State Root 
@@ -490,24 +490,24 @@ required fields.
 
 ### 4.3 Commit Finality
 Commits are chained by reference to prior principal roots, the forward tree,
-and are finalized by a commit transaction.  A commit id is equal to `pts`.
+and are finalized by a commit transaction.  A commit id is equal to TR.
 
 CR is the MR of all components of PT except the commit ID.  PR is the MR of PT
 including the last commit (commit id). A commit is finalized with
-`"arrow":<pts>` appearing in the last coz. For example, in a three coz commit,
-`"arrow":<pts>` appears in the last coz:
+`"arrow":<b64ut>` appearing in the last coz. For example, in a single coz commit,
+`"arrow":<b64ut>` appears in the commit transaction:
 
-```json
-{"txc":[{ // Commit Transaction
+```json5
+{"txs":[[{ // Commit transaction (last entry in txs)
     "pay":{
         "alg": "ES256",
         "now": 1736893000,
         "typ": "cyphr.me/cyphrpass/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "arrow":"<b64ut>" // past state, new state, mutation // Transition arrow
+        "arrow":"<b64ut>" // Transition arrow: MR(pre, fwd, TMR)
       },
       "sig": "<b64ut>"
-  }]
+  }]]
 }
 ```
 
@@ -516,9 +516,9 @@ section Proof of Error).
 
 ### 4.4 Trust Anchor
 For a Cyphrpass client, the last known trusted state for a particular principal
-is the **trust anchor**, ASₐ. The ordered sequence of transactions linking two
-known Auth Roots ASₐ → ASₓ is called the **`tx_path`**. The transactions that
-must actually be fetched and verified to move from ASₐ to ASₓ form the
+is the **trust anchor**, ARₐ. The ordered sequence of transactions linking two
+known Auth Roots ARₐ → ARₓ is called the **`tx_path`**. The transactions that
+must actually be fetched and verified to move from ARₐ to ARₓ form the
 `tx_patch` (Δ). (See also section Checkpoint and State Jumping.)
 
 ### 4.5 Comparison to `git`
@@ -540,16 +540,12 @@ left, maintaining a dense prefix with no gaps, following the growth pattern used
 in RFC 6962.
 
 
-New commits are appended sequentially from the left, maintaining a dense prefix
-with no gaps, following the growth pattern used in RFC 6962.
-
-
 
 // TODO think about this: The resulting Merkle root after each append contributes to the Commit Root (CR).
 
 Append only. Commits are assigned an order.  (sequence numbers starting
 from 0.) The Merkle root after incorporating commit N becomes (a component
-of) Commit Root CS_N. Clients obtain inclusion proofs for specific commits and
+of) Commit Root CR_N. Clients obtain inclusion proofs for specific commits and
 consistency proofs between known roots using standard Merkle path proofs.
 Implementations may choose to expose the tree via tiled static storage for
 efficiency (as in modern transparency log designs), but this is an
@@ -719,13 +715,13 @@ Number of MR root digests in a commit:
  - TMR
  - TXC
  - Forward PT
- - PTS 
+ - arrow
 
 Not cacheable (always have to recalculate at the time of a commit):
  - TMR
  - TXC
  - Forward PT
- - PTS
+ - arrow
 
 Don't need 
  - Forward CR. 
