@@ -41,8 +41,8 @@ it enables:
 
 ### 2.1 Levels and State Tree
 
-The **principal tree** (PT) consists of nodes representing user authentication
-components and user data.
+The **principal tree** (PT) consists of nodes representing the complete state of
+a principal (identity) including authentication components and user data. 
 
 ```text
 Principal Tree (PT)
@@ -61,8 +61,8 @@ Principal Tree (PT)
 ```
 
 The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
-roots representing the complete state of a Principal (identity) at a particular
-commit. The first PR is the Principal Genesis (PG).
+roots representing components of the PT calculated for each commit. The first PR
+is the Principal Genesis (PG).
 
 ```text
 Principal Root (PR)
@@ -107,7 +107,7 @@ and includes a reference to the prior PR and the forward PT.
 | **Key Root**         | KR  | Merkle root of keys  `MR(tmb₁, tmb₂, ...)`      |
 | **Rule Root**        | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`    |
 | **Data Root**        | DR  | Merkle root of user data actions                |
-| **Commit Root**      | CR  | Merkle root of transactions `MR(TS,TCS)`        |
+| **Commit Root**      | CR  | Merkle root of transactions `MR(TMR,TCR)`       |
 | **Tip**              | -   | The latest PR (digest identifier)               |
 | **Action**           | -   | A signed coz identified by `typ`, basis of AAA  |
 | **trust anchor**     | -   | Last known valid state for a principal          |
@@ -269,15 +269,14 @@ authorized if and only if all three conditions hold:
 ### 3.2 Level 2: Key Replacement
 
 - Introduces key replacement. `key/replace` swaps current key for new key.
-- No commit
-- `tmb` == KR == AR == PR
-- Self-revoke results in permanent lockout (in lieu of sideband intervention)
+- Each level builds on the previous level; level 2 has the same semantics as
+  level 1 with the addition of key replacement.
 
 ### 3.3 Level 3: Commit (Multi-Key)
 
 - Introduces the Commit Tree (CT).
 - Multiple concurrent keys with equal authority
-- PR = MR(AR, DR, CR, ...), CR = MR(TS, TCS)
+- PR = MR(AR, DR, CR, ...), CR = MR(TMR, TCR)
 - Initial PR is equal to PG
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
@@ -372,23 +371,21 @@ DR = MR(czd₀, czd₁, ..., nonce?)
 ```
 
 #### 3.7.6 Commit Root
-// TODO ZAMI: Should SR (State Root) be introduced as an intermediate level in
-formulas? (PR = MR(SR, CR) where SR = MR(AR, DR))
-// TODO TX awareness.  Transactions should be explicitly denoted?
-
-CR (Level 3+) is calculated as all transaction components MR(TMR, TCS). TMR
-contains mutation transactions, denoted by `txs`, and TCS contains commit
-transaction cozies, denoted by `txc`. Both are the Merkle root of all related
-`czd`s ordered by position as given by the principal. The order of mutation
+CR (Level 3+) is calculated as all transaction components MR(TMR, TCR). TMR
+contains mutation transactions and TCR contains commit transaction cozies. Both
+are the Merkle root of all related `czd`s ordered by position as given by the
+principal with the commit transaction appearing last. The order of mutation
 cozies must be grouped by transaction; interlacing cozies related to different
 transaction is prohibited because cozies out of order are interpreted as
-separate transactions.
+separate transactions. Denoted by the field `txs`, the wire format for
+transactions is a list of lists, where each list item is a transaction
+containing one to many cozies.
 
 CR is one of the two normal components for PR, so that PR = MR(SR, CR).
 
-On commit the field `commit` is equal to PTS, which is the Merkle root of the
-prior principal root, `pre`, the forward AT and DT `fwd`, and TMR.  PTS is all
-principal components, prior, forward, and `txs`, excluding `txc`. Why? A commit
+On commit the field `trans` is the Merkle root of three components: the prior
+PR, `pre`, the forward ST, `fwd`, and TMR.  `trans` is all principal components,
+prior, forward, and mutations, excluding the commit transaction. Why? A commit
 cannot refer to itself (a signature cannot sign itself), so instead its
 signature covers everything except the commit transaction itself.  For the same
 reason, `pre` refers to PR while `fwd` refers to ST. After the commit is
@@ -411,7 +408,7 @@ root (MALTR) of CT.
   TX₀ = MR(czd₀, czd₁?, ...)
   TMR = MR(TX₀, TX₁?, ...)
   TCR = MR(czd₀, czd₁?, ...)
-  TR  = MR(TMR, TCS)
+  TR  = MR(TMR, TCR) // Equal to commit ID. 
 
   CR = MALTR(TR₀, TR₁...)
 ```
@@ -423,16 +420,22 @@ also enumerated as metadata:
 
 - `pre`: <b64ut> The prior Principal Root (PR), the state the commit is mutating
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
-- `txs_order`: [`czd`, ...] An array of `czd`s enumerating cozie order. // TODO think
-- `txc_order`: [`czd`, ...] An array `czd`s enumerating cozie order.
-- `pts`: <b64ut> (Principal transaction state) MR(pre, fwd, TMR)
-- `trans`: <b64ut> Commit transaction field, value is equal to PTS. // TODO think arrow
+
+- `arrow`: <b64ut> (Principal transition) MR(pre, fwd, TMR)
+
+
 
 - `TMR`: <b64ut>,  MR(TX₀, TX₁?, ...)
 - `TCR`: <b64ut>,  MR(txc)
-- `TR`: <b64ut> MR(TMR, TCS)
+- `TR`: <b64ut>    MR(TMR, TCR)
+
 - `CR`: MALTR(TR₀, TR₁...)
 - `CT`: MALT(TR₀, TR₁...)
+
+// Other meta fields. 
+- `txs_order`: [TX₀, TX₁, ?, ...] An array of `czd`s enumerating cozie order. 
+- `tczd_order`: [`czd`, ...] An array `czd`s enumerating cozie order. // TODO we need a meta to denote cozie order.  Naming might be silly here.
+
 
 ---
 
@@ -491,8 +494,8 @@ and are finalized by a commit transaction.  A commit id is equal to `pts`.
 
 CR is the MR of all components of PT except the commit ID.  PR is the MR of PT
 including the last commit (commit id). A commit is finalized with
-`"commit":<pts>` appearing in the last coz. For example, in a three coz commit,
-`"commit":<pts>` appears in the last coz:
+`"arrow":<pts>` appearing in the last coz. For example, in a three coz commit,
+`"arrow":<pts>` appears in the last coz:
 
 ```json
 {"txc":[{ // Commit Transaction
@@ -501,7 +504,7 @@ including the last commit (commit id). A commit is finalized with
         "now": 1736893000,
         "typ": "cyphr.me/cyphrpass/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "trans":"<b64ut>" // past state, new state, mutation // Transition arrow
+        "arrow":"<b64ut>" // past state, new state, mutation // Transition arrow
       },
       "sig": "<b64ut>"
   }]
@@ -522,7 +525,7 @@ must actually be fetched and verified to move from ASₐ to ASₓ form the
 In git, commits are digest of metadata objects, including fields like author and
 date, but critically parent and commit tree.  Cyphrpass's design parallel these
 critical git components
-  - `"commit":<CR>` is equivalent to the git tree root, which is referenced in
+  - `"arrow":<CR>` is equivalent to the git tree root, which is referenced in
     the git commit. // TODO not true newest design, but I think it is equivalent
     to `fwd`.
   - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
@@ -653,7 +656,7 @@ material, but `tmb` is signed within the coz.
 
 ```json5
 {
-  "txs": [[// Transaction array, TX0
+  "txs": [[ // Transaction array, TX0
       { // Mutation transactions
       "pay": {
         "alg": "ES256",
@@ -679,7 +682,7 @@ material, but `tmb` is signed within the coz.
         "now": 1736893000,
         "typ": "cyphr.me/cyphrpass/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "commit":"<b64ut>" // PTS
+        "arrow":"<b64ut>"
       },
       "sig": "<b64ut>"
   ]],
@@ -698,33 +701,28 @@ material, but `tmb` is signed within the coz.
 {"tx_meta":{
     "pre": "<b64ut>", // prior (source) PR
     "fwd":"<b64ut>", // forward tree, MR(PT)
+    "TMR":  "<b64ut>",  // ordered MR(txm)
+    "TCR": "<b64ut>", // Ordered MR(txc)
+    "CR":"<b64ut>", // CR = MR(TMR, TCR)
 
-    "TS":  "<b64ut>",  // ordered MR(txs)
+    "fpr":"<b64ut>", // Forward principal root. // TODO think about calling this just ps
+    "arrow":"<b64ut>",
 
-    "fps":"<b64ut>", // Forward principal root. // TODO think about calling this just ps
-    "TCS": "<b64ut>", // Ordered MR(txc)
 
-    "commit":"<b64ut>",// Exactly equal to PTS
-    "PTS": "<b64ut>", // == (past_ps (pre), forward PT, TS) PTS (Principal transaction State)
-    // // TODO Rename CR to PTS, then later new CR resulting in  PR = AR, DR, CR
-    "CR":"<b64ut>", // CR = MR(TS, TCS)
     "txs_order": [czds...],
-    "txc_order": [czds...]
-    // PR = AR, DR, CR
-    // forward PT is explicitly included.  It is just a digest so clients may implicitly accept forward PT without calculation, although they should calculate forward PT. 
 }}
 ```
 
 Calculation Overhead:
 Number of MR root digests in a commit:
  - Pre (Past PR)
- - TS
+ - TMR
  - TXC
  - Forward PT
  - PTS 
 
 Not cacheable (always have to recalculate at the time of a commit):
- - TS
+ - TMR
  - TXC
  - Forward PT
  - PTS
@@ -771,7 +769,7 @@ Don't need
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
         "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Genesis Key
-        "commit":"<CR>" // In this case, MR(tmb₁, tmb₂)
+        "arrow":"<b64ut>" 
       },
       "sig": "<b64ut>",
     },
@@ -1196,7 +1194,7 @@ the secretes.
       "typ": "cyphr.me/cyphrpass/key/create",
       "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-      "commit": "<CR>"
+      "arrow": "<b64ut>"
       }],
     "RT":{}, // Rule Tree (empty)
     "DT":{}, // Data Tree (empty)
@@ -1916,7 +1914,7 @@ Example principal fork, consisting of two transactions:
         "typ": "cyphr.me/cyphrpass/principal/fork/create",
         "pre": "<source PR>",
         "fork_pr": "<fresh PG digest, which in this case is just KR>",
-        "commit":"<commit>"
+        "arrow":"<b64ut>"
       },
       "sig": "<b64ut>"
     },
