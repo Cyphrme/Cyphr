@@ -276,7 +276,7 @@ authorized if and only if all three conditions hold:
 
 - Introduces the Commit Tree (CT).
 - Multiple concurrent keys with equal authority
-- PR = MR(AR, DR, CR, ...), CR = MR(TMR, TCR)
+- PR = MR(SR, CR), CR = MR(TMR, TCR)
 - Initial PR is equal to PG
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
@@ -383,8 +383,8 @@ containing one to many cozies.
 
 CR is one of the two normal components for PR, so that PR = MR(SR, CR).
 
-On commit the field `trans` is the Merkle root of three components: the prior
-PR, `pre`, the forward ST, `fwd`, and TMR.  `trans` is all principal components,
+On commit the field `arrow` is the Merkle root of three components: the prior
+PR, `pre`, the forward ST, `fwd`, and TMR.  `arrow` is all principal components,
 prior, forward, and mutations, excluding the commit transaction. Why? A commit
 cannot refer to itself (a signature cannot sign itself), so instead its
 signature covers everything except the commit transaction itself.  For the same
@@ -740,15 +740,15 @@ Don't need
 
 ```json5
 {
-  "txs": [{
-      "pay": { // First Key
+  "txs": [[{ // TX0: First Key
+      "pay": {
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
         "typ": "cyphr.me/cyphrpass/key/create",
         "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Targeted PR.  At genesis, PR == AR == KR == first key's tmb.
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
-    },{ // Second Key
+    }}],[{ // TX1: Second Key
       "pay": {
         "alg": "ES256",
         "now": 1628181264,
@@ -758,17 +758,27 @@ Don't need
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key
       },
       "sig": "<b64ut>", 
-    },{
+    }],[{ // TX2: Principal Declaration
       "pay": {
         "alg": "ES256",
         "now": 1736893000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "typ": "cyphr.me/cyphrpass/principal/create",
-        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Genesis Key
+        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "id":"<b64ut>" // ID == PG
+      },
+      "sig": "<b64ut>",
+    }],[{ // TX3: Commit (finality)
+      "pay": {
+        "alg": "ES256",
+        "now": 1736893000,
+        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "typ": "cyphr.me/cyphrpass/commit/create",
+        "pre":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "arrow":"<b64ut>" 
       },
       "sig": "<b64ut>",
-    },
+    }],
   ],
   "keys": [{ // Public keys material
       "tag": "User Key 0",
@@ -835,7 +845,7 @@ included in `txs`.
 
 ```json5
 {
-  "txs":[{
+  "txs":[[{
     "pay": {
       "alg": "ES256",
       "now": 1623132000,
@@ -845,7 +855,7 @@ included in `txs`.
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
     },
     "sig": "<b64ut>"
-  }],
+  }]],
   "keys": [{
     "alg": "ES256",
     "now": 1623132000,
@@ -1369,7 +1379,7 @@ signed for a valid total transaction:
 
 ```json5
 {
-  "txs": [
+  "txs": [[
     {
       "pay": {
         "alg": "ES256",
@@ -1392,10 +1402,10 @@ signed for a valid total transaction:
       },
       "sig": "<b64ut>",
     },
-  ],
-  "key": {
+  ]],
+  "keys": [{
     /* new key */
-  },
+  }],
 }
 ```
 
@@ -1559,9 +1569,9 @@ Principal Tree (PT0)
 │   │
 │   ├── Key Tree (KT0) // Principal 0's tree
 │   │   
-│   ├── Key Root (KS1) from principal 1
+│   ├── Key Root (KR1) from principal 1
 │   │   
-│   ├── Key Root (KS2) from principal 2
+│   ├── Key Root (KR2) from principal 2
 ```
 
 Embedded nodes use the b64ut digest as the key in tree structure.  
@@ -1879,7 +1889,7 @@ Example principal fork, consisting of two transactions:
 
 ```json5
 {
-  "txs": [
+  "txs": [[
     {
       "pay": {
         "alg": "ES256",
@@ -1890,7 +1900,7 @@ Example principal fork, consisting of two transactions:
         "pre": "<source PR>",
       },
       "sig": "<b64ut>"
-    },
+    }],[
     {
       "pay": {
         "alg": "ES256",
@@ -1901,7 +1911,7 @@ Example principal fork, consisting of two transactions:
         "pre":"<source PR>",
       },
       "sig": "<b64ut>",
-    }
+    }],[
     {
       "pay": {
         "alg": "ES256",
@@ -1913,7 +1923,7 @@ Example principal fork, consisting of two transactions:
         "arrow":"<b64ut>"
       },
       "sig": "<b64ut>"
-    },
+    }],
   ],
   "keys": [
     {
