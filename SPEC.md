@@ -338,7 +338,6 @@ State Root (SR) is calculated as:
   SR = MR(DT, AT, embedding?, ...)
 ```
 
-
 #### 3.7.3 Key Root
 Key Root (KR) is calculated as:
 
@@ -354,7 +353,6 @@ Rule Root (RR) is calculated as:
 ```
 
 #### 3.7.4 Auth Root
-
 Auth Root (AR) combines authentication-related states:
 
 ```
@@ -362,7 +360,6 @@ Auth Root (AR) combines authentication-related states:
 ```
 
 #### 3.7.5 Data Root
-
 Data Root (DR) (Level 4+) is the digest of all data action `czd`s.  DR is
 sorted by `now` and secondarily `czd`.
 
@@ -370,27 +367,24 @@ sorted by `now` and secondarily `czd`.
 DR = MR(czd₀, czd₁, ..., nonce?)
 ```
 
-#### 3.7.6 Commit Root
-CR (Level 3+) is calculated as all transaction components MR(TMR, TCR). TMR
-contains mutation transactions and TCR contains commit transaction cozies. Both
-are the Merkle root of all related `czd`s ordered by position as given by the
-principal with the commit transaction appearing last. The order of mutation
-cozies must be grouped by transaction; interlacing cozies related to different
-transaction is prohibited because cozies out of order are interpreted as
-separate transactions. Denoted by the field `txs`, the wire format for
-transactions is a list of lists, where each list item is a transaction
-containing one to many cozies.
+### 3.7.6 Transaction Root
+Transaction Root (TR) (Level 3+) is calculated as the structured MR of all
+transactions in a commit, MR(TMR, TCR).  The identifier for all transactions is
+the MR of ordered `czd`s.  TMR is the MR of mutation transaction identifiers.
+TCR is the MR of commit `czd`s; unlike TMR there is no intermediate root
+since there is only ever one transaction for a commit.
 
-CR is one of the two normal components for PR, so that PR = MR(SR, CR).
+Denoted by the field `txs`, the wire format for transactions is a list of lists,
+where each list item is a transaction, and each transaction contains one to many
+cozies. Transactions and cozies are ordered as specified by the principal with
+the condition of the commit transaction appearing last.
 
-On commit the field `arrow` is the Merkle root of three components: the prior
-PR, `pre`, the forward ST, `fwd`, and TMR.  `arrow` is all principal components,
-prior, forward, and mutations, excluding the commit transaction. Why? A commit
-cannot refer to itself (a signature cannot sign itself), so instead its
-signature covers everything except the commit transaction itself.  For the same
-reason, `pre` refers to PR while `fwd` refers to ST. After the commit is
-finalized, PR is calculable, but a "forward PR" isn't calculable since that
-would require commit to refer to itself. After commit, PR is calculated.
+```
+  TX₀ = MR(czd₀, czd₁?, ...)
+  TMR = MR(TX₀, TX₁?, ...)
+  TCR = MR(czd₀, czd₁?, ...)
+  TR  = MR(TMR, TCR)
+```
 
 For mutation transactions, all related coz's `czd` are rooted, which is the
 identifier for the transaction.  Then all mutation transaction identifiers are
@@ -401,18 +395,26 @@ the transaction commit root (TCR) is calculated directly from coz's `czd`.
 
 Then the TMR and TCR are rooted, which yields the transaction root, TR.
 
+#### 3.7.7 Commit Root
+Commit Root (CR) is one of the two normal components for PR, so that PR = MR(SR, CR).
+
+On commit the field `arrow` is the Merkle root of three components: the prior
+PR, `pre`, the forward ST, `fwd`, and TMR.  `arrow` is all principal components,
+prior, forward, and mutations, excluding the commit transaction. Why? A commit
+cannot refer to itself (a signature cannot sign itself), so instead its
+signature covers everything except the commit transaction itself.  For the same
+reason, `pre` refers to PR while `fwd` refers to ST. After the commit is
+finalized, PR is calculable, but a "forward PR" isn't calculable since that
+would require commit to refer to itself. After commit, PR is calculated for that commit.
+
 Each TR is a node in the commit tree (CT), and the CR is calculated as the MALT
-root (MALTR) of CT. 
+root (MALTR) of CT.
 
 ```
-  TX₀ = MR(czd₀, czd₁?, ...)
-  TMR = MR(TX₀, TX₁?, ...)
-  TCR = MR(czd₀, czd₁?, ...)
-  TR  = MR(TMR, TCR) // Equal to commit ID. 
-
   CR = MALTR(TR₀, TR₁...)
 ```
 
+#### 3.7.8 Meta Fields
 Since clients need additional internal state for verification, other digests are
 also enumerated as metadata:
 - `txs`: [TX₀, TX₁?] Commit and Mutation transactions. Commit transaction must be last.
@@ -420,10 +422,7 @@ also enumerated as metadata:
 
 - `pre`: <b64ut> The prior Principal Root (PR), the state the commit is mutating
 - `fwd`: <b64ut> The forward State Tree (ST), the state after mutation.
-
 - `arrow`: <b64ut> (Principal transition) MR(pre, fwd, TMR)
-
-
 
 - `TMR`: <b64ut>,  MR(TX₀, TX₁?, ...)
 - `TCR`: <b64ut>,  MR(txc)
@@ -490,12 +489,12 @@ required fields.
 
 ### 4.3 Commit Finality
 Commits are chained by reference to prior principal roots, the forward tree,
-and are finalized by a commit transaction.  A commit id is equal to TR.
+and are finalized by a commit transaction.  A commit id is equal to TR. // TODO sorta wrong
 
-CR is the MR of all components of PT except the commit ID.  PR is the MR of PT
-including the last commit (commit id). A commit is finalized with
-`"arrow":<b64ut>` appearing in the last coz. For example, in a single coz commit,
-`"arrow":<b64ut>` appears in the commit transaction:
+CR is the MALTR of all commits.  PR is the MR of PT including the last commit
+(commit id). A commit is finalized with a commit transaction, `commit/create`
+with the field `"arrow":<MR(pre, fwd, TMR)>`. For example, in a single
+transaction and single coz commit:
 
 ```json5
 {"txs":[[{ // Commit transaction (last entry in txs)
@@ -523,34 +522,23 @@ must actually be fetched and verified to move from ARₐ to ARₓ form the
 
 ### 4.5 Comparison to `git`
 In git, commits are digest of metadata objects, including fields like author and
-date, but critically parent and commit tree.  Cyphrpass's design parallel these
-critical git components
-  - `"arrow":<CR>` is equivalent to the git tree root, which is referenced in
-    the git commit. // TODO not true newest design, but I think it is equivalent
-    to `fwd`.
+date, but critically parent and commit tree a design similar to Cyphrpass's.
+  - `"arrow":<pre, fwd, TMR>` is equivalent to the git tree root, which is
+    referenced in the git commit.
   - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
     Merkle DAG (instead of a simple binary Merkle tree) where `pre` is a list of
     parents (see section Explicit Fork).
 
-
 ### 4.6 Commit Tree
-
 The Commit Tree (CT) is a MALT. New commits are appended sequentially from the
 left, maintaining a dense prefix with no gaps, following the growth pattern used
 in RFC 6962.
 
-
-
-// TODO think about this: The resulting Merkle root after each append contributes to the Commit Root (CR).
-
-Append only. Commits are assigned an order.  (sequence numbers starting
-from 0.) The Merkle root after incorporating commit N becomes (a component
-of) Commit Root CR_N. Clients obtain inclusion proofs for specific commits and
-consistency proofs between known roots using standard Merkle path proofs.
-Implementations may choose to expose the tree via tiled static storage for
-efficiency (as in modern transparency log designs), but this is an
-implementation detail and does not change the cryptographic commitments or proof
-formats.
+Commits are ordered.  The Merkle root after incorporating commit N becomes the
+Commit Root(CR) for that commit (CR_N). Clients obtain inclusion proofs for
+specific commits and consistency proofs between known roots using standard
+Merkle path proofs. Implementations may choose to expose the tree via tiled
+static storage for efficiency (as in modern transparency log designs).
 
 
 

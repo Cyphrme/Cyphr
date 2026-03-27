@@ -531,5 +531,17 @@ contain one or more transactions, which themselves contain one or more cozies
 
 
 
+- `pre`: the prior principal state (PS)
+- `fwd`: the forward principal tree 
+- `TS`: ordered MR(txs)
 
 
+Both
+are the Merkle root of all related `czd`s ordered by position as given by the
+principal with . // TODO sorta wrong
+TMR
+contains mutation transactions and TCR contains commit transaction cozies.
+Interlacing cozies
+related to different transaction would be interpreted as separate transactions.
+Mutation
+transaction cozies are grouped by transaction. 
