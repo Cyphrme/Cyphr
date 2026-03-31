@@ -197,32 +197,32 @@ keys are the sole authentication factor, verifiable by any party.
 
 ## Verification
 
-| Constraint                     | Method      | Result | Detail                             |
-| :----------------------------- | :---------- | :----- | :--------------------------------- |
-| [pop-via-signature]            | agent-check | pass   | Explicit in SPEC.md §14.1          |
-| [pop-types]                    | agent-check | pass   | Explicit in SPEC.md §14.1          |
-| [login-challenge-response]     | agent-check | pass   | Explicit in SPEC.md §14.2 Option A |
-| [login-timestamp-based]        | agent-check | pass   | Explicit in SPEC.md §14.2 Option B |
-| [login-lifecycle-gate]         | agent-check | pass   | Explicit in SPEC.md §14.2          |
-| [replay-prevention]            | agent-check | pass   | Explicit in SPEC.md §14.3          |
-| [bearer-token-service-signed]  | agent-check | pass   | Explicit in SPEC.md §14.4          |
-| [bearer-token-fields]          | agent-check | pass   | Explicit in SPEC.md §14.4          |
-| [embedding-weight-default]     | agent-check | pass   | Explicit in SPEC.md §12            |
-| [embedding-cyclic-stop]        | agent-check | pass   | Explicit in SPEC.md §12            |
-| [embedding-conjunctive-auth]   | agent-check | pass   | Explicit in SPEC.md §12.2          |
-| [embedding-tip-retrieval]      | agent-check | pass   | Explicit in SPEC.md §12.1          |
-| [embedding-pinning]            | agent-check | pass   | Explicit in SPEC.md §12.4          |
-| [verification-replay]          | agent-check | pass   | Explicit in SPEC.md §16.2          |
-| [verification-timestamp-order] | agent-check | pass   | Explicit in SPEC.md §16.2          |
-| [checkpoint-self-contained]    | agent-check | pass   | Explicit in SPEC.md §8.2           |
-| [checkpoint-genesis-foundational] | agent-check | pass | Explicit in SPEC.md §8.2           |
-| [checkpoint-declarative]       | agent-check | pass   | Explicit in SPEC.md §8.3           |
-| [mss-bidirectional]            | agent-check | pass   | Explicit in SPEC.md §16            |
-| [mss-push-on-mutation]         | agent-check | pass   | Explicit in SPEC.md §16.3          |
-| [no-login-non-active]          | agent-check | pass   | Follows from §14.2                 |
-| [no-unsigned-bearer]           | agent-check | pass   | Follows from §14.4                 |
-| [aaa-over-bearer]              | agent-check | pass   | Explicit in SPEC.md §14            |
-| [sso-without-centralization]   | agent-check | pass   | Explicit in SPEC.md §14.5          |
+| Constraint                        | Method      | Result | Detail                             |
+| :-------------------------------- | :---------- | :----- | :--------------------------------- |
+| [pop-via-signature]               | agent-check | pass   | Explicit in SPEC.md §14.1          |
+| [pop-types]                       | agent-check | pass   | Explicit in SPEC.md §14.1          |
+| [login-challenge-response]        | agent-check | pass   | Explicit in SPEC.md §14.2 Option A |
+| [login-timestamp-based]           | agent-check | pass   | Explicit in SPEC.md §14.2 Option B |
+| [login-lifecycle-gate]            | agent-check | pass   | Explicit in SPEC.md §14.2          |
+| [replay-prevention]               | agent-check | pass   | Explicit in SPEC.md §14.3          |
+| [bearer-token-service-signed]     | agent-check | pass   | Explicit in SPEC.md §14.4          |
+| [bearer-token-fields]             | agent-check | pass   | Explicit in SPEC.md §14.4          |
+| [embedding-weight-default]        | agent-check | pass   | Explicit in SPEC.md §12            |
+| [embedding-cyclic-stop]           | agent-check | pass   | Explicit in SPEC.md §12            |
+| [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §12.2          |
+| [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §12.1          |
+| [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §12.4          |
+| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §16.2          |
+| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §16.2          |
+| [checkpoint-self-contained]       | agent-check | pass   | Explicit in SPEC.md §8.2           |
+| [checkpoint-genesis-foundational] | agent-check | pass   | Explicit in SPEC.md §8.2           |
+| [checkpoint-declarative]          | agent-check | pass   | Explicit in SPEC.md §8.3           |
+| [mss-bidirectional]               | agent-check | pass   | Explicit in SPEC.md §16            |
+| [mss-push-on-mutation]            | agent-check | pass   | Explicit in SPEC.md §16.3          |
+| [no-login-non-active]             | agent-check | pass   | Follows from §14.2                 |
+| [no-unsigned-bearer]              | agent-check | pass   | Follows from §14.4                 |
+| [aaa-over-bearer]                 | agent-check | pass   | Explicit in SPEC.md §14            |
+| [sso-without-centralization]      | agent-check | pass   | Explicit in SPEC.md §14.5          |
 
 ## Implications
 

@@ -225,8 +225,8 @@ determinism.
   `VERIFIED: agent-check`
 
 **[promotion-recursive-termination]**: Recursive implicit promotion MUST
-terminate. Since the state tree has finite depth (PR → SR → AR → KR/RR, with DT
-and CR as siblings), promotion recurses at most through the tree height.
+terminate. Since the state tree has finite depth (PR → {SR, CR}, SR → {AR, DR},
+AR → {KR, RR}), promotion recurses at most through the tree height.
 
 - **Type**: Safety
   `VERIFIED: agent-check`

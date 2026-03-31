@@ -157,7 +157,7 @@ directly from its cozies.
 `arrow` field value MUST equal `MR(pre, fwd, TMR)`, where:
 
 - `pre` is the prior PR (the state being mutated)
-- `fwd` is the forward ST (state after mutation, before commit)
+- `fwd` is the forward SR (state after mutation, before commit)
 - `TMR` is the transaction mutation root
 
 The commit transaction MUST be the last transaction in `txs`.
@@ -165,7 +165,7 @@ The commit transaction MUST be the last transaction in `txs`.
 
 **[arrow-excludes-self]**: The `arrow` field covers everything except the commit
 transaction itself. A commit cannot refer to itself (a signature cannot sign
-itself). For this reason, `pre` refers to PR while `fwd` refers to ST (not PR).
+itself). For this reason, `pre` refers to PR while `fwd` refers to SR (not PR).
 `VERIFIED: agent-check`
 
 **[pr-after-commit]**: After the commit transaction is finalized, PR is
@@ -282,7 +282,7 @@ key being removed, and `pre` = targeted PR.
 **[key-replace]**: `key/replace` (Level 2+) atomically removes the signing key
 and adds a new key. The transaction MUST include `id` = `tmb` of the new key,
 and `pre` = targeted PR. For Level 2, `pre` is the `tmb` of the previous key
-(since AR == KR == `tmb`).
+(since SR == AR == KR == `tmb`).
 
 - **PRE**: Signing key (`tmb`) MUST be active in KT. Level 2 principal MUST
   have exactly one key.
@@ -333,7 +333,7 @@ signed, updating the DR component in the principal state tree. Without this
 explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 
 - **PRE**: DT exists (Level 4+). Signing key MUST be active.
-- **POST**: DR = MR(DT) is included as a component of PR.
+- **POST**: DR = MR(DT) is included as a component of SR (and thus PR).
   `VERIFIED: agent-check`
 
 #### Nonce Transactions
@@ -388,9 +388,9 @@ applied to transaction outputs.
 - **Type**: Safety
   `VERIFIED: agent-check`
 
-**[genesis-irreversible]**: Once a principal reaches genesis (PR is established),
-the PR MUST NOT change. Genesis is a one-way transition from "no principal" to
-"principal with permanent PR."
+**[genesis-irreversible]**: Once a principal reaches genesis (PG is established),
+the PG MUST NOT change. Genesis is a one-way transition from "no principal" to
+"principal with permanent PG."
 
 - **Type**: Safety
   `VERIFIED: agent-check`
@@ -419,15 +419,15 @@ included `pre`.
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
-| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4 (list of lists structure)                 |
-| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                          |
-| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                              |
-| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                    |
-| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                  |
-| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                          |
-| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                           |
-| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                     |
-| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                       |
+| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4 (list of lists structure)                |
+| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                         |
+| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                             |
+| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                   |
+| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                 |
+| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                         |
+| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                          |
+| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                    |
+| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                      |
 | [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
 | [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
 | [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                            |
@@ -457,7 +457,6 @@ included `pre`.
 | [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]           |
 | [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
 | [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)           |
-| [no-interlaced-cozies]        | agent-check | pass   | SPEC.md §4 (coz ordering)                            |
 | [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)               |
 
 ## Implications

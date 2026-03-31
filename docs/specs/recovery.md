@@ -142,7 +142,7 @@ current `now`, not `rvk`. `rvk` is a declaration of compromise, not a request
 for history rewriting.
 `VERIFIED: agent-check`
 
-**[disown-no-as-mutation]**: A client MAY mark past actions as disowned
+**[disown-no-ar-mutation]**: A client MAY mark past actions as disowned
 (expressing intent that the action was unintentional), but disowning MUST NOT
 mutate AR. Disowning is bookkeeping only.
 `VERIFIED: agent-check`
@@ -239,7 +239,7 @@ investigates, without irreversibly revoking keys.
 | [external-freeze-delegation]   | agent-check | pass   | Explicit in SPEC.md §18.10                |
 | [no-retroactive-undo]          | agent-check | pass   | Explicit in SPEC.md §18.12                |
 | [revoke-forward-only]          | agent-check | pass   | Explicit in SPEC.md §18.12                |
-| [disown-no-as-mutation]        | agent-check | pass   | Explicit in SPEC.md §18.12                |
+| [disown-no-ar-mutation]        | agent-check | pass   | Explicit in SPEC.md §18.12                |
 | [recovery-flow]                | agent-check | pass   | Explicit in SPEC.md §18.6                 |
 | [freeze-transition]            | agent-check | pass   | Follows from §18.9                        |
 | [unfreeze-transition]          | agent-check | pass   | Follows from §18.9.3                      |
