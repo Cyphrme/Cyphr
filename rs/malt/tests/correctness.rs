@@ -11,7 +11,7 @@
 mod common;
 
 use common::{SimpleHasher, build_log};
-use daolfmt::{Log, TreeHasher};
+use malt::{Log, TreeHasher};
 
 // ---------------------------------------------------------------------------
 // Tests

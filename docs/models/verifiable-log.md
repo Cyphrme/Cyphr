@@ -1,7 +1,7 @@
-# MODEL: Dense, Append-Only, Left-Filled Merkle Tree (DAOLFMT)
+# MODEL: Merkle Append-Only Log Tree (MALT)
 
 <!--
-  Formal domain model of the DAOLFMT verifiable log data structure.
+  Formal domain model of the MALT verifiable log data structure.
 
   See: .agent/personas/sdma.md for the applied modeling toolkit.
   See: .sketches/2026-03-20-daolfmt-verifiable-log.md for the exploratory sketch.
@@ -11,7 +11,7 @@
 
 ## Domain Classification
 
-**Problem Statement:** Formalize the DAOLFMT — a generic, append-only
+**Problem Statement:** Formalize MALT — a generic, append-only
 Merkle tree conforming to RFC 9162 §2.1 — as a standalone, reusable data
 structure. The model captures the tree's inductive construction, algebraic
 invariants, proof semantics, and the generic hash abstraction enabling
@@ -59,9 +59,9 @@ verification is type-checking (recomputing the root from the path).
 | Ologs          | Captures ontology but not behavioral properties (proofs).                    |
 | Hyperdoctrines | Overkill — invariants are simple equational laws.                            |
 
-**Dual Relationship to Principal-State-Model:**
+**Dual Relationship to Principal-State-Model (MALT as algebra):**
 
-| DAOLFMT (algebra)                | Principal (coalgebra)        |
+| MALT (algebra)                   | Principal (coalgebra)        |
 | :------------------------------- | :--------------------------- |
 | Construction-first               | Observation-first            |
 | Tree IS the data                 | PS hides the data            |
@@ -527,7 +527,7 @@ algebraic properties.
 
 ### For Cyphrpass Integration
 
-- The tree root serves as CS (Commit State) in the principal's state tree.
+- The tree root serves as CR (Commit Root) in the principal's state tree.
 - Consistency proofs subsume state jumping and witness resync.
 - Inclusion proofs enable selective disclosure of individual commits.
 - The algebraic tree output feeds the coalgebraic principal model — the

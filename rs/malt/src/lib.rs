@@ -1,6 +1,6 @@
-//! # DAOLFMT
+//! # MALT
 //!
-//! Dense, Append-Only, Left-Filled Merkle Tree conforming to
+//! Merkle Append-Only Log Tree conforming to
 //! [RFC 9162 §2.1](https://www.rfc-editor.org/rfc/rfc9162#section-2.1).
 //!
 //! This crate provides a generic, append-only Merkle tree parameterized by a
@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! use daolfmt::{Log, TreeHasher};
+//! use malt::{Log, TreeHasher};
 //!
 //! // Implement TreeHasher for your hash function, then:
 //! let mut log = Log::new(my_hasher);

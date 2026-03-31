@@ -1,4 +1,4 @@
-package daolfmt
+package malt
 
 import (
 	"encoding/binary"

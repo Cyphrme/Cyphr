@@ -10,7 +10,7 @@
 mod common;
 
 use common::{SimpleHasher, build_log};
-use daolfmt::{Log, TreeHasher, verify_consistency, verify_inclusion};
+use malt::{Log, TreeHasher, verify_consistency, verify_inclusion};
 
 // ---------------------------------------------------------------------------
 // I-SOUND: Generated inclusion proofs verify correctly.
@@ -200,7 +200,7 @@ fn consistency_proof_old_size_ge_new_size() {
 /// Verify inclusion rejects index >= tree_size.
 #[test]
 fn verify_inclusion_rejects_bad_index() {
-    use daolfmt::InclusionProof;
+    use malt::InclusionProof;
     let proof = InclusionProof {
         index: 5,
         tree_size: 5,
@@ -214,7 +214,7 @@ fn verify_inclusion_rejects_bad_index() {
 /// Verify consistency rejects old_size=0.
 #[test]
 fn verify_consistency_rejects_old_size_zero() {
-    use daolfmt::ConsistencyProof;
+    use malt::ConsistencyProof;
     let proof = ConsistencyProof {
         old_size: 0,
         new_size: 5,
@@ -227,7 +227,7 @@ fn verify_consistency_rejects_old_size_zero() {
 /// Verify consistency rejects old_size >= new_size.
 #[test]
 fn verify_consistency_rejects_old_ge_new() {
-    use daolfmt::ConsistencyProof;
+    use malt::ConsistencyProof;
     let proof = ConsistencyProof {
         old_size: 5,
         new_size: 5,

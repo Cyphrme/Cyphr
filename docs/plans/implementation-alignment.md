@@ -100,12 +100,12 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 
 ## Phases
 
-1. **Phase 1: MALT Package Rename** — Rename daolfmt → malt in both Go and Rust
-   - [ ] Go: rename `go/daolfmt/` → `go/malt/`, update module path to `github.com/cyphrme/malt`
-   - [ ] Rust: rename `rs/daolfmt/` → `rs/malt/`, update crate name in `Cargo.toml`
-   - [ ] Update `Cargo.toml` workspace members list
-   - [ ] Update any existing references/imports
-   - [ ] Both packages build and pass tests under new name
+1. **Phase 1: MALT Package Rename** — Rename daolfmt → malt in both Go and Rust ✅
+   - [x] Go: rename `go/daolfmt/` → `go/malt/`, update module path to `github.com/cyphrme/malt`
+   - [x] Rust: rename `rs/daolfmt/` → `rs/malt/`, update crate name in `Cargo.toml`
+   - [x] Update `Cargo.toml` workspace members list
+   - [x] Update any existing references/imports
+   - [x] Both packages build and pass tests under new name
 
 2. **Phase 2: Type Renames (State → Root)** — Align type and function names with SPEC.md terminology
    - [ ] Go: `KeyState` → `KeyRoot`

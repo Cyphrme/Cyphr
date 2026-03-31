@@ -1,4 +1,4 @@
-// Package daolfmt implements a Dense, Append-Only, Left-Filled Merkle Tree
+// Package malt implements a Merkle Append-Only Log Tree (MALT)
 // conforming to RFC 9162 §2.1.
 //
 // The tree is parameterized by a [TreeHasher] that defines the hash
@@ -18,7 +18,7 @@
 //
 // These guard invariants proven correct by the formal model (§3.4 A-STACK,
 // A-EQUIV). They are not input-validation panics.
-package daolfmt
+package malt
 
 import "math/bits"
 

@@ -1,6 +1,6 @@
-//! Shared test utilities for DAOLFMT integration tests.
+//! Shared test utilities for MALT integration tests.
 
-use daolfmt::TreeHasher;
+use malt::TreeHasher;
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001B3;
@@ -43,8 +43,8 @@ impl TreeHasher for SimpleHasher {
 }
 
 /// Build a log with n leaves using sequential leaf data.
-pub fn build_log(n: u64) -> daolfmt::Log<SimpleHasher> {
-    let mut log = daolfmt::Log::new(SimpleHasher);
+pub fn build_log(n: u64) -> malt::Log<SimpleHasher> {
+    let mut log = malt::Log::new(SimpleHasher);
     for i in 0..n {
         log.append(format!("leaf-{i}").as_bytes());
     }
