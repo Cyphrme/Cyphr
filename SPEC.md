@@ -107,7 +107,7 @@ and includes a reference to the prior PR and the forward PT.
 | **Key Root**         | KR  | Merkle root of keys  `MR(tmb₁, tmb₂, ...)`      |
 | **Rule Root**        | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`    |
 | **Data Root**        | DR  | Merkle root of user data actions                |
-| **Commit Root**      | CR  | Merkle root of transactions `MR(TMR,TCR)`       |
+| **Commit Root**      | CR  | MALT root of commit tree `MALTR(TR₀, TR₁...)`   |
 | **Tip**              | -   | The latest PR (digest identifier)               |
 | **Action**           | -   | A signed coz identified by `typ`, basis of AAA  |
 | **trust anchor**     | -   | Last known valid state for a principal          |
@@ -448,8 +448,8 @@ mutations may occur per commit and are applied one-by-one using a given order as
 dictated by the principal. Unlike other systems, there are no minting fees, gas,
 or need for a global ledger.
 
-For example, a transaction may have three transaction: one transaction for
-`key/update`, signed by two keys and consisting two cozies, one for
+For example, a commit may have three transactions: one transaction for
+`key/replace`, signed by two keys and consisting of two cozies, one for
 `key/create`, signed by one key and consisting of one coz, and a
 `commit/create`, finalizing the commit.  
 
@@ -647,6 +647,7 @@ material, but `tmb` is signed within the coz.
         "now": 1623132000,
         "typ": "cyphr.me/cyphrpass/key/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+        "pre": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // PR at genesis == tmb of first key
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
       },
       "sig": "<b64ut>"
@@ -684,10 +685,10 @@ material, but `tmb` is signed within the coz.
 ```json5
 {"tx_meta":{
     "pre": "<b64ut>", // prior (source) PR
-    "fwd":"<b64ut>", // forward tree, MR(PT)
+    "fwd":"<b64ut>", // forward State Root (SR)
     "TMR":  "<b64ut>",  // ordered MR(txm)
     "TCR": "<b64ut>", // Ordered MR(txc)
-    "CR":"<b64ut>", // CR = MR(TMR, TCR)
+    "CR":"<b64ut>", // CR = MALTR(TR₀, TR₁...)
 
     "fpr":"<b64ut>", // Forward principal root. // TODO think about calling this just ps
     "arrow":"<b64ut>",
@@ -1711,7 +1712,7 @@ A principal may be flagged with the following conditions.
 | `Errored`        | Fork detected, invalid chain, or other error              |
 | `Deleted`        | `principal/delete` transaction signed                     |
 | `Frozen`         | `freeze/create` active and `freeze/delete` not signed     |
-| `CanMutateAS`    | Has components at the required thresholds to mutate AT    |
+| `CanMutateAR`    | Has components at the required thresholds to mutate AT    |
 | `HasActiveKeys`  | At least one active (non-revoked, non-deleted) key exists |
 | `CanDataAction`  | Can sign data actions (Level 4+, active key exists)       |
 
@@ -1725,10 +1726,10 @@ Flags combine into 6 principal base states.
 
 | State        | Conditions                                    |
 | :----------- | :-------------------------------------------- |
-| **Active**   | ¬Deleted, ¬Frozen, CanMutateAS, HasActiveKeys |
-| **Frozen**   | Frozen, ¬Deleted, CanMutateAS, HasActiveKeys  |
+| **Active**   | ¬Deleted, ¬Frozen, CanMutateAR, HasActiveKeys |
+| **Frozen**   | Frozen, ¬Deleted, CanMutateAR, HasActiveKeys  |
 | **Deleted**  | Deleted, ¬Frozen                              |
-| **Zombie**   | ¬CanMutateAS, CanDataAction, ¬Deleted         |
+| **Zombie**   | ¬CanMutateAR, CanDataAction, ¬Deleted         |
 | **Dead**     | ¬HasActiveKeys, ¬CanDataAction                |
 | **Nuked**    | Deleted, all keys revoked or deleted          |
 
@@ -1737,7 +1738,7 @@ Flags combine into 6 principal base states.
   unfrozen via `freeze/delete`. No mutations until unfrozen.
 - **Deleted**: The principal signed `principal/delete`. No new transactions or
   actions (including data actions) are possible.
-- **Zombie**: (Level 4+) AR mutation is impossible (`¬CanMutateAS`), but data
+- **Zombie**: (Level 4+) AR mutation is impossible (`¬CanMutateAR`), but data
   actions are still possible. Example: `key/create` requires 2 weight points,
   but only one key exists with weight 1. `comment/create` requires default 1,
   so comments are still possible but AR mutation is impossible.
@@ -1757,15 +1758,15 @@ existing principal keys.
 An **unrecoverable** principal is where recovery is impossible within the
 Cyphrpass protocol rules. Transactions and recovery are impossible, although
 some data actions may still be possible.  Unrecoverable is a partially ambiguous
-classification: the principal cannot mutate AR (`¬CanMutateAS`) and is not
+classification: the principal cannot mutate AR (`¬CanMutateAR`) and is not
 deleted, but whether data actions remain possible is not connoted. Once
 `CanDataAction` is evaluated, an unrecoverable principal resolves to either
 **Zombie** (data actions still possible) or **Dead** (nothing possible).
 
 
 
-Not that `CanMutateAS` is not monotonic in key count at Level 5+. A principal
-with active keys may still have `¬CanMutateAS` if no key combination meets the
+Note that `CanMutateAR` is not monotonic in key count at Level 5+. A principal
+with active keys may still have `¬CanMutateAR` if no key combination meets the
 threshold for AT mutation.
 
 ### 11.4 Close
@@ -1815,7 +1816,7 @@ Merging where a **source** adopts the state of another principal, the
 (Level 3+).
 
 The source signs a `principal/merge` transaction where the source is denoted via
-`pre` and the target's PR is denoted via `merge_to_ps`. The target accepts the
+`pre` and the target's PR is denoted via `merge_to_pr`. The target accepts the
 merge by signing a `principal/merge-ack` transaction containing the PR of the
 source. Optionally, the source may delete all keys and/or sign a
 `principal/delete`.
@@ -1835,8 +1836,8 @@ Example source principal merge transaction:
     "now": 1736893000,
     "tmb": "<source signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge",
-    "pre": "<list of source's PSs>",
-    "merge_to_ps": "<target Principal Root>"
+    "pre": "<list of source's PRs>",
+    "merge_to_pr": "<target Principal Root>"
   },
   "sig": "<b64ut>"
 }
@@ -1852,7 +1853,7 @@ And the merge acknowledgement by the target principal:
     "tmb": "<target signing key tmb>",
     "typ": "cyphr.me/cyphrpass/principal/merge-ack",
     "pre": "<target PR>",
-    "merge_from_ps": "<list of source Principal Root>"
+    "merge_from_pr": "<list of source Principal Root>"
   },
   "sig": "<b64ut>"
 }
