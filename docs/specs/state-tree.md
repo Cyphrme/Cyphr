@@ -195,12 +195,11 @@ entirely, not represented as empty.)
 `VERIFIED: agent-check`
 
 > [!NOTE]
-> **PLACEHOLDER — Empty state representation**: SPEC.md does not fully specify
-> how empty DT or RT interact with implicit promotion at levels where they are
-> first introduced. The semantic is that absent components are excluded from the
-> Merkle root computation (not included as zero-length or sentinel values), but
-> the boundary conditions for "first introduction" of DT/RT need confirmation
-> from Zami. See sketch gap #7.
+> **Empty state representation (partially resolved)**: SPEC.md §9.1 and the
+> SR formula (`MR(AR, DR?, ...)`) use `?` notation indicating absent components
+> are excluded from the Merkle root computation (not included as zero-length or
+> sentinel values). The boundary conditions for "first introduction" of DT/RT
+> (Level 4, Level 5) still need confirmation from Zami.
 
 **[no-circular-state]**: The state computation dependency graph MUST be acyclic.
 KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (MALTR of TRs),
@@ -358,10 +357,10 @@ governance is delegated to Coz").
 
 ### Open Questions (for Zami / sketch)
 
-1. **Empty state boundary** (placeholder above): When DT or RT is first
-   introduced (Level 4, Level 5), what is its initial representation? Is it
-   absent (excluded from MR) until explicitly created, or does it start as
-   some sentinel?
+1. ~~**Empty state boundary** (partially resolved): Absent components use `?`
+   notation and are excluded from MR computation. The remaining question is
+   about exact behavior at the transition point (e.g., when a Level 3 principal
+   first gains DT to become Level 4).~~
 2. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
    nonce inject an algorithm that no key supports and no conversion path
    exists for? What are the bounds?

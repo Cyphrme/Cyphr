@@ -368,13 +368,13 @@ match the key being revoked MUST be rejected. Revokes MUST be self-signed.
 `VERIFIED: agent-check`
 
 > [!NOTE]
-> **PLACEHOLDER — Commit Finality (resolved)**: The commit finality
-> mechanism is now resolved: `arrow` field in `commit/create` (see
-> [commit-finality-arrow]).
+> **Commit Finality (resolved)**: The commit finality mechanism uses the `arrow`
+> field in `commit/create` (see [commit-finality-arrow]). The old `"commit":<CS>`
+> model is superseded.
 
 **[intra-commit-ordering]**: Transactions within a commit MUST be applied in
 **array order** (the order they appear in the `txs` array). This ordering is
-also used for Commit ID computation (per [commit-id-computation]). Application
+also used for TR computation (per [tr-computation]). Application
 order determines the final state when operations on the same target are present.
 `VERIFIED: agent-check — new 2026-03-09 per array-order decision`
 
@@ -419,9 +419,15 @@ included `pre`.
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
-| [commit-id-computation]       | agent-check | pass   | SPEC.md §9; array order per decision                |
-| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
-| [commit-field-required]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
+| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4 (list of lists structure)                 |
+| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                          |
+| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                              |
+| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                    |
+| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                  |
+| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                          |
+| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                           |
+| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                     |
+| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                       |
 | [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
 | [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
 | [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                            |
@@ -431,8 +437,8 @@ included `pre`.
 | [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-pre-continuity]      | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PR, updated 2026-03-09)            |
+| [genesis-pre-bootstrap]       | agent-check | pass   | Explicit in SPEC.md §5.1                            |
+| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PG)                                |
 | [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                            |
 | [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                            |
 | [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                            |
@@ -451,6 +457,7 @@ included `pre`.
 | [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]           |
 | [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
 | [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)           |
+| [no-interlaced-cozies]        | agent-check | pass   | SPEC.md §4 (coz ordering)                            |
 | [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)               |
 
 ## Implications
@@ -484,8 +491,9 @@ included `pre`.
 
 ### Open Questions (for Zami / sketch)
 
-1. **Commit field in non-last coz**: §4.2 says `"commit":<CR>` appears in the
-   "last coz". What happens if it appears in an earlier coz? Ignored? Rejected?
+1. ~~**Commit field in non-last coz**: Obsolete — the old `"commit":<CS>` model
+   is superseded by `arrow` in `commit/create`. The `arrow` field appears only
+   in the commit transaction, which is always the last transaction in `txs`.~~
 2. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
    Is the public key material always required alongside `key/create`, or can
    it be transmitted via sideband?

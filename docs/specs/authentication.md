@@ -214,6 +214,9 @@ keys are the sole authentication factor, verifiable by any party.
 | [embedding-pinning]            | agent-check | pass   | Explicit in SPEC.md §12.4          |
 | [verification-replay]          | agent-check | pass   | Explicit in SPEC.md §16.2          |
 | [verification-timestamp-order] | agent-check | pass   | Explicit in SPEC.md §16.2          |
+| [checkpoint-self-contained]    | agent-check | pass   | Explicit in SPEC.md §8.2           |
+| [checkpoint-genesis-foundational] | agent-check | pass | Explicit in SPEC.md §8.2           |
+| [checkpoint-declarative]       | agent-check | pass   | Explicit in SPEC.md §8.3           |
 | [mss-bidirectional]            | agent-check | pass   | Explicit in SPEC.md §16            |
 | [mss-push-on-mutation]         | agent-check | pass   | Explicit in SPEC.md §16.3          |
 | [no-login-non-active]          | agent-check | pass   | Follows from §14.2                 |
