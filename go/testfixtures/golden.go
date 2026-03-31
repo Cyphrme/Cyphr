@@ -53,7 +53,7 @@ type GoldenKey struct {
 }
 
 // GoldenCommit is an atomic transaction bundle from a golden file.
-// Matches the Rust fixture format: {txs, keys, commit_id, as, cs, ps}.
+// Matches the Rust fixture format: {txs, keys, commit_id, ar, cs, pr}.
 type GoldenCommit struct {
 	// Txs contains the transactions in this commit.
 	Txs []json.RawMessage `json:"txs"`
@@ -61,12 +61,12 @@ type GoldenCommit struct {
 	Keys []GoldenKey `json:"keys"`
 	// CommitID is the commit identity after this commit (base64url).
 	CommitID string `json:"commit_id,omitempty"`
-	// AS is the auth state after this commit (base64url).
-	AS string `json:"as,omitempty"`
+	// AR is the auth root after this commit (base64url).
+	AR string `json:"ar,omitempty"`
 	// CS is the commit state after this commit (base64url).
 	CS string `json:"cs,omitempty"`
-	// PS is the principal state after this commit (base64url).
-	PS string `json:"ps,omitempty"`
+	// PR is the principal root after this commit (base64url).
+	PR string `json:"pr,omitempty"`
 }
 
 // GoldenExpected contains expected state assertions.
@@ -75,30 +75,30 @@ type GoldenExpected struct {
 	KeyCount *int `json:"key_count,omitempty"`
 	// Level is the expected feature level.
 	Level *int `json:"level,omitempty"`
-	// KS is the expected key state digest (first variant).
-	KS string `json:"ks,omitempty"`
-	// AS is the expected auth state digest (JSON field is "as", first variant).
-	AS string `json:"as,omitempty"`
-	// PS is the expected principal state digest (first variant).
-	PS string `json:"ps,omitempty"`
+	// KR is the expected key root digest (first variant).
+	KR string `json:"kr,omitempty"`
+	// AR is the expected auth root digest (first variant).
+	AR string `json:"ar,omitempty"`
+	// PR is the expected principal root digest (first variant).
+	PR string `json:"pr,omitempty"`
 	// CommitID is the expected commit ID digest.
 	CommitID string `json:"commit_id,omitempty"`
 	// TS is a backwards-compatible alias for CommitID (legacy golden files).
 	TS string `json:"ts,omitempty"`
 	// CS is the expected commit state digest.
 	CS string `json:"cs,omitempty"`
-	// DS is the expected data state digest.
-	DS string `json:"ds,omitempty"`
-	// PR is the expected principal root.
-	PR string `json:"pr,omitempty"`
+	// DR is the expected data root digest.
+	DR string `json:"dr,omitempty"`
+	// PG is the expected principal genesis.
+	PG string `json:"pg,omitempty"`
 	// Error is the expected error (for error tests).
 	Error string `json:"error,omitempty"`
-	// MultihashKS contains per-algorithm KS variants for cross-impl verification (SPEC §14).
-	MultihashKS map[string]string `json:"multihash_ks,omitempty"`
-	// MultihashAS contains per-algorithm AS variants for cross-impl verification.
-	MultihashAS map[string]string `json:"multihash_as,omitempty"`
-	// MultihashPS contains per-algorithm PS variants for cross-impl verification.
-	MultihashPS map[string]string `json:"multihash_ps,omitempty"`
+	// MultihashKR contains per-algorithm KR variants for cross-impl verification (SPEC §14).
+	MultihashKR map[string]string `json:"multihash_kr,omitempty"`
+	// MultihashAR contains per-algorithm AR variants for cross-impl verification.
+	MultihashAR map[string]string `json:"multihash_ar,omitempty"`
+	// MultihashPR contains per-algorithm PR variants for cross-impl verification.
+	MultihashPR map[string]string `json:"multihash_pr,omitempty"`
 }
 
 // LoadGolden loads a golden test from a JSON file.

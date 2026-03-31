@@ -138,10 +138,10 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
             ));
         }
 
-        if exp.auth_state != expected_commit.auth_state {
+        if exp.auth_root != expected_commit.auth_root {
             return Err(format!(
                 "commit {}: as mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.auth_state, expected_commit.auth_state
+                i, exp.auth_root, expected_commit.auth_root
             ));
         }
 
@@ -152,10 +152,10 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
             ));
         }
 
-        if exp.ps != expected_commit.ps {
+        if exp.pr != expected_commit.pr {
             return Err(format!(
                 "commit {}: ps mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.ps, expected_commit.ps
+                i, exp.pr, expected_commit.pr
             ));
         }
     }
@@ -304,7 +304,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         let commit0 = &commit_vec[0];
         eprintln!(
             "  [0] commit_id={}, as={}, ps={}",
-            commit0.commit_id, commit0.auth_state, commit0.ps
+            commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
 
@@ -566,14 +566,14 @@ fn e2e_checkpoint_load() {
 
     // Create principal with single key (implicit genesis)
     let principal = cyphrpass::Principal::implicit(key.clone()).expect("implicit failed");
-    let initial_as = principal.auth_state().clone();
+    let initial_as = principal.auth_root().clone();
 
     // L1 principal has no PR
-    assert!(principal.pr().is_none(), "L1 principal should have no PR");
+    assert!(principal.pg().is_none(), "L1 principal should have no PR");
 
     // Create checkpoint at genesis
     let checkpoint = Checkpoint {
-        auth_state: initial_as,
+        auth_root: initial_as,
         keys: vec![key],
         attestor: None,
     };
@@ -583,7 +583,7 @@ fn e2e_checkpoint_load() {
 
     // Verify PR is still None for L1
     assert!(
-        loaded.pr().is_none(),
+        loaded.pg().is_none(),
         "checkpoint_matches_pr: L1 should have no PR"
     );
 
@@ -633,11 +633,11 @@ fn make_test_entries_with_timestamps(timestamps: &[i64]) -> Vec<Entry> {
 /// FileStore: append entry and read it back.
 #[test]
 fn e2e_file_append_read() {
-    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass::state::PrincipalGenesis;
     use cyphrpass_storage::Store;
 
     let (store, dir) = temp_filestore("append_read");
-    let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4, 5]);
+    let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4, 5]);
 
     // Create and append an entry
     let entries = make_test_entries_with_timestamps(&[1700000000]);
@@ -656,11 +656,11 @@ fn e2e_file_append_read() {
 /// FileStore: query entries after a timestamp.
 #[test]
 fn e2e_file_query_after() {
-    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass::state::PrincipalGenesis;
     use cyphrpass_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_after");
-    let pr = PrincipalRoot::from_bytes(vec![2, 3, 4, 5, 6]);
+    let pr = PrincipalGenesis::from_bytes(vec![2, 3, 4, 5, 6]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -688,11 +688,11 @@ fn e2e_file_query_after() {
 /// FileStore: query entries before a timestamp.
 #[test]
 fn e2e_file_query_before() {
-    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass::state::PrincipalGenesis;
     use cyphrpass_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_before");
-    let pr = PrincipalRoot::from_bytes(vec![3, 4, 5, 6, 7]);
+    let pr = PrincipalGenesis::from_bytes(vec![3, 4, 5, 6, 7]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -720,11 +720,11 @@ fn e2e_file_query_before() {
 /// FileStore: query entries in a time range.
 #[test]
 fn e2e_file_query_range() {
-    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass::state::PrincipalGenesis;
     use cyphrpass_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_range");
-    let pr = PrincipalRoot::from_bytes(vec![4, 5, 6, 7, 8]);
+    let pr = PrincipalGenesis::from_bytes(vec![4, 5, 6, 7, 8]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -752,11 +752,11 @@ fn e2e_file_query_range() {
 /// FileStore: query with limit.
 #[test]
 fn e2e_file_query_limit() {
-    use cyphrpass::state::PrincipalRoot;
+    use cyphrpass::state::PrincipalGenesis;
     use cyphrpass_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_limit");
-    let pr = PrincipalRoot::from_bytes(vec![5, 6, 7, 8, 9]);
+    let pr = PrincipalGenesis::from_bytes(vec![5, 6, 7, 8, 9]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -809,7 +809,7 @@ fn e2e_dynamic_edge_cases() {
 /// state derivation across all supported algorithms.
 #[test]
 fn e2e_multihash_round_trip() {
-    use cyphrpass::state::{compute_as, compute_cs, compute_ks, compute_ps};
+    use cyphrpass::state::{compute_ar, compute_cs, compute_kr, compute_pr};
 
     let pool = load_pool();
     let intent = load_e2e_intents("multihash_coherence.toml");
@@ -867,12 +867,12 @@ fn e2e_multihash_round_trip() {
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
         // Recompute KS with all active algorithms
-        let recomputed_ks = compute_ks(&thumbprints.to_vec(), None, active_algs).unwrap();
+        let recomputed_ks = compute_kr(&thumbprints.to_vec(), None, active_algs).unwrap();
 
         // Verify each algorithm variant matches
         for &alg in active_algs {
             // KS coherence
-            let principal_ks = principal.key_state().get(alg);
+            let principal_ks = principal.key_root().get(alg);
             let recomputed_ks_variant = recomputed_ks.get(alg);
 
             assert_eq!(
@@ -882,7 +882,7 @@ fn e2e_multihash_round_trip() {
             );
 
             // Verify AS variant exists
-            let principal_as = principal.auth_state().get(alg);
+            let principal_as = principal.auth_root().get(alg);
             assert!(
                 principal_as.is_some(),
                 "{}: AS variant {:?} should exist",
@@ -891,7 +891,7 @@ fn e2e_multihash_round_trip() {
             );
 
             // Verify PS variant exists
-            let principal_ps = principal.ps().get(alg);
+            let principal_ps = principal.pr().get(alg);
             assert!(
                 principal_ps.is_some(),
                 "{}: PS variant {:?} should exist",
@@ -903,7 +903,7 @@ fn e2e_multihash_round_trip() {
         }
 
         // PR check: None for L1/L2, has genesis variant for L3+
-        if let Some(pr) = principal.pr() {
+        if let Some(pr) = principal.pg() {
             let genesis_alg = principal.hash_alg();
             let principal_pr = pr.get(genesis_alg);
             assert!(
@@ -919,11 +919,11 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
         // Recompute AS from KS
-        let recomputed_as = compute_as(&recomputed_ks, None, active_algs).unwrap();
+        let recomputed_as = compute_ar(&recomputed_ks, None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(
-                principal.auth_state().get(alg),
+                principal.auth_root().get(alg),
                 recomputed_as.get(alg),
                 "{}: AS variant {:?} mismatch after recomputation",
                 test.name,
@@ -933,14 +933,14 @@ fn e2e_multihash_round_trip() {
 
         // Recompute CS from AS + DS?
         let _recomputed_cs =
-            compute_cs(&recomputed_as, principal.data_state(), active_algs).unwrap();
+            compute_cs(&recomputed_as, principal.data_root(), active_algs).unwrap();
 
         // Recompute PS from AS + CommitID? + DS?
         let commit_id = principal.current_commit_id();
-        let recomputed_ps = compute_ps(
+        let recomputed_ps = compute_pr(
             &recomputed_as,
             commit_id,
-            principal.data_state(),
+            principal.data_root(),
             None,
             active_algs,
         )
@@ -948,7 +948,7 @@ fn e2e_multihash_round_trip() {
 
         for &alg in active_algs {
             assert_eq!(
-                principal.ps().get(alg),
+                principal.pr().get(alg),
                 recomputed_ps.get(alg),
                 "{}: PS variant {:?} mismatch after recomputation",
                 test.name,

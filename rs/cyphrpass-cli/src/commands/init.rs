@@ -59,14 +59,14 @@ pub fn run(
     // Get identity string for output: PR if available, else PS
     let identity_str = {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        if let Some(pr) = principal.pr() {
+        if let Some(pr) = principal.pg() {
             pr.as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
                 .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
         } else {
             principal
-                .ps()
+                .pr()
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
@@ -76,7 +76,7 @@ pub fn run(
 
     // Store the identity (only if PR is set — L3+ explicit genesis)
     let store = parse_store(&cli.store)?;
-    if let Some(pr_ref) = principal.pr() {
+    if let Some(pr_ref) = principal.pg() {
         let commits = export_commits(&principal)?;
         for commit in &commits {
             store.append_commit(pr_ref, commit)?;

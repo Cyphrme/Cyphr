@@ -181,14 +181,14 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         );
     }
 
-    if let Some(ref ks) = expected.ks {
+    if let Some(ref ks) = expected.kr {
         // Parse alg:digest format
         let (alg, expected_digest) = parse_alg_digest(ks)
             .unwrap_or_else(|| panic!("{}: invalid ks format (expected alg:digest)", test_name));
         let hash_alg = parse_hash_alg(&alg)
             .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_ks = principal
-            .key_state()
+            .key_root()
             .get(hash_alg)
             .map(|b| {
                 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -198,22 +198,22 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_ks, expected_digest, "{}: ks mismatch", test_name);
     }
 
-    if let Some(ref auth_state) = expected.auth_state {
+    if let Some(ref auth_root) = expected.auth_root {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(auth_state)
+        let (alg, expected_digest) = parse_alg_digest(auth_root)
             .unwrap_or_else(|| panic!("{}: invalid as format (expected alg:digest)", test_name));
         let hash_alg = parse_hash_alg(&alg)
             .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_as = principal
-            .auth_state()
+            .auth_root()
             .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
     }
 
-    if let Some(ref ps) = expected.ps {
+    if let Some(ref ps) = expected.pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format
         let (alg, expected_digest) = parse_alg_digest(ps)
@@ -221,47 +221,47 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         let hash_alg = parse_hash_alg(&alg)
             .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
         let actual_ps = principal
-            .ps()
+            .pr()
             .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
         assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
     }
 
-    if let Some(ref pr) = expected.pr {
-        // Skip empty PR or non-prefixed format (implicit genesis uses raw thumbprint)
-        if !pr.is_empty() {
-            if let Some((alg, expected_digest)) = parse_alg_digest(pr) {
+    if let Some(ref pg) = expected.pg {
+        // Skip empty PG or non-prefixed format (implicit genesis uses raw thumbprint)
+        if !pg.is_empty() {
+            if let Some((alg, expected_digest)) = parse_alg_digest(pg) {
                 use coz::base64ct::{Base64UrlUnpadded, Encoding};
                 let hash_alg = parse_hash_alg(&alg)
                     .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-                let actual_pr = principal
-                    .pr()
-                    .and_then(|pr_val| pr_val.get(hash_alg))
+                let actual_pg = principal
+                    .pg()
+                    .and_then(|pg_val| pg_val.get(hash_alg))
                     .map(Base64UrlUnpadded::encode_string)
                     .unwrap_or_default();
-                assert_eq!(actual_pr, expected_digest, "{}: pr mismatch", test_name);
+                assert_eq!(actual_pg, expected_digest, "{}: pg mismatch", test_name);
             }
-            // If no ':' in pr, it's a raw thumbprint format - skip alg:digest verification
+            // If no ':' in pg, it's a raw thumbprint format - skip alg:digest verification
         }
     }
 
-    if let Some(ref ds) = expected.ds {
+    if let Some(ref ds) = expected.dr {
         let principal_ds = principal
-            .data_state()
+            .data_root()
             .map(|d| cad_to_b64(&d.0))
             .unwrap_or_else(|| "<no ds>".to_string());
         assert_eq!(principal_ds, *ds, "{}: ds mismatch", test_name);
     }
 
     // Verify per-algorithm multihash variants (SPEC §14 cross-implementation parity)
-    if let Some(ref mh_ks) = expected.multihash_ks {
+    if let Some(ref mh_ks) = expected.multihash_kr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         for (alg_name, expected_digest) in mh_ks {
             let hash_alg = parse_hash_alg(alg_name)
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
-                .key_state()
+                .key_root()
                 .get(hash_alg)
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
@@ -273,13 +273,13 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         }
     }
 
-    if let Some(ref mh_as) = expected.multihash_as {
+    if let Some(ref mh_as) = expected.multihash_ar {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         for (alg_name, expected_digest) in mh_as {
             let hash_alg = parse_hash_alg(alg_name)
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
-                .auth_state()
+                .auth_root()
                 .get(hash_alg)
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
@@ -291,13 +291,13 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         }
     }
 
-    if let Some(ref mh_ps) = expected.multihash_ps {
+    if let Some(ref mh_ps) = expected.multihash_pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         for (alg_name, expected_digest) in mh_ps {
             let hash_alg = parse_hash_alg(alg_name)
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
-                .ps()
+                .pr()
                 .get(hash_alg)
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();

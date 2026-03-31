@@ -222,8 +222,8 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		failures = append(failures, fmt.Sprintf("level: got %d, want %d", p.Level(), *exp.Level))
 	}
 	// KS - parse alg:digest format and compare
-	if exp.KS != "" {
-		alg, expectedDigest := parseAlgDigest(exp.KS)
+	if exp.KR != "" {
+		alg, expectedDigest := parseAlgDigest(exp.KR)
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
@@ -231,7 +231,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("ks: invalid algorithm %s", alg))
 			} else {
-				ksDigest := p.KS().Get(hashAlg)
+				ksDigest := p.KR().Get(hashAlg)
 				if ksDigest == nil {
 					failures = append(failures, fmt.Sprintf("ks: got nil, want %s", expectedDigest))
 				} else if coz.B64(ksDigest).String() != expectedDigest {
@@ -242,8 +242,8 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// AS - parse alg:digest format and compare
-	if exp.AS != "" {
-		alg, expectedDigest := parseAlgDigest(exp.AS)
+	if exp.AR != "" {
+		alg, expectedDigest := parseAlgDigest(exp.AR)
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
@@ -251,7 +251,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("as: invalid algorithm %s", alg))
 			} else {
-				asDigest := p.AS().Get(hashAlg)
+				asDigest := p.AR().Get(hashAlg)
 				if asDigest == nil {
 					failures = append(failures, fmt.Sprintf("as: got nil, want %s", expectedDigest))
 				} else if coz.B64(asDigest).String() != expectedDigest {
@@ -261,21 +261,21 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		}
 	}
 
-	// PS - parse alg:digest format and compare
-	if exp.PS != "" {
-		alg, expectedDigest := parseAlgDigest(exp.PS)
+	// PR - parse alg:digest format and compare
+	if exp.PR != "" {
+		alg, expectedDigest := parseAlgDigest(exp.PR)
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
 			hashAlg, err := cyphrpass.ParseHashAlg(alg)
 			if err != nil {
-				failures = append(failures, fmt.Sprintf("ps: invalid algorithm %s", alg))
+				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
 			} else {
-				psDigest := p.PS().Get(hashAlg)
-				if psDigest == nil {
-					failures = append(failures, fmt.Sprintf("ps: got nil, want %s", expectedDigest))
-				} else if coz.B64(psDigest).String() != expectedDigest {
-					failures = append(failures, fmt.Sprintf("ps: got %s, want %s", coz.B64(psDigest).String(), expectedDigest))
+				prDigest := p.PR().Get(hashAlg)
+				if prDigest == nil {
+					failures = append(failures, fmt.Sprintf("pr: got nil, want %s", expectedDigest))
+				} else if coz.B64(prDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("pr: got %s, want %s", coz.B64(prDigest).String(), expectedDigest))
 				}
 			}
 		}
@@ -304,16 +304,16 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// PR - parse alg:digest format and compare (skip if empty or non-prefixed)
-	if exp.PR != "" {
-		alg, expectedDigest := parseAlgDigest(exp.PR)
+	if exp.PG != "" {
+		alg, expectedDigest := parseAlgDigest(exp.PG)
 		if alg != "" {
 			hashAlg, err := cyphrpass.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
-			} else if p.PR() == nil {
+			} else if p.PG() == nil {
 				failures = append(failures, fmt.Sprintf("pr: got nil, want %s:%s", alg, expectedDigest))
 			} else {
-				prDigest := p.PR().Get(hashAlg)
+				prDigest := p.PG().Get(hashAlg)
 				if prDigest == nil {
 					failures = append(failures, fmt.Sprintf("pr: got nil variant, want %s", expectedDigest))
 				} else if coz.B64(prDigest).String() != expectedDigest {
@@ -325,22 +325,22 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// DS (only for Level 4+)
-	if exp.DS != "" {
-		if p.DS() == nil {
-			failures = append(failures, fmt.Sprintf("ds: got nil, want %s", exp.DS))
-		} else if p.DS().String() != exp.DS {
-			failures = append(failures, fmt.Sprintf("ds: got %s, want %s", p.DS().String(), exp.DS))
+	if exp.DR != "" {
+		if p.DR() == nil {
+			failures = append(failures, fmt.Sprintf("ds: got nil, want %s", exp.DR))
+		} else if p.DR().String() != exp.DR {
+			failures = append(failures, fmt.Sprintf("ds: got %s, want %s", p.DR().String(), exp.DR))
 		}
 	}
 
 	// Multihash KS variants (SPEC §14 cross-impl verification)
-	for algName, expectedDigest := range exp.MultihashKS {
+	for algName, expectedDigest := range exp.MultihashKR {
 		hashAlg, err := cyphrpass.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_ks: invalid algorithm %s", algName))
 			continue
 		}
-		actualDigest := p.KS().Get(hashAlg)
+		actualDigest := p.KR().Get(hashAlg)
 		if actualDigest == nil {
 			failures = append(failures, fmt.Sprintf("multihash_ks[%s]: got nil, want %s", algName, expectedDigest))
 		} else {
@@ -352,13 +352,13 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// Multihash AS variants
-	for algName, expectedDigest := range exp.MultihashAS {
+	for algName, expectedDigest := range exp.MultihashAR {
 		hashAlg, err := cyphrpass.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_as: invalid algorithm %s", algName))
 			continue
 		}
-		actualDigest := p.AS().Get(hashAlg)
+		actualDigest := p.AR().Get(hashAlg)
 		if actualDigest == nil {
 			failures = append(failures, fmt.Sprintf("multihash_as[%s]: got nil, want %s", algName, expectedDigest))
 		} else {
@@ -370,13 +370,13 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// Multihash PS variants
-	for algName, expectedDigest := range exp.MultihashPS {
+	for algName, expectedDigest := range exp.MultihashPR {
 		hashAlg, err := cyphrpass.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_ps: invalid algorithm %s", algName))
 			continue
 		}
-		actualDigest := p.PS().Get(hashAlg)
+		actualDigest := p.PR().Get(hashAlg)
 		if actualDigest == nil {
 			failures = append(failures, fmt.Sprintf("multihash_ps[%s]: got nil, want %s", algName, expectedDigest))
 		} else {

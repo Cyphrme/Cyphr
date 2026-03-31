@@ -23,13 +23,13 @@
 // # State Types
 //
 // State is computed as Merkle digests per SPEC §7:
-//   - [PrincipalRoot] (PR): Permanent identifier, set at genesis
-//   - [PrincipalState] (PS): Current top-level state
-//   - [AuthState] (AS): Authentication state from keyset
+//   - [PrincipalGenesis] (PR): Permanent identifier, set at genesis
+//   - [PrincipalRoot] (PS): Current top-level state
+//   - [AuthRoot] (AS): Authentication state from keyset
 //   - [CommitState] (CS): Auth state bound to a specific commit
-//   - [KeyState] (KS): Digest of active key thumbprints
+//   - [KeyRoot] (KS): Digest of active key thumbprints
 //   - [CommitID]: Identity of a commit (Merkle root of transaction czds)
-//   - [DataState] (DS): Digest of action czds (Level 4)
+//   - [DataRoot] (DS): Digest of action czds (Level 4)
 //
 // # Genesis
 //
@@ -41,7 +41,7 @@
 //
 //	key, _ := coz.NewKey(coz.ES256)
 //	principal, _ := cyphrpass.Implicit(key)
-//	fmt.Println(principal.PR())  // Permanent identifier
+//	fmt.Println(principal.PG())  // Permanent identifier
 //
 // [Coz]: https://github.com/Cyphrme/Coz
 package cyphrpass

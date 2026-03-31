@@ -5,7 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::state::{
-    AuthState, CommitID, CommitState, HashAlg, PrincipalState, TaggedCzd, compute_commit_id_tagged,
+    AuthRoot, CommitID, CommitState, HashAlg, PrincipalRoot, TaggedCzd, compute_commit_id_tagged,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -28,11 +28,11 @@ pub struct Commit {
     /// Commit ID: Merkle root of transaction czds.
     commit_id: CommitID,
     /// Auth State at the end of this commit.
-    auth_state: AuthState,
+    auth_root: AuthRoot,
     /// Commit State: MR(AS, Commit ID).
     cs: CommitState,
     /// Principal State at the end of this commit.
-    ps: PrincipalState,
+    ps: PrincipalRoot,
 }
 
 impl Commit {
@@ -44,9 +44,9 @@ impl Commit {
     pub(crate) fn new(
         transactions: Vec<VerifiedTransaction>,
         commit_id: CommitID,
-        auth_state: AuthState,
+        auth_root: AuthRoot,
         cs: CommitState,
-        ps: PrincipalState,
+        ps: PrincipalRoot,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -54,7 +54,7 @@ impl Commit {
         Ok(Self {
             transactions,
             commit_id,
-            auth_state,
+            auth_root,
             cs,
             ps,
         })
@@ -76,12 +76,12 @@ impl Commit {
     }
 
     /// Get the Auth State at the end of this commit.
-    pub fn auth_state(&self) -> &AuthState {
-        &self.auth_state
+    pub fn auth_root(&self) -> &AuthRoot {
+        &self.auth_root
     }
 
     /// Get the Principal State at the end of this commit.
-    pub fn ps(&self) -> &PrincipalState {
+    pub fn pr(&self) -> &PrincipalRoot {
         &self.ps
     }
 
@@ -165,7 +165,7 @@ impl PendingCommit {
     ///
     /// # Arguments
     ///
-    /// * `auth_state` - The computed Auth State after all transactions
+    /// * `auth_root` - The computed Auth State after all transactions
     /// * `cs` - The computed Commit State: MR(AS, Commit ID)
     /// * `ps` - The computed Principal State after all transactions
     ///
@@ -174,9 +174,9 @@ impl PendingCommit {
     /// Returns `EmptyCommit` if no transactions exist.
     pub fn finalize(
         self,
-        auth_state: AuthState,
+        auth_root: AuthRoot,
         cs: CommitState,
-        ps: PrincipalState,
+        ps: PrincipalRoot,
     ) -> crate::error::Result<Commit> {
         if self.transactions.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -191,7 +191,7 @@ impl PendingCommit {
         let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_id, auth_state, cs, ps)
+        Commit::new(self.transactions, commit_id, auth_root, cs, ps)
     }
 
     /// Consume the pending commit and return the transactions.
@@ -388,7 +388,7 @@ impl<'a> CommitScope<'a> {
         new_key: Option<crate::key::Key>,
     ) -> crate::error::Result<&'a Commit> {
         use crate::state::{
-            compute_as, compute_cs, compute_ks, derive_hash_algs, hash_alg_from_str,
+            compute_ar, compute_cs, compute_kr, derive_hash_algs, hash_alg_from_str,
         };
         use crate::transaction::{Transaction, VerifiedTransaction};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -417,9 +417,9 @@ impl<'a> CommitScope<'a> {
 
         let thumbprints: Vec<&coz::Thumbprint> =
             self.principal.auth.keys.values().map(|k| &k.tmb).collect();
-        let ks = compute_ks(&thumbprints, None, &active_algs)?;
-        let auth_state = compute_as(&ks, None, &active_algs)?;
-        let cs = compute_cs(&auth_state, self.principal.ds.as_ref(), &active_algs)?;
+        let ks = compute_kr(&thumbprints, None, &active_algs)?;
+        let auth_root = compute_ar(&ks, None, &active_algs)?;
+        let cs = compute_cs(&auth_root, self.principal.ds.as_ref(), &active_algs)?;
 
         // 4. Inject commit:<CS> into pay as alg:b64(digest) tagged string
         // Per Coz semantics, digest references in pay align with the signer's algorithm.
@@ -550,7 +550,7 @@ mod tests {
         let tx = make_test_tx(true, 0x01);
         pending.push(tx);
 
-        let auth_state = AuthState(MultihashDigest::from_single(
+        let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
@@ -558,19 +558,19 @@ mod tests {
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
-        let ps = PrincipalState(MultihashDigest::from_single(
+        let ps = PrincipalRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_state.clone(), cs.clone(), ps.clone());
+        let commit = pending.finalize(auth_root.clone(), cs.clone(), ps.clone());
         assert!(commit.is_ok());
 
         let commit = commit.unwrap();
         assert_eq!(commit.len(), 1);
-        assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.auth_root(), &auth_root);
         assert_eq!(commit.cs(), &cs);
-        assert_eq!(commit.ps(), &ps);
+        assert_eq!(commit.pr(), &ps);
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
         let tx = make_test_tx(false, 0x01); // No finalizer marker, but finalize should succeed
         pending.push(tx);
 
-        let auth_state = AuthState(MultihashDigest::from_single(
+        let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
@@ -588,12 +588,12 @@ mod tests {
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
-        let ps = PrincipalState(MultihashDigest::from_single(
+        let ps = PrincipalRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_state, cs, ps);
+        let result = pending.finalize(auth_root, cs, ps);
         assert!(
             result.is_ok(),
             "finalize should succeed without finalizer marker"
@@ -604,7 +604,7 @@ mod tests {
     fn pending_commit_finalize_fails_when_empty() {
         let pending = PendingCommit::new(HashAlg::Sha256);
 
-        let auth_state = AuthState(MultihashDigest::from_single(
+        let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
@@ -612,12 +612,12 @@ mod tests {
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
-        let ps = PrincipalState(MultihashDigest::from_single(
+        let ps = PrincipalRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_state, cs, ps);
+        let result = pending.finalize(auth_root, cs, ps);
         assert!(result.is_err(), "should fail when empty");
     }
 
@@ -640,7 +640,7 @@ mod tests {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         pending.push(make_test_tx(true, 0x01));
 
-        let auth_state = AuthState(MultihashDigest::from_single(
+        let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
@@ -648,22 +648,22 @@ mod tests {
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
-        let ps = PrincipalState(MultihashDigest::from_single(
+        let ps = PrincipalRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
         let commit = pending
-            .finalize(auth_state.clone(), cs.clone(), ps.clone())
+            .finalize(auth_root.clone(), cs.clone(), ps.clone())
             .unwrap();
 
         // Test all accessors
         assert_eq!(commit.transactions().len(), 1);
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 1);
-        assert_eq!(commit.auth_state(), &auth_state);
+        assert_eq!(commit.auth_root(), &auth_root);
         assert_eq!(commit.cs(), &cs);
-        assert_eq!(commit.ps(), &ps);
+        assert_eq!(commit.pr(), &ps);
         assert_eq!(commit.commit_id().get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
@@ -674,7 +674,7 @@ mod tests {
         pending.push(make_test_tx(false, 0x02));
         pending.push(make_test_tx(true, 0x03)); // finalizer
 
-        let auth_state = AuthState(MultihashDigest::from_single(
+        let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
@@ -682,12 +682,12 @@ mod tests {
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
-        let ps = PrincipalState(MultihashDigest::from_single(
+        let ps = PrincipalRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_state, cs, ps).unwrap();
+        let commit = pending.finalize(auth_root, cs, ps).unwrap();
         assert_eq!(commit.len(), 3);
 
         // Commit ID should be Merkle root of all 3 transaction czds

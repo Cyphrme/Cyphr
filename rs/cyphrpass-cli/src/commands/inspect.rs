@@ -3,7 +3,7 @@
 use cyphrpass_storage::load_principal_from_commits;
 
 use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
+    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
@@ -12,7 +12,7 @@ use crate::{Cli, OutputFormat};
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     // Try to load commits from store
     let commits = store.get_commits(&pr).unwrap_or_default();
@@ -90,11 +90,11 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 // Display helpers (unique to inspect)
 // ============================================================================
 
-/// Format KeyState for display.
+/// Format KeyRoot for display.
 fn format_ks(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let ks = principal.key_state();
+    let ks = principal.key_root();
     let hash_alg = principal.hash_alg();
 
     ks.get(hash_alg)
@@ -102,24 +102,24 @@ fn format_ks(principal: &cyphrpass::Principal) -> String {
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
-/// Format AuthState for display.
+/// Format AuthRoot for display.
 fn format_as(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let auth_state = principal.auth_state();
+    let auth_root = principal.auth_root();
     let hash_alg = principal.hash_alg();
 
-    auth_state
+    auth_root
         .get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
-/// Format PrincipalState for display.
+/// Format PrincipalRoot for display.
 fn format_ps(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let ps = principal.ps();
+    let ps = principal.pr();
     let hash_alg = principal.hash_alg();
 
     ps.get(hash_alg)
@@ -127,14 +127,14 @@ fn format_ps(principal: &cyphrpass::Principal) -> String {
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
-/// Format PrincipalRoot for display.
+/// Format PrincipalGenesis for display.
 fn format_pr(principal: &cyphrpass::Principal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let hash_alg = principal.hash_alg();
 
     principal
-        .pr()
+        .pg()
         .and_then(|pr| pr.get(hash_alg))
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<none>".to_string())

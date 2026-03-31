@@ -69,16 +69,16 @@ type dataLedger struct {
 //   - Auth ledger tracking keys and transactions
 //   - Data ledger tracking actions (Level 4+)
 type Principal struct {
-	// pr is nil until principal/create establishes it (SPEC §5.1).
+	// pg is nil until principal/create establishes it (SPEC §5.1).
 	// INVARIANT: only TxPrincipalCreate sets this field. Field privacy
 	// prevents external construction — Go equivalent of Rust's enum Approach C.
-	pr       *PrincipalRoot
-	ps       PrincipalState
-	ks       KeyState
+	pg       *PrincipalGenesis
+	pr       PrincipalRoot
+	kr       KeyRoot
 	commitID *CommitID // nil if no transactions
-	as       AuthState
+	ar       AuthRoot
 	cs       *CommitState // nil before first commit
-	ds       *DataState   // nil if no actions
+	dr       *DataRoot    // nil if no actions
 
 	auth       authLedger
 	data       dataLedger
@@ -121,33 +121,33 @@ func Implicit(key *coz.Key) (*Principal, error) {
 	}
 
 	// KS = tmb (single key promotes)
-	ks, err := ComputeKS([]coz.B64{key.Tmb}, nil, algs)
+	kr, err := ComputeKR([]coz.B64{key.Tmb}, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// AS = KS (no RS, promotes)
-	as, err := ComputeAS(ks, nil, algs)
+	ar, err := ComputeAR(kr, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// CS = AS (no DS at genesis, promotes)
-	cs, err := ComputeCS(as, nil, algs)
+	cs, err := ComputeCS(ar, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PS = AS (no CommitID or DS at genesis, promotes)
-	ps, err := ComputePS(as, nil, nil, nil, algs)
+	pr, err := ComputePR(ar, nil, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	p := &Principal{
-		ps:         ps,
-		ks:         ks,
-		as:         as,
+		pr:         pr,
+		kr:         kr,
+		ar:         ar,
 		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
@@ -186,33 +186,33 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 	}
 
 	// KS = H(sort(tmb₀, tmb₁, ...)) or promoted if single
-	ks, err := ComputeKS(thumbprints, nil, algs)
+	kr, err := ComputeKR(thumbprints, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// AS = KS (no RS, promotes)
-	as, err := ComputeAS(ks, nil, algs)
+	ar, err := ComputeAR(kr, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// CS = AS (no DS at genesis, promotes)
-	cs, err := ComputeCS(as, nil, algs)
+	cs, err := ComputeCS(ar, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	// PS = AS (no CommitID or DS at genesis, promotes)
-	ps, err := ComputePS(as, nil, nil, nil, algs)
+	pr, err := ComputePR(ar, nil, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Principal{
-		ps:         ps,
-		ks:         ks,
-		as:         as,
+		pr:         pr,
+		kr:         kr,
+		ar:         ar,
 		cs:         &cs,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
@@ -228,28 +228,28 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 // PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
 // INVARIANT: pr is set exclusively by TxPrincipalCreate. Field privacy
 // enforces this — external code cannot construct a Principal with a forged PR.
-func (p *Principal) PR() *PrincipalRoot {
-	return p.pr
+func (p *Principal) PG() *PrincipalGenesis {
+	return p.pg
 }
 
 // PS returns the current Principal State.
-func (p *Principal) PS() PrincipalState {
-	return p.ps
+func (p *Principal) PR() PrincipalRoot {
+	return p.pr
 }
 
 // AS returns the current Auth State.
-func (p *Principal) AS() AuthState {
-	return p.as
+func (p *Principal) AR() AuthRoot {
+	return p.ar
 }
 
 // KS returns the current Key State.
-func (p *Principal) KS() KeyState {
-	return p.ks
+func (p *Principal) KR() KeyRoot {
+	return p.kr
 }
 
-// DS returns the current Data State (nil if no actions).
-func (p *Principal) DS() *DataState {
-	return p.ds
+// DR returns the current Data Root (nil if no actions).
+func (p *Principal) DR() *DataRoot {
+	return p.dr
 }
 
 // HashAlg returns the hash algorithm used by this principal (genesis algorithm).
@@ -410,18 +410,18 @@ func (p *Principal) RecordAction(action *Action) error {
 	for i, a := range p.data.Actions {
 		czds[i] = a.Czd
 	}
-	ds, err := ComputeDS(czds, nil, p.hashAlg)
+	ds, err := ComputeDR(czds, nil, p.hashAlg)
 	if err != nil {
 		return err
 	}
-	p.ds = ds
+	p.dr = ds
 
 	// Recompute PS = MR(AS, CommitID?, DS?)
-	ps, err := ComputePS(p.as, p.commitID, p.ds, nil, p.activeAlgs)
+	pr, err := ComputePR(p.ar, p.commitID, p.dr, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
-	p.ps = ps
+	p.pr = pr
 
 	return nil
 }
@@ -549,12 +549,12 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 			return err
 		}
 		// id must equal current PS (SPEC §5.1:609 — "id: Final PS = PR")
-		if !bytes.Equal(tx.ID, p.ps.First()) {
+		if !bytes.Equal(tx.ID, p.pr.First()) {
 			return ErrMalformedPayload
 		}
 		// Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
-		pr := NewPrincipalRoot(p.ps)
-		p.pr = &pr
+		pr := NewPrincipalGenesis(p.pr)
+		p.pg = &pr
 	}
 
 	// Update signer's last_used timestamp
@@ -574,8 +574,8 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 
 // verifyPre checks that the transaction's pre matches current PS.
 // At genesis (before first commit), PS is promoted from AS, so pre = AS = PS.
-func (p *Principal) verifyPre(pre PrincipalState) error {
-	if !bytes.Equal(p.ps.First(), pre.First()) {
+func (p *Principal) verifyPre(pre PrincipalRoot) error {
+	if !bytes.Equal(p.pr.First(), pre.First()) {
 		return ErrInvalidPrior
 	}
 	return nil
@@ -741,18 +741,18 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	for i, k := range p.auth.Keys {
 		thumbprints[i] = k.Tmb
 	}
-	ks, err := ComputeKS(thumbprints, nil, p.activeAlgs)
+	kr, err := ComputeKR(thumbprints, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	p.ks = ks
+	p.kr = kr
 
 	// Recompute AS = MR(KS, RS?)
-	as, err := ComputeAS(p.ks, nil, p.activeAlgs)
+	ar, err := ComputeAR(p.kr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	p.as = as
+	p.ar = ar
 
 	// Compute Commit ID from this commit's transaction czds (SPEC §4.2.1)
 	cid, err := pending.ComputeCommitID()
@@ -762,7 +762,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	p.commitID = cid
 
 	// Recompute CS = MR(AS, DS?) — PT minus CommitID
-	cs, err := ComputeCS(p.as, p.ds, p.activeAlgs)
+	cs, err := ComputeCS(p.ar, p.dr, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
@@ -788,14 +788,14 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 
 	// Recompute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
-	ps, err := ComputePS(p.as, p.commitID, p.ds, nil, p.activeAlgs)
+	pr, err := ComputePR(p.ar, p.commitID, p.dr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	p.ps = ps
+	p.pr = pr
 
 	// Finalize the pending commit into an immutable Commit
-	commit, err := pending.Finalize(p.as, cs, p.ps)
+	commit, err := pending.Finalize(p.ar, cs, p.pr)
 	if err != nil {
 		return nil, err
 	}

@@ -23,16 +23,16 @@ func TestImplicit_SingleKey(t *testing.T) {
 	}
 
 	// Level 1: PR is nil (no principal/create at L1)
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Errorf("PR should be nil at Level 1")
 	}
-	if !bytes.Equal(p.PS().First(), key.Tmb) {
+	if !bytes.Equal(p.PR().First(), key.Tmb) {
 		t.Errorf("PS != tmb")
 	}
-	if !bytes.Equal(p.AS().First(), key.Tmb) {
+	if !bytes.Equal(p.AR().First(), key.Tmb) {
 		t.Errorf("AS != tmb")
 	}
-	if !bytes.Equal(p.KS().First(), key.Tmb) {
+	if !bytes.Equal(p.KR().First(), key.Tmb) {
 		t.Errorf("KS != tmb")
 	}
 }
@@ -64,7 +64,7 @@ func TestExplicit_MultiKey(t *testing.T) {
 	}
 
 	// PR should be nil (not yet established — needs principal/create)
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Error("PR should be nil before principal/create")
 	}
 
@@ -94,15 +94,15 @@ func TestPR_IsNilAtLevel1(t *testing.T) {
 	p, _ := Implicit(key)
 
 	// PR is nil at Level 1 (no principal/create)
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Error("PR should be nil at Level 1")
 	}
 
 	// PS still exists and is stable
-	psBefore := append([]byte{}, p.PS().First()...)
-	ps := p.PS()
-	_ = ps
-	if !bytes.Equal(p.PS().First(), psBefore) {
+	psBefore := append([]byte{}, p.PR().First()...)
+	pr := p.PR()
+	_ = pr
+	if !bytes.Equal(p.PR().First(), psBefore) {
 		t.Error("PS should be stable")
 	}
 }
@@ -128,17 +128,17 @@ func TestImplicit_GoldenKey(t *testing.T) {
 	}
 
 	// At Level 1, PR is nil, PS = AS = KS = tmb
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Error("PR should be nil at Level 1")
 	}
-	if p.PS().String() != goldenTmbB64 {
-		t.Errorf("PS = %s, want %s", p.PS().String(), goldenTmbB64)
+	if p.PR().String() != goldenTmbB64 {
+		t.Errorf("PS = %s, want %s", p.PR().String(), goldenTmbB64)
 	}
-	if p.AS().String() != goldenTmbB64 {
-		t.Errorf("AS = %s, want %s", p.AS().String(), goldenTmbB64)
+	if p.AR().String() != goldenTmbB64 {
+		t.Errorf("AS = %s, want %s", p.AR().String(), goldenTmbB64)
 	}
-	if p.KS().String() != goldenTmbB64 {
-		t.Errorf("KS = %s, want %s", p.KS().String(), goldenTmbB64)
+	if p.KR().String() != goldenTmbB64 {
+		t.Errorf("KS = %s, want %s", p.KR().String(), goldenTmbB64)
 	}
 }
 
@@ -154,11 +154,11 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    p.PS(),
+		Pre:    p.PR(),
 		ID:     key2.Tmb,
 	}
 
-	oldAS := append([]byte{}, p.AS().First()...)
+	oldAS := append([]byte{}, p.AR().First()...)
 
 	_, err := p.ApplyTransactionUnsafe(tx, key2)
 	if err != nil {
@@ -179,7 +179,7 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 	}
 
 	// AS should have changed
-	if bytes.Equal(p.AS().First(), oldAS) {
+	if bytes.Equal(p.AR().First(), oldAS) {
 		t.Error("AS should change after key add")
 	}
 }
@@ -189,7 +189,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 	p, _ := Implicit(key1)
 
 	key2 := makeTestCozKey(0x22)
-	wrongPre := PrincipalState{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
+	wrongPre := PrincipalRoot{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
 	tx := &Transaction{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
@@ -216,7 +216,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xEE}, 32),
 		Rvk:    2000,
-		Pre:    p.PS(), // Unified pre semantics: all transactions require pre
+		Pre:    p.PR(), // Unified pre semantics: all transactions require pre
 	}
 
 	_, err := p.ApplyTransactionUnsafe(tx, nil)
@@ -238,7 +238,7 @@ func TestPR_StillNilAfterTransaction(t *testing.T) {
 	p, _ := Implicit(key1)
 
 	// PR is nil at L1
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Fatal("PR should be nil before principal/create")
 	}
 
@@ -248,13 +248,13 @@ func TestPR_StillNilAfterTransaction(t *testing.T) {
 		Signer: key1.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    p.PS(),
+		Pre:    p.PR(),
 		ID:     key2.Tmb,
 	}
 	p.ApplyTransactionUnsafe(tx, key2) //nolint:errcheck
 
 	// PR should still be nil (no principal/create was issued)
-	if p.PR() != nil {
+	if p.PG() != nil {
 		t.Error("PR should still be nil without principal/create")
 	}
 }
@@ -268,7 +268,7 @@ func TestRecordAction_UpgradesToLevel4(t *testing.T) {
 	if p.Level() != Level1 {
 		t.Errorf("expected Level1, got %v", p.Level())
 	}
-	if p.DS() != nil {
+	if p.DR() != nil {
 		t.Error("DS should be nil before actions")
 	}
 
@@ -287,7 +287,7 @@ func TestRecordAction_UpgradesToLevel4(t *testing.T) {
 	if p.Level() != Level4 {
 		t.Errorf("expected Level4, got %v", p.Level())
 	}
-	if p.DS() == nil {
+	if p.DR() == nil {
 		t.Error("DS should not be nil after action")
 	}
 	if p.ActionCount() != 1 {
@@ -299,7 +299,7 @@ func TestRecordAction_ChangesPS(t *testing.T) {
 	key := makeTestCozKey(0xBB)
 	p, _ := Implicit(key)
 
-	psBefore := append([]byte{}, p.PS().First()...)
+	psBefore := append([]byte{}, p.PR().First()...)
 
 	action := &Action{
 		Typ:    "cyphr.me/action/test",
@@ -309,7 +309,7 @@ func TestRecordAction_ChangesPS(t *testing.T) {
 	}
 	p.RecordAction(action)
 
-	if bytes.Equal(p.PS().First(), psBefore) {
+	if bytes.Equal(p.PR().First(), psBefore) {
 		t.Error("PS should change after adding DS")
 	}
 }

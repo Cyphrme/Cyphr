@@ -174,7 +174,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 	// Build pay object (pre field will be overridden dynamically if we are in a batch,
 	// but the test intent generator computes it before batch modifications are readable.
 	// The cyphrpass Go implementation expects pre to be generated correctly by e2e runner)
-	payObj := buildTransactionPay(tx, signerKey.Tmb, principal.PS())
+	payObj := buildTransactionPay(tx, signerKey.Tmb, principal.PR())
 
 	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
@@ -216,7 +216,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 
 	// Handle principal/create: id is self-referential (current PS)
 	if strings.Contains(tx.Typ, "principal/create") {
-		payObj["id"] = principal.PS().Tagged()
+		payObj["id"] = principal.PR().Tagged()
 	}
 
 	// Inject 'alg' field for both final and non-final transactions
@@ -289,7 +289,7 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalState) map[string]any {
+func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalRoot) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
@@ -393,16 +393,16 @@ func verifyE2EExpected(p *cyphrpass.Principal, exp *ExpectedAssertions) []string
 		failures = append(failures, fmt.Sprintf("level: got %d, want %d", p.Level(), *exp.Level))
 	}
 
-	if exp.KS != "" && p.KS().String() != exp.KS {
-		failures = append(failures, fmt.Sprintf("ks: got %s, want %s", p.KS().String(), exp.KS))
+	if exp.KR != "" && p.KR().String() != exp.KR {
+		failures = append(failures, fmt.Sprintf("ks: got %s, want %s", p.KR().String(), exp.KR))
 	}
 
-	if exp.AS != "" && p.AS().String() != exp.AS {
-		failures = append(failures, fmt.Sprintf("as: got %s, want %s", p.AS().String(), exp.AS))
+	if exp.AR != "" && p.AR().String() != exp.AR {
+		failures = append(failures, fmt.Sprintf("as: got %s, want %s", p.AR().String(), exp.AR))
 	}
 
-	if exp.PS != "" && p.PS().String() != exp.PS {
-		failures = append(failures, fmt.Sprintf("ps: got %s, want %s", p.PS().String(), exp.PS))
+	if exp.PR != "" && p.PR().String() != exp.PR {
+		failures = append(failures, fmt.Sprintf("ps: got %s, want %s", p.PR().String(), exp.PR))
 	}
 
 	return failures
@@ -482,10 +482,10 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Compare state
-	if principal.PS().String() != reimported.PS().String() {
+	if principal.PR().String() != reimported.PR().String() {
 		result.Failures = append(result.Failures, fmt.Sprintf(
 			"round-trip PS mismatch: original=%s reimported=%s",
-			principal.PS().String(), reimported.PS().String()))
+			principal.PR().String(), reimported.PR().String()))
 	}
 
 	if principal.ActiveKeyCount() != reimported.ActiveKeyCount() {
@@ -577,7 +577,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		thumbprints = append(thumbprints, k.Tmb)
 	}
 
-	recomputedKS, err := cyphrpass.ComputeKS(thumbprints, nil, activeAlgs)
+	recomputedKS, err := cyphrpass.ComputeKR(thumbprints, nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute KS: %w", err)
 		return result
@@ -585,7 +585,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 
 	// Step 3: Verify each algorithm variant matches for KS
 	for _, alg := range activeAlgs {
-		reimportedVariant := reimported.KS().Get(alg)
+		reimportedVariant := reimported.KR().Get(alg)
 		recomputedVariant := recomputedKS.Get(alg)
 
 		if reimportedVariant == nil {
@@ -604,14 +604,14 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 4: Recompute AS and verify variants
-	recomputedAS, err := cyphrpass.ComputeAS(recomputedKS, nil, activeAlgs)
+	recomputedAS, err := cyphrpass.ComputeAR(recomputedKS, nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute AS: %w", err)
 		return result
 	}
 
 	for _, alg := range activeAlgs {
-		reimportedVariant := reimported.AS().Get(alg)
+		reimportedVariant := reimported.AR().Get(alg)
 		recomputedVariant := recomputedAS.Get(alg)
 
 		if reimportedVariant == nil {
@@ -630,7 +630,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 5: Recompute CS = MR(AS, DS?) and verify variants
-	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.DS(), activeAlgs)
+	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.DR(), activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute CS: %w", err)
 		return result
@@ -658,14 +658,14 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 6: Recompute PS = MR(AS, CommitID?, DS?) and verify variants
-	recomputedPS, err := cyphrpass.ComputePS(recomputedAS, reimported.CommitID(), reimported.DS(), nil, activeAlgs)
+	recomputedPS, err := cyphrpass.ComputePR(recomputedAS, reimported.CommitID(), reimported.DR(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute PS: %w", err)
 		return result
 	}
 
 	for _, alg := range activeAlgs {
-		reimportedVariant := reimported.PS().Get(alg)
+		reimportedVariant := reimported.PR().Get(alg)
 		recomputedVariant := recomputedPS.Get(alg)
 
 		if reimportedVariant == nil {
@@ -684,9 +684,9 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 6: PR check — nil for L1/L2, has genesis variant for L3+
-	if reimported.PR() != nil {
+	if reimported.PG() != nil {
 		genesisAlg := reimported.HashAlg()
-		prVariant := reimported.PR().Get(genesisAlg)
+		prVariant := reimported.PG().Get(genesisAlg)
 		if prVariant == nil {
 			result.Failures = append(result.Failures, fmt.Sprintf(
 				"PR should have genesis algorithm %s variant", genesisAlg))

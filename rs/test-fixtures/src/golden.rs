@@ -97,40 +97,40 @@ pub struct GoldenExpected {
     /// Expected level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
-    /// Expected key state digest (first variant).
+    /// Expected key root digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ks: Option<String>,
-    /// Expected auth state digest (first variant).
-    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
-    pub auth_state: Option<String>,
-    /// Expected principal state digest (first variant).
+    pub kr: Option<String>,
+    /// Expected auth root digest (first variant).
+    #[serde(rename = "ar", default, skip_serializing_if = "Option::is_none")]
+    pub auth_root: Option<String>,
+    /// Expected principal root digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ps: Option<String>,
+    pub pr: Option<String>,
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
     pub commit_id: Option<String>,
-    /// Expected commit state digest: MR(AS, Commit ID).
+    /// Expected commit state digest: MR(AR, Commit ID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cs: Option<String>,
-    /// Expected data state digest (Level 4).
+    /// Expected data root digest (Level 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ds: Option<String>,
-    /// Expected principal root.
+    pub dr: Option<String>,
+    /// Expected principal genesis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr: Option<String>,
+    pub pg: Option<String>,
     /// Expected error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Per-algorithm KS variants for multihash verification (SPEC §14).
+    /// Per-algorithm KR variants for multihash verification (SPEC §14).
     /// Key: algorithm name (e.g., "SHA-256"), Value: base64url digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multihash_ks: Option<std::collections::BTreeMap<String, String>>,
-    /// Per-algorithm AS variants for multihash verification.
+    pub multihash_kr: Option<std::collections::BTreeMap<String, String>>,
+    /// Per-algorithm AR variants for multihash verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multihash_as: Option<std::collections::BTreeMap<String, String>>,
-    /// Per-algorithm PS variants for multihash verification.
+    pub multihash_ar: Option<std::collections::BTreeMap<String, String>>,
+    /// Per-algorithm PR variants for multihash verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub multihash_ps: Option<std::collections::BTreeMap<String, String>>,
+    pub multihash_pr: Option<std::collections::BTreeMap<String, String>>,
 }
 
 // ============================================================================
@@ -157,11 +157,11 @@ impl<'a> Generator<'a> {
 
     /// Format principal state as tagged digest string (alg:digest format).
     ///
-    /// Delegates to Principal::ps_tagged() — the canonical `pre` format.
-    fn format_ps_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
-        principal.ps_tagged().map_err(|e| Error::Generation {
+    /// Delegates to Principal::pr_tagged() — the canonical `pre` format.
+    fn format_pr_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
+        principal.pr_tagged().map_err(|e| Error::Generation {
             name: String::new(),
-            reason: format!("ps_tagged failed: {}", e),
+            reason: format!("pr_tagged failed: {}", e),
         })
     }
 
@@ -285,7 +285,7 @@ impl<'a> Generator<'a> {
     /// - commit_id: Commit ID digest (base64url)
     /// - as: Auth State digest (base64url)
     /// - cs: Commit State digest (base64url)
-    /// - ps: Principal State digest (base64url)
+    /// - pr: Principal State digest (base64url)
     ///
     /// Actions are exported as single-tx pseudo-commits at the end, with
     /// the current state digests at the time of action application.
@@ -331,8 +331,8 @@ impl<'a> Generator<'a> {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            let auth_state = principal
-                .auth_state()
+            let auth_root = principal
+                .auth_root()
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
@@ -346,8 +346,8 @@ impl<'a> Generator<'a> {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            let ps = principal
-                .ps()
+            let pr_ = principal
+                .pr()
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
@@ -357,9 +357,9 @@ impl<'a> Generator<'a> {
                 vec![raw],
                 vec![],
                 commit_id,
-                auth_state,
+                auth_root,
                 cs,
-                ps,
+                pr_,
             ));
         }
 
@@ -495,7 +495,7 @@ impl<'a> Generator<'a> {
             if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
                 override_pre
             } else {
-                computed_pre = Self::format_ps_tagged(principal)?;
+                computed_pre = Self::format_pr_tagged(principal)?;
                 &computed_pre
             };
 
@@ -597,7 +597,7 @@ impl<'a> Generator<'a> {
             })?;
 
             // Capture pre before this commit (alg:digest format)
-            let pre = Self::format_ps_tagged(principal)?;
+            let pre = Self::format_pr_tagged(principal)?;
 
             // Resolve signer
             let signer = self.resolve_key(&tx.signer)?;
@@ -723,7 +723,7 @@ impl<'a> Generator<'a> {
             })?;
 
         // Capture pre (principal state before transaction) in alg:digest format
-        let pre = Self::format_ps_tagged(principal)?;
+        let pre = Self::format_pr_tagged(principal)?;
 
         // Resolve signer and build pay
         let signer = self.resolve_key(&tx.signer)?;
@@ -1258,20 +1258,20 @@ impl<'a> Generator<'a> {
             .expect("Principal must have at least one active algorithm");
 
         // Compute state digests with algorithm prefix (alg:digest format)
-        let ks = {
-            let ks_state = principal.key_state();
+        let kr = {
+            let ks_state = principal.key_root();
             ks_state
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
                 .unwrap_or_default()
         };
-        let auth_state = principal
-            .auth_state()
+        let auth_root = principal
+            .auth_root()
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
-        let ps = principal
-            .ps()
+        let pr_val = principal
+            .pr()
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
@@ -1284,10 +1284,10 @@ impl<'a> Generator<'a> {
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
-        let ds = principal.data_state().map(|d| d.0.to_b64());
-        let pr = principal
-            .pr()
-            .and_then(|pr_val| pr_val.get(first_alg))
+        let dr = principal.data_root().map(|d| d.0.to_b64());
+        let pg = principal
+            .pg()
+            .and_then(|pg_val| pg_val.get(first_alg))
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
         let level = principal.level() as u8;
@@ -1295,12 +1295,12 @@ impl<'a> Generator<'a> {
 
         // Build multihash variants if multiple algorithms active
         let active_algs = principal.active_algs();
-        let (multihash_ks, multihash_as, multihash_ps) = if active_algs.len() > 1 {
+        let (multihash_kr, multihash_ar, multihash_pr) = if active_algs.len() > 1 {
             let ks_map: std::collections::BTreeMap<String, String> = active_algs
                 .iter()
                 .filter_map(|alg| {
                     principal
-                        .key_state()
+                        .key_root()
                         .get(*alg)
                         .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
                 })
@@ -1309,21 +1309,21 @@ impl<'a> Generator<'a> {
                 .iter()
                 .filter_map(|alg| {
                     principal
-                        .auth_state()
+                        .auth_root()
                         .get(*alg)
                         .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
                 })
                 .collect();
-            let ps_map: std::collections::BTreeMap<String, String> = active_algs
+            let pr_map: std::collections::BTreeMap<String, String> = active_algs
                 .iter()
                 .filter_map(|alg| {
                     principal
-                        .ps()
+                        .pr()
                         .get(*alg)
                         .map(|d| (alg.to_string(), Base64UrlUnpadded::encode_string(d)))
                 })
                 .collect();
-            (Some(ks_map), Some(as_map), Some(ps_map))
+            (Some(ks_map), Some(as_map), Some(pr_map))
         } else {
             (None, None, None)
         };
@@ -1333,32 +1333,32 @@ impl<'a> Generator<'a> {
             Some(e) => GoldenExpected {
                 key_count: e.key_count.or(Some(key_count)),
                 level: e.level.or(Some(level)),
-                ks: e.ks.clone().or(Some(ks)),
-                auth_state: e.auth_state.clone().or(Some(auth_state)),
-                ps: e.ps.clone().or(Some(ps)),
+                kr: e.kr.clone().or(Some(kr)),
+                auth_root: e.auth_root.clone().or(Some(auth_root)),
+                pr: e.pr.clone().or(Some(pr_val)),
                 commit_id: e.commit_id.clone().or(commit_id),
                 cs: e.cs.clone().or(cs),
-                ds: ds.clone(),
-                pr: Some(pr.clone()),
+                dr: dr.clone(),
+                pg: Some(pg.clone()),
                 error: e.error.clone(),
-                multihash_ks: multihash_ks.clone(),
-                multihash_as: multihash_as.clone(),
-                multihash_ps: multihash_ps.clone(),
+                multihash_kr: multihash_kr.clone(),
+                multihash_ar: multihash_ar.clone(),
+                multihash_pr: multihash_pr.clone(),
             },
             None => GoldenExpected {
                 key_count: Some(key_count),
                 level: Some(level),
-                ks: Some(ks),
-                auth_state: Some(auth_state),
-                ps: Some(ps),
+                kr: Some(kr),
+                auth_root: Some(auth_root),
+                pr: Some(pr_val),
                 commit_id,
                 cs,
-                ds,
-                pr: Some(pr),
+                dr,
+                pg: Some(pg),
                 error: None,
-                multihash_ks,
-                multihash_as,
-                multihash_ps,
+                multihash_kr,
+                multihash_ar,
+                multihash_pr,
             },
         }
     }
@@ -1449,13 +1449,10 @@ level = 3
         // Verify expected state was computed
         assert_eq!(golden.expected.key_count, Some(2));
         assert_eq!(golden.expected.level, Some(3));
-        assert!(golden.expected.ks.is_some(), "ks should be computed");
-        assert!(
-            golden.expected.auth_state.is_some(),
-            "as should be computed"
-        );
-        assert!(golden.expected.ps.is_some(), "ps should be computed");
+        assert!(golden.expected.kr.is_some(), "ks should be computed");
+        assert!(golden.expected.auth_root.is_some(), "as should be computed");
         assert!(golden.expected.pr.is_some(), "pr should be computed");
+        assert!(golden.expected.pg.is_some(), "pg should be computed");
     }
 
     #[test]
@@ -1526,9 +1523,9 @@ target = "alice"
         assert_eq!(golden.expected.key_count, Some(2));
 
         // All state digests should be non-empty
+        assert!(golden.expected.pg.is_some());
         assert!(golden.expected.pr.is_some());
-        assert!(golden.expected.ps.is_some());
-        assert!(golden.expected.ks.is_some());
-        assert!(golden.expected.auth_state.is_some());
+        assert!(golden.expected.kr.is_some());
+        assert!(golden.expected.auth_root.is_some());
     }
 }

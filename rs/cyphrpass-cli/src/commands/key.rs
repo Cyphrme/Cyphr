@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::common::{
     current_timestamp, extract_genesis_from_commits, generate_key, load_key_from_keystore,
-    parse_principal_root, parse_store,
+    parse_principal_genesis, parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, KeyCommands, OutputFormat};
@@ -63,7 +63,7 @@ fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
 fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     // Load current principal state
     let commits = store.get_commits(&pr).unwrap_or_default();
@@ -107,7 +107,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
 
     // Build pay Value for key/create (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
-    let pre = principal.ps_tagged()?;
+    let pre = principal.pr_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -163,7 +163,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
 fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     // Load current principal state
     let commits = store.get_commits(&pr).unwrap_or_default();
@@ -191,7 +191,7 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
 
     // Build pay Value for key/revoke (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
-    let pre = principal.ps_tagged()?;
+    let pre = principal.pr_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
@@ -294,7 +294,7 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     let commits = store.get_commits(&pr).unwrap_or_default();
 

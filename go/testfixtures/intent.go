@@ -93,14 +93,14 @@ type ExpectedAssertions struct {
 	KeyCount *int `toml:"key_count,omitempty"`
 	// Level is expected feature level.
 	Level *int `toml:"level,omitempty"`
-	// KS is expected key state digest.
-	KS string `toml:"ks,omitempty"`
-	// AS is expected auth state digest.
-	AS string `toml:"as,omitempty"`
+	// KR is expected key root digest.
+	KR string `toml:"kr,omitempty"`
+	// AR is expected auth root digest.
+	AR string `toml:"ar,omitempty"`
 	// CS is expected commit state digest.
 	CS string `toml:"cs,omitempty"`
-	// PS is expected principal state digest.
-	PS string `toml:"ps,omitempty"`
+	// PR is expected principal root digest.
+	PR string `toml:"pr,omitempty"`
 	// CommitID is expected commit ID digest.
 	CommitID string `toml:"commit_id,omitempty"`
 	// Error is expected error for error tests.

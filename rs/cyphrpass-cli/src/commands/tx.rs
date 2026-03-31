@@ -3,7 +3,7 @@
 use cyphrpass_storage::{Genesis, load_principal_from_commits};
 
 use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_root, parse_store,
+    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat, TxCommands};
@@ -74,7 +74,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 /// Verify transaction chain integrity for an identity.
 fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     // Load commits from store
     let commits = store.get_commits(&pr).unwrap_or_default();
@@ -86,7 +86,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let principal = cyphrpass::Principal::implicit(key)?;
 
         // Verify PR matches (L1 has no PR)
-        if let Some(pr) = principal.pr() {
+        if let Some(pr) = principal.pg() {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
             let computed_pr = pr
                 .as_multihash()
@@ -140,7 +140,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     // Verify PR matches
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    if let Some(pr) = principal.pr() {
+    if let Some(pr) = principal.pg() {
         let computed_pr = pr
             .as_multihash()
             .first_variant()
@@ -159,14 +159,14 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         return Ok(());
     };
     let computed_ps = principal
-        .ps()
+        .pr()
         .as_multihash()
         .first_variant()
         .map(Base64UrlUnpadded::encode_string)
         .map_err(|e| Error::Storage(format!("PS empty: {e}")))?;
 
     // Parse stored ps which may be in "alg:digest" format
-    let stored_ps_digest = last_commit.ps.split(':').last().unwrap_or(&last_commit.ps);
+    let stored_ps_digest = last_commit.pr.split(':').last().unwrap_or(&last_commit.pr);
 
     if computed_ps != stored_ps_digest {
         return Err(Error::Storage(format!(
@@ -204,7 +204,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphrpass::Principal> {
     let store = parse_store(&cli.store)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     let commits = store.get_commits(&pr).unwrap_or_default();
 

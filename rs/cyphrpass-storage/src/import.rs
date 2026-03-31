@@ -9,7 +9,7 @@
 
 use crate::{CommitEntry, Entry, KeyEntry};
 use coz::Thumbprint;
-use cyphrpass::state::{AuthState, PrincipalRoot};
+use cyphrpass::state::{AuthRoot, PrincipalGenesis};
 use cyphrpass::{Key, Principal};
 
 // ============================================================================
@@ -48,7 +48,7 @@ pub enum Genesis {
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
     /// The trusted Auth State at checkpoint.
-    pub auth_state: AuthState,
+    pub auth_root: AuthRoot,
     /// Active keys at checkpoint (needed to verify subsequent transactions).
     pub keys: Vec<Key>,
     /// Future: thumbprint of key that attested this checkpoint.
@@ -179,7 +179,7 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///
 /// ```ignore
 /// let checkpoint = Checkpoint {
-///     auth_state: trusted_as,
+///     auth_root: trusted_as,
 ///     keys: current_keys,
 ///     attestor: Some(service_tmb),
 /// };
@@ -187,7 +187,7 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 /// let principal = load_from_checkpoint(pr, checkpoint, &entries)?;
 /// ```
 pub fn load_from_checkpoint(
-    expected_pr: Option<PrincipalRoot>,
+    expected_pr: Option<PrincipalGenesis>,
     checkpoint: Checkpoint,
     entries: &[Entry],
 ) -> Result<Principal, LoadError> {
@@ -198,7 +198,7 @@ pub fn load_from_checkpoint(
     // Construct principal at checkpoint state
     // We use the first key to determine hash algorithm, then add remaining keys
     let mut principal =
-        Principal::from_checkpoint(expected_pr, checkpoint.auth_state, checkpoint.keys)?;
+        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys)?;
 
     // Replay entries from checkpoint
     replay_entries(&mut principal, entries)?;
@@ -566,7 +566,7 @@ mod tests {
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
         // Implicit genesis: PR is None at L1
-        assert!(principal.pr().is_none(), "PR should be None at L1");
+        assert!(principal.pg().is_none(), "PR should be None at L1");
         assert_eq!(principal.active_key_count(), 1);
     }
 
@@ -580,7 +580,7 @@ mod tests {
 
         // Explicit genesis: PR is None (needs principal/create)
         assert!(
-            principal.pr().is_none(),
+            principal.pg().is_none(),
             "PR should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
@@ -599,9 +599,9 @@ mod tests {
         use cyphrpass::multihash::MultihashDigest;
         use cyphrpass::state::HashAlg;
 
-        let pr = PrincipalRoot::from_bytes(vec![0xAA; 32]);
+        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]);
         let checkpoint = Checkpoint {
-            auth_state: AuthState(MultihashDigest::from_single(
+            auth_root: AuthRoot(MultihashDigest::from_single(
                 HashAlg::Sha256,
                 vec![0xBB; 32],
             )),

@@ -121,18 +121,18 @@ pub struct ExpectedAssertions {
     /// Expected level.
     #[serde(default)]
     pub level: Option<u8>,
-    /// Expected key state digest.
+    /// Expected key root digest.
     #[serde(default)]
-    pub ks: Option<String>,
-    /// Expected auth state digest.
-    #[serde(rename = "as", default)]
-    pub auth_state: Option<String>,
+    pub kr: Option<String>,
+    /// Expected auth root digest.
+    #[serde(rename = "ar", default)]
+    pub auth_root: Option<String>,
     /// Expected commit state digest.
     #[serde(default)]
     pub cs: Option<String>,
-    /// Expected principal state digest.
+    /// Expected principal root digest.
     #[serde(default)]
-    pub ps: Option<String>,
+    pub pr: Option<String>,
     /// Expected commit ID digest.
     #[serde(default)]
     pub commit_id: Option<String>,

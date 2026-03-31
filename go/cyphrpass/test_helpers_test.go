@@ -27,15 +27,15 @@ func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*C
 	for i, k := range p.auth.Keys {
 		thumbprints[i] = k.Tmb
 	}
-	ks, err := ComputeKS(thumbprints, nil, p.activeAlgs)
+	kr, err := ComputeKR(thumbprints, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	as, err := ComputeAS(ks, nil, p.activeAlgs)
+	ar, err := ComputeAR(kr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := ComputeCS(as, p.ds, p.activeAlgs)
+	cs, err := ComputeCS(ar, p.dr, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}

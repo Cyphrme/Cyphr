@@ -33,7 +33,7 @@ pub use import::{
     load_principal_from_commits,
 };
 
-use cyphrpass::state::PrincipalRoot;
+use cyphrpass::state::PrincipalGenesis;
 use serde_json::value::RawValue;
 
 /// Storage backend trait.
@@ -46,20 +46,20 @@ pub trait Store {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Append a signed entry to the log.
-    fn append_entry(&self, pr: &PrincipalRoot, entry: &Entry) -> Result<(), Self::Error>;
+    fn append_entry(&self, pr: &PrincipalGenesis, entry: &Entry) -> Result<(), Self::Error>;
 
     /// Retrieve all entries for a principal.
-    fn get_entries(&self, pr: &PrincipalRoot) -> Result<Vec<Entry>, Self::Error>;
+    fn get_entries(&self, pr: &PrincipalGenesis) -> Result<Vec<Entry>, Self::Error>;
 
     /// Retrieve entries with filtering (supports transaction patches).
     fn get_entries_range(
         &self,
-        pr: &PrincipalRoot,
+        pr: &PrincipalGenesis,
         opts: &QueryOpts,
     ) -> Result<Vec<Entry>, Self::Error>;
 
     /// Check if principal exists in storage.
-    fn exists(&self, pr: &PrincipalRoot) -> Result<bool, Self::Error>;
+    fn exists(&self, pr: &PrincipalGenesis) -> Result<bool, Self::Error>;
 }
 
 /// Query options for filtered retrieval.
@@ -221,9 +221,9 @@ pub struct KeyEntry {
 /// - `txs`: Array of transaction entries (signed coz messages)
 /// - `keys`: Key material introduced in this commit (SPEC §5.2/§5.3)
 /// - `commit_id`: Commit ID (Merkle root of commit's transaction czds)
-/// - `as`: Auth State (derived from KS)
-/// - `cs`: Commit State (derived from AS and Commit ID)
-/// - `ps`: Principal State (derived from CS and DS)
+/// - `ar`: Auth Root (derived from KR)
+/// - `cs`: Commit State (derived from AR and Commit ID)
+/// - `pr`: Principal Root (derived from CS and DR)
 ///
 /// The derived state digests enable efficient indexing and verification
 /// without replaying the full transaction history.
@@ -236,13 +236,13 @@ pub struct CommitEntry {
     /// Commit ID (per-commit Merkle root of transaction czds).
     #[serde(alias = "ts")]
     pub commit_id: String,
-    /// Auth State after this commit.
-    #[serde(rename = "as")]
-    pub auth_state: String,
-    /// Commit State: MR(AS, Commit ID).
+    /// Auth Root after this commit.
+    #[serde(rename = "ar")]
+    pub auth_root: String,
+    /// Commit State: MR(AR, Commit ID).
     pub cs: String,
-    /// Principal State after this commit.
-    pub ps: String,
+    /// Principal Root after this commit.
+    pub pr: String,
 }
 
 impl CommitEntry {
@@ -251,17 +251,17 @@ impl CommitEntry {
         txs: Vec<serde_json::Value>,
         keys: Vec<KeyEntry>,
         commit_id: String,
-        auth_state: String,
+        auth_root: String,
         cs: String,
-        ps: String,
+        pr: String,
     ) -> Self {
         Self {
             txs,
             keys,
             commit_id,
-            auth_state,
+            auth_root,
             cs,
-            ps,
+            pr,
         }
     }
 

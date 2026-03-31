@@ -41,7 +41,7 @@ pub enum ExportError {
 /// ```ignore
 /// let entries = export_entries(&principal)?;
 /// for entry in entries {
-///     store.append_entry(principal.pr(), &entry)?;
+///     store.append_entry(principal.pg(), &entry)?;
 /// }
 /// ```
 pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> {
@@ -130,14 +130,14 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             Base64UrlUnpadded::encode_string(cid_bytes)
         );
 
-        let as_bytes = commit.auth_state().as_multihash().first_variant()?;
+        let as_bytes = commit.auth_root().as_multihash().first_variant()?;
         let as_alg = commit
-            .auth_state()
+            .auth_root()
             .as_multihash()
             .algorithms()
             .next()
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
-        let auth_state = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
+        let auth_root = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
 
         let cs_bytes = commit.cs().as_multihash().first_variant()?;
         let cs_alg = commit
@@ -148,16 +148,16 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let cs = format!("{}:{}", cs_alg, Base64UrlUnpadded::encode_string(cs_bytes));
 
-        let ps_bytes = commit.ps().as_multihash().first_variant()?;
+        let ps_bytes = commit.pr().as_multihash().first_variant()?;
         let ps_alg = commit
-            .ps()
+            .pr()
             .as_multihash()
             .algorithms()
             .next()
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
 
-        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_state, cs, ps));
+        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_root, cs, ps));
     }
 
     Ok(commit_entries)
@@ -176,7 +176,7 @@ pub fn persist_entries<S: Store>(
         store
             .append_entry(
                 principal
-                    .pr()
+                    .pg()
                     .expect("persist_entries requires PR (Level 3+)"),
                 &entry,
             )

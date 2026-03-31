@@ -6,14 +6,14 @@ use std::path::Path;
 
 use cyphrpass_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
-use super::common::{extract_genesis_from_commits, parse_principal_root, parse_store};
+use super::common::{extract_genesis_from_commits, parse_principal_genesis, parse_store};
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
 pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
-    let pr = parse_principal_root(identity)?;
+    let pr = parse_principal_genesis(identity)?;
 
     // Get commits from storage
     let commits = store.get_commits(&pr)?;
@@ -83,10 +83,12 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     // Verify by loading the principal (this replays and verifies all transactions)
     let principal = load_principal_from_commits(genesis.clone(), &commits)?;
     // For Level 2 identities (no PR established), use the genesis thumbprint
-    let pr = match principal.pr() {
+    let pr = match principal.pg() {
         Some(pr) => pr.clone(),
         None => match &genesis {
-            Genesis::Implicit(k) => cyphrpass::PrincipalRoot::from_bytes(k.tmb.as_bytes().to_vec()),
+            Genesis::Implicit(k) => {
+                cyphrpass::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec())
+            },
             Genesis::Explicit(_) => {
                 return Err(Error::Storage(
                     "explicit genesis must establish a PR".into(),

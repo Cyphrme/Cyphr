@@ -18,7 +18,7 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 //
 //	entries := ExportEntries(principal)
 //	for _, entry := range entries {
-//	    store.AppendEntry(principal.PR(), entry)
+//	    store.AppendEntry(principal.PG(), entry)
 //	}
 func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 	var entries []*Entry
@@ -61,7 +61,7 @@ func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 func PersistEntries(store Store, principal *cyphrpass.Principal) (int, error) {
 	entries := ExportEntries(principal)
 	for _, entry := range entries {
-		if err := store.AppendEntry(principal.PR(), entry); err != nil {
+		if err := store.AppendEntry(principal.PG(), entry); err != nil {
 			return 0, err
 		}
 	}

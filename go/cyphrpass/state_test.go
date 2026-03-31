@@ -40,84 +40,84 @@ func TestHashAlgFromSEAlg(t *testing.T) {
 	}
 }
 
-func TestComputeKS_ImplicitPromotion(t *testing.T) {
+func TestComputeKR_ImplicitPromotion(t *testing.T) {
 	// SPEC §7.2: Single key, no nonce → KS = tmb
 	algs := []HashAlg{HashAlg(coz.SHA256)}
-	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, algs)
+	kr, err := ComputeKR([]coz.B64{goldenTmb}, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// First variant should equal the thumbprint (implicit promotion)
-	if !bytes.Equal(ks.First(), goldenTmb) {
-		t.Errorf("single key should promote to KS: got %x, want %x", ks.First(), goldenTmb)
+	if !bytes.Equal(kr.First(), goldenTmb) {
+		t.Errorf("single key should promote to KS: got %x, want %x", kr.First(), goldenTmb)
 	}
 }
 
-func TestComputeKS_EmptyKeys(t *testing.T) {
+func TestComputeKR_EmptyKeys(t *testing.T) {
 	algs := []HashAlg{HashAlg(coz.SHA256)}
-	_, err := ComputeKS(nil, nil, algs)
+	_, err := ComputeKR(nil, nil, algs)
 	if err != ErrNoActiveKeys {
 		t.Errorf("expected ErrNoActiveKeys, got %v", err)
 	}
 }
 
-func TestComputeAS_ImplicitPromotion(t *testing.T) {
+func TestComputeAR_ImplicitPromotion(t *testing.T) {
 	// SPEC §8.4: Only KS, no RS, no nonce → AS = KS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
-	ks := KeyState{FromSingleDigest(HashSha256, goldenTmb)}
-	as, err := ComputeAS(ks, nil, algs)
+	kr := KeyRoot{FromSingleDigest(HashSha256, goldenTmb)}
+	ar, err := ComputeAR(kr, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(as.First(), ks.First()) {
-		t.Errorf("AS should promote from KS: got %x, want %x", as.First(), ks.First())
+	if !bytes.Equal(ar.First(), kr.First()) {
+		t.Errorf("AS should promote from KS: got %x, want %x", ar.First(), kr.First())
 	}
 }
 
-func TestComputePS_ImplicitPromotion(t *testing.T) {
+func TestComputePR_ImplicitPromotion(t *testing.T) {
 	// SPEC §8.3: Only AS, no CommitID, no DS, no nonce → PS = AS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
-	as := AuthState{FromSingleDigest(HashSha256, goldenTmb)}
-	ps, err := ComputePS(as, nil, nil, nil, algs)
+	ar := AuthRoot{FromSingleDigest(HashSha256, goldenTmb)}
+	pr, err := ComputePR(ar, nil, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(ps.First(), as.First()) {
-		t.Errorf("PS should promote from AS: got %x, want %x", ps.First(), as.First())
+	if !bytes.Equal(pr.First(), ar.First()) {
+		t.Errorf("PS should promote from AS: got %x, want %x", pr.First(), ar.First())
 	}
 }
 
 func TestImplicitGenesisSingleKey(t *testing.T) {
 	// SPEC §15.3: Level 1 single-key → PR = PS = CS = AS = KS = tmb
 	algs := []HashAlg{HashAlg(coz.SHA256)}
-	ks, err := ComputeKS([]coz.B64{goldenTmb}, nil, algs)
+	kr, err := ComputeKR([]coz.B64{goldenTmb}, nil, algs)
 	if err != nil {
-		t.Fatalf("ComputeKS: %v", err)
+		t.Fatalf("ComputeKR: %v", err)
 	}
-	as, err := ComputeAS(ks, nil, algs)
+	ar, err := ComputeAR(kr, nil, algs)
 	if err != nil {
-		t.Fatalf("ComputeAS: %v", err)
+		t.Fatalf("ComputeAR: %v", err)
 	}
-	cs, err := ComputeCS(as, nil, algs)
+	cs, err := ComputeCS(ar, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeCS: %v", err)
 	}
-	ps, err := ComputePS(as, nil, nil, nil, algs)
+	pr, err := ComputePR(ar, nil, nil, nil, algs)
 	if err != nil {
-		t.Fatalf("ComputePS: %v", err)
+		t.Fatalf("ComputePR: %v", err)
 	}
 
 	// All states should equal the thumbprint
-	if !bytes.Equal(ks.First(), goldenTmb) {
+	if !bytes.Equal(kr.First(), goldenTmb) {
 		t.Errorf("KS != tmb")
 	}
-	if !bytes.Equal(as.First(), goldenTmb) {
+	if !bytes.Equal(ar.First(), goldenTmb) {
 		t.Errorf("AS != tmb")
 	}
 	if !bytes.Equal(cs.First(), goldenTmb) {
 		t.Errorf("CS != tmb")
 	}
-	if !bytes.Equal(ps.First(), goldenTmb) {
+	if !bytes.Equal(pr.First(), goldenTmb) {
 		t.Errorf("PS != tmb")
 	}
 }

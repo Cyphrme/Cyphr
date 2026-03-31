@@ -22,16 +22,16 @@ type Commit struct {
 	// cs is the Commit State at the end of this commit.
 	cs CommitState
 	// as is the Auth State at the end of this commit.
-	as AuthState
+	ar AuthRoot
 	// ps is the Principal State at the end of this commit.
-	ps PrincipalState
+	pr PrincipalRoot
 	// raw stores the original raw JSON for each transaction (for storage round-trips).
 	raw []json.RawMessage
 }
 
 // newCommit creates a finalized commit from transactions and computed states.
 // Returns ErrEmptyCommit if transactions is empty.
-func newCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthState, ps PrincipalState) (*Commit, error) {
+func newCommit(txs []*Transaction, commitID *CommitID, cs CommitState, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
 	if len(txs) == 0 {
 		return nil, ErrEmptyCommit
 	}
@@ -39,8 +39,8 @@ func newCommit(txs []*Transaction, commitID *CommitID, cs CommitState, as AuthSt
 		transactions: txs,
 		commitID:     commitID,
 		cs:           cs,
-		as:           as,
-		ps:           ps,
+		ar:           ar,
+		pr:           pr,
 	}, nil
 }
 
@@ -60,13 +60,13 @@ func (c *Commit) CS() CommitState {
 }
 
 // AS returns the Auth State at the end of this commit.
-func (c *Commit) AS() AuthState {
-	return c.as
+func (c *Commit) AR() AuthRoot {
+	return c.ar
 }
 
 // PS returns the Principal State at the end of this commit.
-func (c *Commit) PS() PrincipalState {
-	return c.ps
+func (c *Commit) PR() PrincipalRoot {
+	return c.pr
 }
 
 // Len returns the number of transactions in this commit.
@@ -158,7 +158,7 @@ func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
 //   - ps: The computed Principal State after all transactions
 //
 // Returns nil if no transactions exist.
-func (p *PendingCommit) Finalize(as AuthState, cs CommitState, ps PrincipalState) (*Commit, error) {
+func (p *PendingCommit) Finalize(ar AuthRoot, cs CommitState, pr PrincipalRoot) (*Commit, error) {
 	if len(p.transactions) == 0 {
 		return nil, ErrEmptyCommit
 	}
@@ -169,7 +169,7 @@ func (p *PendingCommit) Finalize(as AuthState, cs CommitState, ps PrincipalState
 		return nil, err
 	}
 
-	commit, err := newCommit(p.transactions, cid, cs, as, ps)
+	commit, err := newCommit(p.transactions, cid, cs, ar, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -296,15 +296,15 @@ func (b *CommitBatch) FinalizeWithCommit(
 	for i, k := range b.principal.auth.Keys {
 		thumbprints[i] = k.Tmb
 	}
-	ks, err := ComputeKS(thumbprints, nil, b.principal.activeAlgs)
+	kr, err := ComputeKR(thumbprints, nil, b.principal.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	as, err := ComputeAS(ks, nil, b.principal.activeAlgs)
+	ar, err := ComputeAR(kr, nil, b.principal.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := ComputeCS(as, b.principal.ds, b.principal.activeAlgs)
+	cs, err := ComputeCS(ar, b.principal.dr, b.principal.activeAlgs)
 	if err != nil {
 		return nil, err
 	}

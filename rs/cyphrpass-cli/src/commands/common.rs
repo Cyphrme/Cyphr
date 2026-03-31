@@ -141,10 +141,10 @@ pub fn parse_store(store_uri: &str) -> crate::Result<FileStore> {
     }
 }
 
-/// Parse a base64url principal root string into a PrincipalRoot.
-pub fn parse_principal_root(s: &str) -> crate::Result<cyphrpass::PrincipalRoot> {
+/// Parse a base64url principal root string into a PrincipalGenesis.
+pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphrpass::PrincipalGenesis> {
     let bytes = Base64UrlUnpadded::decode_vec(s)?;
-    Ok(cyphrpass::PrincipalRoot::from_bytes(bytes))
+    Ok(cyphrpass::PrincipalGenesis::from_bytes(bytes))
 }
 
 /// Decode base64url string to bytes.

@@ -52,7 +52,7 @@ type Transaction struct {
 	Czd coz.B64
 
 	// Pre is the prior Principal State (required for all transaction types).
-	Pre PrincipalState
+	Pre PrincipalRoot
 
 	// ID is the target key thumbprint (for add/delete/replace/other-revoke).
 	ID coz.B64
@@ -151,12 +151,12 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 
 	case TypPrincipalCreate:
 		// SPEC §5.1: Genesis finalization transaction
-		// For principal/create, id is an AuthState (tagged digest format)
+		// For principal/create, id is an AuthRoot (tagged digest format)
 		tx.Kind = TxPrincipalCreate
 		if err := tx.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseIDAsAuthState(pay.ID); err != nil {
+		if err := tx.parseIDAsAuthRoot(pay.ID); err != nil {
 			return nil, err
 		}
 
@@ -183,8 +183,8 @@ func (tx *Transaction) parsePre(pre string) error {
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	// Create single-variant PrincipalState from tagged digest
-	tx.Pre = PrincipalState{FromSingleDigest(tagged.Alg, tagged.Digest)}
+	// Create single-variant PrincipalRoot from tagged digest
+	tx.Pre = PrincipalRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
 	return nil
 }
 
@@ -201,9 +201,9 @@ func (tx *Transaction) parseID(id string) error {
 	return nil
 }
 
-// parseIDAsAuthState decodes the id field as an AuthState (alg:digest format).
-// Used for principal/create where id is the current AuthState per SPEC §5.1.
-func (tx *Transaction) parseIDAsAuthState(id string) error {
+// parseIDAsAuthRoot decodes the id field as an AuthRoot (alg:digest format).
+// Used for principal/create where id is the current AuthRoot per SPEC §5.1.
+func (tx *Transaction) parseIDAsAuthRoot(id string) error {
 	if id == "" {
 		return ErrMalformedPayload
 	}

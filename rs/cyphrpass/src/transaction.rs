@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthState, CommitState, PrincipalState};
+use crate::state::{AuthRoot, CommitState, PrincipalRoot};
 
 // ============================================================================
 // Transaction Types (SPEC §4.2)
@@ -33,7 +33,7 @@ pub enum TransactionKind {
     /// Create a new key (Level 3+) - SPEC §4.2.1
     KeyCreate {
         /// Previous Principal State.
-        pre: PrincipalState,
+        pre: PrincipalRoot,
         /// Thumbprint of key being created.
         id: Thumbprint,
     },
@@ -41,7 +41,7 @@ pub enum TransactionKind {
     /// Remove key without invalidation (Level 3+) - SPEC §4.2.2
     KeyDelete {
         /// Previous Principal State.
-        pre: PrincipalState,
+        pre: PrincipalRoot,
         /// Thumbprint of key being deleted.
         id: Thumbprint,
     },
@@ -49,7 +49,7 @@ pub enum TransactionKind {
     /// Atomic key swap (Level 2+) - SPEC §4.2.3
     KeyReplace {
         /// Previous Principal State.
-        pre: PrincipalState,
+        pre: PrincipalRoot,
         /// Thumbprint of new key.
         id: Thumbprint,
     },
@@ -58,7 +58,7 @@ pub enum TransactionKind {
     /// Per protocol simplification, revoke requires `pre` like all other coz.
     SelfRevoke {
         /// Previous Principal State.
-        pre: PrincipalState,
+        pre: PrincipalRoot,
         /// Revocation timestamp.
         rvk: i64,
     },
@@ -68,9 +68,9 @@ pub enum TransactionKind {
     /// Finalizes explicit genesis. `pre` references current Principal State.
     PrincipalCreate {
         /// Previous Principal State (required per implicit first key model).
-        pre: PrincipalState,
+        pre: PrincipalRoot,
         /// Final Auth State bundle identifier (becomes PR).
-        id: AuthState,
+        id: AuthRoot,
     },
 }
 
@@ -222,7 +222,7 @@ impl Transaction {
     /// Extract `pre` field (previous Principal State) from pay.extra.
     ///
     /// Expects `alg:digest` format (e.g., `SHA-256:U5XUZots...`).
-    fn extract_pre(pay: &Pay) -> Result<PrincipalState> {
+    fn extract_pre(pay: &Pay) -> Result<PrincipalRoot> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
@@ -232,7 +232,7 @@ impl Transaction {
         // Parse tagged digest (validates algorithm and length)
         let tagged: TaggedDigest = pre_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(PrincipalState(MultihashDigest::from_single(
+        Ok(PrincipalRoot(MultihashDigest::from_single(
             tagged.alg(),
             tagged.as_bytes().to_vec(),
         )))
@@ -251,11 +251,11 @@ impl Transaction {
         Some(Thumbprint::from_bytes(id_bytes))
     }
 
-    /// Extract `id` field as AuthState (for principal/create).
+    /// Extract `id` field as AuthRoot (for principal/create).
     ///
     /// Per SPEC §5.1, the `id` field in principal/create contains the
     /// Auth State bundle identifier. Expects `alg:digest` format.
-    fn extract_as(pay: &Pay) -> Result<AuthState> {
+    fn extract_as(pay: &Pay) -> Result<AuthRoot> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
@@ -265,7 +265,7 @@ impl Transaction {
         // Parse tagged digest (validates algorithm and length)
         let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(AuthState(MultihashDigest::from_single(
+        Ok(AuthRoot(MultihashDigest::from_single(
             tagged.alg(),
             tagged.as_bytes().to_vec(),
         )))

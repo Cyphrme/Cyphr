@@ -35,7 +35,7 @@ pub use key::Key;
 pub use multihash::MultihashDigest;
 pub use principal::Principal;
 pub use state::{
-    AuthState, CommitID, CommitState, DataState, HashAlg, KeyState, PrincipalRoot, PrincipalState,
-    compute_as, compute_commit_id, compute_cs, compute_ds, compute_ks, compute_ps,
+    AuthRoot, CommitID, CommitState, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot,
+    compute_ar, compute_commit_id, compute_cs, compute_dr, compute_kr, compute_pr,
 };
 pub use transaction::{Transaction, TransactionKind, VerifiedTransaction, verify_transaction};

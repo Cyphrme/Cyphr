@@ -13,9 +13,9 @@ import (
 // at different levels of the Cyphrpass state tree per SPEC §7.
 // Per SPEC §14, each state has one variant per active hash algorithm.
 
-// KeyState (KS) is the digest of active key thumbprints (SPEC §7.2).
+// KeyRoot (KS) is the digest of active key thumbprints (SPEC §7.2).
 // Single key with no nonce: KS = tmb (implicit promotion).
-type KeyState struct {
+type KeyRoot struct {
 	MultihashDigest
 }
 
@@ -26,8 +26,8 @@ type CommitID struct {
 	MultihashDigest
 }
 
-// AuthState (AS) is the authentication state: MR(KS, RS?) or promoted (SPEC §8.4).
-type AuthState struct {
+// AuthRoot (AS) is the authentication state: MR(KS, RS?) or promoted (SPEC §8.4).
+type AuthRoot struct {
 	MultihashDigest
 }
 
@@ -38,37 +38,37 @@ type CommitState struct {
 	MultihashDigest
 }
 
-// DataState (DS) is the state of user actions (SPEC §7.4).
+// DataRoot (DS) is the state of user actions (SPEC §7.4).
 // Currently single-algorithm (Cad-based), per Rust implementation.
-type DataState struct {
+type DataRoot struct {
 	digest coz.B64
 }
 
-// NewDataState creates a DataState from a digest.
-func NewDataState(digest coz.B64) DataState {
-	return DataState{digest: slices.Clone(digest)}
+// NewDataRoot creates a DataRoot from a digest.
+func NewDataRoot(digest coz.B64) DataRoot {
+	return DataRoot{digest: slices.Clone(digest)}
 }
 
 // Bytes returns the raw digest bytes.
-func (d DataState) Bytes() coz.B64 {
+func (d DataRoot) Bytes() coz.B64 {
 	return d.digest
 }
 
-// PrincipalState (PS) is the current top-level state: MR(AS, CommitID?, DS?) (SPEC §8.3).
+// PrincipalRoot (PS) is the current top-level state: MR(AS, CommitID?, DS?) (SPEC §8.3).
 // PS includes CommitID directly, unlike CS which excludes it.
-type PrincipalState struct {
-	MultihashDigest
-}
-
-// PrincipalRoot (PR) is the first PS ever computed. Permanent, never changes (SPEC §7.7).
-// Frozen at genesis with only the genesis-time algorithm variants.
 type PrincipalRoot struct {
 	MultihashDigest
 }
 
-// NewPrincipalRoot creates a PrincipalRoot from the initial PrincipalState.
-func NewPrincipalRoot(ps PrincipalState) PrincipalRoot {
-	return PrincipalRoot{ps.Clone()}
+// PrincipalGenesis (PR) is the first PS ever computed. Permanent, never changes (SPEC §7.7).
+// Frozen at genesis with only the genesis-time algorithm variants.
+type PrincipalGenesis struct {
+	MultihashDigest
+}
+
+// NewPrincipalGenesis creates a PrincipalGenesis from the initial PrincipalRoot.
+func NewPrincipalGenesis(ps PrincipalRoot) PrincipalGenesis {
+	return PrincipalGenesis{ps.Clone()}
 }
 
 // HashAlg is a hash algorithm used for state computation (SPEC §12).
@@ -189,18 +189,18 @@ func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
 }
 
 // String methods for state types (return base64 of first variant for compatibility).
-func (s KeyState) String() string       { return s.First().String() }
-func (s CommitID) String() string       { return s.First().String() }
-func (s AuthState) String() string      { return s.First().String() }
-func (s CommitState) String() string    { return s.First().String() }
-func (s DataState) String() string      { return s.digest.String() }
-func (s PrincipalState) String() string { return s.First().String() }
-func (s PrincipalRoot) String() string  { return s.First().String() }
+func (s KeyRoot) String() string          { return s.First().String() }
+func (s CommitID) String() string         { return s.First().String() }
+func (s AuthRoot) String() string         { return s.First().String() }
+func (s CommitState) String() string      { return s.First().String() }
+func (s DataRoot) String() string         { return s.digest.String() }
+func (s PrincipalRoot) String() string    { return s.First().String() }
+func (s PrincipalGenesis) String() string { return s.First().String() }
 
-// Tagged returns the AuthState as an algorithm-prefixed digest string.
+// Tagged returns the AuthRoot as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
-func (s AuthState) Tagged() string {
+func (s AuthRoot) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
 		return ""
@@ -223,11 +223,11 @@ func (s CommitState) Tagged() string {
 	return fmt.Sprintf("%s:%s", firstAlg, digest.String())
 }
 
-// Tagged returns the PrincipalState as an algorithm-prefixed digest string.
+// Tagged returns the PrincipalRoot as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
 // This is the canonical format for the `pre` field in transactions.
-func (s PrincipalState) Tagged() string {
+func (s PrincipalRoot) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
 		return ""
@@ -317,21 +317,21 @@ func hashConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
 	return coz.Hash(coz.HshAlg(alg), buf.Bytes())
 }
 
-// ComputeKS computes Key State from thumbprints (SPEC §7.2).
+// ComputeKR computes Key State from thumbprints (SPEC §7.2).
 // If only one thumbprint with no nonce, KS = tmb (implicit promotion).
 // Computes one variant per algorithm in algs.
-func ComputeKS(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyState, error) {
+func ComputeKR(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyRoot, error) {
 	if len(thumbprints) == 0 {
-		return KeyState{}, ErrNoActiveKeys
+		return KeyRoot{}, ErrNoActiveKeys
 	}
 	if len(algs) == 0 {
-		return KeyState{}, ErrNoActiveKeys
+		return KeyRoot{}, ErrNoActiveKeys
 	}
 
 	// Implicit promotion: single key, no nonce
 	// Use first algorithm for single-variant multihash
 	if len(thumbprints) == 1 && len(nonce) == 0 {
-		return KeyState{FromSingleDigest(algs[0], thumbprints[0])}, nil
+		return KeyRoot{FromSingleDigest(algs[0], thumbprints[0])}, nil
 	}
 
 	// Collect all components
@@ -348,16 +348,16 @@ func ComputeKS(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyState, 
 	for _, alg := range algs {
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
-			return KeyState{}, err
+			return KeyRoot{}, err
 		}
 		variants[alg] = digest
 	}
 
 	mh, err := NewMultihashDigest(variants)
 	if err != nil {
-		return KeyState{}, err
+		return KeyRoot{}, err
 	}
-	return KeyState{mh}, nil
+	return KeyRoot{mh}, nil
 }
 
 // ComputeCommitID computes the Commit ID (formerly Transaction State) from czds (SPEC §8.5).
@@ -484,27 +484,27 @@ func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*Co
 	return &cid, nil
 }
 
-// ComputeAS computes Auth State from KS (SPEC §8.4).
+// ComputeAR computes Auth State from KS (SPEC §8.4).
 // AS = MR(KS, RS?) — authentication state derived from the keyset.
 // If no nonce (and no RS), AS = KS (implicit promotion).
-func ComputeAS(ks KeyState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
+func ComputeAR(kr KeyRoot, nonce coz.B64, algs []HashAlg) (AuthRoot, error) {
 	// Implicit promotion: only KS, no nonce
 	if len(nonce) == 0 {
-		return AuthState{ks.Clone()}, nil
+		return AuthRoot{kr.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = ks.Algorithms()
+		algs = kr.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
 		// Get KS variant for this algorithm, falling back to first available
-		ksBytes := ks.GetOrFirst(alg)
+		krBytes := kr.GetOrFirst(alg)
 
 		// Collect non-nil components
-		components := [][]byte{ksBytes}
+		components := [][]byte{krBytes}
 		// TODO: Level 5 — add RS component here when RuleState is implemented
 		if len(nonce) > 0 {
 			components = append(components, nonce)
@@ -512,38 +512,38 @@ func ComputeAS(ks KeyState, nonce coz.B64, algs []HashAlg) (AuthState, error) {
 
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
-			return AuthState{}, err
+			return AuthRoot{}, err
 		}
 		variants[alg] = digest
 	}
 
 	mh, err := NewMultihashDigest(variants)
 	if err != nil {
-		return AuthState{}, err
+		return AuthRoot{}, err
 	}
-	return AuthState{mh}, nil
+	return AuthRoot{mh}, nil
 }
 
 // ComputeCS computes Commit State (SPEC §8.5).
 // CS = MR(AS, DS?) — the Principal Tree minus CommitID.
 // CommitID is excluded from CS to avoid circular dependencies.
 // If ds is nil (no actions), CS promotes from AS.
-func ComputeCS(as AuthState, ds *DataState, algs []HashAlg) (CommitState, error) {
+func ComputeCS(ar AuthRoot, dr *DataRoot, algs []HashAlg) (CommitState, error) {
 	// Implicit promotion: only AS, no DS
-	if ds == nil {
-		return CommitState{as.Clone()}, nil
+	if dr == nil {
+		return CommitState{ar.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = as.Algorithms()
+		algs = ar.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		asBytes := as.GetOrFirst(alg)
+		arBytes := ar.GetOrFirst(alg)
 
-		components := [][]byte{asBytes, ds.Bytes()}
+		components := [][]byte{arBytes, dr.Bytes()}
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
 			return CommitState{}, err
@@ -558,19 +558,19 @@ func ComputeCS(as AuthState, ds *DataState, algs []HashAlg) (CommitState, error)
 	return CommitState{mh}, nil
 }
 
-// ComputeDS computes Data State from action czds (SPEC §7.4).
+// ComputeDR computes Data State from action czds (SPEC §7.4).
 // If only one action with no nonce, DS = czd (implicit promotion).
 // Returns nil DS if no actions.
-// DataState is currently single-algorithm (per Rust).
-func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataState, error) {
+// DataRoot is currently single-algorithm (per Rust).
+func ComputeDR(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataRoot, error) {
 	if len(czds) == 0 {
 		return nil, nil // No actions = nil DS
 	}
 
 	// Implicit promotion: single action, no nonce
 	if len(czds) == 1 && len(nonce) == 0 {
-		ds := NewDataState(czds[0])
-		return &ds, nil
+		dr := NewDataRoot(czds[0])
+		return &dr, nil
 	}
 
 	components := make([][]byte, 0, len(czds)+1)
@@ -585,36 +585,36 @@ func ComputeDS(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataState, error) {
 	if err != nil {
 		return nil, err
 	}
-	ds := NewDataState(digest)
-	return &ds, nil
+	dr := NewDataRoot(digest)
+	return &dr, nil
 }
 
-// ComputePS computes Principal State (SPEC §8.3).
+// ComputePR computes Principal State (SPEC §8.3).
 // PS = MR(AS, CommitID?, DS?) — top-level state including CommitID directly.
 // PS is computed from raw components, NOT from CS.
 // If commitID is nil and ds is nil with no nonce, PS = AS (implicit promotion).
-func ComputePS(as AuthState, commitID *CommitID, ds *DataState, nonce coz.B64, algs []HashAlg) (PrincipalState, error) {
+func ComputePR(ar AuthRoot, commitID *CommitID, dr *DataRoot, nonce coz.B64, algs []HashAlg) (PrincipalRoot, error) {
 	// Implicit promotion: only AS, nothing else
-	if commitID == nil && ds == nil && len(nonce) == 0 {
-		return PrincipalState{as.Clone()}, nil
+	if commitID == nil && dr == nil && len(nonce) == 0 {
+		return PrincipalRoot{ar.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = as.Algorithms()
+		algs = ar.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		asBytes := as.GetOrFirst(alg)
+		arBytes := ar.GetOrFirst(alg)
 
 		// Collect non-nil components
-		components := [][]byte{asBytes}
+		components := [][]byte{arBytes}
 		if commitID != nil {
 			components = append(components, commitID.GetOrFirst(alg))
 		}
-		if ds != nil {
-			components = append(components, ds.Bytes())
+		if dr != nil {
+			components = append(components, dr.Bytes())
 		}
 		if len(nonce) > 0 {
 			components = append(components, nonce)
@@ -622,14 +622,14 @@ func ComputePS(as AuthState, commitID *CommitID, ds *DataState, nonce coz.B64, a
 
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
-			return PrincipalState{}, err
+			return PrincipalRoot{}, err
 		}
 		variants[alg] = digest
 	}
 
 	mh, err := NewMultihashDigest(variants)
 	if err != nil {
-		return PrincipalState{}, err
+		return PrincipalRoot{}, err
 	}
-	return PrincipalState{mh}, nil
+	return PrincipalRoot{mh}, nil
 }

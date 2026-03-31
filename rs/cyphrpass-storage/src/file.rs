@@ -4,7 +4,7 @@
 //! with one commit bundle per line (commit-based format).
 
 use crate::{CommitEntry, Entry, EntryError, QueryOpts, Store};
-use cyphrpass::state::PrincipalRoot;
+use cyphrpass::state::PrincipalGenesis;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -39,8 +39,8 @@ impl FileStore {
     ///
     /// # Errors
     ///
-    /// Returns `FileStoreError::EmptyDigest` if the PrincipalRoot has no variants.
-    fn path_for(&self, pr: &PrincipalRoot) -> Result<PathBuf, FileStoreError> {
+    /// Returns `FileStoreError::EmptyDigest` if the PrincipalGenesis has no variants.
+    fn path_for(&self, pr: &PrincipalGenesis) -> Result<PathBuf, FileStoreError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Extract the first variant for the filename
         let pr_bytes = pr
@@ -63,7 +63,7 @@ impl FileStore {
 impl Store for FileStore {
     type Error = FileStoreError;
 
-    fn append_entry(&self, pr: &PrincipalRoot, entry: &Entry) -> Result<(), Self::Error> {
+    fn append_entry(&self, pr: &PrincipalGenesis, entry: &Entry) -> Result<(), Self::Error> {
         self.ensure_dir()?;
         let path = self.path_for(pr)?;
 
@@ -79,7 +79,7 @@ impl Store for FileStore {
         Ok(())
     }
 
-    fn get_entries(&self, pr: &PrincipalRoot) -> Result<Vec<Entry>, Self::Error> {
+    fn get_entries(&self, pr: &PrincipalGenesis) -> Result<Vec<Entry>, Self::Error> {
         let path = self.path_for(pr)?;
 
         if !path.exists() {
@@ -110,7 +110,7 @@ impl Store for FileStore {
 
     fn get_entries_range(
         &self,
-        pr: &PrincipalRoot,
+        pr: &PrincipalGenesis,
         opts: &QueryOpts,
     ) -> Result<Vec<Entry>, Self::Error> {
         let mut entries = self.get_entries(pr)?;
@@ -131,7 +131,7 @@ impl Store for FileStore {
         Ok(entries)
     }
 
-    fn exists(&self, pr: &PrincipalRoot) -> Result<bool, Self::Error> {
+    fn exists(&self, pr: &PrincipalGenesis) -> Result<bool, Self::Error> {
         Ok(self.path_for(pr)?.exists())
     }
 }
@@ -151,7 +151,7 @@ impl FileStore {
     /// - `ps`: Principal State (base64url)
     pub fn append_commit(
         &self,
-        pr: &PrincipalRoot,
+        pr: &PrincipalGenesis,
         commit: &CommitEntry,
     ) -> Result<(), FileStoreError> {
         self.ensure_dir()?;
@@ -173,7 +173,7 @@ impl FileStore {
     /// Get all commits from the principal's log.
     ///
     /// Parses each line as a `CommitEntry` with embedded state digests.
-    pub fn get_commits(&self, pr: &PrincipalRoot) -> Result<Vec<CommitEntry>, FileStoreError> {
+    pub fn get_commits(&self, pr: &PrincipalGenesis) -> Result<Vec<CommitEntry>, FileStoreError> {
         let path = self.path_for(pr)?;
 
         if !path.exists() {
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_exists_empty() {
         let (store, dir) = temp_store("exists_empty");
-        let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
 
         assert!(!store.exists(&pr).unwrap());
 
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_append_and_get() {
         let (store, dir) = temp_store("append_and_get");
-        let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
 
         let entry = Entry::from_json(
             r#"{"pay":{"now":1234567890,"typ":"test/action"},"sig":"test"}"#.to_string(),
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_get_entries_range() {
         let (store, dir) = temp_store("entries_range");
-        let pr = PrincipalRoot::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
 
         // Add entries with different timestamps: 100, 200, 300, 400, 500
         for i in 1..=5 {

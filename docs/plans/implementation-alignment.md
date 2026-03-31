@@ -107,18 +107,18 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - [x] Update any existing references/imports
    - [x] Both packages build and pass tests under new name
 
-2. **Phase 2: Type Renames (State → Root)** — Align type and function names with SPEC.md terminology
-   - [ ] Go: `KeyState` → `KeyRoot`
-   - [ ] Go: `AuthState` → `AuthRoot`
-   - [ ] Go: `DataState` → `DataRoot`
-   - [ ] Go: `PrincipalState` → `PrincipalRoot`
-   - [ ] Go: `PrincipalRoot` → `PrincipalGenesis`
-   - [ ] Go: `CommitState` kept temporarily (deleted in Phase 3)
-   - [ ] Go: accessor renames (`.KS()` → `.KR()`, `.AS()` → `.AR()`, `.DS()` → `.DR()`, `.PS()` → `.PR()`, `.PR()` → `.PG()`)
-   - [ ] Go: function renames (`ComputeKS` → `ComputeKR`, `ComputeAS` → `ComputeAR`, `ComputeDS` → `ComputeDR`, `ComputePS` → `ComputePR`)
-   - [ ] Rust: identical renames
-   - [ ] All tests, storage, CLI, fixtures updated
-   - [ ] Both implementations build and pass all tests
+2. **Phase 2: Type Renames (State → Root)** — Align type and function names with SPEC.md terminology ✅
+   - [x] Go: `KeyState` → `KeyRoot`
+   - [x] Go: `AuthState` → `AuthRoot`
+   - [x] Go: `DataState` → `DataRoot`
+   - [x] Go: `PrincipalState` → `PrincipalRoot`
+   - [x] Go: `PrincipalRoot` → `PrincipalGenesis`
+   - [x] Go: `CommitState` kept temporarily (deleted in Phase 3)
+   - [x] Go: accessor renames (`.KS()` → `.KR()`, `.AS()` → `.AR()`, `.DS()` → `.DR()`, `.PS()` → `.PR()`, `.PR()` → `.PG()`)
+   - [x] Go: function renames (`ComputeKS` → `ComputeKR`, `ComputeAS` → `ComputeAR`, `ComputeDS` → `ComputeDR`, `ComputePS` → `ComputePR`)
+   - [x] Rust: identical renames
+   - [x] All tests, storage, CLI, fixtures updated
+   - [x] Both implementations build and pass all tests
 
 3. **Phase 3: SR Introduction + CS Elimination** — Replace `CS = MR(AS, DS?)` with `SR = MR(AR, DR?)` and restructure `PR = MR(SR, CR)`
 
