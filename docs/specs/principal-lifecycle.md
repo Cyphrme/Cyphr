@@ -42,7 +42,7 @@ TYPE LifecycleState = Active | Frozen | Deleted | Zombie | Dead | Nuked
 TYPE ErrorFlag      = Boolean                              -- orthogonal to base state
 
 -- Lifecycle conditions (derived from state)
-TYPE CanMutateAS    = Boolean   -- keys meet threshold to mutate Auth State
+TYPE CanMutateAR    = Boolean   -- keys meet threshold to mutate Auth Root
 TYPE HasActiveKeys  = Boolean   -- ≥1 active (non-revoked, non-deleted) key
 TYPE CanDataAction  = Boolean   -- Level 4+, active key exists
 TYPE IsFrozen       = Boolean   -- freeze/create active, freeze/delete not signed
@@ -55,18 +55,18 @@ TYPE IsErrored      = Boolean   -- fork detected or chain invalid
 #### Feature Level Capabilities
 
 **[level-1-static]**: A Level 1 principal MUST have exactly one key that never
-changes. No commit chain exists. `tmb` == KS == AS == PS via implicit
-promotion. Level 1 does not have a PR.
+changes. No commit chain exists. `tmb` == KR == AR == SR == PR == PG via
+implicit promotion. Level 1 does not have a commit chain.
 `VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.1/§5.1`
 
 **[level-2-single-key]**: A Level 2 principal MUST have exactly one active key
 at any time. Key changes are performed via `key/replace` (atomic swap) only.
-No commit chain exists. `tmb` == KS == AS == PS via implicit promotion. Level 2
-does not have a PR.
+No commit chain exists. `tmb` == KR == AR == SR == PR == PG via implicit
+promotion. Level 2 does not have a commit chain.
 `VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §3.2/§5.1`
 
 **[level-3-multi-key]**: A Level 3+ principal MUST support multiple concurrent
-keys. CS = MR(AS, ...), PS = MR(AS, CommitID, ...). Initial PS equals PR.
+keys. PR = MR(SR, CR). Initial PR equals PG.
 Any active key MAY perform `key/create`, `key/delete`, or `key/revoke` on any
 other key (subject to Level 5+ rules).
 `VERIFIED: agent-check — updated 2026-03-09 per A-3, SPEC §3.3`
@@ -85,13 +85,13 @@ determined by which state components exist and what rules govern them (per
 
 **[lifecycle-derived-from-state]**: A principal's lifecycle state MUST be
 deterministically derived from the following conditions: `IsDeleted`,
-`IsFrozen`, `CanMutateAS`, `HasActiveKeys`, `CanDataAction`. No additional
+`IsFrozen`, `CanMutateAR`, `HasActiveKeys`, `CanDataAction`. No additional
 inputs determine lifecycle state.
 `VERIFIED: agent-check`
 
 **[lifecycle-state-matrix]**: The mapping from conditions to base states MUST be:
 
-| State       | IsDeleted | IsFrozen | CanMutateAS | HasActiveKeys               | CanDataAction |
+| State       | IsDeleted | IsFrozen | CanMutateAR | HasActiveKeys               | CanDataAction |
 | :---------- | :-------- | :------- | :---------- | :-------------------------- | :------------ |
 | **Active**  | false     | false    | true        | true                        | —             |
 | **Frozen**  | false     | true     | true        | true                        | —             |
@@ -112,10 +112,10 @@ invalidity (see `consensus.md`).
 exclusive. A principal MUST NOT be both frozen and deleted simultaneously.
 `VERIFIED: agent-check`
 
-**[canmutate-non-monotonic]**: At Level 5+, `CanMutateAS` is NOT monotonic in
-key count. A principal with active keys MAY have `¬CanMutateAS` if no key
-combination meets the threshold for AS mutation. Implementations MUST NOT assume
-that having active keys implies the ability to mutate AS.
+**[canmutate-non-monotonic]**: At Level 5+, `CanMutateAR` is NOT monotonic in
+key count. A principal with active keys MAY have `¬CanMutateAR` if no key
+combination meets the threshold for AR mutation. Implementations MUST NOT assume
+that having active keys implies the ability to mutate AR.
 `VERIFIED: agent-check`
 
 ### Transitions
@@ -146,13 +146,13 @@ the recommended sequence is: revoke all keys, delete all keys, sign
 the target principal. Without acknowledgement, external accounts could attack
 by merging in their state (merge attack).
 
-- **PRE**: Source signs `principal/merge` with `merge_to_ps` = target's PS.
-- **POST**: Merge is not complete until target signs `principal/ack-merge`
-  with `merge_from_ps` = source's PS.
+- **PRE**: Source signs `principal/merge` with `merge_to_pr` = target's PR.
+- **POST**: Merge is not complete until target signs `principal/merge-ack`
+  with `merge_from_pr` = source's PR.
   `VERIFIED: agent-check`
 
 **[merge-implicit]**: Alternatively, an implicit merge MAY be performed where
-the source deletes all keys and both principals add each other's PS.
+the source deletes all keys and both principals add each other's PR.
 `VERIFIED: agent-check`
 
 **[merge-key-transfer]**: If the target wants to reuse keys from the source,
@@ -162,9 +162,9 @@ a merge.
 
 #### Fork
 
-**[fork-creates-new-pr]**: `principal/fork/create` (Level 3+) creates a new
+**[fork-creates-new-pg]**: `principal/fork/create` (Level 3+) creates a new
 principal from an existing one. The forked principal MUST have a new, distinct
-PR. At least one key MUST be added to the forked principal.
+PG. At least one key MUST be added to the forked principal.
 
 - **PRE**: Source principal is Active. Signing key MUST be active on source.
 - **POST**: New principal exists with its own PR and commit chain. Source
@@ -172,13 +172,13 @@ PR. At least one key MUST be added to the forked principal.
   `VERIFIED: agent-check`
 
 **[fork-equivalent-to-genesis]**: The fork transaction bundle MUST be
-equivalent to a genesis transaction — it establishes a new PR via the same
+equivalent to a genesis transaction — it establishes a new PG via the same
 bootstrap model.
 `VERIFIED: agent-check`
 
 **[key-sharing-across-principals]**: Nothing in the protocol prevents multiple
 principals from sharing keys, as long as genesis does not result in the same
-PR. Any set of non-revoked keys MAY be used to create a new PR.
+PR. Any set of non-revoked keys MAY be used to create a new PG.
 `VERIFIED: agent-check`
 
 #### Freeze
@@ -219,8 +219,8 @@ requires sideband intervention.
 `VERIFIED: agent-check`
 
 > [!NOTE]
-> **PLACEHOLDER — Level 5 Rules**: SPEC.md §10 describes Rule State (RS) with
-> weighted keys and timelocks (`CanMutateAS` depends on weight thresholds at
+> **PLACEHOLDER — Level 5 Rules**: SPEC.md §10 describes Rule Root (RR) with
+> weighted keys and timelocks (`CanMutateAR` depends on weight thresholds at
 > Level 5+). The rules mechanics are in preview and not yet stable for full
 > formalization. Key constraints: each key has weight (default 1), actions need
 > threshold weight, timelocks may delay effects.
@@ -261,9 +261,9 @@ keys once all are revoked/deleted and no recovery path exists.
 
 | Constraint                      | Method      | Result | Detail                               |
 | :------------------------------ | :---------- | :----- | :----------------------------------- |
-| [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no PR)           |
-| [level-2-single-key]            | agent-check | pass   | SPEC.md §3.2, §5.1 (no PR)           |
-| [level-3-multi-key]             | agent-check | pass   | SPEC.md §3.3 (CS/PS formulas)        |
+| [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no chain)        |
+| [level-2-single-key]            | agent-check | pass   | SPEC.md §3.2, §5.1 (no chain)        |
+| [level-3-multi-key]             | agent-check | pass   | SPEC.md §3.3 (CR/PR formulas)        |
 | [level-4-data-tree]             | agent-check | pass   | Explicit in SPEC.md §3.4             |
 | [level-not-authorization]       | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)   |
 | [lifecycle-derived-from-state]  | agent-check | pass   | Explicit in SPEC.md §11              |
@@ -276,7 +276,7 @@ keys once all are revoked/deleted and no recovery path exists.
 | [merge-requires-ack]            | agent-check | pass   | Explicit in SPEC.md §19.2            |
 | [merge-implicit]                | agent-check | pass   | Explicit in SPEC.md §19.2            |
 | [merge-key-transfer]            | agent-check | pass   | Explicit in SPEC.md §19.2            |
-| [fork-creates-new-pr]           | agent-check | pass   | Explicit in SPEC.md §19.3            |
+| [fork-creates-new-pg]           | agent-check | pass   | Explicit in SPEC.md §19.3            |
 | [fork-equivalent-to-genesis]    | agent-check | pass   | Explicit in SPEC.md §19.3            |
 | [key-sharing-across-principals] | agent-check | pass   | Explicit in SPEC.md §19.3            |
 | [freeze-blocks-mutations]       | agent-check | pass   | Inferred from SPEC.md §11.2, §18.9   |
@@ -296,7 +296,7 @@ keys once all are revoked/deleted and no recovery path exists.
 - **Lifecycle state machine**: The [lifecycle-state-matrix] is directly
   implementable as a match/switch on the five boolean conditions. Both
   implementations should derive lifecycle state identically.
-- **Non-monotonic CanMutateAS**: At Level 5+, implementations MUST NOT assume
+- **Non-monotonic CanMutateAR**: At Level 5+, implementations MUST NOT assume
   having keys → can mutate. Weight thresholds can make mutation impossible
   even with active keys.
 - **Merge two-phase**: Merge is a two-principal operation — both must cooperate.
@@ -312,15 +312,15 @@ keys once all are revoked/deleted and no recovery path exists.
 - **Delete finality**: Verify no operation succeeds after `principal/delete`.
 - **Freeze/unfreeze cycle**: Verify mutations are rejected during freeze and
   accepted after unfreeze.
-- **Merge handshake**: End-to-end test with source merge → target ack-merge.
+- **Merge handshake**: End-to-end test with source merge → target merge-ack.
 
 ### Open Questions (for Zami / sketch)
 
 1. **Zombie → Dead transition**: Can a Zombie principal (can do data actions but
-   not mutate AS) become Dead? What triggers that transition — key revocation?
+   not mutate AR) become Dead? What triggers that transition — key revocation?
 2. **Freeze scope**: Does freeze block data actions too, or only AT mutations?
-   §11.2 says "no mutations" but the Frozen state shows `CanMutateAS=true` —
+   §11.2 says "no mutations" but the Frozen state shows `CanMutateAR=true` —
    does freeze override this?
-3. **Fork PR derivation**: §19.3 shows fork creating a new PR but the `fork_pr`
-   field in the example says "which in this case is just KS" — is this always
+3. **Fork PG derivation**: §19.3 shows fork creating a new PG but the `fork_pr`
+   field in the example says "which in this case is just KR" — is this always
    the case, or does it depend on the fork's key set?

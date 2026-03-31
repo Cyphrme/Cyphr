@@ -16,8 +16,8 @@
 ## Domain
 
 **Problem Domain:** Cyphrpass state tree computation — the hierarchical Merkle
-structure that derives all protocol identifiers (PR, PS, AS, KS, RS, DS, Commit
-ID) and the multihash mechanism that makes those identifiers algorithm-agnostic.
+structure that derives all protocol identifiers (PG, PR, SR, AR, KR, RR, DR, CR,
+TR) and the multihash mechanism that makes those identifiers algorithm-agnostic.
 
 **Target System:** `SPEC.md` §2.1–2.2 (Core Concepts and Terminology), §9
 (State Calculation), §20 (Multihash Identifiers).
@@ -46,14 +46,17 @@ TYPE MerkleTree   = Leaf Digest | Branch MerkleTree MerkleTree
 TYPE MultihashId  = Map<HashAlg, Digest>             -- one variant per supported algorithm
 
 -- State identifiers (all are Digest values computed via MR)
-TYPE PR = Digest    -- Principal Root (immutable, first PS)
-TYPE PS = Digest    -- Principal State (top-level, evolves per commit)
-TYPE CS = Digest    -- Commit State (PT components excluding CommitID)
-TYPE AS = Digest    -- Auth State
-TYPE KS = Digest    -- Key State
-TYPE RS = Digest    -- Rule State (Level 5+)
-TYPE DS = Digest    -- Data State (Level 4+)
-TYPE CommitID = Digest
+TYPE PG = Digest    -- Principal Genesis (immutable, first PR)
+TYPE PR = Digest    -- Principal Root (top-level, evolves per commit)
+TYPE SR = Digest    -- State Root (intermediate: MR(AR, DR?))
+TYPE CR = Digest    -- Commit Root (MALTR of commit tree)
+TYPE AR = Digest    -- Auth Root
+TYPE KR = Digest    -- Key Root
+TYPE RR = Digest    -- Rule Root (Level 5+)
+TYPE DR = Digest    -- Data Root (Level 4+)
+TYPE TR = Digest    -- Transaction Root (commit ID): MR(TMR, TCR)
+TYPE TMR = Digest   -- Transaction Mutation Root
+TYPE TCR = Digest   -- Transaction Commit Root
 
 -- Trees (underlying data structures behind the digest identifiers)
 TYPE PT            -- Principal Tree
@@ -70,20 +73,20 @@ TYPE DT            -- Data Tree (Level 4+)
 encodings MUST be rejected.
 `VERIFIED: agent-check`
 
-**[identifier-is-cid]**: All identifiers (PR, PS, AS, KS, RS, DS, Commit ID,
+**[identifier-is-cid]**: All identifiers (PG, PR, SR, AR, KR, RR, DR, CR, TR,
 `tmb`, nonces) MUST be cryptographic digest Content Identifiers (CIDs) encoded
 as b64ut, providing both addressing and integrity of the reference.
 `VERIFIED: agent-check`
 
-**[mr-sort-order]**: When computing a Merkle root for state tree nodes (KS, AS,
-PS, DS), child digests MUST be sorted in lexical byte order (opaque byte
-comparison). **Exception:** Commit ID computation uses array order (see
-`transactions.md` [commit-id-computation]).
+**[mr-sort-order]**: When computing a Merkle root for state tree nodes (KR, AR,
+SR, PR, DR), child digests MUST be sorted in lexical byte order (opaque byte
+comparison). **Exception:** Commit tree (CT) uses MALT ordering (append-only,
+array order). See `transactions.md` [commit-finality-arrow].
 `VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
 
-**[pr-immutable]**: The Principal Root (PR) MUST NOT change after genesis
-(Level 3+). PR is the first PS computed at genesis commit. No operation MAY
-alter it. Levels 1–2 do not have a PR (see [level-1-2-identity]).
+**[pg-immutable]**: The Principal Genesis (PG) MUST NOT change after genesis
+(Level 3+). PG is the first PR computed at genesis commit. No operation MAY
+alter it. Levels 1–2 do not have a PG (see [level-1-2-identity]).
 `VERIFIED: agent-check — updated 2026-03-09 per B-2`
 
 **[alg-alignment]**: Inside a coz, all digest references in `pay` (including
@@ -125,14 +128,15 @@ level without additional hashing. Promotion MUST be applied recursively.
   `VERIFIED: agent-check`
 
 **Corollary — [level-1-2-identity]**: For Levels 1 and 2 (single-key
-principals): `tmb` == KS == AS == PS via recursive implicit promotion of the
-single key's thumbprint. Levels 1–2 do not have PR (no commit chain exists).
+principal): `tmb` == KR == AR == SR == PR == PG via recursive implicit
+promotion of the single key's thumbprint. Levels 1–2 do not have a commit
+chain.
 `VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §5.1`
 
 **[state-computation]**: When computing a new state digest after a mutation:
 
 1. **Collect** all component digests at the current tree level (including
-   embedding/nonce nodes if present). Absent components (e.g., no RS at
+   embedding/nonce nodes if present). Absent components (e.g., no RR at
    Level < 5) MUST be excluded from collection.
 2. **Sort** collected digests in lexical byte order (per [mr-sort-order]).
 3. **Apply implicit promotion** if exactly one digest remains (per
@@ -167,7 +171,7 @@ implementations MUST compute an MHMR variant for every state node:
    compute H(concatenated bytes).
 
 - **PRE**: Set of supported hash algorithms is determined by active keys in
-  KS plus any nonce-injected algorithms.
+  KR plus any nonce-injected algorithms.
 - **POST**: One digest variant per supported H, all considered equivalent
   (per [mhmr-equivalence]).
   `VERIFIED: agent-check`
@@ -186,7 +190,7 @@ implementations MUST begin computing its MHMR variant.
 
 **[no-empty-mr]**: A state digest MUST NOT be computed from zero child digests.
 Every state level that participates in the tree MUST have at least one child
-node. (Absent state components — e.g., no RS at Level < 5 — are excluded
+node. (Absent state components — e.g., no RR at Level < 5 — are excluded
 entirely, not represented as empty.)
 `VERIFIED: agent-check`
 
@@ -199,9 +203,10 @@ entirely, not represented as empty.)
 > from Zami. See sketch gap #7.
 
 **[no-circular-state]**: The state computation dependency graph MUST be acyclic.
-AS feeds into CS and PS, but MUST NOT depend on CommitID or CS. The dependency
-order is: KS → AS → CS (excludes CommitID), CommitID (from czds) → PS (includes
-CommitID). (SPEC.md §4.2: CS = PT components except CommitID; §3.3: CS = MR(AS, ...)).
+KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (MALTR of TRs),
+PR = MR(SR, CR). AR and SR MUST NOT depend on TR or CR. The `arrow` field in
+the commit transaction covers `MR(pre, fwd, TMR)` where `fwd` is SR, not PR,
+precisely because PR depends on CR which depends on TR which includes the commit.
 `VERIFIED: agent-check — rewritten 2026-03-09 per B-4, §4.2/§3.3`
 
 **[no-non-canonical-b64ut]**: A b64ut string that uses padding characters (`=`),
@@ -221,8 +226,8 @@ determinism.
   `VERIFIED: agent-check`
 
 **[promotion-recursive-termination]**: Recursive implicit promotion MUST
-terminate. Since the state tree has finite depth (PR → PS → AS → KS/RS, with DT
-and Commit ID as siblings), promotion recurses at most through the tree height.
+terminate. Since the state tree has finite depth (PR → SR → AR → KR/RR, with DT
+and CR as siblings), promotion recurses at most through the tree height.
 
 - **Type**: Safety
   `VERIFIED: agent-check`
@@ -241,25 +246,26 @@ These formulas summarize the computation rules. Each line is normative and
 constrained by the invariants and transitions above.
 
 ```
-KS       = MR(tmb₀, tmb₁?, embedding?, nonce?, ...)
-AS       = MR(KS, RS?, embedding?, ...)                -- nil components excluded
-CS       = MR(AS, DS?, embedding?, ...)                 -- Level 3+, PT minus CommitID
-DS       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`
-CommitID = MR(czd₀, czd₁?, embedding?, ...)             -- array order (not lexical sort)
-PS       = MR(AS, CommitID?, DS?, embedding?, ...)       -- CommitID absent at Level 1-2
-PR       = first PS at genesis commit (Level 3+ only, immutable)
+KR       = MR(tmb₀, tmb₁?, embedding?, nonce?, ...)
+AR       = MR(KR, RR?, embedding?, ...)                -- nil components excluded
+SR       = MR(AR, DR?, embedding?, ...)                 -- State Root (non-commit state)
+DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`
+TR       = MR(TMR, TCR)                                 -- Transaction Root (commit ID)
+CR       = MALTR(TR₀, TR₁, ...)                         -- Commit Root (MALT of commit tree)
+PR       = MR(SR, CR, embedding?, ...)                   -- CR absent at Level 1-2
+PG       = first PR at genesis commit (Level 3+ only, immutable)
 ```
 
-**Commit Finality (resolved):** A commit is finalized by having
-`"commit":<CS>` appear in the last coz of the commit (SPEC.md §4.2). CS is
-computed from all PT components except CommitID. This serves as the
-forward-reference finality signal (analogous to git's tree root in a commit).
-See `transactions.md` [commit-finality].
+**Commit Finality (resolved):** A commit is finalized by a `commit/create`
+transaction containing `arrow = MR(pre, fwd, TMR)`. The `arrow` field covers
+everything except the commit transaction itself. `fwd` is SR (not PR) because
+PR depends on CR which depends on TR which includes the commit. See
+`transactions.md` [commit-finality-arrow].
 
 > [!NOTE]
-> **DS Sort Order**: SPEC.md §9.6 states DS is "sorted by `now` and secondarily
+> **DR Sort Order**: SPEC.md §9.6 states DR is "sorted by `now` and secondarily
 > `czd`". This overrides the general [mr-sort-order] (lexical byte order) for
-> DS specifically.
+> DR specifically.
 
 ## Algorithm Mapping
 
@@ -297,7 +303,7 @@ governance is delegated to Coz").
 | [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2                |
 | [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                                     |
 | [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision |
-| [pr-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                       |
+| [pg-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                       |
 | [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                             |
 | [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                                     |
 | [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.8                                     |
@@ -310,7 +316,7 @@ governance is delegated to Coz").
 | [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                                      |
 | [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                                      |
 | [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)               |
-| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CS/PS definitions                            |
+| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CR/PR definitions                            |
 | [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical")         |
 | [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules                       |
 | [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                                 |
@@ -325,7 +331,7 @@ governance is delegated to Coz").
   for identical inputs. This is the foundational parity requirement.
 - **Implicit promotion**: Implementations MUST handle the single-child case
   before computing any Merkle root. This is a common source of bugs — the
-  single-key Level 1/2 case where `tmb` promotes all the way to PS.
+  single-key Level 1/2 case where `tmb` promotes all the way to PG.
 - **Conversion order**: [conversion] specifies H(child_bytes), not
   H(H(child_bytes)). Double-hashing during conversion is a specification
   violation.
@@ -336,7 +342,7 @@ governance is delegated to Coz").
 ### For Testing
 
 - **Parity test vectors**: Golden fixtures must verify that both implementations
-  produce identical PR/PS/AS/KS for the same input key set.
+  produce identical PG/PR/SR/AR/KR for the same input key set.
 - **Promotion edge cases**: Test single-key, then add a second key (promotion
   stops), then remove it (promotion resumes).
 - **Conversion cases**: Test mixed-algorithm key sets (e.g., ES256 + ES384)

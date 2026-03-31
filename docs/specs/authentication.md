@@ -55,13 +55,13 @@ the same verification rules.
 **[login-challenge-response]**: In challenge-response login, the service MUST
 generate a 256-bit cryptographic challenge (nonce). The principal signs the
 challenge, and the service MUST verify: (1) signature is valid, (2) `tmb`
-belongs to an active key in KS, (3) principal lifecycle state is Active, (4)
+belongs to an active key in KR, (3) principal lifecycle state is Active, (4)
 challenge matches the one issued.
 `VERIFIED: agent-check`
 
 **[login-timestamp-based]**: In timestamp-based login, the principal signs a
 login request with current `now`. The service MUST verify: (1) signature is
-valid, (2) `tmb` belongs to an active key in KS, (3) principal lifecycle is
+valid, (2) `tmb` belongs to an active key in KR, (3) principal lifecycle is
 Active, (4) `now` is within the acceptable window (e.g., ±60 seconds).
 `VERIFIED: agent-check`
 
@@ -82,18 +82,18 @@ support at least one mechanism.
 
 **[bearer-token-service-signed]**: Bearer tokens MUST be signed Coz messages
 from the service (not the principal). The service signs the token with its own
-key, binding it to a specific principal PR and permission set.
+key, binding it to a specific principal PG and permission set.
 `VERIFIED: agent-check`
 
 **[bearer-token-fields]**: Bearer tokens SHOULD contain at minimum: principal
-PR, authorized permissions, and expiry (`exp`). The `typ` is service-defined.
+PG, authorized permissions, and expiry (`exp`). The `typ` is service-defined.
 `VERIFIED: agent-check`
 
 #### Embedding
 
 **[embedding-weight-default]**: An embedded node MUST have a default weight of
 one (1), regardless of how many children the embedded node contains. Weight
-MAY be overridden by rules (RS) at Level 5+.
+MAY be overridden by rules (RR) at Level 5+.
 `VERIFIED: agent-check`
 
 **[embedding-cyclic-stop]**: Embedding MUST stop recursion at the point of
@@ -104,12 +104,12 @@ infinite recursion).
 
 **[embedding-conjunctive-auth]**: Authorization involving an embedded principal
 MUST be conjunctive: (1) the transaction must be valid according to the
-embedded principal's own rules (its KS/RS), AND (2) the act of using that
+embedded principal's own rules (its KR/RR), AND (2) the act of using that
 embedded principal must be authorized by the primary principal's rules. Both
 conditions MUST hold.
 `VERIFIED: agent-check`
 
-**[embedding-tip-retrieval]**: For PR, PS, and AS references exclusively,
+**[embedding-tip-retrieval]**: For PG, PR, and AR references exclusively,
 embedded nodes MUST trigger tip retrieval from the referenced principal at
 verification time before any operation. Other node types MUST NOT trigger
 retrieval. Opaque nodes MUST NOT trigger synchronization.
@@ -123,15 +123,33 @@ trigger tip retrieval.
 #### State Verification
 
 **[verification-replay]**: To verify a principal's current state, a verifier
-MUST: (1) identify the trust anchor (PR or known PS), (2) obtain ordered
+MUST: (1) identify the trust anchor (PG or known PR), (2) obtain ordered
 transaction history from trust anchor to tip, (3) replay each transaction
-verifying signature, key membership in KS, lifecycle gate, timestamp ordering,
+verifying signature, key membership in KR, lifecycle gate, timestamp ordering,
 and well-formedness, (4) compare final computed state against claimed state.
 `VERIFIED: agent-check`
 
 **[verification-timestamp-order]**: During chain replay, each transaction's
 `now` MUST be after the previous transaction's `now`. Backward timestamps MUST
 be rejected.
+`VERIFIED: agent-check`
+
+#### Checkpoints
+
+**[checkpoint-self-contained]**: A checkpoint MUST be a self-contained snapshot
+of the authentication-relevant state at a particular commit. Once verified, a
+checkpoint allows verification from that point forward without replaying
+earlier history.
+`VERIFIED: agent-check`
+
+**[checkpoint-genesis-foundational]**: Genesis is the foundational checkpoint.
+Services SHOULD cache later checkpoints to reduce chain length for
+verification.
+`VERIFIED: agent-check`
+
+**[checkpoint-declarative]**: A declarative transaction (`checkpoint/create`)
+MUST enumerate the full principal tree (PT). Since declarative transactions
+exhaustively declare state, they inherently serve as checkpoints.
 `VERIFIED: agent-check`
 
 #### MSS Properties
@@ -235,7 +253,7 @@ keys are the sole authentication factor, verifiable by any party.
 1. **Embedding storage representation**: §12 shows several thought experiments
    for KT representation (array vs object, labeled vs unlabeled). Which is
    the canonical representation? See §12 Option 1/Option 2 discussion.
-2. **Meaningful embedding enforcement**: §12.3 says embedding RS into KS
+2. **Meaningful embedding enforcement**: §12.3 says embedding RR into KR
    "carries no meaning" — should this be a MUST NOT, a warning, or merely
    discouraged?
 3. **MSS registration protocol**: §16.5 describes registration via embedding

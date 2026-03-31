@@ -62,7 +62,7 @@ TYPE TimestampTolerance = Integer                     -- default ±360s
 
 **[single-chain]**: Cyphrpass assumes a single linear chain per principal. An
 implicit fork occurs when two or more conflicting commits reference the same
-`pre` (prior PS), violating this assumption.
+`pre` (prior PR), violating this assumption.
 `VERIFIED: agent-check`
 
 **[proof-of-error]**: Witnesses MAY retain invalid messages as proof of error —
@@ -132,7 +132,7 @@ transaction errors: `INVALID_SIGNATURE`, `UNKNOWN_KEY`, `UNKNOWN_ALG`,
 `VERIFIED: agent-check`
 
 **[error-codes-state]**: Implementations MUST detect: `STATE_MISMATCH` (computed
-PS ≠ claimed PS), `HASH_ALG_MISMATCH`, `ALG_INCOMPATIBLE`, `CHAIN_BROKEN`
+PR ≠ claimed PR), `HASH_ALG_MISMATCH`, `ALG_INCOMPATIBLE`, `CHAIN_BROKEN`
 (Level 2+).
 `VERIFIED: agent-check`
 
@@ -146,7 +146,7 @@ PS ≠ claimed PS), `HASH_ALG_MISMATCH`, `ALG_INCOMPATIBLE`, `CHAIN_BROKEN`
 
 **[resync-process]**: Resync MUST follow: (1) select trust anchor, (2) fetch
 patch via `/patch` endpoint, (3) verify patch (pre chaining, signing keys,
-computed PS, timestamps, thresholds, no forks), (4) apply and promote new PS
+computed PR, timestamps, thresholds, no forks), (4) apply and promote new PR
 to trust anchor.
 
 - **PRE**: Witness trust anchor is behind current tip.
@@ -158,7 +158,7 @@ resync attempts to prevent denial-of-service.
 `VERIFIED: agent-check`
 
 **[resync-pop]**: A principal MAY re-iterate an existing state as authoritative
-without mutating PS/AS through a resync PoP (signing `resync/create`). This
+without mutating PR/AR through a resync PoP (signing `resync/create`). This
 proves current possession without advancing the chain.
 
 - **PRE**: Principal has an active key.
@@ -190,10 +190,10 @@ transactions become permanently invalid.
 #### State Jumping
 
 **[state-jump-mechanism]**: A state-jump transaction (Level 3+) advances a
-client's trust anchor from an old PS directly to a much later PS without
+client's trust anchor from an old PR directly to a much later PR without
 fetching every intermediate transaction.
 
-- **PRE**: Signing key(s) MUST be present in KS at both the old trust anchor
+- **PRE**: Signing key(s) MUST be present in KR at both the old trust anchor
   AND the current tip. `jump_to_ps` MUST match the service-reported tip.
 - **POST**: Client trust anchor updated to `jump_to_ps`. Future resolutions
   start from the new anchor.
@@ -305,7 +305,7 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
   gossip or inconsistent patch responses.
 - **State jumping is optional**: Reference client defaults to rejecting jumps.
   Implementations that support jumping must verify the signing key exists in
-  KS at both anchor and tip.
+  KR at both anchor and tip.
 
 ### For Testing
 

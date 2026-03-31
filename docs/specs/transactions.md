@@ -40,14 +40,17 @@ TYPE Coz            = { pay: Payload, sig: B64ut }
 TYPE Payload        = { alg: KeyAlg, tmb: B64ut, now: Timestamp, typ: TypString, ... }
 TYPE Timestamp      = Integer                              -- Unix timestamp, 0 < t < 2^53 - 1
 TYPE TypString      = "<authority>/<action>"
-TYPE Authority      = String                               -- domain name or Principal Root
+TYPE Authority      = String                               -- domain name or Principal Genesis
 TYPE Action         = "<noun>[/<noun>...]/<verb>"
 TYPE Verb           = "create" | "read" | "update" | "upsert" | "delete"
 TYPE TransactionCoz = Coz & { pay: { pre: Digest } }      -- transaction cozies require `pre`
 TYPE DataActionCoz  = Coz                                  -- no `pre` required
-TYPE Commit         = List<TransactionCoz>                 -- ≥1 transaction cozies
+
+-- Transaction structure: list of lists
+TYPE Transaction    = List<Coz>                            -- ≥1 related cozies
+TYPE TxsList        = List<Transaction>                    -- all transactions in a commit
+TYPE Commit         = TxsList                              -- txs is list of lists; commit tx is last
 TYPE GenesisCommit  = Commit & { keys: List<PublicKey> }   -- includes key material
-TYPE CS             = Digest                               -- Commit State (PT minus CommitID)
 
 -- Key lifecycle
 TYPE KeyVerb        = "key/create" | "key/delete" | "key/replace" | "key/revoke"
@@ -67,7 +70,7 @@ rejected. (Coz itself makes all fields optional; Cyphrpass constrains this.)
 
 **[transaction-pre-required]**: Transaction cozies (those that mutate AT and
 advance the commit chain) MUST additionally contain `pre` in `pay`, referencing
-the targeted Principal Tree (PT), as denoted by PS, for mutation (SPEC.md §4.3).
+the targeted Principal Root (PR) for mutation.
 Cozies without `pre` are not transactions (except naked revokes — see
 [revoke-naked]).
 `VERIFIED: agent-check — updated 2026-03-09 per A-2, A-4`
@@ -75,14 +78,14 @@ Cozies without `pre` are not transactions (except naked revokes — see
 **[data-action-no-pre]**: Data action cozies MUST NOT contain `pre`. Data
 actions are stateless signed messages that do not mutate AT and are not part
 of the commit chain.
-`VERIFIED: agent-check — updated 2026-03-09 per B-5 (AS→AT)`
+`VERIFIED: agent-check — updated 2026-03-09 per B-5 (AR→AT)`
 
 #### Authorization
 
 **[authorization-triple]**: A transaction MUST be authorized if and only if all
 three conditions hold:
 
-1. **Pre-mutation state**: The signing key (`tmb`) MUST be active in KS
+1. **Pre-mutation state**: The signing key (`tmb`) MUST be active in KR
    _before_ the transaction is applied. A key added or revoked within the same
    commit MUST NOT affect authorization of that commit's transactions.
 2. **Lifecycle gate**: The principal's current lifecycle state MUST permit the
@@ -111,27 +114,65 @@ Empty commits (zero transactions) are not valid.
 `VERIFIED: agent-check`
 
 **[commit-pre-chain]**: All transaction cozies in a commit MUST reference the
-same `pre` value — the PS targeted for mutation. The `pre` field groups
+same `pre` value — the PR targeted for mutation. The `pre` field groups
 transactions into a transaction bundle for a commit.
 `VERIFIED: agent-check`
 
-**[commit-id-computation]**: Commit ID MUST be computed as MR(czd₀, czd₁, ...)
-of all transaction cozies in the commit. Cozies MUST be processed in **array
-order** (the order they appear in `txs`), not lexical sort order. This is an
-exception to `state-tree.md` [mr-sort-order].
-`VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
+#### Transaction Structure
 
-**[commit-finality]**: A commit is finalized by having `"commit":<CS>` appear in
-the last coz of the commit (SPEC.md §4.2). CS is computed as all PT components
-except CommitID: `CS = MR(AS, DS?, embedding?, ...)`. The `commit` field serves
-as the forward-reference finality signal. See `state-tree.md` State Formulas.
-`VERIFIED: agent-check — new 2026-03-09 per B-1, R-1`
+**[txs-list-of-lists]**: The `txs` field MUST be a list of lists. Each inner
+list is a transaction containing one or more related cozies. The commit
+transaction MUST be the last entry in `txs`.
+`VERIFIED: agent-check`
 
-**[commit-field-required]**: The last coz in a commit MUST contain the `commit`
-field in `pay` with its value set to the computed CS. Cozies that are not the
-last in a commit MAY omit the `commit` field. A commit without a `commit` field
-in its final coz MUST be rejected as incomplete.
-`VERIFIED: agent-check — new 2026-03-09 per S-1`
+**[tx-grouping]**: Mutation cozies MUST be grouped by transaction. Interlacing
+cozies related to different transactions is prohibited because cozies out of
+order are interpreted as separate transactions.
+`VERIFIED: agent-check`
+
+**[tx-root-computation]**: Each transaction's identifier is computed as
+`TX = MR(czd₀, czd₁?, ...)` of its related cozies' `czd` values.
+`VERIFIED: agent-check`
+
+#### Transaction Root Decomposition
+
+**[tmr-computation]**: The Transaction Mutation Root (TMR) MUST be computed as
+`TMR = MR(TX₀, TX₁?, ...)` of all mutation transaction identifiers.
+`VERIFIED: agent-check`
+
+**[tcr-computation]**: The Transaction Commit Root (TCR) MUST be computed as
+`TCR = MR(czd₀, czd₁?, ...)` of the commit transaction's cozies' `czd` values.
+Since there is exactly one commit transaction per commit, TCR is calculated
+directly from its cozies.
+`VERIFIED: agent-check`
+
+**[tr-computation]**: The Transaction Root (TR) MUST be computed as
+`TR = MR(TMR, TCR)`. TR serves as the commit ID.
+`VERIFIED: agent-check`
+
+#### Commit Finality
+
+**[commit-finality-arrow]**: A commit is finalized by a commit transaction coz
+(`typ: "cyphr.me/cyphrpass/commit/create"`) containing the `arrow` field. The
+`arrow` field value MUST equal `MR(pre, fwd, TMR)`, where:
+
+- `pre` is the prior PR (the state being mutated)
+- `fwd` is the forward ST (state after mutation, before commit)
+- `TMR` is the transaction mutation root
+
+The commit transaction MUST be the last transaction in `txs`.
+`VERIFIED: agent-check`
+
+**[arrow-excludes-self]**: The `arrow` field covers everything except the commit
+transaction itself. A commit cannot refer to itself (a signature cannot sign
+itself). For this reason, `pre` refers to PR while `fwd` refers to ST (not PR).
+`VERIFIED: agent-check`
+
+**[pr-after-commit]**: After the commit transaction is finalized, PR is
+calculable: `PR = MR(SR, CR)` where CR now includes the new TR. A "forward PR"
+is not calculable at signing time since that would require the commit to refer
+to itself.
+`VERIFIED: agent-check`
 
 #### `typ` Grammar
 
@@ -143,7 +184,7 @@ compound, e.g., `user/image`).
 
 **[typ-verbs]**: Standard verbs MUST be one of: `create`, `read`, `update`,
 `upsert`, `delete`. Protocol-level special verbs (`revoke`, `replace`, `merge`,
-`ack-merge`) are additionally permitted for their defined transaction types.
+`merge-ack`) are additionally permitted for their defined transaction types.
 `VERIFIED: agent-check`
 
 **[idempotent-transactions]**: Transaction mutations MUST be idempotent.
@@ -190,50 +231,48 @@ only, not replay-from-genesis.
 
 #### Genesis
 
-**[genesis-bootstrap]**: For Level 3+ principals, genesis MUST follow the
-bootstrap model: the first key exists without a transaction (implicit `tmb` ==
-KS == AS == PS). Additional keys, rules, or components MUST be added via
-transactions that reference `pre` = the current PS. The explicit commit genesis
-is finalized by a `principal/create` transaction. Level 1 and 2 principals have
-an implicit genesis with no transactions or commit chain.
+**[genesis-bootstrap]**: Genesis MUST use explicit `key/create` transactions to
+establish the initial key set. The first key's `pre` references its own `tmb`
+(the bootstrap identity). Additional keys reference the current PR (which
+evolves as mutations accumulate). Genesis is finalized by a `principal/create`
+declaration followed by a `commit/create` transaction.
 
 - **PRE**: No principal exists for this key identity.
-- **POST**: For Level 3+, PR is established and immutable, and the commit chain
-  begins. For Levels 1-2, PR does not exist.
+- **POST**: PG is established and immutable, and the commit chain begins.
   `VERIFIED: agent-check`
 
-**[genesis-pre-continuity]**: Every transaction in a genesis commit, including
-the genesis transactions themselves, MUST include `pre` referencing the current
-PS. For the first transaction (e.g., `key/create` adding a second key), `pre`
-MUST reference the first key's `tmb` (which is PS via implicit promotion).
+**[genesis-pre-bootstrap]**: At genesis, no prior PR exists. The bootstrap
+identity is the first key's `tmb`, which serves as the initial `pre` for the
+first `key/create`. Subsequent transactions within the genesis commit reference
+the current PR as it evolves through mutations.
 
-- **PRE**: First key's `tmb` is the current PS.
-- **POST**: Each transaction targets the same PS, maintaining chain continuity.
+- **PRE**: First key's `tmb` is the bootstrap identity.
+- **POST**: Each transaction targets the evolving PR, maintaining chain continuity.
   `VERIFIED: agent-check`
 
-**[genesis-finality]**: Level 3+ genesis MUST be finalized by a
-`principal/create` transaction with `id` set to the computed Principal State
-(PS), which at genesis becomes the Principal Root (PR). Level 1-2 principals DO
-NOT use `principal/create`.
+**[genesis-finality]**: Genesis MUST include a `principal/create` transaction
+(with `id` == PG) declaring the principal, followed by a `commit/create`
+transaction with `arrow` that finalizes the commit (per [commit-finality-arrow]).
+The resulting PG is the first PR computed after this commit.
 
-- **PRE**: All genesis mutations (key additions, etc.) are included (Level 3+).
-- **POST**: PR = the `id` field of `principal/create`. Principal is created.
-  `VERIFIED: agent-check — updated 2026-03-09 per B-3 (AS→PS), SPEC §5.1`
+- **PRE**: All genesis mutations (key additions, etc.) are included.
+- **POST**: PG = the first PR. Principal is created.
+  `VERIFIED: agent-check`
 
 #### Key Lifecycle
 
 **[key-create]**: `key/create` (Level 3+) adds a new key to KT. The
-transaction MUST include `id` = `tmb` of the new key and `pre` = targeted PS.
-The signing key (`tmb`) MUST be active in KS at pre-mutation state.
+transaction MUST include `id` = `tmb` of the new key and `pre` = targeted PR.
+The signing key (`tmb`) MUST be active in KR at pre-mutation state.
 
 - **PRE**: Key identified by `id` MUST NOT already exist in KT (per
   [create-uniqueness]).
-- **POST**: New key is active in KT. KS is recomputed. AS evolves.
+- **POST**: New key is active in KT. KR is recomputed. AR evolves.
   `VERIFIED: agent-check`
 
 **[key-delete]**: `key/delete` (Level 3+) removes a key from KT without
 marking it as compromised. The transaction MUST include `id` = `tmb` of the
-key being removed, and `pre` = targeted PS.
+key being removed, and `pre` = targeted PR.
 
 - **PRE**: Key identified by `id` MUST be active in KT.
 - **POST**: Key is removed from KT. Past signatures from the key's active
@@ -242,8 +281,8 @@ key being removed, and `pre` = targeted PS.
 
 **[key-replace]**: `key/replace` (Level 2+) atomically removes the signing key
 and adds a new key. The transaction MUST include `id` = `tmb` of the new key,
-and `pre` = targeted PS. For Level 2, `pre` is the `tmb` of the previous key
-(since AS == KS == `tmb`).
+and `pre` = targeted PR. For Level 2, `pre` is the `tmb` of the previous key
+(since AR == KR == `tmb`).
 
 - **PRE**: Signing key (`tmb`) MUST be active in KT. Level 2 principal MUST
   have exactly one key.
@@ -262,7 +301,7 @@ key is compromised. The `tmb` signing the revoke MUST be the key being revoked
   `VERIFIED: agent-check`
 
 **[revoke-naked]**: A revoke MAY omit `pre` (naked revoke). A naked revoke
-does NOT mutate PS. Third parties MAY sign naked revokes to declare a key
+does NOT mutate PR. Third parties MAY sign naked revokes to declare a key
 compromised without knowledge of the principal's state. A naked revoke, or a
 revoke with `pre` but without a subsequent `delete`, puts the principal in an
 error state (see `consensus.md`).
@@ -285,16 +324,16 @@ active period MUST be ignored.
 **[data-action-stateless]**: Data actions are stateless signed messages. They
 MUST NOT mutate AT. They do not participate in the commit chain.
 
-- **PRE**: Signing key MUST be active in KS.
+- **PRE**: Signing key MUST be active in KR.
 - **POST**: Action is recorded in DT (if DT exists). No AT change.
-  `VERIFIED: agent-check — updated 2026-03-09 per B-5 (AS→AT)`
+  `VERIFIED: agent-check — updated 2026-03-09 per B-5 (AR→AT)`
 
-**[ds-inclusion]**: To include DS into PS, a `ds/create` transaction MUST be
-signed, updating the DS component in the principal state tree. Without this
-explicit inclusion transaction, DS is absent from PS (excluded, not zero).
+**[dr-inclusion]**: To include DR into PR, a `ds/create` transaction MUST be
+signed, updating the DR component in the principal state tree. Without this
+explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 
 - **PRE**: DT exists (Level 4+). Signing key MUST be active.
-- **POST**: DS = MR(DT) is included as a component of PS.
+- **POST**: DR = MR(DT) is included as a component of PR.
   `VERIFIED: agent-check`
 
 #### Nonce Transactions
@@ -309,13 +348,13 @@ The path grammar is: `cyphrpass/<tree-path>/nonce/<verb>`. Examples:
 
 ### Forbidden States
 
-**[no-orphan-pre]**: A transaction's `pre` MUST reference a valid, known PS.
+**[no-orphan-pre]**: A transaction's `pre` MUST reference a valid, known PR.
 Transactions referencing a `pre` that does not correspond to any known state
 in the commit chain MUST be rejected.
 `VERIFIED: agent-check`
 
 **[no-unauthorized-transaction]**: A transaction signed by a key not active in
-KS at the pre-mutation state MUST be rejected. There MUST NOT be a state where
+KR at the pre-mutation state MUST be rejected. There MUST NOT be a state where
 a transaction is accepted from an unauthorized key.
 `VERIFIED: agent-check`
 
@@ -329,11 +368,9 @@ match the key being revoked MUST be rejected. Revokes MUST be self-signed.
 `VERIFIED: agent-check`
 
 > [!NOTE]
-> **PLACEHOLDER — Commit Finality (partially resolved)**: The commit finality
-> mechanism is now resolved: inline `"commit":<CS>` in the last coz (see
-> [commit-finality], [commit-field-required]). However, the exact behavior when
-> `commit` appears in cozies other than the last one is not specified. Is it
-> ignored? Rejected?
+> **PLACEHOLDER — Commit Finality (resolved)**: The commit finality
+> mechanism is now resolved: `arrow` field in `commit/create` (see
+> [commit-finality-arrow]).
 
 **[intra-commit-ordering]**: Transactions within a commit MUST be applied in
 **array order** (the order they appear in the `txs` array). This ordering is
@@ -344,7 +381,7 @@ order determines the final state when operations on the same target are present.
 ### Behavioral Properties
 
 **[commit-deterministic]**: Given identical transaction cozies in a commit, the
-resulting PS MUST be identical regardless of implementation. This follows from
+resulting PR MUST be identical regardless of implementation. This follows from
 deterministic state computation (per `state-tree.md` [deterministic-state])
 applied to transaction outputs.
 
@@ -383,7 +420,7 @@ included `pre`.
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
 | [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
 | [commit-id-computation]       | agent-check | pass   | SPEC.md §9; array order per decision                |
-| [commit-finality]             | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
+| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
 | [commit-field-required]       | agent-check | pass   | SPEC.md §4.2 (new 2026-03-09)                       |
 | [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
 | [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
@@ -395,7 +432,7 @@ included `pre`.
 | [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
 | [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                            |
 | [genesis-pre-continuity]      | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PS, updated 2026-03-09)            |
+| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PR, updated 2026-03-09)            |
 | [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                            |
 | [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                            |
 | [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                            |
@@ -403,15 +440,15 @@ included `pre`.
 | [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                            |
-| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AS→AT, updated 2026-03-09)            |
-| [ds-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
+| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AR→AT, updated 2026-03-09)            |
+| [dr-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
 | [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                            |
 | [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                    |
 | [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                     |
 | [no-self-revoke-recovery]     | agent-check | pass   | Explicit in SPEC.md §3.1                            |
 | [no-revoke-non-self]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
 | [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]    |
-| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pr-immutable]           |
+| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]           |
 | [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
 | [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)           |
 | [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)               |
@@ -422,10 +459,10 @@ included `pre`.
 
 - **Authorization snapshot**: The [pre-mutation-key-rule] is the most critical
   implementation detail — authorization is evaluated against the state _before_
-  the commit is applied, not during. Implementations must snapshot KS before
+  the commit is applied, not during. Implementations must snapshot KR before
   processing any transaction in a commit.
 - **Revoke without `pre`**: Naked revokes are valid Coz messages that don't
-  mutate PS but must be stored and propagated. Implementations must handle
+  mutate PR but must be stored and propagated. Implementations must handle
   revokes arriving out-of-band (not in the commit chain).
 - **Key re-addition**: [key-delete] explicitly permits re-adding a deleted key
   via `key/create`. Implementations must not treat "previously deleted" as a
@@ -447,7 +484,7 @@ included `pre`.
 
 ### Open Questions (for Zami / sketch)
 
-1. **Commit field in non-last coz**: §4.2 says `"commit":<CS>` appears in the
+1. **Commit field in non-last coz**: §4.2 says `"commit":<CR>` appears in the
    "last coz". What happens if it appears in an earlier coz? Ignored? Rejected?
 2. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
    Is the public key material always required alongside `key/create`, or can

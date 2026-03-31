@@ -40,7 +40,7 @@ their identities or allow unauthorized parties to take over accounts.
 
 **[unrecoverable-definition]**: A principal is unrecoverable when: (1) no useful
 active keys remain, (2) no designated recovery agents or fallback mechanisms are
-present or able to act, (3) AS cannot be mutated, and (4) recovery is impossible
+present or able to act, (3) AR cannot be mutated, and (4) recovery is impossible
 within the protocol (requires sideband intervention). All four conditions MUST
 hold for the state to be classified as unrecoverable. Note: some data actions
 MAY still be possible even in an unrecoverable state (SPEC.md §2.2.11).
@@ -70,7 +70,7 @@ or reverse an unrecoverable state once it has occurred.
 
 **[fallback-field]**: For single-key accounts, a `fallback` field MAY be
 included at key creation to designate a recovery key. The `fallback` value is
-`tmb` (Level 2) or external principal `PS` (Level 3+).
+`tmb` (Level 2) or external principal `PR` (Level 3+).
 `VERIFIED: agent-check`
 
 **[fallback-not-in-tmb]**: The `fallback` field MUST NOT be included in the
@@ -144,7 +144,7 @@ for history rewriting.
 
 **[disown-no-as-mutation]**: A client MAY mark past actions as disowned
 (expressing intent that the action was unintentional), but disowning MUST NOT
-mutate AS. Disowning is bookkeeping only.
+mutate AR. Disowning is bookkeeping only.
 `VERIFIED: agent-check`
 
 ### Transitions
@@ -152,7 +152,7 @@ mutate AS. Disowning is bookkeeping only.
 **[recovery-flow]**: The recovery flow MUST follow: (1) user generates a new
 key/account, (2) user contacts recovery agent out-of-band, (3) agent verifies
 identity (method varies), (4) agent signs `key/create` for the new key,
-referencing `pre` = targeted PS.
+referencing `pre` = targeted PR.
 
 - **PRE**: Principal is unrecoverable or compromised. Recovery agent is
   registered.
@@ -195,7 +195,7 @@ NOT be able to freeze a principal (per [external-freeze-delegation]).
 > **PLACEHOLDER — Recovery Timelocks (Level 5+)**: SPEC.md §18.10 mentions
 > recovery can have a "mandatory waiting period" (timelock) at Level 5+. The
 > mechanics of timelocked recovery (how long, who sets it, interaction with
-> freeze) are not fully specified. Deferred until Rule State (RS) is
+> freeze) are not fully specified. Deferred until Rule Root (RR) is
 > formalized.
 
 ### Behavioral Properties
@@ -258,7 +258,7 @@ investigates, without irreversibly revoking keys.
   recovery agent. This is a special case in the authorization pipeline.
 - **Fallback outside tmb**: The `fallback` field must be excluded from
   thumbprint computation — implementations must be careful not to include it.
-- **Freeze is a state flag**: Freeze does not modify KS or AS directly — it sets
+- **Freeze is a state flag**: Freeze does not modify KR or AR directly — it sets
   a condition flag that gates all mutations. This is distinct from key lifecycle
   operations.
 - **Forward-only mutations**: No undo, no rollback. The implementation must
@@ -284,6 +284,6 @@ investigates, without irreversibly revoking keys.
    implementations handle a recovery attempt on a principal that isn't
    actually unrecoverable?
 2. **External freeze timeout**: §18.9.3 says external freeze may include "a
-   timeout, if configured" — what's the timeout mechanism? Timer in RS?
+   timeout, if configured" — what's the timeout mechanism? Timer in RR?
 3. **Disown transaction type**: §18.12 says clients MAY "mark past actions as
    disowned" — is there a specific `typ` for this (e.g., `action/disown`)?
