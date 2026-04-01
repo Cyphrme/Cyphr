@@ -49,6 +49,7 @@ pub trait TreeHasher {
 /// and O(1) root extraction.
 ///
 /// Leaf hashes are retained for proof generation.
+#[derive(Debug, Clone)]
 pub struct Log<H: TreeHasher> {
     hasher: H,
     /// Stored leaf hashes for proof generation.

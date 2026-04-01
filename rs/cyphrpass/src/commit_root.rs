@@ -70,7 +70,7 @@ impl TreeHasher for CyphrpassMultiHasher {
 }
 
 /// The Commit Root represents the finalized state of the verifiable MALT log.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRoot(pub MultihashDigest);
 
 impl CommitRoot {

@@ -741,12 +741,12 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 /// Returns `EmptyMultihash` if the StateRoot contains no variants.
 pub fn compute_pr(
     state_root: &StateRoot,
-    tr: Option<&crate::transaction_root::TransactionRoot>,
+    cr: Option<&crate::commit_root::CommitRoot>,
     embedding: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<PrincipalRoot> {
     // Implicit promotion: only SR, no CR, no embedding
-    if tr.is_none() && embedding.is_none() {
+    if cr.is_none() && embedding.is_none() {
         return Ok(PrincipalRoot(state_root.0.clone()));
     }
 
@@ -757,7 +757,7 @@ pub fn compute_pr(
 
         // Collect non-nil components
         let mut components: Vec<&[u8]> = vec![sr_bytes];
-        if let Some(cr_digest) = tr {
+        if let Some(cr_digest) = cr {
             components.push(cr_digest.0.get_or_err(alg)?);
         }
         if let Some(e) = embedding {

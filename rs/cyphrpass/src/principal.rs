@@ -87,6 +87,10 @@ pub struct PrincipalCore {
     pub(crate) ks: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
+    /// MALT tree for computing Commit Root (CR).
+    pub(crate) commit_tree: Option<crate::commit_root::CommitLog>,
+    /// Current Commit Root (CR).
+    pub(crate) cr: Option<crate::commit_root::CommitRoot>,
     /// Current State Root: SR = MR(AR, DR?, embedding?).
     pub(crate) sr: Option<StateRoot>,
     /// Current Auth State.
@@ -115,6 +119,8 @@ impl Default for PrincipalCore {
             ps: PrincipalRoot::default(),
             ks: KeyRoot::default(),
             tr: None,
+            commit_tree: None,
+            cr: None,
             sr: None,
             auth_root: AuthRoot::default(),
             ds: None,
@@ -245,6 +251,8 @@ impl Principal {
             ps,
             ks,
             tr: None,
+            commit_tree: None,
+            cr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -297,6 +305,8 @@ impl Principal {
             ps,
             ks,
             tr: None,
+            commit_tree: None,
+            cr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -359,6 +369,8 @@ impl Principal {
             ps,
             ks,
             tr: None,
+            commit_tree: None,
+            cr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -513,6 +525,11 @@ impl Principal {
         self.tr.as_ref()
     }
 
+    /// Get the current Commit Root (CR).
+    pub fn cr(&self) -> Option<&crate::commit_root::CommitRoot> {
+        self.cr.as_ref()
+    }
+
     /// Get the current State Root.
     ///
     /// Returns `None` only if no state has been computed (shouldn't happen
@@ -650,7 +667,7 @@ impl Principal {
         self.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, self.tr.as_ref(), None, &[self.hash_alg])?;
+        self.ps = compute_pr(&sr, self.cr.as_ref(), None, &[self.hash_alg])?;
 
         Ok(&self.ps)
     }
@@ -920,6 +937,7 @@ impl Principal {
 
         // Re-derive active algorithms from ALL current keys
         // (SPEC §14: union of all active keys' algorithms)
+        let old_algs = std::mem::take(&mut self.active_algs);
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         self.active_algs = derive_hash_algs(&key_refs);
 
@@ -950,8 +968,34 @@ impl Principal {
             }
         }
 
+        // Rebuild MALT tree if algorithm set changed or tree is uninitialized
+        if old_algs != self.active_algs || self.commit_tree.is_none() {
+            let hasher = crate::commit_root::CyphrpassMultiHasher::new(self.active_algs.clone());
+            let mut log = malt::Log::new(hasher);
+            for prior_commit in &self.auth.commits {
+                let tr = prior_commit.tr();
+                let mut bytes = Vec::new();
+                for &alg in &self.active_algs {
+                    bytes.extend_from_slice(tr.0.get(alg).unwrap_or(&[]));
+                }
+                log.append(&bytes);
+            }
+            self.commit_tree = Some(log);
+        }
+
+        // Append current TR to MALT tree and compute CR
+        let mut bytes = Vec::new();
+        for &alg in &self.active_algs {
+            bytes.extend_from_slice(tr.0.get(alg).unwrap_or(&[]));
+        }
+        let commit_tree = self.commit_tree.as_mut().expect("just verified");
+        commit_tree.append(&bytes);
+        
+        let cr = crate::commit_root::CommitRoot(commit_tree.root());
+        self.cr = Some(cr.clone());
+
         // Compute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, Some(&tr), None, &self.active_algs)?;
+        self.ps = compute_pr(&sr, Some(&cr), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
         let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone())?;

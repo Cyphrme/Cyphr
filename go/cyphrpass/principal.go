@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cyphrme/coz"
+	"github.com/cyphrme/malt"
 )
 
 // currentTime returns current unix timestamp in seconds.
@@ -79,6 +80,9 @@ type Principal struct {
 	ar AuthRoot
 	sr StateRoot // SR = MR(AR, DR?, embedding?)
 	dr *DataRoot // nil if no actions
+
+	commitTree *malt.Log[string]
+	cr         *CommitRoot // nil if no transactions
 
 	auth       authLedger
 	data       dataLedger
@@ -240,6 +244,11 @@ func (p *Principal) PR() PrincipalRoot {
 // AS returns the current Auth State.
 func (p *Principal) AR() AuthRoot {
 	return p.ar
+}
+
+// CR returns the current Commit Root.
+func (p *Principal) CR() *CommitRoot {
+	return p.cr
 }
 
 // KS returns the current Key State.
@@ -423,8 +432,8 @@ func (p *Principal) RecordAction(action *Action) error {
 	}
 	p.sr = sr
 
-	// Recompute PR = MR(SR, TR?, embedding?)
-	pr, err := ComputePR(p.sr, p.tr, nil, p.activeAlgs)
+	// Recompute PR = MR(SR, CR?, embedding?)
+	pr, err := ComputePR(p.sr, p.cr, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -794,8 +803,51 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 	}
 
-	// Recompute PR = MR(SR, TR?, embedding?)
-	pr, err := ComputePR(p.sr, p.tr, nil, p.activeAlgs)
+	// Re-derive active algorithms correctly (Fix Phase 3 Tech Debt)
+	oldAlgs := make([]HashAlg, len(p.activeAlgs))
+	copy(oldAlgs, p.activeAlgs)
+	p.activeAlgs = DeriveHashAlgs(p.auth.Keys)
+	
+	algsChanged := len(oldAlgs) != len(p.activeAlgs)
+	if !algsChanged {
+		for i, v := range oldAlgs {
+			if v != p.activeAlgs[i] {
+				algsChanged = true
+				break
+			}
+		}
+	}
+
+	// Rebuild MALT tree if algorithm set changed or tree is uninitialized
+	if algsChanged || p.commitTree == nil {
+		hasher := NewCyphrpassMultiHasher(p.activeAlgs)
+		p.commitTree = malt.New[string](hasher)
+		for _, priorCommit := range p.commits {
+			if priorCommit.TR() != nil {
+				var bytesData []byte
+				for _, alg := range p.activeAlgs {
+					bytesData = append(bytesData, priorCommit.TR().GetOrFirst(alg)...)
+				}
+				p.commitTree.Append(bytesData)
+			}
+		}
+	}
+
+	// Append current TR to MALT tree and compute CR
+	var bytesData []byte
+	for _, alg := range p.activeAlgs {
+		bytesData = append(bytesData, tr.GetOrFirst(alg)...)
+	}
+	p.commitTree.Append(bytesData)
+	crStr := p.commitTree.Root()
+	cr, err := NewCommitRootFromString(crStr)
+	if err != nil {
+		return nil, err
+	}
+	p.cr = cr
+
+	// Recompute PR = MR(SR, CR?, embedding?)
+	pr, err := ComputePR(p.sr, p.cr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}

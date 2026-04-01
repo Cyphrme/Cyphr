@@ -493,9 +493,9 @@ func ComputeDR(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataRoot, error) {
 // If CR is nil (Levels 1-3) and no embedding, PR = SR (implicit promotion).
 // The cr parameter is temporarily *CommitID until CR replaces CommitID in Phase 5.
 // embedding is reserved for future use; pass nil.
-func ComputePR(sr StateRoot, tr *TransactionRoot, embedding coz.B64, algs []HashAlg) (PrincipalRoot, error) {
-	// Implicit promotion: only SR, no TR, no embedding
-	if tr == nil && len(embedding) == 0 {
+func ComputePR(sr StateRoot, cr *CommitRoot, embedding coz.B64, algs []HashAlg) (PrincipalRoot, error) {
+	// Implicit promotion: only SR, no CR, no embedding
+	if cr == nil && len(embedding) == 0 {
 		return PrincipalRoot{sr.Clone()}, nil
 	}
 
@@ -510,8 +510,8 @@ func ComputePR(sr StateRoot, tr *TransactionRoot, embedding coz.B64, algs []Hash
 
 		// Collect non-nil components
 		components := [][]byte{srBytes}
-		if tr != nil {
-			components = append(components, tr.GetOrFirst(alg))
+		if cr != nil {
+			components = append(components, cr.GetOrFirst(alg))
 		}
 		if len(embedding) > 0 {
 			components = append(components, embedding)

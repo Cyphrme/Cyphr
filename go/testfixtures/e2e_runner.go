@@ -656,7 +656,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 6: Recompute PR = MR(SR, CR?) and verify variants
-	recomputedPR, err := cyphrpass.ComputePR(recomputedSR, reimported.TR(), nil, activeAlgs)
+	recomputedPR, err := cyphrpass.ComputePR(recomputedSR, reimported.CR(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute PR: %w", err)
 		return result

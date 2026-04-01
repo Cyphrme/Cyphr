@@ -128,6 +128,19 @@ type CommitRoot struct {
 
 type CommitLog = malt.Log[string]
 
+// NewCommitRootFromString rebuilds a CommitRoot from MALT tree root output.
+func NewCommitRootFromString(s string) (*CommitRoot, error) {
+	v, err := deserializeVariants(s)
+	if err != nil {
+		return nil, err
+	}
+	md, err := NewMultihashDigest(v)
+	if err != nil {
+		return nil, err
+	}
+	return &CommitRoot{MultihashDigest: &md}, nil
+}
+
 // ComputeCR computes the CR incrementally over a list of TRs.
 func ComputeCR(trs []*MultihashDigest, algs []HashAlg) (*CommitRoot, error) {
 	hasher := NewCyphrpassMultiHasher(algs)
