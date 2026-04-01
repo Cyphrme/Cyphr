@@ -5,9 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::parsed_coz::VerifiedCoz;
-use crate::state::{
-    AuthRoot, CommitID, HashAlg, PrincipalRoot, StateRoot, TaggedCzd, compute_commit_id_tagged,
-};
+use crate::state::{AuthRoot, HashAlg, PrincipalRoot, StateRoot, TaggedCzd};
 
 // ============================================================================
 // Commit
@@ -568,7 +566,7 @@ mod tests {
         let pending = PendingCommit::new(HashAlg::Sha256);
         assert!(pending.is_empty());
         assert_eq!(pending.len(), 0);
-        assert!(pending.compute_commit_id().is_none());
+        assert!(pending.compute_tr().is_none());
     }
 
     #[test]
@@ -586,15 +584,22 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_compute_commit_id_returns_merkle_root() {
+    fn pending_commit_compute_tr_returns_merkle_root() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         let tx1 = make_test_tx(false, 0x01);
-        pending.push(tx1);
+        pending
+            .transactions
+            .push(crate::transaction::Transaction(vec![tx1.clone()]));
+        let ctx = crate::transaction::CommitTransaction(vec![tx1]);
+        pending.commit_tx = Some(ctx);
 
-        let commit_id = pending.compute_commit_id();
-        assert!(commit_id.is_some());
+        let tr = pending.compute_tr();
+        assert!(tr.is_some());
         // Commit ID should be 32 bytes (SHA256)
-        assert_eq!(commit_id.unwrap().get(HashAlg::Sha256).unwrap().len(), 32);
+        assert_eq!(
+            tr.clone().unwrap().0.get(HashAlg::Sha256).unwrap().len(),
+            32
+        );
     }
 
     #[test]
@@ -717,11 +722,11 @@ mod tests {
         assert_eq!(commit.auth_root(), &auth_root);
         assert_eq!(commit.sr(), &sr);
         assert_eq!(commit.pr(), &ps);
-        assert_eq!(commit.commit_id().get(HashAlg::Sha256).unwrap().len(), 32);
+        assert_eq!(commit.tr().0.get(HashAlg::Sha256).unwrap().len(), 32);
     }
 
     #[test]
-    fn commit_multi_transaction_computes_correct_commit_id() {
+    fn commit_multi_transaction_computes_correct_tr() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         pending.push(make_test_tx(false, 0x01));
         pending.push(make_test_tx(false, 0x02));
@@ -744,7 +749,7 @@ mod tests {
         assert_eq!(commit.len(), 3);
 
         // Commit ID should be Merkle root of all 3 coz czds
-        let cid = commit.commit_id();
+        let cid = &commit.tr().0;
         assert_eq!(cid.get(HashAlg::Sha256).unwrap().len(), 32);
     }
 

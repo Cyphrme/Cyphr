@@ -936,8 +936,8 @@ fn e2e_multihash_round_trip() {
             compute_sr(&recomputed_as, principal.data_root(), None, active_algs).unwrap();
 
         // Recompute PR from SR + CR?
-        let commit_id = principal.current_commit_id();
-        let recomputed_ps = compute_pr(&recomputed_sr, commit_id, None, active_algs).unwrap();
+        let tr = principal.current_tr();
+        let recomputed_ps = compute_pr(&recomputed_sr, tr, None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(

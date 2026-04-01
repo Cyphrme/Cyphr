@@ -135,7 +135,7 @@ pub struct ExpectedAssertions {
     pub pr: Option<String>,
     /// Expected commit ID digest.
     #[serde(default)]
-    pub commit_id: Option<String>,
+    pub tr: Option<String>,
     /// Expected error (for error tests).
     #[serde(default)]
     pub error: Option<String>,

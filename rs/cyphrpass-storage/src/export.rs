@@ -117,18 +117,14 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
         // Use first_variant() for deterministic, fallible access
-        let cid_bytes = commit.commit_id().as_multihash().first_variant()?;
-        let cid_alg = commit
-            .commit_id()
-            .as_multihash()
+        let tr_bytes = commit.tr().0.first_variant()?;
+        let tr_alg = commit
+            .tr()
+            .0
             .algorithms()
             .next()
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
-        let commit_id = format!(
-            "{}:{}",
-            cid_alg,
-            Base64UrlUnpadded::encode_string(cid_bytes)
-        );
+        let commit_id = format!("{}:{}", tr_alg, Base64UrlUnpadded::encode_string(tr_bytes));
 
         let as_bytes = commit.auth_root().as_multihash().first_variant()?;
         let as_alg = commit

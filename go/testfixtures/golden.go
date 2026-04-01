@@ -53,14 +53,14 @@ type GoldenKey struct {
 }
 
 // GoldenCommit is an atomic coz bundle from a golden file.
-// Matches the Rust fixture format: {cozies, keys, commit_id, ar, cs, pr}.
+// Matches the Rust fixture format: {cozies, keys, tr, ar, cs, pr}.
 type GoldenCommit struct {
 	// Cozies contains the cozies in this commit.
 	Cozies []json.RawMessage `json:"txs"`
 	// Keys contains key material introduced in this commit (SPEC §5.2/§5.3).
 	Keys []GoldenKey `json:"keys"`
 	// CommitID is the commit identity after this commit (base64url).
-	CommitID string `json:"commit_id,omitempty"`
+	CommitID string `json:"tr,omitempty"`
 	// AR is the auth root after this commit (base64url).
 	AR string `json:"ar,omitempty"`
 	// SR is the state root after this commit (base64url).
@@ -82,7 +82,7 @@ type GoldenExpected struct {
 	// PR is the expected principal root digest (first variant).
 	PR string `json:"pr,omitempty"`
 	// CommitID is the expected commit ID digest.
-	CommitID string `json:"commit_id,omitempty"`
+	CommitID string `json:"tr,omitempty"`
 	// TS is a backwards-compatible alias for CommitID (legacy golden files).
 	TS string `json:"ts,omitempty"`
 	// SR is the expected state root digest.

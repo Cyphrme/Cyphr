@@ -1,4 +1,4 @@
-use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
+use crate::parsed_coz::VerifiedCoz;
 
 /// A sequence of one or more related mutation cozies.
 /// In Cyphrpass, mutation cozies MUST be grouped by transaction.

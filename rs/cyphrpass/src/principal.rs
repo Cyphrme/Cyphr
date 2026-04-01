@@ -11,9 +11,8 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
-    AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
-    compute_ar, compute_dr, compute_kr, compute_pr, compute_sr, derive_hash_algs,
-    hash_alg_from_str,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_ar,
+    compute_dr, compute_kr, compute_pr, compute_sr, derive_hash_algs, hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -952,7 +951,7 @@ impl Principal {
         }
 
         // Compute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, Some(&commit_id), None, &self.active_algs)?;
+        self.ps = compute_pr(&sr, Some(&tr), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
         let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone())?;

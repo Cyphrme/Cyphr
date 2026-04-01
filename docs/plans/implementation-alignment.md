@@ -159,10 +159,10 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 - [x] Update downstream consumers (storage, fixtures, runners)
 
 5. **Phase 5: MALT Integration for CR** — Wire malt package for `CR = MALTR(TR₀, TR₁, ...)`
-   - [ ] Go: add `github.com/cyphrme/malt` dependency to `go.mod`
-   - [ ] Rust: add `malt = { path = "../malt" }` to `cyphrpass/Cargo.toml`
-   - [ ] Implement `TreeHasher` for Cyphrpass hash algorithms (both langs)
-   - [ ] Add `CommitRoot` type (both langs)
+   - [x] Go: add `github.com/cyphrme/malt` dependency to `go.mod`
+   - [x] Rust: add `malt = { path = "../malt" }` to `cyphrpass/Cargo.toml`
+   - [x] Implement `TreeHasher` for Cyphrpass hash algorithms (both langs)
+   - [x] Add `CommitRoot` type (both langs)
    - [ ] Add `ComputeCR` using MALT `Log.Append()` + `Log.Root()`
    - [ ] Add `commit_tree` (MALT `Log`) to Principal struct
    - [ ] Update PR computation: `PR = MR(SR, CR)`
@@ -297,6 +297,7 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 | Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |            |
 | Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           | 2026-04-01 |
 | C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                    | Formal protocol restored and output applied   | 2026-04-01 |
+| Unresolved lint warnings in Rust related to missing doc comments on newly added types/methods.                   | LOW      | Focusing on structural alignment rather than polished docs  | Polish docs in Phase 7 cleanup.               |            |
 
 ## Deviation Log
 

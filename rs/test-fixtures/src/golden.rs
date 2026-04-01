@@ -108,7 +108,7 @@ pub struct GoldenExpected {
     pub pr: Option<String>,
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
-    pub commit_id: Option<String>,
+    pub tr: Option<String>,
     /// Expected state root digest: MR(AR, DR?).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sr: Option<String>,
@@ -282,7 +282,7 @@ impl<'a> Generator<'a> {
     ///
     /// Each CommitEntry contains:
     /// - cozies: array of cozies in commit (with pay, sig, key? fields)
-    /// - commit_id: Commit ID digest (base64url)
+    /// - tr: Commit ID digest (base64url)
     /// - as: Auth State digest (base64url)
     /// - sr: State Root digest (base64url)
     /// - pr: Principal State digest (base64url)
@@ -320,12 +320,12 @@ impl<'a> Generator<'a> {
 
             // Create pseudo-commit with current state
             // (actions don't change key state, only add data state)
-            // Use last commit's commit_id if available, else we have no commit_id (genesis-only)
-            let commit_id = last_commit
+            // Use last commit's tr if available, else we have no tr (genesis-only)
+            let tr = last_commit
                 .map(|c| {
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    c.commit_id()
-                        .as_multihash()
+                    c.tr()
+                        .0
                         .first_variant()
                         .map(Base64UrlUnpadded::encode_string)
                         .unwrap_or_default()
@@ -353,14 +353,7 @@ impl<'a> Generator<'a> {
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
 
-            commits.push(CommitEntry::new(
-                vec![raw],
-                vec![],
-                commit_id,
-                auth_root,
-                sr,
-                pr_,
-            ));
+            commits.push(CommitEntry::new(vec![raw], vec![], tr, auth_root, sr, pr_));
         }
 
         Ok((commits, digests))
@@ -1275,7 +1268,7 @@ impl<'a> Generator<'a> {
             .get(first_alg)
             .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
             .unwrap_or_default();
-        let commit_id = principal.current_commit_id().and_then(|cid| {
+        let tr = principal.current_tr().and_then(|cid| {
             cid.get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
@@ -1336,7 +1329,7 @@ impl<'a> Generator<'a> {
                 kr: e.kr.clone().or(Some(kr)),
                 auth_root: e.auth_root.clone().or(Some(auth_root)),
                 pr: e.pr.clone().or(Some(pr_val)),
-                commit_id: e.commit_id.clone().or(commit_id),
+                tr: e.tr.clone().or(tr),
                 sr: e.sr.clone().or(sr),
                 dr: dr.clone(),
                 pg: Some(pg.clone()),
@@ -1351,7 +1344,7 @@ impl<'a> Generator<'a> {
                 kr: Some(kr),
                 auth_root: Some(auth_root),
                 pr: Some(pr_val),
-                commit_id,
+                tr,
                 sr,
                 dr,
                 pg: Some(pg),

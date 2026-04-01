@@ -102,7 +102,7 @@ type ExpectedAssertions struct {
 	// PR is expected principal root digest.
 	PR string `toml:"pr,omitempty"`
 	// CommitID is expected commit ID digest.
-	CommitID string `toml:"commit_id,omitempty"`
+	CommitID string `toml:"tr,omitempty"`
 	// Error is expected error for error tests.
 	Error string `toml:"error,omitempty"`
 }

@@ -1,6 +1,6 @@
 use crate::multihash::MultihashDigest;
+use crate::state::hash_concat_bytes;
 use crate::state::{HashAlg, TaggedCzd};
-use crate::state::{hash_bytes, hash_concat_bytes};
 use std::collections::BTreeMap;
 
 /// The Transaction Mutation Root (TMR)
