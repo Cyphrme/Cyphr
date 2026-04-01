@@ -22,7 +22,7 @@ func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*C
 		return nil, err
 	}
 
-	// Compute CS from post-mutation state
+	// Compute SR from post-mutation state
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
 		thumbprints[i] = k.Tmb
@@ -31,17 +31,17 @@ func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*C
 	if err != nil {
 		return nil, err
 	}
-	ar, err := ComputeAR(kr, nil, p.activeAlgs)
+	ar, err := ComputeAR(kr, nil, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := ComputeCS(ar, p.dr, p.activeAlgs)
+	sr, err := ComputeSR(ar, p.dr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
 
-	// Inject commit_state into transaction
-	tx.CommitCS = &cs
+	// Inject state_root into transaction
+	tx.CommitCS = &sr
 
 	// Finalize as single-tx commit
 	pending := NewPendingCommit(p.hashAlg)

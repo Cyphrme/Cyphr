@@ -10,8 +10,8 @@ use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::state::{
-    AuthRoot, CommitID, CommitState, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot,
-    compute_ar, compute_cs, compute_dr, compute_kr, compute_pr, derive_hash_algs,
+    AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
+    compute_ar, compute_dr, compute_kr, compute_pr, compute_sr, derive_hash_algs,
     hash_alg_from_str,
 };
 use crate::transaction::VerifiedTransaction;
@@ -89,7 +89,7 @@ pub struct PrincipalCore {
     /// Current Commit ID (Merkle root of last commit's transactions).
     pub(crate) commit_id: Option<CommitID>,
     /// Current Commit State: MR(AS, Commit ID).
-    pub(crate) cs: Option<CommitState>,
+    pub(crate) cs: Option<StateRoot>,
     /// Current Auth State.
     pub(crate) auth_root: AuthRoot,
     /// Current Data State (Level 4+).
@@ -233,11 +233,11 @@ impl Principal {
         // KS = tmb (single key promotes)
         let ks = compute_kr(&[&key.tmb], None, &active_algs)?;
         // AS = KS (no Commit ID, promotes)
-        let auth_root = compute_ar(&ks, None, &active_algs)?;
-        // CS = promoted from AS at genesis (no DS)
-        let cs = compute_cs(&auth_root, None, &active_algs)?;
-        // PS = AS (no CommitID or DS at genesis)
-        let ps = compute_pr(&auth_root, None, None, None, &active_algs)?;
+        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        // SR = AR (no DR at genesis, promotes)
+        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        // PR = SR (no CR at genesis, promotes)
+        let ps = compute_pr(&cs, None, None, &active_algs)?;
 
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64, key);
@@ -283,11 +283,11 @@ impl Principal {
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
 
         // AS = KS (no Commit ID yet)
-        let auth_root = compute_ar(&ks, None, &active_algs)?;
-        // CS = promoted from AS at genesis (no DS)
-        let cs = compute_cs(&auth_root, None, &active_algs)?;
-        // PS = AS (no CommitID or DS at genesis)
-        let ps = compute_pr(&auth_root, None, None, None, &active_algs)?;
+        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        // SR = AR (no DR at genesis, promotes)
+        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        // PR = SR (no CR at genesis, promotes)
+        let ps = compute_pr(&cs, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -346,10 +346,10 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
 
-        // CS = promoted from checkpoint AS (no DS at checkpoint load)
-        let cs = compute_cs(&auth_root, None, &active_algs)?;
-        // PS = AS (no CommitID or DS at checkpoint)
-        let ps = compute_pr(&auth_root, None, None, None, &active_algs)?;
+        // SR = AR (no DR at checkpoint, promotes)
+        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        // PR = SR (no CR at checkpoint, promotes)
+        let ps = compute_pr(&cs, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -520,7 +520,7 @@ impl Principal {
     ///
     /// Returns `None` only if no state has been computed (shouldn't happen
     /// after genesis). At genesis, CS is promoted from AS.
-    pub fn cs(&self) -> Option<&CommitState> {
+    pub fn cs(&self) -> Option<&StateRoot> {
         self.cs.as_ref()
     }
 
@@ -651,14 +651,12 @@ impl Principal {
         let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
         self.ds = compute_dr(&czds, None, self.hash_alg);
 
-        // Recompute PS = MR(AS, CommitID?, DS?)
-        self.ps = compute_pr(
-            &self.auth_root,
-            self.commit_id.as_ref(),
-            self.ds.as_ref(),
-            None,
-            &[self.hash_alg],
-        )?;
+        // Recompute SR = MR(AR, DR?, embedding?)
+        let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &[self.hash_alg])?;
+        self.cs = Some(sr.clone());
+
+        // Recompute PR = MR(SR, CR?, embedding?)
+        self.ps = compute_pr(&sr, self.commit_id.as_ref(), None, &[self.hash_alg])?;
 
         Ok(&self.ps)
     }
@@ -775,7 +773,7 @@ impl Principal {
 
     /// Apply a transaction without prior signature verification (test-only).
     ///
-    /// This helper computes commit_state post-mutation (per SPEC §4.4) since
+    /// This helper computes state_root post-mutation (per SPEC §4.4) since
     /// test transactions don't go through the signing path.
     #[cfg(test)]
     pub(crate) fn apply_transaction_test(
@@ -784,7 +782,7 @@ impl Principal {
         new_key: Option<Key>,
     ) -> Result<&Commit> {
         use crate::commit::PendingCommit;
-        use crate::state::{compute_ar, compute_cs, compute_kr, derive_hash_algs};
+        use crate::state::{compute_ar, compute_kr, compute_sr, derive_hash_algs};
         use crate::transaction::VerifiedTransaction;
 
         // Apply mutation eagerly (same as apply_verified_internal)
@@ -796,13 +794,13 @@ impl Principal {
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
-        let auth_root = compute_ar(&ks, None, &active_algs)?;
-        let cs = compute_cs(&auth_root, self.ds.as_ref(), &active_algs)?;
+        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        let cs = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
 
-        // Inject commit_state into the transaction
-        tx.commit_state = Some(cs);
+        // Inject state_root into the transaction
+        tx.state_root = Some(cs);
 
-        // Create the final VerifiedTransaction with commit_state
+        // Create the final VerifiedTransaction with state_root
         let final_vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
 
         // Finalize as single-tx commit
@@ -920,10 +918,10 @@ impl Principal {
         let txs = pending.transactions();
         for (i, vtx) in txs.iter().enumerate() {
             let is_last = i == txs.len() - 1;
-            if vtx.commit_state().is_some() && !is_last {
+            if vtx.state_root().is_some() && !is_last {
                 return Err(Error::CommitNotLast);
             }
-            if vtx.commit_state().is_none() && is_last {
+            if vtx.state_root().is_none() && is_last {
                 return Err(Error::MissingCommit);
             }
         }
@@ -941,36 +939,30 @@ impl Principal {
         let commit_id = pending.compute_commit_id().ok_or(Error::EmptyCommit)?;
         self.commit_id = Some(commit_id.clone());
 
-        // Compute AS from updated KS (AS = MR(KS, RS?) per SPEC §8.4)
-        self.auth_root = compute_ar(&self.ks, None, &self.active_algs)?;
+        // Compute AR = MR(KR, RR?, embedding?)
+        self.auth_root = compute_ar(&self.ks, None, None, &self.active_algs)?;
 
-        // Compute CS = MR(AS, DS?) — PT minus CommitID
-        let cs = compute_cs(&self.auth_root, self.ds.as_ref(), &self.active_algs)?;
-        self.cs = Some(cs.clone());
+        // Compute SR = MR(AR, DR?, embedding?)
+        let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &self.active_algs)?;
+        self.cs = Some(sr.clone());
 
-        // Validate commit field matches independently computed CS
-        // Compare per-variant (the claimed CS from pay may contain a single
-        // algorithm variant while the computed CS is multi-variant).
-        if let Some(claimed_cs) = txs.last().unwrap().commit_state() {
-            for (alg, claimed_bytes) in claimed_cs.0.variants() {
-                let computed_bytes = cs.0.get_or_err(*alg)?;
+        // Validate commit field matches independently computed SR
+        // Compare per-variant (the claimed SR from pay may contain a single
+        // algorithm variant while the computed SR is multi-variant).
+        if let Some(claimed_sr) = txs.last().unwrap().state_root() {
+            for (alg, claimed_bytes) in claimed_sr.0.variants() {
+                let computed_bytes = sr.0.get_or_err(*alg)?;
                 if claimed_bytes.as_ref() != computed_bytes {
                     return Err(Error::CommitMismatch);
                 }
             }
         }
 
-        // Compute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
-        self.ps = compute_pr(
-            &self.auth_root,
-            Some(&commit_id),
-            self.ds.as_ref(),
-            None,
-            &self.active_algs,
-        )?;
+        // Compute PR = MR(SR, CR?, embedding?)
+        self.ps = compute_pr(&sr, Some(&commit_id), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(self.auth_root.clone(), cs, self.ps.clone())?;
+        let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone())?;
 
         self.auth.commits.push(commit);
 
@@ -1273,7 +1265,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
-            commit_state: None,
+            state_root: None,
             raw,
         }
     }
@@ -1457,7 +1449,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
-            commit_state: None,
+            state_root: None,
             raw: dummy_coz_json(),
         };
 
@@ -1490,7 +1482,7 @@ mod tests {
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
-            commit_state: None,
+            state_root: None,
             raw: dummy_coz_json(),
         };
 
@@ -1550,7 +1542,7 @@ mod tests {
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
-            commit_state: None,
+            state_root: None,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction_test(tx, None).unwrap();
@@ -1591,7 +1583,7 @@ mod tests {
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
-            commit_state: None,
+            state_root: None,
             raw: dummy_coz_json(),
         };
         principal.apply_transaction_test(tx, Some(key2)).unwrap();

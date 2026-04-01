@@ -83,17 +83,17 @@ impl AuthRoot {
     }
 }
 
-/// Commit State (CS) — SPEC §8.5
+/// State Root (SR) — SPEC §3.7.2
 ///
-/// The Principal Tree minus CommitID: `CS = MR(AS, DS?)`.
-/// CS captures all non-commit-specific state. CommitID is excluded to avoid
-/// circular dependencies (CS is embedded in cozies before CommitID is known).
+/// Principal non-commit state: `SR = MR(AR, DR?, embedding?)`.
+/// SR excludes commit information (CR is a sibling of SR in PR, not a child).
+/// If DR is None and no embedding, SR = AR (implicit promotion).
 ///
 /// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CommitState(pub MultihashDigest);
+pub struct StateRoot(pub MultihashDigest);
 
-impl CommitState {
+impl StateRoot {
     /// Get the full multihash.
     #[must_use]
     pub fn as_multihash(&self) -> &MultihashDigest {
@@ -120,10 +120,10 @@ impl DataRoot {
     }
 }
 
-/// Principal State (PS) — SPEC §8.3
+/// Principal Root (PR) — SPEC §3.7.1
 ///
-/// Current top-level state: `PS = MR(AS, CommitID?, DS?)`.
-/// PS includes CommitID directly, unlike CS which excludes it.
+/// Current top-level state: `PR = MR(SR, CR?, embedding?)`.
+/// When no CR exists (Levels 1-3), PR = SR (implicit promotion).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrincipalRoot(pub MultihashDigest);
 
@@ -613,38 +613,43 @@ pub fn compute_commit_id_tagged(
     Some(CommitID(MultihashDigest::new(variants).ok()?))
 }
 
-/// Compute Auth State — SPEC §8.4.
+/// Compute Auth Root — SPEC §3.7.
 ///
-/// `AS = MR(KS, RS?)` — authentication state derived from the keyset.
+/// `AR = MR(KR, RR?, embedding?)` — authentication state derived from keyset.
 ///
-/// - Only KS, no RS/nonce: AS = KS (implicit promotion)
-/// - Otherwise: AS = H(sort(KS, RS?, nonce?))
+/// - Only KR, no nonce/embedding: AR = KR (implicit promotion)
+/// - Otherwise: AR = H(sort(KR, RR?, nonce?, embedding?))
+///
+/// `embedding` is reserved for future use; pass `None`.
 ///
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if the KeyRoot contains no variants.
 pub fn compute_ar(
     ks: &KeyRoot,
-    // rs: Option<&RuleState>,  // Level 5, not yet implemented
+    // rs: Option<&RuleRoot>,  // Level 5, not yet implemented
     nonce: Option<&[u8]>,
+    embedding: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<AuthRoot> {
-    // Implicit promotion: only KS, nothing else
-    // Clone the KeyRoot multihash directly
-    if nonce.is_none() {
+    // Implicit promotion: only KR, no nonce, no embedding
+    if nonce.is_none() && embedding.is_none() {
         return Ok(AuthRoot(ks.0.clone()));
     }
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let ks_bytes = ks.0.get_or_err(alg)?;
+        let kr_bytes = ks.0.get_or_err(alg)?;
 
         // Collect non-nil components
-        let mut components: Vec<&[u8]> = vec![ks_bytes];
-        // TODO: Level 5 — add RS component here when RuleState is implemented
+        let mut components: Vec<&[u8]> = vec![kr_bytes];
+        // TODO: Level 5 — add RR component here when RuleRoot is implemented
         if let Some(n) = nonce {
             components.push(n);
+        }
+        if let Some(e) = embedding {
+            components.push(e);
         }
 
         let digest = hash_sorted_concat_bytes(alg, &components);
@@ -654,39 +659,46 @@ pub fn compute_ar(
     Ok(AuthRoot(MultihashDigest::new(variants)?))
 }
 
-/// Compute Commit State — SPEC §8.5.
+/// Compute State Root — SPEC §3.7.2.
 ///
-/// `CS = MR(AS, DS?)` — the Principal Tree minus CommitID.
-/// CommitID is excluded from CS to avoid circular dependencies.
+/// `SR = MR(AR, DR?, embedding?)` — principal non-commit state.
 ///
-/// - If ds is None (no actions): CS promotes from AS
-/// - Otherwise: CS = H(sort(AS, DS)) for each algorithm
+/// - If ds is None and no embedding: SR promotes from AR
+/// - Otherwise: SR = H(sort(AR, DR?, embedding?)) for each algorithm
+///
+/// `embedding` is reserved for future use; pass `None`.
 ///
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if AuthRoot contains no variants.
-pub fn compute_cs(
+pub fn compute_sr(
     auth_root: &AuthRoot,
     ds: Option<&DataRoot>,
+    embedding: Option<&[u8]>,
     algs: &[HashAlg],
-) -> crate::error::Result<CommitState> {
-    // Implicit promotion: no DS → CS = AS
-    let ds_inner = match ds {
-        Some(d) => d,
-        None => return Ok(CommitState(auth_root.0.clone())),
-    };
+) -> crate::error::Result<StateRoot> {
+    // Implicit promotion: no DS, no embedding → SR = AR
+    if ds.is_none() && embedding.is_none() {
+        return Ok(StateRoot(auth_root.0.clone()));
+    }
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let as_bytes = auth_root.0.get_or_err(alg)?;
+        let ar_bytes = auth_root.0.get_or_err(alg)?;
 
-        let components: Vec<&[u8]> = vec![as_bytes, ds_inner.0.as_bytes()];
+        let mut components: Vec<&[u8]> = vec![ar_bytes];
+        if let Some(d) = ds {
+            components.push(d.0.as_bytes());
+        }
+        if let Some(e) = embedding {
+            components.push(e);
+        }
         let digest = hash_sorted_concat_bytes(alg, &components);
         variants.insert(alg, digest.into_boxed_slice());
     }
 
-    Ok(CommitState(MultihashDigest::new(variants)?))
+    Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
 /// Compute Data State (SPEC §7.4).
@@ -714,46 +726,42 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
     Some(DataRoot(hash_sorted_concat(alg, &components)))
 }
 
-/// Compute Principal State — SPEC §8.3.
+/// Compute Principal Root — SPEC §3.7.1.
 ///
-/// `PS = MR(AS, CommitID?, DS?)` — top-level state including CommitID directly.
-/// PS is computed from raw components, NOT from CS.
+/// `PR = MR(SR, CR?, embedding?)` — top-level state.
+/// If CR is None (Levels 1-3) and no embedding, PR = SR (implicit promotion).
 ///
-/// - Only AS, no CommitID/DS/nonce: PS = AS (implicit promotion)
-/// - Otherwise: PS = H(sort(AS, CommitID?, DS?, nonce?)) for each algorithm
+/// The `cr` parameter is temporarily `Option<&CommitID>` until CR replaces
+/// CommitID in Phase 5.
 ///
-/// Accepts multiple hash algorithms and produces a variant for each.
+/// `embedding` is reserved for future use; pass `None`.
 ///
 /// # Errors
 ///
-/// Returns `EmptyMultihash` if the AuthRoot contains no variants.
+/// Returns `EmptyMultihash` if the StateRoot contains no variants.
 pub fn compute_pr(
-    auth_root: &AuthRoot,
-    commit_id: Option<&CommitID>,
-    ds: Option<&DataRoot>,
-    nonce: Option<&[u8]>,
+    state_root: &StateRoot,
+    cr: Option<&CommitID>,
+    embedding: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<PrincipalRoot> {
-    // Implicit promotion: only AS, nothing else
-    if commit_id.is_none() && ds.is_none() && nonce.is_none() {
-        return Ok(PrincipalRoot(auth_root.0.clone()));
+    // Implicit promotion: only SR, no CR, no embedding
+    if cr.is_none() && embedding.is_none() {
+        return Ok(PrincipalRoot(state_root.0.clone()));
     }
 
     // Compute hash for each algorithm variant
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let as_bytes = auth_root.0.get_or_err(alg)?;
+        let sr_bytes = state_root.0.get_or_err(alg)?;
 
         // Collect non-nil components
-        let mut components: Vec<&[u8]> = vec![as_bytes];
-        if let Some(cid) = commit_id {
+        let mut components: Vec<&[u8]> = vec![sr_bytes];
+        if let Some(cid) = cr {
             components.push(cid.0.get_or_err(alg)?);
         }
-        if let Some(d) = ds {
-            components.push(d.0.as_bytes());
-        }
-        if let Some(n) = nonce {
-            components.push(n);
+        if let Some(e) = embedding {
+            components.push(e);
         }
 
         let digest = hash_sorted_concat_bytes(alg, &components);
@@ -827,7 +835,7 @@ mod tests {
         // Only KS, no RS: AS = KS (the specified algorithm variant)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, &[HashAlg::Sha256]).unwrap();
+        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
 
         // AS should equal the KS variant for this algorithm
         assert_eq!(
@@ -840,11 +848,11 @@ mod tests {
     fn cs_with_ds_hashes() {
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, &[HashAlg::Sha256]).unwrap();
+        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let czd = Czd::from_bytes(vec![10, 20, 30]);
         let ds = compute_dr(&[&czd], None, HashAlg::Sha256).unwrap();
 
-        let cs = compute_cs(&auth_root, Some(&ds), &[HashAlg::Sha256]).unwrap();
+        let cs = compute_sr(&auth_root, Some(&ds), None, &[HashAlg::Sha256]).unwrap();
 
         // Should be hashed combination
         let cs_bytes = cs.get(HashAlg::Sha256).unwrap();
@@ -853,12 +861,13 @@ mod tests {
     }
 
     #[test]
-    fn ps_promotion_from_as() {
-        // Only AS, no CommitID, no DS: PS = AS
+    fn ps_promotion_from_sr() {
+        // Only SR, no CR: PR = SR (implicit promotion)
         let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&auth_root, None, None, None, &[HashAlg::Sha256]).unwrap();
+        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
+        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_pr(&sr, None, None, &[HashAlg::Sha256]).unwrap();
 
         assert_eq!(
             ps.get(HashAlg::Sha256).unwrap(),
@@ -868,12 +877,12 @@ mod tests {
 
     #[test]
     fn full_promotion_chain() {
-        // Level 1: PR = PS = CS = AS = KS = tmb
+        // Level 1: PR = SR = AR = KR = tmb
         let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
-        let auth_root = compute_ar(&ks, None, &[HashAlg::Sha256]).unwrap();
-        let _cs = compute_cs(&auth_root, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&auth_root, None, None, None, &[HashAlg::Sha256]).unwrap();
+        let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
+        let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_pr(&sr, None, None, &[HashAlg::Sha256]).unwrap();
         let pr = PrincipalGenesis::from_initial(&ps);
 
         // All should be identical to tmb

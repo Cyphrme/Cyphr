@@ -60,10 +60,10 @@ type Transaction struct {
 	// Rvk is the revocation timestamp (for revoke transactions).
 	Rvk int64
 
-	// CommitCS is the commit state from the `commit` field (terminal coz only).
-	// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
-	// where CS = MR(AS, DS?). Nil for non-terminal transactions.
-	CommitCS *CommitState
+	// CommitCS is the state root from the `commit` field (terminal coz only).
+	// Per SPEC §4.4, the last coz in a commit contains `"commit":<SR>`
+	// where SR = MR(AR, DR?). Nil for non-terminal transactions.
+	CommitCS *StateRoot
 
 	// raw is the original CozJson bytes for this transaction.
 	// This field enables bit-perfect export for storage round-trips.
@@ -216,15 +216,15 @@ func (tx *Transaction) parseIDAsAuthRoot(id string) error {
 	return nil
 }
 
-// parseCommit decodes the commit field as a CommitState in alg:digest format.
-// Per SPEC §4.4, the commit field contains CS = MR(AS, DS?).
+// parseCommit decodes the commit field as a StateRoot in alg:digest format.
+// Per SPEC §4.4, the commit field contains SR = MR(AR, DR?).
 func (tx *Transaction) parseCommit(commit string) error {
 	tagged, err := ParseTaggedDigest(commit)
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	cs := CommitState{FromSingleDigest(tagged.Alg, tagged.Digest)}
-	tx.CommitCS = &cs
+	sr := StateRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
+	tx.CommitCS = &sr
 	return nil
 }
 

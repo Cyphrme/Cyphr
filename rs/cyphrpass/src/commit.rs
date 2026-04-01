@@ -5,7 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::state::{
-    AuthRoot, CommitID, CommitState, HashAlg, PrincipalRoot, TaggedCzd, compute_commit_id_tagged,
+    AuthRoot, CommitID, HashAlg, PrincipalRoot, StateRoot, TaggedCzd, compute_commit_id_tagged,
 };
 use crate::transaction::VerifiedTransaction;
 
@@ -29,8 +29,8 @@ pub struct Commit {
     commit_id: CommitID,
     /// Auth State at the end of this commit.
     auth_root: AuthRoot,
-    /// Commit State: MR(AS, Commit ID).
-    cs: CommitState,
+    /// State Root at the end of this commit.
+    cs: StateRoot,
     /// Principal State at the end of this commit.
     ps: PrincipalRoot,
 }
@@ -45,7 +45,7 @@ impl Commit {
         transactions: Vec<VerifiedTransaction>,
         commit_id: CommitID,
         auth_root: AuthRoot,
-        cs: CommitState,
+        cs: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
@@ -70,8 +70,8 @@ impl Commit {
         &self.commit_id
     }
 
-    /// Get the Commit State: MR(AS, Commit ID).
-    pub fn cs(&self) -> &CommitState {
+    /// Get the State Root at the end of this commit.
+    pub fn cs(&self) -> &StateRoot {
         &self.cs
     }
 
@@ -175,7 +175,7 @@ impl PendingCommit {
     pub fn finalize(
         self,
         auth_root: AuthRoot,
-        cs: CommitState,
+        cs: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Commit> {
         if self.transactions.is_empty() {
@@ -363,7 +363,7 @@ impl<'a> CommitScope<'a> {
     /// 4. Injects `"commit":<CS>` into the pay (in lexicographic key order)
     /// 5. Signs the complete pay via `coz::sign_json`
     /// 6. Computes czd from the signed message
-    /// 7. Creates the final Transaction with commit_state
+    /// 7. Creates the final Transaction with state_root
     /// 8. Pushes to pending and calls finalize_commit
     ///
     /// # Arguments
@@ -388,7 +388,7 @@ impl<'a> CommitScope<'a> {
         new_key: Option<crate::key::Key>,
     ) -> crate::error::Result<&'a Commit> {
         use crate::state::{
-            compute_ar, compute_cs, compute_kr, derive_hash_algs, hash_alg_from_str,
+            compute_ar, compute_kr, compute_sr, derive_hash_algs, hash_alg_from_str,
         };
         use crate::transaction::{Transaction, VerifiedTransaction};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -418,8 +418,8 @@ impl<'a> CommitScope<'a> {
         let thumbprints: Vec<&coz::Thumbprint> =
             self.principal.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
-        let auth_root = compute_ar(&ks, None, &active_algs)?;
-        let cs = compute_cs(&auth_root, self.principal.ds.as_ref(), &active_algs)?;
+        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        let cs = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
 
         // 4. Inject commit:<CS> into pay as alg:b64(digest) tagged string
         // Per Coz semantics, digest references in pay align with the signer's algorithm.
@@ -451,7 +451,7 @@ impl<'a> CommitScope<'a> {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, alg).ok_or(crate::error::Error::InvalidSignature)?;
 
-        // 7. Create the real Transaction (with commit_state and real czd)
+        // 7. Create the real Transaction (with state_root and real czd)
         let raw = coz::CozJson {
             pay: pay.clone(),
             sig: sig_bytes,
@@ -554,7 +554,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = CommitState(MultihashDigest::from_single(
+        let cs = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -584,7 +584,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = CommitState(MultihashDigest::from_single(
+        let cs = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -608,7 +608,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = CommitState(MultihashDigest::from_single(
+        let cs = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -644,7 +644,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = CommitState(MultihashDigest::from_single(
+        let cs = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -678,7 +678,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = CommitState(MultihashDigest::from_single(
+        let cs = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));

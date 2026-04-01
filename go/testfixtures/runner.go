@@ -281,23 +281,21 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		}
 	}
 
-	// CS - parse alg:digest format and compare
+	// SR - parse alg:digest format and compare
 	if exp.CS != "" {
 		alg, expectedDigest := parseAlgDigest(exp.CS)
 		if alg == "" {
 			// Legacy format without prefix - skip verification
-		} else if p.CS() == nil {
-			failures = append(failures, fmt.Sprintf("cs: got nil, want %s:%s", alg, expectedDigest))
 		} else {
 			hashAlg, err := cyphrpass.ParseHashAlg(alg)
 			if err != nil {
-				failures = append(failures, fmt.Sprintf("cs: invalid algorithm %s", alg))
+				failures = append(failures, fmt.Sprintf("sr: invalid algorithm %s", alg))
 			} else {
-				csDigest := p.CS().Get(hashAlg)
-				if csDigest == nil {
-					failures = append(failures, fmt.Sprintf("cs: got nil, want %s", expectedDigest))
-				} else if coz.B64(csDigest).String() != expectedDigest {
-					failures = append(failures, fmt.Sprintf("cs: got %s, want %s", coz.B64(csDigest).String(), expectedDigest))
+				srDigest := p.SR().Get(hashAlg)
+				if srDigest == nil {
+					failures = append(failures, fmt.Sprintf("sr: got nil, want %s", expectedDigest))
+				} else if coz.B64(srDigest).String() != expectedDigest {
+					failures = append(failures, fmt.Sprintf("sr: got %s, want %s", coz.B64(srDigest).String(), expectedDigest))
 				}
 			}
 		}

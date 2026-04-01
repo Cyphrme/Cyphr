@@ -603,82 +603,80 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Step 4: Recompute AS and verify variants
-	recomputedAS, err := cyphrpass.ComputeAR(recomputedKS, nil, activeAlgs)
+	// Step 4: Recompute AR and verify variants
+	recomputedAR, err := cyphrpass.ComputeAR(recomputedKS, nil, nil, activeAlgs)
 	if err != nil {
-		result.Err = fmt.Errorf("failed to recompute AS: %w", err)
+		result.Err = fmt.Errorf("failed to recompute AR: %w", err)
 		return result
 	}
 
 	for _, alg := range activeAlgs {
 		reimportedVariant := reimported.AR().Get(alg)
-		recomputedVariant := recomputedAS.Get(alg)
+		recomputedVariant := recomputedAR.Get(alg)
 
 		if reimportedVariant == nil {
-			result.Failures = append(result.Failures, fmt.Sprintf("AS missing variant for %s", alg))
+			result.Failures = append(result.Failures, fmt.Sprintf("AR missing variant for %s", alg))
 			continue
 		}
 		if recomputedVariant == nil {
-			result.Failures = append(result.Failures, fmt.Sprintf("recomputed AS missing variant for %s", alg))
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed AR missing variant for %s", alg))
 			continue
 		}
 		if string(reimportedVariant) != string(recomputedVariant) {
 			result.Failures = append(result.Failures, fmt.Sprintf(
-				"AS variant %s mismatch: reimported=%x recomputed=%x",
+				"AR variant %s mismatch: reimported=%x recomputed=%x",
 				alg, reimportedVariant[:8], recomputedVariant[:8]))
 		}
 	}
 
-	// Step 5: Recompute CS = MR(AS, DS?) and verify variants
-	recomputedCS, err := cyphrpass.ComputeCS(recomputedAS, reimported.DR(), activeAlgs)
+	// Step 5: Recompute SR = MR(AR, DR?) and verify variants
+	recomputedSR, err := cyphrpass.ComputeSR(recomputedAR, reimported.DR(), nil, activeAlgs)
 	if err != nil {
-		result.Err = fmt.Errorf("failed to recompute CS: %w", err)
+		result.Err = fmt.Errorf("failed to recompute SR: %w", err)
 		return result
 	}
 
-	if reimported.CS() != nil {
-		for _, alg := range activeAlgs {
-			reimportedVariant := reimported.CS().Get(alg)
-			recomputedVariant := recomputedCS.Get(alg)
+	for _, alg := range activeAlgs {
+		reimportedVariant := reimported.SR().Get(alg)
+		recomputedVariant := recomputedSR.Get(alg)
 
-			if reimportedVariant == nil {
-				result.Failures = append(result.Failures, fmt.Sprintf("CS missing variant for %s", alg))
-				continue
-			}
-			if recomputedVariant == nil {
-				result.Failures = append(result.Failures, fmt.Sprintf("recomputed CS missing variant for %s", alg))
-				continue
-			}
-			if string(reimportedVariant) != string(recomputedVariant) {
-				result.Failures = append(result.Failures, fmt.Sprintf(
-					"CS variant %s mismatch: reimported=%x recomputed=%x",
-					alg, reimportedVariant[:8], recomputedVariant[:8]))
-			}
+		if reimportedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("SR missing variant for %s", alg))
+			continue
+		}
+		if recomputedVariant == nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed SR missing variant for %s", alg))
+			continue
+		}
+		if string(reimportedVariant) != string(recomputedVariant) {
+			result.Failures = append(result.Failures, fmt.Sprintf(
+				"SR variant %s mismatch: reimported=%x recomputed=%x",
+				alg, reimportedVariant[:8], recomputedVariant[:8]))
 		}
 	}
 
-	// Step 6: Recompute PS = MR(AS, CommitID?, DS?) and verify variants
-	recomputedPS, err := cyphrpass.ComputePR(recomputedAS, reimported.CommitID(), reimported.DR(), nil, activeAlgs)
+	// Step 6: Recompute PR = MR(SR, CR?) and verify variants
+	recomputedPR, err := cyphrpass.ComputePR(recomputedSR, reimported.CommitID(), nil, activeAlgs)
 	if err != nil {
-		result.Err = fmt.Errorf("failed to recompute PS: %w", err)
+		result.Err = fmt.Errorf("failed to recompute PR: %w", err)
 		return result
 	}
 
 	for _, alg := range activeAlgs {
 		reimportedVariant := reimported.PR().Get(alg)
-		recomputedVariant := recomputedPS.Get(alg)
+		recomputedVariant := recomputedPR.Get(alg)
 
 		if reimportedVariant == nil {
-			result.Failures = append(result.Failures, fmt.Sprintf("PS missing variant for %s", alg))
+			result.Failures = append(result.Failures, fmt.Sprintf("PR missing variant for %s", alg))
 			continue
 		}
 		if recomputedVariant == nil {
-			result.Failures = append(result.Failures, fmt.Sprintf("recomputed PS missing variant for %s", alg))
+			result.Failures = append(result.Failures, fmt.Sprintf("recomputed PR missing variant for %s", alg))
 			continue
 		}
 		if string(reimportedVariant) != string(recomputedVariant) {
 			result.Failures = append(result.Failures, fmt.Sprintf(
-				"PS variant %s mismatch: reimported=%x recomputed=%x",
+				"PR variant %s mismatch: reimported=%x recomputed=%x",
 				alg, reimportedVariant[:8], recomputedVariant[:8]))
 		}
 	}

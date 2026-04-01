@@ -19,8 +19,8 @@ type Commit struct {
 	transactions []*Transaction
 	// commitID is the Commit ID: Merkle root of transaction czds.
 	commitID *CommitID
-	// cs is the Commit State at the end of this commit.
-	cs CommitState
+	// sr is the State Root at the end of this commit.
+	sr StateRoot
 	// as is the Auth State at the end of this commit.
 	ar AuthRoot
 	// ps is the Principal State at the end of this commit.
@@ -31,14 +31,14 @@ type Commit struct {
 
 // newCommit creates a finalized commit from transactions and computed states.
 // Returns ErrEmptyCommit if transactions is empty.
-func newCommit(txs []*Transaction, commitID *CommitID, cs CommitState, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
+func newCommit(txs []*Transaction, commitID *CommitID, sr StateRoot, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
 	if len(txs) == 0 {
 		return nil, ErrEmptyCommit
 	}
 	return &Commit{
 		transactions: txs,
 		commitID:     commitID,
-		cs:           cs,
+		sr:           sr,
 		ar:           ar,
 		pr:           pr,
 	}, nil
@@ -54,9 +54,9 @@ func (c *Commit) CommitID() *CommitID {
 	return c.commitID
 }
 
-// CS returns the Commit State at the end of this commit.
-func (c *Commit) CS() CommitState {
-	return c.cs
+// SR returns the State Root at the end of this commit.
+func (c *Commit) SR() StateRoot {
+	return c.sr
 }
 
 // AS returns the Auth State at the end of this commit.
@@ -158,7 +158,7 @@ func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
 //   - ps: The computed Principal State after all transactions
 //
 // Returns nil if no transactions exist.
-func (p *PendingCommit) Finalize(ar AuthRoot, cs CommitState, pr PrincipalRoot) (*Commit, error) {
+func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*Commit, error) {
 	if len(p.transactions) == 0 {
 		return nil, ErrEmptyCommit
 	}
@@ -169,7 +169,7 @@ func (p *PendingCommit) Finalize(ar AuthRoot, cs CommitState, pr PrincipalRoot) 
 		return nil, err
 	}
 
-	commit, err := newCommit(p.transactions, cid, cs, ar, pr)
+	commit, err := newCommit(p.transactions, cid, sr, ar, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -300,17 +300,17 @@ func (b *CommitBatch) FinalizeWithCommit(
 	if err != nil {
 		return nil, err
 	}
-	ar, err := ComputeAR(kr, nil, b.principal.activeAlgs)
+	ar, err := ComputeAR(kr, nil, nil, b.principal.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := ComputeCS(ar, b.principal.dr, b.principal.activeAlgs)
+	sr, err := ComputeSR(ar, b.principal.dr, nil, b.principal.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Inject commit:<CS> into pay
-	pay["commit"] = cs.Tagged()
+	// 3. Inject commit:<SR> into pay
+	pay["commit"] = sr.Tagged()
 
 	// 4. Serialize and sign
 	payBytes, err = json.Marshal(pay)
@@ -338,7 +338,7 @@ func (b *CommitBatch) FinalizeWithCommit(
 	}
 
 	// 6. Parse the real transaction (with commit field and real czd)
-	txPay.Commit = cs.Tagged()
+	txPay.Commit = sr.Tagged()
 	realTx, err := ParseTransaction(&txPay, signedCoz.Czd)
 	if err != nil {
 		return nil, err

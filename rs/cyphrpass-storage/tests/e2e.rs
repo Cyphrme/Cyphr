@@ -809,7 +809,7 @@ fn e2e_dynamic_edge_cases() {
 /// state derivation across all supported algorithms.
 #[test]
 fn e2e_multihash_round_trip() {
-    use cyphrpass::state::{compute_ar, compute_cs, compute_kr, compute_pr};
+    use cyphrpass::state::{compute_ar, compute_kr, compute_pr, compute_sr};
 
     let pool = load_pool();
     let intent = load_e2e_intents("multihash_coherence.toml");
@@ -919,7 +919,7 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
         // Recompute AS from KS
-        let recomputed_as = compute_ar(&recomputed_ks, None, active_algs).unwrap();
+        let recomputed_as = compute_ar(&recomputed_ks, None, None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(
@@ -931,20 +931,13 @@ fn e2e_multihash_round_trip() {
             );
         }
 
-        // Recompute CS from AS + DS?
-        let _recomputed_cs =
-            compute_cs(&recomputed_as, principal.data_root(), active_algs).unwrap();
+        // Recompute SR from AR + DR?
+        let recomputed_sr =
+            compute_sr(&recomputed_as, principal.data_root(), None, active_algs).unwrap();
 
-        // Recompute PS from AS + CommitID? + DS?
+        // Recompute PR from SR + CR?
         let commit_id = principal.current_commit_id();
-        let recomputed_ps = compute_pr(
-            &recomputed_as,
-            commit_id,
-            principal.data_root(),
-            None,
-            active_algs,
-        )
-        .unwrap();
+        let recomputed_ps = compute_pr(&recomputed_sr, commit_id, None, active_algs).unwrap();
 
         for &alg in active_algs {
             assert_eq!(

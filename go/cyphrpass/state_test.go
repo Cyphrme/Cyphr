@@ -65,7 +65,7 @@ func TestComputeAR_ImplicitPromotion(t *testing.T) {
 	// SPEC §8.4: Only KS, no RS, no nonce → AS = KS
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	kr := KeyRoot{FromSingleDigest(HashSha256, goldenTmb)}
-	ar, err := ComputeAR(kr, nil, algs)
+	ar, err := ComputeAR(kr, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,15 +75,19 @@ func TestComputeAR_ImplicitPromotion(t *testing.T) {
 }
 
 func TestComputePR_ImplicitPromotion(t *testing.T) {
-	// SPEC §8.3: Only AS, no CommitID, no DS, no nonce → PS = AS
+	// SPEC §3.7.1: Only SR, no CR → PR = SR (implicit promotion)
 	algs := []HashAlg{HashAlg(coz.SHA256)}
 	ar := AuthRoot{FromSingleDigest(HashSha256, goldenTmb)}
-	pr, err := ComputePR(ar, nil, nil, nil, algs)
+	sr, err := ComputeSR(ar, nil, nil, algs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pr, err := ComputePR(sr, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(pr.First(), ar.First()) {
-		t.Errorf("PS should promote from AS: got %x, want %x", pr.First(), ar.First())
+		t.Errorf("PR should promote from SR (from AR): got %x, want %x", pr.First(), ar.First())
 	}
 }
 
@@ -94,31 +98,31 @@ func TestImplicitGenesisSingleKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeKR: %v", err)
 	}
-	ar, err := ComputeAR(kr, nil, algs)
+	ar, err := ComputeAR(kr, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputeAR: %v", err)
 	}
-	cs, err := ComputeCS(ar, nil, algs)
+	sr, err := ComputeSR(ar, nil, nil, algs)
 	if err != nil {
-		t.Fatalf("ComputeCS: %v", err)
+		t.Fatalf("ComputeSR: %v", err)
 	}
-	pr, err := ComputePR(ar, nil, nil, nil, algs)
+	pr, err := ComputePR(sr, nil, nil, algs)
 	if err != nil {
 		t.Fatalf("ComputePR: %v", err)
 	}
 
 	// All states should equal the thumbprint
 	if !bytes.Equal(kr.First(), goldenTmb) {
-		t.Errorf("KS != tmb")
+		t.Errorf("KR != tmb")
 	}
 	if !bytes.Equal(ar.First(), goldenTmb) {
-		t.Errorf("AS != tmb")
+		t.Errorf("AR != tmb")
 	}
-	if !bytes.Equal(cs.First(), goldenTmb) {
-		t.Errorf("CS != tmb")
+	if !bytes.Equal(sr.First(), goldenTmb) {
+		t.Errorf("SR != tmb")
 	}
 	if !bytes.Equal(pr.First(), goldenTmb) {
-		t.Errorf("PS != tmb")
+		t.Errorf("PR != tmb")
 	}
 }
 

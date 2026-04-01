@@ -77,8 +77,8 @@ type Principal struct {
 	kr       KeyRoot
 	commitID *CommitID // nil if no transactions
 	ar       AuthRoot
-	cs       *CommitState // nil before first commit
-	dr       *DataRoot    // nil if no actions
+	sr       StateRoot // SR = MR(AR, DR?, embedding?)
+	dr       *DataRoot // nil if no actions
 
 	auth       authLedger
 	data       dataLedger
@@ -126,20 +126,20 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// AS = KS (no RS, promotes)
-	ar, err := ComputeAR(kr, nil, algs)
+	// AR = KR (no RR, promotes)
+	ar, err := ComputeAR(kr, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// CS = AS (no DS at genesis, promotes)
-	cs, err := ComputeCS(ar, nil, algs)
+	// SR = AR (no DR at genesis, promotes)
+	sr, err := ComputeSR(ar, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = AS (no CommitID or DS at genesis, promotes)
-	pr, err := ComputePR(ar, nil, nil, nil, algs)
+	// PR = SR (no CR at genesis, promotes)
+	pr, err := ComputePR(sr, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		pr:         pr,
 		kr:         kr,
 		ar:         ar,
-		cs:         &cs,
+		sr:         sr,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
 		auth: authLedger{
@@ -191,20 +191,20 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		return nil, err
 	}
 
-	// AS = KS (no RS, promotes)
-	ar, err := ComputeAR(kr, nil, algs)
+	// AR = KR (no RR, promotes)
+	ar, err := ComputeAR(kr, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// CS = AS (no DS at genesis, promotes)
-	cs, err := ComputeCS(ar, nil, algs)
+	// SR = AR (no DR at genesis, promotes)
+	sr, err := ComputeSR(ar, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
 
-	// PS = AS (no CommitID or DS at genesis, promotes)
-	pr, err := ComputePR(ar, nil, nil, nil, algs)
+	// PR = SR (no CR at genesis, promotes)
+	pr, err := ComputePR(sr, nil, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		pr:         pr,
 		kr:         kr,
 		ar:         ar,
-		cs:         &cs,
+		sr:         sr,
 		hashAlg:    hashAlg,
 		activeAlgs: algs,
 		auth: authLedger{
@@ -267,9 +267,9 @@ func (p *Principal) CommitID() *CommitID {
 	return p.commitID
 }
 
-// CS returns the current Commit State (nil before first commit).
-func (p *Principal) CS() *CommitState {
-	return p.cs
+// SR returns the current State Root.
+func (p *Principal) SR() StateRoot {
+	return p.sr
 }
 
 // Key returns a key by thumbprint, or nil if not found.
@@ -416,8 +416,15 @@ func (p *Principal) RecordAction(action *Action) error {
 	}
 	p.dr = ds
 
-	// Recompute PS = MR(AS, CommitID?, DS?)
-	pr, err := ComputePR(p.ar, p.commitID, p.dr, nil, p.activeAlgs)
+	// Recompute SR = MR(AR, DR?, embedding?)
+	sr, err := ComputeSR(p.ar, p.dr, nil, p.activeAlgs)
+	if err != nil {
+		return err
+	}
+	p.sr = sr
+
+	// Recompute PR = MR(SR, CR?, embedding?)
+	pr, err := ComputePR(p.sr, p.commitID, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -747,8 +754,8 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.kr = kr
 
-	// Recompute AS = MR(KS, RS?)
-	ar, err := ComputeAR(p.kr, nil, p.activeAlgs)
+	// Recompute AR = MR(KR, RR?, embedding?)
+	ar, err := ComputeAR(p.kr, nil, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
@@ -761,16 +768,16 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.commitID = cid
 
-	// Recompute CS = MR(AS, DS?) — PT minus CommitID
-	cs, err := ComputeCS(p.ar, p.dr, p.activeAlgs)
+	// Recompute SR = MR(AR, DR?, embedding?)
+	sr, err := ComputeSR(p.ar, p.dr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	p.cs = &cs
+	p.sr = sr
 
-	// Validate commit field matches independently computed CS.
+	// Validate commit field matches independently computed SR.
 	// The tx's CommitCS is a single-variant multihash (signer's algorithm only).
-	// We must compare against the computed CS at that specific algorithm,
+	// We must compare against the computed SR at that specific algorithm,
 	// not via Tagged() which uses the lex-first algorithm and would fail
 	// in cross-algorithm scenarios (e.g., ES384 signer on SHA-256+SHA-384 principal).
 	lastTx := txs[len(txs)-1]
@@ -781,21 +788,21 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 		txAlg := txAlgs[0]
 		txDigest := lastTx.CommitCS.Get(txAlg)
-		computedDigest := cs.Get(txAlg)
+		computedDigest := sr.Get(txAlg)
 		if computedDigest == nil || !bytes.Equal(txDigest, computedDigest) {
 			return nil, ErrCommitMismatch
 		}
 	}
 
-	// Recompute PS = MR(AS, CommitID?, DS?) — includes CommitID directly
-	pr, err := ComputePR(p.ar, p.commitID, p.dr, nil, p.activeAlgs)
+	// Recompute PR = MR(SR, CR?, embedding?)
+	pr, err := ComputePR(p.sr, p.commitID, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
 	p.pr = pr
 
 	// Finalize the pending commit into an immutable Commit
-	commit, err := pending.Finalize(p.ar, cs, p.pr)
+	commit, err := pending.Finalize(p.ar, sr, p.pr)
 	if err != nil {
 		return nil, err
 	}

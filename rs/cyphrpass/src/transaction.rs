@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthRoot, CommitState, PrincipalRoot};
+use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 
 // ============================================================================
 // Transaction Types (SPEC §4.2)
@@ -112,7 +112,7 @@ pub struct Transaction {
     ///
     /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
     /// where CS = MR(AS, DS?). None for non-terminal transactions.
-    pub(crate) commit_state: Option<CommitState>,
+    pub(crate) state_root: Option<StateRoot>,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
 }
@@ -139,14 +139,14 @@ impl Transaction {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
-        let commit_state = Self::extract_commit(pay)?;
+        let state_root = Self::extract_commit(pay)?;
         Ok(Self {
             kind,
             signer,
             now,
             czd,
             hash_alg,
-            commit_state,
+            state_root,
             raw,
         })
     }
@@ -184,8 +184,8 @@ impl Transaction {
     /// Get the commit state if this is a terminal (finalizing) transaction.
     ///
     /// Per SPEC §4.4, only the last coz in a commit has `"commit":<CS>`.
-    pub fn commit_state(&self) -> Option<&CommitState> {
-        self.commit_state.as_ref()
+    pub fn state_root(&self) -> Option<&StateRoot> {
+        self.state_root.as_ref()
     }
 
     /// Parse the transaction kind from typ and payload fields.
@@ -275,7 +275,7 @@ impl Transaction {
     ///
     /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
     /// in `alg:digest` format. Returns `Ok(None)` if the field is absent.
-    fn extract_commit(pay: &Pay) -> Result<Option<CommitState>> {
+    fn extract_commit(pay: &Pay) -> Result<Option<StateRoot>> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
@@ -291,7 +291,7 @@ impl Transaction {
         let commit_str = commit_value.as_str().ok_or(Error::MalformedPayload)?;
         let tagged: TaggedDigest = commit_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(Some(CommitState(MultihashDigest::from_single(
+        Ok(Some(StateRoot(MultihashDigest::from_single(
             tagged.alg(),
             tagged.as_bytes().to_vec(),
         ))))

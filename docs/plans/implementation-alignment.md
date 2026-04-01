@@ -120,32 +120,32 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - [x] All tests, storage, CLI, fixtures updated
    - [x] Both implementations build and pass all tests
 
-3. **Phase 3: SR Introduction + CS Elimination** — Replace `CS = MR(AS, DS?)` with `SR = MR(AR, DR?)` and restructure `PR = MR(SR, CR)`
+3. **Phase 3: SR Introduction + CS Elimination** — Replace `CS = MR(AS, DS?)` with `SR = MR(AR, DR?)` and restructure `PR = MR(SR, CR)` ✅
 
    **3a: Core types and compute (both langs)**
-   - [ ] Add `StateRoot` type (both langs)
-   - [ ] Add `ComputeSR(ar, dr?, embedding?, algs) → StateRoot` (`SR = MR(AR, DR?, embedding?)`)
-   - [ ] Add `embedding` parameter to `ComputeKR`, `ComputeAR`, `ComputePR`
-   - [ ] Delete `ComputeCS` (both langs)
-   - [ ] Rewrite `ComputePR`: inputs change from `(CS, DS)` to `(SR, CR, embedding?)`
-   - [ ] If no CR (Levels 1-3): `PR = SR` (implicit promotion)
+   - [x] Add `StateRoot` type (both langs)
+   - [x] Add `ComputeSR(ar, dr?, embedding?, algs) → StateRoot` (`SR = MR(AR, DR?, embedding?)`)
+   - [x] Add `embedding` parameter to `ComputeKR`, `ComputeAR`, `ComputePR`
+   - [x] Delete `ComputeCS` (both langs)
+   - [x] Rewrite `ComputePR`: inputs change from `(CS, DS)` to `(SR, CR, embedding?)`
+   - [x] If no CR (Levels 1-3): `PR = SR` (implicit promotion)
 
    **3b: Principal struct integration (both langs)**
-   - [ ] Replace `cs` field with `sr` field in Principal
-   - [ ] Update state recomputation in `finalize_commit` / `FinalizeCommit`
-   - [ ] Add `.SR()` accessor
-   - [ ] Delete `.CS()` accessor and `CommitState` type
+   - [x] Replace `cs` field with `sr` field in Principal
+   - [x] Update state recomputation in `finalize_commit` / `FinalizeCommit`
+   - [x] Add `.SR()` accessor
+   - [x] Delete `.CS()` accessor and `CommitState` type
 
    **3c: Commit struct + finalization (both langs)**
-   - [ ] Replace `cs` field with `sr` in `Commit` struct
-   - [ ] Update `PendingCommit` / `CommitScope` finalization
-   - [ ] Update `CommitBatch` (Go) finalization
+   - [x] Replace `cs` field with `sr` in `Commit` struct
+   - [x] Update `PendingCommit` / `CommitScope` finalization
+   - [x] Update `CommitBatch` (Go) finalization
 
    **3d: Downstream consumers (both langs)**
-   - [ ] Update storage export/import (if CS is referenced)
+   - [x] Update storage export/import (if CS is referenced)
    - [ ] Update CLI commands
-   - [ ] Update test fixtures and intent structs
-   - [ ] Update e2e runners
+   - [x] Update test fixtures and intent structs
+   - [x] Update e2e runners
 
 4. **Phase 4: TR Decomposition + List-of-Lists** — Replace CommitID with TMR/TCR/TR; adopt list-of-lists `txs` structure
    - [ ] Restructure transaction model: `txs` is list of transactions, each transaction is list of cozies (mutation cozies + commit coz)
@@ -288,8 +288,13 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item | Severity | Why Introduced | Follow-Up | Resolved |
-| :--- | :------- | :------------- | :-------- | :------: |
+| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                     | Resolved |
+| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------- | :------: |
+| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass          |          |
+| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass |          |
+| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`  |          |
+| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |          |
+| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           |          |
 
 ## Deviation Log
 
@@ -297,8 +302,9 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit              | Planned                                    | Actual                                                                                                 | Rationale                                                                                                                      |
+| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
+| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`) | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible |
 
 ## Retrospective
 

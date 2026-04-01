@@ -31,10 +31,10 @@ type AuthRoot struct {
 	MultihashDigest
 }
 
-// CommitState (CS) is the Principal Tree minus CommitID: MR(AS, DS?) (SPEC §8.5).
-// CS captures all non-commit-specific state. CommitID is excluded to avoid
-// circular dependencies (CS is embedded in cozies before CommitID is known).
-type CommitState struct {
+// StateRoot (SR) is the principal non-commit state: MR(AR, DR?, embedding?) (SPEC §3.7.2).
+// SR excludes commit information (CR is a sibling of SR in PR, not a child).
+// If DR is nil and no embedding, SR = AR (implicit promotion).
+type StateRoot struct {
 	MultihashDigest
 }
 
@@ -54,8 +54,8 @@ func (d DataRoot) Bytes() coz.B64 {
 	return d.digest
 }
 
-// PrincipalRoot (PS) is the current top-level state: MR(AS, CommitID?, DS?) (SPEC §8.3).
-// PS includes CommitID directly, unlike CS which excludes it.
+// PrincipalRoot (PR) is the current top-level state: MR(SR, CR?, embedding?) (SPEC §3.7.1).
+// When no CR exists (Levels 1-3), PR = SR (implicit promotion).
 type PrincipalRoot struct {
 	MultihashDigest
 }
@@ -192,7 +192,7 @@ func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
 func (s KeyRoot) String() string          { return s.First().String() }
 func (s CommitID) String() string         { return s.First().String() }
 func (s AuthRoot) String() string         { return s.First().String() }
-func (s CommitState) String() string      { return s.First().String() }
+func (s StateRoot) String() string        { return s.First().String() }
 func (s DataRoot) String() string         { return s.digest.String() }
 func (s PrincipalRoot) String() string    { return s.First().String() }
 func (s PrincipalGenesis) String() string { return s.First().String() }
@@ -210,10 +210,10 @@ func (s AuthRoot) Tagged() string {
 	return fmt.Sprintf("%s:%s", firstAlg, digest.String())
 }
 
-// Tagged returns the CommitState as an algorithm-prefixed digest string.
+// Tagged returns the StateRoot as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
-func (s CommitState) Tagged() string {
+func (s StateRoot) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
 		return ""
@@ -484,12 +484,13 @@ func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*Co
 	return &cid, nil
 }
 
-// ComputeAR computes Auth State from KS (SPEC §8.4).
-// AS = MR(KS, RS?) — authentication state derived from the keyset.
-// If no nonce (and no RS), AS = KS (implicit promotion).
-func ComputeAR(kr KeyRoot, nonce coz.B64, algs []HashAlg) (AuthRoot, error) {
-	// Implicit promotion: only KS, no nonce
-	if len(nonce) == 0 {
+// ComputeAR computes Auth Root from KR (SPEC §3.7).
+// AR = MR(KR, RR?, embedding?) — authentication state derived from the keyset.
+// If no nonce (and no RS/RR), AR = KR (implicit promotion).
+// embedding is reserved for future use; pass nil.
+func ComputeAR(kr KeyRoot, nonce coz.B64, embedding coz.B64, algs []HashAlg) (AuthRoot, error) {
+	// Implicit promotion: only KR, no nonce, no embedding
+	if len(nonce) == 0 && len(embedding) == 0 {
 		return AuthRoot{kr.Clone()}, nil
 	}
 
@@ -500,14 +501,17 @@ func ComputeAR(kr KeyRoot, nonce coz.B64, algs []HashAlg) (AuthRoot, error) {
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		// Get KS variant for this algorithm, falling back to first available
+		// Get KR variant for this algorithm, falling back to first available
 		krBytes := kr.GetOrFirst(alg)
 
 		// Collect non-nil components
 		components := [][]byte{krBytes}
-		// TODO: Level 5 — add RS component here when RuleState is implemented
+		// TODO: Level 5 — add RR component here when RuleRoot is implemented
 		if len(nonce) > 0 {
 			components = append(components, nonce)
+		}
+		if len(embedding) > 0 {
+			components = append(components, embedding)
 		}
 
 		digest, err := hashSortedConcatBytes(alg, components...)
@@ -524,14 +528,14 @@ func ComputeAR(kr KeyRoot, nonce coz.B64, algs []HashAlg) (AuthRoot, error) {
 	return AuthRoot{mh}, nil
 }
 
-// ComputeCS computes Commit State (SPEC §8.5).
-// CS = MR(AS, DS?) — the Principal Tree minus CommitID.
-// CommitID is excluded from CS to avoid circular dependencies.
-// If ds is nil (no actions), CS promotes from AS.
-func ComputeCS(ar AuthRoot, dr *DataRoot, algs []HashAlg) (CommitState, error) {
-	// Implicit promotion: only AS, no DS
-	if dr == nil {
-		return CommitState{ar.Clone()}, nil
+// ComputeSR computes State Root (SPEC §3.7.2).
+// SR = MR(AR, DR?, embedding?) — the principal non-commit state.
+// If DR is nil and no embedding, SR = AR (implicit promotion).
+// embedding is reserved for future use; pass nil.
+func ComputeSR(ar AuthRoot, dr *DataRoot, embedding coz.B64, algs []HashAlg) (StateRoot, error) {
+	// Implicit promotion: only AR, no DR, no embedding
+	if dr == nil && len(embedding) == 0 {
+		return StateRoot{ar.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
@@ -543,19 +547,25 @@ func ComputeCS(ar AuthRoot, dr *DataRoot, algs []HashAlg) (CommitState, error) {
 	for _, alg := range algs {
 		arBytes := ar.GetOrFirst(alg)
 
-		components := [][]byte{arBytes, dr.Bytes()}
+		components := [][]byte{arBytes}
+		if dr != nil {
+			components = append(components, dr.Bytes())
+		}
+		if len(embedding) > 0 {
+			components = append(components, embedding)
+		}
 		digest, err := hashSortedConcatBytes(alg, components...)
 		if err != nil {
-			return CommitState{}, err
+			return StateRoot{}, err
 		}
 		variants[alg] = digest
 	}
 
 	mh, err := NewMultihashDigest(variants)
 	if err != nil {
-		return CommitState{}, err
+		return StateRoot{}, err
 	}
-	return CommitState{mh}, nil
+	return StateRoot{mh}, nil
 }
 
 // ComputeDR computes Data State from action czds (SPEC §7.4).
@@ -589,35 +599,33 @@ func ComputeDR(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataRoot, error) {
 	return &dr, nil
 }
 
-// ComputePR computes Principal State (SPEC §8.3).
-// PS = MR(AS, CommitID?, DS?) — top-level state including CommitID directly.
-// PS is computed from raw components, NOT from CS.
-// If commitID is nil and ds is nil with no nonce, PS = AS (implicit promotion).
-func ComputePR(ar AuthRoot, commitID *CommitID, dr *DataRoot, nonce coz.B64, algs []HashAlg) (PrincipalRoot, error) {
-	// Implicit promotion: only AS, nothing else
-	if commitID == nil && dr == nil && len(nonce) == 0 {
-		return PrincipalRoot{ar.Clone()}, nil
+// ComputePR computes Principal Root (SPEC §3.7.1).
+// PR = MR(SR, CR?, embedding?) — top-level state.
+// If CR is nil (Levels 1-3) and no embedding, PR = SR (implicit promotion).
+// The cr parameter is temporarily *CommitID until CR replaces CommitID in Phase 5.
+// embedding is reserved for future use; pass nil.
+func ComputePR(sr StateRoot, cr *CommitID, embedding coz.B64, algs []HashAlg) (PrincipalRoot, error) {
+	// Implicit promotion: only SR, no CR, no embedding
+	if cr == nil && len(embedding) == 0 {
+		return PrincipalRoot{sr.Clone()}, nil
 	}
 
 	if len(algs) == 0 {
-		algs = ar.Algorithms()
+		algs = sr.Algorithms()
 	}
 
 	// Compute hash for each algorithm variant
 	variants := make(map[HashAlg]coz.B64, len(algs))
 	for _, alg := range algs {
-		arBytes := ar.GetOrFirst(alg)
+		srBytes := sr.GetOrFirst(alg)
 
 		// Collect non-nil components
-		components := [][]byte{arBytes}
-		if commitID != nil {
-			components = append(components, commitID.GetOrFirst(alg))
+		components := [][]byte{srBytes}
+		if cr != nil {
+			components = append(components, cr.GetOrFirst(alg))
 		}
-		if dr != nil {
-			components = append(components, dr.Bytes())
-		}
-		if len(nonce) > 0 {
-			components = append(components, nonce)
+		if len(embedding) > 0 {
+			components = append(components, embedding)
 		}
 
 		digest, err := hashSortedConcatBytes(alg, components...)
