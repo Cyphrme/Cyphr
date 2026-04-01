@@ -10,9 +10,9 @@
 //!
 //! The generator:
 //! 1. Creates a Principal from genesis keys (auto-promotion per spec)
-//! 2. For each transaction, captures `pre` from current state root
+//! 2. For each coz, captures `pre` from current state root
 //! 3. Builds and signs the Coz message
-//! 4. Applies the transaction to the Principal
+//! 4. Applies the coz to the Principal
 //! 5. Extracts final state digests (ks, as, sr, ps, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -40,10 +40,10 @@ pub struct Golden {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
     /// Commit bundles in application order (one commit per line in JSONL).
-    /// Each commit contains: txs (transactions), ts, as, ps digests.
+    /// Each commit contains: cozies (cozies), ts, as, ps digests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<CommitEntry>>,
-    /// Coz digests (czd) parallel to all transactions across commits.
+    /// Coz digests (czd) parallel to all cozies across commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digests: Option<Vec<String>>,
     /// Expected state after execution.
@@ -71,7 +71,7 @@ pub struct GoldenCoz {
     pub sig: String,
     /// Coz digest (base64url).
     pub czd: String,
-    /// Embedded key (for key/create transactions).
+    /// Embedded key (for key/create cozies).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<GoldenKey>,
 }
@@ -281,13 +281,13 @@ impl<'a> Generator<'a> {
     /// Returns commits as Vec<CommitEntry> and digests as Vec<String>.
     ///
     /// Each CommitEntry contains:
-    /// - txs: array of transactions in commit (with pay, sig, key? fields)
+    /// - cozies: array of cozies in commit (with pay, sig, key? fields)
     /// - commit_id: Commit ID digest (base64url)
     /// - as: Auth State digest (base64url)
     /// - sr: State Root digest (base64url)
     /// - pr: Principal State digest (base64url)
     ///
-    /// Actions are exported as single-tx pseudo-commits at the end, with
+    /// Actions are exported as single-cz pseudo-commits at the end, with
     /// the current state digests at the time of action application.
     fn export_principal_commits(
         principal: &cyphrpass::Principal,
@@ -299,14 +299,14 @@ impl<'a> Generator<'a> {
             reason: format!("export_commits failed: {}", e),
         })?;
 
-        // Compute digests from transactions and actions
+        // Compute digests from cozies and actions
         let mut digests = Vec::new();
-        for tx in principal.transactions() {
-            digests.push(tx.czd().to_b64());
+        for cz in principal.cozies() {
+            digests.push(cz.czd().to_b64());
         }
 
         // Export actions as pseudo-commits
-        // Each action gets its own single-tx commit entry
+        // Each action gets its own single-cz commit entry
         // Actions use the state from the last finalized commit
         let last_commit = principal.commits().last();
         for action in principal.actions() {
@@ -368,12 +368,12 @@ impl<'a> Generator<'a> {
 
     /// Convert a GoldenCoz to a CommitEntry for error tests.
     /// Used for error tests where the failing entry is not in Principal.
-    /// Wraps the single failing transaction as a commit with placeholder state digests.
+    /// Wraps the single failing coz as a commit with placeholder state digests.
     ///
     /// Note: For error tests, the state digests are meaningless since the
-    /// transaction failed validation. We use empty strings as placeholders.
+    /// coz failed validation. We use empty strings as placeholders.
     fn coz_to_commit_entry(coz: &GoldenCoz) -> CommitEntry {
-        // Build JSON object for the failing transaction (no embedded key)
+        // Build JSON object for the failing coz (no embedded key)
         let tx_json = serde_json::json!({
             "pay": serde_json::from_str::<Value>(coz.pay.get()).expect("valid pay JSON"),
             "sig": coz.sig,
@@ -394,7 +394,7 @@ impl<'a> Generator<'a> {
             })
             .unwrap_or_default();
 
-        // Wrap as a single-transaction commit with placeholder state digests
+        // Wrap as a single-coz commit with placeholder state digests
         CommitEntry::new(
             vec![tx_json],
             keys,
@@ -470,13 +470,13 @@ impl<'a> Generator<'a> {
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        let tx = test
+        let cz = test
             .commit
             .first()
-            .and_then(|c| c.tx.first())
+            .and_then(|c| c.cz.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
-                    "test '{}': single-commit test requires [[commit.tx]]",
+                    "test '{}': single-commit test requires [[commit.cz]]",
                     test.name
                 ),
             })?;
@@ -488,7 +488,7 @@ impl<'a> Generator<'a> {
             .and_then(|e| e.error.as_ref())
             .is_some();
 
-        // Capture pre (principal state before transaction) in alg:digest format
+        // Capture pre (principal state before coz) in alg:digest format
         // Use override.pre if specified (for InvalidPrior tests)
         let computed_pre;
         let pre: &str =
@@ -500,21 +500,21 @@ impl<'a> Generator<'a> {
             };
 
         // Resolve signer for pay construction
-        let signer = self.resolve_key(&tx.signer)?;
+        let signer = self.resolve_key(&cz.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build the pay Value (without commit field)
-        let pay_value = self.build_pay_value(tx, &signer.alg, &signer_tmb, Some(pre))?;
+        let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(pre))?;
 
         let coz = if is_error_test {
             // Error tests: sign manually — CommitScope would reject invalid payloads
             // (e.g., wrong pre). We need valid signatures over intentionally bad data.
-            let (coz, _sig_bytes, _czd) = self.build_golden_coz(tx, &test.name, Some(pre))?;
+            let (coz, _sig_bytes, _czd) = self.build_golden_coz(cz, &test.name, Some(pre))?;
             coz
         } else {
             // Happy path: use CommitScope::finalize_with_commit
             // This handles mutation → CS computation → commit injection → signing atomically.
-            let new_key = if let Some(target_name) = &tx.target {
+            let new_key = if let Some(target_name) = &cz.target {
                 Some(self.pool_key_to_cyphrpass_key(target_name)?)
             } else {
                 None
@@ -546,8 +546,8 @@ impl<'a> Generator<'a> {
                 })?;
 
             // Extract GoldenCoz from the finalized commit
-            let vtx = &commit.transactions()[0];
-            self.commit_vtx_to_golden_coz(vtx, tx)?
+            let vtx = &commit.cozies()[0];
+            self.commit_vtx_to_golden_coz(vtx, cz)?
         };
 
         // Build expected with computed state digests (or error)
@@ -556,7 +556,7 @@ impl<'a> Generator<'a> {
         // Build genesis_keys, entries, and digests
         let genesis_keys = self.build_genesis_keys(&test.principal).ok();
 
-        // For error tests, the transaction was not applied - add it manually
+        // For error tests, the coz was not applied - add it manually
         let (mut commits, mut digests) = Self::export_principal_commits(principal)?;
         if is_error_test {
             commits.push(Self::coz_to_commit_entry(&coz));
@@ -592,21 +592,21 @@ impl<'a> Generator<'a> {
         let commit_count = test.commit.len();
         for (i, commit) in test.commit.iter().enumerate() {
             let is_last_commit = i == commit_count - 1;
-            let tx = commit.tx.first().ok_or_else(|| Error::InvalidIntent {
-                message: format!("test '{}': commit {} has no transactions", test.name, i + 1),
+            let cz = commit.cz.first().ok_or_else(|| Error::InvalidIntent {
+                message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
             })?;
 
             // Capture pre before this commit (alg:digest format)
             let pre = Self::format_pr_tagged(principal)?;
 
             // Resolve signer
-            let signer = self.resolve_key(&tx.signer)?;
+            let signer = self.resolve_key(&cz.signer)?;
             let signer_tmb = signer.compute_tmb_b64()?;
 
             let coz = if is_last_commit && is_error_test {
                 // Error tests: sign last commit manually
                 let (coz, _sig_bytes, _czd) = self
-                    .build_golden_coz(tx, &test.name, Some(&pre))
+                    .build_golden_coz(cz, &test.name, Some(&pre))
                     .map_err(|e| Error::Generation {
                         name: test.name.clone(),
                         reason: format!("commit {}: {}", i + 1, e),
@@ -614,7 +614,7 @@ impl<'a> Generator<'a> {
                 coz
             } else {
                 // Happy path: use CommitScope::finalize_with_commit
-                let new_key = if let Some(target_name) = &tx.target {
+                let new_key = if let Some(target_name) = &cz.target {
                     Some(self.pool_key_to_cyphrpass_key(target_name)?)
                 } else {
                     None
@@ -638,7 +638,7 @@ impl<'a> Generator<'a> {
                     }
                 })?;
 
-                let pay_value = self.build_pay_value(tx, &signer.alg, &signer_tmb, Some(&pre))?;
+                let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(&pre))?;
 
                 let scope = principal.begin_commit();
                 let commit_ref = scope
@@ -648,8 +648,8 @@ impl<'a> Generator<'a> {
                         reason: format!("commit {}: {}", i + 1, e),
                     })?;
 
-                let vtx = &commit_ref.transactions()[0];
-                self.commit_vtx_to_golden_coz(vtx, tx)?
+                let vtx = &commit_ref.cozies()[0];
+                self.commit_vtx_to_golden_coz(vtx, cz)?
             };
 
             coz_sequence.push(coz);
@@ -680,7 +680,7 @@ impl<'a> Generator<'a> {
         })
     }
 
-    /// Generate a genesis-only test case (no transactions or actions).
+    /// Generate a genesis-only test case (no cozies or actions).
     fn generate_genesis_only(
         &self,
         test: &TestIntent,
@@ -704,33 +704,33 @@ impl<'a> Generator<'a> {
 
     /// Generate a combined commit + action test case.
     ///
-    /// The commit transactions are applied first, then the actions.
+    /// The commit cozies are applied first, then the actions.
     fn generate_tx_and_action(
         &self,
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
-        // First, apply the commit transaction
-        let tx = test
+        // First, apply the commit coz
+        let cz = test
             .commit
             .first()
-            .and_then(|c| c.tx.first())
+            .and_then(|c| c.cz.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
-                    "test '{}': tx+action test requires [[commit.tx]]",
+                    "test '{}': cz+action test requires [[commit.cz]]",
                     test.name
                 ),
             })?;
 
-        // Capture pre (principal state before transaction) in alg:digest format
+        // Capture pre (principal state before coz) in alg:digest format
         let pre = Self::format_pr_tagged(principal)?;
 
         // Resolve signer and build pay
-        let signer = self.resolve_key(&tx.signer)?;
+        let signer = self.resolve_key(&cz.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
-        let pay_value = self.build_pay_value(tx, &signer.alg, &signer_tmb, Some(&pre))?;
+        let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(&pre))?;
 
-        let new_key = if let Some(target_name) = &tx.target {
+        let new_key = if let Some(target_name) = &cz.target {
             Some(self.pool_key_to_cyphrpass_key(target_name)?)
         } else {
             None
@@ -752,7 +752,7 @@ impl<'a> Generator<'a> {
                 reason: format!("invalid pub base64: {}", e),
             })?;
 
-        // Use CommitScope::finalize_with_commit for the transaction
+        // Use CommitScope::finalize_with_commit for the coz
         let scope = principal.begin_commit();
         scope
             .finalize_with_commit(pay_value, &signer.alg, &prv_bytes, &pub_bytes, new_key)
@@ -763,7 +763,7 @@ impl<'a> Generator<'a> {
 
         // Now apply the action
         let action_intent = test.action.first().ok_or_else(|| Error::InvalidIntent {
-            message: format!("test '{}': tx+action test requires [[action]]", test.name),
+            message: format!("test '{}': cz+action test requires [[action]]", test.name),
         })?;
 
         let (_, action_sig_bytes, action_czd) = self.build_action_coz(action_intent, &test.name)?;
@@ -1020,25 +1020,25 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    /// Build a GoldenCoz from a transaction intent.
+    /// Build a GoldenCoz from a coz intent.
     ///
     /// Returns the GoldenCoz plus raw sig bytes and czd for applying to Principal.
     fn build_golden_coz(
         &self,
-        tx: &TxIntent,
+        cz: &TxIntent,
         test_name: &str,
         pre: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer key
-        let signer = self.resolve_key(&tx.signer)?;
+        let signer = self.resolve_key(&cz.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build pay JSON with derived fields (including pre)
-        let pay_json = self.build_pay_json(tx, &signer.alg, &signer_tmb, pre)?;
+        let pay_json = self.build_pay_json(cz, &signer.alg, &signer_tmb, pre)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
-            self.sign_pay(&pay_json, signer, tx, test_name)?;
+            self.sign_pay(&pay_json, signer, cz, test_name)?;
 
         let coz = GoldenCoz {
             pay: serde_json::from_slice(&pay_json).map_err(|e| Error::Generation {
@@ -1059,7 +1059,7 @@ impl<'a> Generator<'a> {
     /// Per Coz spec, standard fields appear in canonical (alphabetic) order.
     fn build_pay_value(
         &self,
-        tx: &TxIntent,
+        cz: &TxIntent,
         alg: &str,
         tmb: &str,
         pre: Option<&str>,
@@ -1069,8 +1069,8 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // id field handling depends on transaction type
-        let is_principal_create = tx.typ.contains("principal/create");
+        // id field handling depends on coz type
+        let is_principal_create = cz.typ.contains("principal/create");
         if is_principal_create {
             // For principal/create, id is the current PS (SPEC §5.1: "id: Final PS = PR").
             // pre is the PS-tagged value, which equals PS at this point since
@@ -1080,7 +1080,7 @@ impl<'a> Generator<'a> {
                 reason: "principal/create requires pre (PS) for id field".to_string(),
             })?;
             fields.insert("id".to_string(), Value::String(ps_val.to_string()));
-        } else if let Some(target_name) = &tx.target {
+        } else if let Some(target_name) = &cz.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
             let target_tmb = target.compute_tmb_b64()?;
@@ -1088,28 +1088,28 @@ impl<'a> Generator<'a> {
         }
 
         // msg if present
-        if let Some(msg) = &tx.msg {
+        if let Some(msg) = &cz.msg {
             fields.insert("msg".to_string(), Value::String(msg.clone()));
         }
 
         // now (timestamp)
-        fields.insert("now".to_string(), Value::Number(tx.now.into()));
+        fields.insert("now".to_string(), Value::Number(cz.now.into()));
 
-        // pre (prior auth state) - only for transactions, not genesis
+        // pre (prior auth state) - only for cozies, not genesis
         if let Some(pre_val) = pre {
             fields.insert("pre".to_string(), Value::String(pre_val.to_string()));
         }
 
         // rvk if present
-        if let Some(rvk) = tx.rvk {
+        if let Some(rvk) = cz.rvk {
             fields.insert("rvk".to_string(), Value::Number(rvk.into()));
         }
 
         // tmb (signer thumbprint)
         fields.insert("tmb".to_string(), Value::String(tmb.to_string()));
 
-        // typ (transaction/action type)
-        fields.insert("typ".to_string(), Value::String(tx.typ.clone()));
+        // typ (coz/action type)
+        fields.insert("typ".to_string(), Value::String(cz.typ.clone()));
 
         serde_json::to_value(&fields).map_err(|e| Error::Signing {
             message: format!("failed to build pay value: {}", e),
@@ -1122,12 +1122,12 @@ impl<'a> Generator<'a> {
     /// Thin wrapper over build_pay_value for paths that need raw bytes.
     fn build_pay_json(
         &self,
-        tx: &TxIntent,
+        cz: &TxIntent,
         alg: &str,
         tmb: &str,
         pre: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
-        let value = self.build_pay_value(tx, alg, tmb, pre)?;
+        let value = self.build_pay_value(cz, alg, tmb, pre)?;
         serde_json::to_vec(&value).map_err(|e| Error::Signing {
             message: format!("failed to serialize pay: {}", e),
         })
@@ -1140,7 +1140,7 @@ impl<'a> Generator<'a> {
         &self,
         pay_json: &[u8],
         signer: &PoolKey,
-        tx: &TxIntent,
+        cz: &TxIntent,
         test_name: &str,
     ) -> SignResult {
         // Get private key bytes
@@ -1179,7 +1179,7 @@ impl<'a> Generator<'a> {
         let czd_b64 = Base64UrlUnpadded::encode_string(czd.as_bytes());
 
         // Build embedded key for key/create operations
-        let embedded_key = if let Some(target_name) = &tx.target {
+        let embedded_key = if let Some(target_name) = &cz.target {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
                 alg: target.alg.clone(),
@@ -1193,21 +1193,21 @@ impl<'a> Generator<'a> {
         Ok((sig_b64, sig_bytes, czd_b64, czd, embedded_key))
     }
 
-    /// Extract a GoldenCoz from a VerifiedTransaction (produced by CommitScope).
+    /// Extract a GoldenCoz from a VerifiedCoz (produced by CommitScope).
     ///
-    /// Used after `finalize_with_commit()` to convert the Commit's transaction
+    /// Used after `finalize_with_commit()` to convert the Commit's coz
     /// into the golden fixture format.
     fn commit_vtx_to_golden_coz(
         &self,
-        vtx: &cyphrpass::transaction::VerifiedTransaction,
-        tx: &TxIntent,
+        vtx: &cyphrpass::parsed_coz::VerifiedCoz,
+        cz: &TxIntent,
     ) -> Result<GoldenCoz, Error> {
         let raw = vtx.raw();
         let sig_b64 = Base64UrlUnpadded::encode_string(&raw.sig);
         let czd_b64 = Base64UrlUnpadded::encode_string(vtx.czd().as_bytes());
 
         // Build embedded key for key/create operations
-        let embedded_key = if let Some(target_name) = &tx.target {
+        let embedded_key = if let Some(target_name) = &cz.target {
             let target = self.resolve_key(target_name)?;
             Some(GoldenKey {
                 alg: target.alg.clone(),
@@ -1220,12 +1220,12 @@ impl<'a> Generator<'a> {
 
         // Convert Value to Box<RawValue> for bit-perfect preservation in GoldenCoz
         let pay_str = serde_json::to_string(&raw.pay).map_err(|e| Error::Generation {
-            name: tx.signer.clone(),
+            name: cz.signer.clone(),
             reason: format!("failed to serialize pay from commit: {}", e),
         })?;
         let pay_raw: Box<RawValue> =
             RawValue::from_string(pay_str).map_err(|e| Error::Generation {
-                name: tx.signer.clone(),
+                name: cz.signer.clone(),
                 reason: format!("failed to create RawValue: {}", e),
             })?;
 
@@ -1391,7 +1391,7 @@ name = "key_add_golden_to_alice"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000000
 signer = "golden"
@@ -1428,16 +1428,16 @@ level = 3
 
         // Verify commit has correct structure
         let commit = &commits[0];
-        assert_eq!(commit.txs.len(), 1, "commit should have 1 tx");
-        let tx = &commit.txs[0];
-        let pay = tx.get("pay").expect("tx missing pay");
+        assert_eq!(commit.cozies.len(), 1, "commit should have 1 cz");
+        let cz = &commit.cozies[0];
+        let pay = cz.get("pay").expect("cz missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/key/create");
         assert_eq!(pay["now"], 1700000000);
         assert!(pay.get("pre").is_some(), "pre should be populated");
 
         // Verify sig and keys are populated
-        assert!(tx.get("sig").is_some(), "tx should have sig");
+        assert!(cz.get("sig").is_some(), "cz should have sig");
         let key = commit
             .keys
             .first()
@@ -1472,7 +1472,7 @@ name = "bad_signer"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000000
 signer = "nonexistent_key"
@@ -1499,14 +1499,14 @@ target = "alice"
 
         let pool = Pool::load(&pool_path).expect("failed to load pool");
 
-        // Just create a principal, no transaction
+        // Just create a principal, no coz
         let intent_str = r#"
 [[test]]
 name = "genesis_only"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000000
 signer = "golden"

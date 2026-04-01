@@ -25,9 +25,9 @@ pub enum ExportError {
 /// Export all entries from a Principal for storage (legacy flat format).
 ///
 /// Returns a vector of `Entry` that can be persisted to any `Store`.
-/// The order is: transactions first (in apply order), then actions.
+/// The order is: cozies first (in apply order), then actions.
 ///
-/// For `key/create` and `key/replace` transactions, the associated key material
+/// For `key/create` and `key/replace` cozies, the associated key material
 /// is included in the exported entry as a `key` field, matching SPEC §3.1 JSONL format.
 ///
 /// **Note**: For commit-based storage, use `export_commits` instead.
@@ -47,9 +47,9 @@ pub enum ExportError {
 pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> {
     let mut entries = Vec::new();
 
-    for tx in principal.transactions() {
+    for cz in principal.cozies() {
         // Serialize complete CozJson {pay, sig} — no key embedding
-        let raw = serde_json::to_value(tx.raw())?;
+        let raw = serde_json::to_value(cz.raw())?;
 
         // Note: from_value serializes, which is fine for export (creating new entries)
         entries.push(Entry::from_value(&raw)?);
@@ -67,8 +67,8 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 ///
 /// Returns a vector of `CommitEntry` representing each finalized commit.
 /// Each entry contains:
-/// - `txs`: Array of transaction JSON values (with embedded key material)
-/// - `commit_id`: Commit ID (Merkle root of transaction czds, base64url)
+/// - `cozies`: Array of coz JSON values (with embedded key material)
+/// - `commit_id`: Commit ID (Merkle root of coz czds, base64url)
 /// - `as`: Auth State (base64url)
 /// - `sr`: State Root (base64url)
 /// - `ps`: Principal State (base64url)
@@ -95,16 +95,16 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
     let mut commit_entries = Vec::new();
 
     for commit in principal.commits() {
-        let mut txs = Vec::new();
+        let mut cozies = Vec::new();
         let mut keys = Vec::new();
 
-        for tx in commit.transactions() {
+        for cz in commit.cozies() {
             // Serialize complete CozJson {pay, sig} — no key embedding
-            let raw = serde_json::to_value(tx.raw())?;
-            txs.push(raw);
+            let raw = serde_json::to_value(cz.raw())?;
+            cozies.push(raw);
 
             // Collect key material at commit level
-            if let Some(key) = tx.new_key() {
+            if let Some(key) = cz.new_key() {
                 keys.push(KeyEntry {
                     alg: key.alg.clone(),
                     pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
@@ -157,7 +157,7 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
 
-        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_root, sr, ps));
+        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, ps));
     }
 
     Ok(commit_entries)
@@ -217,11 +217,11 @@ mod tests {
 
     #[test]
     fn export_implicit_genesis_no_entries() {
-        // Implicit genesis has no transactions (identity emerges from key possession)
+        // Implicit genesis has no cozies (identity emerges from key possession)
         let principal = Principal::implicit(make_test_key(0xAA)).unwrap();
         let entries = export_entries(&principal).unwrap();
 
-        // No transactions for implicit genesis
+        // No cozies for implicit genesis
         assert_eq!(entries.len(), 0);
     }
 
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn exported_entry_has_pay_and_sig() {
-        // We can't easily create a real transaction without signature verification,
+        // We can't easily create a real coz without signature verification,
         // but we can verify the CozJson serialization format
         let coz_json = coz::CozJson {
             pay: json!({"typ": "test", "now": 1000}),

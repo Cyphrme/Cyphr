@@ -132,10 +132,10 @@ fn try_apply_entry(
         })
     });
 
-    // Determine if this is a transaction or action based on typ field
+    // Determine if this is a coz or action based on typ field
     let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
     if typ.starts_with("cyphr.me/key/") || typ == "cyphr.me/principal/create" {
-        // Transaction
+        // ParsedCoz
         principal.verify_and_apply_transaction(&pay_json, &sig, computed_czd, new_key)?;
     } else {
         // Action
@@ -388,25 +388,25 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     // Apply commits from fixture
     // ========================================================================
     if let (Some(commits), Some(digests)) = (&fixture.commits, &fixture.digests) {
-        // Apply transactions from commits
+        // Apply cozies from commits
         let mut digest_idx = 0;
         let commit_count = commits.len();
 
         for (ci, commit) in commits.iter().enumerate() {
             let is_last_commit = ci == commit_count - 1;
-            let tx_count = commit.txs.len();
+            let tx_count = commit.cozies.len();
 
-            for (ti, tx) in commit.txs.iter().enumerate() {
+            for (ti, cz) in commit.cozies.iter().enumerate() {
                 let is_last_tx = is_last_commit && ti == tx_count - 1;
                 let czd = &digests[digest_idx];
                 digest_idx += 1;
 
-                match try_apply_entry(&mut principal, tx, czd, &fixture.name, &commit.keys) {
+                match try_apply_entry(&mut principal, cz, czd, &fixture.name, &commit.keys) {
                     Ok(()) => {
                         if is_last_tx {
                             if let Some(err) = expected_error {
                                 panic!(
-                                    "{}: expected error '{}' but last tx succeeded",
+                                    "{}: expected error '{}' but last cz succeeded",
                                     fixture.name, err
                                 );
                             }
@@ -418,7 +418,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                                 assert_eq!(
                                     error_name(&e),
                                     expected,
-                                    "{}: wrong error type on last tx",
+                                    "{}: wrong error type on last cz",
                                     fixture.name
                                 );
                                 println!(
@@ -429,7 +429,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                             }
                         }
                         panic!(
-                            "{}: commit {} tx {} failed: {:?}",
+                            "{}: commit {} cz {} failed: {:?}",
                             fixture.name,
                             ci + 1,
                             ti + 1,

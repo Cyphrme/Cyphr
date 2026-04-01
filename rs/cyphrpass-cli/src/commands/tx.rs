@@ -1,4 +1,4 @@
-//! Transaction commands.
+//! ParsedCoz commands.
 
 use cyphrpass_storage::{Genesis, load_principal_from_commits};
 
@@ -16,15 +16,15 @@ pub fn run(cli: &Cli, command: &TxCommands) -> crate::Result<()> {
     }
 }
 
-/// List transactions for an identity.
+/// List cozies for an identity.
 fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
     let principal = load_identity(cli, identity)?;
 
-    let txs: Vec<_> = principal.transactions().collect();
+    let cozies: Vec<_> = principal.cozies().collect();
 
     match cli.output {
         OutputFormat::Json => {
-            let tx_list: Vec<_> = txs
+            let tx_list: Vec<_> = cozies
                 .iter()
                 .enumerate()
                 .map(|(i, tx)| {
@@ -40,8 +40,8 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 
             let output = serde_json::json!({
                 "identity": identity,
-                "transaction_count": txs.len(),
-                "transactions": tx_list,
+                "transaction_count": cozies.len(),
+                "cozies": tx_list,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
@@ -49,10 +49,10 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
             println!("Transactions for: {identity}");
             println!();
 
-            if txs.is_empty() {
-                println!("  (no transactions - genesis state)");
+            if cozies.is_empty() {
+                println!("  (no cozies - genesis state)");
             } else {
-                for (i, tx) in txs.iter().enumerate() {
+                for (i, tx) in cozies.iter().enumerate() {
                     println!(
                         "  [{}] {:?} by {} @ {}",
                         i,
@@ -64,14 +64,14 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
             }
 
             println!();
-            println!("Total: {} transactions", txs.len());
+            println!("Total: {} cozies", cozies.len());
         },
     }
 
     Ok(())
 }
 
-/// Verify transaction chain integrity for an identity.
+/// Verify coz chain integrity for an identity.
 fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_genesis(identity)?;
@@ -175,7 +175,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         )));
     }
 
-    let tx_count: usize = principal.transactions().count();
+    let tx_count: usize = principal.cozies().count();
 
     match cli.output {
         OutputFormat::Json => {
@@ -216,7 +216,7 @@ fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphrpass::Principa
         let key = load_key_from_keystore(&keystore, identity)?;
         Ok(cyphrpass::Principal::implicit(key)?)
     } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with transactions
+        // Has commits + in keystore = implicit genesis with cozies
         let genesis_key = load_key_from_keystore(&keystore, identity)?;
         let genesis = Genesis::Implicit(genesis_key);
         Ok(load_principal_from_commits(genesis, &commits)?)

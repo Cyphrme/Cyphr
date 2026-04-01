@@ -7,7 +7,7 @@ import (
 	"github.com/cyphrme/coz"
 )
 
-// Transaction type constants per SPEC §4.2.
+// ParsedCoz type constants per SPEC §4.2.
 // These are typ suffixes; full typ is "<authority>/<suffix>".
 const (
 	TypKeyCreate  = "key/create" // SPEC §4.2
@@ -18,67 +18,67 @@ const (
 	TypPrincipalCreate = "principal/create" // SPEC §5.1 genesis finalization
 )
 
-// TransactionKind represents the type of auth mutation.
-type TransactionKind string
+// CozKind represents the type of auth mutation.
+type CozKind string
 
 const (
-	TxKeyCreate       TransactionKind = "key/create"
-	TxKeyDelete       TransactionKind = "key/delete"
-	TxKeyReplace      TransactionKind = "key/replace"
-	TxRevoke          TransactionKind = "key/revoke"
-	TxPrincipalCreate TransactionKind = "principal/create" // SPEC §5.1 genesis finalization
+	TxKeyCreate       CozKind = "key/create"
+	TxKeyDelete       CozKind = "key/delete"
+	TxKeyReplace      CozKind = "key/replace"
+	TxRevoke          CozKind = "key/revoke"
+	TxPrincipalCreate CozKind = "principal/create" // SPEC §5.1 genesis finalization
 )
 
-// String returns the string representation of a TransactionKind.
-func (k TransactionKind) String() string {
+// String returns the string representation of a CozKind.
+func (k CozKind) String() string {
 	return string(k)
 }
 
-// Transaction is a parsed auth mutation.
+// ParsedCoz is a parsed auth mutation.
 //
-// Transactions mutate Auth State and form a chain via the Pre field.
+// Cozies mutate Auth State and form a chain via the Pre field.
 // Pre references the prior Principal State (PS) per SPEC §4.3.
-type Transaction struct {
-	// Kind is the type of transaction.
-	Kind TransactionKind
+type ParsedCoz struct {
+	// Kind is the type of coz.
+	Kind CozKind
 
 	// Signer is the thumbprint of the signing key.
 	Signer coz.B64
 
-	// Now is the transaction timestamp.
+	// Now is the coz timestamp.
 	Now int64
 
-	// Czd is the Coz digest of this transaction.
+	// Czd is the Coz digest of this coz.
 	Czd coz.B64
 
-	// Pre is the prior Principal State (required for all transaction types).
+	// Pre is the prior Principal State (required for all coz types).
 	Pre PrincipalRoot
 
 	// ID is the target key thumbprint (for add/delete/replace/other-revoke).
 	ID coz.B64
 
-	// Rvk is the revocation timestamp (for revoke transactions).
+	// Rvk is the revocation timestamp (for revoke cozies).
 	Rvk int64
 
 	// CommitSR is the state root from the `commit` field (terminal coz only).
 	// Per SPEC §4.4, the last coz in a commit contains `"commit":<SR>`
-	// where SR = MR(AR, DR?). Nil for non-terminal transactions.
+	// where SR = MR(AR, DR?). Nil for non-terminal cozies.
 	CommitSR *StateRoot
 
-	// raw is the original CozJson bytes for this transaction.
+	// raw is the original CozJson bytes for this coz.
 	// This field enables bit-perfect export for storage round-trips.
 	// It includes the complete {pay, sig, key?} structure.
 	raw json.RawMessage
 }
 
-// Raw returns the original CozJson bytes for this transaction.
-func (t *Transaction) Raw() json.RawMessage {
+// Raw returns the original CozJson bytes for this coz.
+func (t *ParsedCoz) Raw() json.RawMessage {
 	return t.raw
 }
 
-// TransactionPay represents the payload fields for a Cyphrpass transaction.
-// This struct is used for JSON unmarshaling of transaction payloads.
-type TransactionPay struct {
+// CozPay represents the payload fields for a Cyphrpass coz.
+// This struct is used for JSON unmarshaling of coz payloads.
+type CozPay struct {
 	Alg    coz.SEAlg `json:"alg"`
 	Tmb    coz.B64   `json:"tmb"`
 	Now    int64     `json:"now"`
@@ -89,14 +89,14 @@ type TransactionPay struct {
 	Commit string    `json:"commit,omitempty"` // State Root (alg:digest, terminal coz only)
 }
 
-// ParseTransaction parses a transaction from a TransactionPay and czd.
+// ParseCoz parses a coz from a CozPay and czd.
 // The czd must be pre-computed from the full Coz message.
-func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
+func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 	if pay == nil || pay.Typ == "" {
 		return nil, ErrMalformedPayload
 	}
 
-	tx := &Transaction{
+	cz := &ParsedCoz{
 		Signer: pay.Tmb,
 		Now:    pay.Now,
 		Czd:    czd,
@@ -108,41 +108,41 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 
 	switch suffix {
 	case TypKeyCreate:
-		tx.Kind = TxKeyCreate
-		if err := tx.parsePre(pay.Pre); err != nil {
+		cz.Kind = TxKeyCreate
+		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseID(pay.ID); err != nil {
+		if err := cz.parseID(pay.ID); err != nil {
 			return nil, err
 		}
 
 	case TypKeyDelete:
-		tx.Kind = TxKeyDelete
-		if err := tx.parsePre(pay.Pre); err != nil {
+		cz.Kind = TxKeyDelete
+		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseID(pay.ID); err != nil {
+		if err := cz.parseID(pay.ID); err != nil {
 			return nil, err
 		}
 
 	case TypKeyReplace:
-		tx.Kind = TxKeyReplace
-		if err := tx.parsePre(pay.Pre); err != nil {
+		cz.Kind = TxKeyReplace
+		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseID(pay.ID); err != nil {
+		if err := cz.parseID(pay.ID); err != nil {
 			return nil, err
 		}
 
 	case TypKeyRevoke:
-		tx.Kind = TxRevoke
+		cz.Kind = TxRevoke
 		if pay.ID != "" {
-			if err := tx.parseID(pay.ID); err != nil {
+			if err := cz.parseID(pay.ID); err != nil {
 				return nil, err
 			}
 		}
 		// All revoke types require pre (unified pre semantics)
-		if err := tx.parsePre(pay.Pre); err != nil {
+		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
 		if pay.Rvk == 0 {
@@ -150,13 +150,13 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 		}
 
 	case TypPrincipalCreate:
-		// SPEC §5.1: Genesis finalization transaction
+		// SPEC §5.1: Genesis finalization coz
 		// For principal/create, id is an AuthRoot (tagged digest format)
-		tx.Kind = TxPrincipalCreate
-		if err := tx.parsePre(pay.Pre); err != nil {
+		cz.Kind = TxPrincipalCreate
+		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
-		if err := tx.parseIDAsAuthRoot(pay.ID); err != nil {
+		if err := cz.parseIDAsAuthRoot(pay.ID); err != nil {
 			return nil, err
 		}
 
@@ -166,16 +166,16 @@ func ParseTransaction(pay *TransactionPay, czd coz.B64) (*Transaction, error) {
 
 	// Parse optional commit field (terminal coz finality marker)
 	if pay.Commit != "" {
-		if err := tx.parseCommit(pay.Commit); err != nil {
+		if err := cz.parseCommit(pay.Commit); err != nil {
 			return nil, err
 		}
 	}
 
-	return tx, nil
+	return cz, nil
 }
 
 // parsePre decodes the pre field in alg:digest format.
-func (tx *Transaction) parsePre(pre string) error {
+func (cz *ParsedCoz) parsePre(pre string) error {
 	if pre == "" {
 		return ErrMalformedPayload
 	}
@@ -184,12 +184,12 @@ func (tx *Transaction) parsePre(pre string) error {
 		return ErrMalformedPayload
 	}
 	// Create single-variant PrincipalRoot from tagged digest
-	tx.Pre = PrincipalRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
+	cz.Pre = PrincipalRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
 	return nil
 }
 
 // parseID decodes the id field (raw base64 thumbprint).
-func (tx *Transaction) parseID(id string) error {
+func (cz *ParsedCoz) parseID(id string) error {
 	if id == "" {
 		return ErrMalformedPayload
 	}
@@ -197,13 +197,13 @@ func (tx *Transaction) parseID(id string) error {
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	tx.ID = idBytes
+	cz.ID = idBytes
 	return nil
 }
 
 // parseIDAsAuthRoot decodes the id field as an AuthRoot (alg:digest format).
 // Used for principal/create where id is the current AuthRoot per SPEC §5.1.
-func (tx *Transaction) parseIDAsAuthRoot(id string) error {
+func (cz *ParsedCoz) parseIDAsAuthRoot(id string) error {
 	if id == "" {
 		return ErrMalformedPayload
 	}
@@ -212,23 +212,23 @@ func (tx *Transaction) parseIDAsAuthRoot(id string) error {
 		return ErrMalformedPayload
 	}
 	// Store the raw digest bytes in ID field
-	tx.ID = tagged.Digest
+	cz.ID = tagged.Digest
 	return nil
 }
 
 // parseCommit decodes the commit field as a StateRoot in alg:digest format.
 // Per SPEC §4.4, the commit field contains SR = MR(AR, DR?).
-func (tx *Transaction) parseCommit(commit string) error {
+func (cz *ParsedCoz) parseCommit(commit string) error {
 	tagged, err := ParseTaggedDigest(commit)
 	if err != nil {
 		return ErrMalformedPayload
 	}
 	sr := StateRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
-	tx.CommitSR = &sr
+	cz.CommitSR = &sr
 	return nil
 }
 
-// typSuffix extracts the transaction type suffix from a full typ string.
+// typSuffix extracts the coz type suffix from a full typ string.
 // E.g., "cyphr.me/key/create" or "cyphr.me/cyphrpass/key/create" both return "key/create".
 // Uses suffix matching against known types for robustness against varying authority paths.
 func typSuffix(typ string) string {

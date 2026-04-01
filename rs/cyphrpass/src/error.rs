@@ -5,7 +5,7 @@ use thiserror::Error;
 /// Cyphrpass error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
 pub enum Error {
-    // === Transaction errors (§17.1) ===
+    // === ParsedCoz errors (§17.1) ===
     /// Signature does not verify against claimed key.
     #[error("invalid signature")]
     InvalidSignature,
@@ -34,7 +34,7 @@ pub enum Error {
     #[error("key revoked")]
     KeyRevoked,
 
-    /// Missing required fields for transaction type.
+    /// Missing required fields for coz type.
     #[error("malformed payload")]
     MalformedPayload,
 
@@ -91,20 +91,20 @@ pub enum Error {
     UnsupportedAlgorithm(String),
 
     // === Commit lifecycle errors ===
-    /// Attempted to finalize an empty commit (no transactions).
+    /// Attempted to finalize an empty commit (no cozies).
     #[error("empty commit")]
     EmptyCommit,
 
     /// `commit` field appears on a non-terminal coz in the commit array.
     ///
     /// Per SPEC §4.4, `commit` MUST only appear on the last coz.
-    #[error("commit field on non-terminal transaction")]
+    #[error("commit field on non-terminal coz")]
     CommitNotLast,
 
     /// Terminal coz is missing the required `commit` field.
     ///
     /// Per SPEC §4.4, the last coz MUST include `"commit":<CS>`.
-    #[error("missing commit field on terminal transaction")]
+    #[error("missing commit field on terminal coz")]
     MissingCommit,
 
     /// `commit` field value does not match independently computed CS.
@@ -116,7 +116,7 @@ pub enum Error {
     /// External reference to transitory (unfinalized) state root.
     ///
     /// Per SPEC §4.2.1, transitory state during a pending commit cannot
-    /// be referenced by external transactions until the commit is finalized.
+    /// be referenced by external cozies until the commit is finalized.
     #[error("transitory state reference")]
     TransitoryStateReference,
 

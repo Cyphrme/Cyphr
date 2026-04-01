@@ -25,7 +25,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
         let key = load_key_from_keystore(&keystore, identity)?;
         cyphrpass::Principal::implicit(key)?
     } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with transactions
+        // Has commits + in keystore = implicit genesis with cozies
         let genesis_key = load_key_from_keystore(&keystore, identity)?;
         let genesis = cyphrpass_storage::Genesis::Implicit(genesis_key);
         load_principal_from_commits(genesis, &commits)?

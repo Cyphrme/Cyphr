@@ -2,7 +2,7 @@ package cyphrpass
 
 import "errors"
 
-// Transaction errors (SPEC §14.1)
+// ParsedCoz errors (SPEC §14.1)
 var (
 	// ErrInvalidSignature indicates the signature does not verify against the claimed key.
 	ErrInvalidSignature = errors.New("cyphrpass: invalid signature")
@@ -22,7 +22,7 @@ var (
 	// ErrKeyRevoked indicates the signing key has rvk ≤ now.
 	ErrKeyRevoked = errors.New("cyphrpass: key revoked")
 
-	// ErrMalformedPayload indicates missing required fields for transaction type.
+	// ErrMalformedPayload indicates missing required fields for coz type.
 	ErrMalformedPayload = errors.New("cyphrpass: malformed payload")
 
 	// ErrDuplicateKey indicates key/add for a key already in KS.
@@ -70,16 +70,16 @@ var (
 	// ErrUnsupportedAlgorithm indicates the algorithm is not supported.
 	ErrUnsupportedAlgorithm = errors.New("cyphrpass: unsupported algorithm")
 
-	// ErrEmptyCommit indicates an attempt to finalize a commit with no transactions.
+	// ErrEmptyCommit indicates an attempt to finalize a commit with no cozies.
 	ErrEmptyCommit = errors.New("cyphrpass: empty commit")
 
 	// ErrCommitNotLast indicates a commit field appeared on a non-terminal coz.
 	// Per SPEC §4.4, commit MUST only appear on the last coz.
-	ErrCommitNotLast = errors.New("cyphrpass: commit field on non-terminal transaction")
+	ErrCommitNotLast = errors.New("cyphrpass: commit field on non-terminal coz")
 
 	// ErrMissingCommit indicates the terminal coz is missing the required commit field.
 	// Per SPEC §4.4, the last coz MUST include "commit":<CS>.
-	ErrMissingCommit = errors.New("cyphrpass: missing commit field on terminal transaction")
+	ErrMissingCommit = errors.New("cyphrpass: missing commit field on terminal coz")
 
 	// ErrCommitMismatch indicates the commit field value does not match independently computed CS.
 	// Per SPEC §4.4, the commit value must equal MR(AS, DS?).

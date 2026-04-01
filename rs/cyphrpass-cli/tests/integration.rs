@@ -98,7 +98,7 @@ fn test_key_lifecycle() {
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "genesis"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
-    // 2. Add a new key to identity (this creates the first transaction)
+    // 2. Add a new key to identity (this creates the first coz)
     // Use --arg=value format to handle thumbprints starting with -
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
@@ -131,7 +131,7 @@ fn test_key_lifecycle() {
 fn test_export_import_roundtrip() {
     let cli = CliTest::new();
 
-    // 1. Generate key and create identity with transaction
+    // 1. Generate key and create identity with coz
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
@@ -211,7 +211,7 @@ fn test_tx_list_genesis() {
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
-    // List transactions (should be empty for genesis)
+    // List cozies (should be empty for genesis)
     // Use --arg=value format to handle thumbprints starting with -
     let identity_arg = format!("--identity={genesis_tmb}");
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
@@ -227,19 +227,19 @@ fn test_tx_list_after_transactions() {
     let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
 
-    // Add a key (creates first transaction)
+    // Add a key (creates first coz)
     // Use --arg=value format to handle thumbprints starting with -
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
-    // List transactions - should show 1 transaction
+    // List cozies - should show 1 coz
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
 
     assert_eq!(tx_list["transaction_count"], 1);
-    let txs = tx_list["transactions"].as_array().unwrap();
-    assert_eq!(txs.len(), 1);
-    assert!(txs[0]["kind"].as_str().unwrap().contains("key/create"));
+    let cozies = tx_list["cozies"].as_array().unwrap();
+    assert_eq!(cozies.len(), 1);
+    assert!(cozies[0]["kind"].as_str().unwrap().contains("key/create"));
 }
 
 #[test]
@@ -280,10 +280,10 @@ fn test_inspect_after_transactions() {
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
-    // Inspect after transaction
+    // Inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PR is still <none> until a principal/create transaction establishes it
+    // PR is still <none> until a principal/create coz establishes it
     assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
@@ -313,7 +313,7 @@ fn test_full_workflow() {
     let keystore_list = cli.run_json(&["key", "list"]);
     assert_eq!(keystore_list.as_array().unwrap().len(), 1);
 
-    // 3. Check tx list at genesis (0 transactions)
+    // 3. Check tx list at genesis (0 cozies)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
     assert_eq!(tx_list["transaction_count"], 0);
 
@@ -330,11 +330,11 @@ fn test_full_workflow() {
     let key_list = cli.run_json(&["key", "list", &identity_arg]);
     assert_eq!(key_list["active_keys"].as_array().unwrap().len(), 2);
 
-    // 7. Check tx list after transaction
+    // 7. Check tx list after coz
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
     assert_eq!(tx_list["transaction_count"], 1);
 
-    // 8. Check inspect after transaction
+    // 8. Check inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
     assert_eq!(inspect["commit_count"], 1);
     assert_eq!(inspect["active_keys"].as_array().unwrap().len(), 2);
@@ -361,7 +361,7 @@ fn test_full_workflow() {
         "genesis key should be in final active keys"
     );
 
-    // 12. Check tx list shows 2 transactions (add + revoke)
+    // 12. Check tx list shows 2 cozies (add + revoke)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
     assert_eq!(tx_list["transaction_count"], 2);
 }
@@ -375,7 +375,7 @@ fn test_tx_verify_genesis() {
     let genesis_tmb = genesis["tmb"].as_str().unwrap();
     let identity_arg = format!("--identity={genesis_tmb}");
 
-    // Verify genesis state (no transactions yet)
+    // Verify genesis state (no cozies yet)
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 
     assert_eq!(verify["status"], "OK");
@@ -393,10 +393,10 @@ fn test_tx_verify_after_transactions() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let signer_arg = format!("--signer={genesis_tmb}");
 
-    // Add a key (creates first transaction)
+    // Add a key (creates first coz)
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
-    // Verify transaction chain - THIS IS THE CRITICAL TEST
+    // Verify coz chain - THIS IS THE CRITICAL TEST
     // If PS Mismatch bug exists, this will fail
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 

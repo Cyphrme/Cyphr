@@ -10,13 +10,13 @@ import (
 
 // Genesis represents how a principal was created.
 //
-// Per SPEC §5, principals can be created implicitly (single key, no transaction)
-// or explicitly (multiple keys with genesis transactions).
+// Per SPEC §5, principals can be created implicitly (single key, no coz)
+// or explicitly (multiple keys with genesis cozies).
 type Genesis interface {
 	isGenesis()
 }
 
-// ImplicitGenesis represents implicit genesis: single key, no transaction required.
+// ImplicitGenesis represents implicit genesis: single key, no coz required.
 //
 // Per SPEC §5.1: "Identity emerges from first key possession"
 //   - PR = PS = AS = KS = tmb
@@ -42,20 +42,20 @@ func (ExplicitGenesis) isGenesis() {}
 
 // LoadPrincipal loads a principal by replaying entries from genesis.
 //
-// This performs full verification of the entire transaction history.
+// This performs full verification of the entire coz history.
 // Each entry's signature is verified before applying to ensure cryptographic
 // integrity of the reconstructed state.
 //
 // # Arguments
 //
 //   - genesis: How the principal was created (implicit or explicit)
-//   - entries: All transactions and actions to replay
+//   - entries: All cozies and actions to replay
 //
 // # Errors
 //
 // Returns error if:
 //   - Signature verification fails
-//   - Transaction chain is broken (pre mismatch)
+//   - ParsedCoz chain is broken (pre mismatch)
 //   - Unknown signer key
 //   - Genesis has no keys
 //
@@ -95,12 +95,12 @@ func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, err
 
 // ReplayEntries replays entries onto a principal.
 // This is exported for use by testfixtures package for setup-aware loading.
-// It processes entries sequentially, properly batching transactions into atomic commits.
+// It processes entries sequentially, properly batching cozies into atomic commits.
 func ReplayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
 	var batch *cyphrpass.CommitBatch
 
 	for i, entry := range entries {
-		// Determine if transaction or action
+		// Determine if coz or action
 		if !entry.IsTransaction() {
 			if batch != nil {
 				return fmt.Errorf("entry %d: action encountered while batch is open", i)
@@ -142,7 +142,7 @@ func ReplayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
 	return nil
 }
 
-// replayTransactionToBatch replays a transaction entry into an active commit batch.
+// replayTransactionToBatch replays a coz entry into an active commit batch.
 func replayTransactionToBatch(batch *cyphrpass.CommitBatch, entry *Entry, index int) error {
 	// Extract pay and sig bytes
 	payBytes, err := entry.PayBytes()

@@ -20,7 +20,7 @@ type Key struct {
 	// FirstSeen is when this key was first added to the principal.
 	FirstSeen int64
 
-	// LastUsed is the last time this key signed a valid transaction/action.
+	// LastUsed is the last time this key signed a valid coz/action.
 	LastUsed int64
 
 	// Revocation holds revocation info. nil if the key is active.
@@ -33,7 +33,7 @@ func (k *Key) IsActive() bool {
 }
 
 // IsActiveAt returns true if the key was active at the given timestamp.
-// This is critical for validating historical transactions.
+// This is critical for validating historical cozies.
 // Per SPEC §11.3: Signatures with now >= rvk are invalid.
 func (k *Key) IsActiveAt(timestamp int64) bool {
 	if k.Revocation == nil {

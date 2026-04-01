@@ -3,7 +3,7 @@
 //! Storage backends for the Cyphrpass identity protocol.
 //!
 //! This crate provides a backend-agnostic storage API for persisting
-//! Cyphrpass principals, transactions, and actions. The core `Store` trait
+//! Cyphrpass principals, cozies, and actions. The core `Store` trait
 //! defines the minimal interface that any storage backend must implement.
 //!
 //! ## Design Principles
@@ -11,7 +11,7 @@
 //! - **Storage is dumb**: The storage layer only handles bytes. All semantic
 //!   operations (verification, state computation) are handled by `cyphrpass`.
 //! - **Immutable history**: Entries are append-only; past entries are never modified.
-//! - **Order via `pre` chain**: Canonical order is derived from transaction `pre`
+//! - **Order via `pre` chain**: Canonical order is derived from coz `pre`
 //!   field chaining, not storage order.
 //! - **Bit-perfect preservation**: Entries store original JSON bytes to ensure
 //!   correct `czd` computation. See `Entry` for details.
@@ -39,7 +39,7 @@ use serde_json::value::RawValue;
 /// Storage backend trait.
 ///
 /// Implementations provide persistence for signed Cyphrpass entries
-/// (transactions and actions). The trait is intentionally minimal:
+/// (cozies and actions). The trait is intentionally minimal:
 /// storage backends need only handle append and retrieval operations.
 pub trait Store {
     /// The error type for this store implementation.
@@ -51,7 +51,7 @@ pub trait Store {
     /// Retrieve all entries for a principal.
     fn get_entries(&self, pr: &PrincipalGenesis) -> Result<Vec<Entry>, Self::Error>;
 
-    /// Retrieve entries with filtering (supports transaction patches).
+    /// Retrieve entries with filtering (supports coz patches).
     fn get_entries_range(
         &self,
         pr: &PrincipalGenesis,
@@ -195,7 +195,7 @@ impl Entry {
 /// Key material for a commit (SPEC §6).
 ///
 /// Keys are stored at commit level per SPEC §5.2/§5.3, not embedded
-/// per-transaction. Optional fields (`tag`, `now`) are semantically
+/// per-coz. Optional fields (`tag`, `now`) are semantically
 /// optional — not all keys have human-readable labels or creation
 /// timestamps at export time.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -218,22 +218,22 @@ pub struct KeyEntry {
 /// A stored commit bundle for the commit-based JSONL format.
 ///
 /// Each line in the JSONL file represents one finalized commit containing:
-/// - `txs`: Array of transaction entries (signed coz messages)
+/// - `cozies`: Array of coz entries (signed coz messages)
 /// - `keys`: Key material introduced in this commit (SPEC §5.2/§5.3)
-/// - `commit_id`: Commit ID (Merkle root of commit's transaction czds)
+/// - `commit_id`: Commit ID (Merkle root of commit's coz czds)
 /// - `ar`: Auth Root (derived from KR)
 /// - `sr`: State Root (derived from AR and DR?)
 /// - `pr`: Principal Root (derived from SR and CR)
 ///
 /// The derived state digests enable efficient indexing and verification
-/// without replaying the full transaction history.
+/// without replaying the full coz history.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitEntry {
-    /// Transaction entries in this commit bundle.
-    pub txs: Vec<serde_json::Value>,
+    /// ParsedCoz entries in this commit bundle.
+    pub cozies: Vec<serde_json::Value>,
     /// Key material introduced in this commit.
     pub keys: Vec<KeyEntry>,
-    /// Commit ID (per-commit Merkle root of transaction czds).
+    /// Commit ID (per-commit Merkle root of coz czds).
     #[serde(alias = "ts")]
     pub commit_id: String,
     /// Auth Root after this commit.
@@ -249,7 +249,7 @@ pub struct CommitEntry {
 impl CommitEntry {
     /// Create a new commit entry from components.
     pub fn new(
-        txs: Vec<serde_json::Value>,
+        cozies: Vec<serde_json::Value>,
         keys: Vec<KeyEntry>,
         commit_id: String,
         auth_root: String,
@@ -257,7 +257,7 @@ impl CommitEntry {
         pr: String,
     ) -> Self {
         Self {
-            txs,
+            cozies,
             keys,
             commit_id,
             auth_root,

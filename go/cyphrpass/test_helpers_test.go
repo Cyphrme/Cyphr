@@ -2,23 +2,23 @@ package cyphrpass
 
 import "github.com/cyphrme/coz"
 
-// ApplyTransactionUnsafe applies a transaction without signature verification.
+// ApplyTransactionUnsafe applies a coz without signature verification.
 // This function is intended ONLY for testing where signatures are validated
 // externally or cannot be generated (e.g., fixture-based tests).
 //
 // It computes commit_state post-mutation (per SPEC §4.4) since test
-// transactions don't go through the signing path.
+// cozies don't go through the signing path.
 //
 // # Errors
 //
-//   - ErrTimestampPast: Transaction timestamp is older than latest seen
-//   - ErrTimestampFuture: Transaction timestamp is too far in the future
-//   - ErrInvalidPrior: Transaction's pre doesn't match current PS
+//   - ErrTimestampPast: ParsedCoz timestamp is older than latest seen
+//   - ErrTimestampFuture: ParsedCoz timestamp is too far in the future
+//   - ErrInvalidPrior: ParsedCoz's pre doesn't match current PS
 //   - ErrNoActiveKeys: Would leave principal with no active keys
 //   - ErrDuplicateKey: Adding key already in KS
-func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*Commit, error) {
+func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Commit, error) {
 	// Apply mutation eagerly
-	if err := p.applyTransactionInternal(tx, newKey); err != nil {
+	if err := p.applyCozInternal(cz, newKey); err != nil {
 		return nil, err
 	}
 
@@ -40,11 +40,11 @@ func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*C
 		return nil, err
 	}
 
-	// Inject state_root into transaction
-	tx.CommitSR = &sr
+	// Inject state_root into coz
+	cz.CommitSR = &sr
 
-	// Finalize as single-tx commit
+	// Finalize as single-cz commit
 	pending := NewPendingCommit(p.hashAlg)
-	pending.Push(tx)
+	pending.Push(cz)
 	return p.finalizeCommit(pending)
 }

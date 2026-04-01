@@ -109,7 +109,7 @@ func (e *Entry) SigBytes() ([]byte, error) {
 }
 
 // KeyJSON extracts the optional `key` field as raw JSON bytes.
-// Returns nil if no key field is present (e.g., for actions or non-key-add transactions).
+// Returns nil if no key field is present (e.g., for actions or non-key-add cozies).
 func (e *Entry) KeyJSON() (json.RawMessage, error) {
 	var extractor struct {
 		Key json.RawMessage `json:"key"`
@@ -152,8 +152,8 @@ func (e *Entry) HasCommit() (bool, error) {
 	return extractor.Pay.Commit != "", nil
 }
 
-// IsTransaction returns true if this entry is a transaction (key mutation).
-// Per SPEC: transactions have typ containing "/key/".
+// IsTransaction returns true if this entry is a coz (key mutation).
+// Per SPEC: cozies have typ containing "/key/".
 func (e *Entry) IsTransaction() bool {
 	typ, err := e.Typ()
 	if err != nil {
@@ -162,8 +162,8 @@ func (e *Entry) IsTransaction() bool {
 	return containsKeyPrefix(typ)
 }
 
-// containsKeyPrefix checks if typ indicates a transaction.
-// Per SPEC: transactions have typ containing "/key/" or "/principal/".
+// containsKeyPrefix checks if typ indicates a coz.
+// Per SPEC: cozies have typ containing "/key/" or "/principal/".
 func containsKeyPrefix(typ string) bool {
 	// Look for "/key/" or "/principal/" in the typ string
 	for i := 0; i+5 <= len(typ); i++ {

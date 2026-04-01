@@ -10,7 +10,7 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 // The interface stores raw bytes (signed Coz messages). All verification,
 // state computation, and key validity checks belong in the Principal type.
 type Store interface {
-	// AppendEntry appends a signed entry (transaction or action) to the log.
+	// AppendEntry appends a signed entry (coz or action) to the log.
 	// The entry must be a valid signed Coz JSON message.
 	AppendEntry(pr *cyphrpass.PrincipalGenesis, entry *Entry) error
 
@@ -18,7 +18,7 @@ type Store interface {
 	GetEntries(pr *cyphrpass.PrincipalGenesis) ([]*Entry, error)
 
 	// GetEntriesRange returns entries with pagination/filtering.
-	// Supports transaction patches for checkpoint-based sync.
+	// Supports coz patches for checkpoint-based sync.
 	GetEntriesRange(pr *cyphrpass.PrincipalGenesis, opts *QueryOpts) ([]*Entry, error)
 
 	// Exists checks if a principal exists in storage.

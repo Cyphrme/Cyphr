@@ -82,7 +82,7 @@ func TestEntry_SigBytes(t *testing.T) {
 	}
 }
 
-// TestEntry_IsTransaction verifies transaction detection.
+// TestEntry_IsTransaction verifies coz detection.
 func TestEntry_IsTransaction(t *testing.T) {
 	tests := []struct {
 		name string
@@ -90,12 +90,12 @@ func TestEntry_IsTransaction(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "key/add transaction",
+			name: "key/add coz",
 			raw:  `{"pay":{"now":1000,"typ":"cyphr.me/key/add"},"sig":"AA"}`,
 			want: true,
 		},
 		{
-			name: "key/revoke transaction",
+			name: "key/revoke coz",
 			raw:  `{"pay":{"now":1000,"typ":"cyphr.me/key/revoke"},"sig":"AA"}`,
 			want: true,
 		},

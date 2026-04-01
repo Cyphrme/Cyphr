@@ -4,7 +4,7 @@
 //!
 //! ## Canonical Format
 //!
-//! Transactions use `[[test.commit]]` + `[[test.commit.tx]]`.
+//! Transactions use `[[test.commit]]` + `[[test.commit.cz]]`.
 //! Actions use `[[test.action]]`.
 //! See `.sketches/2026-02-18-fixture-format-alignment.md` for design rationale.
 
@@ -32,7 +32,7 @@ pub struct TestIntent {
     /// Setup modifiers (e.g., pre-revoke keys).
     #[serde(default)]
     pub setup: Option<SetupIntent>,
-    /// Commit sequence. Each commit contains one or more transactions.
+    /// Commit sequence. Each commit contains one or more cozies.
     #[serde(default)]
     pub commit: Vec<CommitIntent>,
     /// Action sequence (Level 4 data recording).
@@ -46,20 +46,20 @@ pub struct TestIntent {
     pub expected: Option<ExpectedAssertions>,
 }
 
-/// A single commit containing one or more transactions.
+/// A single commit containing one or more cozies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitIntent {
     /// Transactions within this commit.
     #[serde(default)]
-    pub tx: Vec<TxIntent>,
+    pub cz: Vec<TxIntent>,
 }
 
-/// A single transaction within a commit.
+/// A single coz within a commit.
 ///
 /// Flat struct merging the old `PayIntent` + `CryptoIntent` fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxIntent {
-    /// Transaction type (e.g., "cyphr.me/key/create").
+    /// ParsedCoz type (e.g., "cyphr.me/key/create").
     pub typ: String,
     /// Timestamp.
     pub now: i64,
@@ -164,7 +164,7 @@ impl FromStr for Intent {
 }
 
 impl TestIntent {
-    /// Returns true if this test has commits (state-mutating transactions).
+    /// Returns true if this test has commits (state-mutating cozies).
     pub fn has_commits(&self) -> bool {
         !self.commit.is_empty()
     }
@@ -200,7 +200,7 @@ name = "key_add_increases_count"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000000
 signer = "golden"
@@ -217,14 +217,14 @@ name = "transaction_sequence"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000001
 signer = "golden"
 target = "key_a"
 
 [[test.commit]]
-[[test.commit.tx]]
+[[test.commit.cz]]
 typ = "cyphr.me/key/create"
 now = 1700000002
 signer = "golden"
@@ -290,12 +290,12 @@ level = 1
         assert!(test.has_commits());
         assert!(!test.is_genesis_only());
         assert_eq!(test.commit.len(), 1);
-        assert_eq!(test.commit[0].tx.len(), 1);
-        let tx = &test.commit[0].tx[0];
-        assert_eq!(tx.typ, "cyphr.me/key/create");
-        assert_eq!(tx.now, 1700000000);
-        assert_eq!(tx.signer, "golden");
-        assert_eq!(tx.target.as_deref(), Some("key_a"));
+        assert_eq!(test.commit[0].cz.len(), 1);
+        let cz = &test.commit[0].cz[0];
+        assert_eq!(cz.typ, "cyphr.me/key/create");
+        assert_eq!(cz.now, 1700000000);
+        assert_eq!(cz.signer, "golden");
+        assert_eq!(cz.target.as_deref(), Some("key_a"));
         let expected = test.expected.as_ref().expect("missing expected");
         assert_eq!(expected.key_count, Some(2));
         assert_eq!(expected.level, Some(3));
@@ -308,10 +308,10 @@ level = 1
         let test = &intent.test[0];
         assert!(test.has_commits());
         assert_eq!(test.commit.len(), 2);
-        assert_eq!(test.commit[0].tx[0].now, 1700000001);
-        assert_eq!(test.commit[0].tx[0].target.as_deref(), Some("key_a"));
-        assert_eq!(test.commit[1].tx[0].now, 1700000002);
-        assert_eq!(test.commit[1].tx[0].target.as_deref(), Some("key_b"));
+        assert_eq!(test.commit[0].cz[0].now, 1700000001);
+        assert_eq!(test.commit[0].cz[0].target.as_deref(), Some("key_a"));
+        assert_eq!(test.commit[1].cz[0].now, 1700000002);
+        assert_eq!(test.commit[1].cz[0].target.as_deref(), Some("key_b"));
         let expected = test.expected.as_ref().expect("missing expected");
         assert_eq!(expected.key_count, Some(3));
     }

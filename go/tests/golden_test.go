@@ -58,7 +58,7 @@ func runGoldenDir(t *testing.T, dir string) {
 // Golden Test Functions (one per directory)
 // =========================================================================
 
-// TestGolden_Mutations tests key mutation transactions.
+// TestGolden_Mutations tests key mutation cozies.
 //
 // Covers:
 //   - key_add_changes_state

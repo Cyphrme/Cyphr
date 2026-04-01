@@ -17,7 +17,7 @@
 //
 //   - [Principal]: Self-sovereign identity with permanent root (PR) and evolving state (PS)
 //   - [Key]: Cryptographic key with lifecycle tracking
-//   - [Transaction]: Auth mutations (key/add, key/delete, key/replace, key/revoke)
+//   - [ParsedCoz]: Auth mutations (key/add, key/delete, key/replace, key/revoke)
 //   - [Action]: Level 4 signed user actions
 //
 // # State Types
@@ -28,7 +28,7 @@
 //   - [AuthRoot] (AS): Authentication state from keyset
 //   - [CommitState] (CS): Auth state bound to a specific commit
 //   - [KeyRoot] (KS): Digest of active key thumbprints
-//   - [CommitID]: Identity of a commit (Merkle root of transaction czds)
+//   - [CommitID]: Identity of a commit (Merkle root of coz czds)
 //   - [DataRoot] (DS): Digest of action czds (Level 4)
 //
 // # Genesis

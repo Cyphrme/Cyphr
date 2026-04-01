@@ -1,31 +1,31 @@
-//! Commit types for atomic transaction bundles.
+//! Commit types for atomic coz bundles.
 //!
-//! Per SPEC §4, a Commit is an atomic bundle of transactions.
-//! The Commit ID is the Merkle root of only the transactions in a
+//! Per SPEC §4, a Commit is an atomic bundle of cozies.
+//! The Commit ID is the Merkle root of only the cozies in a
 //! single commit, not cumulatively.
 
+use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
     AuthRoot, CommitID, HashAlg, PrincipalRoot, StateRoot, TaggedCzd, compute_commit_id_tagged,
 };
-use crate::transaction::VerifiedTransaction;
 
 // ============================================================================
 // Commit
 // ============================================================================
 
-/// A finalized, atomic bundle of transactions.
+/// A finalized, atomic bundle of cozies.
 ///
 /// Per SPEC §4:
-/// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for transactions in this commit only
+/// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
-/// - `pre` of first transaction references previous commit's CS (or promoted AS for genesis)
+/// - `pre` of first coz references previous commit's CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
 pub struct Commit {
-    /// The verified transactions in this commit.
-    transactions: Vec<VerifiedTransaction>,
-    /// Commit ID: Merkle root of transaction czds.
+    /// The verified cozies in this commit.
+    cozies: Vec<VerifiedCoz>,
+    /// Commit ID: Merkle root of coz czds.
     commit_id: CommitID,
     /// Auth State at the end of this commit.
     auth_root: AuthRoot,
@@ -36,23 +36,23 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Create a new finalized commit from transactions and computed states.
+    /// Create a new finalized commit from cozies and computed states.
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if `transactions` is empty.
+    /// Returns `EmptyCommit` if `cozies` is empty.
     pub(crate) fn new(
-        transactions: Vec<VerifiedTransaction>,
+        cozies: Vec<VerifiedCoz>,
         commit_id: CommitID,
         auth_root: AuthRoot,
         sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Self> {
-        if transactions.is_empty() {
+        if cozies.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
         Ok(Self {
-            transactions,
+            cozies,
             commit_id,
             auth_root,
             sr,
@@ -60,9 +60,9 @@ impl Commit {
         })
     }
 
-    /// Get the transactions in this commit.
-    pub fn transactions(&self) -> &[VerifiedTransaction] {
-        &self.transactions
+    /// Get the cozies in this commit.
+    pub fn cozies(&self) -> &[VerifiedCoz] {
+        &self.cozies
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
@@ -85,14 +85,14 @@ impl Commit {
         &self.ps
     }
 
-    /// Get the number of transactions in this commit.
+    /// Get the number of cozies in this commit.
     pub fn len(&self) -> usize {
-        self.transactions.len()
+        self.cozies.len()
     }
 
     /// Check if the commit is empty (should never be true for valid commits).
     pub fn is_empty(&self) -> bool {
-        self.transactions.is_empty()
+        self.cozies.is_empty()
     }
 }
 
@@ -102,16 +102,16 @@ impl Commit {
 
 /// A commit that is being built but not yet finalized.
 ///
-/// Transactions can be added to a pending commit until the final transaction
+/// Transactions can be added to a pending commit until the final coz
 /// with `commit: true` is received, at which point `finalize()` converts it
 /// to an immutable `Commit`.
 ///
 /// Per SPEC §4.2.1, the state during a pending commit is "transitory" and
-/// cannot be referenced by external transactions until finalized.
+/// cannot be referenced by external cozies until finalized.
 #[derive(Debug, Clone)]
 pub struct PendingCommit {
-    /// Accumulated transactions (not yet finalized).
-    transactions: Vec<VerifiedTransaction>,
+    /// Accumulated cozies (not yet finalized).
+    cozies: Vec<VerifiedCoz>,
     /// Hash algorithm for state computation.
     hash_alg: HashAlg,
 }
@@ -120,41 +120,41 @@ impl PendingCommit {
     /// Create a new empty pending commit.
     pub fn new(hash_alg: HashAlg) -> Self {
         Self {
-            transactions: Vec::new(),
+            cozies: Vec::new(),
             hash_alg,
         }
     }
 
-    /// Add a transaction to the pending commit.
-    pub fn push(&mut self, tx: VerifiedTransaction) {
-        self.transactions.push(tx);
+    /// Add a coz to the pending commit.
+    pub fn push(&mut self, cz: VerifiedCoz) {
+        self.cozies.push(cz);
     }
 
-    /// Get the current list of pending transactions.
-    pub fn transactions(&self) -> &[VerifiedTransaction] {
-        &self.transactions
+    /// Get the current list of pending cozies.
+    pub fn cozies(&self) -> &[VerifiedCoz] {
+        &self.cozies
     }
 
     /// Check if the pending commit is empty.
     pub fn is_empty(&self) -> bool {
-        self.transactions.is_empty()
+        self.cozies.is_empty()
     }
 
-    /// Get the number of pending transactions.
+    /// Get the number of pending cozies.
     pub fn len(&self) -> usize {
-        self.transactions.len()
+        self.cozies.len()
     }
 
-    /// Compute the Commit ID for the current pending transactions.
+    /// Compute the Commit ID for the current pending cozies.
     ///
-    /// Returns `None` if no transactions have been added.
+    /// Returns `None` if no cozies have been added.
     pub fn compute_commit_id(&self) -> Option<CommitID> {
-        if self.transactions.is_empty() {
+        if self.cozies.is_empty() {
             return None;
         }
         // Collect czds with their source algorithms for cross-algorithm conversion
         let tagged_czds: Vec<TaggedCzd<'_>> = self
-            .transactions
+            .cozies
             .iter()
             .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
             .collect();
@@ -165,40 +165,40 @@ impl PendingCommit {
     ///
     /// # Arguments
     ///
-    /// * `auth_root` - The computed Auth State after all transactions
+    /// * `auth_root` - The computed Auth State after all cozies
     /// * `sr` - The computed State Root: MR(AR, DR?, embedding?)
-    /// * `ps` - The computed Principal State after all transactions
+    /// * `ps` - The computed Principal State after all cozies
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if no transactions exist.
+    /// Returns `EmptyCommit` if no cozies exist.
     pub fn finalize(
         self,
         auth_root: AuthRoot,
         sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Commit> {
-        if self.transactions.is_empty() {
+        if self.cozies.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
-        // Compute Commit ID from all transaction czds with algorithm tagging
+        // Compute Commit ID from all coz czds with algorithm tagging
         let tagged_czds: Vec<TaggedCzd<'_>> = self
-            .transactions
+            .cozies
             .iter()
             .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
             .collect();
         let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_id, auth_root, sr, ps)
+        Commit::new(self.cozies, commit_id, auth_root, sr, ps)
     }
 
-    /// Consume the pending commit and return the transactions.
+    /// Consume the pending commit and return the cozies.
     ///
     /// Use this for rollback or when abandoning a pending commit.
-    pub fn into_transactions(self) -> Vec<VerifiedTransaction> {
-        self.transactions
+    pub fn into_transactions(self) -> Vec<VerifiedCoz> {
+        self.cozies
     }
 }
 
@@ -220,23 +220,23 @@ impl PendingCommit {
 /// - Intermediate state (after apply but before finalize) is unobservable
 ///
 /// This structurally prevents the "pending commit trap" where consumers
-/// forget to finalize after applying transactions.
+/// forget to finalize after applying cozies.
 ///
-/// # Single-Transaction Convenience
+/// # Single-ParsedCoz Convenience
 ///
-/// For the common case of applying a single transaction as an atomic commit,
+/// For the common case of applying a single coz as an atomic commit,
 /// use [`Principal::apply_transaction()`] instead of creating a scope manually.
 ///
 /// # Example
 ///
 /// ```ignore
-/// // Multi-transaction commit:
+/// // Multi-coz commit:
 /// let mut scope = principal.begin_commit();
 /// scope.apply(vtx1)?;
 /// scope.apply(vtx2)?;
 /// let commit = scope.finalize()?;
 ///
-/// // Single-transaction commit (convenience):
+/// // Single-coz commit (convenience):
 /// let commit = principal.apply_transaction(vtx)?;
 /// ```
 #[must_use = "a CommitScope must be finalized via .finalize() to produce a Commit"]
@@ -257,22 +257,22 @@ impl<'a> CommitScope<'a> {
         }
     }
 
-    /// Apply a verified transaction within this commit scope.
+    /// Apply a verified coz within this commit scope.
     ///
-    /// The transaction mutates the principal's state eagerly (keys, timestamps,
+    /// The coz mutates the principal's state eagerly (keys, timestamps,
     /// etc.). The borrow checker ensures no external code can observe this
     /// intermediate state.
     ///
-    /// The transaction is accumulated in the pending commit for finalization.
+    /// The coz is accumulated in the pending commit for finalization.
     ///
     /// # Errors
     ///
-    /// - `TimestampPast`: Transaction timestamp is older than latest seen
-    /// - `TimestampFuture`: Transaction timestamp is too far in the future
-    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
+    /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
+    /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
+    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
-    pub fn apply(&mut self, vtx: VerifiedTransaction) -> crate::error::Result<()> {
+    pub fn apply(&mut self, vtx: VerifiedCoz) -> crate::error::Result<()> {
         self.principal.apply_verified_internal(vtx.clone())?;
         self.pending.push(vtx);
         Ok(())
@@ -285,22 +285,22 @@ impl<'a> CommitScope<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if no transactions were applied.
+    /// Returns `EmptyCommit` if no cozies were applied.
     pub fn finalize(self) -> crate::error::Result<&'a Commit> {
         self.principal.finalize_commit(self.pending)
     }
 
-    /// Verify a transaction signature and apply it within this commit scope.
+    /// Verify a coz signature and apply it within this commit scope.
     ///
     /// This combines signature verification and application in one call,
     /// analogous to `Principal::verify_and_apply_transaction` but within
-    /// a multi-transaction commit scope.
+    /// a multi-coz commit scope.
     ///
     /// # Arguments
     ///
     /// * `pay_json` - Raw JSON bytes of the Pay object
     /// * `sig` - Signature bytes
-    /// * `czd` - Coz digest for this transaction
+    /// * `czd` - Coz digest for this coz
     /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
     pub fn verify_and_apply(
         &mut self,
@@ -309,7 +309,7 @@ impl<'a> CommitScope<'a> {
         czd: coz::Czd,
         new_key: Option<crate::key::Key>,
     ) -> crate::error::Result<()> {
-        use crate::transaction::verify_transaction;
+        use crate::parsed_coz::verify_coz;
 
         // Parse Pay to get signer thumbprint
         let pay: coz::Pay =
@@ -333,8 +333,8 @@ impl<'a> CommitScope<'a> {
             .get_key(signer_tmb)
             .ok_or(crate::error::Error::UnknownKey)?;
 
-        // Verify signature and parse transaction
-        let vtx = verify_transaction(pay_json, sig, signer_key, czd, new_key)?;
+        // Verify signature and parse coz
+        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
 
         // Apply within this scope
         self.apply(vtx)
@@ -344,17 +344,17 @@ impl<'a> CommitScope<'a> {
     pub fn principal_hash_alg(&self) -> crate::state::HashAlg {
         self.principal.hash_alg()
     }
-    /// Get the number of transactions applied so far.
+    /// Get the number of cozies applied so far.
     pub fn len(&self) -> usize {
         self.pending.len()
     }
 
-    /// Check if no transactions have been applied yet.
+    /// Check if no cozies have been applied yet.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
-    /// Finalize the commit by signing the last transaction with `commit:<CS>`.
+    /// Finalize the commit by signing the last coz with `commit:<CS>`.
     ///
     /// This is the creation-path API (Option A). It:
     /// 1. Parses the unsigned pay to determine the mutation
@@ -363,7 +363,7 @@ impl<'a> CommitScope<'a> {
     /// 4. Injects `"commit":<CS>` into the pay (in lexicographic key order)
     /// 5. Signs the complete pay via `coz::sign_json`
     /// 6. Computes czd from the signed message
-    /// 7. Creates the final Transaction with state_root
+    /// 7. Creates the final ParsedCoz with state_root
     /// 8. Pushes to pending and calls finalize_commit
     ///
     /// # Arguments
@@ -387,10 +387,10 @@ impl<'a> CommitScope<'a> {
         pub_key: &[u8],
         new_key: Option<crate::key::Key>,
     ) -> crate::error::Result<&'a Commit> {
+        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
         use crate::state::{
             compute_ar, compute_kr, compute_sr, derive_hash_algs, hash_alg_from_str,
         };
-        use crate::transaction::{Transaction, VerifiedTransaction};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         // 1. Parse pay to get mutation kind
@@ -398,15 +398,15 @@ impl<'a> CommitScope<'a> {
             .map_err(|_| crate::error::Error::MalformedPayload)?;
         let hash_alg = hash_alg_from_str(alg)?;
 
-        // 2. Create a preliminary Transaction (with placeholder czd) to apply mutation
+        // 2. Create a preliminary ParsedCoz (with placeholder czd) to apply mutation
         let placeholder_czd = coz::Czd::from_bytes(vec![0u8; 32]);
         let placeholder_raw = coz::CozJson {
             pay: pay.clone(),
             sig: vec![],
         };
         let prelim_tx =
-            Transaction::from_pay(&parsed_pay, placeholder_czd, hash_alg, placeholder_raw)?;
-        let prelim_vtx = VerifiedTransaction::from_parts(prelim_tx, new_key.clone());
+            ParsedCoz::from_pay(&parsed_pay, placeholder_czd, hash_alg, placeholder_raw)?;
+        let prelim_vtx = VerifiedCoz::from_parts(prelim_tx, new_key.clone());
 
         // Apply mutation (verify_pre, key mutations, etc.)
         self.principal.apply_verified_internal(prelim_vtx)?;
@@ -451,15 +451,15 @@ impl<'a> CommitScope<'a> {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, alg).ok_or(crate::error::Error::InvalidSignature)?;
 
-        // 7. Create the real Transaction (with state_root and real czd)
+        // 7. Create the real ParsedCoz (with state_root and real czd)
         let raw = coz::CozJson {
             pay: pay.clone(),
             sig: sig_bytes,
         };
         let real_pay: coz::Pay =
             serde_json::from_value(pay).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let final_tx = Transaction::from_pay(&real_pay, czd, hash_alg, raw)?;
-        let final_vtx = VerifiedTransaction::from_parts(final_tx, new_key);
+        let final_tx = ParsedCoz::from_pay(&real_pay, czd, hash_alg, raw)?;
+        let final_vtx = VerifiedCoz::from_parts(final_tx, new_key);
 
         // 9. Push to pending sequence
         self.pending.push(final_vtx);
@@ -475,7 +475,7 @@ impl<'a> CommitScope<'a> {
 mod tests {
     use super::*;
     use crate::multihash::MultihashDigest;
-    use crate::transaction::{Transaction, VerifiedTransaction};
+    use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
     use coz::{Czd, PayBuilder, Thumbprint};
     use serde_json::json;
 
@@ -483,8 +483,8 @@ mod tests {
     const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
-    /// Create a test transaction with specified finalizer flag.
-    fn make_test_tx(is_finalizer: bool, czd_byte: u8) -> VerifiedTransaction {
+    /// Create a test coz with specified finalizer flag.
+    fn make_test_tx(is_finalizer: bool, czd_byte: u8) -> VerifiedCoz {
         let mut pay = PayBuilder::new()
             .typ("cyphr.me/key/create")
             .alg("ES256")
@@ -502,8 +502,8 @@ mod tests {
             pay: serde_json::to_value(&pay).unwrap(),
             sig: vec![0; 64],
         };
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, raw).unwrap();
-        VerifiedTransaction::from_transaction_unsafe(tx, None)
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, raw).unwrap();
+        VerifiedCoz::from_transaction_unsafe(cz, None)
     }
 
     // ========================================================================
@@ -522,7 +522,7 @@ mod tests {
     fn pending_commit_push_adds_transactions() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
 
-        // Push transactions
+        // Push cozies
         let tx1 = make_test_tx(false, 0x01);
         pending.push(tx1);
         assert_eq!(pending.len(), 1);
@@ -547,8 +547,8 @@ mod tests {
     #[test]
     fn pending_commit_finalize_succeeds_with_finalizer() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        let tx = make_test_tx(true, 0x01);
-        pending.push(tx);
+        let cz = make_test_tx(true, 0x01);
+        pending.push(cz);
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -577,8 +577,8 @@ mod tests {
     fn pending_commit_finalize_succeeds_without_finalizer_marker() {
         // Per protocol simplification, commit: true is no longer required
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        let tx = make_test_tx(false, 0x01); // No finalizer marker, but finalize should succeed
-        pending.push(tx);
+        let cz = make_test_tx(false, 0x01); // No finalizer marker, but finalize should succeed
+        pending.push(cz);
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -627,8 +627,8 @@ mod tests {
         pending.push(make_test_tx(false, 0x01));
         pending.push(make_test_tx(true, 0x02));
 
-        let txs = pending.into_transactions();
-        assert_eq!(txs.len(), 2);
+        let cozies = pending.into_transactions();
+        assert_eq!(cozies.len(), 2);
     }
 
     // ========================================================================
@@ -658,7 +658,7 @@ mod tests {
             .unwrap();
 
         // Test all accessors
-        assert_eq!(commit.transactions().len(), 1);
+        assert_eq!(commit.cozies().len(), 1);
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_root(), &auth_root);
@@ -690,7 +690,7 @@ mod tests {
         let commit = pending.finalize(auth_root, sr, ps).unwrap();
         assert_eq!(commit.len(), 3);
 
-        // Commit ID should be Merkle root of all 3 transaction czds
+        // Commit ID should be Merkle root of all 3 coz czds
         let cid = commit.commit_id();
         assert_eq!(cid.get(HashAlg::Sha256).unwrap().len(), 32);
     }

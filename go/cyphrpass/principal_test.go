@@ -142,14 +142,14 @@ func TestImplicit_GoldenKey(t *testing.T) {
 	}
 }
 
-// Transaction tests
+// ParsedCoz tests
 
 func TestApplyTransaction_KeyAdd(t *testing.T) {
 	key1 := makeTestCozKey(0x11)
 	p, _ := Implicit(key1)
 
 	key2 := makeTestCozKey(0x22)
-	tx := &Transaction{
+	cz := &ParsedCoz{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
@@ -160,9 +160,9 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 
 	oldAS := append([]byte{}, p.AR().First()...)
 
-	_, err := p.ApplyTransactionUnsafe(tx, key2)
+	_, err := p.ApplyTransactionUnsafe(cz, key2)
 	if err != nil {
-		t.Fatalf("ApplyTransaction failed: %v", err)
+		t.Fatalf("ApplyCoz failed: %v", err)
 	}
 
 	// Should now have 2 keys
@@ -190,7 +190,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 
 	key2 := makeTestCozKey(0x22)
 	wrongPre := PrincipalRoot{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
-	tx := &Transaction{
+	cz := &ParsedCoz{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
@@ -199,7 +199,7 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 		ID:     key2.Tmb,
 	}
 
-	_, err := p.ApplyTransactionUnsafe(tx, key2)
+	_, err := p.ApplyTransactionUnsafe(cz, key2)
 	if err != ErrInvalidPrior {
 		t.Errorf("expected ErrInvalidPrior, got %v", err)
 	}
@@ -210,16 +210,16 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 	p, _ := Implicit(key)
 
 	// Level 1: single key, self-revoke should fail
-	tx := &Transaction{
+	cz := &ParsedCoz{
 		Kind:   TxRevoke,
 		Signer: key.Tmb,
 		Now:    2000,
 		Czd:    bytes.Repeat([]byte{0xEE}, 32),
 		Rvk:    2000,
-		Pre:    p.PR(), // Unified pre semantics: all transactions require pre
+		Pre:    p.PR(), // Unified pre semantics: all cozies require pre
 	}
 
-	_, err := p.ApplyTransactionUnsafe(tx, nil)
+	_, err := p.ApplyTransactionUnsafe(cz, nil)
 	if err != ErrNoActiveKeys {
 		t.Errorf("expected ErrNoActiveKeys, got %v", err)
 	}
@@ -243,7 +243,7 @@ func TestPR_StillNilAfterTransaction(t *testing.T) {
 	}
 
 	key2 := makeTestCozKey(0x22)
-	tx := &Transaction{
+	cz := &ParsedCoz{
 		Kind:   TxKeyCreate,
 		Signer: key1.Tmb,
 		Now:    2000,
@@ -251,7 +251,7 @@ func TestPR_StillNilAfterTransaction(t *testing.T) {
 		Pre:    p.PR(),
 		ID:     key2.Tmb,
 	}
-	p.ApplyTransactionUnsafe(tx, key2) //nolint:errcheck
+	p.ApplyTransactionUnsafe(cz, key2) //nolint:errcheck
 
 	// PR should still be nil (no principal/create was issued)
 	if p.PG() != nil {

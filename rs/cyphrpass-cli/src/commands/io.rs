@@ -80,7 +80,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     // Determine genesis from first commit
     let genesis = extract_genesis_from_commits(&commits, Some(&keystore))?;
 
-    // Verify by loading the principal (this replays and verifies all transactions)
+    // Verify by loading the principal (this replays and verifies all cozies)
     let principal = load_principal_from_commits(genesis.clone(), &commits)?;
     // For Level 2 identities (no PR established), use the genesis thumbprint
     let pr = match principal.pg() {

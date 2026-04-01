@@ -26,7 +26,7 @@ type RunResult struct {
 //
 // The test flow is:
 //  1. Resolve genesis keys from pool
-//  2. Flatten transactions from golden commits
+//  2. Flatten cozies from golden commits
 //  3. Call storage.LoadPrincipal to replay with verification
 //  4. Assert expected state matches actual state
 //
@@ -144,26 +144,26 @@ func resolveGenesisKeys(pool *Pool, golden *Golden) ([]*coz.Key, error) {
 }
 
 // entriesFromCommits builds storage entries from golden commits.
-// Commit-level keys are embedded into key-introducing transactions so the
+// Commit-level keys are embedded into key-introducing cozies so the
 // storage layer's Entry.KeyJSON() can extract them during replay.
 func entriesFromCommits(commits []GoldenCommit) ([]*storage.Entry, error) {
 	var entries []*storage.Entry
 	for ci, c := range commits {
 		keyIdx := 0
-		for ti, tx := range c.Txs {
-			raw := tx
-			// Embed commit-level key into key-introducing txs
-			if typ := txTyp(tx); isKeyIntroducingTyp(typ) && keyIdx < len(c.Keys) {
-				injected, err := embedKey(tx, c.Keys[keyIdx])
+		for ti, cz := range c.Cozies {
+			raw := cz
+			// Embed commit-level key into key-introducing cozies
+			if typ := txTyp(cz); isKeyIntroducingTyp(typ) && keyIdx < len(c.Keys) {
+				injected, err := embedKey(cz, c.Keys[keyIdx])
 				if err != nil {
-					return nil, fmt.Errorf("commit %d tx %d: embed key: %w", ci, ti, err)
+					return nil, fmt.Errorf("commit %d cz %d: embed key: %w", ci, ti, err)
 				}
 				raw = injected
 				keyIdx++
 			}
 			entry, err := storage.NewEntry(raw)
 			if err != nil {
-				return nil, fmt.Errorf("commit %d tx %d: %w", ci, ti, err)
+				return nil, fmt.Errorf("commit %d cz %d: %w", ci, ti, err)
 			}
 			entries = append(entries, entry)
 		}
@@ -171,15 +171,15 @@ func entriesFromCommits(commits []GoldenCommit) ([]*storage.Entry, error) {
 	return entries, nil
 }
 
-// txTyp extracts pay.typ from a raw JSON transaction.
+// txTyp extracts pay.typ from a raw JSON coz.
 // Returns empty string on parse failure (non-fatal).
-func txTyp(tx json.RawMessage) string {
+func txTyp(cz json.RawMessage) string {
 	var ext struct {
 		Pay struct {
 			Typ string `json:"typ"`
 		} `json:"pay"`
 	}
-	if err := json.Unmarshal(tx, &ext); err != nil {
+	if err := json.Unmarshal(cz, &ext); err != nil {
 		return ""
 	}
 	return ext.Pay.Typ
@@ -190,10 +190,10 @@ func isKeyIntroducingTyp(typ string) bool {
 	return strings.HasSuffix(typ, "/key/create") || strings.HasSuffix(typ, "/key/replace")
 }
 
-// embedKey embeds a GoldenKey into a raw JSON transaction as a "key" field.
-func embedKey(tx json.RawMessage, key GoldenKey) (json.RawMessage, error) {
+// embedKey embeds a GoldenKey into a raw JSON coz as a "key" field.
+func embedKey(cz json.RawMessage, key GoldenKey) (json.RawMessage, error) {
 	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(tx, &obj); err != nil {
+	if err := json.Unmarshal(cz, &obj); err != nil {
 		return nil, err
 	}
 	keyJSON, err := json.Marshal(map[string]any{

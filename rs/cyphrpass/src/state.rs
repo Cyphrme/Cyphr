@@ -39,7 +39,7 @@ impl KeyRoot {
 
 /// Commit ID — SPEC §8.5
 ///
-/// Digest of transaction `czd`s within a single commit.
+/// Digest of coz `czd`s within a single commit.
 /// Previously named `TransactionState`; renamed to reflect its role as
 /// the identity of a commit rather than a state-tree node.
 ///
@@ -385,7 +385,7 @@ fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
 
 /// Compute `H(components...)` in array order (no sort).
 ///
-/// Used for CommitID where transaction order is significant (SPEC §8.5).
+/// Used for CommitID where coz order is significant (SPEC §8.5).
 fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     // Hash based on algorithm — no sort, preserve insertion order
     match alg {
@@ -490,12 +490,12 @@ pub fn compute_kr(
     Ok(KeyRoot(MultihashDigest::new(variants)?))
 }
 
-/// Compute Commit ID (formerly Transaction State) — SPEC §8.5.
+/// Compute Commit ID (formerly ParsedCoz State) — SPEC §8.5.
 ///
 /// The Commit ID is the Merkle root of the czds within a single commit.
 ///
-/// - No transactions: CommitID = None
-/// - Single transaction, no nonce: CommitID = czd (implicit promotion)
+/// - No cozies: CommitID = None
+/// - Single coz, no nonce: CommitID = czd (implicit promotion)
 /// - Otherwise: CommitID = H(czd₀ ‖ czd₁ ‖ nonce? ‖ ...) — array order, no sort
 pub fn compute_commit_id(
     czds: &[&Czd],
@@ -571,8 +571,8 @@ impl<'a> TaggedCzd<'a> {
 /// When computing a target hash variant, czds from different algorithms
 /// are converted (re-hashed) to the target algorithm.
 ///
-/// - No transactions: CommitID = None
-/// - Single transaction, no nonce: CommitID = czd (implicit promotion)
+/// - No cozies: CommitID = None
+/// - Single coz, no nonce: CommitID = czd (implicit promotion)
 /// - Otherwise: CommitID = H(converted_czd₀ ‖ converted_czd₁ ‖ nonce? ‖ ...) — array order
 pub fn compute_commit_id_tagged(
     czds: &[TaggedCzd<'_>],
@@ -605,7 +605,7 @@ pub fn compute_commit_id_tagged(
             components.push(n);
         }
 
-        // Hash in array order (no sort — CommitID preserves transaction order)
+        // Hash in array order (no sort — CommitID preserves coz order)
         let digest = hash_concat_bytes(target_alg, &components);
         variants.insert(target_alg, digest.into_boxed_slice());
     }

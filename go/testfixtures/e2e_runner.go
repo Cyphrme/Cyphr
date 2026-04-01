@@ -24,7 +24,7 @@ type E2EResult struct {
 
 // RunE2ETest runs a single e2e test case from an intent.
 // Unlike golden tests which load pre-computed fixtures, e2e tests
-// dynamically generate transactions, apply them, and verify round-trip.
+// dynamically generate cozies, apply them, and verify round-trip.
 func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 	result := &E2EResult{Name: test.Name}
 
@@ -69,7 +69,7 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 		}
 	}
 
-	// Build and apply transactions/actions based on intent type
+	// Build and apply cozies/actions based on intent type
 	var applyErr error
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)
@@ -133,38 +133,38 @@ func resolveGenesisFromNames(pool *Pool, names []string) ([]*coz.Key, error) {
 	return keys, nil
 }
 
-// applySingleCommit applies a single transaction commit.
-func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, tx *TxIntent, override *OverrideIntent) error {
+// applySingleCommit applies a single coz commit.
+func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, cz *TxIntent, override *OverrideIntent) error {
 	batch := principal.BeginCommit()
-	return applyTxToBatch(pool, principal, batch, tx, override, true)
+	return applyTxToBatch(pool, principal, batch, cz, override, true)
 }
 
 // applyMultiCommit applies multiple commits.
 func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
 	for i, commit := range test.Commit {
 		batch := principal.BeginCommit()
-		for j, tx := range commit.Tx {
-			// Apply override only to the last tx of the last commit
+		for j, cz := range commit.Tx {
+			// Apply override only to the last cz of the last commit
 			var override *OverrideIntent
 			if i == len(test.Commit)-1 && j == len(commit.Tx)-1 {
 				override = test.Override
 			}
 			isFinal := j == len(commit.Tx)-1
-			if err := applyTxToBatch(pool, principal, batch, &tx, override, isFinal); err != nil {
-				return fmt.Errorf("commit %d tx %d: %w", i, j, err)
+			if err := applyTxToBatch(pool, principal, batch, &cz, override, isFinal); err != nil {
+				return fmt.Errorf("commit %d cz %d: %w", i, j, err)
 			}
 		}
 	}
 	return nil
 }
 
-// applyTxToBatch builds a transaction payload and applies it to the active commit batch.
+// applyTxToBatch builds a coz payload and applies it to the active commit batch.
 // If isFinal is true, it finalizes the commit with the commit:<CS> injection.
-func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass.CommitBatch, tx *TxIntent, override *OverrideIntent, isFinal bool) error {
+func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass.CommitBatch, cz *TxIntent, override *OverrideIntent, isFinal bool) error {
 	// Get signer key
-	signerPool := pool.Get(tx.Signer)
+	signerPool := pool.Get(cz.Signer)
 	if signerPool == nil {
-		return fmt.Errorf("signer %q not found in pool", tx.Signer)
+		return fmt.Errorf("signer %q not found in pool", cz.Signer)
 	}
 	signerKey, err := signerPool.ToSigningKey()
 	if err != nil {
@@ -174,14 +174,14 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 	// Build pay object (pre field will be overridden dynamically if we are in a batch,
 	// but the test intent generator computes it before batch modifications are readable.
 	// The cyphrpass Go implementation expects pre to be generated correctly by e2e runner)
-	payObj := buildTransactionPay(tx, signerKey.Tmb, principal.PR())
+	payObj := buildTransactionPay(cz, signerKey.Tmb, principal.PR())
 
 	// Handle target key for key/create (SPEC verb naming)
 	var targetKey *coz.Key
-	if tx.Target != "" && (strings.Contains(tx.Typ, "key/create") || strings.Contains(tx.Typ, "key/add")) {
-		targetPool := pool.Get(tx.Target)
+	if cz.Target != "" && (strings.Contains(cz.Typ, "key/create") || strings.Contains(cz.Typ, "key/add")) {
+		targetPool := pool.Get(cz.Target)
 		if targetPool == nil {
-			return fmt.Errorf("target %q not found in pool", tx.Target)
+			return fmt.Errorf("target %q not found in pool", cz.Target)
 		}
 		targetKey, err = targetPool.ToCozKey()
 		if err != nil {
@@ -191,10 +191,10 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 	}
 
 	// Handle target key for key/delete or key/revoke
-	if tx.Target != "" && (strings.Contains(tx.Typ, "key/delete") || strings.Contains(tx.Typ, "key/revoke")) {
-		targetPool := pool.Get(tx.Target)
+	if cz.Target != "" && (strings.Contains(cz.Typ, "key/delete") || strings.Contains(cz.Typ, "key/revoke")) {
+		targetPool := pool.Get(cz.Target)
 		if targetPool == nil {
-			return fmt.Errorf("target %q not found in pool", tx.Target)
+			return fmt.Errorf("target %q not found in pool", cz.Target)
 		}
 		var targetCoz *coz.Key
 		targetCoz, err = targetPool.ToCozKey()
@@ -215,11 +215,11 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 	}
 
 	// Handle principal/create: id is self-referential (current PS)
-	if strings.Contains(tx.Typ, "principal/create") {
+	if strings.Contains(cz.Typ, "principal/create") {
 		payObj["id"] = principal.PR().Tagged()
 	}
 
-	// Inject 'alg' field for both final and non-final transactions
+	// Inject 'alg' field for both final and non-final cozies
 	payObj["alg"] = string(signerKey.Alg)
 
 	// Sign and apply
@@ -228,7 +228,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 		return err
 	}
 
-	// Non-final transaction: sign normally without 'commit' field
+	// Non-final coz: sign normally without 'commit' field
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal pay: %w", err)
@@ -288,33 +288,33 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 	return nil
 }
 
-// buildTransactionPay creates a pay map for a transaction.
-func buildTransactionPay(tx *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalRoot) map[string]any {
+// buildTransactionPay creates a pay map for a coz.
+func buildTransactionPay(cz *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalRoot) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
-		"typ": tx.Typ,
-		"now": tx.Now,
+		"typ": cz.Typ,
+		"now": cz.Now,
 	}
 
-	// Add pre field (current principal state) for transactions that need it
-	if strings.Contains(tx.Typ, "key/create") ||
-		strings.Contains(tx.Typ, "key/add") ||
-		strings.Contains(tx.Typ, "key/delete") ||
-		strings.Contains(tx.Typ, "key/replace") ||
-		strings.Contains(tx.Typ, "key/revoke") ||
-		strings.Contains(tx.Typ, "principal/create") {
+	// Add pre field (current principal state) for cozies that need it
+	if strings.Contains(cz.Typ, "key/create") ||
+		strings.Contains(cz.Typ, "key/add") ||
+		strings.Contains(cz.Typ, "key/delete") ||
+		strings.Contains(cz.Typ, "key/replace") ||
+		strings.Contains(cz.Typ, "key/revoke") ||
+		strings.Contains(cz.Typ, "principal/create") {
 		payObj["pre"] = currentPS.Tagged()
 	}
 
 	// Add rvk field if present
-	if tx.Rvk != 0 {
-		payObj["rvk"] = tx.Rvk
+	if cz.Rvk != 0 {
+		payObj["rvk"] = cz.Rvk
 	}
 
 	// Add msg field if present
-	if tx.Msg != "" {
-		payObj["msg"] = tx.Msg
+	if cz.Msg != "" {
+		payObj["msg"] = cz.Msg
 	}
 
 	return payObj
@@ -442,7 +442,7 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 		return result
 	}
 
-	// Apply all transactions/actions (same as RunE2ETest)
+	// Apply all cozies/actions (same as RunE2ETest)
 	var applyErr error
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)
@@ -532,7 +532,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		return result
 	}
 
-	// Apply transactions if present
+	// Apply cozies if present
 	var applyErr error
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)

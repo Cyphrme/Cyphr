@@ -22,7 +22,7 @@ type Golden struct {
 	Setup *GoldenSetup `json:"setup,omitempty"`
 	// GenesisKeys contains full key material for storage import.
 	GenesisKeys []GoldenKey `json:"genesis_keys,omitempty"`
-	// Commits contains atomic transaction bundles.
+	// Commits contains atomic coz bundles.
 	Commits []GoldenCommit `json:"commits,omitempty"`
 	// Digests contains czd values parallel to entries.
 	Digests []string `json:"digests,omitempty"`
@@ -52,11 +52,11 @@ type GoldenKey struct {
 	Now int64 `json:"now,omitempty"`
 }
 
-// GoldenCommit is an atomic transaction bundle from a golden file.
-// Matches the Rust fixture format: {txs, keys, commit_id, ar, cs, pr}.
+// GoldenCommit is an atomic coz bundle from a golden file.
+// Matches the Rust fixture format: {cozies, keys, commit_id, ar, cs, pr}.
 type GoldenCommit struct {
-	// Txs contains the transactions in this commit.
-	Txs []json.RawMessage `json:"txs"`
+	// Cozies contains the cozies in this commit.
+	Cozies []json.RawMessage `json:"txs"`
 	// Keys contains key material introduced in this commit (SPEC §5.2/§5.3).
 	Keys []GoldenKey `json:"keys"`
 	// CommitID is the commit identity after this commit (base64url).
@@ -143,7 +143,7 @@ func LoadGoldenDir(dir string) ([]*Golden, error) {
 	return goldens, nil
 }
 
-// IsGenesisOnly returns true if this test has no transactions.
+// IsGenesisOnly returns true if this test has no cozies.
 func (g *Golden) IsGenesisOnly() bool {
 	return len(g.Commits) == 0
 }
@@ -153,11 +153,11 @@ func (g *Golden) IsErrorTest() bool {
 	return g.Expected.Error != ""
 }
 
-// TxCount returns the total number of transactions across all commits.
+// TxCount returns the total number of cozies across all commits.
 func (g *Golden) TxCount() int {
 	count := 0
 	for _, c := range g.Commits {
-		count += len(c.Txs)
+		count += len(c.Cozies)
 	}
 	return count
 }

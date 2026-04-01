@@ -25,7 +25,7 @@ type TestIntent struct {
 	Setup *SetupIntent `toml:"setup,omitempty"`
 
 	// Commit is the commit sequence. Each commit contains one or more
-	// transactions.
+	// cozies.
 	Commit []CommitIntent `toml:"commit,omitempty"`
 	// Action contains the action sequence (Level 4).
 	Action []ActionIntent `toml:"action,omitempty"`
@@ -36,16 +36,16 @@ type TestIntent struct {
 	Expected *ExpectedAssertions `toml:"expected,omitempty"`
 }
 
-// CommitIntent is a single commit containing one or more transactions.
+// CommitIntent is a single commit containing one or more cozies.
 type CommitIntent struct {
-	// Tx contains transactions within this commit.
+	// Tx contains cozies within this commit.
 	Tx []TxIntent `toml:"tx,omitempty"`
 }
 
-// TxIntent is a single transaction within a commit.
+// TxIntent is a single coz within a commit.
 // Flat struct merging the old PayIntent + CryptoIntent fields.
 type TxIntent struct {
-	// Typ is transaction type (e.g., "cyphr.me/key/create").
+	// Typ is coz type (e.g., "cyphr.me/key/create").
 	Typ string `toml:"typ"`
 	// Now is timestamp.
 	Now int64 `toml:"now"`
@@ -161,7 +161,7 @@ func (t *TestIntent) IsGenesisOnly() bool {
 	return len(t.Commit) == 0 && len(t.Action) == 0
 }
 
-// HasTxAndAction returns true if this test has both transactions and actions.
+// HasTxAndAction returns true if this test has both cozies and actions.
 func (t *TestIntent) HasTxAndAction() bool {
 	return len(t.Commit) > 0 && len(t.Action) > 0
 }

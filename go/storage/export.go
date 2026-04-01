@@ -5,14 +5,14 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 // ExportEntries exports all entries from a Principal for storage.
 //
 // Returns a slice of Entry that can be persisted to any Store.
-// The order is: transactions first (in apply order), then actions.
+// The order is: cozies first (in apply order), then actions.
 //
 // Each entry contains the original raw JSON bytes from verification,
 // ensuring bit-perfect round-trip fidelity for czd computation.
 //
-// For implicit genesis principals (Level 1, no transactions), this
+// For implicit genesis principals (Level 1, no cozies), this
 // returns only actions (if any). The genesis key is not exported as
-// an entry since implicit genesis has no transaction.
+// an entry since implicit genesis has no coz.
 //
 // # Example
 //
@@ -23,16 +23,16 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 	var entries []*Entry
 
-	// Export transactions in applied order
-	for _, tx := range principal.Transactions() {
-		if tx.Raw() == nil {
-			// Skip transactions without raw bytes (shouldn't happen in normal flow)
+	// Export cozies in applied order
+	for _, cz := range principal.Cozies() {
+		if cz.Raw() == nil {
+			// Skip cozies without raw bytes (shouldn't happen in normal flow)
 			continue
 		}
 
 		entry := &Entry{
-			raw: tx.Raw(),
-			Now: tx.Now,
+			raw: cz.Raw(),
+			Now: cz.Now,
 		}
 		entries = append(entries, entry)
 	}

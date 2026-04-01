@@ -123,9 +123,9 @@ pub enum Commands {
         command: KeyCommands,
     },
 
-    /// Transaction operations
+    /// ParsedCoz operations
     Tx {
-        /// Transaction subcommand to execute
+        /// ParsedCoz subcommand to execute
         #[command(subcommand)]
         command: TxCommands,
     },
@@ -208,17 +208,17 @@ pub enum KeyCommands {
     },
 }
 
-/// Transaction subcommands.
+/// ParsedCoz subcommands.
 #[derive(Subcommand)]
 pub enum TxCommands {
-    /// List transactions for an identity
+    /// List cozies for an identity
     List {
         /// Principal Root (base64url)
         #[arg(long)]
         identity: String,
     },
 
-    /// Verify transaction chain integrity
+    /// Verify coz chain integrity
     Verify {
         /// Principal Root (base64url)
         #[arg(long)]

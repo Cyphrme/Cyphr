@@ -94,16 +94,16 @@ fn make_commits(commits: &[CommitEntry]) -> Vec<CommitEntry> {
 /// Compare exported commits against expected commits.
 /// Returns ok if semantically equivalent.
 /// Note: expected may contain action pseudo-commits which are filtered out
-/// since export_commits only exports transactions.
+/// since export_commits only exports cozies.
 fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result<(), String> {
-    // Filter expected to only transaction commits (exclude action pseudo-commits)
+    // Filter expected to only coz commits (exclude action pseudo-commits)
     // Transactions: key/* and principal/create
     let tx_commits: Vec<_> = expected
         .iter()
         .filter(|c| {
-            // A commit is a transaction commit if its first tx has a transaction typ
-            c.txs.first().is_some_and(|tx| {
-                tx.get("pay")
+            // A commit is a coz commit if its first cz has a coz typ
+            c.cozies.first().is_some_and(|cz| {
+                cz.get("pay")
                     .and_then(|p| p.get("typ"))
                     .and_then(|t| t.as_str())
                     .is_some_and(|typ| typ.contains("/key/") || typ.contains("/principal/create"))
@@ -113,20 +113,20 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 
     if exported.len() != tx_commits.len() {
         return Err(format!(
-            "commit count mismatch: exported {} vs expected {} (tx commits)",
+            "commit count mismatch: exported {} vs expected {} (cz commits)",
             exported.len(),
             tx_commits.len()
         ));
     }
 
     for (i, (exp, expected_commit)) in exported.iter().zip(tx_commits.iter()).enumerate() {
-        // Compare transaction counts
-        if exp.txs.len() != expected_commit.txs.len() {
+        // Compare coz counts
+        if exp.cozies.len() != expected_commit.cozies.len() {
             return Err(format!(
-                "commit {}: tx count mismatch {} vs {}",
+                "commit {}: cz count mismatch {} vs {}",
                 i,
-                exp.txs.len(),
-                expected_commit.txs.len()
+                exp.cozies.len(),
+                expected_commit.cozies.len()
             ));
         }
 
@@ -167,7 +167,7 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 // Round-Trip Tests
 // ============================================================================
 
-/// Single transaction round-trip: load genesis + 1 entry → export → compare.
+/// Single coz round-trip: load genesis + 1 entry → export → compare.
 #[test]
 fn rt_single_tx() {
     let fixture = load_fixture("mutations", "key_add_increases_count");
@@ -203,7 +203,7 @@ fn rt_single_tx() {
     }
 }
 
-/// Multi-step transaction round-trip.
+/// Multi-step coz round-trip.
 #[test]
 fn rt_multi_tx() {
     let fixture = load_fixture("multi_key", "add_third_key_to_dual_key_account");
@@ -229,7 +229,7 @@ fn rt_multi_tx() {
     }
 }
 
-/// Level 4 round-trip: transactions + actions.
+/// Level 4 round-trip: cozies + actions.
 #[test]
 fn rt_with_actions() {
     let fixture = load_fixture("actions", "single_action_promotes_ds");
@@ -285,15 +285,15 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let genesis = make_genesis(genesis_keys);
     let commit_vec = make_commits(commits);
 
-    // Debug: dump pre values from commit transactions
+    // Debug: dump pre values from commit cozies
     for (ci, commit) in commits.iter().enumerate() {
-        for (ti, tx) in commit.txs.iter().enumerate() {
-            if let Some(pay) = tx.get("pay") {
+        for (ti, cz) in commit.cozies.iter().enumerate() {
+            if let Some(pay) = cz.get("pay") {
                 if let Some(pre) = pay.get("pre") {
                     eprintln!("  [{}:{}] pre: {}", ci, ti, pre);
                 }
             }
-            if let Some(key) = tx.get("key") {
+            if let Some(key) = cz.get("key") {
                 eprintln!("  [{}:{}] key.tmb: {:?}", ci, ti, key.get("tmb"));
             }
         }
@@ -550,7 +550,7 @@ fn e2e_checkpoint_load() {
 
     let pool = load_pool();
 
-    // Build a 2-tx history, then load from checkpoint at tx 1
+    // Build a 2-cz history, then load from checkpoint at cz 1
     let golden_key = pool
         .pool
         .key

@@ -9,7 +9,7 @@ fn main() {
     let commit = &commits[0];
     println!("Commit keys: {:?}", commit.get("keys"));
     println!(
-        "Commit txs[0] key: {:?}",
-        commit.get("txs").unwrap().as_array().unwrap()[0].get("key")
+        "Commit cozies[0] key: {:?}",
+        commit.get("cozies").unwrap().as_array().unwrap()[0].get("key")
     );
 }

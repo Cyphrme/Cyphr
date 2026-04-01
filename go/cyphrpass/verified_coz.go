@@ -6,30 +6,30 @@ import (
 	"github.com/cyphrme/coz"
 )
 
-// VerifiedTx is a transaction that has been cryptographically verified.
-// It can only be created through Principal.VerifyTransaction.
-// This type ensures that ApplyTransaction can never receive an unverified transaction.
-type VerifiedTx struct {
-	tx     *Transaction // unexported: can only be constructed via VerifyTransaction
-	signer *Key         // the key that verified this transaction
-	newKey *coz.Key     // optional: new key for add/replace operations
+// VerifiedCoz is a coz that has been cryptographically verified.
+// It can only be created through Principal.VerifyCoz.
+// This type ensures that ApplyCoz can never receive an unverified coz.
+type VerifiedCoz struct {
+	cz     *ParsedCoz // unexported: can only be constructed via VerifyCoz
+	signer *Key       // the key that verified this coz
+	newKey *coz.Key   // optional: new key for add/replace operations
 }
 
-// Transaction returns a copy of the verified transaction data.
-// The returned Transaction is read-only for inspection purposes.
-func (vt *VerifiedTx) Transaction() Transaction {
-	return *vt.tx
+// ParsedCoz returns a copy of the verified coz data.
+// The returned ParsedCoz is read-only for inspection purposes.
+func (vt *VerifiedCoz) ParsedCoz() ParsedCoz {
+	return *vt.cz
 }
 
-// Signer returns the key that signed and verified this transaction.
-func (vt *VerifiedTx) Signer() *Key {
+// Signer returns the key that signed and verified this coz.
+func (vt *VerifiedCoz) Signer() *Key {
 	return vt.signer
 }
 
-// VerifyTransaction verifies a Coz message and returns a VerifiedTx if valid.
+// VerifyCoz verifies a Coz message and returns a VerifiedCoz if valid.
 //
 // The coz message must contain:
-//   - pay: JSON payload with transaction fields
+//   - pay: JSON payload with coz fields
 //   - sig: signature over the payload
 //
 // For key/add and key/replace, newKey must be provided.
@@ -40,9 +40,9 @@ func (vt *VerifiedTx) Signer() *Key {
 //   - ErrUnknownKey: Signer not in current KS
 //   - ErrKeyRevoked: Signer key is revoked
 //   - ErrMalformedPayload: Invalid payload structure
-func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx, error) {
+func (p *Principal) VerifyCoz(cz *coz.Coz, newKey *coz.Key) (*VerifiedCoz, error) {
 	// Parse the payload to extract signer thumbprint
-	var pay TransactionPay
+	var pay CozPay
 	if err := json.Unmarshal(cz.Pay, &pay); err != nil {
 		return nil, ErrMalformedPayload
 	}
@@ -53,7 +53,7 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 		return nil, ErrUnknownKey
 	}
 
-	// Check if key is revoked (for most transaction types)
+	// Check if key is revoked (for most coz types)
 	// Self-revoke handled specially in apply
 	if !signerKey.IsActive() {
 		return nil, ErrKeyRevoked
@@ -70,8 +70,8 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 		return nil, ErrMalformedPayload
 	}
 
-	// Parse the transaction
-	tx, err := ParseTransaction(&pay, cz.Czd)
+	// Parse the coz
+	parsed, err := ParseCoz(&pay, cz.Czd)
 	if err != nil {
 		return nil, err
 	}
@@ -82,10 +82,10 @@ func (p *Principal) VerifyTransaction(cz *coz.Coz, newKey *coz.Key) (*VerifiedTx
 	if err != nil {
 		return nil, ErrMalformedPayload
 	}
-	tx.raw = rawEntry
+	parsed.raw = rawEntry
 
-	return &VerifiedTx{
-		tx:     tx,
+	return &VerifiedCoz{
+		cz:     parsed,
 		signer: signerKey,
 		newKey: newKey,
 	}, nil

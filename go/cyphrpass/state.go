@@ -19,7 +19,7 @@ type KeyRoot struct {
 	MultihashDigest
 }
 
-// CommitID is the digest of transaction czds within a single commit (SPEC §8.5).
+// CommitID is the digest of coz czds within a single commit (SPEC §8.5).
 // Previously named TransactionState; renamed to reflect its role as the
 // identity of a commit rather than a state-tree node.
 type CommitID struct {
@@ -226,7 +226,7 @@ func (s StateRoot) Tagged() string {
 // Tagged returns the PrincipalRoot as an algorithm-prefixed digest string.
 // Format: "ALG:base64url" (e.g., "SHA-256:digest...").
 // Uses the lexicographically first algorithm for deterministic output.
-// This is the canonical format for the `pre` field in transactions.
+// This is the canonical format for the `pre` field in cozies.
 func (s PrincipalRoot) Tagged() string {
 	algs := s.Algorithms()
 	if len(algs) == 0 {
@@ -301,7 +301,7 @@ func hashSortedConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
 }
 
 // hashConcatBytes implements array-order digest: concatenate in insertion order,
-// then hash. Used for CommitID where transaction order is significant (SPEC §8.5).
+// then hash. Used for CommitID where coz order is significant (SPEC §8.5).
 func hashConcatBytes(alg HashAlg, components ...[]byte) (coz.B64, error) {
 	if len(components) == 0 {
 		return nil, nil
@@ -360,19 +360,19 @@ func ComputeKR(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyRoot, e
 	return KeyRoot{mh}, nil
 }
 
-// ComputeCommitID computes the Commit ID (formerly Transaction State) from czds (SPEC §8.5).
+// ComputeCommitID computes the Commit ID (formerly ParsedCoz State) from czds (SPEC §8.5).
 // The Commit ID is the Merkle root of the czds within a single commit.
-// If only one transaction with no nonce, CommitID = czd (implicit promotion).
-// Returns nil if no transactions.
+// If only one coz with no nonce, CommitID = czd (implicit promotion).
+// Returns nil if no cozies.
 func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
 	if len(czds) == 0 {
-		return nil, nil // No transactions = nil CommitID
+		return nil, nil // No cozies = nil CommitID
 	}
 	if len(algs) == 0 {
 		algs = []HashAlg{HashSha256} // Default fallback
 	}
 
-	// Implicit promotion: single transaction, no nonce
+	// Implicit promotion: single coz, no nonce
 	if len(czds) == 1 && len(nonce) == 0 {
 		cid := CommitID{FromSingleDigest(algs[0], czds[0])}
 		return &cid, nil
@@ -430,7 +430,7 @@ func (tc TaggedCzd) ConvertTo(target HashAlg) (coz.B64, error) {
 // When computing a target hash variant, czds from different algorithms are
 // converted (re-hashed) to the target algorithm.
 //
-// Returns nil if no transactions.
+// Returns nil if no cozies.
 func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
 	if len(czds) == 0 {
 		return nil, nil
@@ -468,7 +468,7 @@ func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*Co
 			converted = append(converted, nonce)
 		}
 
-		// Hash in array order (no sort — CommitID preserves transaction order)
+		// Hash in array order (no sort — CommitID preserves coz order)
 		digest, err := hashConcatBytes(targetAlg, converted...)
 		if err != nil {
 			return nil, err

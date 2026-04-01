@@ -24,7 +24,7 @@ func loadE2EPool(t *testing.T) *testfixtures.Pool {
 }
 
 // TestE2E_RoundTrip runs round-trip verification tests.
-// These tests generate transactions dynamically, apply them, export, and reimport.
+// These tests generate cozies dynamically, apply them, export, and reimport.
 func TestE2E_RoundTrip(t *testing.T) {
 	pool := loadE2EPool(t)
 

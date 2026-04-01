@@ -42,7 +42,7 @@ func (l Level) String() string {
 	}
 }
 
-// authLedger holds keys and transactions.
+// authLedger holds keys and cozies.
 type authLedger struct {
 	// Keys maps thumbprint (b64 string) to active keys.
 	// Uses ordered map semantics via slice backing.
@@ -52,8 +52,8 @@ type authLedger struct {
 	// Revoked keys for historical verification.
 	Revoked []*Key
 
-	// Transactions history.
-	Transactions []*Transaction
+	// Cozies history.
+	Cozies []*ParsedCoz
 }
 
 // dataLedger holds actions (Level 4+).
@@ -65,8 +65,8 @@ type dataLedger struct {
 //
 // A Principal has:
 //   - Permanent root (PR) set at principal/create (Level 3+), nil for L1/L2
-//   - Evolving state (PS) as keys, transactions, and actions change
-//   - Auth ledger tracking keys and transactions
+//   - Evolving state (PS) as keys, cozies, and actions change
+//   - Auth ledger tracking keys and cozies
 //   - Data ledger tracking actions (Level 4+)
 type Principal struct {
 	// pg is nil until principal/create establishes it (SPEC §5.1).
@@ -75,7 +75,7 @@ type Principal struct {
 	pg       *PrincipalGenesis
 	pr       PrincipalRoot
 	kr       KeyRoot
-	commitID *CommitID // nil if no transactions
+	commitID *CommitID // nil if no cozies
 	ar       AuthRoot
 	sr       StateRoot // SR = MR(AR, DR?, embedding?)
 	dr       *DataRoot // nil if no actions
@@ -262,7 +262,7 @@ func (p *Principal) ActiveAlgs() []HashAlg {
 	return p.activeAlgs
 }
 
-// CommitID returns the current Commit ID (nil if no transactions).
+// CommitID returns the current Commit ID (nil if no cozies).
 func (p *Principal) CommitID() *CommitID {
 	return p.commitID
 }
@@ -340,7 +340,7 @@ func (p *Principal) PreRevokeKey(tmb coz.B64, rvk int64) error {
 }
 
 // SetMaxClockSkew configures the maximum allowed clock skew for future timestamps.
-// Transactions with tx.Now > serverTime + maxClockSkew will be rejected with ErrTimestampFuture.
+// Cozies with cz.Now > serverTime + maxClockSkew will be rejected with ErrTimestampFuture.
 // Set to 0 to disable future timestamp checking (default).
 // Recommended value: 300 (5 minutes).
 func (p *Principal) SetMaxClockSkew(seconds int64) {
@@ -353,11 +353,11 @@ func (p *Principal) Level() Level {
 	if len(p.data.Actions) > 0 {
 		return Level4
 	}
-	// Level 3: multiple keys or transactions
-	if len(p.auth.Keys) > 1 || len(p.auth.Transactions) > 0 {
+	// Level 3: multiple keys or cozies
+	if len(p.auth.Keys) > 1 || len(p.auth.Cozies) > 0 {
 		return Level3
 	}
-	// Level 1: single key, no transactions
+	// Level 1: single key, no cozies
 	return Level1
 }
 
@@ -438,10 +438,10 @@ func (p *Principal) ActionCount() int {
 	return len(p.data.Actions)
 }
 
-// Transactions returns a copy of all transactions in applied order.
-func (p *Principal) Transactions() []*Transaction {
-	out := make([]*Transaction, len(p.auth.Transactions))
-	copy(out, p.auth.Transactions)
+// Cozies returns a copy of all cozies in applied order.
+func (p *Principal) Cozies() []*ParsedCoz {
+	out := make([]*ParsedCoz, len(p.auth.Cozies))
+	copy(out, p.auth.Cozies)
 	return out
 }
 
@@ -452,15 +452,15 @@ func (p *Principal) Actions() []*Action {
 	return out
 }
 
-// applyTransactionInternal applies a transaction to mutate principal state.
-// This is an internal method; use ApplyTransaction for the public API.
+// applyCozInternal applies a coz to mutate principal state.
+// This is an internal method; use ApplyCoz for the public API.
 //
 // Timestamp validation (SPEC §14.1):
-//   - Rejects if tx.Now < latestTimestamp (TimestampPast)
-//   - Rejects if tx.Now > serverTime + maxClockSkew (TimestampFuture), when maxClockSkew > 0
-func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) error {
+//   - Rejects if cz.Now < latestTimestamp (TimestampPast)
+//   - Rejects if cz.Now > serverTime + maxClockSkew (TimestampFuture), when maxClockSkew > 0
+func (p *Principal) applyCozInternal(cz *ParsedCoz, newKey *coz.Key) error {
 	// Validate timestamp is not in the past (SPEC §14.1)
-	if tx.Now < p.latestTimestamp {
+	if cz.Now < p.latestTimestamp {
 		return ErrTimestampPast
 	}
 
@@ -468,21 +468,21 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 	// Only check if maxClockSkew is configured (> 0)
 	if p.maxClockSkew > 0 {
 		serverTime := currentTime()
-		if tx.Now > serverTime+p.maxClockSkew {
+		if cz.Now > serverTime+p.maxClockSkew {
 			return ErrTimestampFuture
 		}
 	}
 
 	// Verify signer is an active key (except for self-revoke, where
 	// the signer IS the key being revoked)
-	if tx.Kind == TxRevoke && len(tx.ID) == 0 {
+	if cz.Kind == TxRevoke && len(cz.ID) == 0 {
 		// Self-revoke: signer revokes itself. Signer must be active but
 		// will be removed, so we verify below in the dispatch.
 	} else {
-		if !p.IsKeyActive(tx.Signer) {
+		if !p.IsKeyActive(cz.Signer) {
 			// Check if key exists but is revoked
 			for _, k := range p.auth.Revoked {
-				if bytes.Equal(k.Tmb, tx.Signer) {
+				if bytes.Equal(k.Tmb, cz.Signer) {
 					return ErrKeyRevoked
 				}
 			}
@@ -490,73 +490,73 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 		}
 	}
 
-	switch tx.Kind {
+	switch cz.Kind {
 	case TxKeyCreate:
-		if err := p.verifyPre(tx.Pre); err != nil {
+		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
 		if newKey == nil {
 			return ErrMalformedPayload
 		}
-		if !bytes.Equal(newKey.Tmb, tx.ID) {
+		if !bytes.Equal(newKey.Tmb, cz.ID) {
 			return ErrMalformedPayload
 		}
-		if p.IsKeyActive(tx.ID) {
+		if p.IsKeyActive(cz.ID) {
 			return ErrDuplicateKey
 		}
-		if err := p.addKey(newKey, tx.Now); err != nil {
+		if err := p.addKey(newKey, cz.Now); err != nil {
 			return err
 		}
 
 	case TxKeyDelete:
-		if err := p.verifyPre(tx.Pre); err != nil {
+		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
-		if err := p.removeKey(tx.ID); err != nil {
+		if err := p.removeKey(cz.ID); err != nil {
 			return err
 		}
 
 	case TxKeyReplace:
-		if err := p.verifyPre(tx.Pre); err != nil {
+		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
 		if newKey == nil {
 			return ErrMalformedPayload
 		}
-		if !bytes.Equal(newKey.Tmb, tx.ID) {
+		if !bytes.Equal(newKey.Tmb, cz.ID) {
 			return ErrMalformedPayload
 		}
 		// Atomic swap: add new key first, then remove signer
-		if err := p.addKey(newKey, tx.Now); err != nil {
+		if err := p.addKey(newKey, cz.Now); err != nil {
 			return err
 		}
 		// Remove signer directly (bypassing NoActiveKeys check since we just added)
-		p.removeKeyDirect(tx.Signer)
+		p.removeKeyDirect(cz.Signer)
 
 	case TxRevoke:
-		if err := p.verifyPre(tx.Pre); err != nil {
+		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
-		// Self-revoke: tx.ID is empty, target is the signer.
-		// Other-revoke: tx.ID is the target key.
-		target := tx.Signer
+		// Self-revoke: cz.ID is empty, target is the signer.
+		// Other-revoke: cz.ID is the target key.
+		target := cz.Signer
 		var by *coz.B64
-		if len(tx.ID) > 0 {
-			target = tx.ID
-			signer := coz.B64(tx.Signer)
+		if len(cz.ID) > 0 {
+			target = cz.ID
+			signer := coz.B64(cz.Signer)
 			by = &signer
 		}
-		if err := p.revokeKey(target, tx.Rvk, by); err != nil {
+		if err := p.revokeKey(target, cz.Rvk, by); err != nil {
 			return err
 		}
 
 	case TxPrincipalCreate:
 		// SPEC §5.1: Genesis finalization. Verify pre and id matches PS.
-		if err := p.verifyPre(tx.Pre); err != nil {
+		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
 		// id must equal current PS (SPEC §5.1:609 — "id: Final PS = PR")
-		if !bytes.Equal(tx.ID, p.pr.First()) {
+		if !bytes.Equal(cz.ID, p.pr.First()) {
 			return ErrMalformedPayload
 		}
 		// Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
@@ -565,21 +565,21 @@ func (p *Principal) applyTransactionInternal(tx *Transaction, newKey *coz.Key) e
 	}
 
 	// Update signer's last_used timestamp
-	p.updateLastUsed(tx.Signer, tx.Now)
+	p.updateLastUsed(cz.Signer, cz.Now)
 
 	// Update latest timestamp
-	if tx.Now > p.latestTimestamp {
-		p.latestTimestamp = tx.Now
+	if cz.Now > p.latestTimestamp {
+		p.latestTimestamp = cz.Now
 	}
 
-	// Record transaction in the flat history.
+	// Record coz in the flat history.
 	// Note: czd accumulation for commit boundaries is handled by CommitBatch.
-	p.auth.Transactions = append(p.auth.Transactions, tx)
+	p.auth.Cozies = append(p.auth.Cozies, cz)
 
 	return nil
 }
 
-// verifyPre checks that the transaction's pre matches current PS.
+// verifyPre checks that the coz's pre matches current PS.
 // At genesis (before first commit), PS is promoted from AS, so pre = AS = PS.
 func (p *Principal) verifyPre(pre PrincipalRoot) error {
 	if !bytes.Equal(p.pr.First(), pre.First()) {
@@ -699,10 +699,10 @@ func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
 
 // BeginCommit starts a new commit batch.
 //
-// Returns a CommitBatch that accumulates transactions. The caller MUST
+// Returns a CommitBatch that accumulates cozies. The caller MUST
 // call Finalize() to complete the commit, or abandon the batch.
 //
-// For single-transaction commits, use [Principal.ApplyTransaction] instead.
+// For single-coz commits, use [Principal.ApplyCoz] instead.
 func (p *Principal) BeginCommit() *CommitBatch {
 	return &CommitBatch{
 		principal: p,
@@ -710,11 +710,11 @@ func (p *Principal) BeginCommit() *CommitBatch {
 	}
 }
 
-// ApplyTransaction applies a single verified transaction as an atomic commit.
+// ApplyCoz applies a single verified coz as an atomic commit.
 //
-// This is the primary convenience method for the common case (one tx = one commit).
+// This is the primary convenience method for the common case (one cz = one commit).
 // Internally calls BeginCommit, Apply, and Finalize.
-func (p *Principal) ApplyTransaction(vt *VerifiedTx) (*Commit, error) {
+func (p *Principal) ApplyCoz(vt *VerifiedCoz) (*Commit, error) {
 	batch := p.BeginCommit()
 	if err := batch.Apply(vt); err != nil {
 		return nil, err
@@ -730,15 +730,15 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		return nil, ErrEmptyCommit
 	}
 
-	// Validate commit field placement: only last tx may have it,
-	// and last tx MUST have it (SPEC §4.4).
-	txs := pending.Transactions()
-	for i, tx := range txs {
-		isLast := i == len(txs)-1
-		if tx.CommitSR != nil && !isLast {
+	// Validate commit field placement: only last cz may have it,
+	// and last cz MUST have it (SPEC §4.4).
+	cozies := pending.Cozies()
+	for i, cz := range cozies {
+		isLast := i == len(cozies)-1
+		if cz.CommitSR != nil && !isLast {
 			return nil, ErrCommitNotLast
 		}
-		if tx.CommitSR == nil && isLast {
+		if cz.CommitSR == nil && isLast {
 			return nil, ErrMissingCommit
 		}
 	}
@@ -761,7 +761,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ar = ar
 
-	// Compute Commit ID from this commit's transaction czds (SPEC §4.2.1)
+	// Compute Commit ID from this commit's coz czds (SPEC §4.2.1)
 	cid, err := pending.ComputeCommitID()
 	if err != nil {
 		return nil, err
@@ -776,11 +776,11 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	p.sr = sr
 
 	// Validate commit field matches independently computed SR.
-	// The tx's CommitSR is a single-variant multihash (signer's algorithm only).
+	// The cz's CommitSR is a single-variant multihash (signer's algorithm only).
 	// We must compare against the computed SR at that specific algorithm,
 	// not via Tagged() which uses the lex-first algorithm and would fail
 	// in cross-algorithm scenarios (e.g., ES384 signer on SHA-256+SHA-384 principal).
-	lastTx := txs[len(txs)-1]
+	lastTx := cozies[len(cozies)-1]
 	if lastTx.CommitSR != nil {
 		txAlgs := lastTx.CommitSR.Algorithms()
 		if len(txAlgs) == 0 {

@@ -1,6 +1,6 @@
-//! Transaction types for Auth State mutations.
+//! ParsedCoz types for Auth State mutations.
 //!
-//! Per SPEC §4.2, transactions are signed Coz messages that mutate Auth State.
+//! Per SPEC §4.2, cozies are signed Coz messages that mutate Auth State.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use coz::{Czd, Pay, Thumbprint};
@@ -10,10 +10,10 @@ use crate::key::Key;
 use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
 
 // ============================================================================
-// Transaction Types (SPEC §4.2)
+// ParsedCoz Types (SPEC §4.2)
 // ============================================================================
 
-/// Type path suffixes for Cyphrpass transactions.
+/// Type path suffixes for Cyphrpass cozies.
 pub mod typ {
     /// `<authority>/key/create` - Create a new key (Level 3+)
     pub const KEY_CREATE: &str = "key/create";
@@ -27,9 +27,9 @@ pub mod typ {
     pub const PRINCIPAL_CREATE: &str = "principal/create";
 }
 
-/// Transaction kind variants (SPEC §4.2).
+/// ParsedCoz kind variants (SPEC §4.2).
 #[derive(Debug, Clone)]
-pub enum TransactionKind {
+pub enum CozKind {
     /// Create a new key (Level 3+) - SPEC §4.2.1
     KeyCreate {
         /// Previous Principal State.
@@ -74,34 +74,34 @@ pub enum TransactionKind {
     },
 }
 
-impl std::fmt::Display for TransactionKind {
+impl std::fmt::Display for CozKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TransactionKind::KeyCreate { .. } => write!(f, "key/create"),
-            TransactionKind::KeyDelete { .. } => write!(f, "key/delete"),
-            TransactionKind::KeyReplace { .. } => write!(f, "key/replace"),
-            TransactionKind::SelfRevoke { .. } => write!(f, "key/revoke"),
-            TransactionKind::PrincipalCreate { .. } => write!(f, "principal/create"),
+            CozKind::KeyCreate { .. } => write!(f, "key/create"),
+            CozKind::KeyDelete { .. } => write!(f, "key/delete"),
+            CozKind::KeyReplace { .. } => write!(f, "key/replace"),
+            CozKind::SelfRevoke { .. } => write!(f, "key/revoke"),
+            CozKind::PrincipalCreate { .. } => write!(f, "principal/create"),
         }
     }
 }
 
 // ============================================================================
-// Transaction
+// ParsedCoz
 // ============================================================================
 
-/// A verified transaction.
+/// A verified coz.
 ///
-/// This struct can only be created through `verify_transaction()` which
+/// This struct can only be created through `verify_coz()` which
 /// ensures the signature is valid. Fields are crate-internal to prevent
-/// external code from constructing unverified transactions.
+/// external code from constructing unverified cozies.
 #[derive(Debug, Clone)]
-pub struct Transaction {
-    /// Transaction kind.
-    pub(crate) kind: TransactionKind,
+pub struct ParsedCoz {
+    /// ParsedCoz kind.
+    pub(crate) kind: CozKind,
     /// Signer's thumbprint.
     pub(crate) signer: Thumbprint,
-    /// Transaction timestamp.
+    /// ParsedCoz timestamp.
     pub(crate) now: i64,
     /// Coz digest (unique identifier).
     pub(crate) czd: Czd,
@@ -111,19 +111,19 @@ pub struct Transaction {
     /// State root from `commit` field (present on terminal coz only).
     ///
     /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
-    /// where CS = MR(AS, DS?). None for non-terminal transactions.
+    /// where CS = MR(AS, DS?). None for non-terminal cozies.
     pub(crate) state_root: Option<StateRoot>,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
 }
 
-impl Transaction {
-    /// Parse a transaction from an already-verified Pay message.
+impl ParsedCoz {
+    /// Parse a coz from an already-verified Pay message.
     ///
     /// The `pay` must already be parsed and verified. The `raw` CozJson
     /// is stored for export/re-verification.
     ///
-    /// Note: Prefer using `verify_transaction` which ensures consistency.
+    /// Note: Prefer using `verify_coz` which ensures consistency.
     ///
     /// # Errors
     ///
@@ -151,8 +151,8 @@ impl Transaction {
         })
     }
 
-    /// Get the transaction kind.
-    pub fn kind(&self) -> &TransactionKind {
+    /// Get the coz kind.
+    pub fn kind(&self) -> &CozKind {
         &self.kind
     }
 
@@ -161,7 +161,7 @@ impl Transaction {
         &self.signer
     }
 
-    /// Get the transaction timestamp.
+    /// Get the coz timestamp.
     pub fn now(&self) -> i64 {
         self.now
     }
@@ -181,39 +181,39 @@ impl Transaction {
         self.hash_alg
     }
 
-    /// Get the state root if this is a terminal (finalizing) transaction.
+    /// Get the state root if this is a terminal (finalizing) coz.
     ///
     /// Per SPEC §4.4, only the last coz in a commit has `"commit":<CS>`.
     pub fn state_root(&self) -> Option<&StateRoot> {
         self.state_root.as_ref()
     }
 
-    /// Parse the transaction kind from typ and payload fields.
-    fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<TransactionKind> {
-        // Check if typ ends with a known transaction type
+    /// Parse the coz kind from typ and payload fields.
+    fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<CozKind> {
+        // Check if typ ends with a known coz type
         if typ.ends_with(typ::KEY_CREATE) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(TransactionKind::KeyCreate { pre, id })
+            Ok(CozKind::KeyCreate { pre, id })
         } else if typ.ends_with(typ::KEY_DELETE) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(TransactionKind::KeyDelete { pre, id })
+            Ok(CozKind::KeyDelete { pre, id })
         } else if typ.ends_with(typ::KEY_REPLACE) {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(TransactionKind::KeyReplace { pre, id })
+            Ok(CozKind::KeyReplace { pre, id })
         } else if typ.ends_with(typ::KEY_REVOKE) {
             // Per protocol simplification, revoke requires pre like all other coz
             let pre = Self::extract_pre(pay)?;
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
-            Ok(TransactionKind::SelfRevoke { pre, rvk })
+            Ok(CozKind::SelfRevoke { pre, rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
             // `pre` references current AS, `id` is final AS (becomes PR)
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_as(pay)?;
-            Ok(TransactionKind::PrincipalCreate { pre, id })
+            Ok(CozKind::PrincipalCreate { pre, id })
         } else {
             Err(Error::MalformedPayload)
         }
@@ -299,26 +299,26 @@ impl Transaction {
 }
 
 // ============================================================================
-// Verified Transaction
+// Verified ParsedCoz
 // ============================================================================
 
-/// A transaction that has been cryptographically verified.
+/// A coz that has been cryptographically verified.
 ///
 /// This type can only be constructed through [`verify`] or the unsafe
-/// [`VerifiedTransaction::from_transaction_unsafe`], ensuring that
-/// `Principal::apply_verified` can never receive an unverified transaction.
+/// [`VerifiedCoz::from_transaction_unsafe`], ensuring that
+/// `Principal::apply_verified` can never receive an unverified coz.
 #[derive(Debug, Clone)]
-pub struct VerifiedTransaction {
-    /// The verified transaction (private - cannot be constructed directly).
-    tx: Transaction,
+pub struct VerifiedCoz {
+    /// The verified coz (private - cannot be constructed directly).
+    cz: ParsedCoz,
     /// New key for add/replace operations.
     new_key: Option<Key>,
 }
 
-impl VerifiedTransaction {
-    /// Get a reference to the underlying transaction.
-    pub fn transaction(&self) -> &Transaction {
-        &self.tx
+impl VerifiedCoz {
+    /// Get a reference to the underlying coz.
+    pub fn coz(&self) -> &ParsedCoz {
+        &self.cz
     }
 
     /// Get the new key if present (for add/replace operations).
@@ -326,45 +326,45 @@ impl VerifiedTransaction {
         self.new_key.as_ref()
     }
 
-    /// Create a VerifiedTransaction from its constituent parts.
+    /// Create a VerifiedCoz from its constituent parts.
     ///
     /// This is used by the creation path (`CommitScope::finalize_with_commit`)
-    /// where the transaction is signed internally by the builder.
-    /// The caller is responsible for ensuring the transaction is valid.
-    pub(crate) fn from_parts(tx: Transaction, new_key: Option<Key>) -> Self {
-        Self { tx, new_key }
+    /// where the coz is signed internally by the builder.
+    /// The caller is responsible for ensuring the coz is valid.
+    pub(crate) fn from_parts(cz: ParsedCoz, new_key: Option<Key>) -> Self {
+        Self { cz, new_key }
     }
 
-    /// Create a VerifiedTransaction without signature verification.
+    /// Create a VerifiedCoz without signature verification.
     ///
     /// # Safety
     ///
     /// This method bypasses signature verification and should ONLY be used
     /// for testing. Production code should use [`verify`] or [`from_parts`].
     #[cfg(test)]
-    pub(crate) fn from_transaction_unsafe(tx: Transaction, new_key: Option<Key>) -> Self {
-        Self::from_parts(tx, new_key)
+    pub(crate) fn from_transaction_unsafe(cz: ParsedCoz, new_key: Option<Key>) -> Self {
+        Self::from_parts(cz, new_key)
     }
 }
 
-impl std::ops::Deref for VerifiedTransaction {
-    type Target = Transaction;
+impl std::ops::Deref for VerifiedCoz {
+    type Target = ParsedCoz;
 
     fn deref(&self) -> &Self::Target {
-        &self.tx
+        &self.cz
     }
 }
 
-/// Verify a transaction signature and return a VerifiedTransaction.
+/// Verify a coz signature and return a VerifiedCoz.
 ///
 /// Uses coz-rs runtime verification with the key's algorithm.
-pub fn verify_transaction(
+pub fn verify_coz(
     pay_json: &[u8],
     sig: &[u8],
     key: &Key,
     czd: Czd,
     new_key: Option<Key>,
-) -> Result<VerifiedTransaction> {
+) -> Result<VerifiedCoz> {
     // Verify the signature
     let valid = coz::verify_json(pay_json, sig, &key.alg, &key.pub_key).unwrap_or(false);
     if !valid {
@@ -385,10 +385,10 @@ pub fn verify_transaction(
     // Derive hash algorithm from signing key's algorithm
     let hash_alg = crate::state::hash_alg_from_str(&key.alg)?;
 
-    // Create transaction from parsed Pay
-    let tx = Transaction::from_pay(&pay, czd, hash_alg, raw)?;
+    // Create coz from parsed Pay
+    let cz = ParsedCoz::from_pay(&pay, czd, hash_alg, raw)?;
 
-    Ok(VerifiedTransaction { tx, new_key })
+    Ok(VerifiedCoz { cz, new_key })
 }
 
 // ============================================================================
@@ -427,10 +427,10 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::KeyCreate { .. }));
-        assert_eq!(tx.now, 1000);
+        assert!(matches!(cz.kind, CozKind::KeyCreate { .. }));
+        assert_eq!(cz.now, 1000);
     }
 
     #[test]
@@ -445,9 +445,9 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::KeyDelete { .. }));
+        assert!(matches!(cz.kind, CozKind::KeyDelete { .. }));
     }
 
     #[test]
@@ -462,9 +462,9 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::KeyReplace { .. }));
+        assert!(matches!(cz.kind, CozKind::KeyReplace { .. }));
     }
 
     #[test]
@@ -480,12 +480,9 @@ mod tests {
         pay.extra.insert("pre".into(), json!(TEST_PRE));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
-        assert!(matches!(
-            tx.kind,
-            TransactionKind::SelfRevoke { rvk: 1000, .. }
-        ));
+        assert!(matches!(cz.kind, CozKind::SelfRevoke { rvk: 1000, .. }));
     }
 
     #[test]
@@ -503,9 +500,9 @@ mod tests {
         pay.extra.insert("commit".into(), json!(true));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let tx = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
+        let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
-        assert!(matches!(tx.kind, TransactionKind::PrincipalCreate { .. }));
+        assert!(matches!(cz.kind, CozKind::PrincipalCreate { .. }));
     }
 
     #[test]
@@ -517,7 +514,7 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
+        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
@@ -533,7 +530,7 @@ mod tests {
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
+        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }
@@ -548,7 +545,7 @@ mod tests {
             .build();
 
         let czd = Czd::from_bytes(vec![0; 32]);
-        let result = Transaction::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
+        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
     }

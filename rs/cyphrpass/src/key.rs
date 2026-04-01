@@ -25,7 +25,7 @@ pub struct Key {
     pub pub_key: Vec<u8>,
     /// When this key was first added to the principal.
     pub first_seen: i64,
-    /// When this key last signed a valid transaction/action.
+    /// When this key last signed a valid coz/action.
     pub last_used: Option<i64>,
     /// Revocation info (None = active).
     pub revocation: Option<Revocation>,
@@ -41,7 +41,7 @@ impl Key {
 
     /// Returns true if the key was active at the given timestamp.
     ///
-    /// Critical for validating historical transactions.
+    /// Critical for validating historical cozies.
     pub fn is_active_at(&self, timestamp: i64) -> bool {
         self.revocation.as_ref().is_none_or(|r| timestamp < r.rvk)
     }

@@ -75,7 +75,7 @@ func TestLoadGolden(t *testing.T) {
 		t.Errorf("Principal = %v, want [golden]", golden.Principal)
 	}
 
-	// Check tx count using helper
+	// Check cz count using helper
 	if golden.TxCount() != 1 {
 		t.Errorf("TxCount = %d, want 1", golden.TxCount())
 	}

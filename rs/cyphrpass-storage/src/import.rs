@@ -4,7 +4,7 @@
 //! entries, supporting both full replay from genesis and partial replay
 //! from a trusted checkpoint.
 //!
-//! Supports both legacy flat format (one tx per line) and commit-based format
+//! Supports both legacy flat format (one cz per line) and commit-based format
 //! (one commit bundle per line).
 
 use crate::{CommitEntry, Entry, KeyEntry};
@@ -18,11 +18,11 @@ use cyphrpass::{Key, Principal};
 
 /// How the principal was created (genesis mode).
 ///
-/// Per SPEC §5, principals can be created implicitly (single key, no transaction)
-/// or explicitly (multiple keys with genesis transactions).
+/// Per SPEC §5, principals can be created implicitly (single key, no coz)
+/// or explicitly (multiple keys with genesis cozies).
 #[derive(Debug, Clone)]
 pub enum Genesis {
-    /// Implicit genesis: single key, no transaction required.
+    /// Implicit genesis: single key, no coz required.
     ///
     /// Per SPEC §5.1: "Identity emerges from first key possession"
     /// - `PS = AS = KS = tmb` (PR is None at L1/L2)
@@ -37,7 +37,7 @@ pub enum Genesis {
 
 /// Trusted checkpoint for partial replay.
 ///
-/// Enables thin clients to verify only recent transactions without
+/// Enables thin clients to verify only recent cozies without
 /// replaying full history from genesis.
 ///
 /// # Security
@@ -49,7 +49,7 @@ pub enum Genesis {
 pub struct Checkpoint {
     /// The trusted Auth State at checkpoint.
     pub auth_root: AuthRoot,
-    /// Active keys at checkpoint (needed to verify subsequent transactions).
+    /// Active keys at checkpoint (needed to verify subsequent cozies).
     pub keys: Vec<Key>,
     /// Future: thumbprint of key that attested this checkpoint.
     ///
@@ -76,7 +76,7 @@ pub enum LoadError {
     #[error("invalid signature at index {index}: {message}")]
     InvalidSignature { index: usize, message: String },
 
-    /// Transaction pre field doesn't match expected AS.
+    /// ParsedCoz pre field doesn't match expected AS.
     #[error("broken chain at index {index}: pre mismatch")]
     BrokenChain { index: usize },
 
@@ -105,7 +105,7 @@ pub enum LoadError {
     InvalidKeyMaterial { field: String, message: String },
 }
 
-/// Determine if a typ string represents a transaction (not an action).
+/// Determine if a typ string represents a coz (not an action).
 ///
 /// Transactions are: key/*, principal/create
 /// Everything else is an action.
@@ -119,18 +119,18 @@ fn is_transaction_typ(typ: &str) -> bool {
 
 /// Load a principal by replaying entries from genesis.
 ///
-/// This performs full verification of the entire transaction history.
+/// This performs full verification of the entire coz history.
 ///
 /// # Arguments
 ///
 /// * `genesis` - How the principal was created (implicit or explicit)
-/// * `entries` - All transactions and actions to replay
+/// * `entries` - All cozies and actions to replay
 ///
 /// # Errors
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - Transaction chain is broken (pre mismatch)
+/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -161,7 +161,7 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 
 /// Load a principal from a trusted checkpoint.
 ///
-/// This allows verification of only the transaction suffix, enabling
+/// This allows verification of only the coz suffix, enabling
 /// efficient sync for thin clients or after long periods offline.
 ///
 /// # Security
@@ -220,7 +220,7 @@ pub fn load_from_checkpoint(
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - Transaction chain is broken (pre mismatch)
+/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -274,17 +274,17 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             .pay_bytes()
             .map_err(|_| LoadError::MissingTimestamp { index })?;
 
-        // Determine if this is a transaction or action by typ prefix
+        // Determine if this is a coz or action by typ prefix
         let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
         if is_transaction_typ(typ) {
-            // Transaction: extract key material if present
+            // ParsedCoz: extract key material if present
             let new_key = extract_key_from_entry(&raw);
 
             // Compute czd for this entry
             let czd = compute_czd(&pay_json, &sig, principal)?;
 
-            // Apply transaction
+            // Apply coz
             principal
                 .verify_and_apply_transaction(&pay_json, &sig, czd, new_key)
                 .map_err(|e| match e {
@@ -332,10 +332,10 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
 
 /// Replay commit bundles onto a principal (commit-based format).
 ///
-/// Each commit bundle contains multiple transactions that form an atomic unit.
-/// Uses `CommitScope` to properly group transactions into commits.
+/// Each commit bundle contains multiple cozies that form an atomic unit.
+/// Uses `CommitScope` to properly group cozies into commits.
 /// Key material is read from the commit-level `keys[]` array, not from
-/// per-tx embedded fields.
+/// per-cz embedded fields.
 fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -345,14 +345,14 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
         // in the same bundle.
         let mut deferred_actions: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
 
-        // Create a commit scope for this bundle's transactions
+        // Create a commit scope for this bundle's cozies
         let mut scope = principal.begin_commit();
         let mut applied_tx_count = 0;
 
-        // Iterator over commit-level keys — consumed by key-introducing txs
+        // Iterator over commit-level keys — consumed by key-introducing cozies
         let mut key_iter = commit.keys.iter();
 
-        for (tx_idx, tx_value) in commit.txs.iter().enumerate() {
+        for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
             let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
 
             let pay = tx_value
@@ -375,11 +375,11 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
             let pay_json =
                 serde_json::to_vec(pay).map_err(|e| LoadError::Json { index, source: e })?;
 
-            // Determine if this is a transaction or action by typ prefix
+            // Determine if this is a coz or action by typ prefix
             let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
 
             if is_transaction_typ(typ) {
-                // Transaction: consume next key from commit-level keys if this
+                // ParsedCoz: consume next key from commit-level keys if this
                 // is a key-introducing type (key/create, key/replace)
                 let new_key = if is_key_introducing_typ(typ) {
                     key_iter.next().map(key_entry_to_key).transpose()?
@@ -428,7 +428,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
             // Finalize the commit scope
             scope.finalize().map_err(LoadError::Protocol)?;
         } else {
-            // Drop scope without finalize — no transactions were applied
+            // Drop scope without finalize — no cozies were applied
             drop(scope);
         }
 
@@ -455,7 +455,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
     Ok(())
 }
 
-/// Returns true if a transaction type introduces new key material.
+/// Returns true if a coz type introduces new key material.
 fn is_key_introducing_typ(typ: &str) -> bool {
     typ.contains("/key/create") || typ.contains("/key/replace")
 }
@@ -490,7 +490,7 @@ fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
 /// Extract key material from a per-entry embedded `key` field.
 ///
 /// Used by `replay_entries()` (legacy flat format) where key material
-/// is embedded in each transaction entry. For commit-based format,
+/// is embedded in each coz entry. For commit-based format,
 /// use `key_entry_to_key()` with commit-level `keys[]` instead.
 fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};

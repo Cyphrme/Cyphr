@@ -41,12 +41,12 @@ pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Resu
 ///
 /// Strategy depends on whether a keystore is available:
 ///
-/// **With keystore**: Look up the signer of the first transaction by
+/// **With keystore**: Look up the signer of the first coz by
 /// thumbprint (`pay.tmb`). This is the correct approach for import,
 /// where the genesis key (signer) may not be embedded in the commit
 /// but the *new* key being added might be.
 ///
-/// **Without keystore**: Scan the first commit's transactions for
+/// **Without keystore**: Scan the first commit's cozies for
 /// embedded `key` objects. This works for inspect/verify/list where
 /// all key material is in the commits themselves.
 pub fn extract_genesis_from_commits(
@@ -56,9 +56,9 @@ pub fn extract_genesis_from_commits(
     let first_commit = commits.first().ok_or(Error::MissingField("commits"))?;
 
     // When keystore is available, prefer signer-based lookup.
-    // The signer of the first transaction IS the genesis key.
+    // The signer of the first coz IS the genesis key.
     if let Some(ks) = keystore {
-        if let Some(first_tx) = first_commit.txs.first() {
+        if let Some(first_tx) = first_commit.cozies.first() {
             if let Some(signer_tmb) = first_tx
                 .get("pay")
                 .and_then(|p| p.get("tmb"))
@@ -82,7 +82,7 @@ pub fn extract_genesis_from_commits(
     // No keystore or signer lookup failed — scan for embedded keys.
     let mut genesis_keys = Vec::new();
 
-    for tx_value in &first_commit.txs {
+    for tx_value in &first_commit.cozies {
         if let Some(key_obj) = tx_value.get("key") {
             genesis_keys.push(extract_key_from_obj(key_obj)?);
         }

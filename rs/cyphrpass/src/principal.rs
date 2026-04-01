@@ -9,12 +9,12 @@ use crate::action::Action;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
     compute_ar, compute_dr, compute_kr, compute_pr, compute_sr, derive_hash_algs,
     hash_alg_from_str,
 };
-use crate::transaction::VerifiedTransaction;
 
 /// Get current unix timestamp in seconds.
 /// Separated for testability.
@@ -36,7 +36,7 @@ pub struct AuthLedger {
     pub keys: IndexMap<String, Key>,
     /// Revoked keys for historical verification.
     pub revoked: IndexMap<String, Key>,
-    /// Finalized commits (atomic transaction bundles).
+    /// Finalized commits (atomic coz bundles).
     pub commits: Vec<Commit>,
 }
 
@@ -86,7 +86,7 @@ pub struct PrincipalCore {
     pub(crate) ps: PrincipalRoot,
     /// Current Key State.
     pub(crate) ks: KeyRoot,
-    /// Current Commit ID (Merkle root of last commit's transactions).
+    /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) commit_id: Option<CommitID>,
     /// Current State Root: SR = MR(AR, DR?, embedding?).
     pub(crate) sr: Option<StateRoot>,
@@ -193,7 +193,7 @@ impl Principal {
     /// Transition from Nascent to Established by freezing PR.
     ///
     /// This is the only code path that can create an Established principal.
-    /// Called exclusively from the PrincipalCreate transaction handler.
+    /// Called exclusively from the PrincipalCreate coz handler.
     fn establish_pg(&mut self, pr: PrincipalGenesis) -> Result<()> {
         let old = std::mem::take(&mut self.0);
         match old {
@@ -408,7 +408,7 @@ impl Principal {
     /// Get the current Principal State as a tagged digest string (alg:digest format).
     ///
     /// Uses the lexicographically first algorithm from active_algs for deterministic output.
-    /// This is the canonical format for the `pre` field in transactions (SPEC §4.3).
+    /// This is the canonical format for the `pre` field in cozies (SPEC §4.3).
     ///
     /// # Errors
     ///
@@ -499,9 +499,9 @@ impl Principal {
         self.auth.revoked.insert(tmb_b64, key);
     }
 
-    /// Get all transactions (across all commits).
-    pub fn transactions(&self) -> impl Iterator<Item = &VerifiedTransaction> {
-        self.auth.commits.iter().flat_map(|c| c.transactions())
+    /// Get all cozies (across all commits).
+    pub fn cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
+        self.auth.commits.iter().flat_map(|c| c.cozies())
     }
 
     /// Get all finalized commits.
@@ -545,25 +545,22 @@ impl Principal {
         CommitScope::new(self)
     }
 
-    /// Apply a single verified transaction as an atomic commit.
+    /// Apply a single verified coz as an atomic commit.
     ///
-    /// This is the convenience method for the common single-transaction case.
-    /// It internally creates a commit scope, applies the transaction, and
+    /// This is the convenience method for the common single-coz case.
+    /// It internally creates a commit scope, applies the coz, and
     /// finalizes the commit in one call.
     ///
-    /// For multi-transaction commits, use `begin_commit()` instead.
+    /// For multi-coz commits, use `begin_commit()` instead.
     ///
     /// # Errors
     ///
-    /// - `TimestampPast`: Transaction timestamp is older than latest seen
-    /// - `TimestampFuture`: Transaction timestamp is too far in the future
-    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
+    /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
+    /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
+    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
-    pub fn apply_transaction(
-        &mut self,
-        vtx: crate::transaction::VerifiedTransaction,
-    ) -> Result<&Commit> {
+    pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
         let mut scope = self.begin_commit();
         scope.apply(vtx)?;
         scope.finalize()
@@ -747,10 +744,10 @@ impl Principal {
     }
 
     // ========================================================================
-    // Transaction application (internal)
+    // ParsedCoz application (internal)
     // ========================================================================
 
-    /// Apply a verified transaction to mutate principal state (internal).
+    /// Apply a verified coz to mutate principal state (internal).
     ///
     /// Called by `CommitScope::apply()`. This mutates the principal eagerly;
     /// the commit scope holds `&mut self` preventing external observation
@@ -758,35 +755,35 @@ impl Principal {
     ///
     /// # Errors
     ///
-    /// - `TimestampPast`: Transaction timestamp is older than latest seen
-    /// - `TimestampFuture`: Transaction timestamp is too far in the future
-    /// - `InvalidPrior`: Transaction's `pre` doesn't match current CS
+    /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
+    /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
+    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub(crate) fn apply_verified_internal(
         &mut self,
-        vtx: crate::transaction::VerifiedTransaction,
+        vtx: crate::parsed_coz::VerifiedCoz,
     ) -> Result<()> {
         self.apply_transaction_internal(vtx)?;
         Ok(())
     }
 
-    /// Apply a transaction without prior signature verification (test-only).
+    /// Apply a coz without prior signature verification (test-only).
     ///
     /// This helper computes state_root post-mutation (per SPEC §4.4) since
-    /// test transactions don't go through the signing path.
+    /// test cozies don't go through the signing path.
     #[cfg(test)]
     pub(crate) fn apply_transaction_test(
         &mut self,
-        mut tx: crate::transaction::Transaction,
+        mut cz: crate::parsed_coz::ParsedCoz,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
         use crate::commit::PendingCommit;
+        use crate::parsed_coz::VerifiedCoz;
         use crate::state::{compute_ar, compute_kr, compute_sr, derive_hash_algs};
-        use crate::transaction::VerifiedTransaction;
 
         // Apply mutation eagerly (same as apply_verified_internal)
-        let vtx = VerifiedTransaction::from_transaction_unsafe(tx.clone(), new_key.clone());
+        let vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key.clone());
         self.apply_verified_internal(vtx)?;
 
         // Compute CS from post-mutation state
@@ -797,54 +794,52 @@ impl Principal {
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
         let cs = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
 
-        // Inject state_root into the transaction
-        tx.state_root = Some(cs);
+        // Inject state_root into the coz
+        cz.state_root = Some(cs);
 
-        // Create the final VerifiedTransaction with state_root
-        let final_vtx = VerifiedTransaction::from_transaction_unsafe(tx, new_key);
+        // Create the final VerifiedCoz with state_root
+        let final_vtx = VerifiedCoz::from_transaction_unsafe(cz, new_key);
 
-        // Finalize as single-tx commit
+        // Finalize as single-cz commit
         let mut pending = PendingCommit::new(self.hash_alg());
         pending.push(final_vtx);
         self.finalize_commit(pending)
     }
 
-    /// Internal transaction application logic.
+    /// Internal coz application logic.
     fn apply_transaction_internal(
         &mut self,
-        vtx: crate::transaction::VerifiedTransaction,
+        vtx: crate::parsed_coz::VerifiedCoz,
     ) -> Result<&AuthRoot> {
-        use crate::transaction::TransactionKind;
+        use crate::parsed_coz::CozKind;
 
-        // Access the underlying Transaction via Deref
-        let tx = &*vtx;
+        // Access the underlying ParsedCoz via Deref
+        let cz = &*vtx;
 
         // Validate timestamp is not in the past (SPEC §14.1)
-        if tx.now < self.latest_timestamp {
+        if cz.now < self.latest_timestamp {
             return Err(Error::TimestampPast);
         }
 
         // Validate timestamp is not too far in the future (SPEC §14.1)
         if self.max_clock_skew > 0 {
             let server_time = current_time();
-            if tx.now > server_time + self.max_clock_skew {
+            if cz.now > server_time + self.max_clock_skew {
                 return Err(Error::TimestampFuture);
             }
         }
 
         // Verify signer is an active key (except for self-revoke which is handled specially)
-        if !matches!(&tx.kind, TransactionKind::SelfRevoke { .. })
-            && !self.is_key_active(&tx.signer)
-        {
+        if !matches!(&cz.kind, CozKind::SelfRevoke { .. }) && !self.is_key_active(&cz.signer) {
             // Check if key exists but is revoked
-            if self.auth.revoked.contains_key(&tx.signer.to_b64()) {
+            if self.auth.revoked.contains_key(&cz.signer.to_b64()) {
                 return Err(Error::KeyRevoked);
             }
             return Err(Error::UnknownKey);
         }
 
-        match &tx.kind {
-            TransactionKind::KeyCreate { pre, id } => {
+        match &cz.kind {
+            CozKind::KeyCreate { pre, id } => {
                 self.verify_pre(pre)?;
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
@@ -854,13 +849,13 @@ impl Principal {
                 if self.auth.keys.contains_key(&id.to_b64()) {
                     return Err(Error::DuplicateKey);
                 }
-                self.add_key(key, tx.now);
+                self.add_key(key, cz.now);
             },
-            TransactionKind::KeyDelete { pre, id } => {
+            CozKind::KeyDelete { pre, id } => {
                 self.verify_pre(pre)?;
                 self.remove_key(id)?;
             },
-            TransactionKind::KeyReplace { pre, id } => {
+            CozKind::KeyReplace { pre, id } => {
                 self.verify_pre(pre)?;
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
@@ -868,17 +863,17 @@ impl Principal {
                 }
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
-                self.add_key(key, tx.now);
+                self.add_key(key, cz.now);
                 // Use shift_remove directly to bypass NoActiveKeys check
                 // (we just added a key, so this is safe)
-                self.auth.keys.shift_remove(&tx.signer.to_b64());
+                self.auth.keys.shift_remove(&cz.signer.to_b64());
             },
-            TransactionKind::SelfRevoke { pre, rvk } => {
+            CozKind::SelfRevoke { pre, rvk } => {
                 // Per protocol simplification, revoke requires pre like all other coz
                 self.verify_pre(pre)?;
-                self.revoke_key(&tx.signer, *rvk, None)?;
+                self.revoke_key(&cz.signer, *rvk, None)?;
             },
-            TransactionKind::PrincipalCreate { pre, id } => {
+            CozKind::PrincipalCreate { pre, id } => {
                 // Genesis finalization (SPEC §5.1)
                 // Verify that `pre` matches the current PS (chain continuity)
                 self.verify_pre(pre)?;
@@ -893,11 +888,11 @@ impl Principal {
         }
 
         // Update signer's last_used timestamp
-        self.update_last_used(&tx.signer, tx.now);
+        self.update_last_used(&cz.signer, cz.now);
 
         // Update latest timestamp
-        if tx.now > self.latest_timestamp {
-            self.latest_timestamp = tx.now;
+        if cz.now > self.latest_timestamp {
+            self.latest_timestamp = cz.now;
         }
 
         Ok(&self.auth_root)
@@ -913,11 +908,11 @@ impl Principal {
             return Err(Error::EmptyCommit);
         }
 
-        // Validate commit field placement: only last tx may have it,
-        // and last tx MUST have it (SPEC §4.4).
-        let txs = pending.transactions();
-        for (i, vtx) in txs.iter().enumerate() {
-            let is_last = i == txs.len() - 1;
+        // Validate commit field placement: only last cz may have it,
+        // and last cz MUST have it (SPEC §4.4).
+        let cozies = pending.cozies();
+        for (i, vtx) in cozies.iter().enumerate() {
+            let is_last = i == cozies.len() - 1;
             if vtx.state_root().is_some() && !is_last {
                 return Err(Error::CommitNotLast);
             }
@@ -949,7 +944,7 @@ impl Principal {
         // Validate commit field matches independently computed SR
         // Compare per-variant (the claimed SR from pay may contain a single
         // algorithm variant while the computed SR is multi-variant).
-        if let Some(claimed_sr) = txs.last().unwrap().state_root() {
+        if let Some(claimed_sr) = cozies.last().unwrap().state_root() {
             for (alg, claimed_bytes) in claimed_sr.0.variants() {
                 let computed_bytes = sr.0.get_or_err(*alg)?;
                 if claimed_bytes.as_ref() != computed_bytes {
@@ -969,20 +964,20 @@ impl Principal {
         Ok(self.auth.commits.last().expect("just pushed"))
     }
 
-    /// Verify signature and apply a transaction as an atomic commit.
+    /// Verify signature and apply a coz as an atomic commit.
     ///
-    /// This is the primary method for processing incoming single-transaction
-    /// commits. It verifies the signature, parses the transaction, applies
+    /// This is the primary method for processing incoming single-coz
+    /// commits. It verifies the signature, parses the coz, applies
     /// the mutation, and finalizes the commit in one call.
     ///
-    /// For multi-transaction commits, use `begin_commit()` with manual
+    /// For multi-coz commits, use `begin_commit()` with manual
     /// scope control.
     ///
     /// # Arguments
     ///
     /// * `pay_json` - Raw JSON bytes of the Pay object
     /// * `sig` - Signature bytes
-    /// * `czd` - Coz digest for this transaction
+    /// * `czd` - Coz digest for this coz
     /// * `new_key` - New key to add (required for KeyCreate/KeyReplace)
     ///
     /// # Errors
@@ -992,7 +987,7 @@ impl Principal {
     /// - `MalformedPayload`: Missing required fields
     /// - `InvalidPrior`: `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no keys
-    #[must_use = "transaction application may fail; handle the Result"]
+    #[must_use = "coz application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
         &mut self,
         pay_json: &[u8],
@@ -1000,7 +995,7 @@ impl Principal {
         czd: coz::Czd,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
-        use crate::transaction::verify_transaction;
+        use crate::parsed_coz::verify_coz;
 
         // Parse Pay to get signer thumbprint
         let pay: coz::Pay =
@@ -1019,10 +1014,10 @@ impl Principal {
         // Look up signer key (guaranteed active now)
         let signer_key = self.get_key(signer_tmb).ok_or(Error::UnknownKey)?;
 
-        // Verify signature and parse transaction
-        let vtx = verify_transaction(pay_json, sig, signer_key, czd, new_key)?;
+        // Verify signature and parse coz
+        let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
 
-        // Apply as single-tx atomic commit
+        // Apply as single-cz atomic commit
         self.apply_transaction(vtx)
     }
 
@@ -1099,7 +1094,7 @@ impl Principal {
 
     /// Update a key's last_used timestamp.
     ///
-    /// Called after successful transaction or action signing.
+    /// Called after successful coz or action signing.
     fn update_last_used(&mut self, tmb: &Thumbprint, timestamp: i64) {
         let tmb_b64 = tmb.to_b64();
         if let Some(key) = self.auth.keys.get_mut(&tmb_b64) {
@@ -1131,8 +1126,8 @@ mod tests {
         }
     }
 
-    /// Create a dummy CozJson for test transactions.
-    /// The payload content doesn't need to match the Transaction kind
+    /// Create a dummy CozJson for test cozies.
+    /// The payload content doesn't need to match the ParsedCoz kind
     /// since tests bypass signature verification.
     fn dummy_coz_json() -> coz::CozJson {
         coz::CozJson {
@@ -1218,22 +1213,22 @@ mod tests {
     }
 
     // ========================================================================
-    // Transaction application tests
+    // ParsedCoz application tests
     // ========================================================================
 
     fn make_key_add_tx(
         pre: &PrincipalRoot,
         new_key: &Key,
         signer: &Thumbprint,
-    ) -> crate::transaction::Transaction {
+    ) -> crate::parsed_coz::ParsedCoz {
         use coz::Czd;
         use serde_json::json;
 
-        use crate::transaction::{Transaction, TransactionKind};
+        use crate::parsed_coz::{CozKind, ParsedCoz};
 
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-        // Create dummy raw CozJson for test transactions
+        // Create dummy raw CozJson for test cozies
         let ps_bytes = pre
             .get(HashAlg::Sha256)
             .or_else(|| {
@@ -1256,8 +1251,8 @@ mod tests {
             sig: vec![0; 64],
         };
 
-        Transaction {
-            kind: TransactionKind::KeyCreate {
+        ParsedCoz {
+            kind: CozKind::KeyCreate {
                 pre: pre.clone(),
                 id: new_key.tmb.clone(),
             },
@@ -1277,10 +1272,10 @@ mod tests {
 
         let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
 
         principal
-            .apply_transaction_test(tx, Some(key2.clone()))
+            .apply_transaction_test(cz, Some(key2.clone()))
             .unwrap();
 
         assert_eq!(principal.active_key_count(), 2);
@@ -1300,9 +1295,9 @@ mod tests {
             .to_vec();
         let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
 
-        principal.apply_transaction_test(tx, Some(key2)).unwrap();
+        principal.apply_transaction_test(cz, Some(key2)).unwrap();
         // apply_transaction_test auto-finalizes the commit
 
         let new_as = principal
@@ -1327,9 +1322,9 @@ mod tests {
             vec![0xFF; 32],
         ));
         let key2 = make_test_key(0x22);
-        let tx = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
 
-        let result = principal.apply_transaction_test(tx, Some(key2));
+        let result = principal.apply_transaction_test(cz, Some(key2));
         assert!(matches!(result, Err(Error::InvalidPrior)));
     }
 
@@ -1346,9 +1341,9 @@ mod tests {
 
         let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
 
-        principal.apply_transaction_test(tx, Some(key2)).unwrap();
+        principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
         // PR should still be None (no principal/create was issued)
         assert!(
@@ -1433,7 +1428,7 @@ mod tests {
     fn self_revoke_last_key_prevented() {
         use coz::Czd;
 
-        use crate::transaction::{Transaction, TransactionKind};
+        use crate::parsed_coz::{CozKind, ParsedCoz};
 
         let key = make_test_key(0xDD);
         let mut principal = Principal::implicit(key.clone()).unwrap();
@@ -1443,8 +1438,8 @@ mod tests {
 
         let pre = principal.pr().clone();
 
-        let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
@@ -1453,7 +1448,7 @@ mod tests {
             raw: dummy_coz_json(),
         };
 
-        let result = principal.apply_transaction_test(tx, None);
+        let result = principal.apply_transaction_test(cz, None);
         assert!(matches!(result, Err(Error::NoActiveKeys)));
 
         // Key should still be active (no mutation occurred)
@@ -1472,12 +1467,12 @@ mod tests {
         // Revoke key2 via self-revoke (key2 revokes itself)
         use coz::Czd;
 
-        use crate::transaction::{Transaction, TransactionKind};
+        use crate::parsed_coz::{CozKind, ParsedCoz};
 
         let pre = principal.pr().clone();
 
-        let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { pre, rvk: 2000 },
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
             signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
@@ -1486,7 +1481,7 @@ mod tests {
             raw: dummy_coz_json(),
         };
 
-        principal.apply_transaction_test(tx, None).unwrap();
+        principal.apply_transaction_test(cz, None).unwrap();
 
         assert_eq!(principal.active_key_count(), 1);
         assert!(principal.is_key_active(&key1.tmb));
@@ -1506,15 +1501,15 @@ mod tests {
         let mut key2 = make_test_key(0x22);
         key2.first_seen = 0; // Caller may not set this
 
-        // Transaction has now=2000
-        let tx = make_key_add_tx(&pre, &key2, &key1.tmb);
-        assert_eq!(tx.now, 2000);
+        // ParsedCoz has now=2000
+        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        assert_eq!(cz.now, 2000);
 
         principal
-            .apply_transaction_test(tx, Some(key2.clone()))
+            .apply_transaction_test(cz, Some(key2.clone()))
             .unwrap();
 
-        // New key's first_seen should be set from tx.now
+        // New key's first_seen should be set from cz.now
         let added_key = principal.get_key(&key2.tmb).unwrap();
         assert_eq!(added_key.first_seen, 2000);
     }
@@ -1527,7 +1522,7 @@ mod tests {
     fn revoked_key_in_revoked_set() {
         use coz::Czd;
 
-        use crate::transaction::{Transaction, TransactionKind};
+        use crate::parsed_coz::{CozKind, ParsedCoz};
 
         let key1 = make_test_key(0x11);
         let key2 = make_test_key(0x22);
@@ -1536,8 +1531,8 @@ mod tests {
         let pre = principal.pr().clone();
 
         // Revoke key2 (self-revoke)
-        let tx = Transaction {
-            kind: TransactionKind::SelfRevoke { pre, rvk: 1500 },
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 1500 },
             signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
@@ -1545,7 +1540,7 @@ mod tests {
             state_root: None,
             raw: dummy_coz_json(),
         };
-        principal.apply_transaction_test(tx, None).unwrap();
+        principal.apply_transaction_test(cz, None).unwrap();
 
         // key2 should be in revoked set, not active
         assert!(!principal.is_key_active(&key2.tmb));
@@ -1567,15 +1562,15 @@ mod tests {
         // Initially, last_used should be None
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
-        // Apply a key/create transaction with now=5000
+        // Apply a key/create coz with now=5000
         let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
 
         use coz::Czd;
 
-        use crate::transaction::{Transaction, TransactionKind};
-        let tx = Transaction {
-            kind: TransactionKind::KeyCreate {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+        let cz = ParsedCoz {
+            kind: CozKind::KeyCreate {
                 pre,
                 id: key2.tmb.clone(),
             },
@@ -1586,7 +1581,7 @@ mod tests {
             state_root: None,
             raw: dummy_coz_json(),
         };
-        principal.apply_transaction_test(tx, Some(key2)).unwrap();
+        principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
         // Signer's last_used should now be 5000
         assert_eq!(principal.get_key(&key1.tmb).unwrap().last_used, Some(5000));

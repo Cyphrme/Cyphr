@@ -19,7 +19,7 @@ var (
 	// ErrNoGenesisKeys indicates genesis was attempted with no keys.
 	ErrNoGenesisKeys = errors.New("genesis requires at least one key")
 
-	// ErrBrokenChain indicates a transaction's pre field doesn't match expected AS.
+	// ErrBrokenChain indicates a coz's pre field doesn't match expected AS.
 	ErrBrokenChain = errors.New("broken chain: pre mismatch")
 
 	// ErrUnknownSigner indicates the signer key is not in the principal's key set.

@@ -8,7 +8,7 @@ use coz::{Czd, Pay, Thumbprint};
 /// A verified action (Level 4+).
 ///
 /// Actions are arbitrary signed Coz messages that represent user actions.
-/// Unlike transactions which mutate Auth State, actions are recorded in
+/// Unlike cozies which mutate Auth State, actions are recorded in
 /// Data State and can represent any application-specific operation.
 ///
 /// This struct can only be created through verification. Fields are

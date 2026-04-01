@@ -144,7 +144,7 @@ impl FileStore {
     /// Append a commit bundle to the principal's log.
     ///
     /// Each commit is stored as a single JSON line containing:
-    /// - `txs`: Array of transaction entries
+    /// - `cozies`: Array of coz entries
     /// - `commit_id`: Commit ID (base64url)
     /// - `as`: Auth State (base64url)
     /// - `sr`: State Root (base64url)
