@@ -2,6 +2,7 @@ package cyphrpass
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/cyphrme/coz"
 )
@@ -128,7 +129,7 @@ func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 
 // Push adds a coz to the pending commit.
 func (p *PendingCommit) Push(cz *ParsedCoz) {
-	if cz.CommitSR != nil {
+	if cz.Arrow != nil {
 		p.commitTx = append(p.commitTx, cz)
 	} else {
 		p.transactions = append(p.transactions, Transaction{cz})
@@ -170,9 +171,8 @@ func (p *PendingCommit) Len() int {
 	return len(p.Cozies())
 }
 
-// ComputeTR computes the Transaction Root for the current pending cozies.
-// Computes TMR from all mutations, TCR from the commit transaction, and TR from both.
-func (p *PendingCommit) ComputeTR() (*TransactionRoot, error) {
+// ComputeRoots computes the TMR, TCR, and TR for the current pending cozies.
+func (p *PendingCommit) ComputeRoots() (tmr *TransactionMutationRoot, tcr *TransactionCommitRoot, tr *TransactionRoot, err error) {
 	algs := []HashAlg{p.hashAlg}
 
 	// Compute TMR
@@ -185,15 +185,15 @@ func (p *PendingCommit) ComputeTR() (*TransactionRoot, error) {
 		}
 		txRoot, err := ComputeTX(czds, algs)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		if txRoot != nil {
 			txDigests = append(txDigests, *txRoot)
 		}
 	}
-	tmr, err := ComputeTMR(txDigests, algs)
+	tmr, err = ComputeTMR(txDigests, algs)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	// Compute TCR
@@ -201,13 +201,17 @@ func (p *PendingCommit) ComputeTR() (*TransactionRoot, error) {
 	for _, cz := range p.commitTx {
 		commitCzds = append(commitCzds, TaggedCzd{Czd: cz.Czd, Alg: cz.HashAlg})
 	}
-	tcr, err := ComputeTCR(commitCzds, algs)
+	tcr, err = ComputeTCR(commitCzds, algs)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
-	// Compute TR
-	return ComputeTR(tmr, tcr, algs)
+	tr, err = ComputeTR(tmr, tcr, algs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return tmr, tcr, tr, nil
 }
 
 // Finalize converts the pending commit to an immutable Commit.
@@ -224,7 +228,7 @@ func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*
 	}
 
 	// Compute TR from TMR and TCR
-	tr, err := p.ComputeTR()
+	_, _, tr, err := p.ComputeRoots()
 	if err != nil {
 		return nil, err
 	}
@@ -312,47 +316,24 @@ func (b *CommitBatch) IsEmpty() bool {
 	return b.pending.IsEmpty()
 }
 
-// FinalizeWithCommit signs the last coz with commit:<CS> and finalizes.
+// FinalizeWithArrow appends a dedicated commit/create transaction with the Arrow field and finalizes.
 //
-// This is the creation-path API (Option A). It:
-//  1. Applies the last cz mutation from the pay fields
-//  2. Computes CS = MR(AS', DS') from post-mutation state
-//  3. Injects "commit":<CS> into the pay
-//  4. Signs the complete pay via the provided coz.Key
-//  5. Computes czd and creates the final coz
-//  6. Pushes to pending and calls finalizeCommit
-//
-// The pay must be a map[string]any with all fields except "commit".
-// The signerKey must include private key material for signing.
-func (b *CommitBatch) FinalizeWithCommit(
-	pay map[string]any,
+// This replaces FinalizeWithCommit (Option A). It:
+//  1. Computes TMR, TCR? No, it computes TMR from the pending transactions.
+//  2. Computes the current SR post-mutations.
+//  3. Computes Arrow = MR(pre, SR, TMR).
+//  4. Constructs a commit/create transaction with `arrow: <Arrow>`.
+//  5. Signs the commit/create with the provided signerKey.
+//  6. Finalizes the commit batch.
+func (b *CommitBatch) FinalizeWithArrow(
 	signerKey *coz.Key,
-	newKey *coz.Key,
+	now int64,
 ) (*Commit, error) {
-	// 1. Parse pay into CozPay to determine mutation kind
-	payBytes, err := json.Marshal(pay)
-	if err != nil {
-		return nil, ErrMalformedPayload
+	if b.pending.IsEmpty() {
+		return nil, ErrEmptyCommit
 	}
 
-	var txPay CozPay
-	if err := json.Unmarshal(payBytes, &txPay); err != nil {
-		return nil, ErrMalformedPayload
-	}
-
-	// Create preliminary cz with placeholder czd to apply mutation
-	placeholderCzd := coz.B64(make([]byte, 32))
-	cz, err := ParseCoz(&txPay, placeholderCzd)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply mutation eagerly (newKey is *coz.Key, matching internal API)
-	if err := b.principal.applyCozInternal(cz, newKey); err != nil {
-		return nil, err
-	}
-
-	// 2. Compute CS post-mutation
+	// 1. Recompute current SR from active keys/data
 	thumbprints := make([]coz.B64, len(b.principal.auth.Keys))
 	for i, k := range b.principal.auth.Keys {
 		thumbprints[i] = k.Tmb
@@ -370,11 +351,52 @@ func (b *CommitBatch) FinalizeWithCommit(
 		return nil, err
 	}
 
-	// 3. Inject commit:<SR> into pay
-	pay["commit"] = sr.Tagged()
+	// 2. Compute TMR from pending transactions
+	tmr, err := ComputeTMRFromPending(b.pending.transactions, b.principal.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
 
-	// 4. Serialize and sign
-	payBytes, err = json.Marshal(pay)
+	// 3. Ascertain Pre (previous PR)
+	pre := b.principal.pr
+	if len(b.principal.commits) == 0 {
+		// Genesis bootstrap
+		tmbMD := FromSingleDigest(b.principal.activeAlgs[0], b.principal.auth.Keys[0].Tmb)
+		pre = PrincipalRoot{tmbMD}
+	}
+
+	// 4. Compute Arrow
+	txAlg := HashAlg(signerKey.Alg.Hash())
+	components := [][]byte{
+		pre.GetOrFirst(txAlg),
+		sr.GetOrFirst(txAlg),
+		tmr.GetOrFirst(txAlg),
+	}
+	computedDigest, err := hashSortedConcatBytes(txAlg, components...)
+	if err != nil {
+		return nil, err
+	}
+	arrow := FromSingleDigest(txAlg, computedDigest)
+
+	// Format arrow manually like Tagged()
+	algs := arrow.Algorithms()
+	var taggedArrow string
+	if len(algs) > 0 {
+		firstAlg := algs[0]
+		digest := arrow.Get(firstAlg)
+		taggedArrow = fmt.Sprintf("%s:%s", firstAlg, digest.String())
+	}
+
+	// 5. Construct commit/create payload
+	payObj := map[string]any{
+		"alg":   string(signerKey.Alg),
+		"tmb":   signerKey.Tmb.String(),
+		"typ":   "cyphr.me/cyphrpass/commit/create",
+		"now":   now,
+		"arrow": taggedArrow,
+	}
+
+	payBytes, err := json.Marshal(payObj)
 	if err != nil {
 		return nil, ErrMalformedPayload
 	}
@@ -389,7 +411,7 @@ func (b *CommitBatch) FinalizeWithCommit(
 		return nil, ErrInvalidSignature
 	}
 
-	// 5. Compute czd via coz metadata
+	// 6. Compute czd
 	signedCoz := &coz.Coz{
 		Pay: payBytes,
 		Sig: sig,
@@ -398,25 +420,44 @@ func (b *CommitBatch) FinalizeWithCommit(
 		return nil, ErrMalformedPayload
 	}
 
-	// 6. Parse the real coz (with commit field and real czd)
-	txPay.Commit = sr.Tagged()
-	realTx, err := ParseCoz(&txPay, signedCoz.Czd)
+	// 7. Parse the commit transaction coz
+	var txPay CozPay
+	json.Unmarshal(payBytes, &txPay)
+	commitTxCoz, err := ParseCoz(&txPay, signedCoz.Czd)
 	if err != nil {
 		return nil, err
 	}
 
-	// Store raw bytes for bit-perfect export
-	rawEntry, err := buildRawEntry(signedCoz, newKey)
+	rawEntry, err := buildRawEntry(signedCoz, nil)
 	if err != nil {
 		return nil, ErrMalformedPayload
 	}
-	realTx.raw = rawEntry
+	commitTxCoz.raw = rawEntry
 
-	// 7. Replace the placeholder cz in principal.auth.Cozies
-	lastIdx := len(b.principal.auth.Cozies) - 1
-	b.principal.auth.Cozies[lastIdx] = realTx
+	b.pending.commitTx = []*ParsedCoz{commitTxCoz}
 
-	// 8. Push to pending and finalize
-	b.pending.Push(realTx)
-	return b.principal.finalizeCommit(b.pending)
+	// 8. Finalize
+	return b.Finalize()
+}
+
+// ComputeTMRFromPending is a helper logic to extract TMR.
+func ComputeTMRFromPending(transactions []Transaction, activeAlgs []HashAlg) (*TransactionMutationRoot, error) {
+	if len(transactions) == 0 {
+		return nil, ErrEmptyCommit
+	}
+	var txDigests []MultihashDigest
+	for _, tx := range transactions {
+		var czds []TaggedCzd
+		for _, cz := range tx {
+			czds = append(czds, TaggedCzd{Czd: cz.Czd, Alg: cz.HashAlg})
+		}
+		txRoot, err := ComputeTX(czds, activeAlgs)
+		if err != nil {
+			return nil, err
+		}
+		if txRoot != nil {
+			txDigests = append(txDigests, *txRoot)
+		}
+	}
+	return ComputeTMR(txDigests, activeAlgs)
 }

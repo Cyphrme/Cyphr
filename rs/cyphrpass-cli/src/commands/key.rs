@@ -1,5 +1,6 @@
 //! Key management commands.
 
+use coz::base64ct::Encoding;
 use cyphrpass_storage::{Genesis, export_commits, load_principal_from_commits};
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -123,13 +124,27 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     let pay_value: Value = serde_json::to_value(&pay_map)?;
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
-    let scope = principal.begin_commit();
-    scope.finalize_with_commit(
-        pay_value,
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+    let (sig_bytes, cad) = coz::sign_json(
+        &pay_vec,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
-        Some(new_key.clone()),
+    )
+    .unwrap();
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).unwrap();
+    let mut scope = principal.begin_commit();
+    scope.verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key.clone()))?;
+    let tmb = coz::Thumbprint::from_bytes(
+        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
+    )
+    .unwrap();
+    scope.finalize_with_arrow(
+        &signer_stored.alg,
+        &signer_stored.prv_key,
+        &signer_stored.pub_key,
+        &tmb,
+        now as i64,
     )?;
 
     // Store updated state
@@ -208,13 +223,27 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     let pay_value: Value = serde_json::to_value(&pay_map)?;
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
-    let scope = principal.begin_commit();
-    scope.finalize_with_commit(
-        pay_value,
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+    let (sig_bytes, cad) = coz::sign_json(
+        &pay_vec,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
-        None,
+    )
+    .unwrap();
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).unwrap();
+    let mut scope = principal.begin_commit();
+    scope.verify_and_apply(&pay_vec, &sig_bytes, czd, None)?;
+    let tmb = coz::Thumbprint::from_bytes(
+        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
+    )
+    .unwrap();
+    scope.finalize_with_arrow(
+        &signer_stored.alg,
+        &signer_stored.prv_key,
+        &signer_stored.pub_key,
+        &tmb,
+        now as i64,
     )?;
 
     // Store updated state

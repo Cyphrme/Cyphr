@@ -25,6 +25,8 @@ pub mod typ {
     pub const KEY_REVOKE: &str = "key/revoke";
     /// `<authority>/principal/create` - Explicit genesis finalization (Level 3+)
     pub const PRINCIPAL_CREATE: &str = "principal/create";
+    /// `<authority>/commit/create` - Finalize a commit (Arrow finality)
+    pub const COMMIT_CREATE: &str = "cyphrpass/commit/create";
 }
 
 /// ParsedCoz kind variants (SPEC §4.2).
@@ -72,6 +74,11 @@ pub enum CozKind {
         /// Final Auth State bundle identifier (becomes PR).
         id: AuthRoot,
     },
+    /// Commit finality (Arrow) - SPEC §4.4
+    CommitCreate {
+        /// The arrow field = MR(pre, fwd_SR, TMR)
+        arrow: crate::multihash::MultihashDigest,
+    },
 }
 
 impl std::fmt::Display for CozKind {
@@ -82,6 +89,7 @@ impl std::fmt::Display for CozKind {
             CozKind::KeyReplace { .. } => write!(f, "key/replace"),
             CozKind::SelfRevoke { .. } => write!(f, "key/revoke"),
             CozKind::PrincipalCreate { .. } => write!(f, "principal/create"),
+            CozKind::CommitCreate { .. } => write!(f, "commit/create"),
         }
     }
 }
@@ -108,11 +116,10 @@ pub struct ParsedCoz {
     /// Hash algorithm associated with the signing key.
     /// Used for cross-algorithm state computation (MHMR).
     pub(crate) hash_alg: crate::state::HashAlg,
-    /// State root from `commit` field (present on terminal coz only).
+    /// Arrow field from `arrow` field (present on terminal commit coz only).
     ///
-    /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
-    /// where CS = MR(AS, DS?). None for non-terminal cozies.
-    pub(crate) state_root: Option<StateRoot>,
+    /// Per SPEC §4.4, the last coz in a commit contains `"arrow":<MR(pre, fwd, TMR)>`.
+    pub(crate) arrow: Option<crate::multihash::MultihashDigest>,
     /// Raw Coz message for storage/export.
     pub(crate) raw: coz::CozJson,
 }
@@ -139,14 +146,14 @@ impl ParsedCoz {
         let typ = pay.typ.as_ref().ok_or(Error::MalformedPayload)?;
 
         let kind = Self::parse_kind(pay, typ, &signer)?;
-        let state_root = Self::extract_commit(pay)?;
+        let arrow = Self::extract_arrow(pay)?;
         Ok(Self {
             kind,
             signer,
             now,
             czd,
             hash_alg,
-            state_root,
+            arrow,
             raw,
         })
     }
@@ -181,11 +188,11 @@ impl ParsedCoz {
         self.hash_alg
     }
 
-    /// Get the state root if this is a terminal (finalizing) coz.
+    /// Get the arrow if this is a terminal (finalizing) coz.
     ///
-    /// Per SPEC §4.4, only the last coz in a commit has `"commit":<CS>`.
-    pub fn state_root(&self) -> Option<&StateRoot> {
-        self.state_root.as_ref()
+    /// Per SPEC §4.4, only the last coz in a commit has `"arrow":<Digest>`.
+    pub fn arrow(&self) -> Option<&crate::multihash::MultihashDigest> {
+        self.arrow.as_ref()
     }
 
     /// Parse the coz kind from typ and payload fields.
@@ -214,6 +221,9 @@ impl ParsedCoz {
             let pre = Self::extract_pre(pay)?;
             let id = Self::extract_as(pay)?;
             Ok(CozKind::PrincipalCreate { pre, id })
+        } else if typ.ends_with(typ::COMMIT_CREATE) {
+            let arrow = Self::extract_arrow(pay)?.ok_or(Error::MalformedPayload)?;
+            Ok(CozKind::CommitCreate { arrow })
         } else {
             Err(Error::MalformedPayload)
         }
@@ -271,30 +281,29 @@ impl ParsedCoz {
         )))
     }
 
-    // Extract optional `commit` field (State Root for finality).
+    // Extract optional `arrow` field.
     ///
-    /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
+    /// Per SPEC §4.4, the last coz in a commit contains `"arrow":<Digest>`
     /// in `alg:digest` format. Returns `Ok(None)` if the field is absent.
-    fn extract_commit(pay: &Pay) -> Result<Option<StateRoot>> {
+    fn extract_arrow(pay: &Pay) -> Result<Option<crate::multihash::MultihashDigest>> {
         use crate::multihash::MultihashDigest;
         use crate::state::TaggedDigest;
 
-        let Some(commit_value) = pay.extra.get("commit") else {
+        let Some(arrow_value) = pay.extra.get("arrow") else {
             return Ok(None);
         };
 
-        // commit: true is the legacy boolean form — ignore it (not CS)
-        if commit_value.is_boolean() {
+        if arrow_value.is_boolean() {
             return Ok(None);
         }
 
-        let commit_str = commit_value.as_str().ok_or(Error::MalformedPayload)?;
-        let tagged: TaggedDigest = commit_str.parse().map_err(|_| Error::MalformedPayload)?;
+        let arrow_str = arrow_value.as_str().ok_or(Error::MalformedPayload)?;
+        let tagged: TaggedDigest = arrow_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(Some(StateRoot(MultihashDigest::from_single(
+        Ok(Some(MultihashDigest::from_single(
             tagged.alg(),
             tagged.as_bytes().to_vec(),
-        ))))
+        )))
     }
 }
 

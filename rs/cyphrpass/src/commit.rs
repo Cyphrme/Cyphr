@@ -139,7 +139,7 @@ impl PendingCommit {
 
     /// Add a coz to the pending commit.
     pub fn push(&mut self, cz: VerifiedCoz) {
-        if cz.state_root().is_some() {
+        if cz.arrow().is_some() {
             self.commit_tx = Some(crate::transaction::CommitTransaction(vec![cz]));
         } else {
             self.transactions
@@ -175,12 +175,16 @@ impl PendingCommit {
         self.iter_all_cozies().count()
     }
 
-    /// Compute the Transaction Root (TR) for the current pending cozies.
-    ///
-    /// Returns `None` if no cozies have been added.
-    pub fn compute_tr(&self) -> Option<crate::transaction_root::TransactionRoot> {
+    /// Compute the Transaction Roots (TMR, TCR, TR) for the current pending cozies.
+    pub fn compute_roots(
+        &self,
+    ) -> (
+        Option<crate::transaction_root::TransactionMutationRoot>,
+        Option<crate::transaction_root::TransactionCommitRoot>,
+        Option<crate::transaction_root::TransactionRoot>,
+    ) {
         if self.is_empty() {
-            return None;
+            return (None, None, None);
         }
 
         let algs = &[self.hash_alg];
@@ -205,10 +209,16 @@ impl PendingCommit {
                 .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
                 .collect();
             if let Some(tcr) = crate::transaction_root::compute_tcr(&ctx_czds, algs) {
-                return crate::transaction_root::compute_tr(tmr.as_ref(), &tcr, algs);
+                let tr = crate::transaction_root::compute_tr(tmr.as_ref(), &tcr, algs);
+                return (tmr, Some(tcr), tr);
             }
         }
-        None
+        (tmr, None, None)
+    }
+
+    /// Compute the Transaction Root (TR) for the current pending cozies.
+    pub fn compute_tr(&self) -> Option<crate::transaction_root::TransactionRoot> {
+        self.compute_roots().2
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -402,64 +412,45 @@ impl<'a> CommitScope<'a> {
         self.pending.is_empty()
     }
 
-    /// Finalize the commit by signing the last coz with `commit:<CS>`.
+    /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.
     ///
-    /// This is the creation-path API (Option A). It:
-    /// 1. Parses the unsigned pay to determine the mutation
-    /// 2. Applies the mutation eagerly
-    /// 3. Computes CS = MR(AS', DS') from post-mutation state
-    /// 4. Injects `"commit":<CS>` into the pay (in lexicographic key order)
-    /// 5. Signs the complete pay via `coz::sign_json`
-    /// 6. Computes czd from the signed message
-    /// 7. Creates the final ParsedCoz with state_root
-    /// 8. Pushes to pending and calls finalize_commit
+    /// This replaces `finalize_with_commit` and splits the mutation from finality.
+    /// The caller MUST have previously applied transactions via `verify_and_apply` or `apply`.
     ///
     /// # Arguments
     ///
-    /// * `pay` - Pay fields as a JSON Value (object, without `commit` key)
-    /// * `alg` - Algorithm string (e.g. "ES256")
-    /// * `prv_key` - Private key bytes
+    /// * `alg` - Signer algorithm string (e.g. "ES256")
+    /// * `prv_key` - Private key bytes for signing the Arrow
     /// * `pub_key` - Public key bytes
-    /// * `new_key` - Optional new key for KeyCreate/KeyReplace
+    /// * `tmb` - The thumbprint of the signer key
+    /// * `now` - Timestamp for the commit coz
     ///
     /// # Errors
     ///
-    /// - `MalformedPayload`: Pay missing required fields
-    /// - `InvalidPrior`: `pre` doesn't match current PS
-    /// - Signing failures (from coz)
-    pub fn finalize_with_commit(
+    /// - `EmptyCommit`: if no mutations exist.
+    pub fn finalize_with_arrow(
         mut self,
-        mut pay: serde_json::Value,
         alg: &str,
         prv_key: &[u8],
         pub_key: &[u8],
-        new_key: Option<crate::key::Key>,
+        tmb: &coz::Thumbprint,
+        now: i64,
     ) -> crate::error::Result<&'a Commit> {
         use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
         use crate::state::{
             compute_ar, compute_kr, compute_sr, derive_hash_algs, hash_alg_from_str,
+            hash_sorted_concat_bytes,
         };
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use serde_json::json;
 
-        // 1. Parse pay to get mutation kind
-        let parsed_pay: coz::Pay = serde_json::from_value(pay.clone())
-            .map_err(|_| crate::error::Error::MalformedPayload)?;
-        let hash_alg = hash_alg_from_str(alg)?;
+        if self.is_empty() {
+            return Err(crate::error::Error::EmptyCommit);
+        }
 
-        // 2. Create a preliminary ParsedCoz (with placeholder czd) to apply mutation
-        let placeholder_czd = coz::Czd::from_bytes(vec![0u8; 32]);
-        let placeholder_raw = coz::CozJson {
-            pay: pay.clone(),
-            sig: vec![],
-        };
-        let prelim_tx =
-            ParsedCoz::from_pay(&parsed_pay, placeholder_czd, hash_alg, placeholder_raw)?;
-        let prelim_vtx = VerifiedCoz::from_parts(prelim_tx, new_key.clone());
+        let signer_hash_alg = hash_alg_from_str(alg)?;
 
-        // Apply mutation (verify_pre, key mutations, etc.)
-        self.principal.apply_verified_internal(prelim_vtx)?;
-
-        // 3. Compute CS post-mutation
+        // 1. Recompute roots to get TMR and post-mutation SR
         let key_refs: Vec<&crate::key::Key> = self.principal.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
@@ -469,49 +460,68 @@ impl<'a> CommitScope<'a> {
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
         let sr = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
 
-        // 4. Inject commit:<SR> into pay as alg:b64(digest) tagged string
-        // Per Coz semantics, digest references in pay align with the signer's algorithm.
-        let signer_hash_alg = hash_alg_from_str(alg)?;
+        // For TMR we just use compute_roots early
+        let (tmr, _, _) = self.pending.compute_roots();
+        let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
+
+        // 2. Compute Arrow = MR(pre, sr, tmr)
+        // Arrow computation requires pre, sr, tmr slices
+        // Wait, pre is the principal root of the previous state!
+        // Where is pre? It's self.principal.ps!
+        let pre = &self.principal.ps;
+
+        let pre_bytes = pre.0.get_or_err(signer_hash_alg)?;
         let sr_bytes = sr.0.get_or_err(signer_hash_alg)?;
-        let sr_tagged = format!(
+        let tmr_bytes = tmr.0.get_or_err(signer_hash_alg)?;
+
+        // Arrow = MR(pre, fwd, TMR)
+        let arrow_digest =
+            hash_sorted_concat_bytes(signer_hash_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+
+        // Arrow string format
+        let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
-            Base64UrlUnpadded::encode_string(sr_bytes)
+            Base64UrlUnpadded::encode_string(&arrow_digest)
         );
 
-        if let Some(obj) = pay.as_object_mut() {
-            obj.insert("commit".to_string(), serde_json::Value::String(sr_tagged));
-            // Re-sort keys for Coz canonical ordering.
-            // serde_json with `preserve_order` appends new keys at the end;
-            // we need lexicographic order for deterministic serialization.
+        // 3. Construct commit/create payload
+        let mut pay = serde_json::Map::new();
+        pay.insert("alg".to_string(), json!(alg));
+        pay.insert("arrow".to_string(), json!(arrow_tagged));
+        pay.insert("now".to_string(), json!(now));
+        pay.insert("tmb".to_string(), json!(tmb.to_b64()));
+        pay.insert(
+            "typ".to_string(),
+            json!(crate::parsed_coz::typ::COMMIT_CREATE),
+        );
+
+        let mut pay_obj = serde_json::Value::Object(pay);
+        // Ensure deterministic order
+        if let Some(obj) = pay_obj.as_object_mut() {
             obj.sort_keys();
-        } else {
-            return Err(crate::error::Error::MalformedPayload);
         }
 
-        // 5. Serialize and sign
-        let pay_json =
-            serde_json::to_vec(&pay).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let (sig_bytes, cad) = coz::sign_json(&pay_json, alg, prv_key, pub_key)
-            .ok_or(crate::error::Error::InvalidSignature)?;
+        let pay_vec =
+            serde_json::to_vec(&pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
+        let (sig, cad) = coz::sign_json(&pay_vec, alg, prv_key, pub_key)
+            .ok_or(crate::error::Error::MalformedPayload)?;
+        let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or(crate::error::Error::MalformedPayload)?;
 
-        // 6. Compute czd
-        let czd =
-            coz::czd_for_alg(&cad, &sig_bytes, alg).ok_or(crate::error::Error::InvalidSignature)?;
-
-        // 7. Create the real ParsedCoz (with state_root and real czd)
         let raw = coz::CozJson {
-            pay: pay.clone(),
-            sig: sig_bytes,
+            pay: pay_obj.clone(),
+            sig: sig.clone(),
         };
-        let real_pay: coz::Pay =
-            serde_json::from_value(pay).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let final_tx = ParsedCoz::from_pay(&real_pay, czd, hash_alg, raw)?;
-        let final_vtx = VerifiedCoz::from_parts(final_tx, new_key);
 
-        // 9. Push to pending sequence
-        self.pending.push(final_vtx);
-        self.principal.finalize_commit(self.pending)
+        let parsed_pay: coz::Pay = serde_json::from_value(pay_obj.clone())
+            .map_err(|_| crate::error::Error::MalformedPayload)?;
+
+        let arrow_tx = ParsedCoz::from_pay(&parsed_pay, czd, signer_hash_alg, raw)?;
+        let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
+
+        // 4. Push commit marker and finalize
+        self.pending.push(arrow_vtx);
+        self.finalize()
     }
 }
 

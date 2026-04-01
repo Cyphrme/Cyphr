@@ -466,7 +466,7 @@ impl<'a> Generator<'a> {
         let cz = test
             .commit
             .first()
-            .and_then(|c| c.cz.first())
+            .and_then(|c| c.tx.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
                     "test '{}': single-commit test requires [[commit.cz]]",
@@ -530,15 +530,18 @@ impl<'a> Generator<'a> {
                     reason: format!("invalid pub base64: {}", e),
                 })?;
 
-            let scope = principal.begin_commit();
-            let commit = scope
-                .finalize_with_commit(pay_value, &signer.alg, &prv_bytes, &pub_bytes, new_key)
-                .map_err(|e| Error::Generation {
-                    name: test.name.clone(),
-                    reason: format!("finalize_with_commit failed: {}", e),
-                })?;
+            let commit = self.apply_and_finalize(
+                principal,
+                pay_value,
+                &signer.alg,
+                &prv_bytes,
+                &pub_bytes,
+                &signer_tmb,
+                new_key,
+                cz.now,
+            )?;
 
-            // Extract GoldenCoz from the finalized commit
+            // Extract GoldenCoz from the finalized commit (the first tx is the mutation)
             let vtx = &commit.iter_all_cozies().next().unwrap();
             self.commit_vtx_to_golden_coz(vtx, cz)?
         };
@@ -633,9 +636,17 @@ impl<'a> Generator<'a> {
 
                 let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(&pre))?;
 
-                let scope = principal.begin_commit();
-                let commit_ref = scope
-                    .finalize_with_commit(pay_value, &signer.alg, &prv_bytes, &pub_bytes, new_key)
+                let commit_ref = self
+                    .apply_and_finalize(
+                        principal,
+                        pay_value,
+                        &signer.alg,
+                        &prv_bytes,
+                        &pub_bytes,
+                        &signer_tmb,
+                        new_key,
+                        cz.now,
+                    )
                     .map_err(|e| Error::Generation {
                         name: test.name.clone(),
                         reason: format!("commit {}: {}", i + 1, e),
@@ -707,7 +718,7 @@ impl<'a> Generator<'a> {
         let cz = test
             .commit
             .first()
-            .and_then(|c| c.cz.first())
+            .and_then(|c| c.tx.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
                     "test '{}': cz+action test requires [[commit.cz]]",
@@ -745,14 +756,17 @@ impl<'a> Generator<'a> {
                 reason: format!("invalid pub base64: {}", e),
             })?;
 
-        // Use CommitScope::finalize_with_commit for the coz
-        let scope = principal.begin_commit();
-        scope
-            .finalize_with_commit(pay_value, &signer.alg, &prv_bytes, &pub_bytes, new_key)
-            .map_err(|e| Error::Generation {
-                name: test.name.clone(),
-                reason: format!("finalize_with_commit failed: {}", e),
-            })?;
+        // Use apply_and_finalize for the coz
+        self.apply_and_finalize(
+            principal,
+            pay_value,
+            &signer.alg,
+            &prv_bytes,
+            &pub_bytes,
+            &signer_tmb,
+            new_key,
+            cz.now,
+        )?;
 
         // Now apply the action
         let action_intent = test.action.first().ok_or_else(|| Error::InvalidIntent {
@@ -1238,6 +1252,43 @@ impl<'a> Generator<'a> {
     }
 
     /// Build expected assertions from principal state and intent overrides.
+
+    fn apply_and_finalize(
+        &self,
+        principal: &mut cyphrpass::Principal,
+        pay_value: serde_json::Value,
+        signer_alg: &str,
+        prv_bytes: &[u8],
+        pub_bytes: &[u8],
+        signer_tmb: &str,
+        new_key: Option<cyphrpass::key::Key>,
+        now: i64,
+    ) -> Result<cyphrpass::Commit, Error> {
+        let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
+            name: "unknown".into(),
+            reason: e.to_string(),
+        })?;
+        let (sig_bytes, cad) = coz::sign_json(&pay_vec, signer_alg, prv_bytes, pub_bytes).unwrap();
+        let czd = coz::czd_for_alg(&cad, &sig_bytes, signer_alg).unwrap();
+        let mut scope = principal.begin_commit();
+        scope
+            .verify_and_apply(&pay_vec, &sig_bytes, czd, new_key)
+            .map_err(|e| Error::Generation {
+                name: "unknown".into(),
+                reason: e.to_string(),
+            })?;
+        let tmb = coz::Thumbprint::from_bytes(
+            coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
+        );
+        let commit_ref = scope
+            .finalize_with_arrow(signer_alg, prv_bytes, pub_bytes, &tmb, now)
+            .map_err(|e| Error::Generation {
+                name: "unknown".into(),
+                reason: e.to_string(),
+            })?;
+        Ok(commit_ref.clone())
+    }
+
     fn build_expected_from_principal(
         &self,
         principal: &cyphrpass::Principal,

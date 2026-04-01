@@ -352,7 +352,7 @@ fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
 /// Compute `H(sort(components...))` returning raw bytes.
 ///
 /// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
-fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();

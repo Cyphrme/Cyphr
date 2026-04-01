@@ -739,15 +739,15 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		return nil, ErrEmptyCommit
 	}
 
-	// Validate commit field placement: only last cz may have it,
+	// Validate arrow field placement: only last cz may have it,
 	// and last cz MUST have it (SPEC §4.4).
 	cozies := pending.Cozies()
 	for i, cz := range cozies {
 		isLast := i == len(cozies)-1
-		if cz.CommitSR != nil && !isLast {
+		if cz.Arrow != nil && !isLast {
 			return nil, ErrCommitNotLast
 		}
-		if cz.CommitSR == nil && isLast {
+		if cz.Arrow == nil && isLast {
 			return nil, ErrMissingCommit
 		}
 	}
@@ -770,8 +770,8 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ar = ar
 
-	// Compute Transaction Root (TR) from this commit's transactions (SPEC §14.2)
-	tr, err := pending.ComputeTR()
+	// Compute Transaction Roots (TMR, TCR, TR) from this commit's transactions (SPEC §14.2)
+	tmr, _, tr, err := pending.ComputeRoots()
 	if err != nil {
 		return nil, err
 	}
@@ -784,21 +784,37 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.sr = sr
 
-	// Validate commit field matches independently computed SR.
-	// The cz's CommitSR is a single-variant multihash (signer's algorithm only).
-	// We must compare against the computed SR at that specific algorithm,
-	// not via Tagged() which uses the lex-first algorithm and would fail
-	// in cross-algorithm scenarios (e.g., ES384 signer on SHA-256+SHA-384 principal).
+	// Validate arrow field matches independently computed Arrow.
+	// Arrow = MR(pre, fwd_SR, TMR)
+	// We compare against the computed Arrow at the signer's specific algorithm.
 	lastTx := cozies[len(cozies)-1]
-	if lastTx.CommitSR != nil {
-		txAlgs := lastTx.CommitSR.Algorithms()
+	if lastTx.Arrow != nil {
+		txAlgs := lastTx.Arrow.Algorithms()
 		if len(txAlgs) == 0 {
 			return nil, ErrCommitMismatch
 		}
 		txAlg := txAlgs[0]
-		txDigest := lastTx.CommitSR.Get(txAlg)
-		computedDigest := sr.Get(txAlg)
-		if computedDigest == nil || !bytes.Equal(txDigest, computedDigest) {
+
+		pre := p.pr
+		if len(p.commits) == 0 {
+			// Genesis bootstrap
+			tmbMD := FromSingleDigest(txAlg, p.auth.Keys[0].Tmb)
+			pre = PrincipalRoot{tmbMD}
+		}
+
+		components := [][]byte{
+			pre.GetOrFirst(txAlg),
+			sr.GetOrFirst(txAlg),
+			tmr.GetOrFirst(txAlg),
+		}
+
+		computedDigest, err := hashSortedConcatBytes(txAlg, components...)
+		if err != nil {
+			return nil, err
+		}
+
+		txDigest := lastTx.Arrow.Get(txAlg)
+		if txDigest == nil || !bytes.Equal(txDigest, computedDigest) {
 			return nil, ErrCommitMismatch
 		}
 	}
@@ -807,7 +823,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	oldAlgs := make([]HashAlg, len(p.activeAlgs))
 	copy(oldAlgs, p.activeAlgs)
 	p.activeAlgs = DeriveHashAlgs(p.auth.Keys)
-	
+
 	algsChanged := len(oldAlgs) != len(p.activeAlgs)
 	if !algsChanged {
 		for i, v := range oldAlgs {
@@ -854,7 +870,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	p.pr = pr
 
 	// Finalize the pending commit into an immutable Commit
-	commit, err := pending.Finalize(p.ar, sr, p.pr)
+	commit, err := pending.Finalize(p.ar, p.sr, p.pr)
 	if err != nil {
 		return nil, err
 	}

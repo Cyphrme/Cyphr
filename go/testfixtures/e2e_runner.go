@@ -222,12 +222,6 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 	// Inject 'alg' field for both final and non-final cozies
 	payObj["alg"] = string(signerKey.Alg)
 
-	// Sign and apply
-	if isFinal {
-		_, err := batch.FinalizeWithCommit(payObj, signerKey, targetKey)
-		return err
-	}
-
 	// Non-final coz: sign normally without 'commit' field
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
@@ -249,7 +243,16 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 		Sig: sig,
 	}
 
-	return batch.VerifyAndApply(signedCoz, targetKey)
+	if err := batch.VerifyAndApply(signedCoz, targetKey); err != nil {
+		return err
+	}
+
+	if isFinal {
+		_, err := batch.FinalizeWithArrow(signerKey, cz.Now)
+		return err
+	}
+
+	return nil
 }
 
 // applySingleAction applies a single action.

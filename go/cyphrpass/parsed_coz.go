@@ -60,10 +60,8 @@ type ParsedCoz struct {
 	// Rvk is the revocation timestamp (for revoke cozies).
 	Rvk int64
 
-	// CommitSR is the state root from the `commit` field (terminal coz only).
-	// Per SPEC §4.4, the last coz in a commit contains `"commit":<SR>`
-	// where SR = MR(AR, DR?). Nil for non-terminal cozies.
-	CommitSR *StateRoot
+	// Arrow is the computation MR(pre, fwd, TMR) (terminal coz only).
+	Arrow *MultihashDigest
 
 	// HashAlg is the hash algorithm used to sign this coz.
 	HashAlg HashAlg
@@ -80,14 +78,14 @@ func (t *ParsedCoz) Raw() json.RawMessage {
 // CozPay represents the payload fields for a Cyphrpass coz.
 // This struct is used for JSON unmarshaling of coz payloads.
 type CozPay struct {
-	Alg    coz.SEAlg `json:"alg"`
-	Tmb    coz.B64   `json:"tmb"`
-	Now    int64     `json:"now"`
-	Typ    string    `json:"typ"`
-	Pre    string    `json:"pre,omitempty"`    // Base64url previous state root
-	ID     string    `json:"id,omitempty"`     // Base64url target key thumbprint
-	Rvk    int64     `json:"rvk,omitempty"`    // Revocation timestamp
-	Commit string    `json:"commit,omitempty"` // State Root (alg:digest, terminal coz only)
+	Alg   coz.SEAlg `json:"alg"`
+	Tmb   coz.B64   `json:"tmb"`
+	Now   int64     `json:"now"`
+	Typ   string    `json:"typ"`
+	Pre   string    `json:"pre,omitempty"`   // Base64url previous state root
+	ID    string    `json:"id,omitempty"`    // Base64url target key thumbprint
+	Rvk   int64     `json:"rvk,omitempty"`   // Revocation timestamp
+	Arrow string    `json:"arrow,omitempty"` // Arrow Digest (terminal coz only)
 }
 
 // ParseCoz parses a coz from a CozPay and czd.
@@ -166,9 +164,9 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 		return nil, ErrMalformedPayload
 	}
 
-	// Parse optional commit field (terminal coz finality marker)
-	if pay.Commit != "" {
-		if err := cz.parseCommit(pay.Commit); err != nil {
+	// Parse optional arrow field (terminal coz finality marker)
+	if pay.Arrow != "" {
+		if err := cz.parseArrow(pay.Arrow); err != nil {
 			return nil, err
 		}
 	}
@@ -218,15 +216,18 @@ func (cz *ParsedCoz) parseIDAsAuthRoot(id string) error {
 	return nil
 }
 
-// parseCommit decodes the commit field as a StateRoot in alg:digest format.
-// Per SPEC §4.4, the commit field contains SR = MR(AR, DR?).
-func (cz *ParsedCoz) parseCommit(commit string) error {
-	tagged, err := ParseTaggedDigest(commit)
+// parseArrow decodes the arrow field in alg:digest format.
+// Per SPEC transactions, Arrow = MR(pre, fwd, TMR).
+func (cz *ParsedCoz) parseArrow(arrow string) error {
+	tagged, err := ParseTaggedDigest(arrow)
 	if err != nil {
 		return ErrMalformedPayload
 	}
-	sr := StateRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
-	cz.CommitSR = &sr
+	md, err := NewMultihashDigest(map[HashAlg]coz.B64{tagged.Alg: tagged.Digest})
+	if err != nil {
+		return ErrMalformedPayload
+	}
+	cz.Arrow = &md
 	return nil
 }
 
