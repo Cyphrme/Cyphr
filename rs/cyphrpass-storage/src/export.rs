@@ -47,7 +47,7 @@ pub enum ExportError {
 pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> {
     let mut entries = Vec::new();
 
-    for cz in principal.cozies() {
+    for cz in principal.iter_all_cozies() {
         // Serialize complete CozJson {pay, sig} — no key embedding
         let raw = serde_json::to_value(cz.raw())?;
 
@@ -98,7 +98,7 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
         let mut cozies = Vec::new();
         let mut keys = Vec::new();
 
-        for cz in commit.cozies() {
+        for cz in commit.iter_all_cozies() {
             // Serialize complete CozJson {pay, sig} — no key embedding
             let raw = serde_json::to_value(cz.raw())?;
             cozies.push(raw);

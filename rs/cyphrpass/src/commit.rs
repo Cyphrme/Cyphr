@@ -23,8 +23,10 @@ use crate::state::{
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
 pub struct Commit {
-    /// The verified cozies in this commit.
-    cozies: Vec<VerifiedCoz>,
+    /// Transactions in this commit.
+    pub(crate) transactions: Vec<crate::transaction::Transaction>,
+    /// The terminal commit transaction.
+    pub(crate) commit_tx: crate::transaction::CommitTransaction,
     /// Commit ID: Merkle root of coz czds.
     commit_id: CommitID,
     /// Auth State at the end of this commit.
@@ -42,17 +44,19 @@ impl Commit {
     ///
     /// Returns `EmptyCommit` if `cozies` is empty.
     pub(crate) fn new(
-        cozies: Vec<VerifiedCoz>,
+        transactions: Vec<crate::transaction::Transaction>,
+        commit_tx: crate::transaction::CommitTransaction,
         commit_id: CommitID,
         auth_root: AuthRoot,
         sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Self> {
-        if cozies.is_empty() {
+        if transactions.is_empty() && commit_tx.0.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
         Ok(Self {
-            cozies,
+            transactions,
+            commit_tx,
             commit_id,
             auth_root,
             sr,
@@ -61,8 +65,21 @@ impl Commit {
     }
 
     /// Get the cozies in this commit.
-    pub fn cozies(&self) -> &[VerifiedCoz] {
-        &self.cozies
+    pub fn transactions(&self) -> &[crate::transaction::Transaction] {
+        &self.transactions
+    }
+    pub fn commit_tx(&self) -> &crate::transaction::CommitTransaction {
+        &self.commit_tx
+    }
+    /// Returns a flat vector of all cozies (mutations + commit).
+    pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
+        self.iter_all_cozies().cloned().collect()
+    }
+    pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
+        self.transactions
+            .iter()
+            .flat_map(|tx| tx.0.iter())
+            .chain(self.commit_tx.0.iter())
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
@@ -87,12 +104,12 @@ impl Commit {
 
     /// Get the number of cozies in this commit.
     pub fn len(&self) -> usize {
-        self.cozies.len()
+        self.iter_all_cozies().count()
     }
 
     /// Check if the commit is empty (should never be true for valid commits).
     pub fn is_empty(&self) -> bool {
-        self.cozies.is_empty()
+        self.len() == 0
     }
 }
 
@@ -101,63 +118,76 @@ impl Commit {
 // ============================================================================
 
 /// A commit that is being built but not yet finalized.
-///
-/// Transactions can be added to a pending commit until the final coz
-/// with `commit: true` is received, at which point `finalize()` converts it
-/// to an immutable `Commit`.
-///
-/// Per SPEC §4.2.1, the state during a pending commit is "transitory" and
-/// cannot be referenced by external cozies until finalized.
+/// A commit being built.
+/// Accumulates cozies before finalization.
 #[derive(Debug, Clone)]
 pub struct PendingCommit {
-    /// Accumulated cozies (not yet finalized).
-    cozies: Vec<VerifiedCoz>,
-    /// Hash algorithm for state computation.
-    hash_alg: HashAlg,
+    pub(crate) transactions: Vec<crate::transaction::Transaction>,
+    pub(crate) commit_tx: Option<crate::transaction::CommitTransaction>,
+    pub(crate) raw: Vec<coz::CozJson>,
+    pub(crate) hash_alg: HashAlg,
 }
 
 impl PendingCommit {
-    /// Create a new empty pending commit.
+    /// Create a new empty pending commit with a specific hash algorithm.
     pub fn new(hash_alg: HashAlg) -> Self {
         Self {
-            cozies: Vec::new(),
+            transactions: Vec::new(),
+            commit_tx: None,
+            raw: Vec::new(),
             hash_alg,
         }
     }
 
     /// Add a coz to the pending commit.
     pub fn push(&mut self, cz: VerifiedCoz) {
-        self.cozies.push(cz);
+        if cz.state_root().is_some() {
+            self.commit_tx = Some(crate::transaction::CommitTransaction(vec![cz]));
+        } else {
+            self.transactions
+                .push(crate::transaction::Transaction(vec![cz]));
+        }
     }
 
     /// Get the current list of pending cozies.
-    pub fn cozies(&self) -> &[VerifiedCoz] {
-        &self.cozies
+    pub fn transactions(&self) -> &[crate::transaction::Transaction] {
+        &self.transactions
+    }
+    pub fn commit_tx(&self) -> Option<&crate::transaction::CommitTransaction> {
+        self.commit_tx.as_ref()
+    }
+    /// Returns a flat vector of all cozies (mutations + commit).
+    pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
+        self.iter_all_cozies().cloned().collect()
+    }
+    pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
+        self.transactions
+            .iter()
+            .flat_map(|tx| tx.0.iter())
+            .chain(self.commit_tx.iter().flat_map(|ctx| ctx.0.iter()))
     }
 
     /// Check if the pending commit is empty.
     pub fn is_empty(&self) -> bool {
-        self.cozies.is_empty()
+        self.len() == 0
     }
 
     /// Get the number of pending cozies.
     pub fn len(&self) -> usize {
-        self.cozies.len()
+        self.iter_all_cozies().count()
     }
 
     /// Compute the Commit ID for the current pending cozies.
     ///
     /// Returns `None` if no cozies have been added.
     pub fn compute_commit_id(&self) -> Option<CommitID> {
-        if self.cozies.is_empty() {
+        if self.is_empty() {
             return None;
         }
+        let all = self.iter_all_cozies();
         // Collect czds with their source algorithms for cross-algorithm conversion
-        let tagged_czds: Vec<TaggedCzd<'_>> = self
-            .cozies
-            .iter()
-            .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
-            .collect();
+        let tagged_czds: Vec<TaggedCzd<'_>> =
+            all.map(|t| TaggedCzd::new(t.czd(), t.hash_alg())).collect();
         compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
     }
 
@@ -178,27 +208,30 @@ impl PendingCommit {
         sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Commit> {
-        if self.cozies.is_empty() {
+        if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
+        let commit_tx = self
+            .commit_tx
+            .clone()
+            .ok_or(crate::error::Error::MalformedPayload)?; // Must have a commit tx to finalize
+        let all = self.iter_all_cozies();
+
         // Compute Commit ID from all coz czds with algorithm tagging
-        let tagged_czds: Vec<TaggedCzd<'_>> = self
-            .cozies
-            .iter()
-            .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
-            .collect();
+        let tagged_czds: Vec<TaggedCzd<'_>> =
+            all.map(|t| TaggedCzd::new(t.czd(), t.hash_alg())).collect();
         let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.cozies, commit_id, auth_root, sr, ps)
+        Commit::new(self.transactions, commit_tx, commit_id, auth_root, sr, ps)
     }
 
     /// Consume the pending commit and return the cozies.
     ///
     /// Use this for rollback or when abandoning a pending commit.
     pub fn into_transactions(self) -> Vec<VerifiedCoz> {
-        self.cozies
+        self.iter_all_cozies().cloned().collect()
     }
 }
 
@@ -494,7 +527,10 @@ mod tests {
         pay.extra.insert("pre".into(), json!(TEST_PRE));
         pay.extra.insert("id".into(), json!(TEST_ID));
         if is_finalizer {
-            pay.extra.insert("commit".into(), json!(true));
+            pay.extra.insert(
+                "commit".into(),
+                json!("SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"),
+            );
         }
 
         let czd = Czd::from_bytes(vec![czd_byte; 32]);
@@ -574,10 +610,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_finalize_succeeds_without_finalizer_marker() {
-        // Per protocol simplification, commit: true is no longer required
+    fn pending_commit_finalize_fails_without_finalizer_marker() {
+        // Finalizer must be present to distinguish the commit transaction
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        let cz = make_test_tx(false, 0x01); // No finalizer marker, but finalize should succeed
+        let cz = make_test_tx(false, 0x01); // No finalizer marker
         pending.push(cz);
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
@@ -595,8 +631,8 @@ mod tests {
 
         let result = pending.finalize(auth_root, sr, ps);
         assert!(
-            result.is_ok(),
-            "finalize should succeed without finalizer marker"
+            matches!(result, Err(crate::error::Error::MalformedPayload)),
+            "finalize should fail without finalizer marker"
         );
     }
 
@@ -658,7 +694,7 @@ mod tests {
             .unwrap();
 
         // Test all accessors
-        assert_eq!(commit.cozies().len(), 1);
+        assert_eq!(commit.iter_all_cozies().count(), 1);
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_root(), &auth_root);

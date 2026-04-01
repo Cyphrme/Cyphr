@@ -500,8 +500,8 @@ impl Principal {
     }
 
     /// Get all cozies (across all commits).
-    pub fn cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
-        self.auth.commits.iter().flat_map(|c| c.cozies())
+    pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
+        self.auth.commits.iter().flat_map(|c| c.iter_all_cozies())
     }
 
     /// Get all finalized commits.
@@ -910,7 +910,7 @@ impl Principal {
 
         // Validate commit field placement: only last cz may have it,
         // and last cz MUST have it (SPEC §4.4).
-        let cozies = pending.cozies();
+        let cozies = pending.all_cozies();
         for (i, vtx) in cozies.iter().enumerate() {
             let is_last = i == cozies.len() - 1;
             if vtx.state_root().is_some() && !is_last {

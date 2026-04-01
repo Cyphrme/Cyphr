@@ -26,6 +26,7 @@ pub mod multihash;
 pub mod parsed_coz;
 pub mod principal;
 pub mod state;
+pub mod transaction;
 
 // Re-exports
 pub use action::Action;
@@ -39,3 +40,4 @@ pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
     compute_ar, compute_commit_id, compute_dr, compute_kr, compute_pr, compute_sr,
 };
+pub use transaction::{CommitTransaction, Transaction};

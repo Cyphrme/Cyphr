@@ -230,6 +230,7 @@ pub struct KeyEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitEntry {
     /// ParsedCoz entries in this commit bundle.
+    #[serde(rename = "txs")]
     pub cozies: Vec<serde_json::Value>,
     /// Key material introduced in this commit.
     pub keys: Vec<KeyEntry>,

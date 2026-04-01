@@ -20,7 +20,7 @@ pub fn run(cli: &Cli, command: &TxCommands) -> crate::Result<()> {
 fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
     let principal = load_identity(cli, identity)?;
 
-    let cozies: Vec<_> = principal.cozies().collect();
+    let cozies: Vec<_> = principal.iter_all_cozies().collect();
 
     match cli.output {
         OutputFormat::Json => {
@@ -175,7 +175,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         )));
     }
 
-    let tx_count: usize = principal.cozies().count();
+    let tx_count: usize = principal.iter_all_cozies().count();
 
     match cli.output {
         OutputFormat::Json => {

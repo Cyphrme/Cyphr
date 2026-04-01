@@ -15,10 +15,9 @@ import (
 //
 // A Commit is immutable once finalized.
 type Commit struct {
-	// cozies are the verified cozies in this commit.
-	cozies []*ParsedCoz
-	// commitID is the Commit ID: Merkle root of coz czds.
-	commitID *CommitID
+	transactions []Transaction
+	commitTx     CommitTransaction
+	commitID     *CommitID
 	// sr is the State Root at the end of this commit.
 	sr StateRoot
 	// as is the Auth State at the end of this commit.
@@ -31,22 +30,34 @@ type Commit struct {
 
 // newCommit creates a finalized commit from cozies and computed states.
 // Returns ErrEmptyCommit if cozies is empty.
-func newCommit(cozies []*ParsedCoz, commitID *CommitID, sr StateRoot, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
-	if len(cozies) == 0 {
+func newCommit(transactions []Transaction, commitTx CommitTransaction, commitID *CommitID, sr StateRoot, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
+	if len(transactions) == 0 && len(commitTx) == 0 {
 		return nil, ErrEmptyCommit
 	}
 	return &Commit{
-		cozies:   cozies,
-		commitID: commitID,
-		sr:       sr,
-		ar:       ar,
-		pr:       pr,
+		transactions: transactions,
+		commitTx:     commitTx,
+		commitID:     commitID,
+		sr:           sr,
+		ar:           ar,
+		pr:           pr,
 	}, nil
 }
 
 // Cozies returns the cozies in this commit.
+func (c *Commit) Transactions() []Transaction {
+	return c.transactions
+}
+func (c *Commit) CommitTx() CommitTransaction {
+	return c.commitTx
+}
 func (c *Commit) Cozies() []*ParsedCoz {
-	return c.cozies
+	var flat []*ParsedCoz
+	for _, tx := range c.transactions {
+		flat = append(flat, tx...)
+	}
+	flat = append(flat, c.commitTx...)
+	return flat
 }
 
 // CommitID returns the Commit ID (Merkle root of this commit's czds).
@@ -71,12 +82,12 @@ func (c *Commit) PR() PrincipalRoot {
 
 // Len returns the number of cozies in this commit.
 func (c *Commit) Len() int {
-	return len(c.cozies)
+	return len(c.Cozies())
 }
 
 // IsEmpty returns true if the commit has no cozies (invalid state).
 func (c *Commit) IsEmpty() bool {
-	return len(c.cozies) == 0
+	return len(c.Cozies()) == 0
 }
 
 // Raw returns the raw JSON messages for storage round-trips.
@@ -97,8 +108,8 @@ func (c *Commit) setRaw(raw []json.RawMessage) {
 // Per SPEC §4.2.1, state during a pending commit is "transitory" and cannot
 // be referenced by external cozies until finalized.
 type PendingCommit struct {
-	// cozies are the accumulated cozies (not yet finalized).
-	cozies []*ParsedCoz
+	transactions []Transaction
+	commitTx     CommitTransaction
 	// raw stores the original raw JSON for each coz.
 	raw []json.RawMessage
 	// hashAlg is the hash algorithm for state computation.
@@ -108,43 +119,64 @@ type PendingCommit struct {
 // NewPendingCommit creates a new empty pending commit.
 func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 	return &PendingCommit{
-		cozies:  make([]*ParsedCoz, 0),
-		raw:     make([]json.RawMessage, 0),
-		hashAlg: hashAlg,
+		transactions: make([]Transaction, 0),
+		raw:          make([]json.RawMessage, 0),
+		hashAlg:      hashAlg,
 	}
 }
 
 // Push adds a coz to the pending commit.
 func (p *PendingCommit) Push(cz *ParsedCoz) {
-	p.cozies = append(p.cozies, cz)
+	if cz.CommitSR != nil {
+		p.commitTx = append(p.commitTx, cz)
+	} else {
+		p.transactions = append(p.transactions, Transaction{cz})
+	}
 	if cz.raw != nil {
 		p.raw = append(p.raw, cz.raw)
 	}
 }
 
+// Transactions returns the current pending transactions.
+func (p *PendingCommit) Transactions() []Transaction {
+	return p.transactions
+}
+
+// CommitTx returns the commit transaction.
+func (p *PendingCommit) CommitTx() CommitTransaction {
+	return p.commitTx
+}
+
 // Cozies returns the current list of pending cozies.
 func (p *PendingCommit) Cozies() []*ParsedCoz {
-	return p.cozies
+	var flat []*ParsedCoz
+	for _, tx := range p.transactions {
+		flat = append(flat, tx...)
+	}
+	if p.commitTx != nil {
+		flat = append(flat, p.commitTx...)
+	}
+	return flat
 }
 
 // IsEmpty returns true if no cozies have been added.
 func (p *PendingCommit) IsEmpty() bool {
-	return len(p.cozies) == 0
+	return len(p.Cozies()) == 0
 }
 
 // Len returns the number of pending cozies.
 func (p *PendingCommit) Len() int {
-	return len(p.cozies)
+	return len(p.Cozies())
 }
 
 // ComputeCommitID computes the Commit ID for the current pending cozies.
 // Returns nil if no cozies have been added.
 func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
-	if len(p.cozies) == 0 {
+	if len(p.Cozies()) == 0 {
 		return nil, nil
 	}
-	czds := make([]coz.B64, len(p.cozies))
-	for i, cz := range p.cozies {
+	czds := make([]coz.B64, len(p.Cozies()))
+	for i, cz := range p.Cozies() {
 		czds[i] = cz.Czd
 	}
 	return ComputeCommitID(czds, nil, []HashAlg{p.hashAlg})
@@ -159,7 +191,7 @@ func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
 //
 // Returns nil if no cozies exist.
 func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*Commit, error) {
-	if len(p.cozies) == 0 {
+	if len(p.Cozies()) == 0 {
 		return nil, ErrEmptyCommit
 	}
 
@@ -169,7 +201,7 @@ func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*
 		return nil, err
 	}
 
-	commit, err := newCommit(p.cozies, cid, sr, ar, pr)
+	commit, err := newCommit(p.transactions, p.commitTx, cid, sr, ar, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -180,8 +212,9 @@ func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*
 // IntoTransactions consumes the pending commit and returns the cozies.
 // Use for rollback or when abandoning a pending commit.
 func (p *PendingCommit) IntoTransactions() []*ParsedCoz {
-	cozies := p.cozies
-	p.cozies = nil
+	cozies := p.Cozies()
+	p.transactions = nil
+	p.commitTx = nil
 	p.raw = nil
 	return cozies
 }

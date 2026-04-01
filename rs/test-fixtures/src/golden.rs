@@ -301,7 +301,7 @@ impl<'a> Generator<'a> {
 
         // Compute digests from cozies and actions
         let mut digests = Vec::new();
-        for cz in principal.cozies() {
+        for cz in principal.iter_all_cozies() {
             digests.push(cz.czd().to_b64());
         }
 
@@ -546,7 +546,7 @@ impl<'a> Generator<'a> {
                 })?;
 
             // Extract GoldenCoz from the finalized commit
-            let vtx = &commit.cozies()[0];
+            let vtx = &commit.iter_all_cozies().next().unwrap();
             self.commit_vtx_to_golden_coz(vtx, cz)?
         };
 
@@ -648,7 +648,7 @@ impl<'a> Generator<'a> {
                         reason: format!("commit {}: {}", i + 1, e),
                     })?;
 
-                let vtx = &commit_ref.cozies()[0];
+                let vtx = &commit_ref.iter_all_cozies().next().unwrap();
                 self.commit_vtx_to_golden_coz(vtx, cz)?
             };
 
