@@ -145,10 +145,10 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
             ));
         }
 
-        if exp.cs != expected_commit.cs {
+        if exp.sr != expected_commit.sr {
             return Err(format!(
-                "commit {}: cs mismatch\n  exported: {:?}\n  expected: {:?}",
-                i, exp.cs, expected_commit.cs
+                "commit {}: sr mismatch\n  exported: {:?}\n  expected: {:?}",
+                i, exp.sr, expected_commit.sr
             ));
         }
 
@@ -299,7 +299,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         }
     }
 
-    // Debug: show commit state digests
+    // Debug: show state root digests
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(

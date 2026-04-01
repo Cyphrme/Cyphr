@@ -153,9 +153,9 @@ func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
 // Finalize converts the pending commit to an immutable Commit.
 //
 // Arguments:
-//   - as: The computed Auth State after all transactions
-//   - cs: The computed Commit State (binds AS to this commit's ID)
-//   - ps: The computed Principal State after all transactions
+//   - ar: The computed Auth State after all transactions
+//   - sr: The computed State Root (binds AR and DR)
+//   - pr: The computed Principal State after all transactions
 //
 // Returns nil if no transactions exist.
 func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*Commit, error) {

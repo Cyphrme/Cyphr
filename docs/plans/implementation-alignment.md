@@ -143,7 +143,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 
    **3d: Downstream consumers (both langs)**
    - [x] Update storage export/import (if CS is referenced)
-   - [ ] Update CLI commands
+   - [x] Update CLI commands
    - [x] Update test fixtures and intent structs
    - [x] Update e2e runners
 
@@ -288,13 +288,13 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                     | Resolved |
-| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------- | :------: |
-| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass          |          |
-| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass |          |
-| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`  |          |
-| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |          |
-| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           |          |
+| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                     |  Resolved  |
+| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------- | :--------: |
+| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass          | 2026-04-01 |
+| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass | 2026-04-01 |
+| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`  | 2026-04-01 |
+| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |            |
+| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           | 2026-04-01 |
 
 ## Deviation Log
 

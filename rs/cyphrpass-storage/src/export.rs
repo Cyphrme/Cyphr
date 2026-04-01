@@ -70,7 +70,7 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 /// - `txs`: Array of transaction JSON values (with embedded key material)
 /// - `commit_id`: Commit ID (Merkle root of transaction czds, base64url)
 /// - `as`: Auth State (base64url)
-/// - `cs`: Commit State (MR(AS, Commit ID), base64url)
+/// - `sr`: State Root (base64url)
 /// - `ps`: Principal State (base64url)
 ///
 /// **Note**: Actions are not included in commits; they are stored separately
@@ -139,14 +139,14 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let auth_root = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
 
-        let cs_bytes = commit.cs().as_multihash().first_variant()?;
-        let cs_alg = commit
-            .cs()
+        let sr_bytes = commit.sr().as_multihash().first_variant()?;
+        let sr_alg = commit
+            .sr()
             .as_multihash()
             .algorithms()
             .next()
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
-        let cs = format!("{}:{}", cs_alg, Base64UrlUnpadded::encode_string(cs_bytes));
+        let sr = format!("{}:{}", sr_alg, Base64UrlUnpadded::encode_string(sr_bytes));
 
         let ps_bytes = commit.pr().as_multihash().first_variant()?;
         let ps_alg = commit
@@ -157,7 +157,7 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
             .ok_or(cyphrpass::Error::EmptyMultihash)?;
         let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
 
-        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_root, cs, ps));
+        commit_entries.push(CommitEntry::new(txs, keys, commit_id, auth_root, sr, ps));
     }
 
     Ok(commit_entries)

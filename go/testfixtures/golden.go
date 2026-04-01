@@ -63,8 +63,8 @@ type GoldenCommit struct {
 	CommitID string `json:"commit_id,omitempty"`
 	// AR is the auth root after this commit (base64url).
 	AR string `json:"ar,omitempty"`
-	// CS is the commit state after this commit (base64url).
-	CS string `json:"cs,omitempty"`
+	// SR is the state root after this commit (base64url).
+	SR string `json:"sr,omitempty"`
 	// PR is the principal root after this commit (base64url).
 	PR string `json:"pr,omitempty"`
 }
@@ -85,8 +85,8 @@ type GoldenExpected struct {
 	CommitID string `json:"commit_id,omitempty"`
 	// TS is a backwards-compatible alias for CommitID (legacy golden files).
 	TS string `json:"ts,omitempty"`
-	// CS is the expected commit state digest.
-	CS string `json:"cs,omitempty"`
+	// SR is the expected state root digest.
+	SR string `json:"sr,omitempty"`
 	// DR is the expected data root digest.
 	DR string `json:"dr,omitempty"`
 	// PG is the expected principal genesis.

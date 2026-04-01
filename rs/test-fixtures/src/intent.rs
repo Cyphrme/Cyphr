@@ -127,9 +127,9 @@ pub struct ExpectedAssertions {
     /// Expected auth root digest.
     #[serde(rename = "ar", default)]
     pub auth_root: Option<String>,
-    /// Expected commit state digest.
-    #[serde(default)]
-    pub cs: Option<String>,
+    /// Expected state root digest.
+    #[serde(rename = "sr", default)]
+    pub sr: Option<String>,
     /// Expected principal root digest.
     #[serde(default)]
     pub pr: Option<String>,
@@ -346,17 +346,17 @@ level = 1
     }
 
     #[test]
-    fn test_expected_has_cs_field() {
+    fn test_expected_has_sr_field() {
         let toml_str = r#"
 [[test]]
-name = "with_cs"
+name = "with_sr"
 principal = ["golden"]
 
 [test.expected]
-cs = "SHA-256:abc123"
+sr = "SHA-256:abc123"
 "#;
         let intent = Intent::from_str(toml_str).expect("failed to parse");
         let expected = intent.test[0].expected.as_ref().unwrap();
-        assert_eq!(expected.cs.as_deref(), Some("SHA-256:abc123"));
+        assert_eq!(expected.sr.as_deref(), Some("SHA-256:abc123"));
     }
 }

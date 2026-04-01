@@ -147,7 +147,7 @@ impl FileStore {
     /// - `txs`: Array of transaction entries
     /// - `commit_id`: Commit ID (base64url)
     /// - `as`: Auth State (base64url)
-    /// - `cs`: Commit State (base64url)
+    /// - `sr`: State Root (base64url)
     /// - `ps`: Principal State (base64url)
     pub fn append_commit(
         &self,

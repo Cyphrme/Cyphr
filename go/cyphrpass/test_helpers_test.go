@@ -41,7 +41,7 @@ func (p *Principal) ApplyTransactionUnsafe(tx *Transaction, newKey *coz.Key) (*C
 	}
 
 	// Inject state_root into transaction
-	tx.CommitCS = &sr
+	tx.CommitSR = &sr
 
 	// Finalize as single-tx commit
 	pending := NewPendingCommit(p.hashAlg)

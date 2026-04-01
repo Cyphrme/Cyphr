@@ -222,8 +222,8 @@ pub struct KeyEntry {
 /// - `keys`: Key material introduced in this commit (SPEC §5.2/§5.3)
 /// - `commit_id`: Commit ID (Merkle root of commit's transaction czds)
 /// - `ar`: Auth Root (derived from KR)
-/// - `cs`: Commit State (derived from AR and Commit ID)
-/// - `pr`: Principal Root (derived from CS and DR)
+/// - `sr`: State Root (derived from AR and DR?)
+/// - `pr`: Principal Root (derived from SR and CR)
 ///
 /// The derived state digests enable efficient indexing and verification
 /// without replaying the full transaction history.
@@ -239,8 +239,9 @@ pub struct CommitEntry {
     /// Auth Root after this commit.
     #[serde(rename = "ar")]
     pub auth_root: String,
-    /// Commit State: MR(AR, Commit ID).
-    pub cs: String,
+    /// State Root: MR(AR, DR?).
+    #[serde(alias = "cs")]
+    pub sr: String,
     /// Principal Root after this commit.
     pub pr: String,
 }
@@ -252,7 +253,7 @@ impl CommitEntry {
         keys: Vec<KeyEntry>,
         commit_id: String,
         auth_root: String,
-        cs: String,
+        sr: String,
         pr: String,
     ) -> Self {
         Self {
@@ -260,7 +261,7 @@ impl CommitEntry {
             keys,
             commit_id,
             auth_root,
-            cs,
+            sr,
             pr,
         }
     }

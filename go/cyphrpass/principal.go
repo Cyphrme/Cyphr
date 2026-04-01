@@ -735,10 +735,10 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	txs := pending.Transactions()
 	for i, tx := range txs {
 		isLast := i == len(txs)-1
-		if tx.CommitCS != nil && !isLast {
+		if tx.CommitSR != nil && !isLast {
 			return nil, ErrCommitNotLast
 		}
-		if tx.CommitCS == nil && isLast {
+		if tx.CommitSR == nil && isLast {
 			return nil, ErrMissingCommit
 		}
 	}
@@ -776,18 +776,18 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	p.sr = sr
 
 	// Validate commit field matches independently computed SR.
-	// The tx's CommitCS is a single-variant multihash (signer's algorithm only).
+	// The tx's CommitSR is a single-variant multihash (signer's algorithm only).
 	// We must compare against the computed SR at that specific algorithm,
 	// not via Tagged() which uses the lex-first algorithm and would fail
 	// in cross-algorithm scenarios (e.g., ES384 signer on SHA-256+SHA-384 principal).
 	lastTx := txs[len(txs)-1]
-	if lastTx.CommitCS != nil {
-		txAlgs := lastTx.CommitCS.Algorithms()
+	if lastTx.CommitSR != nil {
+		txAlgs := lastTx.CommitSR.Algorithms()
 		if len(txAlgs) == 0 {
 			return nil, ErrCommitMismatch
 		}
 		txAlg := txAlgs[0]
-		txDigest := lastTx.CommitCS.Get(txAlg)
+		txDigest := lastTx.CommitSR.Get(txAlg)
 		computedDigest := sr.Get(txAlg)
 		if computedDigest == nil || !bytes.Equal(txDigest, computedDigest) {
 			return nil, ErrCommitMismatch

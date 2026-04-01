@@ -88,8 +88,8 @@ pub struct PrincipalCore {
     pub(crate) ks: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's transactions).
     pub(crate) commit_id: Option<CommitID>,
-    /// Current Commit State: MR(AS, Commit ID).
-    pub(crate) cs: Option<StateRoot>,
+    /// Current State Root: SR = MR(AR, DR?, embedding?).
+    pub(crate) sr: Option<StateRoot>,
     /// Current Auth State.
     pub(crate) auth_root: AuthRoot,
     /// Current Data State (Level 4+).
@@ -116,7 +116,7 @@ impl Default for PrincipalCore {
             ps: PrincipalRoot::default(),
             ks: KeyRoot::default(),
             commit_id: None,
-            cs: None,
+            sr: None,
             auth_root: AuthRoot::default(),
             ds: None,
             auth: AuthLedger::default(),
@@ -246,7 +246,7 @@ impl Principal {
             ps,
             ks,
             commit_id: None,
-            cs: Some(cs),
+            sr: Some(cs),
             auth_root,
             ds: None,
             auth: AuthLedger {
@@ -298,7 +298,7 @@ impl Principal {
             ps,
             ks,
             commit_id: None,
-            cs: Some(cs),
+            sr: Some(cs),
             auth_root,
             ds: None,
             auth: AuthLedger {
@@ -360,7 +360,7 @@ impl Principal {
             ps,
             ks,
             commit_id: None,
-            cs: Some(cs),
+            sr: Some(cs),
             auth_root,
             ds: None,
             auth: AuthLedger {
@@ -516,12 +516,12 @@ impl Principal {
         self.commit_id.as_ref()
     }
 
-    /// Get the current Commit State.
+    /// Get the current State Root.
     ///
     /// Returns `None` only if no state has been computed (shouldn't happen
-    /// after genesis). At genesis, CS is promoted from AS.
-    pub fn cs(&self) -> Option<&StateRoot> {
-        self.cs.as_ref()
+    /// after genesis). At genesis, SR is promoted from AR.
+    pub fn sr(&self) -> Option<&StateRoot> {
+        self.sr.as_ref()
     }
 
     /// Begin a new commit scope.
@@ -653,7 +653,7 @@ impl Principal {
 
         // Recompute SR = MR(AR, DR?, embedding?)
         let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &[self.hash_alg])?;
-        self.cs = Some(sr.clone());
+        self.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
         self.ps = compute_pr(&sr, self.commit_id.as_ref(), None, &[self.hash_alg])?;
@@ -944,7 +944,7 @@ impl Principal {
 
         // Compute SR = MR(AR, DR?, embedding?)
         let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &self.active_algs)?;
-        self.cs = Some(sr.clone());
+        self.sr = Some(sr.clone());
 
         // Validate commit field matches independently computed SR
         // Compare per-variant (the claimed SR from pay may contain a single

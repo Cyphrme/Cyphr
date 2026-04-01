@@ -110,10 +110,10 @@ pub enum Error {
     /// `commit` field value does not match independently computed CS.
     ///
     /// Per SPEC §4.4, the `commit` value must equal `MR(AS, DS?)`.
-    #[error("commit state mismatch")]
+    #[error("state root mismatch")]
     CommitMismatch,
 
-    /// External reference to transitory (unfinalized) commit state.
+    /// External reference to transitory (unfinalized) state root.
     ///
     /// Per SPEC §4.2.1, transitory state during a pending commit cannot
     /// be referenced by external transactions until the commit is finalized.

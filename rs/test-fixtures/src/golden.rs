@@ -10,10 +10,10 @@
 //!
 //! The generator:
 //! 1. Creates a Principal from genesis keys (auto-promotion per spec)
-//! 2. For each transaction, captures `pre` from current commit state
+//! 2. For each transaction, captures `pre` from current state root
 //! 3. Builds and signs the Coz message
 //! 4. Applies the transaction to the Principal
-//! 5. Extracts final state digests (ks, as, cs, ps, commit_id)
+//! 5. Extracts final state digests (ks, as, sr, ps, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphrpass_storage::{CommitEntry, KeyEntry};
@@ -109,9 +109,9 @@ pub struct GoldenExpected {
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
     pub commit_id: Option<String>,
-    /// Expected commit state digest: MR(AR, Commit ID).
+    /// Expected state root digest: MR(AR, DR?).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cs: Option<String>,
+    pub sr: Option<String>,
     /// Expected data root digest (Level 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dr: Option<String>,
@@ -284,7 +284,7 @@ impl<'a> Generator<'a> {
     /// - txs: array of transactions in commit (with pay, sig, key? fields)
     /// - commit_id: Commit ID digest (base64url)
     /// - as: Auth State digest (base64url)
-    /// - cs: Commit State digest (base64url)
+    /// - sr: State Root digest (base64url)
     /// - pr: Principal State digest (base64url)
     ///
     /// Actions are exported as single-tx pseudo-commits at the end, with
@@ -337,10 +337,10 @@ impl<'a> Generator<'a> {
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
                 .unwrap_or_default();
-            let cs = principal
-                .cs()
-                .map(|c| {
-                    c.as_multihash()
+            let sr = principal
+                .sr()
+                .map(|s| {
+                    s.as_multihash()
                         .first_variant()
                         .map(Base64UrlUnpadded::encode_string)
                         .unwrap_or_default()
@@ -358,7 +358,7 @@ impl<'a> Generator<'a> {
                 vec![],
                 commit_id,
                 auth_root,
-                cs,
+                sr,
                 pr_,
             ));
         }
@@ -400,7 +400,7 @@ impl<'a> Generator<'a> {
             keys,
             String::new(), // commit_id placeholder for error tests
             String::new(), // as placeholder for error tests
-            String::new(), // cs placeholder for error tests
+            String::new(), // sr placeholder for error tests
             String::new(), // ps placeholder for error tests
         )
     }
@@ -1279,8 +1279,8 @@ impl<'a> Generator<'a> {
             cid.get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
-        let cs = principal.cs().and_then(|cs_val| {
-            cs_val
+        let sr = principal.sr().and_then(|sr_val| {
+            sr_val
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
@@ -1337,7 +1337,7 @@ impl<'a> Generator<'a> {
                 auth_root: e.auth_root.clone().or(Some(auth_root)),
                 pr: e.pr.clone().or(Some(pr_val)),
                 commit_id: e.commit_id.clone().or(commit_id),
-                cs: e.cs.clone().or(cs),
+                sr: e.sr.clone().or(sr),
                 dr: dr.clone(),
                 pg: Some(pg.clone()),
                 error: e.error.clone(),
@@ -1352,7 +1352,7 @@ impl<'a> Generator<'a> {
                 auth_root: Some(auth_root),
                 pr: Some(pr_val),
                 commit_id,
-                cs,
+                sr,
                 dr,
                 pg: Some(pg),
                 error: None,

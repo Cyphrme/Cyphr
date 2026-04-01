@@ -97,8 +97,8 @@ type ExpectedAssertions struct {
 	KR string `toml:"kr,omitempty"`
 	// AR is expected auth root digest.
 	AR string `toml:"ar,omitempty"`
-	// CS is expected commit state digest.
-	CS string `toml:"cs,omitempty"`
+	// SR is expected state root digest.
+	SR string `toml:"sr,omitempty"`
 	// PR is expected principal root digest.
 	PR string `toml:"pr,omitempty"`
 	// CommitID is expected commit ID digest.

@@ -30,7 +30,7 @@ pub struct Commit {
     /// Auth State at the end of this commit.
     auth_root: AuthRoot,
     /// State Root at the end of this commit.
-    cs: StateRoot,
+    sr: StateRoot,
     /// Principal State at the end of this commit.
     ps: PrincipalRoot,
 }
@@ -45,7 +45,7 @@ impl Commit {
         transactions: Vec<VerifiedTransaction>,
         commit_id: CommitID,
         auth_root: AuthRoot,
-        cs: StateRoot,
+        sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() {
@@ -55,7 +55,7 @@ impl Commit {
             transactions,
             commit_id,
             auth_root,
-            cs,
+            sr,
             ps,
         })
     }
@@ -71,8 +71,8 @@ impl Commit {
     }
 
     /// Get the State Root at the end of this commit.
-    pub fn cs(&self) -> &StateRoot {
-        &self.cs
+    pub fn sr(&self) -> &StateRoot {
+        &self.sr
     }
 
     /// Get the Auth State at the end of this commit.
@@ -166,7 +166,7 @@ impl PendingCommit {
     /// # Arguments
     ///
     /// * `auth_root` - The computed Auth State after all transactions
-    /// * `cs` - The computed Commit State: MR(AS, Commit ID)
+    /// * `sr` - The computed State Root: MR(AR, DR?, embedding?)
     /// * `ps` - The computed Principal State after all transactions
     ///
     /// # Errors
@@ -175,7 +175,7 @@ impl PendingCommit {
     pub fn finalize(
         self,
         auth_root: AuthRoot,
-        cs: StateRoot,
+        sr: StateRoot,
         ps: PrincipalRoot,
     ) -> crate::error::Result<Commit> {
         if self.transactions.is_empty() {
@@ -191,7 +191,7 @@ impl PendingCommit {
         let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_id, auth_root, cs, ps)
+        Commit::new(self.transactions, commit_id, auth_root, sr, ps)
     }
 
     /// Consume the pending commit and return the transactions.
@@ -419,20 +419,20 @@ impl<'a> CommitScope<'a> {
             self.principal.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let cs = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
+        let sr = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
 
-        // 4. Inject commit:<CS> into pay as alg:b64(digest) tagged string
+        // 4. Inject commit:<SR> into pay as alg:b64(digest) tagged string
         // Per Coz semantics, digest references in pay align with the signer's algorithm.
         let signer_hash_alg = hash_alg_from_str(alg)?;
-        let cs_bytes = cs.0.get_or_err(signer_hash_alg)?;
-        let cs_tagged = format!(
+        let sr_bytes = sr.0.get_or_err(signer_hash_alg)?;
+        let sr_tagged = format!(
             "{}:{}",
             signer_hash_alg,
-            Base64UrlUnpadded::encode_string(cs_bytes)
+            Base64UrlUnpadded::encode_string(sr_bytes)
         );
 
         if let Some(obj) = pay.as_object_mut() {
-            obj.insert("commit".to_string(), serde_json::Value::String(cs_tagged));
+            obj.insert("commit".to_string(), serde_json::Value::String(sr_tagged));
             // Re-sort keys for Coz canonical ordering.
             // serde_json with `preserve_order` appends new keys at the end;
             // we need lexicographic order for deterministic serialization.
@@ -554,7 +554,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = StateRoot(MultihashDigest::from_single(
+        let sr = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -563,13 +563,13 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_root.clone(), cs.clone(), ps.clone());
+        let commit = pending.finalize(auth_root.clone(), sr.clone(), ps.clone());
         assert!(commit.is_ok());
 
         let commit = commit.unwrap();
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_root(), &auth_root);
-        assert_eq!(commit.cs(), &cs);
+        assert_eq!(commit.sr(), &sr);
         assert_eq!(commit.pr(), &ps);
     }
 
@@ -584,7 +584,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = StateRoot(MultihashDigest::from_single(
+        let sr = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -593,7 +593,7 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_root, cs, ps);
+        let result = pending.finalize(auth_root, sr, ps);
         assert!(
             result.is_ok(),
             "finalize should succeed without finalizer marker"
@@ -608,7 +608,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = StateRoot(MultihashDigest::from_single(
+        let sr = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -617,7 +617,7 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_root, cs, ps);
+        let result = pending.finalize(auth_root, sr, ps);
         assert!(result.is_err(), "should fail when empty");
     }
 
@@ -644,7 +644,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = StateRoot(MultihashDigest::from_single(
+        let sr = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -654,7 +654,7 @@ mod tests {
         ));
 
         let commit = pending
-            .finalize(auth_root.clone(), cs.clone(), ps.clone())
+            .finalize(auth_root.clone(), sr.clone(), ps.clone())
             .unwrap();
 
         // Test all accessors
@@ -662,7 +662,7 @@ mod tests {
         assert!(!commit.is_empty());
         assert_eq!(commit.len(), 1);
         assert_eq!(commit.auth_root(), &auth_root);
-        assert_eq!(commit.cs(), &cs);
+        assert_eq!(commit.sr(), &sr);
         assert_eq!(commit.pr(), &ps);
         assert_eq!(commit.commit_id().get(HashAlg::Sha256).unwrap().len(), 32);
     }
@@ -678,7 +678,7 @@ mod tests {
             HashAlg::Sha256,
             vec![0xAA; 32],
         ));
-        let cs = StateRoot(MultihashDigest::from_single(
+        let sr = StateRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
             vec![0xCC; 32],
         ));
@@ -687,7 +687,7 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_root, cs, ps).unwrap();
+        let commit = pending.finalize(auth_root, sr, ps).unwrap();
         assert_eq!(commit.len(), 3);
 
         // Commit ID should be Merkle root of all 3 transaction czds

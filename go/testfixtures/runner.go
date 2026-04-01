@@ -282,8 +282,8 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	}
 
 	// SR - parse alg:digest format and compare
-	if exp.CS != "" {
-		alg, expectedDigest := parseAlgDigest(exp.CS)
+	if exp.SR != "" {
+		alg, expectedDigest := parseAlgDigest(exp.SR)
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {

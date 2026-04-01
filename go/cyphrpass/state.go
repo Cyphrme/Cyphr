@@ -31,7 +31,7 @@ type AuthRoot struct {
 	MultihashDigest
 }
 
-// StateRoot (SR) is the principal non-commit state: MR(AR, DR?, embedding?) (SPEC §3.7.2).
+// StateRoot (SR) is the principal state tree root: MR(AR, DR?, embedding?) (SPEC §3.7.2).
 // SR excludes commit information (CR is a sibling of SR in PR, not a child).
 // If DR is nil and no embedding, SR = AR (implicit promotion).
 type StateRoot struct {
@@ -529,7 +529,7 @@ func ComputeAR(kr KeyRoot, nonce coz.B64, embedding coz.B64, algs []HashAlg) (Au
 }
 
 // ComputeSR computes State Root (SPEC §3.7.2).
-// SR = MR(AR, DR?, embedding?) — the principal non-commit state.
+// SR = MR(AR, DR?, embedding?) — the principal state tree root.
 // If DR is nil and no embedding, SR = AR (implicit promotion).
 // embedding is reserved for future use; pass nil.
 func ComputeSR(ar AuthRoot, dr *DataRoot, embedding coz.B64, algs []HashAlg) (StateRoot, error) {

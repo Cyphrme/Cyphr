@@ -108,7 +108,7 @@ pub struct Transaction {
     /// Hash algorithm associated with the signing key.
     /// Used for cross-algorithm state computation (MHMR).
     pub(crate) hash_alg: crate::state::HashAlg,
-    /// Commit state from `commit` field (present on terminal coz only).
+    /// State root from `commit` field (present on terminal coz only).
     ///
     /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
     /// where CS = MR(AS, DS?). None for non-terminal transactions.
@@ -181,7 +181,7 @@ impl Transaction {
         self.hash_alg
     }
 
-    /// Get the commit state if this is a terminal (finalizing) transaction.
+    /// Get the state root if this is a terminal (finalizing) transaction.
     ///
     /// Per SPEC §4.4, only the last coz in a commit has `"commit":<CS>`.
     pub fn state_root(&self) -> Option<&StateRoot> {
@@ -271,7 +271,7 @@ impl Transaction {
         )))
     }
 
-    /// Extract optional `commit` field (Commit State for finality).
+    // Extract optional `commit` field (State Root for finality).
     ///
     /// Per SPEC §4.4, the last coz in a commit contains `"commit":<CS>`
     /// in `alg:digest` format. Returns `Ok(None)` if the field is absent.

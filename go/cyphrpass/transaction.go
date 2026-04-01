@@ -60,10 +60,10 @@ type Transaction struct {
 	// Rvk is the revocation timestamp (for revoke transactions).
 	Rvk int64
 
-	// CommitCS is the state root from the `commit` field (terminal coz only).
+	// CommitSR is the state root from the `commit` field (terminal coz only).
 	// Per SPEC §4.4, the last coz in a commit contains `"commit":<SR>`
 	// where SR = MR(AR, DR?). Nil for non-terminal transactions.
-	CommitCS *StateRoot
+	CommitSR *StateRoot
 
 	// raw is the original CozJson bytes for this transaction.
 	// This field enables bit-perfect export for storage round-trips.
@@ -83,10 +83,10 @@ type TransactionPay struct {
 	Tmb    coz.B64   `json:"tmb"`
 	Now    int64     `json:"now"`
 	Typ    string    `json:"typ"`
-	Pre    string    `json:"pre,omitempty"`    // Base64url previous commit state
+	Pre    string    `json:"pre,omitempty"`    // Base64url previous state root
 	ID     string    `json:"id,omitempty"`     // Base64url target key thumbprint
 	Rvk    int64     `json:"rvk,omitempty"`    // Revocation timestamp
-	Commit string    `json:"commit,omitempty"` // Commit State (alg:digest, terminal coz only)
+	Commit string    `json:"commit,omitempty"` // State Root (alg:digest, terminal coz only)
 }
 
 // ParseTransaction parses a transaction from a TransactionPay and czd.
@@ -224,7 +224,7 @@ func (tx *Transaction) parseCommit(commit string) error {
 		return ErrMalformedPayload
 	}
 	sr := StateRoot{FromSingleDigest(tagged.Alg, tagged.Digest)}
-	tx.CommitCS = &sr
+	tx.CommitSR = &sr
 	return nil
 }
 

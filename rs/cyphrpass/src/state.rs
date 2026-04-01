@@ -85,7 +85,7 @@ impl AuthRoot {
 
 /// State Root (SR) — SPEC §3.7.2
 ///
-/// Principal non-commit state: `SR = MR(AR, DR?, embedding?)`.
+/// Principal state tree root: `SR = MR(AR, DR?, embedding?)`.
 /// SR excludes commit information (CR is a sibling of SR in PR, not a child).
 /// If DR is None and no embedding, SR = AR (implicit promotion).
 ///
@@ -661,7 +661,7 @@ pub fn compute_ar(
 
 /// Compute State Root — SPEC §3.7.2.
 ///
-/// `SR = MR(AR, DR?, embedding?)` — principal non-commit state.
+/// `SR = MR(AR, DR?, embedding?)` — principal state tree root.
 ///
 /// - If ds is None and no embedding: SR promotes from AR
 /// - Otherwise: SR = H(sort(AR, DR?, embedding?)) for each algorithm

@@ -83,7 +83,7 @@ var (
 
 	// ErrCommitMismatch indicates the commit field value does not match independently computed CS.
 	// Per SPEC §4.4, the commit value must equal MR(AS, DS?).
-	ErrCommitMismatch = errors.New("cyphrpass: commit state mismatch")
+	ErrCommitMismatch = errors.New("cyphrpass: state root mismatch")
 
 	// ErrEmptyMultihash indicates an attempt to create a MultihashDigest with no variants.
 	ErrEmptyMultihash = errors.New("cyphrpass: empty multihash digest")
