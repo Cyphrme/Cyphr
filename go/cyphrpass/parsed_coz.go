@@ -65,7 +65,8 @@ type ParsedCoz struct {
 	// where SR = MR(AR, DR?). Nil for non-terminal cozies.
 	CommitSR *StateRoot
 
-	// raw is the original CozJson bytes for this coz.
+	// HashAlg is the hash algorithm used to sign this coz.
+	HashAlg HashAlg
 	// This field enables bit-perfect export for storage round-trips.
 	// It includes the complete {pay, sig, key?} structure.
 	raw json.RawMessage
@@ -97,10 +98,11 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 	}
 
 	cz := &ParsedCoz{
-		Signer: pay.Tmb,
-		Now:    pay.Now,
-		Czd:    czd,
-		Rvk:    pay.Rvk,
+		Signer:  pay.Tmb,
+		Now:     pay.Now,
+		Czd:     czd,
+		Rvk:     pay.Rvk,
+		HashAlg: HashAlg(pay.Alg),
 	}
 
 	// Parse typ suffix to determine kind

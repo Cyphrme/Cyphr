@@ -147,15 +147,16 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - [x] Update test fixtures and intent structs
    - [x] Update e2e runners
 
-4. **Phase 4: TR Decomposition + List-of-Lists** — Replace CommitID with TMR/TCR/TR; adopt list-of-lists `txs` structure
-   - [ ] Restructure transaction model: `txs` is list of transactions, each transaction is list of cozies (mutation cozies + commit coz)
-   - [ ] Update storage format to reflect list-of-lists structure
-   - [ ] Add `TransactionMutationRoot`, `TransactionCommitRoot`, `TransactionRoot` types (both langs)
-   - [ ] Add `ComputeTMR`, `ComputeTCR`, `ComputeTR` functions (both langs)
-   - [ ] Delete `CommitID` type and `ComputeCommitID` / `ComputeCommitIDTagged` functions
-   - [ ] Update `Commit` / `PendingCommit` / `CommitScope` structs: `commitID` → `tr` (with `tmr`, `tcr`)
-   - [ ] Update commit finalization: compute TMR from tx mutation czds, TCR from commit czds, `TR = MR(TMR, TCR)`
-   - [ ] Update downstream consumers (storage, fixtures, runners)
+4. 4. **Phase 4: TR Decomposition + List-of-Lists** — Replace CommitID with TMR/TCR/TR; adopt list-of-lists `txs` structure
+
+- [x] Restructure transaction model: `txs` is list of transactions, each transaction is list of cozies (mutation cozies + commit coz)
+- [x] Update storage format to reflect list-of-lists structure
+- [x] Add `TransactionMutationRoot`, `TransactionCommitRoot`, `TransactionRoot` types (both langs)
+- [x] Add `ComputeTMR`, `ComputeTCR`, `ComputeTR` functions (both langs)
+- [x] Delete `CommitID` type and `ComputeCommitID` / `ComputeCommitIDTagged` functions
+- [x] Update `Commit` / `PendingCommit` / `CommitScope` structs: `commitID` → `tr` (with `tmr`, `tcr`)
+- [x] Update commit finalization: compute TMR from tx mutation czds, TCR from commit czds, `TR = MR(TMR, TCR)`
+- [x] Update downstream consumers (storage, fixtures, runners)
 
 5. **Phase 5: MALT Integration for CR** — Wire malt package for `CR = MALTR(TR₀, TR₁, ...)`
    - [ ] Go: add `github.com/cyphrme/malt` dependency to `go.mod`
@@ -295,6 +296,7 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 | ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`  | 2026-04-01 |
 | Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |            |
 | Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           | 2026-04-01 |
+| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                    | Formal protocol restored and output applied   | 2026-04-01 |
 
 ## Deviation Log
 

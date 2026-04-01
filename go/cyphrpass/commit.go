@@ -17,7 +17,8 @@ import (
 type Commit struct {
 	transactions []Transaction
 	commitTx     CommitTransaction
-	commitID     *CommitID
+	// tr is the Transaction Root (TR = MR(TMR, TCR)).
+	tr *TransactionRoot
 	// sr is the State Root at the end of this commit.
 	sr StateRoot
 	// as is the Auth State at the end of this commit.
@@ -30,14 +31,14 @@ type Commit struct {
 
 // newCommit creates a finalized commit from cozies and computed states.
 // Returns ErrEmptyCommit if cozies is empty.
-func newCommit(transactions []Transaction, commitTx CommitTransaction, commitID *CommitID, sr StateRoot, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
+func newCommit(transactions []Transaction, commitTx CommitTransaction, tr *TransactionRoot, sr StateRoot, ar AuthRoot, pr PrincipalRoot) (*Commit, error) {
 	if len(transactions) == 0 && len(commitTx) == 0 {
 		return nil, ErrEmptyCommit
 	}
 	return &Commit{
 		transactions: transactions,
 		commitTx:     commitTx,
-		commitID:     commitID,
+		tr:           tr,
 		sr:           sr,
 		ar:           ar,
 		pr:           pr,
@@ -60,9 +61,9 @@ func (c *Commit) Cozies() []*ParsedCoz {
 	return flat
 }
 
-// CommitID returns the Commit ID (Merkle root of this commit's czds).
-func (c *Commit) CommitID() *CommitID {
-	return c.commitID
+// TR returns the Transaction Root (TR = MR(TMR, TCR)).
+func (c *Commit) TR() *TransactionRoot {
+	return c.tr
 }
 
 // SR returns the State Root at the end of this commit.
@@ -169,17 +170,44 @@ func (p *PendingCommit) Len() int {
 	return len(p.Cozies())
 }
 
-// ComputeCommitID computes the Commit ID for the current pending cozies.
-// Returns nil if no cozies have been added.
-func (p *PendingCommit) ComputeCommitID() (*CommitID, error) {
-	if len(p.Cozies()) == 0 {
-		return nil, nil
+// ComputeTR computes the Transaction Root for the current pending cozies.
+// Computes TMR from all mutations, TCR from the commit transaction, and TR from both.
+func (p *PendingCommit) ComputeTR() (*TransactionRoot, error) {
+	algs := []HashAlg{p.hashAlg}
+
+	// Compute TMR
+	var txDigests []MultihashDigest
+	for _, tx := range p.transactions {
+		// Group czds for this transaction
+		var czds []TaggedCzd
+		for _, cz := range tx {
+			czds = append(czds, TaggedCzd{Czd: cz.Czd, Alg: cz.HashAlg})
+		}
+		txRoot, err := ComputeTX(czds, algs)
+		if err != nil {
+			return nil, err
+		}
+		if txRoot != nil {
+			txDigests = append(txDigests, *txRoot)
+		}
 	}
-	czds := make([]coz.B64, len(p.Cozies()))
-	for i, cz := range p.Cozies() {
-		czds[i] = cz.Czd
+	tmr, err := ComputeTMR(txDigests, algs)
+	if err != nil {
+		return nil, err
 	}
-	return ComputeCommitID(czds, nil, []HashAlg{p.hashAlg})
+
+	// Compute TCR
+	var commitCzds []TaggedCzd
+	for _, cz := range p.commitTx {
+		commitCzds = append(commitCzds, TaggedCzd{Czd: cz.Czd, Alg: cz.HashAlg})
+	}
+	tcr, err := ComputeTCR(commitCzds, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Compute TR
+	return ComputeTR(tmr, tcr, algs)
 }
 
 // Finalize converts the pending commit to an immutable Commit.
@@ -195,13 +223,13 @@ func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*
 		return nil, ErrEmptyCommit
 	}
 
-	// Compute Commit ID from all coz czds
-	cid, err := p.ComputeCommitID()
+	// Compute TR from TMR and TCR
+	tr, err := p.ComputeTR()
 	if err != nil {
 		return nil, err
 	}
 
-	commit, err := newCommit(p.transactions, p.commitTx, cid, sr, ar, pr)
+	commit, err := newCommit(p.transactions, p.commitTx, tr, sr, ar, pr)
 	if err != nil {
 		return nil, err
 	}

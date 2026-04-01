@@ -19,13 +19,6 @@ type KeyRoot struct {
 	MultihashDigest
 }
 
-// CommitID is the digest of coz czds within a single commit (SPEC §8.5).
-// Previously named TransactionState; renamed to reflect its role as the
-// identity of a commit rather than a state-tree node.
-type CommitID struct {
-	MultihashDigest
-}
-
 // AuthRoot (AS) is the authentication state: MR(KS, RS?) or promoted (SPEC §8.4).
 type AuthRoot struct {
 	MultihashDigest
@@ -190,7 +183,7 @@ func (td *TaggedDigest) UnmarshalJSON(data []byte) error {
 
 // String methods for state types (return base64 of first variant for compatibility).
 func (s KeyRoot) String() string          { return s.First().String() }
-func (s CommitID) String() string         { return s.First().String() }
+func (s TransactionRoot) String() string  { return s.First().String() }
 func (s AuthRoot) String() string         { return s.First().String() }
 func (s StateRoot) String() string        { return s.First().String() }
 func (s DataRoot) String() string         { return s.digest.String() }
@@ -360,50 +353,6 @@ func ComputeKR(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyRoot, e
 	return KeyRoot{mh}, nil
 }
 
-// ComputeCommitID computes the Commit ID (formerly ParsedCoz State) from czds (SPEC §8.5).
-// The Commit ID is the Merkle root of the czds within a single commit.
-// If only one coz with no nonce, CommitID = czd (implicit promotion).
-// Returns nil if no cozies.
-func ComputeCommitID(czds []coz.B64, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
-	if len(czds) == 0 {
-		return nil, nil // No cozies = nil CommitID
-	}
-	if len(algs) == 0 {
-		algs = []HashAlg{HashSha256} // Default fallback
-	}
-
-	// Implicit promotion: single coz, no nonce
-	if len(czds) == 1 && len(nonce) == 0 {
-		cid := CommitID{FromSingleDigest(algs[0], czds[0])}
-		return &cid, nil
-	}
-
-	components := make([][]byte, 0, len(czds)+1)
-	for _, c := range czds {
-		components = append(components, c)
-	}
-	if len(nonce) > 0 {
-		components = append(components, nonce)
-	}
-
-	// Compute hash for each algorithm variant
-	variants := make(map[HashAlg]coz.B64, len(algs))
-	for _, alg := range algs {
-		digest, err := hashConcatBytes(alg, components...)
-		if err != nil {
-			return nil, err
-		}
-		variants[alg] = digest
-	}
-
-	mh, err := NewMultihashDigest(variants)
-	if err != nil {
-		return nil, err
-	}
-	cid := CommitID{mh}
-	return &cid, nil
-}
-
 // TaggedCzd is a czd tagged with its source hash algorithm.
 //
 // Used for cross-algorithm state computation where czds from different
@@ -422,66 +371,6 @@ func (tc TaggedCzd) ConvertTo(target HashAlg) (coz.B64, error) {
 		return tc.Czd, nil
 	}
 	return coz.Hash(coz.HshAlg(target), tc.Czd)
-}
-
-// ComputeCommitIDTagged computes the Commit ID with cross-algorithm conversion (SPEC §14.2).
-//
-// Like ComputeCommitID, but accepts czds tagged with their source algorithm.
-// When computing a target hash variant, czds from different algorithms are
-// converted (re-hashed) to the target algorithm.
-//
-// Returns nil if no cozies.
-func ComputeCommitIDTagged(czds []TaggedCzd, nonce coz.B64, algs []HashAlg) (*CommitID, error) {
-	if len(czds) == 0 {
-		return nil, nil
-	}
-	if len(algs) == 0 {
-		algs = []HashAlg{HashSha256}
-	}
-
-	// Implicit promotion: single czd, no nonce
-	if len(czds) == 1 && len(nonce) == 0 {
-		targetAlg := algs[0]
-		converted, err := czds[0].ConvertTo(targetAlg)
-		if err != nil {
-			return nil, err
-		}
-		cid := CommitID{FromSingleDigest(targetAlg, converted)}
-		return &cid, nil
-	}
-
-	// Compute hash for each target algorithm variant
-	variants := make(map[HashAlg]coz.B64, len(algs))
-	for _, targetAlg := range algs {
-		// Convert each czd to target algorithm
-		converted := make([][]byte, 0, len(czds)+1)
-		for _, tc := range czds {
-			c, err := tc.ConvertTo(targetAlg)
-			if err != nil {
-				return nil, err
-			}
-			converted = append(converted, c)
-		}
-
-		// Add nonce if present
-		if len(nonce) > 0 {
-			converted = append(converted, nonce)
-		}
-
-		// Hash in array order (no sort — CommitID preserves coz order)
-		digest, err := hashConcatBytes(targetAlg, converted...)
-		if err != nil {
-			return nil, err
-		}
-		variants[targetAlg] = digest
-	}
-
-	mh, err := NewMultihashDigest(variants)
-	if err != nil {
-		return nil, err
-	}
-	cid := CommitID{mh}
-	return &cid, nil
 }
 
 // ComputeAR computes Auth Root from KR (SPEC §3.7).
@@ -604,9 +493,9 @@ func ComputeDR(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataRoot, error) {
 // If CR is nil (Levels 1-3) and no embedding, PR = SR (implicit promotion).
 // The cr parameter is temporarily *CommitID until CR replaces CommitID in Phase 5.
 // embedding is reserved for future use; pass nil.
-func ComputePR(sr StateRoot, cr *CommitID, embedding coz.B64, algs []HashAlg) (PrincipalRoot, error) {
-	// Implicit promotion: only SR, no CR, no embedding
-	if cr == nil && len(embedding) == 0 {
+func ComputePR(sr StateRoot, tr *TransactionRoot, embedding coz.B64, algs []HashAlg) (PrincipalRoot, error) {
+	// Implicit promotion: only SR, no TR, no embedding
+	if tr == nil && len(embedding) == 0 {
 		return PrincipalRoot{sr.Clone()}, nil
 	}
 
@@ -621,8 +510,8 @@ func ComputePR(sr StateRoot, cr *CommitID, embedding coz.B64, algs []HashAlg) (P
 
 		// Collect non-nil components
 		components := [][]byte{srBytes}
-		if cr != nil {
-			components = append(components, cr.GetOrFirst(alg))
+		if tr != nil {
+			components = append(components, tr.GetOrFirst(alg))
 		}
 		if len(embedding) > 0 {
 			components = append(components, embedding)

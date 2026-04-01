@@ -72,13 +72,13 @@ type Principal struct {
 	// pg is nil until principal/create establishes it (SPEC §5.1).
 	// INVARIANT: only TxPrincipalCreate sets this field. Field privacy
 	// prevents external construction — Go equivalent of Rust's enum Approach C.
-	pg       *PrincipalGenesis
-	pr       PrincipalRoot
-	kr       KeyRoot
-	commitID *CommitID // nil if no cozies
-	ar       AuthRoot
-	sr       StateRoot // SR = MR(AR, DR?, embedding?)
-	dr       *DataRoot // nil if no actions
+	pg *PrincipalGenesis
+	pr PrincipalRoot
+	kr KeyRoot
+	tr *TransactionRoot // nil if no transactions
+	ar AuthRoot
+	sr StateRoot // SR = MR(AR, DR?, embedding?)
+	dr *DataRoot // nil if no actions
 
 	auth       authLedger
 	data       dataLedger
@@ -262,9 +262,9 @@ func (p *Principal) ActiveAlgs() []HashAlg {
 	return p.activeAlgs
 }
 
-// CommitID returns the current Commit ID (nil if no cozies).
-func (p *Principal) CommitID() *CommitID {
-	return p.commitID
+// TR returns the Transaction Root of the most recent commit.
+func (p *Principal) TR() *TransactionRoot {
+	return p.tr
 }
 
 // SR returns the current State Root.
@@ -423,8 +423,8 @@ func (p *Principal) RecordAction(action *Action) error {
 	}
 	p.sr = sr
 
-	// Recompute PR = MR(SR, CR?, embedding?)
-	pr, err := ComputePR(p.sr, p.commitID, nil, p.activeAlgs)
+	// Recompute PR = MR(SR, TR?, embedding?)
+	pr, err := ComputePR(p.sr, p.tr, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
@@ -761,12 +761,12 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ar = ar
 
-	// Compute Commit ID from this commit's coz czds (SPEC §4.2.1)
-	cid, err := pending.ComputeCommitID()
+	// Compute Transaction Root (TR) from this commit's transactions (SPEC §14.2)
+	tr, err := pending.ComputeTR()
 	if err != nil {
 		return nil, err
 	}
-	p.commitID = cid
+	p.tr = tr
 
 	// Recompute SR = MR(AR, DR?, embedding?)
 	sr, err := ComputeSR(p.ar, p.dr, nil, p.activeAlgs)
@@ -794,8 +794,8 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 	}
 
-	// Recompute PR = MR(SR, CR?, embedding?)
-	pr, err := ComputePR(p.sr, p.commitID, nil, p.activeAlgs)
+	// Recompute PR = MR(SR, TR?, embedding?)
+	pr, err := ComputePR(p.sr, p.tr, nil, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}

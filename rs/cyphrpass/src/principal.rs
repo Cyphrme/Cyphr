@@ -87,7 +87,7 @@ pub struct PrincipalCore {
     /// Current Key State.
     pub(crate) ks: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's cozies).
-    pub(crate) commit_id: Option<CommitID>,
+    pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
     /// Current State Root: SR = MR(AR, DR?, embedding?).
     pub(crate) sr: Option<StateRoot>,
     /// Current Auth State.
@@ -115,7 +115,7 @@ impl Default for PrincipalCore {
         Self {
             ps: PrincipalRoot::default(),
             ks: KeyRoot::default(),
-            commit_id: None,
+            tr: None,
             sr: None,
             auth_root: AuthRoot::default(),
             ds: None,
@@ -245,7 +245,7 @@ impl Principal {
         Ok(Self(PrincipalKind::Nascent(PrincipalCore {
             ps,
             ks,
-            commit_id: None,
+            tr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -297,7 +297,7 @@ impl Principal {
         Ok(Self(PrincipalKind::Nascent(PrincipalCore {
             ps,
             ks,
-            commit_id: None,
+            tr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -359,7 +359,7 @@ impl Principal {
         let core = PrincipalCore {
             ps,
             ks,
-            commit_id: None,
+            tr: None,
             sr: Some(cs),
             auth_root,
             ds: None,
@@ -509,11 +509,9 @@ impl Principal {
         self.auth.commits.iter()
     }
 
-    /// Get the Commit ID of the last finalized commit.
-    ///
-    /// Returns `None` if no commits exist yet.
-    pub fn current_commit_id(&self) -> Option<&CommitID> {
-        self.commit_id.as_ref()
+    /// Get the TR of the current commit (if any).
+    pub fn current_tr(&self) -> Option<&crate::transaction_root::TransactionRoot> {
+        self.tr.as_ref()
     }
 
     /// Get the current State Root.
@@ -653,7 +651,7 @@ impl Principal {
         self.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, self.commit_id.as_ref(), None, &[self.hash_alg])?;
+        self.ps = compute_pr(&sr, self.tr.as_ref(), None, &[self.hash_alg])?;
 
         Ok(&self.ps)
     }
@@ -930,9 +928,9 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         self.ks = compute_kr(&thumbprints, None, &self.active_algs)?;
 
-        // Compute Commit ID from pending commit
-        let commit_id = pending.compute_commit_id().ok_or(Error::EmptyCommit)?;
-        self.commit_id = Some(commit_id.clone());
+        // Compute TR from pending commit
+        let tr = pending.compute_tr().ok_or(Error::EmptyCommit)?;
+        self.tr = Some(tr.clone());
 
         // Compute AR = MR(KR, RR?, embedding?)
         self.auth_root = compute_ar(&self.ks, None, None, &self.active_algs)?;

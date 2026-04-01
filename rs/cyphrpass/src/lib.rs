@@ -26,7 +26,11 @@ pub mod multihash;
 pub mod parsed_coz;
 pub mod principal;
 pub mod state;
+// ...
+/// Transaction structure definitions.
 pub mod transaction;
+/// Transaction root (TR, TMR, TCR) computations.
+pub mod transaction_root;
 
 // Re-exports
 pub use action::Action;
@@ -41,3 +45,4 @@ pub use state::{
     compute_ar, compute_commit_id, compute_dr, compute_kr, compute_pr, compute_sr,
 };
 pub use transaction::{CommitTransaction, Transaction};
+pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};

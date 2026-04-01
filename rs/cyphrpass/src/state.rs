@@ -386,7 +386,7 @@ fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
 /// Compute `H(components...)` in array order (no sort).
 ///
 /// Used for CommitID where coz order is significant (SPEC §8.5).
-fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
     // Hash based on algorithm — no sort, preserve insertion order
     match alg {
         HashAlg::Sha256 => {
@@ -416,7 +416,7 @@ fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
 /// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
 ///
 /// Used when converting a czd from one algorithm to another.
-fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
+pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
     match alg {
         HashAlg::Sha256 => {
             let mut h = Sha256::new();
@@ -741,12 +741,12 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 /// Returns `EmptyMultihash` if the StateRoot contains no variants.
 pub fn compute_pr(
     state_root: &StateRoot,
-    cr: Option<&CommitID>,
+    tr: Option<&crate::transaction_root::TransactionRoot>,
     embedding: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<PrincipalRoot> {
     // Implicit promotion: only SR, no CR, no embedding
-    if cr.is_none() && embedding.is_none() {
+    if tr.is_none() && embedding.is_none() {
         return Ok(PrincipalRoot(state_root.0.clone()));
     }
 
@@ -757,8 +757,8 @@ pub fn compute_pr(
 
         // Collect non-nil components
         let mut components: Vec<&[u8]> = vec![sr_bytes];
-        if let Some(cid) = cr {
-            components.push(cid.0.get_or_err(alg)?);
+        if let Some(cr_digest) = tr {
+            components.push(cr_digest.0.get_or_err(alg)?);
         }
         if let Some(e) = embedding {
             components.push(e);

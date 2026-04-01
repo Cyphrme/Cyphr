@@ -27,7 +27,7 @@ use crate::state::HashAlg;
 /// variants.insert(HashAlg::Sha384, vec![0u8; 48].into_boxed_slice());
 /// let mh = MultihashDigest::new(variants);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MultihashDigest {
     variants: BTreeMap<HashAlg, Box<[u8]>>,
 }

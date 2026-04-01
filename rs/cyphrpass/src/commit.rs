@@ -27,8 +27,8 @@ pub struct Commit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
     /// The terminal commit transaction.
     pub(crate) commit_tx: crate::transaction::CommitTransaction,
-    /// Commit ID: Merkle root of coz czds.
-    commit_id: CommitID,
+    /// Transaction Root: Merkle root of coz czds.
+    tr: crate::transaction_root::TransactionRoot,
     /// Auth State at the end of this commit.
     auth_root: AuthRoot,
     /// State Root at the end of this commit.
@@ -46,7 +46,7 @@ impl Commit {
     pub(crate) fn new(
         transactions: Vec<crate::transaction::Transaction>,
         commit_tx: crate::transaction::CommitTransaction,
-        commit_id: CommitID,
+        tr: crate::transaction_root::TransactionRoot,
         auth_root: AuthRoot,
         sr: StateRoot,
         ps: PrincipalRoot,
@@ -57,7 +57,7 @@ impl Commit {
         Ok(Self {
             transactions,
             commit_tx,
-            commit_id,
+            tr,
             auth_root,
             sr,
             ps,
@@ -83,8 +83,8 @@ impl Commit {
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
-    pub fn commit_id(&self) -> &CommitID {
-        &self.commit_id
+    pub fn tr(&self) -> &crate::transaction_root::TransactionRoot {
+        &self.tr
     }
 
     /// Get the State Root at the end of this commit.
@@ -177,18 +177,40 @@ impl PendingCommit {
         self.iter_all_cozies().count()
     }
 
-    /// Compute the Commit ID for the current pending cozies.
+    /// Compute the Transaction Root (TR) for the current pending cozies.
     ///
     /// Returns `None` if no cozies have been added.
-    pub fn compute_commit_id(&self) -> Option<CommitID> {
+    pub fn compute_tr(&self) -> Option<crate::transaction_root::TransactionRoot> {
         if self.is_empty() {
             return None;
         }
-        let all = self.iter_all_cozies();
-        // Collect czds with their source algorithms for cross-algorithm conversion
-        let tagged_czds: Vec<TaggedCzd<'_>> =
-            all.map(|t| TaggedCzd::new(t.czd(), t.hash_alg())).collect();
-        compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
+
+        let algs = &[self.hash_alg];
+
+        let mut tx_roots = Vec::new();
+        for tx in &self.transactions {
+            let tx_czds: Vec<TaggedCzd<'_>> =
+                tx.0.iter()
+                    .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
+                    .collect();
+            if let Some(mh) = crate::transaction_root::compute_tx(&tx_czds, algs) {
+                tx_roots.push(mh);
+            }
+        }
+        let tx_refs: Vec<&crate::multihash::MultihashDigest> = tx_roots.iter().collect();
+        let tmr = crate::transaction_root::compute_tmr(&tx_refs, algs);
+
+        if let Some(ctx) = &self.commit_tx {
+            let ctx_czds: Vec<TaggedCzd<'_>> = ctx
+                .0
+                .iter()
+                .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
+                .collect();
+            if let Some(tcr) = crate::transaction_root::compute_tcr(&ctx_czds, algs) {
+                return crate::transaction_root::compute_tr(tmr.as_ref(), &tcr, algs);
+            }
+        }
+        None
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -216,15 +238,10 @@ impl PendingCommit {
             .commit_tx
             .clone()
             .ok_or(crate::error::Error::MalformedPayload)?; // Must have a commit tx to finalize
-        let all = self.iter_all_cozies();
 
-        // Compute Commit ID from all coz czds with algorithm tagging
-        let tagged_czds: Vec<TaggedCzd<'_>> =
-            all.map(|t| TaggedCzd::new(t.czd(), t.hash_alg())).collect();
-        let commit_id = compute_commit_id_tagged(&tagged_czds, None, &[self.hash_alg])
-            .ok_or(crate::error::Error::EmptyCommit)?;
+        let tr = self.compute_tr().ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_tx, commit_id, auth_root, sr, ps)
+        Commit::new(self.transactions, commit_tx, tr, auth_root, sr, ps)
     }
 
     /// Consume the pending commit and return the cozies.
