@@ -137,10 +137,11 @@ func (e *Entry) Typ() (string, error) {
 	return extractor.Pay.Typ, nil
 }
 
-// HasCommit returns true if the entry's pay has a "commit" field (indicating terminal coz).
+// HasCommit returns true if the entry's pay has an "arrow" or "commit" field (indicating terminal coz).
 func (e *Entry) HasCommit() (bool, error) {
 	var extractor struct {
 		Pay struct {
+			Arrow  string `json:"arrow"`
 			Commit string `json:"commit"`
 		} `json:"pay"`
 	}
@@ -149,7 +150,7 @@ func (e *Entry) HasCommit() (bool, error) {
 		return false, fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	return extractor.Pay.Commit != "", nil
+	return extractor.Pay.Arrow != "" || extractor.Pay.Commit != "", nil
 }
 
 // IsTransaction returns true if this entry is a coz (key mutation).
@@ -163,17 +164,15 @@ func (e *Entry) IsTransaction() bool {
 }
 
 // containsKeyPrefix checks if typ indicates a coz.
-// Per SPEC: cozies have typ containing "/key/" or "/principal/".
+// Per SPEC: cozies have typ containing "/key/", "/principal/", or "/commit/".
 func containsKeyPrefix(typ string) bool {
-	// Look for "/key/" or "/principal/" in the typ string
-	for i := 0; i+5 <= len(typ); i++ {
-		if typ[i:i+5] == "/key/" {
-			return true
-		}
-	}
-	for i := 0; i+11 <= len(typ); i++ {
-		if typ[i:i+11] == "/principal/" {
-			return true
+	// Look for "/key/", "/principal/", or "/commit/" in the typ string
+	prefixes := []string{"/key/", "/principal/", "/commit/"}
+	for _, prefix := range prefixes {
+		for i := 0; i+len(prefix) <= len(typ); i++ {
+			if typ[i:i+len(prefix)] == prefix {
+				return true
+			}
 		}
 	}
 	return false

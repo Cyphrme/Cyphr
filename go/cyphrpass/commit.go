@@ -129,7 +129,7 @@ func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 
 // Push adds a coz to the pending commit.
 func (p *PendingCommit) Push(cz *ParsedCoz) {
-	if cz.Arrow != nil {
+	if cz.Arrow != nil || cz.Kind == TxCommitCreate {
 		p.commitTx = append(p.commitTx, cz)
 	} else {
 		p.transactions = append(p.transactions, Transaction{cz})

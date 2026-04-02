@@ -588,7 +588,7 @@ impl<'a> Generator<'a> {
         let commit_count = test.commit.len();
         for (i, commit) in test.commit.iter().enumerate() {
             let is_last_commit = i == commit_count - 1;
-            let cz = commit.cz.first().ok_or_else(|| Error::InvalidIntent {
+            let cz = commit.tx.first().ok_or_else(|| Error::InvalidIntent {
                 message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
             })?;
 

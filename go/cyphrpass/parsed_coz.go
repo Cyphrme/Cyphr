@@ -16,6 +16,7 @@ const (
 	TypKeyRevoke  = "key/revoke"
 
 	TypPrincipalCreate = "principal/create" // SPEC §5.1 genesis finalization
+	TypCommitCreate    = "commit/create"    // Arrow finality (SPEC §4.4)
 )
 
 // CozKind represents the type of auth mutation.
@@ -27,6 +28,7 @@ const (
 	TxKeyReplace      CozKind = "key/replace"
 	TxRevoke          CozKind = "key/revoke"
 	TxPrincipalCreate CozKind = "principal/create" // SPEC §5.1 genesis finalization
+	TxCommitCreate    CozKind = "commit/create"    // Arrow finality (SPEC §4.4)
 )
 
 // String returns the string representation of a CozKind.
@@ -100,7 +102,7 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 		Now:     pay.Now,
 		Czd:     czd,
 		Rvk:     pay.Rvk,
-		HashAlg: HashAlg(pay.Alg),
+		HashAlg: HashAlgFromSEAlg(pay.Alg),
 	}
 
 	// Parse typ suffix to determine kind
@@ -159,6 +161,11 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 		if err := cz.parseIDAsAuthRoot(pay.ID); err != nil {
 			return nil, err
 		}
+
+	case TypCommitCreate:
+		// Arrow finality (SPEC §4.4): commit/create carries the arrow field.
+		// Arrow is parsed below at line ~178. No pre or id required.
+		cz.Kind = TxCommitCreate
 
 	default:
 		return nil, ErrMalformedPayload
@@ -241,6 +248,7 @@ func typSuffix(typ string) string {
 		TypKeyReplace,
 		TypKeyRevoke,
 		TypPrincipalCreate,
+		TypCommitCreate,
 	}
 	for _, suffix := range known {
 		if strings.HasSuffix(typ, suffix) {

@@ -182,9 +182,22 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
          via implicit promotion through the new SR layer
 
 7. **Phase 7: Verification + Fixture Regeneration** — Rebuild tests against new structure
-   - [x] Regenerate all golden fixtures via `fixture-gen`
-   - [x] Full test suite passes in both langs (`go test ./...`, `cargo test`)
-   - [x] `go build ./...` and `cargo build --workspace` compile cleanly
+
+   **7a: Bug fixes (blocking verification)** ✅
+   - [x] Go: Fix `ParseCoz` `HashAlg` initialization — `HashAlg(pay.Alg)` → `HashAlgFromSEAlg(pay.Alg)` (raw cast of signing alg to hash alg produced garbage)
+   - [x] Go: Add `TypCommitCreate` / `TxCommitCreate` — `commit/create` typ was missing from `ParseCoz` and `typSuffix`, preventing `FinalizeWithArrow` from parsing its own output
+   - [x] Go: Update `Push()` routing — also route by `Kind == TxCommitCreate` (defense-in-depth alongside `Arrow != nil`)
+   - [x] Go: Fix `HasCommit()` in `entry.go` — now detects both `"arrow"` and `"commit"` fields for terminal coz detection during import
+   - [x] Go: Fix `IsTransaction()` / `containsKeyPrefix()` — now matches `/commit/` prefix so `commit/create` entries are recognized as transactions
+   - [x] Go: Fix `test_helpers_test.go` build — pointer/value mismatch on `cz.Arrow` assignment
+   - [x] Rust: Fix `commit.cz` → `commit.tx` in `golden.rs:591` (stale field access from Phase 4)
+   - [x] Rust: Remove `.unwrap()` from infallible `Thumbprint::from_bytes()` in `key.rs` (2 sites)
+   - [x] Both codebases build cleanly: `go build ./...` and `cargo build --workspace`
+
+   **7b: Fixture regeneration + test verification**
+   - [ ] Regenerate all golden fixtures via `fixture-gen`
+   - [ ] Full test suite passes in both langs (`go test ./...`, `cargo test`)
+   - [ ] `go build ./...` and `cargo build --workspace` compile cleanly
    - [ ] Genesis commit trace walkthrough (step through machine spec constraints)
    - [ ] Key addition (Level 3) trace walkthrough
    - [ ] Stale terminology sweep (zero hits for old names):
@@ -297,16 +310,19 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                     |  Resolved  |
-| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------- | :--------: |
-| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass          | 2026-04-01 |
-| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass | 2026-04-01 |
-| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`  | 2026-04-01 |
-| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)        |            |
-| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup           | 2026-04-01 |
-| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                    | Formal protocol restored and output applied   | 2026-04-01 |
-| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers  | Fix test logic in Phase 7                     |            |
-| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                          | Cleanup in Phase 7                            |            |
+| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                           |  Resolved  |
+| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------------- | :--------: |
+| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass                | 2026-04-01 |
+| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass       | 2026-04-01 |
+| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`        | 2026-04-01 |
+| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)              |            |
+| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup                 | 2026-04-01 |
+| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                    | Formal protocol restored and output applied         | 2026-04-01 |
+| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers  | Fix test logic in Phase 7                           |            |
+| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                          | Cleanup in Phase 7                                  |            |
+| Go `ApplyTransactionUnsafe` injects SR as Arrow placeholder instead of computing real Arrow                      | MEDIUM   | Emergency patch during test helper adaptation               | Refactor to compute Arrow properly or remove helper |            |
+| Go `containsKeyPrefix` function name misleading — checks for infixes (`/key/`, `/commit/`) not prefixes          | LOW      | Pre-existing; expanded during Phase 7a `/commit/` addition  | Rename to `containsKnownTypInfix` in cleanup pass   |            |
+| Go `FinalizeWithArrow` uses raw `HashAlg(signerKey.Alg.Hash())` instead of `HashAlgFromSEAlg` wrapper            | LOW      | Pre-existing; functionally equivalent but inconsistent      | Normalize to `HashAlgFromSEAlg` in next code sweep  |            |
 
 ## Deviation Log
 
@@ -314,9 +330,10 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Commit              | Planned                                    | Actual                                                                                                 | Rationale                                                                                                                      |
-| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
-| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`) | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible |
+| Commit              | Planned                                    | Actual                                                                                                                                                                         | Rationale                                                                                                                                                              |
+| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                         |
+| Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit |
 
 ## Retrospective
 

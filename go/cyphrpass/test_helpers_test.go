@@ -40,8 +40,9 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 		return nil, err
 	}
 
-	// Inject state_root into coz
-	cz.Arrow = sr.MultihashDigest
+	// Inject state_root into coz as Arrow placeholder for routing
+	arrowMD := sr.MultihashDigest
+	cz.Arrow = &arrowMD
 
 	// Finalize as single-cz commit
 	pending := NewPendingCommit(p.hashAlg)

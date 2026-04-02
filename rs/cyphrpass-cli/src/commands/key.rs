@@ -137,8 +137,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key.clone()))?;
     let tmb = coz::Thumbprint::from_bytes(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
-    )
-    .unwrap();
+    );
     scope.finalize_with_arrow(
         &signer_stored.alg,
         &signer_stored.prv_key,
@@ -236,8 +235,7 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, None)?;
     let tmb = coz::Thumbprint::from_bytes(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
-    )
-    .unwrap();
+    );
     scope.finalize_with_arrow(
         &signer_stored.alg,
         &signer_stored.prv_key,
