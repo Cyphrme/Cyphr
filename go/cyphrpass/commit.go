@@ -357,13 +357,10 @@ func (b *CommitBatch) FinalizeWithArrow(
 		return nil, err
 	}
 
-	// 3. Ascertain Pre (previous PR)
+	// 3. Ascertain Pre (previous PR).
+	// b.principal.pr holds the PR from before this commit (it hasn't been
+	// updated yet — that happens in finalizeCommit after Arrow validation).
 	pre := b.principal.pr
-	if len(b.principal.commits) == 0 {
-		// Genesis bootstrap
-		tmbMD := FromSingleDigest(b.principal.activeAlgs[0], b.principal.auth.Keys[0].Tmb)
-		pre = PrincipalRoot{tmbMD}
-	}
 
 	// 4. Compute Arrow
 	txAlg := HashAlg(signerKey.Alg.Hash())

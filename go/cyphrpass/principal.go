@@ -795,12 +795,10 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 		txAlg := txAlgs[0]
 
+		// pre is the PR *before* this commit. p.pr has not been updated yet
+		// (that happens at the end of this function), so it correctly holds
+		// the prior value.
 		pre := p.pr
-		if len(p.commits) == 0 {
-			// Genesis bootstrap
-			tmbMD := FromSingleDigest(txAlg, p.auth.Keys[0].Tmb)
-			pre = PrincipalRoot{tmbMD}
-		}
 
 		components := [][]byte{
 			pre.GetOrFirst(txAlg),

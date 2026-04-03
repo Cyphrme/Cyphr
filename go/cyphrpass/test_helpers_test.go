@@ -50,13 +50,8 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 		return nil, err
 	}
 
-	// Ascertain Pre (previous PR)
+	// Ascertain Pre (previous PR) — p.pr is correctly initialized
 	pre := p.pr
-	if len(p.commits) == 0 {
-		// Genesis bootstrap
-		tmbMD := FromSingleDigest(p.activeAlgs[0], p.auth.Keys[0].Tmb)
-		pre = PrincipalRoot{tmbMD}
-	}
 
 	// Compute Arrow = hash_sorted_concat(pre, sr, tmr) per SPEC
 	txAlg := p.activeAlgs[0]
