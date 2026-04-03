@@ -33,18 +33,18 @@ name      = "transaction_replay_order"
 principal = ["alice"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "alice"
-target = "bob"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "alice"
-target = "carol"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000002, signer = "alice", target = "carol", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 3
@@ -60,11 +60,11 @@ name      = "action_after_key_add"
 principal = ["alice"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "alice"
-target = "bob"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.action]]
 msg    = "Action signed by newly added key"

@@ -46,12 +46,14 @@ pub struct TestIntent {
     pub expected: Option<ExpectedAssertions>,
 }
 
-/// A single commit containing one or more cozies.
+/// A single commit containing transactions.
+/// Each transaction is a list of cozies (list-of-lists per SPEC).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitIntent {
     /// Transactions within this commit.
+    /// Each transaction is a list of cozies.
     #[serde(default)]
-    pub tx: Vec<TxIntent>,
+    pub tx: Vec<Vec<TxIntent>>,
 }
 
 /// A single coz within a commit.
@@ -200,11 +202,7 @@ name = "key_add_increases_count"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-typ = "cyphr.me/key/create"
-now = 1700000000
-signer = "golden"
-target = "key_a"
+tx = [[{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "key_a"}]]
 
 [test.expected]
 key_count = 2
@@ -217,18 +215,10 @@ name = "transaction_sequence"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-typ = "cyphr.me/key/create"
-now = 1700000001
-signer = "golden"
-target = "key_a"
+tx = [[{typ = "cyphr.me/key/create", now = 1700000001, signer = "golden", target = "key_a"}]]
 
 [[test.commit]]
-[[test.commit.tx]]
-typ = "cyphr.me/key/create"
-now = 1700000002
-signer = "golden"
-target = "key_b"
+tx = [[{typ = "cyphr.me/key/create", now = 1700000002, signer = "golden", target = "key_b"}]]
 
 [test.expected]
 key_count = 3
@@ -291,7 +281,8 @@ level = 1
         assert!(!test.is_genesis_only());
         assert_eq!(test.commit.len(), 1);
         assert_eq!(test.commit[0].tx.len(), 1);
-        let cz = &test.commit[0].tx[0];
+        assert_eq!(test.commit[0].tx[0].len(), 1);
+        let cz = &test.commit[0].tx[0][0];
         assert_eq!(cz.typ, "cyphr.me/key/create");
         assert_eq!(cz.now, 1700000000);
         assert_eq!(cz.signer, "golden");
@@ -308,10 +299,10 @@ level = 1
         let test = &intent.test[0];
         assert!(test.has_commits());
         assert_eq!(test.commit.len(), 2);
-        assert_eq!(test.commit[0].tx[0].now, 1700000001);
-        assert_eq!(test.commit[0].tx[0].target.as_deref(), Some("key_a"));
-        assert_eq!(test.commit[1].tx[0].now, 1700000002);
-        assert_eq!(test.commit[1].tx[0].target.as_deref(), Some("key_b"));
+        assert_eq!(test.commit[0].tx[0][0].now, 1700000001);
+        assert_eq!(test.commit[0].tx[0][0].target.as_deref(), Some("key_a"));
+        assert_eq!(test.commit[1].tx[0][0].now, 1700000002);
+        assert_eq!(test.commit[1].tx[0][0].target.as_deref(), Some("key_b"));
         let expected = test.expected.as_ref().expect("missing expected");
         assert_eq!(expected.key_count, Some(3));
     }

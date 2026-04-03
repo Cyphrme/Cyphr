@@ -6,11 +6,11 @@ name      = "add_third_key_to_dual_key_account"
 principal = ["alice", "bob"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "alice"
-target = "carol"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 3
@@ -22,11 +22,11 @@ name      = "replace_one_of_two_keys"
 principal = ["alice", "bob"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "alice"
-target = "carol"
-typ    = "cyphr.me/key/replace"
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/key/replace" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -38,11 +38,11 @@ name      = "non_signer_adds_key"
 principal = ["alice", "bob"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "bob"
-target = "carol"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "carol", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 3
@@ -54,11 +54,11 @@ name      = "delete_from_triple_key_leaves_two"
 principal = ["alice", "bob", "carol"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "alice"
-target = "bob"
-typ    = "cyphr.me/key/delete"
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/key/delete" },
+  ],
+]
 
 [test.expected]
 key_count = 2

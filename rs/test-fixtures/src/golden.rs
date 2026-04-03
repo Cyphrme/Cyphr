@@ -467,9 +467,10 @@ impl<'a> Generator<'a> {
             .commit
             .first()
             .and_then(|c| c.tx.first())
+            .and_then(|t| t.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
-                    "test '{}': single-commit test requires [[commit.cz]]",
+                    "test '{}': single-commit test requires at least one coz",
                     test.name
                 ),
             })?;
@@ -588,9 +589,14 @@ impl<'a> Generator<'a> {
         let commit_count = test.commit.len();
         for (i, commit) in test.commit.iter().enumerate() {
             let is_last_commit = i == commit_count - 1;
-            let cz = commit.tx.first().ok_or_else(|| Error::InvalidIntent {
-                message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
-            })?;
+            let cz =
+                commit
+                    .tx
+                    .first()
+                    .and_then(|t| t.first())
+                    .ok_or_else(|| Error::InvalidIntent {
+                        message: format!("test '{}': commit {} has no cozies", test.name, i + 1),
+                    })?;
 
             // Capture pre before this commit (alg:digest format)
             let pre = Self::format_pr_tagged(principal)?;
@@ -719,9 +725,10 @@ impl<'a> Generator<'a> {
             .commit
             .first()
             .and_then(|c| c.tx.first())
+            .and_then(|t| t.first())
             .ok_or_else(|| Error::InvalidIntent {
                 message: format!(
-                    "test '{}': cz+action test requires [[commit.cz]]",
+                    "test '{}': cz+action test requires at least one coz",
                     test.name
                 ),
             })?;

@@ -74,7 +74,7 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)
 	} else if len(test.Commit) == 1 {
-		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], test.Override)
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0][0], test.Override)
 	}
 
 	// Apply actions if present
@@ -140,18 +140,24 @@ func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, cz *TxIntent,
 }
 
 // applyMultiCommit applies multiple commits.
+// Each commit contains transactions, each transaction contains cozies.
 func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
 	for i, commit := range test.Commit {
 		batch := principal.BeginCommit()
-		for j, cz := range commit.Tx {
-			// Apply override only to the last cz of the last commit
-			var override *OverrideIntent
-			if i == len(test.Commit)-1 && j == len(commit.Tx)-1 {
-				override = test.Override
-			}
-			isFinal := j == len(commit.Tx)-1
-			if err := applyTxToBatch(pool, principal, batch, &cz, override, isFinal); err != nil {
-				return fmt.Errorf("commit %d cz %d: %w", i, j, err)
+		for j, tx := range commit.Tx {
+			for k, cz := range tx {
+				// Apply override only to the last cz of the last tx of the last commit
+				var override *OverrideIntent
+				isLastCommit := i == len(test.Commit)-1
+				isLastTx := j == len(commit.Tx)-1
+				isLastCz := k == len(tx)-1
+				if isLastCommit && isLastTx && isLastCz {
+					override = test.Override
+				}
+				isFinal := isLastTx && isLastCz
+				if err := applyTxToBatch(pool, principal, batch, &cz, override, isFinal); err != nil {
+					return fmt.Errorf("commit %d tx %d cz %d: %w", i, j, k, err)
+				}
 			}
 		}
 	}
@@ -450,7 +456,7 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)
 	} else if len(test.Commit) == 1 {
-		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], nil)
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0][0], nil)
 	}
 
 	if applyErr == nil && test.HasAction() {
@@ -540,7 +546,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	if len(test.Commit) > 1 {
 		applyErr = applyMultiCommit(pool, principal, test)
 	} else if len(test.Commit) == 1 {
-		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0], nil)
+		applyErr = applySingleCommit(pool, principal, &test.Commit[0].Tx[0][0], nil)
 	}
 
 	if applyErr != nil {

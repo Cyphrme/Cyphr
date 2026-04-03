@@ -28,11 +28,11 @@ revoke_at  = 1699999999
 revoke_key = "key_a"
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "key_a"
-target = "golden"
-typ    = "cyphr.me/key/delete"
+tx = [
+  [
+    { now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/key/delete" },
+  ],
+]
 
 [test.expected]
 error = "KeyRevoked"
@@ -65,11 +65,11 @@ name      = "last_key_revoke_fails"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-rvk    = 1700000000
-signer = "golden"
-typ    = "cyphr.me/key/revoke"
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/key/revoke" },
+  ],
+]
 
 [test.expected]
 error = "NoActiveKeys"
@@ -84,11 +84,11 @@ name      = "duplicate_key_fails"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "golden"              # Trying to add golden again
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "DuplicateKey"
@@ -102,11 +102,11 @@ name      = "unknown_key_fails"
 principal = ["golden"]          # Only golden in principal
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "key_a"               # key_a is NOT in principal
-target = "key_b"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "key_a", target = "key_b", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "UnknownKey"
@@ -134,11 +134,11 @@ name      = "pre_mismatch_fails"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 # Override pre with wrong value (must be valid alg:digest format to test InvalidPrior)
 [test.override]
@@ -156,18 +156,18 @@ name      = "timestamp_past_fails"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000100
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000100, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000050            # Earlier than commit 1!
-signer = "golden"
-target = "key_b"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000050, signer = "golden", target = "key_b", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "TimestampPast"

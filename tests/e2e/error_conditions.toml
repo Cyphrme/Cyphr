@@ -9,11 +9,11 @@ name      = "err_broken_chain"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.override]
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -27,11 +27,11 @@ name      = "err_unknown_signer"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "alice"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "UnknownSigner"
@@ -42,18 +42,18 @@ name      = "err_timestamp_past"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_b"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_b", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "TimestampPast"
@@ -64,18 +64,18 @@ name      = "err_duplicate_key"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "DuplicateKey"
@@ -86,19 +86,18 @@ name      = "err_revoked_signer"
 principal = ["alice", "bob"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-rvk    = 1700000001
-signer = "alice"               # self-revoke: alice revokes herself
-target = "alice"
-typ    = "cyphr.me/key/revoke"
+tx = [
+  [
+    { now = 1700000001, rvk = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/key/revoke" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "alice"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000002, signer = "alice", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 error = "KeyRevoked"

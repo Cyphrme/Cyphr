@@ -194,7 +194,16 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - [x] Rust: Remove `.unwrap()` from infallible `Thumbprint::from_bytes()` in `key.rs` (2 sites)
    - [x] Both codebases build cleanly: `go build ./...` and `cargo build --workspace`
 
-   **7b: Fixture regeneration + test verification**
+   **7c: Intent format migration (list-of-lists)** ✅
+   - [x] Struct change: `CommitIntent.Tx` from `Vec<TxIntent>` / `[]TxIntent` to `Vec<Vec<TxIntent>>` / `[][]TxIntent` (Go + Rust)
+   - [x] Migrate all 12 TOML files from `[[test.commit.tx]]` table arrays to inline `tx = [[{...}]]` list-of-lists
+   - [x] Update Go e2e runner to iterate transactions → cozies (add inner loop)
+   - [x] Update Rust golden generator to iterate transactions → cozies
+   - [x] Verify both parsers round-trip: load a migrated TOML, confirm struct matches expected shape
+   - [x] Update `tests/README.md` documentation examples to match new format
+   - [x] Sketch ref: `.sketches/2026-04-02-intent-list-of-lists.md`
+
+   **7d: Fixture regeneration + test verification**
    - [ ] Regenerate all golden fixtures via `fixture-gen`
    - [ ] Full test suite passes in both langs (`go test ./...`, `cargo test`)
    - [ ] `go build ./...` and `cargo build --workspace` compile cleanly
@@ -330,10 +339,11 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Commit              | Planned                                    | Actual                                                                                                                                                                         | Rationale                                                                                                                                                              |
-| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                         |
-| Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit |
+| Commit              | Planned                                    | Actual                                                                                                                                                                         | Rationale                                                                                                                                                                       |
+| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                                  |
+| Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit          |
+| Phase 7c (Format)   | Phase 7b was next after bug fixes          | Added intent format migration to list-of-lists (`Vec<Vec<TxIntent>>`) before fixture regeneration                                                                              | Current flat `tx` list can't distinguish single-coz vs. multi-coz transactions — a structural blind spot preventing tests for the full transaction model. Must fix before regen |
 
 ## Retrospective
 

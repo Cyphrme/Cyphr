@@ -20,17 +20,18 @@ name      = "ks_two_keys_sorted"
 principal = ["golden"]           # Start with single implicit key
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-typ    = "cyphr.me/principal/create"
+tx = [
+  [
+    { now = 1700000002, signer = "golden", typ = "cyphr.me/principal/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -82,11 +83,11 @@ name      = "ts_single_tx_promotion"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -98,18 +99,18 @@ name      = "ts_multi_tx_sorted"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/delete"
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "key_a", typ = "cyphr.me/key/delete" },
+  ],
+]
 
 [test.expected]
 key_count = 1
@@ -121,11 +122,11 @@ name      = "as_ks_ts_combined"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2

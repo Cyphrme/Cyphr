@@ -36,10 +36,12 @@ type TestIntent struct {
 	Expected *ExpectedAssertions `toml:"expected,omitempty"`
 }
 
-// CommitIntent is a single commit containing one or more cozies.
+// CommitIntent is a single commit containing transactions.
+// Each transaction is a list of cozies (list-of-lists per SPEC).
 type CommitIntent struct {
-	// Tx contains cozies within this commit.
-	Tx []TxIntent `toml:"tx,omitempty"`
+	// Tx is a list of transactions within this commit.
+	// Each transaction is a list of cozies.
+	Tx [][]TxIntent `toml:"tx,omitempty"`
 }
 
 // TxIntent is a single coz within a commit.

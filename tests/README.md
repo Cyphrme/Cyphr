@@ -178,11 +178,7 @@ name      = "key_add_increases_count"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
 
 [test.expected]
 key_count = 2
@@ -197,18 +193,10 @@ name      = "transaction_sequence_replay"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [[{now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-target = "key_b"
-typ    = "cyphr.me/key/create"
+tx = [[{now = 1700000002, signer = "golden", target = "key_b", typ = "cyphr.me/key/create"}]]
 
 [test.expected]
 key_count = 3
@@ -247,11 +235,7 @@ name      = "action_after_key_add"
 principal = ["alice"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "alice"
-target = "bob"
-typ    = "cyphr.me/key/create"
+tx = [[{now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/key/create"}]]
 
 [[test.action]]
 msg    = "Action signed by newly added key"
@@ -276,11 +260,7 @@ revoke_key = "key_a"
 revoke_at  = 1699999999
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "key_a"
-target = "golden"
-typ    = "cyphr.me/key/delete"
+tx = [[{now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/key/delete"}]]
 
 [test.expected]
 error = "KeyRevoked"
@@ -294,11 +274,7 @@ name      = "pre_mismatch_fails"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
 
 [test.override]
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -309,29 +285,24 @@ error = "InvalidPrior"
 
 ### Intent Field Reference
 
-| Field                | Type     | Description                                    |
-| -------------------- | -------- | ---------------------------------------------- |
-| `name`               | string   | **Required.** Unique test identifier           |
-| `principal`          | string[] | **Required.** Genesis key names from pool      |
-| `setup.revoke_key`   | string   | Pre-revoke this key before test                |
-| `setup.revoke_at`    | i64      | Revocation timestamp                           |
-| `commit[]`           | array    | Commit sequence; each contains `tx[]`          |
-| `commit.tx[].typ`    | string   | Transaction type (`cyphr.me/key/create`, etc.) |
-| `commit.tx[].now`    | i64      | Transaction timestamp                          |
-| `commit.tx[].signer` | string   | Signing key name                               |
-| `commit.tx[].target` | string   | Target key name (for key operations)           |
-| `commit.tx[].rvk`    | i64      | Revocation timestamp (for key/revoke)          |
-| `commit.tx[].msg`    | string   | Optional message field                         |
-| `action[]`           | array    | Action sequence (Level 4 data recording)       |
-| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)        |
-| `action[].now`       | i64      | Action timestamp                               |
-| `action[].signer`    | string   | Action signer key name                         |
-| `action[].msg`       | string   | Action message content                         |
-| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)  |
-| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)    |
-| `expected.key_count` | int      | Expected active key count                      |
-| `expected.level`     | int      | Expected principal level (1-4)                 |
-| `expected.error`     | string   | Expected error name                            |
+| Field                | Type     | Description                                         |
+| -------------------- | -------- | --------------------------------------------------- |
+| `name`               | string   | **Required.** Unique test identifier                |
+| `principal`          | string[] | **Required.** Genesis key names from pool           |
+| `setup.revoke_key`   | string   | Pre-revoke this key before test                     |
+| `setup.revoke_at`    | i64      | Revocation timestamp                                |
+| `commit[]`           | array    | Commit sequence; each contains `tx` (list-of-lists) |
+| `commit.tx[][]`      | array    | Transaction list; each tx is a list of cozies       |
+| `action[]`           | array    | Action sequence (Level 4 data recording)            |
+| `action[].typ`       | string   | Action type (usually `cyphr.me/action`)             |
+| `action[].now`       | i64      | Action timestamp                                    |
+| `action[].signer`    | string   | Action signer key name                              |
+| `action[].msg`       | string   | Action message content                              |
+| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)       |
+| `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)         |
+| `expected.key_count` | int      | Expected active key count                           |
+| `expected.level`     | int      | Expected principal level (1-4)                      |
+| `expected.error`     | string   | Expected error name                                 |
 
 ---
 

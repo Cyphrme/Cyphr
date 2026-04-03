@@ -6,11 +6,11 @@ name      = "key_add_increases_count"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -22,11 +22,11 @@ name      = "key_add_changes_state"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -38,11 +38,11 @@ name      = "key_delete_decreases_count"
 principal = ["golden", "key_a"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/delete"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/delete" },
+  ],
+]
 
 [test.expected]
 key_count = 1
@@ -54,11 +54,11 @@ name      = "key_replace_single_key"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/replace"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/replace" },
+  ],
+]
 
 [test.expected]
 key_count = 1
@@ -69,11 +69,11 @@ name      = "self_revoke_moves_to_revoked"
 principal = ["golden", "key_a"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-rvk    = 1700000000
-signer = "key_a"
-typ    = "cyphr.me/key/revoke"
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "key_a", typ = "cyphr.me/key/revoke" },
+  ],
+]
 
 [test.expected]
 key_count = 1
@@ -84,25 +84,25 @@ name      = "transaction_sequence_replay"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "golden"
-target = "key_b"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "key_b", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000003
-signer = "key_a"
-target = "key_b"
-typ    = "cyphr.me/key/delete"
+tx = [
+  [
+    { now = 1700000003, signer = "key_a", target = "key_b", typ = "cyphr.me/key/delete" },
+  ],
+]
 
 [test.expected]
 key_count = 2

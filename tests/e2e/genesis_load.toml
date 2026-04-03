@@ -20,17 +20,18 @@ name      = "load_explicit_genesis"
 principal = ["alice"]               # Start with single implicit key
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000001
-signer = "alice"
-target = "bob"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000002
-signer = "alice"
-typ    = "cyphr.me/principal/create"
+tx = [
+  [
+    { now = 1700000002, signer = "alice", typ = "cyphr.me/principal/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
@@ -43,11 +44,11 @@ name      = "load_with_transactions"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.tx]]
-now    = 1700000000
-signer = "golden"
-target = "key_a"
-typ    = "cyphr.me/key/create"
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
 
 [test.expected]
 key_count = 2
