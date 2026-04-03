@@ -5,12 +5,13 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 // ExportEntries exports all entries from a Principal for storage.
 //
 // Returns a slice of Entry that can be persisted to any Store.
-// The order is: cozies first (in apply order), then actions.
+// The order is: all cozies per commit (mutations then commit transaction),
+// followed by actions.
 //
 // Each entry contains the original raw JSON bytes from verification,
 // ensuring bit-perfect round-trip fidelity for czd computation.
 //
-// For implicit genesis principals (Level 1, no cozies), this
+// For implicit genesis principals (Level 1, no commits), this
 // returns only actions (if any). The genesis key is not exported as
 // an entry since implicit genesis has no coz.
 //
@@ -23,18 +24,22 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 	var entries []*Entry
 
-	// Export cozies in applied order
-	for _, cz := range principal.Cozies() {
-		if cz.Raw() == nil {
-			// Skip cozies without raw bytes (shouldn't happen in normal flow)
-			continue
-		}
+	// Export cozies per commit, preserving commit boundaries.
+	// Each commit contains mutation cozies followed by the commit transaction
+	// coz (which has the arrow field marking the commit boundary).
+	for _, commit := range principal.Commits() {
+		for _, cz := range commit.Cozies() {
+			if cz.Raw() == nil {
+				// Skip cozies without raw bytes (shouldn't happen in normal flow)
+				continue
+			}
 
-		entry := &Entry{
-			raw: cz.Raw(),
-			Now: cz.Now,
+			entry := &Entry{
+				raw: cz.Raw(),
+				Now: cz.Now,
+			}
+			entries = append(entries, entry)
 		}
-		entries = append(entries, entry)
 	}
 
 	// Export actions in recorded order

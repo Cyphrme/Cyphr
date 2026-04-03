@@ -75,9 +75,9 @@ func TestLoadGolden(t *testing.T) {
 		t.Errorf("Principal = %v, want [golden]", golden.Principal)
 	}
 
-	// Check cz count using helper
-	if golden.TxCount() != 1 {
-		t.Errorf("TxCount = %d, want 1", golden.TxCount())
+	// Check cz count using helper (mutation coz + finality/arrow coz = 2)
+	if golden.TxCount() != 2 {
+		t.Errorf("TxCount = %d, want 2", golden.TxCount())
 	}
 
 	if !golden.IsGenesisOnly() == false {

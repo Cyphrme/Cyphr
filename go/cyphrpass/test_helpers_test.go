@@ -22,6 +22,10 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 		return nil, err
 	}
 
+	// Push mutation coz to transactions (no arrow — that goes on commitTx)
+	pending := NewPendingCommit(p.hashAlg)
+	pending.Push(cz)
+
 	// Compute SR from post-mutation state
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
@@ -40,12 +44,43 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 		return nil, err
 	}
 
-	// Inject state_root into coz as Arrow placeholder for routing
-	arrowMD := sr.MultihashDigest
-	cz.Arrow = &arrowMD
+	// Compute TMR from pending transactions
+	tmr, err := ComputeTMRFromPending(pending.transactions, p.activeAlgs)
+	if err != nil {
+		return nil, err
+	}
 
-	// Finalize as single-cz commit
-	pending := NewPendingCommit(p.hashAlg)
-	pending.Push(cz)
+	// Ascertain Pre (previous PR)
+	pre := p.pr
+	if len(p.commits) == 0 {
+		// Genesis bootstrap
+		tmbMD := FromSingleDigest(p.activeAlgs[0], p.auth.Keys[0].Tmb)
+		pre = PrincipalRoot{tmbMD}
+	}
+
+	// Compute Arrow = hash_sorted_concat(pre, sr, tmr) per SPEC
+	txAlg := p.activeAlgs[0]
+	components := [][]byte{
+		pre.GetOrFirst(txAlg),
+		sr.GetOrFirst(txAlg),
+		tmr.GetOrFirst(txAlg),
+	}
+	arrowDigest, err := hashSortedConcatBytes(txAlg, components...)
+	if err != nil {
+		return nil, err
+	}
+	arrowMD := FromSingleDigest(txAlg, arrowDigest)
+
+	// Create a synthetic commit coz with arrow for the commitTx slot.
+	commitCoz := &ParsedCoz{
+		Kind:    TxCommitCreate,
+		Signer:  cz.Signer,
+		Now:     cz.Now,
+		Czd:     cz.Czd, // Synthetic — not used for real verification
+		HashAlg: cz.HashAlg,
+		Arrow:   &arrowMD,
+	}
+	pending.Push(commitCoz)
+
 	return p.finalizeCommit(pending)
 }
