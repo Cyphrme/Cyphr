@@ -111,3 +111,75 @@ func buildRawEntry(cz *coz.Coz, newKey *coz.Key) (json.RawMessage, error) {
 
 	return json.Marshal(entry)
 }
+
+// verifyCozWithSnapshot verifies a Coz using a pre-commit key snapshot for
+// authorization. This implements [pre-mutation-key-rule]: authorization is
+// evaluated against the key state that existed before any transactions in
+// the current commit are applied. Keys revoked or deleted during a commit
+// still authorize their own containing transactions.
+//
+// The snapshot maps tmb string → *Key for the keys that were active at
+// BeginCommit() time.
+func (p *Principal) verifyCozWithSnapshot(cz *coz.Coz, newKey *coz.Key, snapshot map[string]*Key) (*VerifiedCoz, error) {
+	// Parse the payload to extract signer thumbprint
+	var pay CozPay
+	if err := json.Unmarshal(cz.Pay, &pay); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// Look up the signing key in the pre-commit snapshot first,
+	// falling back to the live state for keys added during this commit.
+	tmbStr := string(pay.Tmb.String())
+	signerKey, inSnapshot := snapshot[tmbStr]
+	if !inSnapshot {
+		// Key not in snapshot — check if it was added during this commit
+		signerKey = p.Key(pay.Tmb)
+		if signerKey == nil {
+			return nil, ErrUnknownKey
+		}
+	}
+
+	// Check if key was active at pre-commit time.
+	// Keys in the snapshot were active at BeginCommit(); keys added during
+	// the commit (not in snapshot) are also active by virtue of being added.
+	// Keys revoked/deleted during the commit but present in the snapshot
+	// are still authorized per [pre-mutation-key-rule].
+	if inSnapshot {
+		// Was in snapshot → was active at pre-commit time → authorized
+	} else if !signerKey.IsActive() {
+		// Not in snapshot and not active → truly unauthorized
+		return nil, ErrKeyRevoked
+	}
+
+	// Verify the signature using the key material.
+	// For keys from the snapshot, we need the actual coz.Key to verify.
+	// The snapshot Key wraps a coz.Key, so use it directly.
+	valid, err := signerKey.Key.VerifyCoz(cz)
+	if err != nil || !valid {
+		return nil, ErrInvalidSignature
+	}
+
+	// Compute metadata including czd
+	if err := cz.Meta(); err != nil {
+		return nil, ErrMalformedPayload
+	}
+
+	// Parse the coz
+	parsed, err := ParseCoz(&pay, cz.Czd)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store raw bytes for bit-perfect export
+	rawEntry, err := buildRawEntry(cz, newKey)
+	if err != nil {
+		return nil, ErrMalformedPayload
+	}
+	parsed.raw = rawEntry
+
+	return &VerifiedCoz{
+		cz:     parsed,
+		signer: signerKey,
+		newKey: newKey,
+	}, nil
+}

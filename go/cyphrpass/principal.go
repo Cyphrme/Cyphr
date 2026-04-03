@@ -482,11 +482,17 @@ func (p *Principal) applyCozInternal(cz *ParsedCoz, newKey *coz.Key) error {
 		}
 	}
 
-	// Verify signer is an active key (except for self-revoke, where
-	// the signer IS the key being revoked)
+	// Verify signer is an active key (except for self-revoke and commit/create).
+	// Self-revoke: signer IS the key being revoked, handled in dispatch below.
+	// Commit/create: authorization is verified by verifyCozWithSnapshot against
+	// the pre-commit key snapshot per [pre-mutation-key-rule]. The commit/create
+	// doesn't mutate state, so no further check is needed here.
 	if cz.Kind == TxRevoke && len(cz.ID) == 0 {
 		// Self-revoke: signer revokes itself. Signer must be active but
 		// will be removed, so we verify below in the dispatch.
+	} else if cz.Kind == TxCommitCreate {
+		// Commit/create: authorization already verified against pre-commit
+		// snapshot. Skip live-state check.
 	} else {
 		if !p.IsKeyActive(cz.Signer) {
 			// Check if key exists but is revoked
@@ -713,9 +719,16 @@ func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
 //
 // For single-coz commits, use [Principal.ApplyCoz] instead.
 func (p *Principal) BeginCommit() *CommitBatch {
+	// Snapshot active keys for pre-mutation authorization checks
+	// per [pre-mutation-key-rule].
+	snapshot := make(map[string]*Key, len(p.auth.Keys))
+	for _, k := range p.auth.Keys {
+		snapshot[k.Tmb.String()] = k
+	}
 	return &CommitBatch{
-		principal: p,
-		pending:   NewPendingCommit(p.hashAlg),
+		principal:     p,
+		pending:       NewPendingCommit(p.hashAlg),
+		preCommitKeys: snapshot,
 	}
 }
 

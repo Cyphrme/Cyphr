@@ -266,9 +266,14 @@ func (p *PendingCommit) IntoTransactions() []*ParsedCoz {
 // IS observable between Apply() and Finalize(). This matches the database/sql
 // convention: between Begin() and Commit(), the caller is responsible for
 // not reading stale data.
+//
+// Per [pre-mutation-key-rule], authorization is evaluated against the key
+// state that existed before any transactions in the commit are applied.
+// CommitBatch snapshots the active key set at creation time for this purpose.
 type CommitBatch struct {
-	principal *Principal
-	pending   *PendingCommit
+	principal     *Principal
+	pending       *PendingCommit
+	preCommitKeys map[string]*Key // snapshot of active keys at BeginCommit()
 }
 
 // Apply applies a verified coz to this commit batch.
@@ -289,9 +294,10 @@ func (b *CommitBatch) Apply(vt *VerifiedCoz) error {
 // VerifyAndApply verifies a Coz message and applies the resulting coz.
 //
 // This is a convenience method for the storage import path, combining
-// [Principal.VerifyCoz] and [CommitBatch.Apply].
+// verification and application. Per [pre-mutation-key-rule], authorization
+// is checked against the pre-commit key snapshot, not the live state.
 func (b *CommitBatch) VerifyAndApply(cz *coz.Coz, newKey *coz.Key) error {
-	vt, err := b.principal.VerifyCoz(cz, newKey)
+	vt, err := b.principal.verifyCozWithSnapshot(cz, newKey, b.preCommitKeys)
 	if err != nil {
 		return err
 	}
