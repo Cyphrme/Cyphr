@@ -220,14 +220,20 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - Rust unit tests: 55/65 → 65/65 passing
    - Rust golden integration: 6/7 failing (`MissingCommit` — fixture runner needs commit coz split)
 
-   **7e: Final verification** (Not Started)
-   - [ ] Fix Rust golden fixture runner (`MissingCommit` — same commit coz pattern)
+   **7e: Final verification** (Partially Complete)
+   - [x] Fix Rust golden fixture runner (`MissingCommit` — same commit coz pattern)
    - [ ] Fix multi-algorithm PR divergence (4 Go tests, likely Rust too)
    - [ ] Full test suite passes in both langs (`go test ./...`, `cargo test`)
    - [ ] Genesis commit trace walkthrough
    - [ ] Key addition (Level 3) trace walkthrough
    - [ ] Stale terminology sweep (zero hits for old names):
          `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt'`
+
+   **7f: MALT Multi-Algorithm Architecture Pivot**
+   - [ ] Remove `CyphrpassMultiHasher` (Go) and equivalent in Rust. The MALT must remain a single-algorithm structure.
+   - [ ] Core types: update `Principal.commitTree` to be a collection of MALTs (e.g., `map[HashAlg]malt.Log` / `HashMap<HashAlg, Log>`).
+   - [ ] Apply `[conversion]` correctly: `CR` is computed by packing the root of each per-algo MALT into a `MultihashDigest`. If an algorithm is newly added, its MALT is initialized and populated using `[conversion]` applied properly (first via O(n) leaf replay or O(log n) frontier conversion, whichever is simpler).
+   - [ ] Verify multi-algorithm PR parity between Go and Rust.
 
 ### 7.1 Technical Debt Log (From Phase 4-7)
 
@@ -361,13 +367,14 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Commit              | Planned                                    | Actual                                                                                                                                                                         | Rationale                                                                                                                                                                       |
-| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                                  |
-| Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit          |
-| Phase 7c (Format)   | Phase 7b was next after bug fixes          | Added intent format migration to list-of-lists (`Vec<Vec<TxIntent>>`) before fixture regeneration                                                                              | Current flat `tx` list can't distinguish single-coz vs. multi-coz transactions — a structural blind spot preventing tests for the full transaction model. Must fix before regen |
-| Phase 7d (Bugs)     | Fixture regen + full pass                  | Fixture regen produced 17 Go failures; uncovered 3 distinct bug classes requiring 7 code fixes across Go + Rust                                                                | Genesis bootstrap, pre-mutation key rule, and mutation/commit coz split were all independently blocking; each required spec consultation                                        |
-| Phase 7d (Split)    | Single verification phase                  | Split 7d (bug fixes, done) from 7e (final verification, not started) due to scope expansion                                                                                    | 7d grew from "regen + verify" to "regen + discover 3 bug classes + fix 7 locations + port to Rust". Clean boundary needed                                                       |
+| Commit              | Planned                                    | Actual                                                                                                                                                                         | Rationale                                                                                                                                                                             |
+| :------------------ | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                                        |
+| Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit                |
+| Phase 7c (Format)   | Phase 7b was next after bug fixes          | Added intent format migration to list-of-lists (`Vec<Vec<TxIntent>>`) before fixture regeneration                                                                              | Current flat `tx` list can't distinguish single-coz vs. multi-coz transactions — a structural blind spot preventing tests for the full transaction model. Must fix before regen       |
+| Phase 7d (Bugs)     | Fixture regen + full pass                  | Fixture regen produced 17 Go failures; uncovered 3 distinct bug classes requiring 7 code fixes across Go + Rust                                                                | Genesis bootstrap, pre-mutation key rule, and mutation/commit coz split were all independently blocking; each required spec consultation                                              |
+| Phase 7d (Split)    | Single verification phase                  | Split 7d (bug fixes, done) from 7e (final verification, not started) due to scope expansion                                                                                    | 7d grew from "regen + verify" to "regen + discover 3 bug classes + fix 7 locations + port to Rust". Clean boundary needed                                                             |
+| Phase 7f (Pivot)    | N/A                                        | Introduced Phase 7f to replace `CyphrpassMultiHasher` with a one-MALT-per-algorithm architecture                                                                               | Investigating 4 PR divergence failures revealed the multi-algorithm hasher violates MALT's single-algorithm concern and forces O(n) rebuilds. Pivot ensures canonical spec alignment. |
 
 ## Retrospective
 
