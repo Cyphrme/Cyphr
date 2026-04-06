@@ -541,19 +541,28 @@ mod tests {
     const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
-    /// Create a test coz with specified finalizer flag.
-    fn make_test_tx(is_finalizer: bool, czd_byte: u8) -> VerifiedCoz {
+    /// Create a test coz. When `is_commit` is true, creates a commit/create
+    /// coz with an arrow field (routes to commit_tx via push). When false,
+    /// creates a mutation coz (routes to transactions).
+    fn make_test_tx(is_commit: bool, czd_byte: u8) -> VerifiedCoz {
+        let typ = if is_commit {
+            "cyphrpass/commit/create"
+        } else {
+            "cyphr.me/key/create"
+        };
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
+            .typ(typ)
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
-        pay.extra.insert("id".into(), json!(TEST_ID));
-        if is_finalizer {
+        if !is_commit {
+            pay.extra.insert("pre".into(), json!(TEST_PRE));
+            pay.extra.insert("id".into(), json!(TEST_ID));
+        }
+        if is_commit {
             pay.extra.insert(
-                "commit".into(),
+                "arrow".into(),
                 json!("SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"),
             );
         }

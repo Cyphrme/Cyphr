@@ -203,11 +203,28 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
    - [x] Update `tests/README.md` documentation examples to match new format
    - [x] Sketch ref: `.sketches/2026-04-02-intent-list-of-lists.md`
 
-   **7d: Fixture regeneration + test verification**
-   - [ ] Regenerate all golden fixtures via `fixture-gen`
+   **7d: Fixture regeneration + bug fixes** ✅
+   - [x] Regenerate all golden fixtures via `fixture-gen` (40 fixtures from 7 intent files)
+   - [x] Go build clean: `go build ./...`
+   - [x] Rust build clean: `cargo build --workspace`
+   - [x] Go `ApplyTransactionUnsafe` nil deref — mutation coz routed to commitTx, TMR nil
+   - [x] Go `ExportEntries` missing commit cozies — reimport couldn't detect boundaries
+   - [x] Go `TestLoadGolden` stale TxCount assertion (1 → 2)
+   - [x] Go genesis bootstrap bug — Arrow `pre` used post-mutation Keys[0].Tmb instead of p.pr (3 locations)
+   - [x] Go [pre-mutation-key-rule] — `CommitBatch` snapshots active keys at BeginCommit;
+         commit/create coz signed by replaced/revoked key now authorized correctly
+   - [x] Rust `state_root` → `arrow` field rename in `apply_transaction_test`
+   - [x] Rust `apply_transaction_test` same mutation+commit coz split as Go
+   - [x] Rust `make_test_tx` — `commit` → `arrow` field, typ → `cyphrpass/commit/create`
+   - Go test failures: 17 → 4 (all multi-algorithm PR divergence)
+   - Rust unit tests: 55/65 → 65/65 passing
+   - Rust golden integration: 6/7 failing (`MissingCommit` — fixture runner needs commit coz split)
+
+   **7e: Final verification** (Not Started)
+   - [ ] Fix Rust golden fixture runner (`MissingCommit` — same commit coz pattern)
+   - [ ] Fix multi-algorithm PR divergence (4 Go tests, likely Rust too)
    - [ ] Full test suite passes in both langs (`go test ./...`, `cargo test`)
-   - [ ] `go build ./...` and `cargo build --workspace` compile cleanly
-   - [ ] Genesis commit trace walkthrough (step through machine spec constraints)
+   - [ ] Genesis commit trace walkthrough
    - [ ] Key addition (Level 3) trace walkthrough
    - [ ] Stale terminology sweep (zero hits for old names):
          `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt'`
@@ -319,19 +336,24 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                                                                                             | Severity | Why Introduced                                              | Follow-Up                                           |  Resolved  |
-| :--------------------------------------------------------------------------------------------------------------- | :------- | :---------------------------------------------------------- | :-------------------------------------------------- | :--------: |
-| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor         | Rename to `CommitSR` in cleanup pass                | 2026-04-01 |
-| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                     | Rename to `sr`/`state_root()` in cleanup pass       | 2026-04-01 |
-| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose              | Sweep with `rg 'commit.state\|Commit State'`        | 2026-04-01 |
-| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests | Regenerate via `fixture-gen` (Phase 7)              |            |
-| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments        | Sweep alongside doc comment cleanup                 | 2026-04-01 |
-| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                    | Formal protocol restored and output applied         | 2026-04-01 |
-| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers  | Fix test logic in Phase 7                           |            |
-| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                          | Cleanup in Phase 7                                  |            |
-| Go `ApplyTransactionUnsafe` injects SR as Arrow placeholder instead of computing real Arrow                      | MEDIUM   | Emergency patch during test helper adaptation               | Refactor to compute Arrow properly or remove helper |            |
-| Go `containsKeyPrefix` function name misleading — checks for infixes (`/key/`, `/commit/`) not prefixes          | LOW      | Pre-existing; expanded during Phase 7a `/commit/` addition  | Rename to `containsKnownTypInfix` in cleanup pass   |            |
-| Go `FinalizeWithArrow` uses raw `HashAlg(signerKey.Alg.Hash())` instead of `HashAlgFromSEAlg` wrapper            | LOW      | Pre-existing; functionally equivalent but inconsistent      | Normalize to `HashAlgFromSEAlg` in next code sweep  |            |
+| Item                                                                                                             | Severity | Why Introduced                                                         | Follow-Up                                           |  Resolved  |
+| :--------------------------------------------------------------------------------------------------------------- | :------- | :--------------------------------------------------------------------- | :-------------------------------------------------- | :--------: |
+| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor                    | Rename to `CommitSR` in cleanup pass                | 2026-04-01 |
+| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                                | Rename to `sr`/`state_root()` in cleanup pass       | 2026-04-01 |
+| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose                         | Sweep with `rg 'commit.state\|Commit State'`        | 2026-04-01 |
+| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests            | Regenerate via `fixture-gen` (Phase 7)              |            |
+| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments                   | Sweep alongside doc comment cleanup                 | 2026-04-01 |
+| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                               | Formal protocol restored and output applied         | 2026-04-01 |
+| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers             | Fix test logic in Phase 7                           |            |
+| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                                     | Cleanup in Phase 7                                  |            |
+| Go `ApplyTransactionUnsafe` injects SR as Arrow placeholder instead of computing real Arrow                      | MEDIUM   | Emergency patch during test helper adaptation                          | Refactor to compute Arrow properly or remove helper | 2026-04-03 |
+| Go `containsKeyPrefix` function name misleading — checks for infixes (`/key/`, `/commit/`) not prefixes          | LOW      | Pre-existing; expanded during Phase 7a `/commit/` addition             | Rename to `containsKnownTypInfix` in cleanup pass   |            |
+| Go `FinalizeWithArrow` uses raw `HashAlg(signerKey.Alg.Hash())` instead of `HashAlgFromSEAlg` wrapper            | LOW      | Pre-existing; functionally equivalent but inconsistent                 | Normalize to `HashAlgFromSEAlg` in next code sweep  |            |
+| Go genesis bootstrap override in Arrow `pre` computation — used post-mutation key set                            | MEDIUM   | Incorrect assumption that p.pr needed re-derivation at genesis         | Removed in 3 locations; p.pr always correct         | 2026-04-03 |
+| Go `VerifyCoz` checked live state for commit/create auth instead of pre-mutation snapshot                        | HIGH     | Violated [pre-mutation-key-rule] — spec says pre-commit keys authorize | Added `verifyCozWithSnapshot` + key snapshot        | 2026-04-03 |
+| Rust `apply_transaction_test` put arrow on mutation coz instead of separate commit coz                           | MEDIUM   | Same structural error as Go `ApplyTransactionUnsafe`                   | Ported same fix: mutation + commit coz split        | 2026-04-06 |
+| Rust golden fixture runner doesn't construct commit/create coz                                                   | MEDIUM   | Runner predates list-of-lists commit coz separation                    | Needs same pattern as unit test helper              |            |
+| Multi-algorithm PR divergence between Go and Rust                                                                | HIGH     | Go and Rust compute PR differently when activeAlgs > 1                 | Root cause TBD — 4 Go tests, likely Rust too        |            |
 
 ## Deviation Log
 
@@ -344,6 +366,8 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 | `19dc1cd` (Phase 3) | `embedding` was Open Question #5, deferred | Added `embedding` parameter stubs proactively to all compute function signatures (always `nil`/`None`)                                                                         | Spec formulas include `embedding?` at every MR level. Adding now avoids a future signature-breaking change; cost is negligible                                                  |
 | Phase 7a (Bug Fix)  | Phase 7 was marked complete                | Discovered 4 critical bugs blocking verification: Go `HashAlg` misinitialization, missing `commit/create` typ parsing, stale storage import detection, and Rust compile errors | Prior session (Gemini) marked Phase 7 items complete but fixture regeneration had produced incorrect digests. Root causes identified during cross-implementation audit          |
 | Phase 7c (Format)   | Phase 7b was next after bug fixes          | Added intent format migration to list-of-lists (`Vec<Vec<TxIntent>>`) before fixture regeneration                                                                              | Current flat `tx` list can't distinguish single-coz vs. multi-coz transactions — a structural blind spot preventing tests for the full transaction model. Must fix before regen |
+| Phase 7d (Bugs)     | Fixture regen + full pass                  | Fixture regen produced 17 Go failures; uncovered 3 distinct bug classes requiring 7 code fixes across Go + Rust                                                                | Genesis bootstrap, pre-mutation key rule, and mutation/commit coz split were all independently blocking; each required spec consultation                                        |
+| Phase 7d (Split)    | Single verification phase                  | Split 7d (bug fixes, done) from 7e (final verification, not started) due to scope expansion                                                                                    | 7d grew from "regen + verify" to "regen + discover 3 bug classes + fix 7 locations + port to Rust". Clean boundary needed                                                       |
 
 ## Retrospective
 

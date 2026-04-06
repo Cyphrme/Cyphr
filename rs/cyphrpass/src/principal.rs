@@ -784,39 +784,68 @@ impl Principal {
 
     /// Apply a coz without prior signature verification (test-only).
     ///
-    /// This helper computes state_root post-mutation (per SPEC §4.4) since
-    /// test cozies don't go through the signing path.
+    /// Pushes the mutation coz to `transactions` (without arrow), then
+    /// creates a separate synthetic `commit/create` coz with the correctly
+    /// computed arrow and pushes it to `commit_tx`. This mirrors the
+    /// protocol structure per SPEC §4.4.
     #[cfg(test)]
     pub(crate) fn apply_transaction_test(
         &mut self,
-        mut cz: crate::parsed_coz::ParsedCoz,
+        cz: crate::parsed_coz::ParsedCoz,
         new_key: Option<Key>,
     ) -> Result<&Commit> {
         use crate::commit::PendingCommit;
-        use crate::parsed_coz::VerifiedCoz;
+        use crate::multihash::MultihashDigest;
+        use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
         use crate::state::{compute_ar, compute_kr, compute_sr, derive_hash_algs};
 
         // Apply mutation eagerly (same as apply_verified_internal)
-        let vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key.clone());
-        self.apply_verified_internal(vtx)?;
+        let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
+        self.apply_verified_internal(mutation_vtx)?;
 
-        // Compute CS from post-mutation state
+        // Push mutation coz to transactions (no arrow)
+        let mut pending = PendingCommit::new(self.hash_alg());
+        let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
+        pending.push(mutation_vtx2);
+
+        // Compute SR from post-mutation state
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let cs = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
+        let sr = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
 
-        // Inject state_root into the coz
-        cz.state_root = Some(cs);
+        // Compute TMR from pending transactions
+        let (tmr_opt, _tcr, _tr) = pending.compute_roots();
+        let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
-        // Create the final VerifiedCoz with state_root
-        let final_vtx = VerifiedCoz::from_transaction_unsafe(cz, new_key);
+        // Compute arrow = hash_sorted_concat(pre, sr, tmr)
+        let pre = &self.ps;
+        let tx_alg = active_algs.first().copied().unwrap_or(self.hash_alg);
+        let pre_bytes = pre.0.get_or_err(tx_alg)?;
+        let sr_bytes = sr.0.get_or_err(tx_alg)?;
+        let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
-        // Finalize as single-cz commit
-        let mut pending = PendingCommit::new(self.hash_alg());
-        pending.push(final_vtx);
+        let arrow_digest =
+            crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest);
+
+        // Create synthetic commit/create coz with arrow
+        let commit_coz = ParsedCoz {
+            kind: CozKind::CommitCreate {
+                arrow: arrow_md.clone(),
+            },
+            signer: cz.signer.clone(),
+            now: cz.now,
+            czd: cz.czd.clone(),
+            hash_alg: cz.hash_alg,
+            arrow: Some(arrow_md),
+            raw: cz.raw.clone(),
+        };
+        let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
+        pending.push(commit_vtx);
+
         self.finalize_commit(pending)
     }
 
