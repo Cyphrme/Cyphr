@@ -105,12 +105,12 @@ pub enum LoadError {
     InvalidKeyMaterial { field: String, message: String },
 }
 
-/// Determine if a typ string represents a coz (not an action).
+/// Determine if a typ string represents a transaction (not an action).
 ///
-/// Transactions are: key/*, principal/create
+/// Transactions are: key/*, principal/create, commit/create
 /// Everything else is an action.
 fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/") || typ.contains("/principal/create")
+    typ.contains("/key/") || typ.contains("/principal/create") || typ.contains("/commit/create")
 }
 
 // ============================================================================

@@ -872,8 +872,17 @@ impl Principal {
             }
         }
 
-        // Verify signer is an active key (except for self-revoke which is handled specially)
-        if !matches!(&cz.kind, CozKind::SelfRevoke { .. }) && !self.is_key_active(&cz.signer) {
+        // Verify signer is an active key.
+        // Exceptions:
+        //   - SelfRevoke: handled specially (revoking oneself)
+        //   - CommitCreate: finality marker; authorization was already verified
+        //     against the pre-commit key snapshot in CommitScope::verify_and_apply.
+        //     The signer may have been replaced by a prior mutation in this commit.
+        let skip_active_check = matches!(
+            &cz.kind,
+            CozKind::SelfRevoke { .. } | CozKind::CommitCreate { .. }
+        );
+        if !skip_active_check && !self.is_key_active(&cz.signer) {
             // Check if key exists but is revoked
             if self.auth.revoked.contains_key(&cz.signer.to_b64()) {
                 return Err(Error::KeyRevoked);

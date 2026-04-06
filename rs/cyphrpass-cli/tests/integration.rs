@@ -233,13 +233,12 @@ fn test_tx_list_after_transactions() {
     let signer_arg = format!("--signer={genesis_tmb}");
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
-    // List cozies - should show 1 coz
+    // List cozies - should show 2 (key/create + commit/create per commit)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
 
-    assert_eq!(tx_list["transaction_count"], 1);
+    assert_eq!(tx_list["transaction_count"], 2);
     let cozies = tx_list["cozies"].as_array().unwrap();
-    assert_eq!(cozies.len(), 1);
-    assert!(cozies[0]["kind"].as_str().unwrap().contains("key/create"));
+    assert_eq!(cozies.len(), 2);
 }
 
 #[test]
@@ -330,9 +329,9 @@ fn test_full_workflow() {
     let key_list = cli.run_json(&["key", "list", &identity_arg]);
     assert_eq!(key_list["active_keys"].as_array().unwrap().len(), 2);
 
-    // 7. Check tx list after coz
+    // 7. Check tx list after coz (mutation + commit/create per commit)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 1);
+    assert_eq!(tx_list["transaction_count"], 2);
 
     // 8. Check inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
@@ -361,9 +360,9 @@ fn test_full_workflow() {
         "genesis key should be in final active keys"
     );
 
-    // 12. Check tx list shows 2 cozies (add + revoke)
+    // 12. Check tx list shows 4 cozies (2 commits × 2 each: mutation + commit/create)
     let tx_list = cli.run_json(&["tx", "list", &identity_arg]);
-    assert_eq!(tx_list["transaction_count"], 2);
+    assert_eq!(tx_list["transaction_count"], 4);
 }
 
 #[test]
@@ -402,5 +401,5 @@ fn test_tx_verify_after_transactions() {
 
     assert_eq!(verify["status"], "OK", "tx verify should succeed");
     assert_eq!(verify["commits_verified"], 1);
-    assert_eq!(verify["transactions_verified"], 1);
+    assert_eq!(verify["transactions_verified"], 2);
 }

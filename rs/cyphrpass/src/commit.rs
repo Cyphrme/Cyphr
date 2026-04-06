@@ -301,17 +301,31 @@ impl PendingCommit {
 pub struct CommitScope<'a> {
     principal: &'a mut crate::principal::Principal,
     pending: PendingCommit,
+    /// Snapshot of active keys at commit-start time for authorization.
+    ///
+    /// Per [pre-mutation-key-rule]: signatures within a commit are verified
+    /// against the key set that was active when the commit began, not the
+    /// eagerly-mutated live state. This ensures that a key replaced mid-commit
+    /// can still sign the terminal commit/create coz.
+    pre_commit_keys: std::collections::BTreeMap<String, crate::key::Key>,
 }
 
 impl<'a> CommitScope<'a> {
     /// Create a new commit scope for the given principal.
     ///
+    /// Snapshots the active key set for [pre-mutation-key-rule] authorization.
     /// This is called by [`Principal::begin_commit()`].
     pub(crate) fn new(principal: &'a mut crate::principal::Principal) -> Self {
         let hash_alg = principal.hash_alg();
+        // Snapshot active keys for pre-mutation authorization checks
+        let pre_commit_keys: std::collections::BTreeMap<String, crate::key::Key> = principal
+            .active_keys()
+            .map(|k| (k.tmb.to_b64(), k.clone()))
+            .collect();
         Self {
             principal,
             pending: PendingCommit::new(hash_alg),
+            pre_commit_keys,
         }
     }
 
@@ -377,19 +391,22 @@ impl<'a> CommitScope<'a> {
             .as_ref()
             .ok_or(crate::error::Error::MalformedPayload)?;
 
-        // Signer must be an ACTIVE key (not revoked)
-        if !self.principal.is_key_active(signer_tmb) {
-            if self.principal.is_key_revoked(signer_tmb) {
-                return Err(crate::error::Error::KeyRevoked);
-            }
+        // [pre-mutation-key-rule]: Check authorization against the snapshot
+        // of keys that were active when this commit began, not the eagerly
+        // mutated live state. Keys added during the commit are also accepted.
+        let tmb_str = signer_tmb.to_b64();
+        let signer_key = if let Some(key) = self.pre_commit_keys.get(&tmb_str) {
+            key
+        } else if self.principal.is_key_active(signer_tmb) {
+            // Key was added during this commit — accept it
+            self.principal
+                .get_key(signer_tmb)
+                .ok_or(crate::error::Error::UnknownKey)?
+        } else if self.principal.is_key_revoked(signer_tmb) {
+            return Err(crate::error::Error::KeyRevoked);
+        } else {
             return Err(crate::error::Error::UnknownKey);
-        }
-
-        // Look up signer key
-        let signer_key = self
-            .principal
-            .get_key(signer_tmb)
-            .ok_or(crate::error::Error::UnknownKey)?;
+        };
 
         // Verify signature and parse coz
         let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;

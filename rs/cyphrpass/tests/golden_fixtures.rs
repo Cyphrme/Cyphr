@@ -72,79 +72,6 @@ fn cad_to_b64(cad: &coz::Cad) -> String {
     Base64UrlUnpadded::encode_string(cad.as_bytes())
 }
 
-/// Apply a storage-format entry {pay, sig, key?} to Principal.
-/// Verifies that computed czd matches expected_czd.
-/// `commit_keys` provides commit-level keys for key/create and key/replace.
-fn try_apply_entry(
-    principal: &mut Principal,
-    entry: &serde_json::Value,
-    expected_czd: &str,
-    test_name: &str,
-    commit_keys: &[KeyEntry],
-) -> Result<(), cyphrpass::error::Error> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let pay = entry.get("pay").expect("entry missing pay");
-    let sig_b64 = entry
-        .get("sig")
-        .and_then(|v| v.as_str())
-        .expect("entry missing sig");
-    let sig = Base64UrlUnpadded::decode_vec(sig_b64).expect("invalid sig base64");
-
-    let pay_json = serde_json::to_vec(pay).expect("failed to serialize pay");
-
-    // Compute czd from pay+sig
-    let alg = pay
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .expect("entry pay missing alg");
-    let cad =
-        coz::canonical_hash_for_alg(&pay_json, alg, None).expect("unsupported algorithm for cad");
-    let computed_czd = coz::czd_for_alg(&cad, &sig, alg).expect("unsupported algorithm for czd");
-    let computed_czd_b64 = Base64UrlUnpadded::encode_string(computed_czd.as_bytes());
-
-    // Verify czd matches expected
-    assert_eq!(
-        computed_czd_b64, expected_czd,
-        "{}: czd mismatch for entry",
-        test_name
-    );
-
-    // Look up new key from commit-level keys[] by matching pay.id to key.tmb
-    let new_key = pay.get("id").and_then(|id_val| {
-        let id_str = id_val.as_str()?;
-        commit_keys.iter().find_map(|ke| {
-            if ke.tmb == id_str {
-                let pub_bytes = Base64UrlUnpadded::decode_vec(&ke.pub_key).ok()?;
-                let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb).ok()?;
-                Some(Key {
-                    alg: ke.alg.clone(),
-                    tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-                    pub_key: pub_bytes,
-                    first_seen: 0,
-                    last_used: None,
-                    revocation: None,
-                    tag: None,
-                })
-            } else {
-                None
-            }
-        })
-    });
-
-    // Determine if this is a coz or action based on typ field
-    let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
-    if typ.starts_with("cyphr.me/key/") || typ == "cyphr.me/principal/create" {
-        // ParsedCoz
-        principal.verify_and_apply_transaction(&pay_json, &sig, computed_czd, new_key)?;
-    } else {
-        // Action
-        principal.verify_and_record_action(&pay_json, &sig, computed_czd)?;
-    }
-
-    Ok(())
-}
-
 fn error_name(e: &cyphrpass::error::Error) -> &'static str {
     use cyphrpass::error::Error;
     match e {
@@ -311,6 +238,8 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 }
 
 fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
     let content = fs::read_to_string(fixture_path)
         .unwrap_or_else(|e| panic!("failed to read {:?}: {}", fixture_path, e));
     let fixture: Golden = serde_json::from_str(&content)
@@ -385,41 +314,105 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     }
 
     // ========================================================================
-    // Apply commits from fixture
+    // Apply commits from fixture using CommitScope (batch processing)
     // ========================================================================
-    if let (Some(commits), Some(digests)) = (&fixture.commits, &fixture.digests) {
-        // Apply cozies from commits
-        let mut digest_idx = 0;
-        let commit_count = commits.len();
-
+    if let Some(commits) = &fixture.commits {
         for (ci, commit) in commits.iter().enumerate() {
-            let is_last_commit = ci == commit_count - 1;
-            let tx_count = commit.cozies.len();
+            // Collect actions to replay after commit scope finalizes
+            let mut deferred_actions: Vec<(serde_json::Value, Vec<u8>)> = Vec::new();
+
+            let mut scope = principal.begin_commit();
+            let mut applied_tx_count = 0;
+            let mut key_iter = commit.keys.iter();
 
             for (ti, cz) in commit.cozies.iter().enumerate() {
-                let is_last_tx = is_last_commit && ti == tx_count - 1;
-                let czd = &digests[digest_idx];
-                digest_idx += 1;
+                let pay = cz.get("pay").unwrap_or_else(|| {
+                    panic!(
+                        "{}: commit {} cz {} missing pay",
+                        fixture.name,
+                        ci + 1,
+                        ti + 1
+                    )
+                });
+                let sig_b64 = cz.get("sig").and_then(|v| v.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "{}: commit {} cz {} missing sig",
+                        fixture.name,
+                        ci + 1,
+                        ti + 1
+                    )
+                });
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).unwrap_or_else(|e| {
+                    panic!(
+                        "{}: commit {} cz {} invalid sig base64: {}",
+                        fixture.name,
+                        ci + 1,
+                        ti + 1,
+                        e
+                    )
+                });
 
-                match try_apply_entry(&mut principal, cz, czd, &fixture.name, &commit.keys) {
-                    Ok(()) => {
-                        if is_last_tx {
-                            if let Some(err) = expected_error {
-                                panic!(
-                                    "{}: expected error '{}' but last cz succeeded",
-                                    fixture.name, err
-                                );
+                let pay_json = serde_json::to_vec(pay).unwrap_or_else(|e| {
+                    panic!(
+                        "{}: commit {} cz {} failed to serialize pay: {}",
+                        fixture.name,
+                        ci + 1,
+                        ti + 1,
+                        e
+                    )
+                });
+
+                let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
+                let is_transaction = typ.contains("/key/")
+                    || typ.contains("/principal/create")
+                    || typ.contains("/commit/create");
+
+                if is_transaction {
+                    // Consume next key from commit-level keys if key-introducing
+                    let new_key = if typ.contains("/key/create") || typ.contains("/key/replace") {
+                        key_iter.next().map(|ke| {
+                            let pub_bytes = Base64UrlUnpadded::decode_vec(&ke.pub_key)
+                                .expect("invalid key pub base64");
+                            let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb)
+                                .expect("invalid key tmb base64");
+                            Key {
+                                alg: ke.alg.clone(),
+                                tmb: coz::Thumbprint::from_bytes(tmb_bytes),
+                                pub_key: pub_bytes,
+                                first_seen: 0,
+                                last_used: None,
+                                revocation: None,
+                                tag: None,
                             }
-                        }
-                    },
-                    Err(e) => {
-                        if is_last_tx {
+                        })
+                    } else {
+                        None
+                    };
+
+                    // Compute czd using the scope's hash algorithm
+                    let alg_str = match scope.principal_hash_alg() {
+                        coz::HashAlg::Sha256 => "ES256",
+                        coz::HashAlg::Sha384 => "ES384",
+                        coz::HashAlg::Sha512 => "ES512",
+                    };
+                    let cad = coz::canonical_hash_for_alg(&pay_json, alg_str, None)
+                        .expect("unsupported alg for cad");
+                    let czd =
+                        coz::czd_for_alg(&cad, &sig, alg_str).expect("unsupported alg for czd");
+
+                    match scope.verify_and_apply(&pay_json, &sig, czd, new_key) {
+                        Ok(()) => {
+                            applied_tx_count += 1;
+                        },
+                        Err(e) => {
                             if let Some(expected) = expected_error {
                                 assert_eq!(
                                     error_name(&e),
                                     expected,
-                                    "{}: wrong error type on last cz",
-                                    fixture.name
+                                    "{}: wrong error type at commit {} cz {}",
+                                    fixture.name,
+                                    ci + 1,
+                                    ti + 1
                                 );
                                 println!(
                                     "  ✓ {} (expected error: {}) [commits]",
@@ -427,17 +420,92 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                                 );
                                 return;
                             }
+                            panic!(
+                                "{}: commit {} cz {} failed: {:?}",
+                                fixture.name,
+                                ci + 1,
+                                ti + 1,
+                                e
+                            );
+                        },
+                    }
+                } else {
+                    // Action: defer until after commit scope finalizes
+                    deferred_actions.push((pay.clone(), sig));
+                }
+            }
+
+            // Finalize the commit scope
+            if applied_tx_count > 0 {
+                match scope.finalize() {
+                    Ok(_) => {},
+                    Err(e) => {
+                        if let Some(expected) = expected_error {
+                            assert_eq!(
+                                error_name(&e),
+                                expected,
+                                "{}: wrong error on commit {} finalize",
+                                fixture.name,
+                                ci + 1
+                            );
+                            println!(
+                                "  ✓ {} (expected error: {}) [finalize]",
+                                fixture.name, expected
+                            );
+                            return;
                         }
                         panic!(
-                            "{}: commit {} cz {} failed: {:?}",
+                            "{}: commit {} finalize failed: {:?}",
                             fixture.name,
                             ci + 1,
-                            ti + 1,
                             e
                         );
                     },
                 }
+            } else {
+                drop(scope);
             }
+
+            // Replay deferred actions on the principal
+            for (pay_val, sig) in deferred_actions {
+                let pay_json =
+                    serde_json::to_vec(&pay_val).expect("failed to serialize action pay");
+                let alg = pay_val
+                    .get("alg")
+                    .and_then(|v| v.as_str())
+                    .expect("action missing alg");
+                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+                    .expect("unsupported alg for cad");
+                let czd = coz::czd_for_alg(&cad, &sig, alg).expect("unsupported alg for czd");
+
+                match principal.verify_and_record_action(&pay_json, &sig, czd) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        if let Some(expected) = expected_error {
+                            assert_eq!(
+                                error_name(&e),
+                                expected,
+                                "{}: wrong action error",
+                                fixture.name
+                            );
+                            println!(
+                                "  ✓ {} (expected error: {}) [action]",
+                                fixture.name, expected
+                            );
+                            return;
+                        }
+                        panic!("{}: action failed: {:?}", fixture.name, e);
+                    },
+                }
+            }
+        }
+
+        // All commits processed — check for unexpected success on error test
+        if let Some(expected) = expected_error {
+            panic!(
+                "{}: expected error '{}' but all commits succeeded",
+                fixture.name, expected
+            );
         }
 
         // Verify expected state
