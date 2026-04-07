@@ -1442,11 +1442,9 @@ name = "key_add_golden_to_alice"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.cz]]
-typ = "cyphr.me/key/create"
-now = 1700000000
-signer = "golden"
-target = "alice"
+tx = [
+  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "alice"}]
+]
 
 [test.expected]
 key_count = 2
@@ -1475,17 +1473,36 @@ level = 3
         let commits = golden.commits.as_ref().expect("missing commits");
         let digests = golden.digests.as_ref().expect("missing digests");
         assert_eq!(commits.len(), 1, "single-step should have 1 commit");
-        assert_eq!(digests.len(), 1, "single-step should have 1 digest");
+        assert_eq!(
+            digests.len(),
+            2,
+            "single-step should have 2 digests (mutation + commit)"
+        );
 
         // Verify commit has correct structure
         let commit = &commits[0];
-        assert_eq!(commit.cozies.len(), 1, "commit should have 1 cz");
+        assert_eq!(
+            commit.cozies.len(),
+            2,
+            "commit should have 2 cozies (mutation + commit)"
+        );
         let cz = &commit.cozies[0];
         let pay = cz.get("pay").expect("cz missing pay");
         assert_eq!(pay["alg"], "ES256");
         assert_eq!(pay["typ"], "cyphr.me/key/create");
         assert_eq!(pay["now"], 1700000000);
-        assert!(pay.get("pre").is_some(), "pre should be populated");
+        assert!(
+            pay.get("pre").is_some(),
+            "pre should be populated on genesis mutation coz"
+        );
+
+        let cz2 = &commit.cozies[1];
+        let pay2 = cz2.get("pay").expect("commit/create missing pay");
+        assert_eq!(pay2["typ"], "cyphrpass/commit/create");
+        assert!(
+            pay2.get("arrow").is_some(),
+            "arrow should be populated on commit coz"
+        );
 
         // Verify sig and keys are populated
         assert!(cz.get("sig").is_some(), "cz should have sig");
@@ -1523,11 +1540,9 @@ name = "bad_signer"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.cz]]
-typ = "cyphr.me/key/create"
-now = 1700000000
-signer = "nonexistent_key"
-target = "alice"
+tx = [
+  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "nonexistent_key", target = "alice"}]
+]
 "#;
 
         let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
@@ -1557,11 +1572,9 @@ name = "genesis_only"
 principal = ["golden"]
 
 [[test.commit]]
-[[test.commit.cz]]
-typ = "cyphr.me/key/create"
-now = 1700000000
-signer = "golden"
-target = "alice"
+tx = [
+  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "alice"}]
+]
 "#;
 
         let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
