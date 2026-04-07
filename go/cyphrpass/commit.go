@@ -127,15 +127,26 @@ func NewPendingCommit(hashAlg HashAlg) *PendingCommit {
 	}
 }
 
-// Push adds a coz to the pending commit.
-func (p *PendingCommit) Push(cz *ParsedCoz) {
-	if cz.Arrow != nil || cz.Kind == TxCommitCreate {
-		p.commitTx = append(p.commitTx, cz)
-	} else {
-		p.transactions = append(p.transactions, Transaction{cz})
+// PushTx adds a transaction (a grouped list of cozies) to the pending commit.
+func (p *PendingCommit) PushTx(tx Transaction) {
+	if len(tx) == 0 {
+		return
 	}
-	if cz.raw != nil {
-		p.raw = append(p.raw, cz.raw)
+
+	isCommit := false
+	for _, cz := range tx {
+		if cz.Arrow != nil || cz.Kind == TxCommitCreate {
+			isCommit = true
+		}
+		if cz.raw != nil {
+			p.raw = append(p.raw, cz.raw)
+		}
+	}
+
+	if isCommit {
+		p.commitTx = append(p.commitTx, tx...)
+	} else {
+		p.transactions = append(p.transactions, tx)
 	}
 }
 
@@ -275,7 +286,7 @@ type CommitBatch struct {
 	preCommitKeys map[string]*Key // snapshot of active keys at BeginCommit()
 }
 
-// Apply applies a verified coz to this commit batch.
+// Apply applies a verified coz to this commit batch as a single-coz transaction.
 //
 // The principal's state is eagerly mutated (key set, timestamps, etc.)
 // so that subsequent cozies within the same batch can see prior
@@ -286,7 +297,21 @@ func (b *CommitBatch) Apply(vt *VerifiedCoz) error {
 	if err := b.principal.applyCozInternal(vt.cz, vt.newKey); err != nil {
 		return err
 	}
-	b.pending.Push(vt.cz)
+	b.pending.PushTx(Transaction{vt.cz})
+	return nil
+}
+
+// ApplyTx applies a fully grouped transaction (multiple cozies) to this commit batch.
+// State mutations are applied sequentially, but the cozies are grouped in the Merkle tree.
+func (b *CommitBatch) ApplyTx(vts []*VerifiedCoz) error {
+	var tx Transaction
+	for _, vt := range vts {
+		if err := b.principal.applyCozInternal(vt.cz, vt.newKey); err != nil {
+			return err
+		}
+		tx = append(tx, vt.cz)
+	}
+	b.pending.PushTx(tx)
 	return nil
 }
 

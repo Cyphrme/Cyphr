@@ -24,7 +24,7 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 
 	// Push mutation coz to transactions (no arrow — that goes on commitTx)
 	pending := NewPendingCommit(p.hashAlg)
-	pending.Push(cz)
+	pending.PushTx(Transaction{cz})
 
 	// Compute SR from post-mutation state
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
@@ -75,7 +75,7 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 		HashAlg: cz.HashAlg,
 		Arrow:   &arrowMD,
 	}
-	pending.Push(commitCoz)
+	pending.PushTx(Transaction{commitCoz})
 
 	return p.finalizeCommit(pending)
 }
