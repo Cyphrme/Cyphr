@@ -34,6 +34,7 @@ impl Default for TransactionRoot {
 }
 
 impl TransactionRoot {
+    /// Returns the raw sub-digest matching the algorithm if it exists.
     pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
         self.0.get(alg)
     }

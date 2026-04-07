@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthRoot, PrincipalRoot, StateRoot};
+use crate::state::{AuthRoot, PrincipalRoot};
 
 // ============================================================================
 // ParsedCoz Types (SPEC §4.2)

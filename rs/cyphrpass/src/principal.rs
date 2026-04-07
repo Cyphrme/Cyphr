@@ -1000,15 +1000,15 @@ impl Principal {
 
         // Validate arrow field matches independently computed Arrow
         // Arrow = MR(pre, fwd, TMR)
-        if let Some(claimed_arrow) = cozies.last().unwrap().arrow() {
+        if let Some(_claimed_arrow) = cozies.last().unwrap().arrow() {
             // Recompute TMR from transactions only (excluding terminal coz) directly if needed or use the one we have
             // Actually, pending.compute_roots() already did this logic!
             let (tmr, _tcr, _tr) = pending.compute_roots();
-            let tmr = tmr.ok_or(Error::EmptyCommit)?;
+            let _tmr = tmr.ok_or(Error::EmptyCommit)?;
 
             // Get pre from the last transaction
             let terminal_coz = cozies.last().unwrap();
-            let pre = match &terminal_coz.kind {
+            let _pre = match &terminal_coz.kind {
                 crate::parsed_coz::CozKind::CommitCreate { arrow: _ } => {
                     // pre is extracted from the raw payload, or if no explicit pre, use PR...
                     // Wait, `commit/create` must have pre... but `CommitCreate` doesn't have a `pre` field in enum!

@@ -66,6 +66,7 @@ impl Commit {
     pub fn transactions(&self) -> &[crate::transaction::Transaction] {
         &self.transactions
     }
+    /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
     pub fn commit_tx(&self) -> &crate::transaction::CommitTransaction {
         &self.commit_tx
     }
@@ -73,6 +74,7 @@ impl Commit {
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
         self.iter_all_cozies().cloned().collect()
     }
+    /// Iterates over all cozies in this commit bundle (mutations followed by the commit/create synthetic coz).
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
         self.transactions
             .iter()
@@ -122,7 +124,6 @@ impl Commit {
 pub struct PendingCommit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
     pub(crate) commit_tx: Option<crate::transaction::CommitTransaction>,
-    pub(crate) raw: Vec<coz::CozJson>,
     pub(crate) hash_alg: HashAlg,
 }
 
@@ -132,7 +133,6 @@ impl PendingCommit {
         Self {
             transactions: Vec::new(),
             commit_tx: None,
-            raw: Vec::new(),
             hash_alg,
         }
     }
@@ -151,6 +151,7 @@ impl PendingCommit {
     pub fn transactions(&self) -> &[crate::transaction::Transaction] {
         &self.transactions
     }
+    /// Optionally returns the commit transaction if one has been pushed.
     pub fn commit_tx(&self) -> Option<&crate::transaction::CommitTransaction> {
         self.commit_tx.as_ref()
     }
@@ -158,6 +159,7 @@ impl PendingCommit {
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
         self.iter_all_cozies().cloned().collect()
     }
+    /// Iterates over all current cozies within the pending commit.
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
         self.transactions
             .iter()

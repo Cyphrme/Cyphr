@@ -14,6 +14,7 @@ pub struct CyphrpassHasher {
 }
 
 impl CyphrpassHasher {
+    /// Create a new single-algorithm MALT hasher.
     pub fn new(alg: HashAlg) -> Self {
         Self { alg }
     }
@@ -49,6 +50,7 @@ impl TreeHasher for CyphrpassHasher {
 pub struct CommitRoot(pub MultihashDigest);
 
 impl CommitRoot {
+    /// Retrieves a reference to the computed multihash digest.
     pub fn as_multihash(&self) -> &MultihashDigest {
         &self.0
     }

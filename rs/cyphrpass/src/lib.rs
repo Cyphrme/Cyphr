@@ -20,6 +20,7 @@
 
 pub mod action;
 pub mod commit;
+/// Commit Root logic.
 pub mod commit_root;
 pub mod error;
 pub mod key;
