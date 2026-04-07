@@ -27,25 +27,29 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 	pending.PushTx(Transaction{cz})
 
 	// Compute SR from post-mutation state
+	// Compute SR from post-mutation state
+	postAlgs := DeriveHashAlgs(p.auth.Keys)
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
 		thumbprints[i] = k.Tmb
 	}
-	kr, err := ComputeKR(thumbprints, nil, p.activeAlgs)
+	kr, err := ComputeKR(thumbprints, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
-	ar, err := ComputeAR(kr, nil, nil, p.activeAlgs)
+	ar, err := ComputeAR(kr, nil, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
-	sr, err := ComputeSR(ar, p.dr, nil, p.activeAlgs)
+	sr, err := ComputeSR(ar, p.dr, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
 
 	// Compute TMR from pending transactions
-	tmr, err := ComputeTMRFromPending(pending.transactions, p.activeAlgs)
+	// CZDs are single-algorithm, so TMR uses the signer's algorithm.
+	txAlg := cz.HashAlg
+	tmr, err := ComputeTMRFromPending(pending.transactions, []HashAlg{txAlg})
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +58,6 @@ func (p *Principal) ApplyTransactionUnsafe(cz *ParsedCoz, newKey *coz.Key) (*Com
 	pre := p.pr
 
 	// Compute Arrow = hash_sorted_concat(pre, sr, tmr) per SPEC
-	txAlg := p.activeAlgs[0]
 	components := [][]byte{
 		pre.GetOrFirst(txAlg),
 		sr.GetOrFirst(txAlg),

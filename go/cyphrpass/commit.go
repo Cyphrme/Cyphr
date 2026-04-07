@@ -230,15 +230,16 @@ func (p *PendingCommit) ComputeRoots(algs []HashAlg) (tmr *TransactionMutationRo
 //   - ar: The computed Auth State after all cozies
 //   - sr: The computed State Root (binds AR and DR)
 //   - pr: The computed Principal State after all cozies
+//   - txAlgs: The explicit algorithms from the terminal arrow payload
 //
 // Returns nil if no cozies exist.
-func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*Commit, error) {
+func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot, txAlgs []HashAlg) (*Commit, error) {
 	if len(p.Cozies()) == 0 {
 		return nil, ErrEmptyCommit
 	}
 
 	// Compute TR from TMR and TCR
-	_, _, tr, err := p.ComputeRoots([]HashAlg{p.hashAlg})
+	_, _, tr, err := p.ComputeRoots(txAlgs)
 	if err != nil {
 		return nil, err
 	}

@@ -788,9 +788,22 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ar = ar
 
+	// Extract the correct transaction algorithm set from the last cozy (the commit coz).
+	lastTx := cozies[len(cozies)-1]
+	var txAlgs []HashAlg
+	if lastTx.Arrow != nil {
+		txAlgs = lastTx.Arrow.Algorithms()
+	} else {
+		txAlgs = []HashAlg{lastTx.HashAlg}
+	}
+	if len(txAlgs) == 0 {
+		return nil, ErrCommitMismatch
+	}
+	txAlg := txAlgs[0]
+
 	// Compute Transaction Roots (TMR, TCR, TR) from this commit's transactions (SPEC §14.2).
 	// CZDs are single-algorithm, so TMR/TCR/TR use the commit's hash algorithm.
-	tmr, _, tr, err := pending.ComputeRoots([]HashAlg{pending.hashAlg})
+	tmr, _, tr, err := pending.ComputeRoots(txAlgs)
 	if err != nil {
 		return nil, err
 	}
@@ -806,14 +819,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	// Validate arrow field matches independently computed Arrow.
 	// Arrow = MR(pre, fwd_SR, TMR)
 	// We compare against the computed Arrow at the signer's specific algorithm.
-	lastTx := cozies[len(cozies)-1]
 	if lastTx.Arrow != nil {
-		txAlgs := lastTx.Arrow.Algorithms()
-		if len(txAlgs) == 0 {
-			return nil, ErrCommitMismatch
-		}
-		txAlg := txAlgs[0]
-
 		// pre is the PR *before* this commit. p.pr has not been updated yet
 		// (that happens at the end of this function), so it correctly holds
 		// the prior value.
@@ -879,7 +885,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	p.pr = pr
 
 	// Finalize the pending commit into an immutable Commit
-	commit, err := pending.Finalize(p.ar, p.sr, p.pr)
+	commit, err := pending.Finalize(p.ar, p.sr, p.pr, txAlgs)
 	if err != nil {
 		return nil, err
 	}

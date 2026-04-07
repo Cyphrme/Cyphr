@@ -257,38 +257,38 @@ During the structural alignment phases, the following technical debt was incurre
    need refinement.
 
    **8a: state-tree.md tracing**
-   - [ ] `[state-computation]` — verify 4-step algorithm is implemented (collect, sort, promote, MR)
-   - [ ] `[implicit-promotion]` — verify single-child promotion works through new SR layer
-   - [ ] `[no-circular-state]` — verify SR excludes CR in implementation; PR = MR(SR, CR)
-   - [ ] `[mr-sort-order]` with MALT exception — verify MALT uses append-order, everything else uses lexical sort
-   - [ ] State formulas — verify code matches: `KR`, `AR`, `SR = MR(AR, DR?, embedding?)`, `PR = MR(SR, CR, embedding?)`
-   - [ ] `[level-1-2-identity]` — verify promotion chain: `tmb == KR == AR == SR == PR == PG`
-   - [ ] `[conversion]` — verify cross-algorithm conversion still works with new types
-   - [ ] Update `state-tree.md` if any constraints need refinement (e.g., embedding semantics)
+   - [x] `[state-computation]` — verify 4-step algorithm is implemented (collect, sort, promote, MR)
+   - [x] `[implicit-promotion]` — verify single-child promotion works through new SR layer
+   - [x] `[no-circular-state]` — verify SR excludes CR in implementation; PR = MR(SR, CR)
+   - [x] `[mr-sort-order]` with MALT exception — verify MALT uses append-order, everything else uses lexical sort
+   - [x] State formulas — verify code matches: `KR`, `AR`, `SR = MR(AR, DR?, embedding?)`, `PR = MR(SR, CR, embedding?)`
+   - [x] `[level-1-2-identity]` — verify promotion chain: `tmb == KR == AR == SR == PR == PG`
+   - [x] `[conversion]` — verify cross-algorithm conversion still works with new types
+   - [x] Update `state-tree.md` if any constraints need refinement (e.g., embedding semantics)
 
    **8b: transactions.md tracing**
-   - [ ] `[txs-list-of-lists]` — verify list-of-lists structure in both implementations
-   - [ ] `[tx-root-computation]` — verify per-transaction `TX = MR(czds)`
-   - [ ] `[tmr-computation]` — verify `TMR = MR(TX₀, TX₁?, ...)`
-   - [ ] `[tcr-computation]` — verify `TCR = MR(czd₀, czd₁?, ...)`
-   - [ ] `[tr-computation]` — verify `TR = MR(TMR, TCR)`
-   - [ ] `[commit-finality-arrow]` — verify `arrow = MR(pre, fwd, TMR)` computation and validation
-   - [ ] `[arrow-excludes-self]` — verify `fwd` is SR (not PR)
-   - [ ] `[pr-after-commit]` — verify `PR = MR(SR, CR)` after commit finalization
-   - [ ] `[intra-commit-ordering]` — verify array-order application
-   - [ ] `[genesis-bootstrap]`, `[genesis-pre-bootstrap]`, `[genesis-finality]` — verify genesis flow
-   - [ ] Update `transactions.md` if any constraints need refinement
+   - [x] `[txs-list-of-lists]` — verify list-of-lists structure in both implementations
+   - [x] `[tx-root-computation]` — verify per-transaction `TX = MR(czds)`
+   - [x] `[tmr-computation]` — verify `TMR = MR(TX₀, TX₁?, ...)`
+   - [x] `[tcr-computation]` — verify `TCR = MR(czd₀, czd₁?, ...)`
+   - [x] `[tr-computation]` — verify `TR = MR(TMR, TCR)`
+   - [x] `[commit-finality-arrow]` — verify `arrow = MR(pre, fwd, TMR)` computation and validation
+   - [x] `[arrow-excludes-self]` — verify `fwd` is SR (not PR)
+   - [x] `[pr-after-commit]` — verify `PR = MR(SR, CR)` after commit finalization
+   - [x] `[intra-commit-ordering]` — verify array-order application
+   - [x] `[genesis-bootstrap]`, `[genesis-pre-bootstrap]`, `[genesis-finality]` — verify genesis flow
+   - [x] Update `transactions.md` if any constraints need refinement
 
    **8c: remaining specs spot-check**
-   - [ ] `principal-lifecycle.md` — verify `[lifecycle-derived-from-state]` uses new type names
-   - [ ] `authentication.md` — verify `[verification-replay]` works with new state structure
-   - [ ] `consensus.md` — verify `[fork-detection]` uses PR (not CS) for tip comparison
-   - [ ] `recovery.md` — verify `[disown-no-ar-mutation]` terminology is current
-   - [ ] Update any specs where old terminology persists or constraints are stale
+   - [x] `principal-lifecycle.md` — verify `[lifecycle-derived-from-state]` uses new type names
+   - [x] `authentication.md` — verify `[verification-replay]` works with new state structure
+   - [x] `consensus.md` — verify `[fork-detection]` uses PR (not CS) for tip comparison
+   - [x] `recovery.md` — verify `[disown-no-ar-mutation]` terminology is current
+   - [x] Update any specs where old terminology persists or constraints are stale
 
    **8d: constraint inventory**
-   - [ ] Produce a summary table: new constraints introduced, constraints modified, constraints unchanged
-   - [ ] Verify no orphan constraints (constraints that reference removed concepts like CS or CommitID)
+   - [x] Produce a summary table: new constraints introduced, constraints modified, constraints unchanged
+   - [x] Verify no orphan constraints (constraints that reference removed concepts like CS or CommitID)
 
 ### Phase Dependency Graph
 
@@ -312,17 +312,17 @@ Phase 8 is the explicit tracing/realignment pass after implementation is stable.
 
 ## Verification
 
-- [ ] `go test ./...` passes (from `go/`)
-- [ ] `cargo test` passes (from `rs/`)
-- [ ] `cargo build --workspace` compiles cleanly
-- [ ] `go build ./...` compiles cleanly
-- [ ] Stale terminology sweep returns zero hits:
+- [x] `go test ./...` passes (from `go/`)
+- [x] `cargo test` passes (from `rs/`)
+- [x] `cargo build --workspace` compiles cleanly
+- [x] `go build ./...` compiles cleanly
+- [x] Stale terminology sweep returns zero hits:
       `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt' go/cyphrpass/ rs/cyphrpass/src/`
-- [ ] Golden fixtures regenerated and verified
-- [ ] Genesis commit trace: all state derivations match machine spec constraints
-- [ ] Key addition trace: all state derivations match machine spec constraints
-- [ ] Phase 8 tracing complete: all key constraints in `docs/specs/` traced to code
-- [ ] No orphan constraints in machine specs (zero references to CS, CommitID, or old type names)
+- [x] Golden fixtures regenerated and verified
+- [x] Genesis commit trace: all state derivations match machine spec constraints
+- [x] Key addition trace: all state derivations match machine spec constraints
+- [x] Phase 8 tracing complete: all key constraints in `docs/specs/` traced to code
+- [x] No orphan constraints in machine specs (zero references to CS, CommitID, or old type names)
 
 ### Commands
 
@@ -366,8 +366,8 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 | Rust `apply_transaction_test` put arrow on mutation coz instead of separate commit coz                           | MEDIUM   | Same structural error as Go `ApplyTransactionUnsafe`                   | Ported same fix: mutation + commit coz split                    | 2026-04-06 |
 | Rust golden fixture runner doesn't construct commit/create coz                                                   | MEDIUM   | Runner predates list-of-lists commit coz separation                    | Needs same pattern as unit test helper                          |            |
 | Multi-algorithm PR divergence between Go and Rust                                                                | HIGH     | Go and Rust compute PR differently when activeAlgs > 1                 | Root cause: multi-alg MALT hasher. Fixed via per-alg MALT pivot | 2026-04-07 |
-| Go `test_helpers_test.go` `ApplyTransactionUnsafe` uses pre-mutation `activeAlgs` for arrow computation          | LOW      | Only used in single-algorithm unit tests; multi-alg would fail         | Align with `FinalizeWithArrow` post-mutation pattern            |            |
-| Go `PendingCommit.Finalize` computes TR with single `p.hashAlg` instead of full active alg set                   | LOW      | Only called from `finalizeCommit` which separately computes TR         | Align when/if Finalize is used independently                    |            |
+| Go `test_helpers_test.go` `ApplyTransactionUnsafe` uses pre-mutation `activeAlgs` for arrow computation          | LOW      | Only used in single-algorithm unit tests; multi-alg would fail         | Align with `FinalizeWithArrow` post-mutation pattern            | 2026-04-07 |
+| Go `PendingCommit.Finalize` computes TR with single `p.hashAlg` instead of full active alg set                   | LOW      | Only called from `finalizeCommit` which separately computes TR         | Align when/if Finalize is used independently                    | 2026-04-07 |
 
 ## Deviation Log
 

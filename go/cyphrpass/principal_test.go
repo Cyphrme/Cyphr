@@ -150,12 +150,13 @@ func TestApplyTransaction_KeyAdd(t *testing.T) {
 
 	key2 := makeTestCozKey(0x22)
 	cz := &ParsedCoz{
-		Kind:   TxKeyCreate,
-		Signer: key1.Tmb,
-		Now:    2000,
-		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    p.PR(),
-		ID:     key2.Tmb,
+		Kind:    TxKeyCreate,
+		Signer:  key1.Tmb,
+		HashAlg: HashSha256,
+		Now:     2000,
+		Czd:     bytes.Repeat([]byte{0xAB}, 32),
+		Pre:     p.PR(),
+		ID:      key2.Tmb,
 	}
 
 	oldAS := append([]byte{}, p.AR().First()...)
@@ -191,12 +192,13 @@ func TestApplyTransaction_InvalidPre(t *testing.T) {
 	key2 := makeTestCozKey(0x22)
 	wrongPre := PrincipalRoot{FromSingleDigest(HashSha256, bytes.Repeat([]byte{0xFF}, 32))}
 	cz := &ParsedCoz{
-		Kind:   TxKeyCreate,
-		Signer: key1.Tmb,
-		Now:    2000,
-		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    wrongPre, // Wrong!
-		ID:     key2.Tmb,
+		Kind:    TxKeyCreate,
+		Signer:  key1.Tmb,
+		HashAlg: HashSha256,
+		Now:     2000,
+		Czd:     bytes.Repeat([]byte{0xAB}, 32),
+		Pre:     wrongPre, // Wrong!
+		ID:      key2.Tmb,
 	}
 
 	_, err := p.ApplyTransactionUnsafe(cz, key2)
@@ -211,12 +213,13 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 
 	// Level 1: single key, self-revoke should fail
 	cz := &ParsedCoz{
-		Kind:   TxRevoke,
-		Signer: key.Tmb,
-		Now:    2000,
-		Czd:    bytes.Repeat([]byte{0xEE}, 32),
-		Rvk:    2000,
-		Pre:    p.PR(), // Unified pre semantics: all cozies require pre
+		Kind:    TxRevoke,
+		Signer:  key.Tmb,
+		HashAlg: HashSha256,
+		Now:     2000,
+		Czd:     bytes.Repeat([]byte{0xEE}, 32),
+		Rvk:     2000,
+		Pre:     p.PR(), // Unified pre semantics: all cozies require pre
 	}
 
 	_, err := p.ApplyTransactionUnsafe(cz, nil)
@@ -244,12 +247,13 @@ func TestPR_StillNilAfterTransaction(t *testing.T) {
 
 	key2 := makeTestCozKey(0x22)
 	cz := &ParsedCoz{
-		Kind:   TxKeyCreate,
-		Signer: key1.Tmb,
-		Now:    2000,
-		Czd:    bytes.Repeat([]byte{0xAB}, 32),
-		Pre:    p.PR(),
-		ID:     key2.Tmb,
+		Kind:    TxKeyCreate,
+		Signer:  key1.Tmb,
+		HashAlg: HashSha256,
+		Now:     2000,
+		Czd:     bytes.Repeat([]byte{0xAB}, 32),
+		Pre:     p.PR(),
+		ID:      key2.Tmb,
 	}
 	p.ApplyTransactionUnsafe(cz, key2) //nolint:errcheck
 
