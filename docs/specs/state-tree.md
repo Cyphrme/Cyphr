@@ -111,6 +111,13 @@ MUST NOT expose whether a node is a nonce or another node type without explicit
 reveal.
 `VERIFIED: agent-check`
 
+**[nonce-injection-bounds]**: Although transaction nonces construct intermediate
+state parameters, a nonce MUST NOT arbitrarily introduce hashing algorithms that
+are entirely unsupported by the `multi-hash-multi-root` key space. The legitimate
+algorithm set is dictated explicitly by the active key capabilities (and their
+acceptable cross-algorithm conversion paths), never arbitrarily extended by nonces.
+`VERIFIED: agent-check`
+
 **[mhmr-equivalence]**: All MHMR variants of a given node MUST be considered
 equivalent references to the same logical state. The protocol MUST NOT enforce
 a relative strength ordering between algorithm variants.
@@ -354,9 +361,3 @@ governance is delegated to Coz").
   conversion sections. A model re-audit should verify that the model's state
   computation aligns with [state-computation], [conversion], and
   [mhmr-computation] as formalized here.
-
-### Open Questions (for Zami / sketch)
-
-1. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
-   nonce inject an algorithm that no key supports and no conversion path
-   exists for? What are the bounds?

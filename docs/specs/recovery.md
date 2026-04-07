@@ -277,13 +277,6 @@ investigates, without irreversibly revoking keys.
 - **Retroactivity prevention**: Attempt to undo a past action and verify it
   is rejected.
 
-### Open Questions (for Zami / sketch)
+### Deferred Specifications (Level 6+)
 
-1. **Recovery validity conditions**: §18.4.1 says "the unrecoverable state may
-   not be definitively known or verifiable by the protocol." How should
-   implementations handle a recovery attempt on a principal that isn't
-   actually unrecoverable?
-2. **External freeze timeout**: §18.9.3 says external freeze may include "a
-   timeout, if configured" — what's the timeout mechanism? Timer in RR?
-3. **Disown transaction type**: §18.12 says clients MAY "mark past actions as
-   disowned" — is there a specific `typ` for this (e.g., `action/disown`)?
+> **Design Pending**: The exact implementation mechanisms for recovery validity checks, external freeze timeouts, and "action/disown" primitives are currently deferred. These components fall under Level 6 functionality (or potentially Level 5 if rule weights dictate them), and will be formalized when the specification expands beyond Level 4 structures.

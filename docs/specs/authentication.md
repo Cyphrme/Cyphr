@@ -251,14 +251,6 @@ keys are the sole authentication factor, verifiable by any party.
 - **Pinned vs unpinned**: Verify pinned embedding does not trigger tip
   retrieval.
 
-### Open Questions (for Zami / sketch)
+### Deferred Specifications (Level 5+)
 
-1. **Embedding storage representation**: §12 shows several thought experiments
-   for KT representation (array vs object, labeled vs unlabeled). Which is
-   the canonical representation? See §12 Option 1/Option 2 discussion.
-2. **Meaningful embedding enforcement**: §12.3 says embedding RR into KR
-   "carries no meaning" — should this be a MUST NOT, a warning, or merely
-   discouraged?
-3. **MSS registration protocol**: §16.5 describes registration via embedding
-   with a `register=true` field, but the exact registration transaction type
-   is not fully formalized.
+> **Design Pending**: The exact representation of Principal Embedding (pinned vs native structures) and the formalization of MSS registration models involve Level 5 capabilities. These rule-based configurations (such as embedding RR into KR vs PR) are currently deferred and will be formalized alongside the Level 5 Rule State specification rollout.

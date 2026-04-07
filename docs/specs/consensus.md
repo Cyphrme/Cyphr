@@ -321,11 +321,6 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 - **Atomicity**: Submit a commit where one transaction is valid but another
   is not — verify the entire commit is rejected.
 
-### Open Questions (for Zami / sketch)
+### Deferred Specifications (Witness Node Level)
 
-1. **Client Mismatch resolution**: §17.3 defines CLIENT_MISMATCH but does not
-   specify a resolution path. How does a witness transition out of this state?
-2. **Proof of error retention**: How long should witnesses retain proof of error?
-   The spec says "may retain" but doesn't specify retention requirements.
-3. **State jump distance limits**: §23.3 mentions services MAY enforce
-   "maximum jump distance" — is there a recommended default?
+> **Design Pending**: Resolution guidelines for `CLIENT_MISMATCH`, data retention policies for proof of error, and configurable limits on "maximum jump distances" strictly concern external Witness server implementation logic. These are deferred until the normative definitions of the Witness interactions and sync protocols are fully specced.

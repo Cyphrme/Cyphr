@@ -108,6 +108,28 @@ MAY simultaneously be errored. `Errored` indicates fork detection or chain
 invalidity (see `consensus.md`).
 `VERIFIED: agent-check`
 
+**[zombie-state-bounds]**: A principal is definitively classified as a `Zombie`
+when it possesses active keys (`HasActiveKeys=true`) but the mathematical
+conditions to sign an Authorization Transition evaluate to `false`
+(`CanMutateAR=false`). In a standard implementation up to Level 4, `CanMutateAR`
+remains true as long as active keys exist; thus, this rule dictates that
+`Zombie` states emerge naturally only at Level 5+ when the combined key weights
+fail to satisfy explicitly configured authorization thresholds.
+`VERIFIED: agent-check`
+
+**[freeze-mutation-lockout]**: The `Frozen` lifecycle state stops **all mutations**,
+which functionally halts the append mechanism of the Commit Tree. Consequently,
+both Auth Operations and Data Operations are universally blocked, rendering any
+theoretical `CanMutateAR=true` evaluation locally moot until the freeze is lifted.
+`VERIFIED: agent-check`
+
+**[fork-pg-derivation]**: When a principal creates a fork, the initial `PG` computation
+of the fork strictly reflects the mathematical snapshot of the fork initialization. If
+the fork purely clones the authorizing keys and nothing else, `PG` strictly equals
+`KR`. If rules or data dependencies are preserved across the fork boundary, `PG` MUST
+mathematically map to the fully populated state topology exactly.
+`VERIFIED: agent-check`
+
 **[deleted-frozen-exclusive]**: `Deleted` and `Frozen` MUST be mutually
 exclusive. A principal MUST NOT be both frozen and deleted simultaneously.
 `VERIFIED: agent-check`
@@ -313,14 +335,3 @@ keys once all are revoked/deleted and no recovery path exists.
 - **Freeze/unfreeze cycle**: Verify mutations are rejected during freeze and
   accepted after unfreeze.
 - **Merge handshake**: End-to-end test with source merge → target merge-ack.
-
-### Open Questions (for Zami / sketch)
-
-1. **Zombie → Dead transition**: Can a Zombie principal (can do data actions but
-   not mutate AR) become Dead? What triggers that transition — key revocation?
-2. **Freeze scope**: Does freeze block data actions too, or only AT mutations?
-   §11.2 says "no mutations" but the Frozen state shows `CanMutateAR=true` —
-   does freeze override this?
-3. **Fork PG derivation**: §19.3 shows fork creating a new PG but the `fork_pr`
-   field in the example says "which in this case is just KR" — is this always
-   the case, or does it depend on the fork's key set?

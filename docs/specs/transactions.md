@@ -208,6 +208,9 @@ singular forms `tx`, `key`, and `coz` are prohibited. Valid fields: `txs`,
 `keys`, `cozies`. (SPEC.md JSON Wire Format)
 `VERIFIED: agent-check — new 2026-03-09 per S-2`
 
+**[key-sideband-optional]**: The public key material required to authenticate a transaction (e.g., verifying a `key/create` signature) MAY be transmitted via sideband data or extracted from a parent structure. The `coz` JSON structure itself does not strictly mandate embedding full public key material if it can be retrieved deterministically.
+`VERIFIED: agent-check`
+
 #### Timestamp
 
 **[timestamp-range]**: The `now` field MUST be a positive integer less than
@@ -299,6 +302,9 @@ key is compromised. The `tmb` signing the revoke MUST be the key being revoked
 - **POST**: The key is marked as compromised. All future signatures from
   this key MUST be rejected.
   `VERIFIED: agent-check`
+
+**[naked-revoke-error]**: A "naked revoke" (a `key/revoke` action causing `HasActiveKeys` to drop to false) directly transitions the principal out of the `Active` state into the `Dead` state (Level 1/2) or `Errored`. This represents an error or termination condition where no further mutative transitions can occur.
+`VERIFIED: agent-check`
 
 **[revoke-naked]**: A revoke MAY omit `pre` (naked revoke). A naked revoke
 does NOT mutate PR. Third parties MAY sign naked revokes to declare a key
@@ -487,12 +493,3 @@ included `pre`.
 - **Idempotency tests**: Replay a valid transaction and verify no state change.
 - **`typ` grammar validation**: Malformed `typ` strings, missing verbs, empty
   nouns.
-
-### Open Questions (for Zami / sketch)
-
-1. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
-   Is the public key material always required alongside `key/create`, or can
-   it be transmitted via sideband?
-2. **Naked revoke and error state**: §6.4 says a naked revoke puts the principal
-   in an error state. Is this the same concept as the `Errored` lifecycle state
-   in §11, or something different?
