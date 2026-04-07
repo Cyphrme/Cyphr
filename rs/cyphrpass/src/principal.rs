@@ -806,7 +806,7 @@ impl Principal {
         // Push mutation coz to transactions (no arrow)
         let mut pending = PendingCommit::new(self.hash_alg());
         let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
-        pending.push(mutation_vtx2);
+        pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
         // Compute SR from post-mutation state
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
@@ -844,7 +844,7 @@ impl Principal {
             raw: cz.raw.clone(),
         };
         let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
-        pending.push(commit_vtx);
+        pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
 
         self.finalize_commit(pending)
     }

@@ -137,13 +137,21 @@ impl PendingCommit {
         }
     }
 
-    /// Add a coz to the pending commit.
-    pub fn push(&mut self, cz: VerifiedCoz) {
-        if cz.arrow().is_some() {
-            self.commit_tx = Some(crate::transaction::CommitTransaction(vec![cz]));
+    /// Add a grouped transaction to the pending commit.
+    pub fn push_tx(&mut self, tx: crate::transaction::Transaction) {
+        if tx.0.is_empty() {
+            return;
+        }
+
+        let is_commit = tx.0.iter().any(|cz| cz.arrow().is_some());
+
+        if is_commit {
+            match &mut self.commit_tx {
+                Some(ctx) => ctx.0.extend(tx.0),
+                None => self.commit_tx = Some(crate::transaction::CommitTransaction(tx.0)),
+            }
         } else {
-            self.transactions
-                .push(crate::transaction::Transaction(vec![cz]));
+            self.transactions.push(tx);
         }
     }
 
@@ -348,7 +356,21 @@ impl<'a> CommitScope<'a> {
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply(&mut self, vtx: VerifiedCoz) -> crate::error::Result<()> {
         self.principal.apply_verified_internal(vtx.clone())?;
-        self.pending.push(vtx);
+        self.pending
+            .push_tx(crate::transaction::Transaction(vec![vtx]));
+        Ok(())
+    }
+
+    /// Apply a grouped transaction (multiple cozies) within this commit scope.
+    ///
+    /// State mutations are applied sequentially, but the cozies are grouped in the Merkle tree.
+    pub fn apply_tx(&mut self, vts: Vec<VerifiedCoz>) -> crate::error::Result<()> {
+        let mut tx = Vec::with_capacity(vts.len());
+        for vt in vts {
+            self.principal.apply_verified_internal(vt.clone())?;
+            tx.push(vt);
+        }
+        self.pending.push_tx(crate::transaction::Transaction(tx));
         Ok(())
     }
 
@@ -539,7 +561,8 @@ impl<'a> CommitScope<'a> {
         let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
 
         // 4. Push commit marker and finalize
-        self.pending.push(arrow_vtx);
+        self.pending
+            .push_tx(crate::transaction::Transaction(vec![arrow_vtx]));
         self.finalize()
     }
 }
@@ -613,11 +636,11 @@ mod tests {
 
         // Push cozies
         let tx1 = make_test_tx(false, 0x01);
-        pending.push(tx1);
+        pending.push_tx(crate::transaction::Transaction(vec![tx1]));
         assert_eq!(pending.len(), 1);
 
         let tx2 = make_test_tx(true, 0x02);
-        pending.push(tx2);
+        pending.push_tx(crate::transaction::Transaction(vec![tx2]));
         assert_eq!(pending.len(), 2);
     }
 
@@ -644,7 +667,7 @@ mod tests {
     fn pending_commit_finalize_succeeds_with_finalizer() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         let cz = make_test_tx(true, 0x01);
-        pending.push(cz);
+        pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -674,7 +697,7 @@ mod tests {
         // Finalizer must be present to distinguish the commit transaction
         let mut pending = PendingCommit::new(HashAlg::Sha256);
         let cz = make_test_tx(false, 0x01); // No finalizer marker
-        pending.push(cz);
+        pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -720,8 +743,12 @@ mod tests {
     #[test]
     fn pending_commit_into_transactions_returns_accumulated() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        pending.push(make_test_tx(false, 0x01));
-        pending.push(make_test_tx(true, 0x02));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            false, 0x01,
+        )]));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            true, 0x02,
+        )]));
 
         let cozies = pending.into_transactions();
         assert_eq!(cozies.len(), 2);
@@ -734,7 +761,9 @@ mod tests {
     #[test]
     fn commit_accessors_return_correct_values() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        pending.push(make_test_tx(true, 0x01));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            true, 0x01,
+        )]));
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -766,9 +795,15 @@ mod tests {
     #[test]
     fn commit_multi_transaction_computes_correct_tr() {
         let mut pending = PendingCommit::new(HashAlg::Sha256);
-        pending.push(make_test_tx(false, 0x01));
-        pending.push(make_test_tx(false, 0x02));
-        pending.push(make_test_tx(true, 0x03)); // finalizer
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            false, 0x01,
+        )]));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            false, 0x02,
+        )]));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            true, 0x03,
+        )])); // finalizer
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
