@@ -24,20 +24,20 @@
       ],
       "keys": [],
       "commit_id": "",
-      "as": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "cs": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "ps": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw"
+      "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
+      "pr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw"
     }
   ],
   "digests": ["MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"],
   "expected": {
     "key_count": 1,
     "level": 4,
-    "ks": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "as": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "ps": "SHA-256:cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
-    "cs": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "ds": "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4",
-    "pr": ""
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
+    "sr": "SHA-256:cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
+    "dr": "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4",
+    "pg": ""
   }
 }

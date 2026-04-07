@@ -13,10 +13,10 @@
   "expected": {
     "key_count": 1,
     "level": 1,
-    "ks": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-    "as": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-    "ps": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-    "cs": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
-    "pr": ""
+    "kr": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+    "ar": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+    "pr": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+    "sr": "SHA-512:eVTL02eZqLWy_Czxcpol1MPFn7YCHz34V-xy0EAwHjVa73x3MjiE-q0VWCOPS3ChT0_67eA-w_zSGuhJJAMjVQ",
+    "pg": ""
   }
 }

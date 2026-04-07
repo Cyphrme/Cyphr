@@ -40,20 +40,20 @@
         }
       ],
       "commit_id": "",
-      "as": "",
-      "cs": "",
-      "ps": ""
+      "ar": "",
+      "sr": "",
+      "pr": ""
     }
   ],
   "digests": ["LpxTeIUqgdinoifGwqEOoLzujHZxTcy8TIiEqVfvppM"],
   "expected": {
     "key_count": 1,
     "level": 1,
-    "ks": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "as": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "ps": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "cs": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "pr": "",
+    "kr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "ar": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
+    "pg": "",
     "error": "KeyRevoked"
   }
 }

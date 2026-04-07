@@ -23,10 +23,10 @@
   "expected": {
     "key_count": 3,
     "level": 3,
-    "ks": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "as": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "ps": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "cs": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "pr": ""
+    "kr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "ar": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "pr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "sr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
+    "pg": ""
   }
 }

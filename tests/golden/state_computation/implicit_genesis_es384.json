@@ -13,10 +13,10 @@
   "expected": {
     "key_count": 1,
     "level": 1,
-    "ks": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "as": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "ps": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "cs": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
-    "pr": ""
+    "kr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "ar": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "sr": "SHA-384:h2HN761WGuS76pKrjLolvENgNlKCx2pQ6lkz6j0ebZOuXLdYG16jBBcLURjSjP_8",
+    "pg": ""
   }
 }
