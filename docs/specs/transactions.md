@@ -490,12 +490,9 @@ included `pre`.
 
 ### Open Questions (for Zami / sketch)
 
-1. ~~**Commit field in non-last coz**: Obsolete — the old `"commit":<CS>` model
-   is superseded by `arrow` in `commit/create`. The `arrow` field appears only
-   in the commit transaction, which is always the last transaction in `txs`.~~
-2. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
+1. **Key material in transactions**: §6.1 shows `key` outside `pay` (unsigned).
    Is the public key material always required alongside `key/create`, or can
    it be transmitted via sideband?
-3. **Naked revoke and error state**: §6.4 says a naked revoke puts the principal
+2. **Naked revoke and error state**: §6.4 says a naked revoke puts the principal
    in an error state. Is this the same concept as the `Errored` lifecycle state
    in §11, or something different?

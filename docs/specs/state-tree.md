@@ -128,10 +128,10 @@ level without additional hashing. Promotion MUST be applied recursively.
   `VERIFIED: agent-check`
 
 **Corollary — [level-1-2-identity]**: For Levels 1 and 2 (single-key
-principal): `tmb` == KR == AR == SR == PR == PG via recursive implicit
+principal): `tmb` == KR == AR == SR == PR via recursive implicit
 promotion of the single key's thumbprint. Levels 1–2 do not have a commit
-chain.
-`VERIFIED: agent-check — updated 2026-03-09 per B-2, SPEC §5.1`
+chain or a PG.
+`VERIFIED: agent-check — updated 2026-04-07 per SPEC §5.1`
 
 **[state-computation]**: When computing a new state digest after a mutation:
 
@@ -357,10 +357,6 @@ governance is delegated to Coz").
 
 ### Open Questions (for Zami / sketch)
 
-1. ~~**Empty state boundary** (partially resolved): Absent components use `?`
-   notation and are excluded from MR computation. The remaining question is
-   about exact behavior at the transition point (e.g., when a Level 3 principal
-   first gains DT to become Level 4).~~
-2. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
+1. **Nonce injection scope**: §20.5 says nonces can inject algorithms. Can a
    nonce inject an algorithm that no key supports and no conversion path
    exists for? What are the bounds?
