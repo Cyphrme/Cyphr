@@ -87,8 +87,8 @@ pub struct PrincipalCore {
     pub(crate) ks: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
-    /// MALT tree for computing Commit Root (CR).
-    pub(crate) commit_tree: Option<crate::commit_root::CommitLog>,
+    /// Per-algorithm MALT trees for computing Commit Root (CR).
+    pub(crate) commit_trees: crate::commit_root::CommitTrees,
     /// Current Commit Root (CR).
     pub(crate) cr: Option<crate::commit_root::CommitRoot>,
     /// Current State Root: SR = MR(AR, DR?, embedding?).
@@ -119,7 +119,7 @@ impl Default for PrincipalCore {
             ps: PrincipalRoot::default(),
             ks: KeyRoot::default(),
             tr: None,
-            commit_tree: None,
+            commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
             sr: None,
             auth_root: AuthRoot::default(),
@@ -251,7 +251,7 @@ impl Principal {
             ps,
             ks,
             tr: None,
-            commit_tree: None,
+            commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
             sr: Some(cs),
             auth_root,
@@ -305,7 +305,7 @@ impl Principal {
             ps,
             ks,
             tr: None,
-            commit_tree: None,
+            commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
             sr: Some(cs),
             auth_root,
@@ -369,7 +369,7 @@ impl Principal {
             ps,
             ks,
             tr: None,
-            commit_tree: None,
+            commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
             sr: Some(cs),
             auth_root,
@@ -977,9 +977,9 @@ impl Principal {
             }
         }
 
-        // Re-derive active algorithms from ALL current keys
-        // (SPEC §14: union of all active keys' algorithms)
-        let old_algs = std::mem::take(&mut self.active_algs);
+        // Re-derive active algorithms from post-mutation key set.
+        // Per [alg-set-evolution], state digests for this commit use the
+        // algorithms supported by the post-mutation key set.
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         self.active_algs = derive_hash_algs(&key_refs);
 
@@ -1027,30 +1027,38 @@ impl Principal {
             // TODO(Arrow Validation): implement MR(pre, fwd, TMR)
         }
 
-        // Rebuild MALT tree if algorithm set changed or tree is uninitialized
-        if old_algs != self.active_algs || self.commit_tree.is_none() {
-            let hasher = crate::commit_root::CyphrpassMultiHasher::new(self.active_algs.clone());
-            let mut log = malt::Log::new(hasher);
-            for prior_commit in &self.auth.commits {
-                let tr = prior_commit.tr();
-                let mut bytes = Vec::new();
-                for &alg in &self.active_algs {
-                    bytes.extend_from_slice(tr.0.get(alg).unwrap_or(&[]));
+        // Ensure per-algorithm MALTs exist for all active algorithms.
+        // New algorithms get a fresh MALT populated with prior TRs via [conversion].
+        // Clone active_algs to avoid borrow conflict with self.commit_trees.
+        let algs = self.active_algs.clone();
+        for &alg in &algs {
+            if !self.commit_trees.contains_key(&alg) {
+                // New algorithm — create MALT and replay prior commits.
+                // [conversion]: tr.get_or_err(alg) returns the native variant
+                // if available, otherwise the first variant's bytes.
+                let hasher = crate::commit_root::CyphrpassHasher::new(alg);
+                let mut log = malt::Log::new(hasher);
+                for prior_commit in &self.auth.commits {
+                    let prior_tr = prior_commit.tr();
+                    if let Ok(bytes) = prior_tr.0.get_or_err(alg) {
+                        log.append(bytes);
+                    }
                 }
-                log.append(&bytes);
+                self.commit_trees.insert(alg, log);
             }
-            self.commit_tree = Some(log);
         }
 
-        // Append current TR to MALT tree and compute CR
-        let mut bytes = Vec::new();
-        for &alg in &self.active_algs {
-            bytes.extend_from_slice(tr.0.get(alg).unwrap_or(&[]));
+        // Append current TR to all active MALTs and assemble CR.
+        // Only active algorithms contribute to the current CR;
+        // stale algorithm MALTs are retained but excluded.
+        let mut active_trees = crate::commit_root::CommitTrees::new();
+        for &alg in &algs {
+            let log = self.commit_trees.get_mut(&alg).expect("just ensured");
+            let bytes = tr.0.get_or_err(alg)?;
+            log.append(bytes);
+            active_trees.insert(alg, log.clone());
         }
-        let commit_tree = self.commit_tree.as_mut().expect("just verified");
-        commit_tree.append(&bytes);
-
-        let cr = crate::commit_root::CommitRoot(commit_tree.root());
+        let cr = crate::commit_root::commit_root_from_trees(&active_trees)?;
         self.cr = Some(cr.clone());
 
         // Compute PR = MR(SR, CR?, embedding?)
