@@ -124,16 +124,14 @@ impl Commit {
 pub struct PendingCommit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
     pub(crate) commit_tx: Option<crate::transaction::CommitTransaction>,
-    pub(crate) hash_alg: HashAlg,
 }
 
 impl PendingCommit {
-    /// Create a new empty pending commit with a specific hash algorithm.
-    pub fn new(hash_alg: HashAlg) -> Self {
+    /// Create a new empty pending commit.
+    pub fn new() -> Self {
         Self {
             transactions: Vec::new(),
             commit_tx: None,
-            hash_alg,
         }
     }
 
@@ -188,6 +186,7 @@ impl PendingCommit {
     /// Compute the Transaction Roots (TMR, TCR, TR) for the current pending cozies.
     pub fn compute_roots(
         &self,
+        algs: &[coz::HashAlg],
     ) -> (
         Option<crate::transaction_root::TransactionMutationRoot>,
         Option<crate::transaction_root::TransactionCommitRoot>,
@@ -196,8 +195,6 @@ impl PendingCommit {
         if self.is_empty() {
             return (None, None, None);
         }
-
-        let algs = &[self.hash_alg];
 
         let mut tx_roots = Vec::new();
         for tx in &self.transactions {
@@ -227,8 +224,11 @@ impl PendingCommit {
     }
 
     /// Compute the Transaction Root (TR) for the current pending cozies.
-    pub fn compute_tr(&self) -> Option<crate::transaction_root::TransactionRoot> {
-        self.compute_roots().2
+    pub fn compute_tr(
+        &self,
+        algs: &[coz::HashAlg],
+    ) -> Option<crate::transaction_root::TransactionRoot> {
+        self.compute_roots(algs).2
     }
 
     /// Finalize the pending commit into an immutable `Commit`.
@@ -238,6 +238,7 @@ impl PendingCommit {
     /// * `auth_root` - The computed Auth State after all cozies
     /// * `sr` - The computed State Root: MR(AR, DR?, embedding?)
     /// * `ps` - The computed Principal State after all cozies
+    /// * `tx_algs` - Explicit transaction algorithm set footprint (extracted from Arrow)
     ///
     /// # Errors
     ///
@@ -247,6 +248,7 @@ impl PendingCommit {
         auth_root: AuthRoot,
         sr: StateRoot,
         ps: PrincipalRoot,
+        tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -257,7 +259,9 @@ impl PendingCommit {
             .clone()
             .ok_or(crate::error::Error::MalformedPayload)?; // Must have a commit tx to finalize
 
-        let tr = self.compute_tr().ok_or(crate::error::Error::EmptyCommit)?;
+        let tr = self
+            .compute_tr(tx_algs)
+            .ok_or(crate::error::Error::EmptyCommit)?;
 
         Commit::new(self.transactions, commit_tx, tr, auth_root, sr, ps)
     }
@@ -334,7 +338,7 @@ impl<'a> CommitScope<'a> {
             .collect();
         Self {
             principal,
-            pending: PendingCommit::new(hash_alg),
+            pending: PendingCommit::new(),
             pre_commit_keys,
         }
     }
@@ -502,7 +506,7 @@ impl<'a> CommitScope<'a> {
         let sr = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
 
         // For TMR we just use compute_roots early
-        let (tmr, _, _) = self.pending.compute_roots();
+        let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
         // 2. Compute Arrow = MR(pre, sr, tmr)
@@ -624,15 +628,15 @@ mod tests {
 
     #[test]
     fn pending_commit_empty_state() {
-        let pending = PendingCommit::new(HashAlg::Sha256);
+        let pending = PendingCommit::new();
         assert!(pending.is_empty());
         assert_eq!(pending.len(), 0);
-        assert!(pending.compute_tr().is_none());
+        assert!(pending.compute_tr(&[coz::HashAlg::Sha256]).is_none());
     }
 
     #[test]
     fn pending_commit_push_adds_transactions() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
 
         // Push cozies
         let tx1 = make_test_tx(false, 0x01);
@@ -646,7 +650,7 @@ mod tests {
 
     #[test]
     fn pending_commit_compute_tr_returns_merkle_root() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         let tx1 = make_test_tx(false, 0x01);
         pending
             .transactions
@@ -654,7 +658,7 @@ mod tests {
         let ctx = crate::transaction::CommitTransaction(vec![tx1]);
         pending.commit_tx = Some(ctx);
 
-        let tr = pending.compute_tr();
+        let tr = pending.compute_tr(&[coz::HashAlg::Sha256]);
         assert!(tr.is_some());
         // Commit ID should be 32 bytes (SHA256)
         assert_eq!(
@@ -665,7 +669,7 @@ mod tests {
 
     #[test]
     fn pending_commit_finalize_succeeds_with_finalizer() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         let cz = make_test_tx(true, 0x01);
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
@@ -682,7 +686,12 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_root.clone(), sr.clone(), ps.clone());
+        let commit = pending.finalize(
+            auth_root.clone(),
+            sr.clone(),
+            ps.clone(),
+            &[coz::HashAlg::Sha256],
+        );
         assert!(commit.is_ok());
 
         let commit = commit.unwrap();
@@ -695,7 +704,7 @@ mod tests {
     #[test]
     fn pending_commit_finalize_fails_without_finalizer_marker() {
         // Finalizer must be present to distinguish the commit transaction
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         let cz = make_test_tx(false, 0x01); // No finalizer marker
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
@@ -712,7 +721,7 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_root, sr, ps);
+        let result = pending.finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256]);
         assert!(
             matches!(result, Err(crate::error::Error::MalformedPayload)),
             "finalize should fail without finalizer marker"
@@ -721,7 +730,7 @@ mod tests {
 
     #[test]
     fn pending_commit_finalize_fails_when_empty() {
-        let pending = PendingCommit::new(HashAlg::Sha256);
+        let pending = PendingCommit::new();
 
         let auth_root = AuthRoot(MultihashDigest::from_single(
             HashAlg::Sha256,
@@ -736,13 +745,13 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let result = pending.finalize(auth_root, sr, ps);
+        let result = pending.finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256]);
         assert!(result.is_err(), "should fail when empty");
     }
 
     #[test]
     fn pending_commit_into_transactions_returns_accumulated() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
             false, 0x01,
         )]));
@@ -760,7 +769,7 @@ mod tests {
 
     #[test]
     fn commit_accessors_return_correct_values() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
             true, 0x01,
         )]));
@@ -779,7 +788,12 @@ mod tests {
         ));
 
         let commit = pending
-            .finalize(auth_root.clone(), sr.clone(), ps.clone())
+            .finalize(
+                auth_root.clone(),
+                sr.clone(),
+                ps.clone(),
+                &[coz::HashAlg::Sha256],
+            )
             .unwrap();
 
         // Test all accessors
@@ -794,7 +808,7 @@ mod tests {
 
     #[test]
     fn commit_multi_transaction_computes_correct_tr() {
-        let mut pending = PendingCommit::new(HashAlg::Sha256);
+        let mut pending = PendingCommit::new();
         pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
             false, 0x01,
         )]));
@@ -818,7 +832,9 @@ mod tests {
             vec![0xBB; 32],
         ));
 
-        let commit = pending.finalize(auth_root, sr, ps).unwrap();
+        let commit = pending
+            .finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256])
+            .unwrap();
         assert_eq!(commit.len(), 3);
 
         // Commit ID should be Merkle root of all 3 coz czds

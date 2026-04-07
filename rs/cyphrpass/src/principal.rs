@@ -804,7 +804,7 @@ impl Principal {
         self.apply_verified_internal(mutation_vtx)?;
 
         // Push mutation coz to transactions (no arrow)
-        let mut pending = PendingCommit::new(self.hash_alg());
+        let mut pending = PendingCommit::new();
         let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
         pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
@@ -816,13 +816,14 @@ impl Principal {
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
         let sr = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
 
+        let tx_alg = cz.hash_alg;
+
         // Compute TMR from pending transactions
-        let (tmr_opt, _tcr, _tr) = pending.compute_roots();
+        let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
         let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
         // Compute arrow = hash_sorted_concat(pre, sr, tmr)
         let pre = &self.ps;
-        let tx_alg = active_algs.first().copied().unwrap_or(self.hash_alg);
         let pre_bytes = pre.0.get_or_err(tx_alg)?;
         let sr_bytes = sr.0.get_or_err(tx_alg)?;
         let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
@@ -987,8 +988,20 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         self.ks = compute_kr(&thumbprints, None, &self.active_algs)?;
 
+        // Extract the explicit transaction algorithms from the Arrow,
+        // or fallback to the terminal coz alg, or the principal's init alg.
+        let tx_algs: Vec<coz::HashAlg> = if let Some(last_coz) = cozies.last() {
+            if let Some(arrow) = last_coz.arrow() {
+                arrow.algorithms().collect()
+            } else {
+                vec![last_coz.hash_alg()]
+            }
+        } else {
+            vec![self.hash_alg()]
+        };
+
         // Compute TR from pending commit
-        let tr = pending.compute_tr().ok_or(Error::EmptyCommit)?;
+        let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
         self.tr = Some(tr.clone());
 
         // Compute AR = MR(KR, RR?, embedding?)
@@ -1003,7 +1016,7 @@ impl Principal {
         if let Some(_claimed_arrow) = cozies.last().unwrap().arrow() {
             // Recompute TMR from transactions only (excluding terminal coz) directly if needed or use the one we have
             // Actually, pending.compute_roots() already did this logic!
-            let (tmr, _tcr, _tr) = pending.compute_roots();
+            let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
             let _tmr = tmr.ok_or(Error::EmptyCommit)?;
 
             // Get pre from the last transaction
@@ -1065,7 +1078,7 @@ impl Principal {
         self.ps = compute_pr(&sr, Some(&cr), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone())?;
+        let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone(), &tx_algs)?;
 
         self.auth.commits.push(commit);
 
