@@ -23,13 +23,13 @@
 // # State Types
 //
 // State is computed as Merkle digests per SPEC §7:
-//   - [PrincipalGenesis] (PR): Permanent identifier, set at genesis
-//   - [PrincipalRoot] (PS): Current top-level state
-//   - [AuthRoot] (AS): Authentication state from keyset
-//   - [CommitState] (CS): Auth state bound to a specific commit
-//   - [KeyRoot] (KS): Digest of active key thumbprints
-//   - [CommitID]: Identity of a commit (Merkle root of coz czds)
-//   - [DataRoot] (DS): Digest of action czds (Level 4)
+//   - [PrincipalGenesis] (PG): Permanent identifier, set at genesis
+//   - [PrincipalRoot] (PR): Current observable state root
+//   - [AuthRoot] (AR): Authentication state from keyset
+//   - [StateRoot] (SR): Context-binding root: MR(AR, DR?, embedding?)
+//   - [KeyRoot] (KR): Digest of active key thumbprints
+//   - [CommitRoot] (CR): Identity of a commit (Merkle root of coz czds)
+//   - [DataRoot] (DR): Digest of action czds (Level 4)
 //
 // # Genesis
 //

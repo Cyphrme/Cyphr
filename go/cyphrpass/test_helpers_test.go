@@ -6,7 +6,7 @@ import "github.com/cyphrme/coz"
 // This function is intended ONLY for testing where signatures are validated
 // externally or cannot be generated (e.g., fixture-based tests).
 //
-// It computes commit_state post-mutation (per SPEC §4.4) since test
+// It computes the state_root post-mutation (per SPEC §4.4) since test
 // cozies don't go through the signing path.
 //
 // # Errors

@@ -244,10 +244,10 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 
 During the structural alignment phases, the following technical debt was incurred and must be resolved before finalizing the release:
 
-- **Rust unused variables**: The `principal.rs` logic triggers `#[warn(unused_variables)]` for `claimed_arrow`, `tmr`, and `pre`, due to partial deferment of deep arrow validation structure inside `finalize_commit`.
-- **Rust documentation coverage**: `missing_docs` compiler warnings ignore documentation for newly split components like `commit.rs`, `commit_root.rs`, and `transaction_root.rs`.
-- **Testing Helpers**: `ApplyTransactionUnsafe` (Go) and equivalent helpers in Rust testing use emergency patches (`cz.Arrow = sr.MultihashDigest`, etc.) to bypass structural enforcement. They need to be properly refactored to compute `Arrow` correctly.
-- **Fixture internal backwards compatibility**: Rust `test-fixtures` has 3 internal unittests failing because they predated the single-commit format changes (list-of-lists) and assume atomic single-coz capability without `commit/create` wrapping.
+- [x] **Rust unused variables**: The `principal.rs` logic triggers `#[warn(unused_variables)]` for `claimed_arrow`, `tmr`, and `pre`, due to partial deferment of deep arrow validation structure inside `finalize_commit`.
+- [x] **Rust documentation coverage**: `missing_docs` compiler warnings ignore documentation for newly split components like `commit.rs`, `commit_root.rs`, and `transaction_root.rs`.
+- [x] **Testing Helpers**: `ApplyTransactionUnsafe` (Go) and equivalent helpers in Rust testing use emergency patches (`cz.Arrow = sr.MultihashDigest`, etc.) to bypass structural enforcement. They need to be properly refactored to compute `Arrow` correctly.
+- [x] **Fixture internal backwards compatibility**: Rust `test-fixtures` has 3 internal unittests failing because they predated the single-commit format changes (list-of-lists) and assume atomic single-coz capability without `commit/create` wrapping.
 
 8. **Phase 8: Machine Spec Tracing + Realignment** — Verify machine specs reflect implementation reality and refine constraints
 
