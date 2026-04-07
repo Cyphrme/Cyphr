@@ -2,34 +2,32 @@ package cyphrpass
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/cyphrme/coz"
 	"github.com/cyphrme/malt"
 )
 
-// CyphrpassMultiHasher implements malt.TreeHasher for Cyphrpass.
-// It uses a canonical string representation of MultihashDigest as the comparable digest type.
-type CyphrpassMultiHasher struct {
-	activeAlgs []HashAlg
+// CyphrpassHasher implements malt.TreeHasher for a single hash algorithm.
+// Each MALT instance uses exactly one algorithm; multi-algorithm support is
+// achieved by maintaining one MALT per active algorithm.
+//
+// The digest type is string (raw bytes cast to string) because Go's
+// malt.TreeHasher requires a comparable type and []byte is not comparable.
+type CyphrpassHasher struct {
+	alg HashAlg
 }
 
-func NewCyphrpassMultiHasher(activeAlgs []HashAlg) *CyphrpassMultiHasher {
-	return &CyphrpassMultiHasher{activeAlgs: activeAlgs}
+// NewCyphrpassHasher creates a hasher for a single hash algorithm.
+func NewCyphrpassHasher(alg HashAlg) *CyphrpassHasher {
+	return &CyphrpassHasher{alg: alg}
 }
 
-// Leaf computes H(0x00 || data) for all active algorithms.
-func (h *CyphrpassMultiHasher) Leaf(data []byte) string {
+// Leaf computes H(0x00 || data).
+func (h *CyphrpassHasher) Leaf(data []byte) string {
 	prefixData := make([]byte, 1+len(data))
 	prefixData[0] = 0x00
 	copy(prefixData[1:], data)
-
-	variants := make(map[HashAlg]coz.B64)
-	for _, alg := range h.activeAlgs {
-		variants[alg] = hashBytesPanic(alg, prefixData)
-	}
-	return serializeVariants(variants)
+	return string(hashBytesPanic(h.alg, prefixData))
 }
 
 func hashBytesPanic(alg HashAlg, data []byte) coz.B64 {
@@ -40,85 +38,20 @@ func hashBytesPanic(alg HashAlg, data []byte) coz.B64 {
 	return b
 }
 
-// Node computes H(0x01 || left || right) for all active algorithms.
-func (h *CyphrpassMultiHasher) Node(left, right string) string {
-	lMap, err := deserializeVariants(left)
-	if err != nil {
-		panic(fmt.Sprintf("MALT invariant violation: left node invalid: %v", err))
-	}
-	rMap, err := deserializeVariants(right)
-	if err != nil {
-		panic(fmt.Sprintf("MALT invariant violation: right node invalid: %v", err))
-	}
-
-	variants := make(map[HashAlg]coz.B64)
-	for _, alg := range h.activeAlgs {
-		lDig := lMap[alg]
-		rDig := rMap[alg]
-		if lDig == nil || rDig == nil {
-			panic(fmt.Sprintf("MALT invariant violation: missing variant %s", alg))
-		}
-
-		d := make([]byte, 1+len(lDig)+len(rDig))
-		d[0] = 0x01
-		copy(d[1:], lDig)
-		copy(d[1+len(lDig):], rDig)
-
-		variants[alg] = hashBytesPanic(alg, d)
-	}
-	return serializeVariants(variants)
+// Node computes H(0x01 || left || right).
+func (h *CyphrpassHasher) Node(left, right string) string {
+	l := []byte(left)
+	r := []byte(right)
+	d := make([]byte, 1+len(l)+len(r))
+	d[0] = 0x01
+	copy(d[1:], l)
+	copy(d[1+len(l):], r)
+	return string(hashBytesPanic(h.alg, d))
 }
 
-// Empty computes H("") for all active algorithms.
-func (h *CyphrpassMultiHasher) Empty() string {
-	variants := make(map[HashAlg]coz.B64)
-	for _, alg := range h.activeAlgs {
-		variants[alg] = hashBytesPanic(alg, []byte{})
-	}
-	return serializeVariants(variants)
-}
-
-// -- Deterministic Serialization Helpers --
-
-func serializeVariants(v map[HashAlg]coz.B64) string {
-	algs := make([]string, 0, len(v))
-	for a := range v {
-		algs = append(algs, string(a))
-	}
-	sort.Strings(algs)
-
-	var sb strings.Builder
-	for i, a := range algs {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteString(a)
-		sb.WriteByte(':')
-		sb.WriteString(v[HashAlg(a)].String())
-	}
-	return sb.String()
-}
-
-func deserializeVariants(s string) (map[HashAlg]coz.B64, error) {
-	out := make(map[HashAlg]coz.B64)
-	if s == "" {
-		return out, nil
-	}
-	parts := strings.Split(s, ",")
-	for _, p := range parts {
-		idx := strings.IndexByte(p, ':')
-		if idx == -1 {
-			return nil, fmt.Errorf("invalid format")
-		}
-		alg := HashAlg(p[:idx])
-		b64str := p[idx+1:]
-		b64, err := coz.Decode(b64str)
-		if err != nil {
-			return nil, err
-		}
-		out[alg] = b64
-	}
-	return out, nil
+// Empty computes H("").
+func (h *CyphrpassHasher) Empty() string {
+	return string(hashBytesPanic(h.alg, []byte{}))
 }
 
 // CommitRoot represents the finalized state of the verifiable MALT log.
@@ -126,15 +59,21 @@ type CommitRoot struct {
 	*MultihashDigest
 }
 
+// CommitLog is a single-algorithm MALT instance for CR computation.
 type CommitLog = malt.Log[string]
 
-// NewCommitRootFromString rebuilds a CommitRoot from MALT tree root output.
-func NewCommitRootFromString(s string) (*CommitRoot, error) {
-	v, err := deserializeVariants(s)
-	if err != nil {
-		return nil, err
+// CommitTrees maps each active hash algorithm to its own MALT instance.
+// CR is assembled from the roots of all active MALTs.
+type CommitTrees map[HashAlg]*CommitLog
+
+// NewCommitRootFromTrees assembles a CommitRoot MultihashDigest from the
+// roots of per-algorithm MALTs.
+func NewCommitRootFromTrees(trees CommitTrees) (*CommitRoot, error) {
+	variants := make(map[HashAlg]coz.B64, len(trees))
+	for alg, log := range trees {
+		variants[alg] = coz.B64(log.Root())
 	}
-	md, err := NewMultihashDigest(v)
+	md, err := NewMultihashDigest(variants)
 	if err != nil {
 		return nil, err
 	}
@@ -143,26 +82,19 @@ func NewCommitRootFromString(s string) (*CommitRoot, error) {
 
 // ComputeCR computes the CR incrementally over a list of TRs.
 func ComputeCR(trs []*MultihashDigest, algs []HashAlg) (*CommitRoot, error) {
-	hasher := NewCyphrpassMultiHasher(algs)
-	log := malt.New[string](hasher)
+	trees := make(CommitTrees, len(algs))
+	for _, alg := range algs {
+		trees[alg] = malt.New[string](NewCyphrpassHasher(alg))
+	}
 
 	for _, tr := range trs {
-		// Concatenate the digests of all active algorithms deterministically
-		var bytesData []byte
 		for _, alg := range algs {
-			bytesData = append(bytesData, tr.GetOrFirst(alg)...)
+			// [conversion]: if TR lacks this alg, GetOrFirst returns the
+			// available variant's bytes. The MALT leaf hash H(0x00 || bytes)
+			// provides the conversion naturally.
+			trees[alg].Append(tr.GetOrFirst(alg))
 		}
-		log.Append(bytesData)
 	}
 
-	rootStr := log.Root()
-	v, err := deserializeVariants(rootStr)
-	if err != nil {
-		return nil, err
-	}
-	md, err := NewMultihashDigest(v)
-	if err != nil {
-		return nil, err
-	}
-	return &CommitRoot{MultihashDigest: &md}, nil
+	return NewCommitRootFromTrees(trees)
 }

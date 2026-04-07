@@ -81,8 +81,8 @@ type Principal struct {
 	sr StateRoot // SR = MR(AR, DR?, embedding?)
 	dr *DataRoot // nil if no actions
 
-	commitTree *malt.Log[string]
-	cr         *CommitRoot // nil if no transactions
+	commitTrees CommitTrees // one MALT per active hash algorithm
+	cr          *CommitRoot // nil if no transactions
 
 	auth       authLedger
 	data       dataLedger
@@ -765,6 +765,11 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 	}
 
+	// Re-derive active algorithms from post-mutation key set.
+	// Per [alg-set-evolution], state digests for this commit use the
+	// algorithms supported by the post-mutation key set.
+	p.activeAlgs = DeriveHashAlgs(p.auth.Keys)
+
 	// Recompute KS from active keys
 	thumbprints := make([]coz.B64, len(p.auth.Keys))
 	for i, k := range p.auth.Keys {
@@ -783,8 +788,9 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.ar = ar
 
-	// Compute Transaction Roots (TMR, TCR, TR) from this commit's transactions (SPEC §14.2)
-	tmr, _, tr, err := pending.ComputeRoots()
+	// Compute Transaction Roots (TMR, TCR, TR) from this commit's transactions (SPEC §14.2).
+	// CZDs are single-algorithm, so TMR/TCR/TR use the commit's hash algorithm.
+	tmr, _, tr, err := pending.ComputeRoots([]HashAlg{pending.hashAlg})
 	if err != nil {
 		return nil, err
 	}
@@ -830,44 +836,36 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 		}
 	}
 
-	// Re-derive active algorithms correctly (Fix Phase 3 Tech Debt)
-	oldAlgs := make([]HashAlg, len(p.activeAlgs))
-	copy(oldAlgs, p.activeAlgs)
-	p.activeAlgs = DeriveHashAlgs(p.auth.Keys)
-
-	algsChanged := len(oldAlgs) != len(p.activeAlgs)
-	if !algsChanged {
-		for i, v := range oldAlgs {
-			if v != p.activeAlgs[i] {
-				algsChanged = true
-				break
-			}
-		}
+	// Ensure per-algorithm MALTs exist for all active algorithms.
+	// New algorithms get a fresh MALT populated with prior TRs via [conversion].
+	if p.commitTrees == nil {
+		p.commitTrees = make(CommitTrees, len(p.activeAlgs))
 	}
-
-	// Rebuild MALT tree if algorithm set changed or tree is uninitialized
-	if algsChanged || p.commitTree == nil {
-		hasher := NewCyphrpassMultiHasher(p.activeAlgs)
-		p.commitTree = malt.New[string](hasher)
-		for _, priorCommit := range p.commits {
-			if priorCommit.TR() != nil {
-				var bytesData []byte
-				for _, alg := range p.activeAlgs {
-					bytesData = append(bytesData, priorCommit.TR().GetOrFirst(alg)...)
-				}
-				p.commitTree.Append(bytesData)
-			}
-		}
-	}
-
-	// Append current TR to MALT tree and compute CR
-	var bytesData []byte
 	for _, alg := range p.activeAlgs {
-		bytesData = append(bytesData, tr.GetOrFirst(alg)...)
+		if _, ok := p.commitTrees[alg]; !ok {
+			// New algorithm — create MALT and replay prior commits.
+			// [conversion]: TR.GetOrFirst(alg) returns the native variant
+			// if available, otherwise the first variant's bytes. The MALT
+			// leaf hash H(0x00 || bytes) provides the conversion.
+			log := malt.New[string](NewCyphrpassHasher(alg))
+			for _, priorCommit := range p.commits {
+				if priorCommit.TR() != nil {
+					log.Append(priorCommit.TR().GetOrFirst(alg))
+				}
+			}
+			p.commitTrees[alg] = log
+		}
 	}
-	p.commitTree.Append(bytesData)
-	crStr := p.commitTree.Root()
-	cr, err := NewCommitRootFromString(crStr)
+
+	// Append current TR to all active MALTs and assemble CR.
+	// Only active algorithms contribute to the current CR;
+	// stale algorithm MALTs are retained but excluded.
+	activeTrees := make(CommitTrees, len(p.activeAlgs))
+	for _, alg := range p.activeAlgs {
+		p.commitTrees[alg].Append(tr.GetOrFirst(alg))
+		activeTrees[alg] = p.commitTrees[alg]
+	}
+	cr, err := NewCommitRootFromTrees(activeTrees)
 	if err != nil {
 		return nil, err
 	}

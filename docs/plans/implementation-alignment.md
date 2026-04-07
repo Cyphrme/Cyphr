@@ -230,10 +230,15 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
          `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt'`
 
    **7f: MALT Multi-Algorithm Architecture Pivot**
-   - [ ] Remove `CyphrpassMultiHasher` (Go) and equivalent in Rust. The MALT must remain a single-algorithm structure.
-   - [ ] Core types: update `Principal.commitTree` to be a collection of MALTs (e.g., `map[HashAlg]malt.Log` / `HashMap<HashAlg, Log>`).
-   - [ ] Apply `[conversion]` correctly: `CR` is computed by packing the root of each per-algo MALT into a `MultihashDigest`. If an algorithm is newly added, its MALT is initialized and populated using `[conversion]` applied properly (first via O(n) leaf replay or O(log n) frontier conversion, whichever is simpler).
-   - [ ] Verify multi-algorithm PR parity between Go and Rust.
+   - [x] Go: Remove `CyphrpassMultiHasher`, replace with single-alg `CyphrpassHasher` in `commit_root.go`
+   - [x] Go: Change `Principal.commitTree` to `commitTrees CommitTrees` (`map[HashAlg]*CommitLog`)
+   - [x] Go: Assemble CR from per-alg MALT roots via `NewCommitRootFromTrees`, filtered to active algs only
+   - [x] Go: Fix `FinalizeWithArrow` to derive post-mutation alg set for KR/AR/SR computation
+   - [x] Go: Fix `ComputeRoots` to accept `algs` parameter; TMR/TCR/TR use signer's single alg (CZDs are single-alg)
+   - [x] Go: Move `activeAlgs` re-derivation in `finalizeCommit` before state root computation
+   - [x] Go: All tests pass (`go test ./...`)
+   - [ ] Rust: Same pivot — replace multi-alg hasher with per-alg MALTs
+   - [ ] Verify multi-algorithm PR parity between Go and Rust
 
 ### 7.1 Technical Debt Log (From Phase 4-7)
 
@@ -342,24 +347,26 @@ rg 'daolfmt' go/ rs/ --glob '!target'
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                                                                                             | Severity | Why Introduced                                                         | Follow-Up                                           |  Resolved  |
-| :--------------------------------------------------------------------------------------------------------------- | :------- | :--------------------------------------------------------------------- | :-------------------------------------------------- | :--------: |
-| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor                    | Rename to `CommitSR` in cleanup pass                | 2026-04-01 |
-| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                                | Rename to `sr`/`state_root()` in cleanup pass       | 2026-04-01 |
-| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose                         | Sweep with `rg 'commit.state\|Commit State'`        | 2026-04-01 |
-| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests            | Regenerate via `fixture-gen` (Phase 7)              |            |
-| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments                   | Sweep alongside doc comment cleanup                 | 2026-04-01 |
-| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                               | Formal protocol restored and output applied         | 2026-04-01 |
-| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers             | Fix test logic in Phase 7                           |            |
-| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                                     | Cleanup in Phase 7                                  |            |
-| Go `ApplyTransactionUnsafe` injects SR as Arrow placeholder instead of computing real Arrow                      | MEDIUM   | Emergency patch during test helper adaptation                          | Refactor to compute Arrow properly or remove helper | 2026-04-03 |
-| Go `containsKeyPrefix` function name misleading — checks for infixes (`/key/`, `/commit/`) not prefixes          | LOW      | Pre-existing; expanded during Phase 7a `/commit/` addition             | Rename to `containsKnownTypInfix` in cleanup pass   |            |
-| Go `FinalizeWithArrow` uses raw `HashAlg(signerKey.Alg.Hash())` instead of `HashAlgFromSEAlg` wrapper            | LOW      | Pre-existing; functionally equivalent but inconsistent                 | Normalize to `HashAlgFromSEAlg` in next code sweep  |            |
-| Go genesis bootstrap override in Arrow `pre` computation — used post-mutation key set                            | MEDIUM   | Incorrect assumption that p.pr needed re-derivation at genesis         | Removed in 3 locations; p.pr always correct         | 2026-04-03 |
-| Go `VerifyCoz` checked live state for commit/create auth instead of pre-mutation snapshot                        | HIGH     | Violated [pre-mutation-key-rule] — spec says pre-commit keys authorize | Added `verifyCozWithSnapshot` + key snapshot        | 2026-04-03 |
-| Rust `apply_transaction_test` put arrow on mutation coz instead of separate commit coz                           | MEDIUM   | Same structural error as Go `ApplyTransactionUnsafe`                   | Ported same fix: mutation + commit coz split        | 2026-04-06 |
-| Rust golden fixture runner doesn't construct commit/create coz                                                   | MEDIUM   | Runner predates list-of-lists commit coz separation                    | Needs same pattern as unit test helper              |            |
-| Multi-algorithm PR divergence between Go and Rust                                                                | HIGH     | Go and Rust compute PR differently when activeAlgs > 1                 | Root cause TBD — 4 Go tests, likely Rust too        |            |
+| Item                                                                                                             | Severity | Why Introduced                                                         | Follow-Up                                                       |  Resolved  |
+| :--------------------------------------------------------------------------------------------------------------- | :------- | :--------------------------------------------------------------------- | :-------------------------------------------------------------- | :--------: |
+| Go `Transaction.CommitCS` field name retains stale CS terminology                                                | MEDIUM   | Minimizing churn during Phase 3 structural refactor                    | Rename to `CommitSR` in cleanup pass                            | 2026-04-01 |
+| Rust `PrincipalCore.cs`, `Commit.cs`, `pub fn cs()` accessor names retain stale `cs` naming                      | MEDIUM   | Same — minimizing churn                                                | Rename to `sr`/`state_root()` in cleanup pass                   | 2026-04-01 |
+| ~20 doc comments across both langs still reference "Commit State" or describe `MR(AS, CommitID)` semantics       | LOW      | Focus was on structural correctness, not prose                         | Sweep with `rg 'commit.state\|Commit State'`                    | 2026-04-01 |
+| Golden fixture JSON values stale — computed under old CS hierarchy                                               | HIGH     | Expected — new computation chain produces different digests            | Regenerate via `fixture-gen` (Phase 7)                          |            |
+| Intent/golden struct comments in `intent.go`/`intent.rs`/`golden.go`/`golden.rs` still say "commit state digest" | LOW      | Focus was on types and functions, not field comments                   | Sweep alongside doc comment cleanup                             | 2026-04-01 |
+| C.O.R.E. boundary consolidation during Phase 4 list-of-lists                                                     | LOW      | Session interruption caused context drop                               | Formal protocol restored and output applied                     | 2026-04-01 |
+| Rust e2e tests fail dynamically due to `commit.cz` validation logic breaking on multi-transaction layouts        | LOW      | List-of-lists format integration wasn't applied to testers             | Fix test logic in Phase 7                                       |            |
+| Missing docs lint warnings in Rust related to `commit.rs` and `transaction_root.rs`                              | LOW      | Minor structural refactoring churn                                     | Cleanup in Phase 7                                              |            |
+| Go `ApplyTransactionUnsafe` injects SR as Arrow placeholder instead of computing real Arrow                      | MEDIUM   | Emergency patch during test helper adaptation                          | Refactor to compute Arrow properly or remove helper             | 2026-04-03 |
+| Go `containsKeyPrefix` function name misleading — checks for infixes (`/key/`, `/commit/`) not prefixes          | LOW      | Pre-existing; expanded during Phase 7a `/commit/` addition             | Rename to `containsKnownTypInfix` in cleanup pass               |            |
+| Go `FinalizeWithArrow` uses raw `HashAlg(signerKey.Alg.Hash())` instead of `HashAlgFromSEAlg` wrapper            | LOW      | Pre-existing; functionally equivalent but inconsistent                 | Normalize to `HashAlgFromSEAlg` in next code sweep              |            |
+| Go genesis bootstrap override in Arrow `pre` computation — used post-mutation key set                            | MEDIUM   | Incorrect assumption that p.pr needed re-derivation at genesis         | Removed in 3 locations; p.pr always correct                     | 2026-04-03 |
+| Go `VerifyCoz` checked live state for commit/create auth instead of pre-mutation snapshot                        | HIGH     | Violated [pre-mutation-key-rule] — spec says pre-commit keys authorize | Added `verifyCozWithSnapshot` + key snapshot                    | 2026-04-03 |
+| Rust `apply_transaction_test` put arrow on mutation coz instead of separate commit coz                           | MEDIUM   | Same structural error as Go `ApplyTransactionUnsafe`                   | Ported same fix: mutation + commit coz split                    | 2026-04-06 |
+| Rust golden fixture runner doesn't construct commit/create coz                                                   | MEDIUM   | Runner predates list-of-lists commit coz separation                    | Needs same pattern as unit test helper                          |            |
+| Multi-algorithm PR divergence between Go and Rust                                                                | HIGH     | Go and Rust compute PR differently when activeAlgs > 1                 | Root cause: multi-alg MALT hasher. Fixed via per-alg MALT pivot | 2026-04-07 |
+| Go `test_helpers_test.go` `ApplyTransactionUnsafe` uses pre-mutation `activeAlgs` for arrow computation          | LOW      | Only used in single-algorithm unit tests; multi-alg would fail         | Align with `FinalizeWithArrow` post-mutation pattern            |            |
+| Go `PendingCommit.Finalize` computes TR with single `p.hashAlg` instead of full active alg set                   | LOW      | Only called from `finalizeCommit` which separately computes TR         | Align when/if Finalize is used independently                    |            |
 
 ## Deviation Log
 

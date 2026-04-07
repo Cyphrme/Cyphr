@@ -172,8 +172,7 @@ func (p *PendingCommit) Len() int {
 }
 
 // ComputeRoots computes the TMR, TCR, and TR for the current pending cozies.
-func (p *PendingCommit) ComputeRoots() (tmr *TransactionMutationRoot, tcr *TransactionCommitRoot, tr *TransactionRoot, err error) {
-	algs := []HashAlg{p.hashAlg}
+func (p *PendingCommit) ComputeRoots(algs []HashAlg) (tmr *TransactionMutationRoot, tcr *TransactionCommitRoot, tr *TransactionRoot, err error) {
 
 	// Compute TMR
 	var txDigests []MultihashDigest
@@ -228,7 +227,7 @@ func (p *PendingCommit) Finalize(ar AuthRoot, sr StateRoot, pr PrincipalRoot) (*
 	}
 
 	// Compute TR from TMR and TCR
-	_, _, tr, err := p.ComputeRoots()
+	_, _, tr, err := p.ComputeRoots([]HashAlg{p.hashAlg})
 	if err != nil {
 		return nil, err
 	}
@@ -339,26 +338,35 @@ func (b *CommitBatch) FinalizeWithArrow(
 		return nil, ErrEmptyCommit
 	}
 
-	// 1. Recompute current SR from active keys/data
+	// 1. Derive post-mutation algorithm set and recompute current SR.
+	// b.principal.activeAlgs may be stale if the mutation added/removed an
+	// algorithm. Derive from the current (post-mutation) key set to match
+	// what finalizeCommit will compute.
 	thumbprints := make([]coz.B64, len(b.principal.auth.Keys))
+	keys := make([]*Key, len(b.principal.auth.Keys))
 	for i, k := range b.principal.auth.Keys {
 		thumbprints[i] = k.Tmb
+		keys[i] = k
 	}
-	kr, err := ComputeKR(thumbprints, nil, b.principal.activeAlgs)
+	postAlgs := DeriveHashAlgs(keys)
+
+	kr, err := ComputeKR(thumbprints, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
-	ar, err := ComputeAR(kr, nil, nil, b.principal.activeAlgs)
+	ar, err := ComputeAR(kr, nil, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
-	sr, err := ComputeSR(ar, b.principal.dr, nil, b.principal.activeAlgs)
+	sr, err := ComputeSR(ar, b.principal.dr, nil, postAlgs)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Compute TMR from pending transactions
-	tmr, err := ComputeTMRFromPending(b.pending.transactions, b.principal.activeAlgs)
+	// 2. Compute TMR from pending transactions.
+	// CZDs are single-algorithm, so TMR uses the signer's algorithm.
+	txAlg := HashAlg(signerKey.Alg.Hash())
+	tmr, err := ComputeTMRFromPending(b.pending.transactions, []HashAlg{txAlg})
 	if err != nil {
 		return nil, err
 	}
@@ -367,9 +375,7 @@ func (b *CommitBatch) FinalizeWithArrow(
 	// b.principal.pr holds the PR from before this commit (it hasn't been
 	// updated yet — that happens in finalizeCommit after Arrow validation).
 	pre := b.principal.pr
-
-	// 4. Compute Arrow
-	txAlg := HashAlg(signerKey.Alg.Hash())
+	// 4. Compute Arrow = MR(pre, fwd_SR, TMR) at the signer's algorithm.
 	components := [][]byte{
 		pre.GetOrFirst(txAlg),
 		sr.GetOrFirst(txAlg),
