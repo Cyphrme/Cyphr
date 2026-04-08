@@ -98,6 +98,12 @@ pub struct OverrideIntent {
     /// Override `tmb` field value (for UnknownKey tests).
     #[serde(default)]
     pub tmb: Option<String>,
+    /// Override timestamp (for TimestampPast tests).
+    #[serde(default)]
+    pub now: Option<i64>,
+    /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
+    #[serde(default)]
+    pub inject_pre: Option<bool>,
 }
 
 /// An action intent (Level 4).

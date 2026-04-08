@@ -52,12 +52,18 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
    - [x] Smoke-test: convert `err_revoke_non_self` and `revoke_non_self_fails` to use `[no-revoke-non-self]` tag syntax. Passes both impls.
 
 2. **Phase 2: OverrideIntent Expansion (Constraint Generation)** — Expand the existing native overriding mechanisms.
-   - [ ] Refactor the `OverrideIntent` schema inside `go/testfixtures/intent.go` and `rs/test-fixtures/src/intent.rs` to allow arbitrary structural manipulation (e.g., overriding/injecting the `commit` tag into non-terminal cozies, forcing bad timestamps, or corrupting signature bytes).
-   - [ ] Write `tests/intents/authentication_constraints.toml` which natively utilizes these new `OverrideIntent` vectors to target strictly specific Level 1-4 auth constraints, generating the bad states uniformly across both Go and Rust intent parsing logic.
+   - [x] Extend `OverrideIntent` schema with `now` and `inject_pre` fields in both Go and Rust.
+   - [x] Wire `now` override into Go E2E runner (`e2e_runner.go`).
+   - [x] Upgrade existing E2E error tests to use formal constraint tags (`[commit-pre-chain]`, `[verification-timestamp-order]`, `[create-uniqueness]`, `[naked-revoke-error]`).
+   - [x] Fix constraint tag → error code mapping divergence: `[commit-pre-chain]`/`[no-orphan-pre]` must resolve to `BrokenChain` in Rust (import pipeline remapping).
+   - [ ] Wire `now` and `inject_pre` overrides into Rust fixture generator (`golden.rs`).
+   - [ ] Write `tests/intents/authentication_constraints.toml` targeting remaining 🟡 TESTABLE constraints (`[transaction-pre-required]`).
+   - [ ] Write tests for 🔶 NEEDS_OVERRIDE constraints that require implementation work: `[data-action-no-pre]` (not enforced), `[commit-one-or-more]` (needs empty commit override).
 
 3. **Phase 3: Execution & Protocol Sweep** — Run the test runners to verify constraint checking parity.
-   - [ ] Execute Go intent tests against `authentication_constraints.toml` and resolve any uncovered blind spots in `go/cyphrpass`.
-   - [ ] Execute Rust intent tests against `authentication_constraints.toml` and resolve any uncovered blind spots in `rs/cyphrpass`.
+   - [x] All E2E error tests pass with constraint tag syntax in both Go and Rust.
+   - [ ] Execute Go intent tests against new authentication constraint vectors.
+   - [ ] Execute Rust intent tests against new authentication constraint vectors.
    - [ ] Guarantee no false-positive test passes occur due to generic `InvalidPrior` or `UnknownKey` errors catching a failure for the wrong sequence reason.
 
 ## Verification
@@ -73,6 +79,8 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 | `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit                  | Fixed: Go guard + Rust id validation                              |    ☑    |
 | Go `revokeKey()` still accepts `by` parameter, always nil after non-self revoke removal                                                                                | LOW      | Divergence fix left unused parameter                         | Clean up if Level 5+ design confirms self-only revoke permanently |    ☐     |
 | `err_delete_unknown_key` uses `UnknownSigner` expectation as parity workaround                                                                                         | LOW      | Rust import conflates signer-not-found with target-not-found | Consider richer error types in storage layer to distinguish       |    ☐     |
+| `[data-action-no-pre]` constraint not enforced in either impl                                                                                                          | MEDIUM   | Discovery during Phase 2 override work                       | Add `pre` field rejection to action parsing before writing test   |    ☐     |
+| `[commit-one-or-more]` requires E2E infrastructure for empty commits                                                                                                   | LOW      | Discovery during Phase 2 — structural gap                    | Extend E2E runner to support commit with no transactions          |    ☐     |
 
 ## Deviation Log
 
@@ -80,6 +88,8 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 | :----- | :-------------------------- | :--------------------------------------------------------- | :------------------------------------------------------------------- |
 | 1      | Coverage matrix + gap tests | + discovered `[no-revoke-non-self]` divergence             | Divergence surfaced during audit; tests intentionally failed         |
 | 2      | (not originally planned)    | Fixed divergence in Go + Rust, fixed `rt_key_revoke_cycle` | Required to make new constraint tests pass; spec alignment mandatory |
+| 3      | Phase 1 tag mapping         | Constraint tag resolution in Go + Rust                     | Exactly as planned                                                   |
+| 4      | Phase 2 override expansion  | + E2E test upgrade to constraint tags, mapping fix         | Upgraded 4 existing tests; fixed BrokenChain/InvalidPrior mapping    |
 
 ## Retrospective
 

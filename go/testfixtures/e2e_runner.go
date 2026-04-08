@@ -218,6 +218,9 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 		if override.Tmb != "" {
 			payObj["tmb"] = override.Tmb
 		}
+		if override.Now != nil {
+			payObj["now"] = *override.Now
+		}
 	}
 
 	// Handle principal/create: id is self-referential (current PS)

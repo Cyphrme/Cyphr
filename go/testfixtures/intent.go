@@ -87,6 +87,10 @@ type OverrideIntent struct {
 	Pre string `toml:"pre,omitempty"`
 	// Tmb overrides `tmb` field value (for UnknownKey tests).
 	Tmb string `toml:"tmb,omitempty"`
+	// Now overrides timestamp (for TimestampPast tests).
+	Now *int64 `toml:"now,omitempty"`
+	// InjectPre forces a `pre` field onto actions (for [data-action-no-pre] tests).
+	InjectPre *bool `toml:"inject_pre,omitempty"`
 }
 
 // ExpectedAssertions contains expected state after test execution.

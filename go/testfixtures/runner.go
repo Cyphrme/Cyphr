@@ -397,8 +397,8 @@ func matchesExpectedError(actual, expected string) bool {
 	constraintTags := map[string]string{
 		// Transactions
 		"[transaction-pre-required]":    "InvalidPrior",
-		"[commit-pre-chain]":            "InvalidPrior",
-		"[no-orphan-pre]":               "InvalidPrior",
+		"[commit-pre-chain]":            "BrokenChain",
+		"[no-orphan-pre]":               "BrokenChain",
 		"[create-uniqueness]":           "DuplicateKey",
 		"[no-unauthorized-transaction]": "UnknownKey",
 		"[revoke-self-signed]":          "MalformedPayload",

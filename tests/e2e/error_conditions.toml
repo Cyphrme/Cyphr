@@ -19,7 +19,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error = "BrokenChain"
+error = "[commit-pre-chain]"
 
 # Unknown signer: signer key not in genesis
 [[test]]
@@ -56,7 +56,7 @@ tx = [
 ]
 
 [test.expected]
-error = "TimestampPast"
+error = "[verification-timestamp-order]"
 
 # Duplicate key: adding a key that already exists
 [[test]]
@@ -78,7 +78,7 @@ tx = [
 ]
 
 [test.expected]
-error = "DuplicateKey"
+error = "[create-uniqueness]"
 
 # Revoked signer: signer key has been revoked (self-revoke), then tries to sign
 [[test]]
@@ -142,7 +142,7 @@ tx = [
 ]
 
 [test.expected]
-error = "NoActiveKeys"
+error = "[naked-revoke-error]"
 
 # key/delete of unknown key
 [[test]]
