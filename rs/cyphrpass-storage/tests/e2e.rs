@@ -384,6 +384,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
             cyphrpass::Error::InvalidSignature => "InvalidSignature",
             cyphrpass::Error::MalformedPayload => "MalformedPayload",
             cyphrpass::Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+            cyphrpass::Error::EmptyCommit => "EmptyCommit",
             _ => "UnknownProtocolError",
         },
         LoadError::Json { .. } => "JsonError",
@@ -399,6 +400,8 @@ fn load_error_name(e: &LoadError) -> &'static str {
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
+        "[commit-one-or-more]" => "EmptyCommit",
+        "[no-empty-mr]" => "NoGenesisKeys",
         "[transaction-pre-required]" => "MalformedPayload",
         "[data-action-no-pre]" => "MalformedPayload",
         "[commit-pre-chain]" => "BrokenChain",

@@ -463,6 +463,36 @@ impl<'a> Generator<'a> {
         test: &TestIntent,
         principal: &mut cyphrpass::Principal,
     ) -> Result<Golden, Error> {
+        let is_empty_commit = test
+            .override_
+            .as_ref()
+            .is_some_and(|o| o.empty_commit.unwrap_or(false));
+
+        if is_empty_commit {
+            let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
+            let genesis_keys = self.build_genesis_keys(&test.principal).ok();
+            let (mut commits, digests) = Self::export_principal_commits(principal)?;
+
+            commits.push(crate::CommitEntry {
+                cozies: vec![],
+                keys: vec![],
+                commit_id: "".to_string(),
+                auth_root: "".to_string(),
+                sr: "".to_string(),
+                pr: "".to_string(),
+            });
+
+            return Ok(Golden {
+                name: test.name.clone(),
+                principal: test.principal.clone(),
+                setup: Self::setup_to_golden(&test.setup),
+                genesis_keys,
+                commits: Some(commits),
+                digests: Some(digests),
+                expected,
+            });
+        }
+
         let cz = test
             .commit
             .first()

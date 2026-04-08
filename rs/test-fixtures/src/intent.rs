@@ -107,6 +107,9 @@ pub struct OverrideIntent {
     /// Omit the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
     #[serde(default)]
     pub omit_pre: Option<bool>,
+    /// Bypass the empty commit validation to force an empty commit generation (for [commit-one-or-more] tests).
+    #[serde(default)]
+    pub empty_commit: Option<bool>,
 }
 
 /// An action intent (Level 4).

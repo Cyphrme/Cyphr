@@ -396,6 +396,8 @@ func matchesExpectedError(actual, expected string) bool {
 	// which get translated to the native error codes they should produce.
 	constraintTags := map[string]string{
 		// Transactions
+		"[commit-one-or-more]":          "EmptyCommit",
+		"[no-empty-mr]":                 "NoGenesisKeys",
 		"[transaction-pre-required]":    "MalformedPayload",
 		"[data-action-no-pre]":          "MalformedPayload",
 		"[commit-pre-chain]":            "BrokenChain",
@@ -421,13 +423,14 @@ func matchesExpectedError(actual, expected string) bool {
 	// Error code to Go message pattern mapping
 	// Rust uses camelCase error codes, Go uses plain English messages
 	codePatterns := map[string][]string{
+		"EmptyCommit":          {"empty commit", "commit has no mutations"},
 		"KeyRevoked":           {"key revoked", "keyrevoked"},
 		"UnknownKey":           {"unknown key", "unknown signer", "unknownkey"},
 		"UnknownSigner":        {"unknown key", "unknown signer"}, // alias for UnknownKey
 		"TimestampPast":        {"timestamp in past", "timestampinpast"},
 		"DuplicateKey":         {"duplicate key", "duplicatekey"},
 		"NoActiveKeys":         {"no active keys", "noactivekeys"},
-		"NoGenesisKeys":        {"no active keys", "noactivekeys", "no genesis keys"}, // maps to same error
+		"NoGenesisKeys":        {"no genesis keys", "noactivekeys", "no active keys"},
 		"InvalidPrior":         {"invalid prior", "invalidprior"},
 		"BrokenChain":          {"invalid prior", "invalidprior"}, // alias for InvalidPrior
 		"UnsupportedAlgorithm": {"unsupported", "rs256", "unsupportedalgorithm"},

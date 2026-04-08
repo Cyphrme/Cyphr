@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cyphrpass::Principal;
 use cyphrpass::key::Key;
-use test_fixtures::{Golden, GoldenExpected, KeyEntry, Pool, PoolKey};
+use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
 
 // ============================================================================
 // Test helpers

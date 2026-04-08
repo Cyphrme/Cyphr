@@ -5,7 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::parsed_coz::VerifiedCoz;
-use crate::state::{AuthRoot, HashAlg, PrincipalRoot, StateRoot, TaggedCzd};
+use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 
 // ============================================================================
 // Commit
@@ -330,7 +330,7 @@ impl<'a> CommitScope<'a> {
     /// Snapshots the active key set for [pre-mutation-key-rule] authorization.
     /// This is called by [`Principal::begin_commit()`].
     pub(crate) fn new(principal: &'a mut crate::principal::Principal) -> Self {
-        let hash_alg = principal.hash_alg();
+        let _hash_alg = principal.hash_alg();
         // Snapshot active keys for pre-mutation authorization checks
         let pre_commit_keys: std::collections::BTreeMap<String, crate::key::Key> = principal
             .active_keys()
@@ -580,6 +580,7 @@ mod tests {
     use super::*;
     use crate::multihash::MultihashDigest;
     use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
+    use crate::state::HashAlg;
     use coz::{Czd, PayBuilder, Thumbprint};
     use serde_json::json;
 

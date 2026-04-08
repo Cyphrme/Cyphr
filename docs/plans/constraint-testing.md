@@ -72,9 +72,9 @@ Implement an automated intent-driven testing framework ensuring symmetric enforc
 
 ## Verification
 
-- [ ] All new negative intents cleanly parse across Rust.
-- [ ] All new negative intents cleanly parse across Go.
-- [ ] CI pipeline validates deterministic rejection logic with 0 false positives.
+- [x] All new negative intents cleanly parse across Rust.
+- [x] All new negative intents cleanly parse across Go.
+- [x] CI pipeline validates deterministic rejection logic with 0 false positives.
 
 ## Technical Debt
 
@@ -83,8 +83,8 @@ Implement an automated intent-driven testing framework ensuring symmetric enforc
 | `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit                  | Fixed: Go guard + Rust id validation                              |    ☑    |
 | Go `revokeKey()` still accepts `by` parameter, always nil after non-self revoke removal                                                                                | LOW      | Divergence fix left unused parameter                         | Clean up if Level 5+ design confirms self-only revoke permanently |    ☐     |
 | `err_delete_unknown_key` uses `UnknownSigner` expectation as parity workaround                                                                                         | LOW      | Rust import conflates signer-not-found with target-not-found | Consider richer error types in storage layer to distinguish       |    ☐     |
-| `[data-action-no-pre]` constraint not enforced in either impl                                                                                                          | MEDIUM   | Discovery during Phase 2 override work                       | Add `pre` field rejection to action parsing before writing test   |    ☐     |
-| `[commit-one-or-more]` requires E2E infrastructure for empty commits                                                                                                   | LOW      | Discovery during Phase 2 — structural gap                    | Extend E2E runner to support commit with no transactions          |    ☐     |
+| `[data-action-no-pre]` constraint not enforced in either impl                                                                                                          | MEDIUM   | Discovery during Phase 2 override work                       | Add `pre` field rejection to action parsing before writing test   |    ☑    |
+| `[commit-one-or-more]` requires E2E infrastructure for empty commits                                                                                                   | LOW      | Discovery during Phase 2 — structural gap                    | Extend E2E runner to support commit with no transactions          |    ☑    |
 
 ## Deviation Log
 
