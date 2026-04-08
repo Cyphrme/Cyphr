@@ -210,7 +210,7 @@ tx = [
 ]
 
 [test.expected]
-error = "MalformedPayload"
+error = "[no-revoke-non-self]"
 
 # key/delete of last remaining key should fail with NoActiveKeys
 # (distinct from revoke — tests the delete path specifically)

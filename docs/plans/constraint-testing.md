@@ -45,8 +45,11 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 
 1. **Phase 1: Intent Framework Translation Upgrade** — Map literal ISO constraint tags (e.g., `error = "[txn-no-mixing]"`) to native error variants.
    - [x] Audit existing error matching infrastructure and build constraint coverage matrix.
-   - [ ] Update Go `go/testfixtures/runner.go` (`matchesExpectedError`) to translate formal machine spec tags like `[auth-frozen]` into the appropriate native error matching logic.
-   - [ ] Update Rust TOML matching logic in `rs/test-fixtures` to map constraint tags inside `test.expected.error` to specific `cyphrpass::Error` variants.
+   - [x] Write new gap-filling TOML test cases for constraints reachable with existing OverrideIntent fields.
+   - [x] Fix `[no-revoke-non-self]` spec-implementation divergence (Go + Rust).
+   - [x] Update Go `go/testfixtures/runner.go` (`matchesExpectedError`) to translate formal machine spec tags like `[auth-frozen]` into the appropriate native error matching logic.
+   - [x] Update Rust TOML matching logic in `rs/cyphrpass-storage/tests/e2e.rs` to map constraint tags inside `test.expected.error` to specific `cyphrpass::Error` variants.
+   - [x] Smoke-test: convert `err_revoke_non_self` and `revoke_non_self_fails` to use `[no-revoke-non-self]` tag syntax. Passes both impls.
 
 2. **Phase 2: OverrideIntent Expansion (Constraint Generation)** — Expand the existing native overriding mechanisms.
    - [ ] Refactor the `OverrideIntent` schema inside `go/testfixtures/intent.go` and `rs/test-fixtures/src/intent.rs` to allow arbitrary structural manipulation (e.g., overriding/injecting the `commit` tag into non-terminal cozies, forcing bad timestamps, or corrupting signature bytes).
@@ -65,14 +68,18 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 
 ## Technical Debt
 
-| Item                                                                                                                                                                   | Severity | Why Introduced                              | Follow-Up                            | Resolved |
-| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :------------------------------------------ | :----------------------------------- | :------: |
-| `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit | Fixed: Go guard + Rust id validation |    ☑    |
+| Item                                                                                                                                                                   | Severity | Why Introduced                                               | Follow-Up                                                         | Resolved |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :----------------------------------------------------------- | :---------------------------------------------------------------- | :------: |
+| `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit                  | Fixed: Go guard + Rust id validation                              |    ☑    |
+| Go `revokeKey()` still accepts `by` parameter, always nil after non-self revoke removal                                                                                | LOW      | Divergence fix left unused parameter                         | Clean up if Level 5+ design confirms self-only revoke permanently |    ☐     |
+| `err_delete_unknown_key` uses `UnknownSigner` expectation as parity workaround                                                                                         | LOW      | Rust import conflates signer-not-found with target-not-found | Consider richer error types in storage layer to distinguish       |    ☐     |
 
 ## Deviation Log
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit | Planned                     | Actual                                                     | Rationale                                                            |
+| :----- | :-------------------------- | :--------------------------------------------------------- | :------------------------------------------------------------------- |
+| 1      | Coverage matrix + gap tests | + discovered `[no-revoke-non-self]` divergence             | Divergence surfaced during audit; tests intentionally failed         |
+| 2      | (not originally planned)    | Fixed divergence in Go + Rust, fixed `rt_key_revoke_cycle` | Required to make new constraint tests pass; spec alignment mandatory |
 
 ## Retrospective
 

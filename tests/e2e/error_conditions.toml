@@ -127,7 +127,7 @@ tx = [
 ]
 
 [test.expected]
-error = "MalformedPayload"
+error = "[no-revoke-non-self]"
 
 # key/delete of last remaining key
 [[test]]

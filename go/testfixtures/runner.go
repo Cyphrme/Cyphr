@@ -389,8 +389,34 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 }
 
 // matchesExpectedError checks if the actual error matches the expected error pattern.
-// Maps Rust error codes to Go error message patterns.
+// Maps Rust error codes and formal constraint tags to Go error message patterns.
 func matchesExpectedError(actual, expected string) bool {
+	// Constraint tag → error code mapping.
+	// Allows TOML tests to use formal spec constraint tags (e.g., "[no-revoke-non-self]")
+	// which get translated to the native error codes they should produce.
+	constraintTags := map[string]string{
+		// Transactions
+		"[transaction-pre-required]":    "InvalidPrior",
+		"[commit-pre-chain]":            "InvalidPrior",
+		"[no-orphan-pre]":               "InvalidPrior",
+		"[create-uniqueness]":           "DuplicateKey",
+		"[no-unauthorized-transaction]": "UnknownKey",
+		"[revoke-self-signed]":          "MalformedPayload",
+		"[no-revoke-non-self]":          "MalformedPayload",
+		"[naked-revoke-error]":          "NoActiveKeys",
+		"[no-self-revoke-recovery]":     "NoActiveKeys",
+		// Authentication
+		"[verification-timestamp-order]": "TimestampPast",
+		// Principal Lifecycle
+		"[no-level-1-recovery]": "NoActiveKeys",
+		"[dead-terminal]":       "NoActiveKeys",
+	}
+
+	// If expected is a constraint tag, resolve to error code first
+	if resolved, ok := constraintTags[expected]; ok {
+		expected = resolved
+	}
+
 	// Error code to Go message pattern mapping
 	// Rust uses camelCase error codes, Go uses plain English messages
 	codePatterns := map[string][]string{

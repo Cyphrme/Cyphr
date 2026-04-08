@@ -392,6 +392,32 @@ fn load_error_name(e: &LoadError) -> &'static str {
     }
 }
 
+/// Resolve formal constraint tags (e.g., "[no-revoke-non-self]") to native error codes.
+///
+/// Allows TOML tests to use constraint tags from the machine spec directly.
+/// If the input is not a bracketed tag, it passes through unchanged.
+fn resolve_constraint_tag(expected: &str) -> &str {
+    match expected {
+        // Transactions
+        "[transaction-pre-required]" => "InvalidPrior",
+        "[commit-pre-chain]" => "InvalidPrior",
+        "[no-orphan-pre]" => "InvalidPrior",
+        "[create-uniqueness]" => "DuplicateKey",
+        "[no-unauthorized-transaction]" => "UnknownKey",
+        "[revoke-self-signed]" => "MalformedPayload",
+        "[no-revoke-non-self]" => "MalformedPayload",
+        "[naked-revoke-error]" => "NoActiveKeys",
+        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // Authentication
+        "[verification-timestamp-order]" => "TimestampPast",
+        // Principal Lifecycle
+        "[no-level-1-recovery]" => "NoActiveKeys",
+        "[dead-terminal]" => "NoActiveKeys",
+        // Pass through if not a constraint tag
+        other => other,
+    }
+}
+
 /// Runner for a single e2e error test.
 fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     let expected_error = test
@@ -399,6 +425,9 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .as_ref()
         .and_then(|e| e.error.as_deref())
         .expect("error test must have expected.error");
+
+    // Resolve constraint tags (e.g., "[no-revoke-non-self]" → "MalformedPayload")
+    let expected_error = resolve_constraint_tag(expected_error);
 
     // Handle NoGenesisKeys special case - error happens at genesis creation
     if expected_error == "NoGenesisKeys" {
