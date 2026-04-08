@@ -44,6 +44,7 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 ## Phases
 
 1. **Phase 1: Intent Framework Translation Upgrade** — Map literal ISO constraint tags (e.g., `error = "[txn-no-mixing]"`) to native error variants.
+   - [x] Audit existing error matching infrastructure and build constraint coverage matrix.
    - [ ] Update Go `go/testfixtures/runner.go` (`matchesExpectedError`) to translate formal machine spec tags like `[auth-frozen]` into the appropriate native error matching logic.
    - [ ] Update Rust TOML matching logic in `rs/test-fixtures` to map constraint tags inside `test.expected.error` to specific `cyphrpass::Error` variants.
 
@@ -64,8 +65,9 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 
 ## Technical Debt
 
-| Item | Severity | Why Introduced | Follow-Up | Resolved |
-| :--- | :------- | :------------- | :-------- | :------: |
+| Item                                                                                                                                                                   | Severity | Why Introduced                              | Follow-Up                                    | Resolved |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :------------------------------------------ | :------------------------------------------- | :------: |
+| `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit | Resolve before writing non-self-revoke tests |    ☐     |
 
 ## Deviation Log
 

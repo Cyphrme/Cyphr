@@ -191,3 +191,54 @@ typ    = "cyphr.me/action"
 
 [test.expected]
 error = "TimestampPast"
+
+# ============================================================================
+# Constraint-driven tests (from coverage audit)
+# ============================================================================
+
+# [no-revoke-non-self]: Revoke MUST be self-signed — signer must match target.
+# Here alice tries to revoke bob. Spec says MUST reject.
+[[test]]
+name      = "revoke_non_self_fails"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/key/revoke" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
+# key/delete of last remaining key should fail with NoActiveKeys
+# (distinct from revoke — tests the delete path specifically)
+[[test]]
+name      = "delete_last_key_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/key/delete" },
+  ],
+]
+
+[test.expected]
+error = "NoActiveKeys"
+
+# key/delete of unknown key (key not in principal)
+[[test]]
+name      = "delete_unknown_key_fails"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/delete" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"

@@ -109,3 +109,52 @@ principal = []
 
 [test.expected]
 error = "NoGenesisKeys"
+
+# ============================================================================
+# Constraint-driven tests (from coverage audit)
+# ============================================================================
+
+# [no-revoke-non-self]: Alice tries to revoke Bob. Spec says MUST reject.
+[[test]]
+name      = "err_revoke_non_self"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/key/revoke" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
+
+# key/delete of last remaining key
+[[test]]
+name      = "err_delete_last_key"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/key/delete" },
+  ],
+]
+
+[test.expected]
+error = "NoActiveKeys"
+
+# key/delete of unknown key
+[[test]]
+name      = "err_delete_unknown_key"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/delete" },
+  ],
+]
+
+[test.expected]
+error = "UnknownKey"
