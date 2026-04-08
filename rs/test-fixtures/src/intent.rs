@@ -104,6 +104,9 @@ pub struct OverrideIntent {
     /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
     #[serde(default)]
     pub inject_pre: Option<bool>,
+    /// Omit the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
+    #[serde(default)]
+    pub omit_pre: Option<bool>,
 }
 
 /// An action intent (Level 4).

@@ -1,0 +1,43 @@
+{
+  "name": "err_data_action_with_pre",
+  "principal": ["golden"],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "now": 1700000001,
+            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/comment/create"
+          },
+          "sig": "VpfJlCjZK9R7Z0zsykEBrCZsB37yE503AC_8zzL6p1Ve1N4GJF-kVMoJu7H6CA7JpogeQ2guvHE-iPFLDe1TGQ"
+        }
+      ],
+      "keys": [],
+      "commit_id": "",
+      "ar": "",
+      "sr": "",
+      "pr": ""
+    }
+  ],
+  "digests": ["lEntjuTHUW7G8hTSAdsRtsel_dIgLf9PjkquJBQnjZQ"],
+  "expected": {
+    "key_count": 1,
+    "level": 1,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "",
+    "error": "[data-action-no-pre]"
+  }
+}

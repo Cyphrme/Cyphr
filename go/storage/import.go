@@ -207,7 +207,7 @@ func replayAction(principal *cyphrpass.Principal, entry *Entry, index int) error
 	}
 
 	// Parse pay to get action fields
-	var pay coz.Pay
+	var pay cyphrpass.CozPay
 	if err := json.Unmarshal(payBytes, &pay); err != nil {
 		return fmt.Errorf("entry %d: invalid pay: %w", index, err)
 	}

@@ -82,7 +82,7 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 		if len(test.Action) > 1 {
 			applyErr = applyMultiAction(pool, principal, test)
 		} else {
-			applyErr = applySingleAction(pool, principal, &test.Action[0])
+			applyErr = applySingleAction(pool, principal, &test.Action[0], test)
 		}
 	}
 
@@ -221,6 +221,9 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 		if override.Now != nil {
 			payObj["now"] = *override.Now
 		}
+		if override.OmitPre != nil && *override.OmitPre {
+			delete(payObj, "pre")
+		}
 	}
 
 	// Handle principal/create: id is self-referential (current PS)
@@ -265,7 +268,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 }
 
 // applySingleAction applies a single action.
-func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *ActionIntent) error {
+func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *ActionIntent, test *TestIntent) error {
 	// Get signer key
 	signerPool := pool.Get(action.Signer)
 	if signerPool == nil {
@@ -287,13 +290,18 @@ func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *Actio
 		payObj["msg"] = action.Msg
 	}
 
+	// Apply inject_pre override if requested
+	if test.Override != nil && test.Override.InjectPre != nil && *test.Override.InjectPre {
+		payObj["pre"] = principal.PR().Tagged()
+	}
+
 	return signAndApplyAction(signerKey, payObj, principal)
 }
 
 // applyMultiAction applies multiple actions.
 func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
 	for i := range test.Action {
-		if err := applySingleAction(pool, principal, &test.Action[i]); err != nil {
+		if err := applySingleAction(pool, principal, &test.Action[i], test); err != nil {
 			return fmt.Errorf("action %d: %w", i, err)
 		}
 	}
@@ -366,7 +374,7 @@ func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cy
 	}
 
 	// Parse pay for action creation
-	var pay coz.Pay
+	var pay cyphrpass.CozPay
 	if err := json.Unmarshal(payBytes, &pay); err != nil {
 		return fmt.Errorf("failed to parse pay: %w", err)
 	}
@@ -466,7 +474,7 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 		if len(test.Action) > 1 {
 			applyErr = applyMultiAction(pool, principal, test)
 		} else {
-			applyErr = applySingleAction(pool, principal, &test.Action[0])
+			applyErr = applySingleAction(pool, principal, &test.Action[0], test)
 		}
 	}
 

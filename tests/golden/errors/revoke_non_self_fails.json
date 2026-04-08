@@ -1,0 +1,56 @@
+{
+  "name": "revoke_non_self_fails",
+  "principal": ["alice", "bob"],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "mt-ShCSV4nZkVVAaErcVu6_bbKeF5T9QfQthRvy0YjtlBpMcOTd64e3JDPZlfQVXl2B01aWj3fMs-KskmL0LjA",
+      "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw"
+    },
+    {
+      "alg": "ES256",
+      "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+      "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+    }
+  ],
+  "commits": [
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
+            "now": 1700000000,
+            "pre": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+            "rvk": 1700000000,
+            "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
+            "typ": "cyphr.me/key/revoke"
+          },
+          "sig": "jLY1QnsHtm0N4SMN3DkvxgurBca86YAdmT1RTgRUGL5LqflMEAqtF9KwCcxQDvPS7-T4GlDisvAl-feHXE6i-w"
+        }
+      ],
+      "keys": [
+        {
+          "alg": "ES256",
+          "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
+          "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8"
+        }
+      ],
+      "commit_id": "",
+      "ar": "",
+      "sr": "",
+      "pr": ""
+    }
+  ],
+  "digests": ["NpWB53zwhg-Q5Wk6w_SXl_IVE0EifSvTYV7Ycp4KSsQ"],
+  "expected": {
+    "key_count": 2,
+    "level": 3,
+    "kr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+    "ar": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+    "pr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+    "sr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
+    "pg": "",
+    "error": "[no-revoke-non-self]"
+  }
+}

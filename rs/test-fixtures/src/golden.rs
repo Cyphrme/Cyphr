@@ -493,17 +493,40 @@ impl<'a> Generator<'a> {
                 &computed_pre
             };
 
+        // Apply override.now if specified (for TimestampPast tests)
+        let cz_modified;
+        let cz = if let Some(override_now) = test.override_.as_ref().and_then(|o| o.now) {
+            cz_modified = TxIntent {
+                now: override_now,
+                ..cz.clone()
+            };
+            &cz_modified
+        } else {
+            cz
+        };
+
         // Resolve signer for pay construction
         let signer = self.resolve_key(&cz.signer)?;
         let signer_tmb = signer.compute_tmb_b64()?;
 
+        // Apply override.omit_pre if specified (for [transaction-pre-required] tests)
+        let pre_pass = if test
+            .override_
+            .as_ref()
+            .is_some_and(|o| o.omit_pre.unwrap_or(false))
+        {
+            None
+        } else {
+            Some(pre)
+        };
+
         // Build the pay Value (without commit field)
-        let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(pre))?;
+        let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, pre_pass)?;
 
         let coz = if is_error_test {
             // Error tests: sign manually — CommitScope would reject invalid payloads
             // (e.g., wrong pre). We need valid signatures over intentionally bad data.
-            let (coz, _sig_bytes, _czd) = self.build_golden_coz(cz, &test.name, Some(pre))?;
+            let (coz, _sig_bytes, _czd) = self.build_golden_coz(cz, &test.name, pre_pass)?;
             coz
         } else {
             // Happy path: use CommitScope::finalize_with_commit
@@ -780,12 +803,26 @@ impl<'a> Generator<'a> {
             message: format!("test '{}': cz+action test requires [[action]]", test.name),
         })?;
 
-        let (_, action_sig_bytes, action_czd) = self.build_action_coz(action_intent, &test.name)?;
+        let action_pre = if test
+            .override_
+            .as_ref()
+            .and_then(|o| o.inject_pre)
+            .unwrap_or(false)
+        {
+            Some(Self::format_pr_tagged(principal)?)
+        } else {
+            None
+        };
+        let action_pre_ref = action_pre.as_deref();
+
+        let (_, action_sig_bytes, action_czd) =
+            self.build_action_coz(action_intent, action_pre_ref, &test.name)?;
 
         // Apply action to principal
         self.apply_action_to_principal(
             principal,
             action_intent,
+            action_pre_ref,
             &action_sig_bytes,
             action_czd,
             &test.name,
@@ -821,7 +858,20 @@ impl<'a> Generator<'a> {
             ),
         })?;
 
-        let (action_coz, sig_bytes, czd) = self.build_action_coz(action_intent, &test.name)?;
+        let action_pre = if test
+            .override_
+            .as_ref()
+            .and_then(|o| o.inject_pre)
+            .unwrap_or(false)
+        {
+            Some(Self::format_pr_tagged(principal)?)
+        } else {
+            None
+        };
+        let action_pre_ref = action_pre.as_deref();
+
+        let (action_coz, sig_bytes, czd) =
+            self.build_action_coz(action_intent, action_pre_ref, &test.name)?;
 
         // Check if this is an error test
         let is_error_test = test
@@ -832,7 +882,14 @@ impl<'a> Generator<'a> {
 
         if !is_error_test {
             // Apply action to principal
-            self.apply_action_to_principal(principal, action_intent, &sig_bytes, czd, &test.name)?;
+            self.apply_action_to_principal(
+                principal,
+                action_intent,
+                action_pre_ref,
+                &sig_bytes,
+                czd,
+                &test.name,
+            )?;
         }
 
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
@@ -877,8 +934,22 @@ impl<'a> Generator<'a> {
         for (i, action_intent) in test.action.iter().enumerate() {
             let is_last_action = i == action_count - 1;
 
+            let action_pre = if is_last_action
+                && is_error_test
+                && test
+                    .override_
+                    .as_ref()
+                    .and_then(|o| o.inject_pre)
+                    .unwrap_or(false)
+            {
+                Some(Self::format_pr_tagged(principal)?)
+            } else {
+                None
+            };
+            let action_pre_ref = action_pre.as_deref();
+
             let (action_coz, sig_bytes, czd) = self
-                .build_action_coz(action_intent, &test.name)
+                .build_action_coz(action_intent, action_pre_ref, &test.name)
                 .map_err(|e| Error::Generation {
                     name: test.name.clone(),
                     reason: format!("action {}: {}", i + 1, e),
@@ -889,6 +960,7 @@ impl<'a> Generator<'a> {
                 self.apply_action_to_principal(
                     principal,
                     action_intent,
+                    action_pre_ref,
                     &sig_bytes,
                     czd,
                     &test.name,
@@ -935,6 +1007,7 @@ impl<'a> Generator<'a> {
     fn build_action_pay_json(
         &self,
         action: &ActionIntent,
+        pre: Option<&str>,
         test_name: &str,
     ) -> Result<Vec<u8>, Error> {
         let signer = self.resolve_key(&action.signer)?;
@@ -946,6 +1019,12 @@ impl<'a> Generator<'a> {
             pay_map.insert("msg".to_string(), Value::String(msg.clone()));
         }
         pay_map.insert("now".to_string(), Value::Number(action.now.into()));
+
+        // [data-action-no-pre] injection override
+        if let Some(pre_val) = pre {
+            pay_map.insert("pre".to_string(), Value::String(pre_val.to_string()));
+        }
+
         pay_map.insert("tmb".to_string(), Value::String(signer_tmb));
         pay_map.insert("typ".to_string(), Value::String(action.typ.clone()));
 
@@ -959,9 +1038,10 @@ impl<'a> Generator<'a> {
     fn build_action_coz(
         &self,
         action: &ActionIntent,
+        pre: Option<&str>,
         test_name: &str,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
-        let pay_json = self.build_action_pay_json(action, test_name)?;
+        let pay_json = self.build_action_pay_json(action, pre, test_name)?;
 
         // Resolve signer for signing
         let signer = self.resolve_key(&action.signer)?;
@@ -1018,11 +1098,12 @@ impl<'a> Generator<'a> {
         &self,
         principal: &mut cyphrpass::Principal,
         action: &ActionIntent,
+        pre: Option<&str>,
         sig_bytes: &[u8],
         czd: coz::Czd,
         test_name: &str,
     ) -> Result<(), Error> {
-        let pay_json = self.build_action_pay_json(action, test_name)?;
+        let pay_json = self.build_action_pay_json(action, pre, test_name)?;
 
         principal
             .verify_and_record_action(&pay_json, sig_bytes, czd)

@@ -1,0 +1,20 @@
+# Data Action Constraints Intent Tests
+#
+# These tests target specific constraints from docs/specs/transactions.md.
+
+# [data-action-no-pre]: Data action cozies MUST NOT contain pre.
+[[test]]
+name      = "err_data_action_with_pre"
+principal = ["golden"]
+
+[[test.action]]
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/comment/create"
+
+[test.override]
+# inject_pre forces the generator to insert a "pre" field into the action payload
+inject_pre = true
+
+[test.expected]
+error = "[data-action-no-pre]"

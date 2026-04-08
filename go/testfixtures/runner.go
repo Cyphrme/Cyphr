@@ -396,7 +396,8 @@ func matchesExpectedError(actual, expected string) bool {
 	// which get translated to the native error codes they should produce.
 	constraintTags := map[string]string{
 		// Transactions
-		"[transaction-pre-required]":    "InvalidPrior",
+		"[transaction-pre-required]":    "MalformedPayload",
+		"[data-action-no-pre]":          "MalformedPayload",
 		"[commit-pre-chain]":            "BrokenChain",
 		"[no-orphan-pre]":               "BrokenChain",
 		"[create-uniqueness]":           "DuplicateKey",

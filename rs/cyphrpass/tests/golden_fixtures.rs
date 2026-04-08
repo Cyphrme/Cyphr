@@ -237,6 +237,35 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     }
 }
 
+/// Resolve formal constraint tags (e.g., "[no-revoke-non-self]") to native error codes.
+///
+/// Allows TOML tests to use constraint tags from the machine spec directly.
+/// If the input is not a bracketed tag, it passes through unchanged.
+fn resolve_constraint_tag(expected: &str) -> &str {
+    match expected {
+        // Transactions
+        "[transaction-pre-required]" => "MalformedPayload",
+        "[data-action-no-pre]" => "MalformedPayload",
+        "[commit-pre-chain]" => "InvalidPrior",
+        "[no-orphan-pre]" => "InvalidPrior",
+        "[create-uniqueness]" => "DuplicateKey",
+        "[no-unauthorized-transaction]" => "UnknownKey",
+        "[revoke-self-signed]" => "MalformedPayload",
+        "[no-revoke-non-self]" => "MalformedPayload",
+        "[naked-revoke-error]" => "NoActiveKeys",
+        "[no-self-revoke-recovery]" => "NoActiveKeys",
+        // Authentication
+        "[verification-timestamp-order]" => "TimestampPast",
+        // Principal Lifecycle
+        "[no-level-1-recovery]" => "NoActiveKeys",
+        "[dead-terminal]" => "NoActiveKeys",
+        // Rust cyphrpass library conflates UnknownSigner and UnknownTarget into UnknownKey
+        "UnknownSigner" => "UnknownKey",
+        // Pass through if not a constraint tag
+        other => other,
+    }
+}
+
 fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -246,7 +275,11 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         .unwrap_or_else(|e| panic!("failed to parse {:?}: {}", fixture_path, e));
 
     // Check if this is an error test
-    let expected_error = fixture.expected.error.as_deref();
+    let expected_error = fixture
+        .expected
+        .error
+        .as_deref()
+        .map(resolve_constraint_tag);
 
     // Resolve genesis keys from pool (fallibly for unsupported algorithms)
     let pool_keys: Vec<&PoolKey> = fixture

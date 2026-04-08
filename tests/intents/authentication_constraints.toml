@@ -1,0 +1,21 @@
+# Authentication Constraints Intent Tests
+#
+# These tests target specific constraints from docs/specs/authentication.md.
+
+# [transaction-pre-required]: Missing pre field in non-genesis transaction
+[[test]]
+name      = "err_transaction_missing_pre"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+  ],
+]
+
+[test.override]
+omit_pre = true
+
+[test.expected]
+error = "[transaction-pre-required]"

@@ -399,7 +399,8 @@ fn load_error_name(e: &LoadError) -> &'static str {
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[transaction-pre-required]" => "InvalidPrior",
+        "[transaction-pre-required]" => "MalformedPayload",
+        "[data-action-no-pre]" => "MalformedPayload",
         "[commit-pre-chain]" => "BrokenChain",
         "[no-orphan-pre]" => "BrokenChain",
         "[create-uniqueness]" => "DuplicateKey",

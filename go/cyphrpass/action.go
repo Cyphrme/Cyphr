@@ -39,13 +39,17 @@ func (a *Action) SetRaw(raw json.RawMessage) {
 	a.raw = raw
 }
 
-// ParseAction creates an Action from a Coz pay object.
+// ParseAction creates an Action from a CozPay object.
 // The czd must be pre-computed from the full Coz message.
-func ParseAction(pay *coz.Pay, czd coz.B64) (*Action, error) {
+func ParseAction(pay *CozPay, czd coz.B64) (*Action, error) {
 	if pay == nil {
 		return nil, ErrMalformedPayload
 	}
 	if pay.Typ == "" {
+		return nil, ErrMalformedPayload
+	}
+	// [data-action-no-pre]: Data action cozies MUST NOT contain pre.
+	if pay.Pre != "" {
 		return nil, ErrMalformedPayload
 	}
 

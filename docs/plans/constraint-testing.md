@@ -56,15 +56,15 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
    - [x] Wire `now` override into Go E2E runner (`e2e_runner.go`).
    - [x] Upgrade existing E2E error tests to use formal constraint tags (`[commit-pre-chain]`, `[verification-timestamp-order]`, `[create-uniqueness]`, `[naked-revoke-error]`).
    - [x] Fix constraint tag → error code mapping divergence: `[commit-pre-chain]`/`[no-orphan-pre]` must resolve to `BrokenChain` in Rust (import pipeline remapping).
-   - [ ] Wire `now` and `inject_pre` overrides into Rust fixture generator (`golden.rs`).
-   - [ ] Write `tests/intents/authentication_constraints.toml` targeting remaining 🟡 TESTABLE constraints (`[transaction-pre-required]`).
-   - [ ] Write tests for 🔶 NEEDS_OVERRIDE constraints that require implementation work: `[data-action-no-pre]` (not enforced), `[commit-one-or-more]` (needs empty commit override).
+   - [x] Wire `now` and `inject_pre` overrides into Rust fixture generator (`golden.rs`).
+   - [x] Write `tests/intents/authentication_constraints.toml` targeting remaining 🟡 TESTABLE constraints (`[transaction-pre-required]`).
+   - [x] Write tests for 🔶 NEEDS_OVERRIDE constraints that require implementation work: `[data-action-no-pre]` (not enforced), `[commit-one-or-more]` (needs empty commit override).
 
 3. **Phase 3: Execution & Protocol Sweep** — Run the test runners to verify constraint checking parity.
    - [x] All E2E error tests pass with constraint tag syntax in both Go and Rust.
-   - [ ] Execute Go intent tests against new authentication constraint vectors.
-   - [ ] Execute Rust intent tests against new authentication constraint vectors.
-   - [ ] Guarantee no false-positive test passes occur due to generic `InvalidPrior` or `UnknownKey` errors catching a failure for the wrong sequence reason.
+   - [x] Execute Go intent tests against new authentication constraint vectors.
+   - [x] Execute Rust intent tests against new authentication constraint vectors.
+   - [x] Guarantee no false-positive test passes occur due to generic `InvalidPrior` or `UnknownKey` errors catching a failure for the wrong sequence reason.
 
 ## Verification
 

@@ -716,6 +716,11 @@ impl Principal {
             .to_string();
         let now = pay_value["now"].as_i64().ok_or(Error::MalformedPayload)?;
 
+        // [data-action-no-pre]: Data action cozies MUST NOT contain pre.
+        if pay_value.get("pre").is_some() {
+            return Err(Error::MalformedPayload);
+        }
+
         // Signer must be an ACTIVE key
         if !self.is_key_active(&signer_tmb) {
             if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {

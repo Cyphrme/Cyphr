@@ -91,6 +91,8 @@ type OverrideIntent struct {
 	Now *int64 `toml:"now,omitempty"`
 	// InjectPre forces a `pre` field onto actions (for [data-action-no-pre] tests).
 	InjectPre *bool `toml:"inject_pre,omitempty"`
+	// OmitPre drops the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
+	OmitPre *bool `toml:"omit_pre,omitempty"`
 }
 
 // ExpectedAssertions contains expected state after test execution.
