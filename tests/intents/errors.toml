@@ -210,7 +210,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnknownKey"
+error = "MalformedPayload"
 
 # key/delete of last remaining key should fail with NoActiveKeys
 # (distinct from revoke — tests the delete path specifically)
@@ -241,4 +241,4 @@ tx = [
 ]
 
 [test.expected]
-error = "UnknownKey"
+error = "UnknownSigner"

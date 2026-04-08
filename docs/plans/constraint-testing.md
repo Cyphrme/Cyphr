@@ -65,9 +65,9 @@ Implement an automated intent-driven testing framework ensuring symmetric 100% e
 
 ## Technical Debt
 
-| Item                                                                                                                                                                   | Severity | Why Introduced                              | Follow-Up                                    | Resolved |
-| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :------------------------------------------ | :------------------------------------------- | :------: |
-| `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit | Resolve before writing non-self-revoke tests |    ☐     |
+| Item                                                                                                                                                                   | Severity | Why Introduced                              | Follow-Up                            | Resolved |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :------------------------------------------ | :----------------------------------- | :------: |
+| `[no-revoke-non-self]` divergence: Go allows other-revoke (`principal.go:559`), Rust enforces self-only by construction (`CozKind::SelfRevoke`), spec says MUST reject | HIGH     | Pre-existing — surfaced by constraint audit | Fixed: Go guard + Rust id validation |    ☑    |
 
 ## Deviation Log
 

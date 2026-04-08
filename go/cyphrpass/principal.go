@@ -552,16 +552,12 @@ func (p *Principal) applyCozInternal(cz *ParsedCoz, newKey *coz.Key) error {
 		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
-		// Self-revoke: cz.ID is empty, target is the signer.
-		// Other-revoke: cz.ID is the target key.
-		target := cz.Signer
-		var by *coz.B64
-		if len(cz.ID) > 0 {
-			target = cz.ID
-			signer := coz.B64(cz.Signer)
-			by = &signer
+		// [no-revoke-non-self] / [revoke-self-signed]: Revoke MUST be
+		// self-signed. If id is specified, it must match the signer.
+		if len(cz.ID) > 0 && !bytes.Equal(cz.ID, cz.Signer) {
+			return ErrMalformedPayload
 		}
-		if err := p.revokeKey(target, cz.Rvk, by); err != nil {
+		if err := p.revokeKey(cz.Signer, cz.Rvk, nil); err != nil {
 			return err
 		}
 

@@ -127,7 +127,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnknownKey"
+error = "MalformedPayload"
 
 # key/delete of last remaining key
 [[test]]
@@ -157,4 +157,4 @@ tx = [
 ]
 
 [test.expected]
-error = "UnknownKey"
+error = "UnknownSigner"

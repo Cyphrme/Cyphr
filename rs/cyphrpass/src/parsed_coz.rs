@@ -214,6 +214,12 @@ impl ParsedCoz {
             // Per protocol simplification, revoke requires pre like all other coz
             let pre = Self::extract_pre(pay)?;
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
+            // [no-revoke-non-self]: If id is present, it must match the signer.
+            if let Some(id) = Self::try_extract_id(pay) {
+                if id.to_b64() != _signer.to_b64() {
+                    return Err(Error::MalformedPayload);
+                }
+            }
             Ok(CozKind::SelfRevoke { pre, rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
