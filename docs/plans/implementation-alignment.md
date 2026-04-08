@@ -386,15 +386,20 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 
 ## Retrospective
 
-<!--
-  Filled in after execution is complete.
--->
-
 ### Process
+
+Execution of the overarching alignment plan underwent several vital pivots due to friction uncovered late in the pipeline. Rather than force adherence to the originally proposed models, we engaged in tight feedback loops shifting structural components (e.g., extracting MALT, enforcing proper list-of-lists mapping for atomic transactions). The rigor required to reach cross-language byte-for-byte consistency mandated adversarial testing—especially isolating test helper (`apply_transaction_test`) assumptions versus actual runtime behavior. The strategy to strictly follow declarative constraints ultimately governed our successful convergence.
 
 ### Outcomes
 
+- **Full MALT Architecture Integration:** Deprecated Cyphrpass MultiHasher in favor of the formal Merkle Append-Only Log Tree, closing a major architectural gap.
+- **Cross-Implementation Parity:** Rust and Go are precisely aligned on all state derivations: Pre-mutation rule checking, multi-algorithm Arrow generation, and List-of-Lists Commit topologies.
+- **Divergence Eradication:** Legacy data structures (such as `commit.state` terminology and implicit `hash_alg` closure shortcuts) have been entirely scrubbed. Both codebases correctly build TR and Arrow natively driven by transactional elements.
+
 ### Pipeline Improvements
+
+- **Testing Abstractions Must Echo Truth:** We discovered that our mock transaction wrappers were hardcoding single-algorithm footprints (e.g., `active_algs.first()`). Test fixtures and helpers must rigidly assemble payloads exactly as production systems do—specifically correctly executing `DeriveHashAlgs`—otherwise, multi-algorithm divergences remain completely invisible during CI runs.
+- **Atomic Commits Enable Refactoring:** Adopting a "commit what works, pause to discuss" strategy via the CORE Protocol helped successfully isolate Go refactors before porting them to Rust, effectively reducing cognitive load during technical debt clearing.
 
 ## References
 
