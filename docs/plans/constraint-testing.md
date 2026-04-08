@@ -2,7 +2,11 @@
 
 ## Goal
 
-Implement an automated intent-driven testing framework ensuring symmetric 100% enforcement of the 158 formal Cyphrpass constraints. Both positive transactional paths and negative adversarial cases must be programmatically verified identically across Rust and Go.
+Implement an automated intent-driven testing framework ensuring symmetric enforcement of the formal Cyphrpass constraints. During the audit of the ~158 protocol constraints, we identified that "meaningful testing" requires categorizing them by enforcement mechanism rather than writing 158 identical negative tests. Our goal is 100% coverage across these categories:
+
+1. **Active Rejections (Testable)**: Constraints where the code explicitly inspects a payload and drops it (e.g., `[data-action-no-pre]`). These must be verified with negative adversarial test cases.
+2. **Structural Invariants**: Constraints describing data structure physics (e.g., `[tr-computation]`). These are implicitly verified by our generic state computation golden fixtures—if the code diverges, the root hashes fail.
+3. **Out of Scope / Design Policy**: Level 5+ embedding logic, service-side policies, or non-behavioral architectural taxonomy.
 
 ## Constraints
 
