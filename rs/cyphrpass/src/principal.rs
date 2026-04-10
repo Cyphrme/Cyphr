@@ -1018,13 +1018,28 @@ impl Principal {
         self.sr = Some(sr.clone());
 
         // Validate arrow field matches independently computed Arrow.
-        // Arrow = MR(pre, fwd, TMR)
-        // TODO(Arrow Validation): Implement full arrow recomputation and
-        // comparison once Arrow is fully ported to Rust.
+        // Arrow = MR(pre, fwd_SR, TMR)
+        // Compare at the signer's specific algorithm, mirroring Go.
         let last_coz = cozies.last().ok_or(Error::EmptyCommit)?;
-        if let Some(_claimed_arrow) = last_coz.arrow() {
+        if let Some(claimed_arrow) = last_coz.arrow() {
             let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
-            let _tmr = tmr.ok_or(Error::EmptyCommit)?;
+            let tmr = tmr.ok_or(Error::EmptyCommit)?;
+
+            // pre is the PR *before* this commit. self.ps has not been updated
+            // yet (that happens at the end of this function), so it correctly
+            // holds the prior value.
+            let tx_alg = tx_algs[0];
+            let pre_bytes = self.ps.0.get_or_err(tx_alg)?;
+            let sr_bytes = sr.0.get_or_err(tx_alg)?;
+            let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
+
+            let computed_digest =
+                crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+
+            let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
+            if claimed_digest != computed_digest.as_slice() {
+                return Err(Error::CommitMismatch);
+            }
         }
 
         // Ensure per-algorithm MALTs exist for all active algorithms.
