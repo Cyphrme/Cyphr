@@ -341,17 +341,3 @@ func TestTaggedDigest_JSON(t *testing.T) {
 		t.Error("JSON round-trip produced different result")
 	}
 }
-
-// contains checks if s contains substr
-func contains(s, substr string) bool {
-	return len(substr) > 0 && len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
-}
-
-func containsImpl(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
