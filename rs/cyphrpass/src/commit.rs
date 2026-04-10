@@ -120,7 +120,7 @@ impl Commit {
 /// A commit that is being built but not yet finalized.
 /// A commit being built.
 /// Accumulates cozies before finalization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PendingCommit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
     pub(crate) commit_tx: Option<crate::transaction::CommitTransaction>,
@@ -129,10 +129,7 @@ pub struct PendingCommit {
 impl PendingCommit {
     /// Create a new empty pending commit.
     pub fn new() -> Self {
-        Self {
-            transactions: Vec::new(),
-            commit_tx: None,
-        }
+        Self::default()
     }
 
     /// Add a grouped transaction to the pending commit.

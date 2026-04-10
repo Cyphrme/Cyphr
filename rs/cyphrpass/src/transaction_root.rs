@@ -4,34 +4,16 @@ use crate::state::{HashAlg, TaggedCzd};
 use std::collections::BTreeMap;
 
 /// The Transaction Mutation Root (TMR)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TransactionMutationRoot(pub MultihashDigest);
 
-impl Default for TransactionMutationRoot {
-    fn default() -> Self {
-        Self(MultihashDigest::default())
-    }
-}
-
 /// The Transaction Commit Root (TCR)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TransactionCommitRoot(pub MultihashDigest);
 
-impl Default for TransactionCommitRoot {
-    fn default() -> Self {
-        Self(MultihashDigest::default())
-    }
-}
-
 /// The Transaction Root (TR)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct TransactionRoot(pub MultihashDigest);
-
-impl Default for TransactionRoot {
-    fn default() -> Self {
-        Self(MultihashDigest::default())
-    }
-}
 
 impl TransactionRoot {
     /// Returns the raw sub-digest matching the algorithm if it exists.

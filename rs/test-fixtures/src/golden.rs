@@ -249,7 +249,12 @@ impl<'a> Generator<'a> {
             let tmb = pool_key.compute_tmb()?;
 
             // Pre-revoke the key (moves from active to revoked set)
-            principal.pre_revoke_key(&tmb, rvk_time);
+            principal
+                .pre_revoke_key(&tmb, rvk_time)
+                .map_err(|e| Error::Generation {
+                    name: _test_name.to_string(),
+                    reason: format!("pre_revoke_key failed: {}", e),
+                })?;
         }
         Ok(())
     }
@@ -1370,7 +1375,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Build expected assertions from principal state and intent overrides.
-
+    #[allow(clippy::too_many_arguments)]
     fn apply_and_finalize(
         &self,
         principal: &mut cyphrpass::Principal,

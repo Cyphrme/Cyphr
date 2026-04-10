@@ -124,26 +124,28 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     let pay_value: Value = serde_json::to_value(&pay_map)?;
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+    let pay_vec = serde_json::to_vec(&pay_value)?;
     let (sig_bytes, cad) = coz::sign_json(
         &pay_vec,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
     )
-    .unwrap();
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).unwrap();
+    .ok_or_else(|| crate::Error::Signing("sign_json failed".into()))?;
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
+        .ok_or_else(|| crate::Error::Signing("czd_for_alg failed".into()))?;
     let mut scope = principal.begin_commit();
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key.clone()))?;
     let tmb = coz::Thumbprint::from_bytes(
-        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
+        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
+            .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
     scope.finalize_with_arrow(
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
         &tmb,
-        now as i64,
+        now,
     )?;
 
     // Store updated state
@@ -222,26 +224,28 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     let pay_value: Value = serde_json::to_value(&pay_map)?;
 
     // Use CommitScope to atomically compute CS, inject commit field, sign, and finalize.
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+    let pay_vec = serde_json::to_vec(&pay_value)?;
     let (sig_bytes, cad) = coz::sign_json(
         &pay_vec,
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
     )
-    .unwrap();
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg).unwrap();
+    .ok_or_else(|| crate::Error::Signing("sign_json failed".into()))?;
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer_stored.alg)
+        .ok_or_else(|| crate::Error::Signing("czd_for_alg failed".into()))?;
     let mut scope = principal.begin_commit();
     scope.verify_and_apply(&pay_vec, &sig_bytes, czd, None)?;
     let tmb = coz::Thumbprint::from_bytes(
-        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
+        coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
+            .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
     scope.finalize_with_arrow(
         &signer_stored.alg,
         &signer_stored.prv_key,
         &signer_stored.pub_key,
         &tmb,
-        now as i64,
+        now,
     )?;
 
     // Store updated state

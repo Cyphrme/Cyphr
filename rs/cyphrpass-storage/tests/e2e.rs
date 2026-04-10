@@ -481,7 +481,9 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
                     panic!("{}: setup.revoke_key '{}' not found", test.name, key_name)
                 });
             let tmb = pool_key.compute_tmb().expect("failed to compute tmb");
-            principal.pre_revoke_key(&tmb, rvk_time);
+            principal
+                .pre_revoke_key(&tmb, rvk_time)
+                .expect("pre_revoke_key failed");
         }
     }
 

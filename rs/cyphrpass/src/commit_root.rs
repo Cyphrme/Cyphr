@@ -77,16 +77,14 @@ pub fn commit_root_from_trees(trees: &CommitTrees) -> crate::error::Result<Commi
 pub fn compute_cr(trs: &[&MultihashDigest], algs: &[HashAlg]) -> crate::error::Result<CommitRoot> {
     let mut trees = CommitTrees::new();
     for &alg in algs {
-        trees.insert(alg, Log::new(CyphrpassHasher::new(alg)));
-    }
-
-    for tr in trs {
-        for &alg in algs {
+        let mut log = Log::new(CyphrpassHasher::new(alg));
+        for tr in trs {
             // [conversion]: if TR lacks this alg, get_or_err returns the
             // first available variant's bytes.
             let bytes = tr.get_or_err(alg)?;
-            trees.get_mut(&alg).unwrap().append(bytes);
+            log.append(bytes);
         }
+        trees.insert(alg, log);
     }
 
     commit_root_from_trees(&trees)

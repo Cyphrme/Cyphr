@@ -494,10 +494,10 @@ impl Principal {
     /// This moves the key from active to revoked set WITHOUT recomputing state.
     /// Used for setting up error condition tests where we need a revoked key.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the key is not found in the active set.
-    pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) {
+    /// Returns `UnknownKey` if the key is not found in the active set.
+    pub fn pre_revoke_key(&mut self, tmb: &Thumbprint, rvk: i64) -> Result<()> {
         use crate::key::Revocation;
 
         let tmb_b64 = tmb.to_b64();
@@ -505,9 +505,10 @@ impl Principal {
             .auth
             .keys
             .shift_remove(&tmb_b64)
-            .expect("pre_revoke_key: key not found in active set");
+            .ok_or(Error::UnknownKey)?;
         key.revocation = Some(Revocation { rvk, by: None });
         self.auth.revoked.insert(tmb_b64, key);
+        Ok(())
     }
 
     /// Get all cozies (across all commits).
@@ -1016,33 +1017,14 @@ impl Principal {
         let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &self.active_algs)?;
         self.sr = Some(sr.clone());
 
-        // Validate arrow field matches independently computed Arrow
+        // Validate arrow field matches independently computed Arrow.
         // Arrow = MR(pre, fwd, TMR)
-        if let Some(_claimed_arrow) = cozies.last().unwrap().arrow() {
-            // Recompute TMR from transactions only (excluding terminal coz) directly if needed or use the one we have
-            // Actually, pending.compute_roots() already did this logic!
+        // TODO(Arrow Validation): Implement full arrow recomputation and
+        // comparison once Arrow is fully ported to Rust.
+        let last_coz = cozies.last().ok_or(Error::EmptyCommit)?;
+        if let Some(_claimed_arrow) = last_coz.arrow() {
             let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
             let _tmr = tmr.ok_or(Error::EmptyCommit)?;
-
-            // Get pre from the last transaction
-            let terminal_coz = cozies.last().unwrap();
-            let _pre = match &terminal_coz.kind {
-                crate::parsed_coz::CozKind::CommitCreate { arrow: _ } => {
-                    // pre is extracted from the raw payload, or if no explicit pre, use PR...
-                    // Wait, `commit/create` must have pre... but `CommitCreate` doesn't have a `pre` field in enum!
-                    // Wait, Arrow validation: comparing `claimed_arrow` variants against computed
-                    // The easiest and most correct way right now given the refactor is to test if variants match.
-                    // Wait, I should construct Arrow or just pull from `claimed_arrow` vs my own Arrow.
-                    // Instead of full Arrow generation inside `finalize_commit` here if it's too complex, let's look at Go `ComputeArrow`.
-                    // In Go, `Arrow = ComputeArrow(pre, sr, tmr)`.
-                    ()
-                },
-                _ => (), // Fallback
-            };
-
-            // Temporary structural hold for now until Arrow recomputation is fully ported to Rust:
-            // Match to skip for now to see if compilation passes, then implement.
-            // TODO(Arrow Validation): implement MR(pre, fwd, TMR)
         }
 
         // Ensure per-algorithm MALTs exist for all active algorithms.
@@ -1050,6 +1032,11 @@ impl Principal {
         // Clone active_algs to avoid borrow conflict with self.commit_trees.
         let algs = self.active_algs.clone();
         for &alg in &algs {
+            // Note: clippy::map_entry suggests using the Entry API here, but that
+            // creates a borrow conflict: entry() borrows commit_trees mutably while
+            // self.auth.commits is needed immutably to build the log. We suppress
+            // the lint because the borrow checker forces this two-step pattern.
+            #[allow(clippy::map_entry)]
             if !self.commit_trees.contains_key(&alg) {
                 // New algorithm — create MALT and replay prior commits.
                 // [conversion]: tr.get_or_err(alg) returns the native variant
@@ -1071,7 +1058,7 @@ impl Principal {
         // stale algorithm MALTs are retained but excluded.
         let mut active_trees = crate::commit_root::CommitTrees::new();
         for &alg in &algs {
-            let log = self.commit_trees.get_mut(&alg).expect("just ensured");
+            let log = self.commit_trees.get_mut(&alg).ok_or(Error::EmptyCommit)?;
             let bytes = tr.0.get_or_err(alg)?;
             log.append(bytes);
             active_trees.insert(alg, log.clone());
@@ -1087,7 +1074,8 @@ impl Principal {
 
         self.auth.commits.push(commit);
 
-        Ok(self.auth.commits.last().expect("just pushed"))
+        // The borrow is safe: we just pushed, so last() is guaranteed Some.
+        self.auth.commits.last().ok_or(Error::EmptyCommit)
     }
 
     /// Verify signature and apply a coz as an atomic commit.
@@ -1204,12 +1192,12 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        // Safe to proceed - remove and revoke (key existence verified above)
+        // Safe to proceed - remove and revoke.
         let mut key = self
             .auth
             .keys
             .shift_remove(&tmb_b64)
-            .expect("key existence verified by contains_key check");
+            .ok_or(Error::UnknownKey)?;
         key.revocation = Some(Revocation { rvk, by });
 
         // Move to revoked set for historical verification
