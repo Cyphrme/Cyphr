@@ -136,7 +136,7 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
 4. **Phase 2c: Downstream Verification (Rust)** — Verify the changes from 2b
    - [x] **Unit Tests**: Verify `cargo test --workspace` passes (except golden data)
-   - [x] **CLI Verification**: Manual check of `cyphrpass-cli key` commands → **BUG FOUND** (Finding 1)
+   - [x] **CLI Verification**: Manual check of `cyphr-cli key` commands → **BUG FOUND** (Finding 1)
    - [x] **E2E Verification**: Manual check of `e2e.rs` logic → **GAP FOUND** (Finding 3)
 
 5. **Phase 2d: Core Integration (Go)** — Wire new types
@@ -153,8 +153,8 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
 6. **Phase 3: Cleanup & Verification** — Comment/doc updates, compilation checks
    - [x] Update all doc comments with new terminology (TS → Commit ID, AS formulas)
-   - [x] Verify Rust unit tests pass (`cargo test -p cyphrpass --lib` — 64/64)
-   - [x] Verify Go unit tests pass (`go test ./cyphrpass/...` — 26/26)
+   - [x] Verify Rust unit tests pass (`cargo test -p cyphr --lib` — 64/64)
+   - [x] Verify Go unit tests pass (`go test ./cyphr/...` — 26/26)
    - [x] Verify both `cargo build --workspace` and `go build ./...` compile cleanly
    - [x] Verify non-golden unit tests pass in both languages
    - [x] Stale reference sweep: zero `TransactionState`/`ComputeTS`/`.TS()` hits
@@ -223,7 +223,7 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
    _Sketch: `.sketches/2026-02-19-commit-api-redesign.md`_
    - [x] **Rust**: Introduce `CommitScope<'a>` typestate pattern; remove auto-creation semantic from `verify_and_apply_transaction`
    - [x] **Go**: Introduce `CommitBatch` (Tx pattern) with `BeginCommit()`, `Apply()`, `Finalize()`
-   - [x] **Rust**: Update `cyphrpass-storage` import loop (`replay_commits`) to use CommitScope with deferred action handling
+   - [x] **Rust**: Update `cyphr-storage` import loop (`replay_commits`) to use CommitScope with deferred action handling
    - [x] **Go**: Update `storage/import.go` replay to use `ApplyTransaction` (auto-finalizing single-tx commits)
    - [x] **Rust**: Refactor test consumers (golden runners, CLI, internal tests) to use new commit API
    - [x] **Go**: Refactor test consumers (`e2e_runner.go`, `principal_test.go`) to use new commit API
@@ -231,8 +231,8 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
 ## Verification
 
-- [x] `cargo test -p cyphrpass --lib` passes (unit tests, excludes golden integration tests) — 64 passed
-- [x] `go test ./cyphrpass/...` passes (unit tests, package-level)
+- [x] `cargo test -p cyphr --lib` passes (unit tests, excludes golden integration tests) — 64 passed
+- [x] `go test ./cyphr/...` passes (unit tests, package-level)
 - [x] `go test ./storage/...` passes (storage tests)
 - [x] Both `cargo build` and `go build ./...` compile cleanly
 - [x] grep for stale `TransactionState` references returns zero hits (excluding golden fixtures) — 2 hits are rename-history doc comments only
@@ -242,19 +242,19 @@ Cross-referenced against `docs/models/principal-state-model.md` §1.1:
 
 ```bash
 # Rust — unit tests only (excludes golden fixtures)
-cargo test -p cyphrpass --lib
+cargo test -p cyphr --lib
 
 # Rust — full compilation check
-cargo build -p cyphrpass
+cargo build -p cyphr
 
 # Go — package-level tests
-go test ./cyphrpass/... ./storage/... ./testfixtures/...
+go test ./cyphr/... ./storage/... ./testfixtures/...
 
 # Go — full compilation
 go build ./...
 
 # Stale terminology check
-rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob '!*golden*'
+rg 'TransactionState' rs/cyphr/src/ go/cyphr/ --glob '!*_test.go' --glob '!*golden*'
 ```
 
 ## Technical Debt
@@ -278,7 +278,7 @@ rg 'TransactionState' rs/cyphrpass/src/ go/cyphrpass/ --glob '!*_test.go' --glob
 
 ## Deviation Log
 
-- **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphrpass-storage`, `cyphrpass-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
+- **2026-02-17**: Scope creep in Phase 2. While performing Rust integration (Phase 2a), also updated downstream consumers in `cyphr-storage`, `cyphr-cli`, `test-fixtures`, and `e2e.rs`. This should have been Phase 3 work. Plan updated to include "Phase 2b" to retrospectively capture this work.
 - **2026-02-19**: Phase ordering fix. TOML migration (was 4f) must precede golden regeneration (was 4d) because the generator can't parse old-format intent files after type restructuring. Reordered: 4d=TOML migration, 4e=golden regen, 4f=consumer updates.
 - **2026-02-19**: Phase 4h (Verification) revealed a pre-existing parity gap: test runners failed to finalize commit boundaries, causing state divergence. Investigation (.sketches/2026-02-19-commit-api-redesign.md) revealed a structural flaw in the `Principal` API where commits were implicitly opened but never auto-finalized. Added Phase 5 to redesign the Commit API to use language-idiomatic enforcement (Rust Typestate, Go database/sql Tx pattern) instead of trying to patch the test runners.
 - **2026-02-19**: Phase 5 Rust implementation used `CommitScope<'a>` instead of `PendingCommit<'a>` (plan name) to avoid collision with existing `PendingCommit` struct. Added `verify_and_apply()` and `principal_hash_alg()` to `CommitScope` — not in plan, but required because the scope's `&mut Principal` borrow prevents calling principal methods directly from storage import code. Added deferred action handling for `replay_commits` — actions in commit bundles can't be processed inside a `CommitScope`. Removed dead error variants `CommitInProgress` and `NoPendingCommit`.

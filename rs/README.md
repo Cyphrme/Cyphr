@@ -1,12 +1,12 @@
-# Cyphrpass Rust Implementation
+# Cyphr Rust Implementation
 
-Rust implementation of the Cyphrpass self-sovereign identity protocol.
+Rust implementation of the Cyphr self-sovereign identity protocol.
 
 ## Installation
 
 ```toml
 [dependencies]
-cyphrpass = { path = "path/to/cyphrpass/rs" }
+cyphr = { path = "path/to/cyphr/rs" }
 ```
 
 ## Quick Start
@@ -14,10 +14,10 @@ cyphrpass = { path = "path/to/cyphrpass/rs" }
 ### Create a Principal
 
 ```rust
-use cyphrpass::{Principal, Key};
+use cyphr::{Principal, Key};
 use coz::Algorithm;
 
-fn main() -> cyphrpass::Result<()> {
+fn main() -> cyphr::Result<()> {
     // Generate a key
     let key = Key::generate(Algorithm::ES256)?;
 
@@ -33,7 +33,7 @@ fn main() -> cyphrpass::Result<()> {
 ### Verify and Apply Transactions
 
 ```rust
-use cyphrpass::{Principal, verify_transaction};
+use cyphr::{Principal, verify_transaction};
 
 // Verify signature and parse transaction
 let vtx = verify_transaction(
@@ -51,7 +51,7 @@ principal.apply_verified(vtx)?;
 ### Record Actions (Level 4)
 
 ```rust
-use cyphrpass::Action;
+use cyphr::Action;
 
 let action = Action {
     signer: signer_tmb.clone(),
@@ -104,7 +104,7 @@ principal.record_action(action)?;
 ## Error Handling
 
 ```rust
-use cyphrpass::Error;
+use cyphr::Error;
 
 match principal.apply_verified(vtx) {
     Ok(_) => { /* success */ }

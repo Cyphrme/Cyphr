@@ -13,7 +13,7 @@
 
 ## Domain
 
-**Problem Domain:** Cyphrpass recovery mechanisms — self-recovery, external
+**Problem Domain:** Cyphr recovery mechanisms — self-recovery, external
 recovery (social recovery, third-party services), account freeze/unfreeze,
 and retroactivity constraints. Recovery is the set of mechanisms for regaining
 control of a principal when keys are lost, compromised, or inaccessible.
@@ -21,15 +21,15 @@ control of a principal when keys are lost, compromised, or inaccessible.
 **Target System:** `SPEC.md` §18 (Recovery).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/models/principal-state-model.md)
+[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
 
 **Criticality Tier:** High — recovery errors can permanently lock users out of
 their identities or allow unauthorized parties to take over accounts.
 
 **Cross-references:**
-[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/principal-lifecycle.md)
+[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/principal-lifecycle.md)
 — lifecycle states affected by recovery.
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/transactions.md)
+[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
 — key lifecycle transactions used in recovery.
 
 ## Constraints
@@ -86,7 +86,7 @@ adding via `key/create`.
 #### Recovery Agents
 
 **[recovery-agent-registration]**: Recovery agents MUST be registered via
-`cyphrpass/recovery/create` transaction, which includes `agent` (PR, tmb, or
+`cyphr/recovery/create` transaction, which includes `agent` (PR, tmb, or
 array of contact PRs) and `threshold` (M-of-N, default 1).
 `VERIFIED: agent-check`
 
@@ -115,7 +115,7 @@ all services that observe the freeze state. Freezes halt all key mutations
 `VERIFIED: agent-check`
 
 **[self-freeze]**: A principal MAY initiate a freeze by signing
-`cyphrpass/freeze/create`. Self-freeze MAY be unfrozen by any active key.
+`cyphr/freeze/create`. Self-freeze MAY be unfrozen by any active key.
 `VERIFIED: agent-check`
 
 **[external-freeze]**: A designated recovery authority MAY initiate a freeze
@@ -124,20 +124,20 @@ recovery authority to thaw (or the principal after a configured timeout).
 `VERIFIED: agent-check`
 
 **[external-freeze-delegation]**: External freeze authority MUST be explicitly
-delegated via `cyphrpass/recovery/create`. Without delegation, an external party
+delegated via `cyphr/recovery/create`. Without delegation, an external party
 MUST NOT be able to freeze a principal.
 `VERIFIED: agent-check`
 
 #### Retroactivity
 
-**[no-retroactive-undo]**: Cyphrpass does not support retroactivity (undoing
+**[no-retroactive-undo]**: Cyphr does not support retroactivity (undoing
 past actions to a given timestamp). Principals MUST mutate their state forward
 using `create` and `delete` verbs to reach their targeted state. Past actions
 MUST NOT be undone.
 `VERIFIED: agent-check`
 
 **[revoke-forward-only]**: Even though `key/revoke` can be postdated to the
-time of an attack via `rvk`, Cyphrpass MUST interpret transactions based on
+time of an attack via `rvk`, Cyphr MUST interpret transactions based on
 current `now`, not `rvk`. `rvk` is a declaration of compromise, not a request
 for history rewriting.
 `VERIFIED: agent-check`
@@ -168,7 +168,7 @@ to Frozen. All mutations are rejected until unfreeze.
 - **POST**: `IsFrozen` = true.
   `VERIFIED: agent-check`
 
-**[unfreeze-transition]**: `cyphrpass/freeze/delete` removes the freeze.
+**[unfreeze-transition]**: `cyphr/freeze/delete` removes the freeze.
 
 - **PRE**: Principal is Frozen.
 - **POST**: `IsFrozen` = false. Principal returns to Active (if keys meet
@@ -183,7 +183,7 @@ legitimate actions) MUST be prevented by the forward-only mutation model.
 `VERIFIED: agent-check`
 
 **[no-unregistered-recovery]**: A party not registered via
-`cyphrpass/recovery/create` MUST NOT be able to sign recovery transactions.
+`cyphr/recovery/create` MUST NOT be able to sign recovery transactions.
 Attempts MUST fail with `RECOVERY_NOT_DESIGNATED`.
 `VERIFIED: agent-check`
 

@@ -1,8 +1,8 @@
-// Package storage provides a backend-agnostic storage API for Cyphrpass.
+// Package storage provides a backend-agnostic storage API for Cyphr.
 //
 // This package follows the "Dumb Storage, Smart Principal" design principle:
 // storage stores and retrieves bytes, while all semantic operations (verification,
-// state computation, key validity) belong in the cyphrpass.Principal type.
+// state computation, key validity) belong in the cyphr.Principal type.
 //
 // # Core Types
 //

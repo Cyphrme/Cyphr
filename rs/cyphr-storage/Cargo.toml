@@ -1,0 +1,21 @@
+[package]
+categories             = ["authentication", "cryptography", "database"]
+description            = "Storage backends for Cyphr identity protocol"
+edition.workspace      = true
+keywords               = ["identity", "storage", "cryptography", "self-sovereign"]
+name                   = "cyphr-storage"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+coz        = { workspace = true }
+cyphr      = { path = "../cyphr" }
+serde      = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+test-fixtures = { path = "../test-fixtures" }

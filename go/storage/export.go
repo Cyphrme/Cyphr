@@ -1,6 +1,6 @@
 package storage
 
-import "github.com/cyphrme/cyphrpass/cyphrpass"
+import "github.com/cyphrme/cyphr/cyphr"
 
 // ExportEntries exports all entries from a Principal for storage.
 //
@@ -21,7 +21,7 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 //	for _, entry := range entries {
 //	    store.AppendEntry(principal.PG(), entry)
 //	}
-func ExportEntries(principal *cyphrpass.Principal) []*Entry {
+func ExportEntries(principal *cyphr.Principal) []*Entry {
 	var entries []*Entry
 
 	// Export cozies per commit, preserving commit boundaries.
@@ -63,7 +63,7 @@ func ExportEntries(principal *cyphrpass.Principal) []*Entry {
 //
 // This is a convenience function that combines ExportEntries and storage.
 // Returns the number of entries persisted.
-func PersistEntries(store Store, principal *cyphrpass.Principal) (int, error) {
+func PersistEntries(store Store, principal *cyphr.Principal) (int, error) {
 	entries := ExportEntries(principal)
 	for _, entry := range entries {
 		if err := store.AppendEntry(principal.PG(), entry); err != nil {

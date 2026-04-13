@@ -86,13 +86,13 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
    - [x] Update `export_commits()`: collect new keys at commit level into `keys[]`, stop embedding `key` per-tx
    - [x] Update `import.rs`: `replay_commits()` reads from commit-level `keys[]` via iterator
    - [x] Update `test-fixtures/golden.rs`: `coz_to_commit_entry()` uses commit-level `KeyEntry`
-   - [x] Run `cargo test -p cyphrpass-storage` — 16/16 unit tests pass
+   - [x] Run `cargo test -p cyphr-storage` — 16/16 unit tests pass
 
 2. **Phase 2: Generator Refactor** — Use `CommitScope` for coz construction
    - [ ] Replace `build_pay_json()` + `sign_pay()` with `CommitScope::finalize_with_commit()` in generator
    - [ ] Implement clone-modify pattern for override/error test generation
    - [ ] Regenerate golden fixtures: `cargo run -p fixture-gen`
-   - [ ] Run `cargo test -p cyphrpass` — all unit tests pass
+   - [ ] Run `cargo test -p cyphr` — all unit tests pass
 
 3. **Phase 3: Consumer Updates** — Go + Rust consumers parse aligned golden JSON
    - [x] Add `Keys []GoldenKey` to `GoldenCommit` struct (Go)
@@ -103,7 +103,7 @@ and refactor the generator to use `CommitScope` (eliminating the parallel
 
 ## Verification
 
-- [x] `cargo test -p cyphrpass-storage` — storage round-trip tests pass
+- [x] `cargo test -p cyphr-storage` — storage round-trip tests pass
 - [x] `cargo run -p fixture-gen` — fixture generation succeeds (21 tests from 5 intents)
 - [x] `cargo test` — full Rust workspace passes (64 unit + 7 golden)
 - [ ] `go test ./...` — full Go test suite passes (blocked on Go cross-alg + missing commit)

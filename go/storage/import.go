@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphrpass/cyphrpass"
+	"github.com/cyphrme/cyphr/cyphr"
 )
 
 // Genesis represents how a principal was created.
@@ -64,19 +64,19 @@ func (ExplicitGenesis) isGenesis() {}
 //	genesis := storage.ImplicitGenesis{Key: myKey}
 //	entries, _ := store.GetEntries(pr)
 //	principal, err := storage.LoadPrincipal(genesis, entries)
-func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, error) {
+func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphr.Principal, error) {
 	// Create principal from genesis
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	var err error
 
 	switch g := genesis.(type) {
 	case ImplicitGenesis:
-		principal, err = cyphrpass.Implicit(g.Key)
+		principal, err = cyphr.Implicit(g.Key)
 	case ExplicitGenesis:
 		if len(g.Keys) == 0 {
 			return nil, ErrNoGenesisKeys
 		}
-		principal, err = cyphrpass.Explicit(g.Keys)
+		principal, err = cyphr.Explicit(g.Keys)
 	default:
 		return nil, fmt.Errorf("unknown genesis type: %T", genesis)
 	}
@@ -96,8 +96,8 @@ func LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, err
 // ReplayEntries replays entries onto a principal.
 // This is exported for use by testfixtures package for setup-aware loading.
 // It processes entries sequentially, properly batching cozies into atomic commits.
-func ReplayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
-	var batch *cyphrpass.CommitBatch
+func ReplayEntries(principal *cyphr.Principal, entries []*Entry) error {
+	var batch *cyphr.CommitBatch
 
 	for i, entry := range entries {
 		// Determine if coz or action
@@ -143,7 +143,7 @@ func ReplayEntries(principal *cyphrpass.Principal, entries []*Entry) error {
 }
 
 // replayTransactionToBatch replays a coz entry into an active commit batch.
-func replayTransactionToBatch(batch *cyphrpass.CommitBatch, entry *Entry, index int) error {
+func replayTransactionToBatch(batch *cyphr.CommitBatch, entry *Entry, index int) error {
 	// Extract pay and sig bytes
 	payBytes, err := entry.PayBytes()
 	if err != nil {
@@ -188,7 +188,7 @@ func replayTransactionToBatch(batch *cyphrpass.CommitBatch, entry *Entry, index 
 }
 
 // replayAction replays an action entry.
-func replayAction(principal *cyphrpass.Principal, entry *Entry, index int) error {
+func replayAction(principal *cyphr.Principal, entry *Entry, index int) error {
 	// Extract pay and sig bytes
 	payBytes, err := entry.PayBytes()
 	if err != nil {
@@ -207,7 +207,7 @@ func replayAction(principal *cyphrpass.Principal, entry *Entry, index int) error
 	}
 
 	// Parse pay to get action fields
-	var pay cyphrpass.CozPay
+	var pay cyphr.CozPay
 	if err := json.Unmarshal(payBytes, &pay); err != nil {
 		return fmt.Errorf("entry %d: invalid pay: %w", index, err)
 	}
@@ -236,7 +236,7 @@ func replayAction(principal *cyphrpass.Principal, entry *Entry, index int) error
 	}
 
 	// Create and record action
-	action, err := cyphrpass.ParseAction(&pay, cz.Czd)
+	action, err := cyphr.ParseAction(&pay, cz.Czd)
 	if err != nil {
 		return fmt.Errorf("entry %d: invalid action: %w", index, err)
 	}

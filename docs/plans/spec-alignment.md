@@ -146,7 +146,7 @@ changes from stable sections §1-11 only.
      - [x] Rust: Wrap `pr` field in `Option<PrincipalRoot>`
      - [x] Rust: Only set at Level 3+ in genesis and import flows
      - [x] Rust: Update accessor to return `Option<&PrincipalRoot>`
-     - [x] Rust: Update 13 files across cyphrpass, cyphrpass-storage, cyphrpass-cli, test-fixtures
+     - [x] Rust: Update 13 files across cyphr, cyphr-storage, cyphr-cli, test-fixtures
      - [x] Both: `go test ./...` and `cargo test --workspace` unit tests pass
    - [x] **WS-D: Genesis Finality** _(Go 2026-03-11, Rust 2026-03-12)_
      - [x] Go: Genesis `id` assertion uses PS (was AS)

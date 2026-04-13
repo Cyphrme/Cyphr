@@ -126,7 +126,7 @@ transferred back to the server on every request.
 }
 ```
 
-For passwordless authentication with Coz, see Cyphrpass.
+For passwordless authentication with Coz, see Cyphr.
 
 # Test Keys
 
@@ -160,7 +160,7 @@ For passwordless authentication with Coz, see Cyphrpass.
 
 ```json5
 {
-  tag: "Cyphrpass Server Key A",
+  tag: "Cyphr Server Key A",
   alg: "ES256",
   now: 1623132000,
   tmb: "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",

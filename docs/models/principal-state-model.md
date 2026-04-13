@@ -1,7 +1,7 @@
-# MODEL: Cyphrpass Principal State
+# MODEL: Cyphr Principal State
 
 <!--
-  Formal domain model of the Cyphrpass Principal, produced by the /model
+  Formal domain model of the Cyphr Principal, produced by the /model
   workflow in Apply mode against SPEC.md (Draft v0.1).
 
   See: .agent/workflows/model.md for the full protocol specification.
@@ -12,7 +12,7 @@
 
 ## Domain Classification
 
-**Problem Statement:** Formalize the Cyphrpass principal's state space,
+**Problem Statement:** Formalize the Cyphr principal's state space,
 transition system, and multi-party protocols to expose gaps, ambiguities, and
 unstated invariants in `SPEC.md` (Draft v0.1, 3182 lines).
 

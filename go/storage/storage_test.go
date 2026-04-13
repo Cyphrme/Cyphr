@@ -3,7 +3,7 @@ package storage_test
 import (
 	"testing"
 
-	"github.com/cyphrme/cyphrpass/storage"
+	"github.com/cyphrme/cyphr/storage"
 )
 
 // TestNewEntry verifies Entry creation from raw bytes.

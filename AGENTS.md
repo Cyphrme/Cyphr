@@ -1,4 +1,4 @@
-# Cyphrpass Agent Configuration
+# Cyphr Agent Configuration
 
 ## Predicate System
 
@@ -18,7 +18,7 @@ This project uses [predicate](https://github.com/nrdxp/predicate) for agent conf
 
 ## Project Overview
 
-**Cyphrpass** is a self-sovereign identity protocol built on cryptographic state trees. It replaces passwords with public key cryptography, enabling:
+**Cyphr** is a self-sovereign identity protocol built on cryptographic state trees. It replaces passwords with public key cryptography, enabling:
 
 - Secure multi-device authentication
 - Key rotation and revocation
@@ -53,7 +53,7 @@ cargo build
 cargo test
 
 # Run specific crate tests
-cargo test -p cyphrpass-storage
+cargo test -p cyphr-storage
 ```
 
 ### Test Fixtures
@@ -78,19 +78,19 @@ cargo run -p fixture-gen
 ## Architecture
 
 ```
-Cyphrpass/
+Cyphr/
 ├── SPEC.md                 # Protocol specification (source of truth)
 ├── docs/                   # Project documentation
 │   ├── models/             # Formal domain models
 │   └── plans/              # Durable implementation plans
 ├── go/                     # Go implementation
-│   ├── cyphrpass/          # Core Principal logic
+│   ├── cyphr/              # Core Principal logic
 │   ├── storage/            # Storage backends
 │   └── testfixtures/       # Test fixture loading
 ├── rs/                     # Rust implementation
-│   ├── cyphrpass/          # Core crate (Principal, state, multihash)
-│   ├── cyphrpass-storage/  # Storage crate (FileStore, export/import)
-│   ├── cyphrpass-cli/      # CLI binary
+│   ├── cyphr/              # Core crate (Principal, state, multihash)
+│   ├── cyphr-storage/      # Storage crate (FileStore, export/import)
+│   ├── cyphr-cli/          # CLI binary
 │   ├── test-fixtures/      # Golden fixture definitions
 │   └── fixture-gen/        # Fixture generation binary
 └── tests/                  # Language-agnostic test vectors
@@ -103,7 +103,7 @@ Key abstractions:
 - **Principal** — Identity container (PR + state tree)
 - **Transaction** — Signed state mutation (key/create, key/revoke, etc.)
 - **Commit** — Atomic bundle of transactions with finality marker
-- **State types** — `AuthState = MR(KS, RS?)`, `CommitState = MR(AS, CommitID)`, `PrincipalState = MR(CS, DS?)` — the hierarchical Merkle tree that derives the observable PS
+- **State types** — `AuthRoot = MR(KR, RR?)`, `StateRoot = MR(AR, DR?, embedding?)` — the hierarchical Merkle tree that derives the observable `PR`
 
 ---
 

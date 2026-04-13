@@ -13,7 +13,7 @@
 
 ## Domain
 
-**Problem Domain:** Cyphrpass transaction processing — the commit chain, genesis,
+**Problem Domain:** Cyphr transaction processing — the commit chain, genesis,
 key lifecycle operations, data actions, and the `typ` action grammar that
 governs intent declaration. This document covers what goes into a commit and
 what happens when it is processed.
@@ -22,13 +22,13 @@ what happens when it is processed.
 (Genesis), §6 (Key), §7 (`typ` Action Grammar).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/models/principal-state-model.md)
+[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
 
 **Criticality Tier:** High — transaction processing errors compromise identity
 integrity and chain validity.
 
 **Cross-references:**
-[`state-tree.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/state-tree.md)
+[`state-tree.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/state-tree.md)
 — state computation rules that transactions produce.
 
 ## Constraints
@@ -63,9 +63,9 @@ TYPE Rvk            = Integer                              -- 0 < rvk < 2^53 - 1
 
 #### Coz Required Fields
 
-**[coz-required-fields]**: All Cyphrpass cozies MUST contain the fields `alg`,
+**[coz-required-fields]**: All Cyphr cozies MUST contain the fields `alg`,
 `tmb`, `now`, and `typ` in `pay`. Cozies missing any of these fields MUST be
-rejected. (Coz itself makes all fields optional; Cyphrpass constrains this.)
+rejected. (Coz itself makes all fields optional; Cyphr constrains this.)
 `VERIFIED: agent-check`
 
 **[transaction-pre-required]**: Transaction cozies (those that mutate AT and
@@ -153,7 +153,7 @@ directly from its cozies.
 #### Commit Finality
 
 **[commit-finality-arrow]**: A commit is finalized by a commit transaction coz
-(`typ: "cyphr.me/cyphrpass/commit/create"`) containing the `arrow` field. The
+(`typ: "cyphr.me/cyphr/commit/create"`) containing the `arrow` field. The
 `arrow` field value MUST equal `MR(pre, fwd, TMR)`, where:
 
 - `pre` is the prior PR (the state being mutated)
@@ -345,11 +345,11 @@ explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 #### Nonce Transactions
 
 **[nonce-path]**: Nonce `typ` MUST specify the insertion path in the state tree.
-The path grammar is: `cyphrpass/<tree-path>/nonce/<verb>`. Examples:
+The path grammar is: `cyphr/<tree-path>/nonce/<verb>`. Examples:
 
-- `cyphrpass/nonce/create` — Principal root level
-- `cyphrpass/AT/nonce/create` — Auth Tree root
-- `cyphrpass/AT/KT/nonce/create` — Key Tree root
+- `cyphr/nonce/create` — Principal root level
+- `cyphr/AT/nonce/create` — Auth Tree root
+- `cyphr/AT/KT/nonce/create` — Key Tree root
   `VERIFIED: agent-check`
 
 ### Forbidden States

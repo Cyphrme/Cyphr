@@ -1,4 +1,4 @@
-# Cyphrpass Test Key Pool
+# Cyphr Test Key Pool
 # Source of truth for all cryptographic material in test fixtures.
 #
 # INVARIANT: `tmb = H(canon({"alg": alg, "pub": pub}))` - computed, not stored.

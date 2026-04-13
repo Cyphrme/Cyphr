@@ -1,8 +1,8 @@
 [workspace]
 members = [
-  "cyphrpass",
-  "cyphrpass-storage",
-  "cyphrpass-cli",
+  "cyphr",
+  "cyphr-storage",
+  "cyphr-cli",
   "malt",
   "test-fixtures",
   "fixture-gen",
@@ -11,7 +11,7 @@ resolver = "2"
 
 [workspace.package]
 edition      = "2024"
-repository   = "https://github.com/Cyphrme/Cyphrpass"
+repository   = "https://github.com/Cyphrme/Cyphr"
 rust-version = "1.85"
 
 [workspace.dependencies]

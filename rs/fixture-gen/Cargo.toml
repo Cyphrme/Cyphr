@@ -1,5 +1,5 @@
 [package]
-description            = "CLI for generating Cyphrpass test fixtures"
+description            = "CLI for generating Cyphr test fixtures"
 edition.workspace      = true
 name                   = "fixture-gen"
 repository.workspace   = true

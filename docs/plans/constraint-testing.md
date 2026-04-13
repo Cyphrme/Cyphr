@@ -2,7 +2,7 @@
 
 ## Goal
 
-Implement an automated intent-driven testing framework ensuring symmetric enforcement of the formal Cyphrpass constraints. During the audit of the ~158 protocol constraints, we identified that "meaningful testing" requires categorizing them by enforcement mechanism rather than writing 158 identical negative tests. Our goal is 100% coverage across these categories:
+Implement an automated intent-driven testing framework ensuring symmetric enforcement of the formal Cyphr constraints. During the audit of the ~158 protocol constraints, we identified that "meaningful testing" requires categorizing them by enforcement mechanism rather than writing 158 identical negative tests. Our goal is 100% coverage across these categories:
 
 1. **Active Rejections (Testable)**: Constraints where the code explicitly inspects a payload and drops it (e.g., `[data-action-no-pre]`). These must be verified with negative adversarial test cases.
 2. **Structural Invariants**: Constraints describing data structure physics (e.g., `[tr-computation]`). These are implicitly verified by our generic state computation golden fixtures—if the code diverges, the root hashes fail.
@@ -10,8 +10,8 @@ Implement an automated intent-driven testing framework ensuring symmetric enforc
 
 ## Constraints
 
-- Zero modifications to the core Cyphrpass specification or principal algorithms may be made to accommodate testing.
-- Must verify failure conditions identically across both `rs/cyphrpass` and `go/cyphrpass`.
+- Zero modifications to the core Cyphr specification or principal algorithms may be made to accommodate testing.
+- Must verify failure conditions identically across both `rs/cyphr` and `go/cyphr`.
 
 ## Decisions
 
@@ -52,7 +52,7 @@ Implement an automated intent-driven testing framework ensuring symmetric enforc
    - [x] Write new gap-filling TOML test cases for constraints reachable with existing OverrideIntent fields.
    - [x] Fix `[no-revoke-non-self]` spec-implementation divergence (Go + Rust).
    - [x] Update Go `go/testfixtures/runner.go` (`matchesExpectedError`) to translate formal machine spec tags like `[auth-frozen]` into the appropriate native error matching logic.
-   - [x] Update Rust TOML matching logic in `rs/cyphrpass-storage/tests/e2e.rs` to map constraint tags inside `test.expected.error` to specific `cyphrpass::Error` variants.
+   - [x] Update Rust TOML matching logic in `rs/cyphr-storage/tests/e2e.rs` to map constraint tags inside `test.expected.error` to specific `cyphr::Error` variants.
    - [x] Smoke-test: convert `err_revoke_non_self` and `revoke_non_self_fails` to use `[no-revoke-non-self]` tag syntax. Passes both impls.
 
 2. **Phase 2: OverrideIntent Expansion (Constraint Generation)** — Expand the existing native overriding mechanisms.

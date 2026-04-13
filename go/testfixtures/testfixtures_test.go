@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/cyphrme/cyphrpass/testfixtures"
+	"github.com/cyphrme/cyphr/testfixtures"
 )
 
 // getTestsDir returns the path to the tests directory.

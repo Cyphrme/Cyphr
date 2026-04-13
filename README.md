@@ -1,8 +1,8 @@
-# Cyphrpass
+# Cyphr
 
 **Self-sovereign identity and authentication built on cryptographic state trees.**
 
-Cyphrpass replaces passwords with public key cryptography, enabling secure multi-device authentication, key rotation, and individually-signed atomic actions—all without a central authority.
+Cyphr replaces passwords with public key cryptography, enabling secure multi-device authentication, key rotation, and individually-signed atomic actions—all without a central authority.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -43,7 +43,7 @@ The internet's authentication layer is broken:
 
 ## The Solution
 
-Cyphrpass provides **self-sovereign identity** for the internet:
+Cyphr provides **self-sovereign identity** for the internet:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -53,7 +53,7 @@ Cyphrpass provides **self-sovereign identity** for the internet:
 
 ### Core Principles
 
-| Old World                   | Cyphrpass                                 |
+| Old World                   | Cyphr                                     |
 | --------------------------- | ----------------------------------------- |
 | Passwords stored on servers | Keys never leave your devices             |
 | Identity owned by platforms | Identity = cryptographic root you control |
@@ -123,15 +123,15 @@ Genesis (tmb)  ──pre──▶  key/create  ──pre──▶  key/revoke  �
 ## Repository Structure
 
 ```
-Cyphrpass/
+Cyphr/
 ├── SPEC.md                 # Full protocol specification
 ├── docs/                   # Plans, models, ADRs
 ├── go/                     # Go implementation
 │   └── README.md           # Go-specific documentation
 ├── rs/                     # Rust implementation
-│   ├── cyphrpass/          # Core crate
-│   ├── cyphrpass-storage/  # Storage crate
-│   ├── cyphrpass-cli/      # CLI binary
+│   ├── cyphr/              # Core crate
+│   ├── cyphr-storage/      # Storage crate
+│   ├── cyphr-cli/          # CLI binary
 │   └── README.md           # Rust-specific documentation
 ├── tests/                  # Language-agnostic test fixtures
 │   ├── golden/             # Pre-computed golden fixtures (40 tests)
@@ -141,10 +141,10 @@ Cyphrpass/
 
 ## Implementations
 
-| Language | Status        | Package                        |
-| -------- | ------------- | ------------------------------ |
-| **Go**   | Levels 1-4 ✅ | `github.com/cyphrme/cyphrpass` |
-| **Rust** | Levels 1-4 ✅ | `cyphrpass`                    |
+| Language | Status        | Package                    |
+| -------- | ------------- | -------------------------- |
+| **Go**   | Levels 1-4 ✅ | `github.com/cyphrme/cyphr` |
+| **Rust** | Levels 1-4 ✅ | `cyphr`                    |
 
 Both implementations support Levels 1-4 (single key through authenticated actions). Levels 5-6 (weighted permissions, programmable rules) are specified but not yet implemented.
 
@@ -152,7 +152,7 @@ All tests pass using shared language-agnostic test vectors.
 
 ## Built On Coz
 
-Cyphrpass uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations—a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
+Cyphr uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations—a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
 
 ## Documentation
 

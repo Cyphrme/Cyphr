@@ -1,6 +1,6 @@
-# Cyphrpass Test Fixtures
+# Cyphr Test Fixtures
 
-Language-agnostic integration test fixtures for Cyphrpass protocol implementations.
+Language-agnostic integration test fixtures for Cyphr protocol implementations.
 
 ## Overview
 
@@ -362,13 +362,13 @@ In addition to golden tests, `tests/e2e/` contains **intent files** that are par
 **Go:**
 
 ```bash
-cd go && go test ./cyphrpass/... -run TestE2E
+cd go && go test ./cyphr/... -run TestE2E
 ```
 
 **Rust:**
 
 ```bash
-cd rs && cargo test -p cyphrpass-storage --test e2e
+cd rs && cargo test -p cyphr-storage --test e2e
 ```
 
 ---

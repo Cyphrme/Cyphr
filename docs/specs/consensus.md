@@ -13,7 +13,7 @@
 
 ## Domain
 
-**Problem Domain:** Cyphrpass consensus — fork detection, proof of error,
+**Problem Domain:** Cyphr consensus — fork detection, proof of error,
 resync, witness behavior, state jumping, and the complete error taxonomy.
 The consensus model is deliberately minimal, favoring simplicity and
 independent verifiability over global coordination.
@@ -22,15 +22,15 @@ independent verifiability over global coordination.
 Conditions).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/models/principal-state-model.md)
+[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
 
 **Criticality Tier:** High — consensus failures can allow fork propagation,
 history rewriting, or denial of service.
 
 **Cross-references:**
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/transactions.md)
+[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
 — commit chain that consensus protects.
-[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/principal-lifecycle.md)
+[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/principal-lifecycle.md)
 — lifecycle state transitions triggered by consensus violations.
 
 ## Constraints
@@ -60,7 +60,7 @@ TYPE TimestampTolerance = Integer                     -- default ±360s
 
 #### Chain Integrity
 
-**[single-chain]**: Cyphrpass assumes a single linear chain per principal. An
+**[single-chain]**: Cyphr assumes a single linear chain per principal. An
 implicit fork occurs when two or more conflicting commits reference the same
 `pre` (prior PR), violating this assumption.
 `VERIFIED: agent-check`

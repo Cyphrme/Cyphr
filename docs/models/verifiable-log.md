@@ -523,9 +523,9 @@ algebraic properties.
 - `A-EQUIV` is the primary correctness test: incremental construction must
   equal batch construction for all inputs.
 - MHMR is a consumer-side concern — the library provides the generic
-  interface, Cyphrpass provides the fat hasher.
+  interface, Cyphr provides the fat hasher.
 
-### For Cyphrpass Integration
+### For Cyphr Integration
 
 - The tree root serves as CR (Commit Root) in the principal's state tree.
 - Consistency proofs subsume state jumping and witness resync.

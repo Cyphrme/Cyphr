@@ -335,6 +335,6 @@ broader open source ecosystem.
 Thinking other angles:
 
 1. User data that has the intent of being public must be public. This addresses AI training.
-2. The server that's hosting Cyphrpass has to be fully open source.
+2. The server that's hosting Cyphr has to be fully open source.
 
 AAA

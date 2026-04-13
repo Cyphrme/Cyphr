@@ -1,6 +1,6 @@
 //! # Test Fixtures
 //!
-//! Types and generation logic for Cyphrpass integration test fixtures.
+//! Types and generation logic for Cyphr integration test fixtures.
 //!
 //! This crate provides:
 //! - **Pool**: Key pool parsing and validation (`pool.toml`)
@@ -26,7 +26,7 @@ pub mod golden;
 pub mod intent;
 pub mod pool;
 
-pub use cyphrpass_storage::{CommitEntry, KeyEntry};
+pub use cyphr_storage::{CommitEntry, KeyEntry};
 pub use error::Error;
 pub use golden::{Generator, Golden, GoldenCoz, GoldenExpected, GoldenKey, GoldenSetup, generate};
 pub use intent::Intent;

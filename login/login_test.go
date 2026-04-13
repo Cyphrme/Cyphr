@@ -52,13 +52,13 @@ var GoldenUserKey1 = coz.Key{
 //	{
 //	  "alg":"ES256",
 //	  "now":1623132000,
-//		"tag": "Cyphrpass Server Key A",
+//		"tag": "Cyphr Server Key A",
 //	  "tmb":"T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
 //	  "pub":"yfZ-PY4QdhWKJ0o41yc8-X9qnahpfKoTN6sr0zd68lMFNbAzOwj9LSVdRngno4Bs_CNyDJCQJ6uqq9Q65cjn-A",
 //	  "prv":"WG-hEn8De4fJJ3FxWAsOAADDp89XigiRajUCI9MFWSo"
 //	}
 var GoldenServerKey = coz.Key{
-	Tag: "Cyphrpass Server Key A",
+	Tag: "Cyphr Server Key A",
 	Alg: coz.SEAlg(coz.ES256),
 	Now: 1623132000,
 	Pub: coz.MustDecode(""),

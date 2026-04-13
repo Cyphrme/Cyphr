@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	path := "/var/home/nrd/git/github.com/Cyphrme/Cyphrpass/go/cyphrpass/commit.go"
+	path := "/var/home/nrd/git/github.com/Cyphrme/Cyphr/go/cyphr/commit.go"
 	b, _ := os.ReadFile(path)
 	content := string(b)
 

@@ -39,7 +39,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 | Decision                       | Choice                                  | Rationale                                                                                                                |
 | :----------------------------- | :-------------------------------------- | :----------------------------------------------------------------------------------------------------------------------- |
 | daolfmt → malt rename          | Rename packages before integration      | MALT is the canonical spec name. Rename first to avoid importing the wrong name                                          |
-| Keep malt standalone           | Separate go.mod / workspace crate       | Future repo split anticipated. Cyphrpass adds as dependency                                                              |
+| Keep malt standalone           | Separate go.mod / workspace crate       | Future repo split anticipated. Cyphr adds as dependency                                                                  |
 | Phase renames before structure | Mechanical grep/replace first           | Low-risk terminology alignment before touching computation logic                                                         |
 | Eliminate CS entirely          | Delete CommitState type, not adapt      | CS has no spec analog. SR replaces it with different semantics (excludes commit info)                                    |
 | Wire format: commit → arrow    | Replace 'commit' coz field with 'arrow' | SPEC.md §5.2 shows commit coz has 'arrow' field. Old CS-embedding wire format is dead                                    |
@@ -55,7 +55,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 | :----------------------------------------------------------- | :------- | :-------- | :------------------------------------------------------------------------------------------------------ |
 | Phase 3 scope explosion (precedent: Feb CS Pivot 4→8 phases) | HIGH     | Mitigated | Sub-phased from start (3a-3d). Prior plan's deviation log explicitly captured this lesson               |
 | Wire format change: 'commit' → 'arrow' in commit coz         | MEDIUM   | Mitigated | SPEC.md L699 confirms. Go `parseCommit` (transaction.go L219) and Rust commit coz builder need updating |
-| Go malt is a separate module — dependency wiring             | MEDIUM   | Mitigated | Add as go.mod dependency. TreeHasher implementation needed for Cyphrpass hash algorithms                |
+| Go malt is a separate module — dependency wiring             | MEDIUM   | Mitigated | Add as go.mod dependency. TreeHasher implementation needed for Cyphr hash algorithms                    |
 | DAOLFMT Append() takes raw []byte, not typed TR digests      | LOW      | Mitigated | Standard pre-hashed-leaf pattern: Leaf = identity, Node = MR. Minor integration work                    |
 | Formal model alignment may be premature                      | LOW      | Accepted  | Deferred to post-implementation verification phase                                                      |
 | `pre` already references PrincipalState (≈PR)                | —        | Validated | Go verifyPre() takes PrincipalState; Rust extract_pre() returns PrincipalState                          |
@@ -95,7 +95,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 - Level 6 VM
 - Recovery timelocks
 - Algorithm rank
-- MALT inclusion/consistency proofs in cyphrpass core
+- MALT inclusion/consistency proofs in cyphr core
 - Formal model alignment (`docs/models/principal-state-model.md`) — deferred to post-verification
 
 ## Phases
@@ -160,8 +160,8 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
 
 5. **Phase 5: MALT Integration for CR** — Wire malt package for `CR = MALTR(TR₀, TR₁, ...)`
    - [x] Go: add `github.com/cyphrme/malt` dependency to `go.mod`
-   - [x] Rust: add `malt = { path = "../malt" }` to `cyphrpass/Cargo.toml`
-   - [x] Implement `TreeHasher` for Cyphrpass hash algorithms (both langs)
+   - [x] Rust: add `malt = { path = "../malt" }` to `cyphr/Cargo.toml`
+   - [x] Implement `TreeHasher` for Cyphr hash algorithms (both langs)
    - [x] Add `CommitRoot` type (both langs)
    - [x] Add `ComputeCR` using MALT `Log.Append()` + `Log.Root()`
    - [x] Add `commit_tree` (MALT `Log`) to Principal struct
@@ -215,7 +215,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
          commit/create coz signed by replaced/revoked key now authorized correctly
    - [x] Rust `state_root` → `arrow` field rename in `apply_transaction_test`
    - [x] Rust `apply_transaction_test` same mutation+commit coz split as Go
-   - [x] Rust `make_test_tx` — `commit` → `arrow` field, typ → `cyphrpass/commit/create`
+   - [x] Rust `make_test_tx` — `commit` → `arrow` field, typ → `cyphr/commit/create`
    - Go test failures: 17 → 4 (all multi-algorithm PR divergence)
    - Rust unit tests: 55/65 → 65/65 passing
    - Rust golden integration: 6/7 failing (`MissingCommit` — fixture runner needs commit coz split)
@@ -230,7 +230,7 @@ formulas. Backwards compatibility is explicitly not a concern (pre-alpha).
          `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt'`
 
    **7f: MALT Multi-Algorithm Architecture Pivot**
-   - [x] Go: Remove `CyphrpassMultiHasher`, replace with single-alg `CyphrpassHasher` in `commit_root.go`
+   - [x] Go: Remove `CyphrMultiHasher`, replace with single-alg `CyphrHasher` in `commit_root.go`
    - [x] Go: Change `Principal.commitTree` to `commitTrees CommitTrees` (`map[HashAlg]*CommitLog`)
    - [x] Go: Assemble CR from per-alg MALT roots via `NewCommitRootFromTrees`, filtered to active algs only
    - [x] Go: Fix `FinalizeWithArrow` to derive post-mutation alg set for KR/AR/SR computation
@@ -317,7 +317,7 @@ Phase 8 is the explicit tracing/realignment pass after implementation is stable.
 - [x] `cargo build --workspace` compiles cleanly
 - [x] `go build ./...` compiles cleanly
 - [x] Stale terminology sweep returns zero hits:
-      `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt' go/cyphrpass/ rs/cyphrpass/src/`
+      `rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt' go/cyphr/ rs/cyphr/src/`
 - [x] Golden fixtures regenerated and verified
 - [x] Genesis commit trace: all state derivations match machine spec constraints
 - [x] Key addition trace: all state derivations match machine spec constraints
@@ -335,7 +335,7 @@ cd rs && cargo test
 
 # Stale terminology check
 rg 'KeyState|AuthState|CommitState|CommitID|PrincipalState|daolfmt' \
-  go/cyphrpass/ rs/cyphrpass/src/ \
+  go/cyphr/ rs/cyphr/src/ \
   --glob '!*_test*' --glob '!*golden*'
 
 # MALT package rename check
@@ -382,7 +382,7 @@ rg 'daolfmt' go/ rs/ --glob '!target'
 | Phase 7c (Format)   | Phase 7b was next after bug fixes          | Added intent format migration to list-of-lists (`Vec<Vec<TxIntent>>`) before fixture regeneration                                                                              | Current flat `tx` list can't distinguish single-coz vs. multi-coz transactions — a structural blind spot preventing tests for the full transaction model. Must fix before regen       |
 | Phase 7d (Bugs)     | Fixture regen + full pass                  | Fixture regen produced 17 Go failures; uncovered 3 distinct bug classes requiring 7 code fixes across Go + Rust                                                                | Genesis bootstrap, pre-mutation key rule, and mutation/commit coz split were all independently blocking; each required spec consultation                                              |
 | Phase 7d (Split)    | Single verification phase                  | Split 7d (bug fixes, done) from 7e (final verification, not started) due to scope expansion                                                                                    | 7d grew from "regen + verify" to "regen + discover 3 bug classes + fix 7 locations + port to Rust". Clean boundary needed                                                             |
-| Phase 7f (Pivot)    | N/A                                        | Introduced Phase 7f to replace `CyphrpassMultiHasher` with a one-MALT-per-algorithm architecture                                                                               | Investigating 4 PR divergence failures revealed the multi-algorithm hasher violates MALT's single-algorithm concern and forces O(n) rebuilds. Pivot ensures canonical spec alignment. |
+| Phase 7f (Pivot)    | N/A                                        | Introduced Phase 7f to replace `CyphrMultiHasher` with a one-MALT-per-algorithm architecture                                                                                   | Investigating 4 PR divergence failures revealed the multi-algorithm hasher violates MALT's single-algorithm concern and forces O(n) rebuilds. Pivot ensures canonical spec alignment. |
 
 ## Retrospective
 
@@ -392,7 +392,7 @@ Execution of the overarching alignment plan underwent several vital pivots due t
 
 ### Outcomes
 
-- **Full MALT Architecture Integration:** Deprecated Cyphrpass MultiHasher in favor of the formal Merkle Append-Only Log Tree, closing a major architectural gap.
+- **Full MALT Architecture Integration:** Deprecated Cyphr MultiHasher in favor of the formal Merkle Append-Only Log Tree, closing a major architectural gap.
 - **Cross-Implementation Parity:** Rust and Go are precisely aligned on all state derivations: Pre-mutation rule checking, multi-algorithm Arrow generation, and List-of-Lists Commit topologies.
 - **Divergence Eradication:** Legacy data structures (such as `commit.state` terminology and implicit `hash_alg` closure shortcuts) have been entirely scrubbed. Both codebases correctly build TR and Arrow natively driven by transactional elements.
 

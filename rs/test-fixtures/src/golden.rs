@@ -16,7 +16,7 @@
 //! 5. Extracts final state digests (ks, as, sr, ps, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphrpass_storage::{CommitEntry, KeyEntry};
+use cyphr_storage::{CommitEntry, KeyEntry};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,7 +141,7 @@ pub struct GoldenExpected {
 ///
 /// The generator transforms human-readable intent files into
 /// golden JSON files containing real Coz messages with cryptographic
-/// signatures. Uses `cyphrpass::Principal` to compute state digests.
+/// signatures. Uses `cyphr::Principal` to compute state digests.
 #[derive(Debug)]
 pub struct Generator<'a> {
     pool: &'a Pool,
@@ -158,7 +158,7 @@ impl<'a> Generator<'a> {
     /// Format principal state as tagged digest string (alg:digest format).
     ///
     /// Delegates to Principal::pr_tagged() — the canonical `pre` format.
-    fn format_pr_tagged(principal: &cyphrpass::Principal) -> Result<String, Error> {
+    fn format_pr_tagged(principal: &cyphr::Principal) -> Result<String, Error> {
         principal.pr_tagged().map_err(|e| Error::Generation {
             name: String::new(),
             reason: format!("pr_tagged failed: {}", e),
@@ -239,7 +239,7 @@ impl<'a> Generator<'a> {
     /// Apply setup modifiers to a principal (e.g., pre-revoke keys).
     fn apply_setup(
         &self,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
         setup: &SetupIntent,
         _test_name: &str,
     ) -> Result<(), Error> {
@@ -282,7 +282,7 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
-    /// Export commits from Principal using cyphrpass-storage export logic.
+    /// Export commits from Principal using cyphr-storage export logic.
     /// Returns commits as Vec<CommitEntry> and digests as Vec<String>.
     ///
     /// Each CommitEntry contains:
@@ -295,9 +295,9 @@ impl<'a> Generator<'a> {
     /// Actions are exported as single-cz pseudo-commits at the end, with
     /// the current state digests at the time of action application.
     fn export_principal_commits(
-        principal: &cyphrpass::Principal,
+        principal: &cyphr::Principal,
     ) -> Result<(Vec<CommitEntry>, Vec<String>), Error> {
-        use cyphrpass_storage::export_commits;
+        use cyphr_storage::export_commits;
 
         let mut commits = export_commits(principal).map_err(|e| Error::Generation {
             name: String::new(),
@@ -412,37 +412,37 @@ impl<'a> Generator<'a> {
         &self,
         key_names: &[String],
         test_name: &str,
-    ) -> Result<cyphrpass::Principal, Error> {
+    ) -> Result<cyphr::Principal, Error> {
         if key_names.is_empty() {
             return Err(Error::InvalidIntent {
                 message: format!("test '{}': principal requires at least one key", test_name),
             });
         }
 
-        // Convert pool keys to cyphrpass keys
-        let keys: Vec<cyphrpass::Key> = key_names
+        // Convert pool keys to cyphr keys
+        let keys: Vec<cyphr::Key> = key_names
             .iter()
-            .map(|name| self.pool_key_to_cyphrpass_key(name))
+            .map(|name| self.pool_key_to_cyphr_key(name))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Auto-promotion: 1 key = implicit, >1 = explicit
         if keys.len() == 1 {
-            cyphrpass::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|e| {
+            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|e| {
                 Error::Generation {
                     name: test_name.to_string(),
                     reason: format!("failed to create implicit principal: {}", e),
                 }
             })
         } else {
-            cyphrpass::Principal::explicit(keys).map_err(|e| Error::Generation {
+            cyphr::Principal::explicit(keys).map_err(|e| Error::Generation {
                 name: test_name.to_string(),
                 reason: format!("failed to create explicit principal: {}", e),
             })
         }
     }
 
-    /// Convert a pool key name to a cyphrpass::Key.
-    fn pool_key_to_cyphrpass_key(&self, name: &str) -> Result<cyphrpass::Key, Error> {
+    /// Convert a pool key name to a cyphr::Key.
+    fn pool_key_to_cyphr_key(&self, name: &str) -> Result<cyphr::Key, Error> {
         let pool_key = self.resolve_key(name)?;
         let tmb = pool_key.compute_tmb()?;
         let pub_bytes = Base64UrlUnpadded::decode_vec(&pool_key.pub_key).map_err(|e| {
@@ -451,7 +451,7 @@ impl<'a> Generator<'a> {
             }
         })?;
 
-        Ok(cyphrpass::Key {
+        Ok(cyphr::Key {
             alg: pool_key.alg.clone(),
             tmb,
             pub_key: pub_bytes,
@@ -466,7 +466,7 @@ impl<'a> Generator<'a> {
     fn generate_single_commit(
         &self,
         test: &TestIntent,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
         let is_empty_commit = test
             .override_
@@ -567,7 +567,7 @@ impl<'a> Generator<'a> {
             // Happy path: use CommitScope::finalize_with_commit
             // This handles mutation → CS computation → commit injection → signing atomically.
             let new_key = if let Some(target_name) = &cz.target {
-                Some(self.pool_key_to_cyphrpass_key(target_name)?)
+                Some(self.pool_key_to_cyphr_key(target_name)?)
             } else {
                 None
             };
@@ -633,7 +633,7 @@ impl<'a> Generator<'a> {
     fn generate_multi_commit(
         &self,
         test: &TestIntent,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
         let mut coz_sequence = Vec::with_capacity(test.commit.len());
 
@@ -675,7 +675,7 @@ impl<'a> Generator<'a> {
             } else {
                 // Happy path: use CommitScope::finalize_with_commit
                 let new_key = if let Some(target_name) = &cz.target {
-                    Some(self.pool_key_to_cyphrpass_key(target_name)?)
+                    Some(self.pool_key_to_cyphr_key(target_name)?)
                 } else {
                     None
                 };
@@ -752,7 +752,7 @@ impl<'a> Generator<'a> {
     fn generate_genesis_only(
         &self,
         test: &TestIntent,
-        principal: &cyphrpass::Principal,
+        principal: &cyphr::Principal,
     ) -> Result<Golden, Error> {
         let expected = self.build_expected_from_principal(principal, test.expected.as_ref());
 
@@ -776,7 +776,7 @@ impl<'a> Generator<'a> {
     fn generate_tx_and_action(
         &self,
         test: &TestIntent,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
         // First, apply the commit coz
         let cz = test
@@ -800,7 +800,7 @@ impl<'a> Generator<'a> {
         let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, Some(&pre))?;
 
         let new_key = if let Some(target_name) = &cz.target {
-            Some(self.pool_key_to_cyphrpass_key(target_name)?)
+            Some(self.pool_key_to_cyphr_key(target_name)?)
         } else {
             None
         };
@@ -884,7 +884,7 @@ impl<'a> Generator<'a> {
     fn generate_single_action(
         &self,
         test: &TestIntent,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
         let action_intent = test.action.first().ok_or_else(|| Error::InvalidIntent {
             message: format!(
@@ -954,7 +954,7 @@ impl<'a> Generator<'a> {
     fn generate_multi_action(
         &self,
         test: &TestIntent,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
     ) -> Result<Golden, Error> {
         let mut action_sequence = Vec::with_capacity(test.action.len());
 
@@ -1131,7 +1131,7 @@ impl<'a> Generator<'a> {
     /// Apply an action to a principal.
     fn apply_action_to_principal(
         &self,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
         action: &ActionIntent,
         pre: Option<&str>,
         sig_bytes: &[u8],
@@ -1329,7 +1329,7 @@ impl<'a> Generator<'a> {
     /// into the golden fixture format.
     fn commit_vtx_to_golden_coz(
         &self,
-        vtx: &cyphrpass::parsed_coz::VerifiedCoz,
+        vtx: &cyphr::parsed_coz::VerifiedCoz,
         cz: &TxIntent,
     ) -> Result<GoldenCoz, Error> {
         let raw = vtx.raw();
@@ -1378,15 +1378,15 @@ impl<'a> Generator<'a> {
     #[allow(clippy::too_many_arguments)]
     fn apply_and_finalize(
         &self,
-        principal: &mut cyphrpass::Principal,
+        principal: &mut cyphr::Principal,
         pay_value: serde_json::Value,
         signer_alg: &str,
         prv_bytes: &[u8],
         pub_bytes: &[u8],
         signer_tmb: &str,
-        new_key: Option<cyphrpass::key::Key>,
+        new_key: Option<cyphr::key::Key>,
         now: i64,
-    ) -> Result<cyphrpass::Commit, Error> {
+    ) -> Result<cyphr::Commit, Error> {
         let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
             name: "unknown".into(),
             reason: e.to_string(),
@@ -1414,7 +1414,7 @@ impl<'a> Generator<'a> {
 
     fn build_expected_from_principal(
         &self,
-        principal: &cyphrpass::Principal,
+        principal: &cyphr::Principal,
         intent_expected: Option<&ExpectedAssertions>,
     ) -> GoldenExpected {
         // Get lexicographically first algorithm for deterministic ordering
@@ -1614,7 +1614,7 @@ level = 3
 
         let cz2 = &commit.cozies[1];
         let pay2 = cz2.get("pay").expect("commit/create missing pay");
-        assert_eq!(pay2["typ"], "cyphrpass/commit/create");
+        assert_eq!(pay2["typ"], "cyphr/commit/create");
         assert!(
             pay2.get("arrow").is_some(),
             "arrow should be populated on commit coz"

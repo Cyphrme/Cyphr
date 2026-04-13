@@ -54,13 +54,13 @@ deficiencies.
 - [x] **WS1: Correctness, Safety & Type Representation** — Eliminated panics,
       removed dead variant, fixed `typSuffix`, added revoked-key guard, constrained
       `TransactionKind`, disambiguated `Revocation.By` semantics.
-      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-02-24-go-correctness-safety.md)
+      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/.sketches/2026-02-24-go-correctness-safety.md)
 - [x] **WS2: Error Hardening** — Replaced `fmt.Errorf` with sentinel errors,
       added `errors.Is`/`errors.As` support throughout core and state modules.
-      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-02-24-go-error-hardening.md)
+      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/.sketches/2026-02-24-go-error-hardening.md)
 - [x] **WS3: Encapsulation Hardening** — Unexported internal fields, defensive
       copies from collection accessors, unexported `NewCommit`/`FinalizeCommit`.
-      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-02-24-go-encapsulation-hardening.md)
+      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/.sketches/2026-02-24-go-encapsulation-hardening.md)
 
 ### Phase 2: Rust CLI (Complete)
 
@@ -69,7 +69,7 @@ deficiencies.
   2. Extracted ~350 lines into `commands/common.rs` (C.2)
   3. Added `cli::Error` enum (11 variants), replaced `Box<dyn Error>`,
      deduped key gen via `common::generate_key()`. `key.rs` 522→309 lines.
-     [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-02-24-rust-cli-deduplication.md)
+     [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/.sketches/2026-02-24-rust-cli-deduplication.md)
 
 ### Phase 3: Cross-Implementation Parity (Complete)
 
@@ -77,7 +77,7 @@ deficiencies.
       Go import/test paths to use atomic `VerifyAndApply` (C.1, D.10), converted
       3 Rust `debug_assert!` to `Result` returns (R3, S2-1). DEV-1/DEV-2 (Go
       commit-based storage) deferred to charter item 4 pending spec finalization.
-      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/.sketches/2026-03-02-machine-spec.md)
+      [Sketch](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/.sketches/2026-03-02-machine-spec.md)
 
 ### Phase 4: Verification & Invariants (Not Started)
 
@@ -136,7 +136,7 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 | ID   | Severity | Area         | Description                                                                                                               | Introduced   |
 | :--- | :------- | :----------- | :------------------------------------------------------------------------------------------------------------------------ | :----------- |
 | TD-1 | LOW      | Rust CLI     | `Error::Storage(String)` catch-all — refine into specific variants as patterns emerge                                     | WS4 Commit 3 |
-| TD-2 | LOW      | Rust Storage | `FileStoreError` re-exported from `cyphrpass-storage` for `#[from]` use — revisit if storage errors are refactored        | WS4 Commit 3 |
+| TD-2 | LOW      | Rust Storage | `FileStoreError` re-exported from `cyphr-storage` for `#[from]` use — revisit if storage errors are refactored            | WS4 Commit 3 |
 | TD-3 | LOW      | Go Commit    | `PendingCommit.ComputeCommitID` uses single genesis `hashAlg` not `activeAlgs` — wire `ComputeCommitIDTagged` when needed | WS5 Commit 1 |
 
 ## Verification
@@ -150,9 +150,9 @@ P3 items resolved opportunistically when a workstream touches a relevant file:
 
 ## References
 
-- AUDIT: [2026-02-20-api-coherence-audit.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/audit/2026-02-20-api-coherence-audit.md)
-- CHARTER: [spec-alignment.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/charters/spec-alignment.md)
-- MACHINE SPECS: [docs/specs/](file:///var/home/nrd/git/github.com/Cyphrme/Cyphrpass/docs/specs/) (145 constraints across 6 documents)
+- AUDIT: [2026-02-20-api-coherence-audit.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/audit/2026-02-20-api-coherence-audit.md)
+- CHARTER: [spec-alignment.md](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/charters/spec-alignment.md)
+- MACHINE SPECS: [docs/specs/](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/) (145 constraints across 6 documents)
 - SPEC ALIGNMENT PLAN: [spec-alignment.md](spec-alignment.md)
 - SKETCHES: `.sketches/2026-02-24-go-*.md`, `.sketches/2026-02-24-rust-cli-deduplication.md`
 

@@ -1,4 +1,4 @@
-# API Coherence Audit: Cyphrpass Identity Protocol
+# API Coherence Audit: Cyphr Identity Protocol
 
 **Date:** 2026-02-20
 **Auditor:** Gemini & Claude (Antigravity) + nrd
@@ -11,19 +11,19 @@
 **Language Targets:**
 | Language | Path |
 |:---------|:---------------------|
-| Go | `go/cyphrpass` |
-| Rust | `rs/cyphrpass` |
+| Go | `go/cyphr` |
+| Rust | `rs/cyphr` |
 
 **Exclusions (initial):**
 
-- `rs/cyphrpass-cli`
-- `rs/cyphrpass-storage`
+- `rs/cyphr-cli`
+- `rs/cyphr-storage`
 - `go/storage`
 - `rs/test-fixtures` / `rs/fixture-gen`
 - `tests/`
 - Vendored dependencies
 
-> **Scope expansion:** During Phase 2, the audit scope was expanded with user approval to include `rs/cyphrpass-cli` (Component 4), `rs/cyphrpass-storage` and `go/storage` (Component 3), and test fixtures (Component 5). These modules were added because they are direct consumers of the core API and their usage patterns revealed systemic issues.
+> **Scope expansion:** During Phase 2, the audit scope was expanded with user approval to include `rs/cyphr-cli` (Component 4), `rs/cyphr-storage` and `go/storage` (Component 3), and test fixtures (Component 5). These modules were added because they are direct consumers of the core API and their usage patterns revealed systemic issues.
 
 **Constraints:**
 
@@ -307,7 +307,7 @@ pub use coz::HashAlg;  // re-exported from coz-rs
 
 Go defines `HashAlg` as a local type alias over `coz.HshAlg`. Rust re-exports `coz::HashAlg` directly from the `coz` crate, making it the **same** type. Both converge to the same algorithm set (`SHA-256`, `SHA-384`, `SHA-512`), but Go's extra indirection means `HashAlg` and `coz.HshAlg` are distinct types in Go.
 
-This is functionally fine but architecturally notable — if `coz-go` adds hash algorithm validation, Go cyphrpass won't benefit without explicit bridging.
+This is functionally fine but architecturally notable — if `coz-go` adds hash algorithm validation, Go cyphr won't benefit without explicit bridging.
 
 ---
 
@@ -558,7 +558,7 @@ The same as D.2's `typSuffix` issue — hand-rolled string searching where `stri
 
 ### Component 4: CLI
 
-**Scope:** Rust-only `cyphrpass-cli` crate: `main.rs`, `lib.rs`, `keystore.rs`, `commands/{init,key,tx,inspect,io}.rs`. No Go CLI exists.
+**Scope:** Rust-only `cyphr-cli` crate: `main.rs`, `lib.rs`, `keystore.rs`, `commands/{init,key,tx,inspect,io}.rs`. No Go CLI exists.
 
 #### Summary
 
@@ -610,7 +610,7 @@ Total: **~350 lines of duplicated code**. Any bug fix must be applied to every c
 
 Every CLI command function returns `Result<(), Box<dyn std::error::Error>>`. This loses type information and makes error matching impossible for callers. The keystore already has a proper `keystore::Error` enum.
 
-**Recommendation:** Create a `cli::Error` enum wrapping keystore, storage, and cyphrpass errors. Low priority since CLI is the outermost layer.
+**Recommendation:** Create a `cli::Error` enum wrapping keystore, storage, and cyphr errors. Low priority since CLI is the outermost layer.
 
 ---
 
@@ -703,8 +703,8 @@ This phase evaluates the systemic properties and internal consistency of each im
 
 #### **Rust Implementation**
 
-- [x] **Naming conventions:** Excellent internal uniformity. Standardized Rust idioms (`from_pay`, `as_value`, `to_b64`) are used systemically across both `cyphrpass` and `cyphrpass-storage`.
-- [ ] **Error handling strategy:** Strong in the core (`thiserror` enums strictly define the failure domain), but systemically degraded in the `cyphrpass-cli` crate, which uniformly returns `Box<dyn Error>` and relies heavily on stringly-typed `.map_err()`/`.ok_or()` (D.9, F.5).
+- [x] **Naming conventions:** Excellent internal uniformity. Standardized Rust idioms (`from_pay`, `as_value`, `to_b64`) are used systemically across both `cyphr` and `cyphr-storage`.
+- [ ] **Error handling strategy:** Strong in the core (`thiserror` enums strictly define the failure domain), but systemically degraded in the `cyphr-cli` crate, which uniformly returns `Box<dyn Error>` and relies heavily on stringly-typed `.map_err()`/`.ok_or()` (D.9, F.5).
 - [ ] **Common patterns:** The core libraries execute trait composition beautifully, but the CLI layer exhibits a systemic failure of composability, opting for massive copy-paste duplication (~350 lines over 5 modules) instead of sharing application-layer logic (C.2).
 - [ ] **`debug_assert!` in core library (3 occurrences):** `state.rs:423`, `multihash.rs:43`, `commit.rs:52` contain `debug_assert!` calls that panic in debug builds. These appear to be internal invariant checks (not reachable from external input), but should be explicitly triaged: if truly unreachable, document why; if potentially reachable, convert to `Result`.
 - [x] **Documentation style:** Consistent. Core crate uses `///` doc comments with `# Panics` sections where applicable.
@@ -715,13 +715,13 @@ This phase evaluates the systemic properties and internal consistency of each im
 
 - [ ] **Encapsulation (Leaky):** Go exhibits a **systemic** issue with encapsulation. The root cause is a single anti-pattern: returning internal collections by reference without defensive copies. This manifests across multiple types:
   - `storage.Entry.Raw` — publicly mutable `json.RawMessage` on a type that documents "CRITICAL" bit-perfect preservation.
-  - `cyphrpass.MultihashDigest.Variants()` — returns internal map (Go maps are reference types), allowing mutation of state digests.
-  - `cyphrpass.Principal` — publicly exposes `AuthLedger` and `DataLedger` fields.
-  - `cyphrpass.Commit.SetRaw()` — public mutator on a type documented as "immutable once finalized."
-  - `cyphrpass.Commit.Transactions()` — returns `[]*Transaction`, a mutable slice of mutable pointers.
-  - `cyphrpass.Commit.Raw()` — returns `[]json.RawMessage`, mutable slice reference.
+  - `cyphr.MultihashDigest.Variants()` — returns internal map (Go maps are reference types), allowing mutation of state digests.
+  - `cyphr.Principal` — publicly exposes `AuthLedger` and `DataLedger` fields.
+  - `cyphr.Commit.SetRaw()` — public mutator on a type documented as "immutable once finalized."
+  - `cyphr.Commit.Transactions()` — returns `[]*Transaction`, a mutable slice of mutable pointers.
+  - `cyphr.Commit.Raw()` — returns `[]json.RawMessage`, mutable slice reference.
   - **Systemic recommendation:** Audit all public methods returning slices/maps for defensive copy needs. Consider an unexported inner type with exported read-only accessors.
-- [x] **Dependency Direction:** Clean. `cyphrpass` knows nothing of `storage`.
+- [x] **Dependency Direction:** Clean. `cyphr` knows nothing of `storage`.
 
 #### **Rust Implementation**
 
@@ -795,7 +795,7 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 
 #### Rust: CLI Deduplication
 
-13. [ ] **[Rust `cyphrpass-cli`]** Extract ~350 lines of duplicated helpers (`load_key_from_keystore`, `extract_genesis_from_commits`, `parse_store`, `parse_principal_root`, `decode_b64`) into `commands/common.rs`. — _BUG-9, C.2_
+13. [ ] **[Rust `cyphr-cli`]** Extract ~350 lines of duplicated helpers (`load_key_from_keystore`, `extract_genesis_from_commits`, `parse_store`, `parse_principal_root`, `decode_b64`) into `commands/common.rs`. — _BUG-9, C.2_
 
 #### Go/Rust: Behavioral Correctness
 
@@ -809,7 +809,7 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 18. [ ] **[Go `key.go`]** Disambiguate `Revocation.By` (currently `coz.B64` where `nil` and empty slice are confusable; consider newtype or pointer). — _B.2_
 19. [ ] **[Go `commit.go`]** Unexport `NewCommit` — only caller should be `FinalizeCommit`. Consider also unexporting `FinalizeCommit` if `CommitBatch.Finalize` is the canonical path. — _A.2_
 20. [ ] **[Go `storage/entry.go`]** Unexport `Entry.Raw` — callers should use `Bytes()` accessor for read access. Preserves bit-perfect invariant. — _B.4_
-21. [ ] **[Rust `cyphrpass-cli`]** De-duplicate key generation match arms (~320 lines across `init.rs`/`key.rs`). Use `coz::Alg` runtime dispatch or a macro. — _C.3_
+21. [ ] **[Rust `cyphr-cli`]** De-duplicate key generation match arms (~320 lines across `init.rs`/`key.rs`). Use `coz::Alg` runtime dispatch or a macro. — _C.3_
 22. [ ] **[Go `state.go`]** Evaluate `DataState` inner type — Go uses `coz.B64` (raw bytes), Rust uses `coz::Cad`. Determine if Go should wrap a typed digest. — _D.3_
 23. [ ] **[Go/Rust]** Decide Go commit-based storage path. If needed, port `CommitEntry`, `load_principal_from_commits`, `Checkpoint`, `load_from_checkpoint` from Rust. — _D.6, DEV-1, DEV-2_
 24. [ ] **[Go/Rust]** Hoist `pre` verification to occur once before transaction dispatch (with self-revoke opt-out) to prevent silent invariant drops. — _C.3_
@@ -829,8 +829,8 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 35. [ ] **[Go `state.go`]** Make visibility symmetric: either both `DeriveHashAlgs` and `isSupportedAlg` should be public, or both private. — _E.3_
 36. [ ] **[Go `storage/entry.go`]** Document the asymmetric design choice to centralize `Entry` extractors in Go versus inline access in Rust. — _D.7_
 37. [ ] **[Go `testfixtures`]** Document that Go intentionally delegates golden fixture generation to Rust as the single source of truth. — _D.11_
-38. [ ] **[Rust `cyphrpass-cli`]** Add `cli::Error` enum wrapping keystore, storage, and cyphrpass errors (low priority — CLI is outermost layer). — _D.9, F.5_
-39. [ ] **[Rust `cyphrpass`]** Triage 3 `debug_assert!` occurrences in core (`state.rs:423`, `multihash.rs:43`, `commit.rs:52`): document unreachability or convert to `Result`. — _Phase 3 §3.1_
+38. [ ] **[Rust `cyphr-cli`]** Add `cli::Error` enum wrapping keystore, storage, and cyphr errors (low priority — CLI is outermost layer). — _D.9, F.5_
+39. [ ] **[Rust `cyphr`]** Triage 3 `debug_assert!` occurrences in core (`state.rs:423`, `multihash.rs:43`, `commit.rs:52`): document unreachability or convert to `Result`. — _Phase 3 §3.1_
 40. [ ] **[Go `state.go`]** Reconcile `MultihashDigest` accessor patterns (`First()` vs `GetOrFirst()`) with Rust (`first_variant()` / `get_or_err()` returning `Result`). — _E.2_
 41. [ ] **[Go/Rust]** Add tracking or assertions for level monotonicity (L3 floor) to prevent future regression if prune logic added. — _D.2 (I4)_
 42. [ ] **[Go/Rust]** Introduce basic property-based testing (fuzz state boundaries, MR associativity). — _E.1_
@@ -870,20 +870,20 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 
 Bugs discovered during the audit that require code changes. Tracked here for resolution after audit completes.
 
-| ID     | Severity | Component            | Description                                                                                                                                                                       | Status |
-| :----- | :------- | :------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----- |
-| BUG-1  | P0       | Go `transaction.go`  | `TxOtherRevoke` variant is dead code — concept removed from SPEC. Remove variant, remove `applyTransactionInternal` case, remove `String()` case.                                 | Open   |
-| BUG-2  | P0       | Go `transaction.go`  | `typSuffix` splits at first `/` — breaks for namespaced authorities. Replace with `strings.HasSuffix`.                                                                            | Open   |
-| BUG-3  | P1       | Go `commit.go`       | `NewCommit` panics on empty input. Library code must not panic per `engineering.md`. Return error or unexport.                                                                    | Open   |
-| BUG-4  | P1       | Go `principal.go`    | `verifyPre` uses `fmt.Errorf` — not matchable via `errors.Is`. Replace with sentinel.                                                                                             | Open   |
-| BUG-5  | P1       | Go `multihash.go`    | `NewMultihashDigest` panics on empty input. Library code must not panic.                                                                                                          | Open   |
-| BUG-6  | P1       | Go `multihash.go`    | `Variants()` returns internal map reference — callers can mutate state type internals.                                                                                            | Open   |
-| BUG-7  | P1       | Go `state.go`        | Missing `ComputeCommitIDTagged` — Go cannot handle multi-algorithm keysets per SPEC §20 (Multihash Identifiers).                                                                  | Open   |
-| BUG-8  | P1       | Rust `import.rs`     | `eprintln!` debug output in `load_principal` — writes to stderr in production on every load. Remove or gate.                                                                      | Open   |
-| BUG-9  | P1       | Rust `cyphrpass-cli` | ~350 lines of copy-pasted helpers across 5 command modules. Extract to `commands/common.rs`.                                                                                      | Open   |
-| BUG-10 | P1       | Go `commit.go`       | `Commit.SetRaw()` is a public mutator on a type documented as "immutable once finalized" (commit.go:16). Violates immutability invariant. Remove or make `pub(crate)` equivalent. | Open   |
-| BUG-11 | P1       | Go `commit.go`       | `Commit.Transactions()` returns `[]*Transaction` — mutable slice of mutable pointers to internal state. Same systemic pattern as BUG-6. Return copies or unexport fields.         | Open   |
-| BUG-12 | P1       | Go/Rust `principal`  | `addKey`/`add_key` does not check the revoked set — allows re-adding a compromised key. Fails I2 (revocation permanence). Add active-check to revoked set.                        | Open   |
+| ID     | Severity | Component           | Description                                                                                                                                                                       | Status |
+| :----- | :------- | :------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----- |
+| BUG-1  | P0       | Go `transaction.go` | `TxOtherRevoke` variant is dead code — concept removed from SPEC. Remove variant, remove `applyTransactionInternal` case, remove `String()` case.                                 | Open   |
+| BUG-2  | P0       | Go `transaction.go` | `typSuffix` splits at first `/` — breaks for namespaced authorities. Replace with `strings.HasSuffix`.                                                                            | Open   |
+| BUG-3  | P1       | Go `commit.go`      | `NewCommit` panics on empty input. Library code must not panic per `engineering.md`. Return error or unexport.                                                                    | Open   |
+| BUG-4  | P1       | Go `principal.go`   | `verifyPre` uses `fmt.Errorf` — not matchable via `errors.Is`. Replace with sentinel.                                                                                             | Open   |
+| BUG-5  | P1       | Go `multihash.go`   | `NewMultihashDigest` panics on empty input. Library code must not panic.                                                                                                          | Open   |
+| BUG-6  | P1       | Go `multihash.go`   | `Variants()` returns internal map reference — callers can mutate state type internals.                                                                                            | Open   |
+| BUG-7  | P1       | Go `state.go`       | Missing `ComputeCommitIDTagged` — Go cannot handle multi-algorithm keysets per SPEC §20 (Multihash Identifiers).                                                                  | Open   |
+| BUG-8  | P1       | Rust `import.rs`    | `eprintln!` debug output in `load_principal` — writes to stderr in production on every load. Remove or gate.                                                                      | Open   |
+| BUG-9  | P1       | Rust `cyphr-cli`    | ~350 lines of copy-pasted helpers across 5 command modules. Extract to `commands/common.rs`.                                                                                      | Open   |
+| BUG-10 | P1       | Go `commit.go`      | `Commit.SetRaw()` is a public mutator on a type documented as "immutable once finalized" (commit.go:16). Violates immutability invariant. Remove or make `pub(crate)` equivalent. | Open   |
+| BUG-11 | P1       | Go `commit.go`      | `Commit.Transactions()` returns `[]*Transaction` — mutable slice of mutable pointers to internal state. Same systemic pattern as BUG-6. Return copies or unexport fields.         | Open   |
+| BUG-12 | P1       | Go/Rust `principal` | `addKey`/`add_key` does not check the revoked set — allows re-adding a compromised key. Fails I2 (revocation permanence). Add active-check to revoked set.                        | Open   |
 
 ---
 
@@ -900,12 +900,12 @@ Features present in one implementation but absent from the other. Neither langua
 | DEV-5 | `TxOtherRevoke`                 | ✅ (dead code)                                   | ❌                                                                              | Removed from SPEC                                             | Go should remove (tracked as BUG-1)                                    |
 | DEV-6 | `verify_and_apply_transaction`  | ⚠️ `CommitBatch.VerifyAndApply` exists in core   | ✅                                                                              | Implemented                                                   | Go core has the atomic method; `go/storage` import path doesn't use it |
 | DEV-7 | `CommitScope` (borrow-enforced) | N/A (Go lacks borrow checker)                    | ✅                                                                              | Implemented                                                   | Go has `CommitBatch` — idiomatic equivalent, no structural enforcement |
-| DEV-8 | CLI tool                        | ❌                                               | ✅ `cyphrpass-cli` (init, key, tx, inspect, import/export)                      | Implemented + tested                                          | Go has no CLI at all                                                   |
+| DEV-8 | CLI tool                        | ❌                                               | ✅ `cyphr-cli` (init, key, tx, inspect, import/export)                          | Implemented + tested                                          | Go has no CLI at all                                                   |
 | DEV-9 | Golden fixture generation       | ❌ (consume-only)                                | ✅ `test-fixtures::Generator` (1400+ lines)                                     | Implemented + tested                                          | Go can run goldens but not produce them                                |
 
 ---
 
-### 1.1 Go Surface (`go/cyphrpass`)
+### 1.1 Go Surface (`go/cyphr`)
 
 #### Types (Structs, Enums, Aliases)
 
@@ -956,16 +956,16 @@ Features present in one implementation but absent from the other. Neither langua
 
 #### Functions
 
-- `ExportEntries(principal *cyphrpass.Principal) []*Entry`
-- `LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphrpass.Principal, error)`
+- `ExportEntries(principal *cyphr.Principal) []*Entry`
+- `LoadPrincipal(genesis Genesis, entries []*Entry) (*cyphr.Principal, error)`
 - `NewEntry(data []byte) (*Entry, error)`
 - `NewEntryFromValue(v any) (*Entry, error)`
-- `PersistEntries(store Store, principal *cyphrpass.Principal) (int, error)`
-- `ReplayEntry(principal *cyphrpass.Principal, entry *Entry, index int) error`
+- `PersistEntries(store Store, principal *cyphr.Principal) (int, error)`
+- `ReplayEntry(principal *cyphr.Principal, entry *Entry, index int) error`
 
 ---
 
-### 1.3 Rust Surface (`rs/cyphrpass`)
+### 1.3 Rust Surface (`rs/cyphr`)
 
 #### Types (Structs, Enums)
 
@@ -1010,7 +1010,7 @@ Features present in one implementation but absent from the other. Neither langua
 - `TransactionKind::KEY_REVOKE`
 - `TransactionKind::PRINCIPAL_CREATE`
 
-### 1.4 Rust Surface (`rs/cyphrpass-storage`)
+### 1.4 Rust Surface (`rs/cyphr-storage`)
 
 #### Types (Structs, Enums)
 
@@ -1081,7 +1081,7 @@ All dependencies verified against official registries. No hallucinated packages,
 | `github.com/cyphrme/coz` v1.0.0          | GitHub (first-party) | ✅     | Core cryptographic library, same organization |
 | `github.com/pelletier/go-toml/v2` v2.2.4 | GitHub/pkg.go.dev    | ✅     | Well-known TOML parser (~5k stars)            |
 
-#### Rust (`rs/cyphrpass/Cargo.toml`)
+#### Rust (`rs/cyphr/Cargo.toml`)
 
 | Dependency   | Registry                | Status | Notes                                     |
 | :----------- | :---------------------- | :----- | :---------------------------------------- |
@@ -1632,15 +1632,15 @@ These should be in a language-independent format (JSON or TOML) consumed by both
 
 ### F.1 Coz Library Coupling Surface
 
-Cyphrpass's Go API directly exposes Coz types in its public surface:
+Cyphr's Go API directly exposes Coz types in its public surface:
 
 - `coz.B64` appears in nearly every function signature (`ComputePS`, `ComputeCommitID`, `ParseTaggedDigest`, etc.)
 - `coz.Key` is the parameter type for `VerifyTransaction` and `addKey`
 - `coz.HshAlg` is aliased locally as `HashAlg` (item 29)
 
-Rust insulates better: `Thumbprint`, `Czd`, `Digest` are Cyphrpass-owned newtypes wrapping Coz primitives.
+Rust insulates better: `Thumbprint`, `Czd`, `Digest` are Cyphr-owned newtypes wrapping Coz primitives.
 
-**Charter concern:** If Coz undergoes a breaking API change (e.g., `B64` representation changes), Go's Cyphrpass must change its entire public API. Rust's newtype barrier absorbs this. Consider whether Go should adopt a similar insulation pattern, or whether the tight coupling is an intentional choice (single-organization control of both libraries).
+**Charter concern:** If Coz undergoes a breaking API change (e.g., `B64` representation changes), Go's Cyphr must change its entire public API. Rust's newtype barrier absorbs this. Consider whether Go should adopt a similar insulation pattern, or whether the tight coupling is an intentional choice (single-organization control of both libraries).
 
 ### F.2 Consumer Onboarding Path
 

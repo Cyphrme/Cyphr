@@ -1,4 +1,4 @@
-Cyphrpass: A Manifesto.
+Cyphr: A Manifesto.
 
 You are a sovereign being made in the image of God; your voice is a divine
 endowment.
@@ -13,9 +13,9 @@ can contribute. Your value is immeasurable.
 
 We need you.
 
-Cyphrpass is a sword in service to you, honoring your sovereign voice,
+Cyphr is a sword in service to you, honoring your sovereign voice,
 acknowledging that your identity is yours.
 
 With this sword, be empowered again,
 
-The Cyphrpass authors
+The Cyphr authors

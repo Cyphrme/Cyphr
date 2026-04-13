@@ -1,11 +1,11 @@
-# Cyphrpass Go Implementation
+# Cyphr Go Implementation
 
-Go implementation of the Cyphrpass self-sovereign identity protocol.
+Go implementation of the Cyphr self-sovereign identity protocol.
 
 ## Installation
 
 ```bash
-go get github.com/cyphrme/cyphrpass
+go get github.com/cyphrme/cyphr
 ```
 
 ## Quick Start
@@ -18,7 +18,7 @@ package main
 import (
     "fmt"
     "github.com/cyphrme/coz"
-    "github.com/cyphrme/cyphrpass"
+    "github.com/cyphrme/cyphr"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
     key, _ := coz.NewKey("ES256")
 
     // Implicit genesis: single key, identity = thumbprint
-    principal, _ := cyphrpass.Implicit(key)
+    principal, _ := cyphr.Implicit(key)
 
     fmt.Printf("Identity (PR): %s\n", principal.PR())
     fmt.Printf("Level: %v\n", principal.Level()) // Level 1
@@ -55,7 +55,7 @@ commit, err := principal.ApplyTransaction(vtx)
 ### Record Actions (Level 4)
 
 ```go
-action := &cyphrpass.Action{
+action := &cyphr.Action{
     Signer: signerThumbprint,
     Now:    time.Now().Unix(),
     Czd:    actionCzd,  // coz digest of the action
@@ -111,13 +111,13 @@ import "errors"
 
 commit, err := principal.ApplyTransaction(vtx)
 switch {
-case errors.Is(err, cyphrpass.ErrInvalidPrior):
+case errors.Is(err, cyphr.ErrInvalidPrior):
     // Transaction pre doesn't match current CS
-case errors.Is(err, cyphrpass.ErrTimestampPast):
+case errors.Is(err, cyphr.ErrTimestampPast):
     // Transaction timestamp older than latest
-case errors.Is(err, cyphrpass.ErrDuplicateKey):
+case errors.Is(err, cyphr.ErrDuplicateKey):
     // Key already in KS
-case errors.Is(err, cyphrpass.ErrNoActiveKeys):
+case errors.Is(err, cyphr.ErrNoActiveKeys):
     // Would leave principal with no active keys
 }
 ```

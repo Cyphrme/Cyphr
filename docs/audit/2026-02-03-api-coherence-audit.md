@@ -11,19 +11,19 @@
 **Language Targets:**
 | Language | Path | Version / Edition |
 |:---------|:-----|:------------------|
-| Go | `go/cyphrpass` | 1.21+ |
-| Rust | `rs/cyphrpass` | 2021 Edition |
+| Go | `go/cyphr` | 1.21+ |
+| Rust | `rs/cyphr` | 2021 Edition |
 | Vectors | `tests/` | Language-agnostic |
 
 **Entry Points:**
 
-- **Go:** `github.com/Cyphrme/Cyphrpass/go/cyphrpass`
-- **Rust:** `cyphrpass` crate (`rs/cyphrpass/src/lib.rs`)
+- **Go:** `github.com/Cyphrme/Cyphr/go/cyphr`
+- **Rust:** `cyphr` crate (`rs/cyphr/src/lib.rs`)
 
 **Exclusions:**
 
-- `rs/cyphrpass-cli` (consumer, not core API)
-- `rs/cyphrpass-storage` (Phase 2 audit candidate, separate concern)
+- `rs/cyphr-cli` (consumer, not core API)
+- `rs/cyphr-storage` (Phase 2 audit candidate, separate concern)
 - `go/storage` (same rationale as Rust)
 - `fixture-gen`, `test-fixtures` (tooling, not protocol)
 - Vendored dependencies
@@ -38,7 +38,7 @@
 
 ## Phase 1: Surface Discovery
 
-### 1.1 Go Surface (`go/cyphrpass`)
+### 1.1 Go Surface (`go/cyphr`)
 
 #### State Types (SPEC §7)
 
@@ -113,7 +113,7 @@
 
 ---
 
-### 1.2 Rust Surface (`rs/cyphrpass`)
+### 1.2 Rust Surface (`rs/cyphr`)
 
 #### State Types (SPEC §7)
 
@@ -217,7 +217,7 @@
 
 1. **`from_checkpoint`** exists in Rust but not Go. Needed for storage import parity?
 2. **`Level()` accessor** in Go; confirm Rust equivalent (may be derived from key count + transactions).
-3. **Storage crates** (`go/storage`, `rs/cyphrpass-storage`) excluded from Phase 1. Should Phase 2 include them?
+3. **Storage crates** (`go/storage`, `rs/cyphr-storage`) excluded from Phase 1. Should Phase 2 include them?
 4. **`TS()` accessor** on Principal: Go has it; Rust needs verification.
 5. **Error naming:** Go uses `ErrKeyRevoked`; Rust uses `KeyRevoked`. Consistent with language idioms but worth documenting for cross-impl consumers.
 
@@ -277,7 +277,7 @@ The `Principal` is the core identity container. Both implementations follow simi
 **Evidence:**
 
 ```go
-// go/cyphrpass/principal.go:259
+// go/cyphr/principal.go:259
 func (p *Principal) Key(tmb coz.B64) *Key {
     tmbStr := string(tmb.String())
     ...
@@ -299,7 +299,7 @@ func (p *Principal) Key(tmb coz.B64) *Key {
 **Evidence:**
 
 ```rust
-// rs/cyphrpass/src/principal.rs:228-272
+// rs/cyphr/src/principal.rs:228-272
 pub fn from_checkpoint(
     pr: PrincipalRoot,
     auth_state: AuthState,
@@ -339,14 +339,14 @@ Both implementations provide `Level()` / `level()` accessors — confirmed parit
 **Observation:** Transaction application in both languages auto-begins commits if none is pending. This is convenient but couples `apply_verified` to commit lifecycle.
 
 ```rust
-// rs/cyphrpass/src/principal.rs:727-729
+// rs/cyphr/src/principal.rs:727-729
 if self.auth.pending.is_none() {
     self.auth.pending = Some(PendingCommit::new(self.hash_alg));
 }
 ```
 
 ```go
-// go/cyphrpass/principal.go:536-537
+// go/cyphr/principal.go:536-537
 p.auth.Transactions = append(p.auth.Transactions, tx)
 p.currentCommitCzds = append(p.currentCommitCzds, tx.Czd)
 ```
@@ -449,7 +449,7 @@ This is verified by unit tests in both languages (`full_promotion_chain`, `ks_si
 **Observation:** Go exposes `GetOrFirst(alg)` as a convenience method for algorithm fallback.
 
 ```go
-// go/cyphrpass/multihash.go:76
+// go/cyphr/multihash.go:76
 func (m MultihashDigest) GetOrFirst(alg HashAlg) coz.B64 {
     if d := m.Get(alg); d != nil { return d }
     return m.First()
@@ -471,7 +471,7 @@ ks.get(alg).or_else(|| ks.0.variants().values().next().map(AsRef::as_ref))
 **Go:**
 
 ```go
-// go/cyphrpass/multihash.go:19-22
+// go/cyphr/multihash.go:19-22
 func NewMultihashDigest(variants map[HashAlg]coz.B64) MultihashDigest {
     if len(variants) == 0 {
         panic("MultihashDigest must have at least one variant")
@@ -483,7 +483,7 @@ func NewMultihashDigest(variants map[HashAlg]coz.B64) MultihashDigest {
 **Rust:**
 
 ```rust
-// rs/cyphrpass/src/multihash.rs:42-46
+// rs/cyphr/src/multihash.rs:42-46
 pub fn new(variants: BTreeMap<HashAlg, Box<[u8]>>) -> Self {
     debug_assert!(
         !variants.is_empty(),
@@ -756,7 +756,7 @@ func typSuffix(typ string) string {
 }
 ```
 
-If `typ` is `cyphr.me/cyphrpass/key/create` (namespaced per SPEC), this returns `cyphrpass/key/create`, which fails the switch statement expectation of `key/create`.
+If `typ` is `cyphr.me/cyphr/key/create` (namespaced per SPEC), this returns `cyphr/key/create`, which fails the switch statement expectation of `key/create`.
 
 **Impact:** Go implementation fails to parse valid namespaced transactions. This is a critical correctness failure. Code path appears untested (tests use manual struct construction).
 
@@ -957,7 +957,7 @@ pub(crate) fn new(...) -> Self {
 
 ### Component 5: Actions (Level 4 Data State)
 
-**Scope:** `go/cyphrpass/action.go` vs `rs/cyphrpass/src/action.rs`. Handling of signed user actions stored in Data State (DS).
+**Scope:** `go/cyphr/action.go` vs `rs/cyphr/src/action.rs`. Handling of signed user actions stored in Data State (DS).
 
 #### Summary
 
@@ -1045,7 +1045,7 @@ var (
 
 ```rust
 // Correct in Rust:
-/// Cyphrpass error type covering all error conditions from SPEC §17.
+/// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
 pub enum Error { ... }
 ```
@@ -1300,7 +1300,7 @@ All iterative component audits are complete. Here is the consolidated recommenda
 
 ## 3A: Go Internal Coherence Audit
 
-**Scope:** All 14 files in `go/cyphrpass/` (~45KB source)
+**Scope:** All 14 files in `go/cyphr/` (~45KB source)
 
 ### Naming Consistency
 
@@ -1378,12 +1378,12 @@ All iterative component audits are complete. Here is the consolidated recommenda
 
 ### Documentation Consistency
 
-| Pattern            | Adherence | Notes                                |
-| :----------------- | :-------: | :----------------------------------- |
-| Package doc exists |    ✅     | `cyphrpass.go` has comprehensive doc |
-| Type docs          |    ✅     | All exported types documented        |
-| SPEC references    |    ⚠️     | Inconsistent (§14 vs §17 in errors)  |
-| Example code       |    ✅     | Package doc includes example         |
+| Pattern            | Adherence | Notes                               |
+| :----------------- | :-------: | :---------------------------------- |
+| Package doc exists |    ✅     | `cyphr.go` has comprehensive doc    |
+| Type docs          |    ✅     | All exported types documented       |
+| SPEC references    |    ⚠️     | Inconsistent (§14 vs §17 in errors) |
+| Example code       |    ✅     | Package doc includes example        |
 
 ---
 
@@ -1408,7 +1408,7 @@ All iterative component audits are complete. Here is the consolidated recommenda
 
 ## 3B: Rust Internal Coherence Audit
 
-**Scope:** All 9 files in `rs/cyphrpass/src/` (~120KB source)
+**Scope:** All 9 files in `rs/cyphr/src/` (~120KB source)
 
 ### Naming Consistency
 
@@ -1544,17 +1544,17 @@ These items represent correctness issues that could cause subtle bugs or protoco
 - **Current:** Go ignores algorithm prefix and hardcodes SHA-256 when parsing the `pre` field.
 - **Issue:** Test vectors and storage layer use `"SHA-256:<digest>"` format, but Go ignores the prefix, causing failures for SHA-384/SHA-512 transactions.
 - **Fix:** Parse the `alg:digest` prefix (e.g., `"SHA-384:abcd..."`) and create `AuthState` with the correct algorithm. Follow Rust's `parse_alg_digest` pattern from `golden_fixtures.rs:40-46`.
-- **File:** `go/cyphrpass/transaction.go` (around `parsePre()`)
+- **File:** `go/cyphr/transaction.go` (around `parsePre()`)
 - **Pattern:** Split on `:`, map algorithm name to `HashAlg`, then decode digest.
 
 | **T1-2** | Go | **Fix `typ` parsing to handle namespaced URIs** | Transaction | Medium |
 
 **Details:**
 
-- **Current:** Go splits `typ` at first slash. `cyphr.me/cyphrpass/key/create` becomes `cyphrpass/key/create`, surviving parse but failing switch.
+- **Current:** Go splits `typ` at first slash. `cyphr.me/cyphr/key/create` becomes `cyphr/key/create`, surviving parse but failing switch.
 - **Issue:** Untested code path fails on valid SPEC inputs.
 - **Fix:** Use `strings.HasSuffix`. Add unit test covering namespaced keys.
-- **File:** `go/cyphrpass/transaction.go` (`typSuffix`)
+- **File:** `go/cyphr/transaction.go` (`typSuffix`)
 
 ---
 
@@ -1575,7 +1575,7 @@ These items represent API consistency, type safety, or parity issues between imp
 - **Current:** Rust uses `debug_assert!` for invariant checks (e.g., empty `MultihashDigest`, empty `Commit`).
 - **Issue:** Invariant violations pass silently in release builds.
 - **Fix:** Replace with `assert!` for parity with Go's unconditional panics.
-- **Files:** `rs/cyphrpass/src/multihash.rs`, `rs/cyphrpass/src/commit.rs`
+- **Files:** `rs/cyphr/src/multihash.rs`, `rs/cyphr/src/commit.rs`
 
 ### T2-1: Other-Revoke Handling
 
@@ -1592,7 +1592,7 @@ These items represent API consistency, type safety, or parity issues between imp
 - **Current:** Rust has `Principal::from_checkpoint()` for storage import; Go lacks equivalent.
 - **Issue:** Go cannot restore principals from persisted state without replaying transactions.
 - **Fix:** Add `FromCheckpoint(pr, as, keys) (*Principal, error)` to Go.
-- **File:** `go/cyphrpass/principal.go`
+- **File:** `go/cyphr/principal.go`
 
 ---
 

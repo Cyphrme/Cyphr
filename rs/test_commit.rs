@@ -1,5 +1,5 @@
 use coz::{Czd, Thumbprint};
-use cyphrpass::{HashAlg, Key, Principal, coz::ParsedCoz};
+use cyphr::{HashAlg, Key, Principal, coz::ParsedCoz};
 use serde_json::json;
 
 fn main() {

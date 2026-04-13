@@ -1,4 +1,4 @@
-// Package testfixtures provides utilities for loading and running Cyphrpass test fixtures.
+// Package testfixtures provides utilities for loading and running Cyphr test fixtures.
 //
 // This package supports the two-tiered test system:
 //

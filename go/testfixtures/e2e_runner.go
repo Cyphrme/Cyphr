@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphrpass/cyphrpass"
-	"github.com/cyphrme/cyphrpass/storage"
+	"github.com/cyphrme/cyphr/cyphr"
+	"github.com/cyphrme/cyphr/storage"
 )
 
 // E2EResult contains the result of running an e2e test.
@@ -36,14 +36,14 @@ func RunE2ETest(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Create principal from genesis
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	if len(genesisKeys) == 1 {
-		principal, err = cyphrpass.Implicit(genesisKeys[0])
+		principal, err = cyphr.Implicit(genesisKeys[0])
 	} else if len(genesisKeys) > 1 {
-		principal, err = cyphrpass.Explicit(genesisKeys)
+		principal, err = cyphr.Explicit(genesisKeys)
 	} else {
 		// Empty genesis - will fail, but might be expected for error tests
-		err = cyphrpass.ErrNoActiveKeys
+		err = cyphr.ErrNoActiveKeys
 	}
 
 	// Handle genesis creation errors - might be expected for error tests
@@ -134,14 +134,14 @@ func resolveGenesisFromNames(pool *Pool, names []string) ([]*coz.Key, error) {
 }
 
 // applySingleCommit applies a single coz commit.
-func applySingleCommit(pool *Pool, principal *cyphrpass.Principal, cz *TxIntent, override *OverrideIntent) error {
+func applySingleCommit(pool *Pool, principal *cyphr.Principal, cz *TxIntent, override *OverrideIntent) error {
 	batch := principal.BeginCommit()
 	return applyTxToBatch(pool, principal, batch, cz, override, true)
 }
 
 // applyMultiCommit applies multiple commits.
 // Each commit contains transactions, each transaction contains cozies.
-func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
+func applyMultiCommit(pool *Pool, principal *cyphr.Principal, test *TestIntent) error {
 	for i, commit := range test.Commit {
 		batch := principal.BeginCommit()
 		for j, tx := range commit.Tx {
@@ -166,7 +166,7 @@ func applyMultiCommit(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 
 // applyTxToBatch builds a coz payload and applies it to the active commit batch.
 // If isFinal is true, it finalizes the commit with the commit:<CS> injection.
-func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass.CommitBatch, cz *TxIntent, override *OverrideIntent, isFinal bool) error {
+func applyTxToBatch(pool *Pool, principal *cyphr.Principal, batch *cyphr.CommitBatch, cz *TxIntent, override *OverrideIntent, isFinal bool) error {
 	// Get signer key
 	signerPool := pool.Get(cz.Signer)
 	if signerPool == nil {
@@ -179,7 +179,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 
 	// Build pay object (pre field will be overridden dynamically if we are in a batch,
 	// but the test intent generator computes it before batch modifications are readable.
-	// The cyphrpass Go implementation expects pre to be generated correctly by e2e runner)
+	// The cyphr Go implementation expects pre to be generated correctly by e2e runner)
 	payObj := buildTransactionPay(cz, signerKey.Tmb, principal.PR())
 
 	// Handle target key for key/create (SPEC verb naming)
@@ -268,7 +268,7 @@ func applyTxToBatch(pool *Pool, principal *cyphrpass.Principal, batch *cyphrpass
 }
 
 // applySingleAction applies a single action.
-func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *ActionIntent, test *TestIntent) error {
+func applySingleAction(pool *Pool, principal *cyphr.Principal, action *ActionIntent, test *TestIntent) error {
 	// Get signer key
 	signerPool := pool.Get(action.Signer)
 	if signerPool == nil {
@@ -299,7 +299,7 @@ func applySingleAction(pool *Pool, principal *cyphrpass.Principal, action *Actio
 }
 
 // applyMultiAction applies multiple actions.
-func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestIntent) error {
+func applyMultiAction(pool *Pool, principal *cyphr.Principal, test *TestIntent) error {
 	for i := range test.Action {
 		if err := applySingleAction(pool, principal, &test.Action[i], test); err != nil {
 			return fmt.Errorf("action %d: %w", i, err)
@@ -309,7 +309,7 @@ func applyMultiAction(pool *Pool, principal *cyphrpass.Principal, test *TestInte
 }
 
 // buildTransactionPay creates a pay map for a coz.
-func buildTransactionPay(cz *TxIntent, signerTmb coz.B64, currentPS cyphrpass.PrincipalRoot) map[string]any {
+func buildTransactionPay(cz *TxIntent, signerTmb coz.B64, currentPS cyphr.PrincipalRoot) map[string]any {
 	payObj := map[string]any{
 		"alg": "ES256", // Will be overridden by signer
 		"tmb": signerTmb.String(),
@@ -343,7 +343,7 @@ func buildTransactionPay(cz *TxIntent, signerTmb coz.B64, currentPS cyphrpass.Pr
 // (signAndApplyTransaction was removed and functionality merged into applyTxToBatch)
 
 // signAndApplyAction signs an action and records it.
-func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cyphrpass.Principal) error {
+func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cyphr.Principal) error {
 	// Serialize pay to JSON - this is the exact bytes that will be signed
 	payBytes, err := json.Marshal(payObj)
 	if err != nil {
@@ -374,13 +374,13 @@ func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cy
 	}
 
 	// Parse pay for action creation
-	var pay cyphrpass.CozPay
+	var pay cyphr.CozPay
 	if err := json.Unmarshal(payBytes, &pay); err != nil {
 		return fmt.Errorf("failed to parse pay: %w", err)
 	}
 
 	// Create action
-	action, err := cyphrpass.ParseAction(&pay, signedCoz.Czd)
+	action, err := cyphr.ParseAction(&pay, signedCoz.Czd)
 	if err != nil {
 		return fmt.Errorf("failed to parse action: %w", err)
 	}
@@ -398,7 +398,7 @@ func signAndApplyAction(signerKey *coz.Key, payObj map[string]any, principal *cy
 }
 
 // verifyE2EExpected checks if principal matches expected state.
-func verifyE2EExpected(p *cyphrpass.Principal, exp *ExpectedAssertions) []string {
+func verifyE2EExpected(p *cyphr.Principal, exp *ExpectedAssertions) []string {
 	if exp == nil {
 		return nil
 	}
@@ -451,11 +451,11 @@ func RunE2ERoundTrip(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Create principal from genesis
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	if len(genesisKeys) == 1 {
-		principal, err = cyphrpass.Implicit(genesisKeys[0])
+		principal, err = cyphr.Implicit(genesisKeys[0])
 	} else {
-		principal, err = cyphrpass.Explicit(genesisKeys)
+		principal, err = cyphr.Explicit(genesisKeys)
 	}
 	if err != nil {
 		result.Err = fmt.Errorf("failed to create principal: %w", err)
@@ -541,11 +541,11 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Create principal from genesis
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	if len(genesisKeys) == 1 {
-		principal, err = cyphrpass.Implicit(genesisKeys[0])
+		principal, err = cyphr.Implicit(genesisKeys[0])
 	} else {
-		principal, err = cyphrpass.Explicit(genesisKeys)
+		principal, err = cyphr.Explicit(genesisKeys)
 	}
 	if err != nil {
 		result.Err = fmt.Errorf("failed to create principal: %w", err)
@@ -597,7 +597,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 		thumbprints = append(thumbprints, k.Tmb)
 	}
 
-	recomputedKS, err := cyphrpass.ComputeKR(thumbprints, nil, activeAlgs)
+	recomputedKS, err := cyphr.ComputeKR(thumbprints, nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute KS: %w", err)
 		return result
@@ -624,7 +624,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 4: Recompute AR and verify variants
-	recomputedAR, err := cyphrpass.ComputeAR(recomputedKS, nil, nil, activeAlgs)
+	recomputedAR, err := cyphr.ComputeAR(recomputedKS, nil, nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute AR: %w", err)
 		return result
@@ -650,7 +650,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 5: Recompute SR = MR(AR, DR?) and verify variants
-	recomputedSR, err := cyphrpass.ComputeSR(recomputedAR, reimported.DR(), nil, activeAlgs)
+	recomputedSR, err := cyphr.ComputeSR(recomputedAR, reimported.DR(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute SR: %w", err)
 		return result
@@ -676,7 +676,7 @@ func RunE2EMultihashCoherence(pool *Pool, test *TestIntent) *E2EResult {
 	}
 
 	// Step 6: Recompute PR = MR(SR, CR?) and verify variants
-	recomputedPR, err := cyphrpass.ComputePR(recomputedSR, reimported.CR(), nil, activeAlgs)
+	recomputedPR, err := cyphr.ComputePR(recomputedSR, reimported.CR(), nil, activeAlgs)
 	if err != nil {
 		result.Err = fmt.Errorf("failed to recompute PR: %w", err)
 		return result

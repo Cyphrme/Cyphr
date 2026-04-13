@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphrpass/cyphrpass"
-	"github.com/cyphrme/cyphrpass/storage"
+	"github.com/cyphrme/cyphr/cyphr"
+	"github.com/cyphrme/cyphr/storage"
 )
 
 // RunResult contains the result of running a golden test.
@@ -62,7 +62,7 @@ func RunGolden(pool *Pool, golden *Golden) *RunResult {
 	}
 
 	// Load principal with optional setup
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	var loadErr error
 
 	if golden.Setup != nil && golden.Setup.RevokeKey != "" {
@@ -209,7 +209,7 @@ func embedKey(cz json.RawMessage, key GoldenKey) (json.RawMessage, error) {
 }
 
 // checkExpected verifies the principal matches expected state.
-func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
+func checkExpected(p *cyphr.Principal, exp GoldenExpected) []string {
 	var failures []string
 
 	// Key count
@@ -227,7 +227,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
-			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			hashAlg, err := cyphr.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("ks: invalid algorithm %s", alg))
 			} else {
@@ -247,7 +247,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
-			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			hashAlg, err := cyphr.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("as: invalid algorithm %s", alg))
 			} else {
@@ -267,7 +267,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
-			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			hashAlg, err := cyphr.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
 			} else {
@@ -287,7 +287,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 		if alg == "" {
 			// Legacy format without prefix - skip verification
 		} else {
-			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			hashAlg, err := cyphr.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("sr: invalid algorithm %s", alg))
 			} else {
@@ -305,7 +305,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 	if exp.PG != "" {
 		alg, expectedDigest := parseAlgDigest(exp.PG)
 		if alg != "" {
-			hashAlg, err := cyphrpass.ParseHashAlg(alg)
+			hashAlg, err := cyphr.ParseHashAlg(alg)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("pr: invalid algorithm %s", alg))
 			} else if p.PG() == nil {
@@ -333,7 +333,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 
 	// Multihash KS variants (SPEC §14 cross-impl verification)
 	for algName, expectedDigest := range exp.MultihashKR {
-		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		hashAlg, err := cyphr.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_ks: invalid algorithm %s", algName))
 			continue
@@ -351,7 +351,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 
 	// Multihash AS variants
 	for algName, expectedDigest := range exp.MultihashAR {
-		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		hashAlg, err := cyphr.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_as: invalid algorithm %s", algName))
 			continue
@@ -369,7 +369,7 @@ func checkExpected(p *cyphrpass.Principal, exp GoldenExpected) []string {
 
 	// Multihash PS variants
 	for algName, expectedDigest := range exp.MultihashPR {
-		hashAlg, err := cyphrpass.ParseHashAlg(algName)
+		hashAlg, err := cyphr.ParseHashAlg(algName)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("multihash_ps: invalid algorithm %s", algName))
 			continue
@@ -458,19 +458,19 @@ func matchesExpectedError(actual, expected string) bool {
 // loadPrincipalWithSetup creates a Principal from genesis, applies setup modifiers,
 // then replays entries. This allows tests to set up state (like pre-revoked keys)
 // before entry replay.
-func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*storage.Entry, setup *GoldenSetup) (*cyphrpass.Principal, error) {
+func loadPrincipalWithSetup(pool *Pool, genesis storage.Genesis, entries []*storage.Entry, setup *GoldenSetup) (*cyphr.Principal, error) {
 	// Create principal from genesis (without entries)
-	var principal *cyphrpass.Principal
+	var principal *cyphr.Principal
 	var err error
 
 	switch g := genesis.(type) {
 	case storage.ImplicitGenesis:
-		principal, err = cyphrpass.Implicit(g.Key)
+		principal, err = cyphr.Implicit(g.Key)
 	case storage.ExplicitGenesis:
 		if len(g.Keys) == 0 {
 			return nil, fmt.Errorf("no genesis keys")
 		}
-		principal, err = cyphrpass.Explicit(g.Keys)
+		principal, err = cyphr.Explicit(g.Keys)
 	default:
 		return nil, fmt.Errorf("unknown genesis type: %T", genesis)
 	}

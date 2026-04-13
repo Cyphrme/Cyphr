@@ -10,7 +10,7 @@
 
 ## Purpose
 
-The Cyphrpass Identity Protocol has dual reference implementations in Go and
+The Cyphr Identity Protocol has dual reference implementations in Go and
 Rust. A comprehensive API coherence audit (2026-02-20) surfaced 12 bugs, 9
 feature deviations, and 43 remediation items spanning correctness, safety,
 encapsulation, and cross-language parity.

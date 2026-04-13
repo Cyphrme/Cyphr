@@ -23,7 +23,7 @@ CLI binary code is lower priority but included for completeness.
 
 ### In Scope
 
-Phase 1 — `cyphrpass` core library (`rs/cyphrpass/src/`):
+Phase 1 — `cyphr` core library (`rs/cyphr/src/`):
 
 | File             | Line | Panic                                                       | Classification                                          |
 | :--------------- | :--- | :---------------------------------------------------------- | :------------------------------------------------------ |
@@ -47,7 +47,7 @@ Phase 1 — `cyphrpass` core library (`rs/cyphrpass/src/`):
 | `transaction.rs` | —    | _Audited: zero production panics_                           | ✅ All panics in `#[cfg(test)]`                         |
 | `action.rs`      | —    | _Audited: zero production panics_                           | ✅ All panics in `#[cfg(test)]`                         |
 
-Phase 2 — `cyphrpass-storage` crate (`rs/cyphrpass-storage/src/`):
+Phase 2 — `cyphr-storage` crate (`rs/cyphr-storage/src/`):
 
 | File        | Lines      | Count | Classification                                            |
 | :---------- | :--------- | :---- | :-------------------------------------------------------- |
@@ -55,7 +55,7 @@ Phase 2 — `cyphrpass-storage` crate (`rs/cyphrpass-storage/src/`):
 | `file.rs`   | L47        | 1     | `.expect("PrincipalRoot must have at least one variant")` |
 | `import.rs` | (pre-test) | 0     | Clean — all panics are in test module                     |
 
-Phase 3 — `cyphrpass-cli` crate (`rs/cyphrpass-cli/src/`):
+Phase 3 — `cyphr-cli` crate (`rs/cyphr-cli/src/`):
 
 | File               | Lines       | Count | Classification                   |
 | :----------------- | :---------- | :---- | :------------------------------- |
@@ -112,7 +112,7 @@ With this helper, most `.get(alg).expect("must have variant")` patterns become
 
 ## Phases
 
-### Phase 1: Core Library (`cyphrpass`) ✅
+### Phase 1: Core Library (`cyphr`) ✅
 
 - [x] Add `get_or_err()` / `first_variant()` helpers to `MultihashDigest`
 - [x] Add `EmptyMultihash` error variant to `Error` enum
@@ -124,13 +124,13 @@ With this helper, most `.get(alg).expect("must have variant")` patterns become
 - [x] Update function signatures: `compute_as`/`compute_cs`/`compute_ps` → `Result`, `commit_state_tagged` → `Result<String>`
 - [x] Update downstream callers (`golden.rs`, `key.rs`, `e2e.rs`)
 
-### Phase 2: Storage Crate (`cyphrpass-storage`) ✅
+### Phase 2: Storage Crate (`cyphr-storage`) ✅
 
 - [x] Convert `export.rs` production panics → `ExportError` enum with `Result` propagation
 - [x] Convert `file.rs` L47 panic → `first_variant()` with `FileStoreError::EmptyDigest`
 - [x] Update `persist_entries` → `PersistError<S::Error>` for combined export+store errors
 
-### Phase 3: CLI Crate (`cyphrpass-cli`) ✅
+### Phase 3: CLI Crate (`cyphr-cli`) ✅
 
 - [x] Convert `tx.rs` (3), `io.rs` (3), `init.rs` (1) state access panics → `first_variant()` + `?`
 - [x] Convert `key.rs` keystore access panics (2) → `?`
@@ -153,7 +153,7 @@ cargo clippy --workspace
 
 ### Manual Verification
 
-- Grep for remaining production panics: `rg 'unwrap\(\)|expect\(' rs/cyphrpass/src/ rs/cyphrpass-storage/src/ rs/cyphrpass-cli/src/ --glob '!*test*'`
+- Grep for remaining production panics: `rg 'unwrap\(\)|expect\(' rs/cyphr/src/ rs/cyphr-storage/src/ rs/cyphr-cli/src/ --glob '!*test*'`
 - The only acceptable surviving panics should be the classified **Invariant** sites (L24, L822 in principal.rs) with justifying comments
 
 ## Risks & Assumptions

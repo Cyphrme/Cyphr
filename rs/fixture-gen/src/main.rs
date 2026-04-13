@@ -1,4 +1,4 @@
-//! Fixture-gen CLI for Cyphrpass test fixtures.
+//! Fixture-gen CLI for Cyphr test fixtures.
 //!
 //! Commands:
 //! - `generate`: Transform intent TOML → golden JSON
@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "fixture-gen")]
-#[command(about = "Generate and manage Cyphrpass test fixtures")]
+#[command(about = "Generate and manage Cyphr test fixtures")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]

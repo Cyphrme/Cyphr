@@ -1,10 +1,10 @@
 package storage
 
-import "github.com/cyphrme/cyphrpass/cyphrpass"
+import "github.com/cyphrme/cyphr/cyphr"
 
-// Store defines the minimal interface for Cyphrpass storage backends.
+// Store defines the minimal interface for Cyphr storage backends.
 //
-// Storage is intentionally simple — Cyphrpass handles all semantic operations.
+// Storage is intentionally simple — Cyphr handles all semantic operations.
 // This follows the "dumb storage, smart Principal" design principle.
 //
 // The interface stores raw bytes (signed Coz messages). All verification,
@@ -12,17 +12,17 @@ import "github.com/cyphrme/cyphrpass/cyphrpass"
 type Store interface {
 	// AppendEntry appends a signed entry (coz or action) to the log.
 	// The entry must be a valid signed Coz JSON message.
-	AppendEntry(pr *cyphrpass.PrincipalGenesis, entry *Entry) error
+	AppendEntry(pr *cyphr.PrincipalGenesis, entry *Entry) error
 
 	// GetEntries returns all entries for a principal in storage order.
-	GetEntries(pr *cyphrpass.PrincipalGenesis) ([]*Entry, error)
+	GetEntries(pr *cyphr.PrincipalGenesis) ([]*Entry, error)
 
 	// GetEntriesRange returns entries with pagination/filtering.
 	// Supports coz patches for checkpoint-based sync.
-	GetEntriesRange(pr *cyphrpass.PrincipalGenesis, opts *QueryOpts) ([]*Entry, error)
+	GetEntriesRange(pr *cyphr.PrincipalGenesis, opts *QueryOpts) ([]*Entry, error)
 
 	// Exists checks if a principal exists in storage.
-	Exists(pr *cyphrpass.PrincipalGenesis) (bool, error)
+	Exists(pr *cyphr.PrincipalGenesis) (bool, error)
 }
 
 // QueryOpts provides common query parameters for filtered retrieval.
