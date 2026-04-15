@@ -1,0 +1,23 @@
+# Structural Constraints Intent Tests
+
+# [commit-one-or-more]: A commit MUST contain at least one mutation transaction
+[[test]]
+name      = "err_empty_commit"
+principal = ["golden"]
+
+[[test.commit]]
+tx = []
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error = "[commit-one-or-more]"
+
+# [no-empty-mr]: A Multihash Root MUST NOT be computed from an empty set
+[[test]]
+name      = "err_empty_genesis"
+principal = []
+
+[test.expected]
+error = "[no-empty-mr]"
