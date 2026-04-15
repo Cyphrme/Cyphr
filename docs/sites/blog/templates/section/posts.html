@@ -1,0 +1,23 @@
+{% extends "base.html" %} {% block content %}
+<article>
+  <h1>{{ section.title }}</h1>
+  {% if section.description %}
+  <p class="lead">{{ section.description }}</p>
+  {% endif %}
+  <ul class="post-list">
+    {% for item in items %}
+    <li>
+      <a href="{{ prefix }}{{ item.path }}" class="post-link">
+        <span class="post-title">{{ item.frontmatter.title }}</span>
+        {% if item.frontmatter.description %}
+        <span class="post-desc">{{ item.frontmatter.description }}</span>
+        {% endif %}
+        {% if item.frontmatter.date %}
+        <time datetime="{{ item.frontmatter.date }}">{{ item.frontmatter.date }}</time>
+        {% endif %}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</article>
+{% endblock content %}

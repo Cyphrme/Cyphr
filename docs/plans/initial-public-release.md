@@ -93,9 +93,9 @@ _(Resolved)_
    - [x] Standardize Rust and Go in-code documentation.
 
 3. **Phase 3: Sukr Subdomain Provisioning** — Establish `.cyphr.me` static sites. _(Depends on Phase 1)_
-   - [ ] Create a shared `theme/` directory for unified CSS.
-   - [ ] Scaffold `docs-site` targeting `docs.cyphr.me` compiling `SPEC.md` and references.
-   - [ ] Scaffold `blog-site` targeting `blog.cyphr.me` compiling the initial narrative post.
+   - [x] Create a shared `theme/` directory for unified CSS (`docs/sites/theme/`).
+   - [x] Scaffold docs site targeting `docs.cyphr.me` (`docs/sites/docs/`).
+   - [x] Scaffold blog site targeting `blog.cyphr.me` (`docs/sites/blog/`).
 
 4. **Phase 4: Release Pipeline & Malt Publishing** — Registry publishing and release automation. _(Depends on Phase 1)_
    - [ ] Establish `cliff.toml` conventional commit parser config.

@@ -1,0 +1,12 @@
+{% extends "base.html" %} {% block content %}
+<article class="tags-page">
+  <h1>Tags</h1>
+  <nav class="section-nav">
+    {% for tag in tags %}
+    <a href="{{ prefix }}/tags/{{ tag }}.html" class="section-link">
+      <strong>{{ tag }}</strong>
+    </a>
+    {% endfor %}
+  </nav>
+</article>
+{% endblock content %}

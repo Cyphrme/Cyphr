@@ -1,0 +1,18 @@
+{% extends "base.html" %} {% block content %}
+<article class="section-index">
+  <h1>{{ section.title }}</h1>
+  {% if section.description %}
+  <p class="lead">{{ section.description }}</p>
+  {% endif %}
+  <nav class="section-nav">
+    {% for item in items %}
+    <a href="{{ prefix }}{{ item.path }}" class="section-link">
+      <strong>{{ item.frontmatter.title }}</strong>
+      {% if item.frontmatter.description %}
+      <span>{{ item.frontmatter.description }}</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </nav>
+</article>
+{% endblock content %}

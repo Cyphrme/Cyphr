@@ -1,0 +1,307 @@
+/* blog.cyphr.me — top-header blog layout */
+@import "../../theme/cyphr.css";
+
+/* ── Layout ──────────────────────────────────────────────── */
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+main {
+  flex: 1;
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2rem 2rem 8rem;
+  width: 100%;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.site-header {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1.25rem 2rem;
+  border-bottom: 1px solid var(--rule);
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg);
+}
+
+.site-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  border-bottom: none;
+}
+
+.site-title:hover {
+  color: var(--accent-hover);
+  border-bottom: none;
+}
+
+.site-header nav {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.site-header nav a {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.site-header nav a:hover,
+.site-header nav a.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Post Header ─────────────────────────────────────────── */
+.post-header {
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.post-description {
+  font-size: 1.1rem;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  margin-bottom: 0.75rem;
+}
+
+.post-meta {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.post-tags {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.post-tags a {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.5em;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.post-tags a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Blog Listing ────────────────────────────────────────── */
+.post-list {
+  list-style: none;
+  padding: 0;
+}
+
+.post-list li {
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.post-list li:first-child {
+  padding-top: 0;
+}
+
+.post-list .post-link {
+  display: block;
+  border-bottom: none;
+}
+
+.post-list .post-link:hover {
+  border-bottom: none;
+}
+
+.post-list .post-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg);
+  transition: color 0.15s;
+}
+
+.post-link:hover .post-title {
+  color: var(--accent);
+}
+
+.post-list .post-desc {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+  margin-top: 0.3rem;
+  line-height: 1.55;
+}
+
+.post-list time {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  display: block;
+  margin-top: 0.35rem;
+}
+
+/* ── Post TOC sidebar ────────────────────────────────────── */
+.post-with-toc {
+  position: relative;
+}
+
+.toc-sidebar {
+  position: absolute;
+  top: 0;
+  left: 100%;
+  margin-left: 2rem;
+  width: 14rem;
+  height: 100%;
+}
+
+.toc-nav {
+  position: sticky;
+  top: 2rem;
+  border-left: 1px solid var(--border);
+  padding-left: 1rem;
+}
+
+.toc-toggle {
+  display: none;
+}
+
+.toc-label {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: block;
+  margin-bottom: 0.75rem;
+  user-select: none;
+}
+
+.toc-label::before {
+  content: "▾ ";
+  font-size: 0.65rem;
+}
+
+.toc-toggle:not(:checked) ~ .toc-label::before {
+  content: "▸ ";
+}
+
+.toc-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+  scrollbar-width: none;
+  opacity: 1;
+  transition: max-height 1s steps(20), opacity 0.3s ease;
+}
+
+.toc-toggle:not(:checked) ~ .toc-list {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.toc-list li {
+  margin-bottom: 0.15rem;
+}
+
+.toc-list a {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  border-bottom: none;
+  line-height: 1.7;
+  display: block;
+  padding: 0.1rem 0;
+  transition: color 0.15s;
+}
+
+.toc-list a:hover {
+  color: var(--accent);
+}
+
+.toc-level-3 { padding-left: 0.4rem; }
+.toc-level-4 { padding-left: 0.8rem; }
+
+/* ── Footer ──────────────────────────────────────────────── */
+.site-footer {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2.5rem 2rem 2rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  text-align: center;
+  width: 100%;
+}
+
+.site-footer span a {
+  color: var(--fg-muted);
+  transition: color 0.15s;
+}
+
+.site-footer span a:hover {
+  color: var(--accent);
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 1200px) {
+  .toc-sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .site-header {
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 2rem 1.25rem 1rem;
+  }
+
+  .site-header nav {
+    gap: 1rem;
+  }
+
+  main {
+    padding: 1.5rem 1.25rem 5rem;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+  }
+
+  .post-list li {
+    padding: 0.75rem 0;
+  }
+
+  .mermaid-diagram svg {
+    max-width: none;
+  }
+}

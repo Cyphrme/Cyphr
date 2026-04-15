@@ -1,0 +1,13 @@
+author   = "Cyphr Contributors"
+base_url = "https://docs.cyphr.me"
+title    = "cyphr docs"
+
+[paths]
+content   = "content"
+output    = "public"
+static    = "static"
+templates = "templates"
+
+[nav]
+nested = true
+toc    = true

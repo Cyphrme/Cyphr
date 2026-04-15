@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  {% if page.description %}
+  <meta name="description" content="{{ page.description }}" />{% endif %}
+  <title>{% block title %}{{ title }} | {{ config.title }}{% endblock title %}</title>
+  <link rel="canonical" href="{{ config.base_url }}{{ page_path }}" />
+  <link rel="stylesheet" href="{{ prefix }}/style.css" />
+</head>
+
+<body>
+  <header class="site-header">
+    <a href="{{ prefix }}/index.html" class="site-title">cyphr</a>
+    <nav>
+      {% for item in nav %}
+      <a href="{{ prefix }}{{ item.path }}" {% if page_path==item.path %}class="active" {% endif %}>{{ item.label }}</a>
+      {% endfor %}
+    </nav>
+  </header>
+  <main>{% block content %}{% endblock content %}</main>
+  <footer class="site-footer">
+    <span>
+      <a href="https://cyphr.me">cyphr.me</a> ·
+      <a href="https://docs.cyphr.me">docs</a> ·
+      <a href="https://github.com/Cyphrme/Cyphr">github</a>
+    </span>
+  </footer>
+</body>
+
+</html>

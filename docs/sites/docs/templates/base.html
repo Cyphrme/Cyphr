@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  {% if page.description %}
+  <meta name="description" content="{{ page.description }}" />{% endif %}
+  <title>{% block title %}{{ title }} | {{ config.title }}{% endblock title %}</title>
+  <link rel="canonical" href="{{ config.base_url }}{{ page_path }}" />
+  <link rel="stylesheet" href="{{ prefix }}/style.css" />
+</head>
+
+<body>
+  <aside class="sidebar">
+    <header>
+      <a href="{{ prefix }}/index.html" class="logo">cyphr</a>
+      <span class="tagline">protocol documentation</span>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <label for="nav-toggle" class="hamburger" aria-label="Toggle navigation">
+        <span></span>
+        <span></span>
+        <span></span>
+      </label>
+    </header>
+    <nav>
+      {% for item in nav %}
+      {% set section_prefix = item.path | replace(from="index.html", to="") %}
+      {% set is_current_section = page_path is starting_with(section_prefix) %}
+      <a href="{{ prefix }}{{ item.path }}" {% if page_path==item.path %}class="active" {% endif %}>{{ item.label }}</a>
+      {% if page_path == item.path and page.toc and anchors %}
+      <div class="nav-anchors">
+        {% for anchor in anchors %}
+        <a href="#{{ anchor.id }}" class="anchor-link level-{{ anchor.level }}">{{ anchor.label | strip_parens }}</a>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if config.nav.nested and item.children %}
+      <div class="nav-children{% if is_current_section %} expanded{% endif %}">
+        {% for child in item.children %}
+        <a href="{{ prefix }}{{ child.path }}" {% if page_path==child.path %}class="active" {% endif %}>{{ child.label }}</a>
+        {% if page_path == child.path and page.toc and anchors %}
+        <div class="nav-anchors">
+          {% for anchor in anchors %}
+          <a href="#{{ anchor.id }}" class="anchor-link level-{{ anchor.level }}">{{ anchor.label | strip_parens }}</a>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endfor %}
+    </nav>
+    <footer class="sidebar-footer">
+      <a href="https://github.com/Cyphrme/Cyphr">GitHub</a>
+      <span>cyphr.me</span>
+    </footer>
+  </aside>
+  <main>{% block content %}{% endblock content %}</main>
+</body>
+
+</html>

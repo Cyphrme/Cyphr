@@ -1,0 +1,13 @@
+author   = "Cyphr Contributors"
+base_url = "https://blog.cyphr.me"
+title    = "cyphr blog"
+
+[paths]
+content   = "content"
+output    = "public"
+static    = "static"
+templates = "templates"
+
+[nav]
+nested = false
+toc    = false
