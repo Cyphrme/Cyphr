@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "rs/v*"
+      - "go/v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Determine release scope from tag ───────────────────────
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.parse.outputs.scope }}
+      version: ${{ steps.parse.outputs.version }}
+      tag: ${{ github.ref_name }}
+    steps:
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          SCOPE="${TAG%%/v*}"
+          VERSION="${TAG#*/}"
+          echo "scope=${SCOPE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  # ── Generate changelog scoped to the relevant directory ────
+  changelog:
+    runs-on: ubuntu-latest
+    needs: meta
+    outputs:
+      body: ${{ steps.cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate changelog
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: >-
+            --latest
+            --strip header
+            --include-path "${{ needs.meta.outputs.scope }}/**"
+            --include-path "tests/**"
+            --include-path "SPEC.md"
+            --include-path "docs/**"
+
+  # ── Cross-compile Rust CLI binaries ────────────────────────
+  build-rs:
+    if: needs.meta.outputs.scope == 'rs'
+    needs: [meta, changelog]
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: cyphr-x86_64-linux
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: cyphr-aarch64-linux
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: cyphr-x86_64-macos
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: cyphr-aarch64-macos
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: cyphr-x86_64-windows
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            artifact: cyphr-aarch64-windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+
+      # Cross-compilation toolchain for aarch64-linux
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p cyphr-cli
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.artifact }}.tar.gz cyphr
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../${{ matrix.artifact }}.zip cyphr.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            rs/${{ matrix.artifact }}.tar.gz
+            rs/${{ matrix.artifact }}.zip
+          if-no-files-found: error
+
+  # ── Create GitHub Release ──────────────────────────────────
+  release:
+    needs: [meta, changelog, build-rs]
+    # Run even if build-rs was skipped (Go releases)
+    if: always() && needs.changelog.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        if: needs.meta.outputs.scope == 'rs'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ needs.meta.outputs.scope }} ${{ needs.meta.outputs.version }}"
+          body: ${{ needs.changelog.outputs.body }}
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          fail_on_unmatched_files: false

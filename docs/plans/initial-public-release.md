@@ -98,10 +98,10 @@ _(Resolved)_
    - [x] Scaffold blog site targeting `blog.cyphr.me` (`docs/sites/blog/`).
 
 4. **Phase 4: Release Pipeline & Malt Publishing** — Registry publishing and release automation. _(Depends on Phase 1)_
-   - [ ] Establish `cliff.toml` conventional commit parser config.
-   - [ ] Publish `malt` independently to crates.io and Go registries.
-   - [ ] Publish `cyphr` crates to crates.io.
-   - [ ] Deploy GitHub Action for cross-compiling CLI binaries and generating release changelogs.
+   - [x] Establish `cliff.toml` conventional commit parser config.
+   - [ ] Publish `malt` independently to crates.io and Go registries. _(manual)_
+   - [ ] Publish `cyphr` crates to crates.io. _(manual)_
+   - [x] Deploy GitHub Action for cross-compiling CLI binaries and generating release changelogs (`release.yml`, scoped `rs/v*` and `go/v*` tags).
 
 ## Verification
 
