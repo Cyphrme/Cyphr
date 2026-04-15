@@ -33,23 +33,32 @@ func main() {
 }
 ```
 
-### Verify and Apply Transactions
+### Verify and Apply Cozies
 
 ```go
-// Receive a signed transaction (Coz message)
+// Receive a signed coz (Coz message)
 cozMsg := &coz.Coz{
     Pay: payloadBytes,
     Sig: signatureBytes,
 }
 
 // Verify signature and parse
-vtx, err := principal.VerifyTransaction(cozMsg, newKey)
+vt, err := principal.VerifyCoz(cozMsg, newKey)
 if err != nil {
     // Handle: ErrInvalidSignature, ErrUnknownKey, ErrKeyRevoked, etc.
 }
 
-// Apply verified transaction as atomic commit
-commit, err := principal.ApplyTransaction(vtx)
+// Apply verified coz as atomic commit
+commit, err := principal.ApplyCoz(vt)
+```
+
+### Multi-Coz Commits
+
+```go
+batch := principal.BeginCommit()
+batch.Apply(vt1) // first coz
+batch.Apply(vt2) // second coz sees first's mutations
+commit, err := batch.Finalize()
 ```
 
 ### Record Actions (Level 4)
@@ -63,7 +72,7 @@ action := &cyphr.Action{
 
 err := principal.RecordAction(action)
 // principal.Level() is now Level4
-// principal.DS() contains action digest
+// principal.DR() contains action digest
 ```
 
 ## API Reference
@@ -77,23 +86,27 @@ err := principal.RecordAction(action)
 
 ### State Accessors
 
-| Method    | Returns          | Description                        |
-| --------- | ---------------- | ---------------------------------- |
-| `PR()`    | `PrincipalRoot`  | Permanent identity (never changes) |
-| `PS()`    | `PrincipalState` | Current state (evolves)            |
-| `AS()`    | `AuthState`      | Auth state = H(KS, TS?, RS?)       |
-| `KS()`    | `KeyState`       | Key state = H(thumbprints)         |
-| `DS()`    | `DataState`      | Data state = H(action czds)        |
-| `Level()` | `Level`          | Current feature level (1-6)        |
+| Method         | Returns             | Description                            |
+| -------------- | ------------------- | -------------------------------------- |
+| `PG()`         | `*PrincipalGenesis` | Permanent identity (nil for L1/L2)     |
+| `PR()`         | `PrincipalRoot`     | Current principal root (evolves)       |
+| `SR()`         | `StateRoot`         | State root = MR(AR, DR?)               |
+| `AR()`         | `AuthRoot`          | Auth root = MR(KR, RR?)                |
+| `KR()`         | `KeyRoot`           | Key root = MR(thumbprints)             |
+| `DR()`         | `*DataRoot`         | Data root = H(action czds), nil if L<4 |
+| `CR()`         | `*CommitRoot`       | Commit root (MALT of TRs)              |
+| `TR()`         | `*TransactionRoot`  | Transaction root of latest commit      |
+| `Level()`      | `Level`             | Current feature level (1-4)            |
+| `HashAlg()`    | `HashAlg`           | Primary hash algorithm                 |
+| `ActiveAlgs()` | `[]HashAlg`         | Hash algorithms from active keyset     |
 
-### Transactions
+### Cozies
 
-| Method                            | Description                           |
-| --------------------------------- | ------------------------------------- |
-| `VerifyTransaction(coz, newKey)`  | Verify signature, return `VerifiedTx` |
-| `ApplyTransaction(vtx)`           | Apply verified tx as atomic commit    |
-| `BeginCommit()`                   | Start multi-tx commit batch           |
-| `ApplyTransactionUnsafe(tx, key)` | Testing only—no signature check       |
+| Method                   | Description                             |
+| ------------------------ | --------------------------------------- |
+| `VerifyCoz(coz, newKey)` | Verify signature, return `*VerifiedCoz` |
+| `ApplyCoz(vt)`           | Apply verified coz as atomic commit     |
+| `BeginCommit()`          | Start multi-coz commit batch            |
 
 ### Keys
 
@@ -109,16 +122,20 @@ err := principal.RecordAction(action)
 ```go
 import "errors"
 
-commit, err := principal.ApplyTransaction(vtx)
+commit, err := principal.ApplyCoz(vt)
 switch {
 case errors.Is(err, cyphr.ErrInvalidPrior):
-    // Transaction pre doesn't match current CS
+    // Coz pre doesn't match current PR
 case errors.Is(err, cyphr.ErrTimestampPast):
-    // Transaction timestamp older than latest
+    // Coz timestamp older than latest
 case errors.Is(err, cyphr.ErrDuplicateKey):
-    // Key already in KS
+    // Key already in KR
 case errors.Is(err, cyphr.ErrNoActiveKeys):
     // Would leave principal with no active keys
+case errors.Is(err, cyphr.ErrEmptyCommit):
+    // Finalized a commit with no cozies
+case errors.Is(err, cyphr.ErrCommitMismatch):
+    // Arrow field doesn't match computed state
 }
 ```
 
@@ -133,8 +150,8 @@ go test ./...
 
 | Suite          | Tests | Description                          |
 | -------------- | ----- | ------------------------------------ |
-| `TestGolden_*` | 41    | Pre-computed fixtures (golden tests) |
-| `TestE2E_*`    | 19    | Dynamic intent-driven tests          |
+| `TestGolden_*` | 47    | Pre-computed fixtures (golden tests) |
+| `TestE2E_*`    | 21    | Dynamic intent-driven tests          |
 | Unit tests     | ~15   | Package-level unit tests             |
 
 **Golden tests** consume pre-computed JSON fixtures from `../tests/golden/`.

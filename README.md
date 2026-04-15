@@ -2,31 +2,31 @@
 
 **Self-sovereign identity and authentication built on cryptographic state trees.**
 
-Cyphr replaces passwords with public key cryptography, enabling secure multi-device authentication, key rotation, and individually-signed atomic actions—all without a central authority.
+Cyphr replaces passwords with public key cryptography, enabling secure multi-device authentication, key rotation, and individually-signed atomic actions, all without a central authority.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                          PRINCIPAL                               │
 │  ┌───────────────────────────────────────────────────────────┐   │
-│  │  Principal Root (PR) — Permanent identity, never changes  │   │
+│  │  Principal Genesis (PG) — Permanent identity, never changes│  │
 │  └───────────────────────────────────────────────────────────┘   │
 │                               ▼                                  │
 │  ┌───────────────────────────────────────────────────────────┐   │
-│  │  Principal State (PS) = MR(CS, DS?)                       │   │
+│  │  Principal Root (PR) = MR(SR, CR?)                        │   │
 │  └───────────────────────────────────────────────────────────┘   │
 │            ▼                              ▼                      │
 │  ┌──────────────────────┐     ┌───────────────────────┐          │
-│  │  Commit State (CS)   │     │   Data State (DS)     │          │
-│  │  = MR(AS, CommitID)  │     │   = H(action czds)    │          │
+│  │  State Root (SR)     │     │  Commit Root (CR)     │          │
+│  │  = MR(AR, DR?)       │     │  = MALT(TR₀,TR₁,...) │          │
 │  └──────────────────────┘     └───────────────────────┘          │
 │            ▼                                                     │
-│  ┌──────────────────────┐                                        │
-│  │   Auth State (AS)    │                                        │
-│  │   = MR(KS, RS?)      │                                        │
-│  └──────────────────────┘                                        │
+│  ┌──────────────────────┐     ┌───────────────────────┐          │
+│  │   Auth Root (AR)     │     │   Data Root (DR)      │          │
+│  │   = MR(KR, RR?)      │     │   = H(action czds)    │          │
+│  └──────────────────────┘     └───────────────────────┘          │
 │         ▼        ▼                                               │
 │  ┌──────────┐ ┌──────┐                                           │
-│  │  KS      │ │  RS  │                                           │
+│  │  KR      │ │  RR  │                                           │
 │  │ (keys)   │ │(rule)│                                           │
 │  └──────────┘ └──────┘                                           │
 └──────────────────────────────────────────────────────────────────┘
@@ -117,7 +117,7 @@ Every key mutation forms a cryptographically linked chain:
 Genesis (tmb)  ──pre──▶  key/create  ──pre──▶  key/revoke  ──pre──▶  ...
      │                       │                      │
      ▼                       ▼                      ▼
-    CS₀                     CS₁                    CS₂
+    PR₀                     PR₁                    PR₂
 ```
 
 ## Repository Structure
@@ -132,9 +132,10 @@ Cyphr/
 │   ├── cyphr/              # Core crate
 │   ├── cyphr-storage/      # Storage crate
 │   ├── cyphr-cli/          # CLI binary
+│   ├── malt/               # Merkle Append-only Log Tree
 │   └── README.md           # Rust-specific documentation
 ├── tests/                  # Language-agnostic test fixtures
-│   ├── golden/             # Pre-computed golden fixtures (40 tests)
+│   ├── golden/             # Pre-computed golden fixtures (47 tests)
 │   ├── e2e/                # E2E intent files (5 scenarios)
 │   └── README.md           # Test fixture documentation
 ```
@@ -152,7 +153,7 @@ All tests pass using shared language-agnostic test vectors.
 
 ## Built On Coz
 
-Cyphr uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations—a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
+Cyphr uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations. Coz is a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
 
 ## Documentation
 

@@ -17,8 +17,8 @@ Implementors in any language can consume the golden JSON files directly. The int
 tests/
 ├── keys/
 │   └── pool.toml         # Shared key pool (public + private keys)
-├── intents/
-│   └── *.toml            # Human-readable test definitions
+├── e2e/
+│   └── *.toml            # Human-readable test definitions (intent files)
 ├── golden/
 │   └── <category>/*.json # Generated fixtures (one JSON per test case)
 └── README.md
@@ -91,15 +91,18 @@ For each JSON file in `golden/`:
 
 ### Test Categories
 
-| Category              | Path                          | Description                                          |
-| --------------------- | ----------------------------- | ---------------------------------------------------- |
-| `mutations`           | `golden/mutations/`           | Transaction mutations (key/add, key/delete, etc.)    |
-| `multi_key`           | `golden/multi_key/`           | Multi-key principal operations                       |
-| `algorithm_diversity` | `golden/algorithm_diversity/` | Cross-algorithm key management                       |
-| `state_computation`   | `golden/state_computation/`   | State digest verification (KS, CommitID, AS, CS, PS) |
-| `edge_cases`          | `golden/edge_cases/`          | Ordering, idempotency, combined operations           |
-| `actions`             | `golden/actions/`             | Level 4 action recording                             |
-| `errors`              | `golden/errors/`              | Error condition rejection tests                      |
+| Category                     | Path                                 | Description                                          |
+| ---------------------------- | ------------------------------------ | ---------------------------------------------------- |
+| `mutations`                  | `golden/mutations/`                  | Transaction mutations (key/add, key/delete, etc.)    |
+| `multi_key`                  | `golden/multi_key/`                  | Multi-key principal operations                       |
+| `algorithm_diversity`        | `golden/algorithm_diversity/`        | Cross-algorithm key management                       |
+| `state_computation`          | `golden/state_computation/`          | State digest verification (KS, CommitID, AS, CS, PS) |
+| `edge_cases`                 | `golden/edge_cases/`                 | Ordering, idempotency, combined operations           |
+| `actions`                    | `golden/actions/`                    | Level 4 action recording                             |
+| `errors`                     | `golden/errors/`                     | Error condition rejection tests                      |
+| `authentication_constraints` | `golden/authentication_constraints/` | Constraints verifying authentication rules           |
+| `data_action_constraints`    | `golden/data_action_constraints/`    | Constraints over data actions                        |
+| `structural_constraints`     | `golden/structural_constraints/`     | Structural validation algorithms                     |
 
 ### Setup Modifiers
 
@@ -323,16 +326,19 @@ cargo run -p fixture-gen -- \
 
 ### Golden Tests (Pre-Computed Fixtures)
 
-| Category            | Tests  |
-| ------------------- | ------ |
-| mutations           | 6      |
-| multi_key           | 4      |
-| algorithm_diversity | 2      |
-| state_computation   | 9      |
-| edge_cases          | 4      |
-| actions             | 5      |
-| errors              | 10     |
-| **Total**           | **40** |
+| Category                   | Tests  |
+| -------------------------- | ------ |
+| mutations                  | 6      |
+| multi_key                  | 4      |
+| algorithm_diversity        | 2      |
+| state_computation          | 9      |
+| edge_cases                 | 4      |
+| actions                    | 5      |
+| errors                     | 13     |
+| authentication_constraints | 1      |
+| data_action_constraints    | 1      |
+| structural_constraints     | 2      |
+| **Total**                  | **47** |
 
 ---
 
@@ -377,6 +383,6 @@ cd rs && cargo test -p cyphr-storage --test e2e
 
 | Type         | Tests  |
 | ------------ | ------ |
-| Golden       | 40     |
+| Golden       | 47     |
 | E2E          | 21     |
-| **Combined** | **61** |
+| **Combined** | **68** |

@@ -17,7 +17,7 @@ cyphr = { path = "path/to/cyphr/rs" }
 use cyphr::{Principal, Key};
 use coz::Algorithm;
 
-fn main() -> cyphr::Result<()> {
+fn main() -> cyphr::error::Result<()> {
     // Generate a key
     let key = Key::generate(Algorithm::ES256)?;
 
@@ -25,18 +25,18 @@ fn main() -> cyphr::Result<()> {
     let principal = Principal::implicit(key)?;
 
     println!("Identity (PR): {:?}", principal.pr());
-    println!("Level: {:?}", principal.level()); // Level::One
+    println!("Level: {:?}", principal.level()); // Level::L1
     Ok(())
 }
 ```
 
-### Verify and Apply Transactions
+### Verify and Apply Cozies
 
 ```rust
-use cyphr::{Principal, verify_transaction};
+use cyphr::verify_coz;
 
-// Verify signature and parse transaction
-let vtx = verify_transaction(
+// Verify signature and parse coz
+let vtx = verify_coz(
     pay_json,     // &[u8] - JSON payload
     sig,          // &[u8] - signature bytes
     &signer_key,  // key that signed
@@ -44,8 +44,17 @@ let vtx = verify_transaction(
     Some(new_key) // new key for add/replace
 )?;
 
-// Apply verified transaction (safe API)
-principal.apply_verified(vtx)?;
+// Apply verified coz as atomic commit
+let commit = principal.apply_transaction(vtx)?;
+```
+
+### Multi-Coz Commits
+
+```rust
+let mut scope = principal.begin_commit();
+scope.apply(vtx1)?;
+scope.apply(vtx2)?;
+let commit = scope.finalize()?;
 ```
 
 ### Record Actions (Level 4)
@@ -53,15 +62,17 @@ principal.apply_verified(vtx)?;
 ```rust
 use cyphr::Action;
 
-let action = Action {
-    signer: signer_tmb.clone(),
-    now: 1700000000,
-    czd: action_czd,
-};
+let action = Action::new(
+    "cyphr.me/action".to_string(),
+    signer_tmb,
+    1700000000,
+    action_czd,
+    raw_coz_json,
+);
 
 principal.record_action(action)?;
-// principal.level() is now Level::Four
-// principal.data_state() contains action digest
+// principal.level() is now Level::L4
+// principal.data_root() contains action digest
 ```
 
 ## API Reference
@@ -75,22 +86,27 @@ principal.record_action(action)?;
 
 ### State Accessors
 
-| Method         | Returns              | Description                        |
-| -------------- | -------------------- | ---------------------------------- |
-| `pr()`         | `&PrincipalRoot`     | Permanent identity (never changes) |
-| `ps()`         | `&PrincipalState`    | Current state (evolves)            |
-| `auth_state()` | `&AuthState`         | Auth state = H(KS, TS?, RS?)       |
-| `key_state()`  | `&KeyState`          | Key state = H(thumbprints)         |
-| `data_state()` | `Option<&DataState>` | Data state = H(action czds)        |
-| `level()`      | `Level`              | Current feature level              |
+| Method          | Returns                     | Description                             |
+| --------------- | --------------------------- | --------------------------------------- |
+| `pg()`          | `Option<&PrincipalGenesis>` | Permanent identity (None for L1/L2)     |
+| `pr()`          | `&PrincipalRoot`            | Current principal root (evolves)        |
+| `sr()`          | `Option<&StateRoot>`        | State root = MR(AR, DR?)                |
+| `auth_root()`   | `&AuthRoot`                 | Auth root = MR(KR, RR?)                 |
+| `key_root()`    | `&KeyRoot`                  | Key root = MR(thumbprints)              |
+| `data_root()`   | `Option<&DataRoot>`         | Data root = H(action czds), None if L<4 |
+| `cr()`          | `Option<&CommitRoot>`       | Commit root (MALT of TRs)               |
+| `current_tr()`  | `Option<&TransactionRoot>`  | Transaction root of latest commit       |
+| `level()`       | `Level`                     | Current feature level (L1-L4)           |
+| `hash_alg()`    | `HashAlg`                   | Primary hash algorithm                  |
+| `active_algs()` | `&[HashAlg]`                | Hash algorithms from active keyset      |
 
-### Transactions
+### Cozies
 
-| Method                       | Description                                    |
-| ---------------------------- | ---------------------------------------------- |
-| `verify_transaction(...)`    | Verify signature, return `VerifiedTransaction` |
-| `apply_verified(vtx)`        | Apply verified transaction (safe API)          |
-| `apply_transaction(tx, key)` | Unsafe—no signature check                      |
+| Function / Method                         | Description                            |
+| ----------------------------------------- | -------------------------------------- |
+| `verify_coz(pay, sig, key, czd, new_key)` | Verify signature, return `VerifiedCoz` |
+| `apply_transaction(vtx)`                  | Apply verified coz as atomic commit    |
+| `begin_commit()`                          | Start multi-coz commit scope           |
 
 ### Keys
 
@@ -106,14 +122,28 @@ principal.record_action(action)?;
 ```rust
 use cyphr::Error;
 
-match principal.apply_verified(vtx) {
+match principal.apply_transaction(vtx) {
     Ok(_) => { /* success */ }
-    Err(Error::InvalidPrior) => { /* pre doesn't match AS */ }
+    Err(Error::InvalidPrior) => { /* pre doesn't match current PR */ }
     Err(Error::TimestampPast) => { /* timestamp too old */ }
-    Err(Error::DuplicateKey) => { /* key already in KS */ }
+    Err(Error::DuplicateKey) => { /* key already in KR */ }
     Err(Error::NoActiveKeys) => { /* would leave 0 keys */ }
+    Err(Error::EmptyCommit) => { /* finalized with no cozies */ }
+    Err(Error::CommitMismatch) => { /* arrow doesn't match computed state */ }
     Err(e) => { /* other error */ }
 }
+```
+
+## Crate Structure
+
+```
+rs/
+├── cyphr/            # Core protocol logic (Principal, state, multihash)
+├── cyphr-storage/    # Storage backends (FileStore, export/import)
+├── cyphr-cli/        # CLI binary
+├── malt/             # Merkle Append-only Log Tree
+├── test-fixtures/    # Golden fixture loading
+└── fixture-gen/      # Fixture generation binary
 ```
 
 ## Testing
@@ -127,8 +157,8 @@ cargo test
 
 | Suite             | Tests | Description                          |
 | ----------------- | ----- | ------------------------------------ |
-| `golden_fixtures` | 41    | Pre-computed fixtures (golden tests) |
-| `e2e.rs`          | 19    | Dynamic intent-driven tests          |
+| `golden_fixtures` | 47    | Pre-computed fixtures (golden tests) |
+| `e2e.rs`          | 21    | Dynamic intent-driven tests          |
 | Unit tests        | ~20   | Crate-level unit tests               |
 
 **Golden tests** consume pre-computed JSON fixtures from `../tests/golden/`.

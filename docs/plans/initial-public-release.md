@@ -76,21 +76,21 @@ _(Resolved)_
 
 1. **Phase 1: Codebase Rename & Test Remediation** — Fully purge Cyphrpass nomenclature.
    - [x] Confirm exact crate/module name with user.
-   - [ ] Execute GitHub repository rename (`Cyphrme/Cyphrpass` → `Cyphrme/Cyphr`).
-   - [ ] Execute codebase rename with the following mapping:
+   - [x] Execute GitHub repository rename (`Cyphrme/Cyphrpass` → `Cyphrme/Cyphr`).
+   - [x] Execute codebase rename with the following mapping:
      - `cyphrpass` → `cyphr` (crate names, module names, struct references)
      - `Cyphrpass` → `Cyphr` (type names, doc references, prose)
      - `cyphr.me/cyphrpass/` → `cyphr.me/proto/` (intent `typ` strings)
      - `cyphrpass-storage` → `cyphr-storage`, `cyphrpass-cli` → `cyphr-cli`
      - Directory renames as needed (e.g., `rs/cyphrpass/` → `rs/cyphr/`)
-   - [ ] Update intent TOML files with new `typ` domain.
-   - [ ] Run `cargo run -p fixture-gen` to regenerate golden test fixtures.
-   - [ ] Verify `go test ./...` and `cargo test` pass with full parity.
+   - [x] Update intent TOML files with new `typ` domain.
+   - [x] Run `cargo run -p fixture-gen` to regenerate golden test fixtures.
+   - [x] Verify `go test ./...` and `cargo test` pass with full parity.
 
 2. **Phase 2: Formal Documentation Audit** — Ensure external materials match the codebase. _(Depends on Phase 1)_
-   - [ ] Scrub `docs/` for out-of-date plans and delete/archive irrelevancies.
-   - [ ] Audit `SPEC.md` and `README.md` to ensure Cyphr Protocol constraints are accurately represented with the new nomenclature.
-   - [ ] Standardize Rust and Go in-code documentation.
+   - [x] Scrub `docs/` for out-of-date plans and delete/archive irrelevancies.
+   - [x] Audit `SPEC.md` and `README.md` to ensure Cyphr Protocol constraints are accurately represented with the new nomenclature.
+   - [x] Standardize Rust and Go in-code documentation.
 
 3. **Phase 3: Sukr Subdomain Provisioning** — Establish `.cyphr.me` static sites. _(Depends on Phase 1)_
    - [ ] Create a shared `theme/` directory for unified CSS.
