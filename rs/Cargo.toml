@@ -3,7 +3,6 @@ members = [
   "cyphr",
   "cyphr-storage",
   "cyphr-cli",
-  "malt",
   "test-fixtures",
   "fixture-gen",
 ]
