@@ -7,17 +7,9 @@ import (
 	"github.com/cyphrme/coz"
 )
 
-// ParsedCoz type constants per SPEC §4.2.
-// These are typ suffixes; full typ is "<authority>/<suffix>".
-const (
-	TypKeyCreate  = "key/create" // SPEC §4.2
-	TypKeyDelete  = "key/delete"
-	TypKeyReplace = "key/replace"
-	TypKeyRevoke  = "key/revoke"
-
-	TypPrincipalCreate = "principal/create" // SPEC §5.1 genesis finalization
-	TypCommitCreate    = "commit/create"    // Arrow finality (SPEC §4.4)
-)
+// CozKind values are the canonical typ suffixes (SPEC §4.2).
+// Full typ is "<authority>/cyphr/<suffix>" per SPEC §7.2.
+// typSuffix() performs authority-agnostic matching via HasSuffix.
 
 // CozKind represents the type of auth mutation.
 type CozKind string
@@ -26,7 +18,7 @@ const (
 	TxKeyCreate       CozKind = "key/create"
 	TxKeyDelete       CozKind = "key/delete"
 	TxKeyReplace      CozKind = "key/replace"
-	TxRevoke          CozKind = "key/revoke"
+	TxSelfRevoke      CozKind = "key/revoke"       // Level 1+: signer revokes itself, no ID field
 	TxPrincipalCreate CozKind = "principal/create" // SPEC §5.1 genesis finalization
 	TxCommitCreate    CozKind = "commit/create"    // Arrow finality (SPEC §4.4)
 )
@@ -105,11 +97,11 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 		HashAlg: HashAlgFromSEAlg(pay.Alg),
 	}
 
-	// Parse typ suffix to determine kind
-	suffix := typSuffix(pay.Typ)
+	// Determine kind from typ via authority-agnostic suffix matching.
+	kind := typSuffix(pay.Typ)
 
-	switch suffix {
-	case TypKeyCreate:
+	switch kind {
+	case TxKeyCreate:
 		cz.Kind = TxKeyCreate
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
@@ -118,7 +110,7 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 			return nil, err
 		}
 
-	case TypKeyDelete:
+	case TxKeyDelete:
 		cz.Kind = TxKeyDelete
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
@@ -127,7 +119,7 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 			return nil, err
 		}
 
-	case TypKeyReplace:
+	case TxKeyReplace:
 		cz.Kind = TxKeyReplace
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
@@ -136,14 +128,16 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 			return nil, err
 		}
 
-	case TypKeyRevoke:
-		cz.Kind = TxRevoke
+	case TxSelfRevoke:
+		// [no-revoke-non-self]: signer IS the revoked key. ID, if present,
+		// must match the signer (enforced in applyCozInternal).
+		// Phase 3 will update intent files to omit ID and tighten this further.
+		cz.Kind = TxSelfRevoke
 		if pay.ID != "" {
 			if err := cz.parseID(pay.ID); err != nil {
 				return nil, err
 			}
 		}
-		// All revoke types require pre (unified pre semantics)
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
 		}
@@ -151,9 +145,8 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 			return nil, ErrMalformedPayload
 		}
 
-	case TypPrincipalCreate:
-		// SPEC §5.1: Genesis finalization coz
-		// For principal/create, id is an AuthRoot (tagged digest format)
+	case TxPrincipalCreate:
+		// SPEC §5.1: Genesis finalization. ID is the current AuthRoot.
 		cz.Kind = TxPrincipalCreate
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err
@@ -162,9 +155,8 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 			return nil, err
 		}
 
-	case TypCommitCreate:
-		// Arrow finality (SPEC §4.4): commit/create carries the arrow field.
-		// Arrow is parsed below at line ~178. No pre or id required.
+	case TxCommitCreate:
+		// Arrow finality (SPEC §4.4): arrow field parsed below.
 		cz.Kind = TxCommitCreate
 
 	default:
@@ -238,21 +230,20 @@ func (cz *ParsedCoz) parseArrow(arrow string) error {
 	return nil
 }
 
-// typSuffix extracts the coz type suffix from a full typ string.
-// E.g., "cyphr.me/key/create" or "cyphr.me/cyphr/key/create" both return "key/create".
-// Uses suffix matching against known types for robustness against varying authority paths.
-func typSuffix(typ string) string {
-	known := []string{
-		TypKeyCreate,
-		TypKeyDelete,
-		TypKeyReplace,
-		TypKeyRevoke,
-		TypPrincipalCreate,
-		TypCommitCreate,
-	}
-	for _, suffix := range known {
-		if strings.HasSuffix(typ, suffix) {
-			return suffix
+// typSuffix returns the CozKind matching typ via authority-agnostic suffix matching.
+// E.g., "cyphr.me/cyphr/key/create", "example.com/cyphr/key/create", or the
+// legacy "cyphr.me/key/create" all resolve to TxKeyCreate.
+func typSuffix(typ string) CozKind {
+	for _, kind := range []CozKind{
+		TxKeyCreate,
+		TxKeyDelete,
+		TxKeyReplace,
+		TxSelfRevoke,
+		TxPrincipalCreate,
+		TxCommitCreate,
+	} {
+		if strings.HasSuffix(typ, string(kind)) {
+			return kind
 		}
 	}
 	return ""

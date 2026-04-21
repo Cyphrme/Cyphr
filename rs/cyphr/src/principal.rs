@@ -82,9 +82,9 @@ pub enum Level {
 #[derive(Debug, Clone)]
 pub struct PrincipalCore {
     /// Current Principal State.
-    pub(crate) ps: PrincipalRoot,
+    pub(crate) pr: PrincipalRoot,
     /// Current Key State.
-    pub(crate) ks: KeyRoot,
+    pub(crate) kr: KeyRoot,
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
     /// Per-algorithm MALT trees for computing Commit Root (CR).
@@ -94,9 +94,9 @@ pub struct PrincipalCore {
     /// Current State Root: SR = MR(AR, DR?, embedding?).
     pub(crate) sr: Option<StateRoot>,
     /// Current Auth State.
-    pub(crate) auth_root: AuthRoot,
+    pub(crate) ar: AuthRoot,
     /// Current Data State (Level 4+).
-    pub(crate) ds: Option<DataRoot>,
+    pub(crate) dr: Option<DataRoot>,
     /// Auth ledger.
     pub(crate) auth: AuthLedger,
     /// Data ledger (Level 4+).
@@ -116,14 +116,14 @@ impl Default for PrincipalCore {
     /// the Nascent → Established transition. Never observable externally.
     fn default() -> Self {
         Self {
-            ps: PrincipalRoot::default(),
-            ks: KeyRoot::default(),
+            pr: PrincipalRoot::default(),
+            kr: KeyRoot::default(),
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
             sr: None,
-            auth_root: AuthRoot::default(),
-            ds: None,
+            ar: AuthRoot::default(),
+            dr: None,
             auth: AuthLedger::default(),
             data: DataLedger::default(),
             hash_alg: HashAlg::Sha256,
@@ -164,12 +164,12 @@ impl Default for PrincipalKind {
 /// - **Established** (L3+): PR is frozen — cannot be removed.
 ///
 /// All shared state is accessed via `Deref<Target = PrincipalCore>`, so
-/// `self.ps`, `self.ks`, etc. work transparently in all code paths.
+/// `self.pr`, `self.kr`, etc. work transparently in all code paths.
 #[derive(Debug, Clone)]
 pub struct Principal(PrincipalKind);
 
 // Deref delegates field access to PrincipalCore transparently.
-// This means `self.ps`, `self.ks`, `self.auth_root`, etc. all
+// This means `self.pr`, `self.kr`, `self.ar`, etc. all
 // resolve automatically — zero changes needed in existing methods.
 impl std::ops::Deref for Principal {
     type Target = PrincipalCore;
@@ -235,27 +235,27 @@ impl Principal {
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
-        // KS = tmb (single key promotes)
-        let ks = compute_kr(&[&key.tmb], None, &active_algs)?;
-        // AS = KS (no Commit ID, promotes)
-        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        // KR = tmb (single key promotes)
+        let kr = compute_kr(&[&key.tmb], None, &active_algs)?;
+        // AR = KR (no Commit ID, promotes)
+        let ar = compute_ar(&kr, None, None, &active_algs)?;
         // SR = AR (no DR at genesis, promotes)
-        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        let sr = compute_sr(&ar, None, None, &active_algs)?;
         // PR = SR (no CR at genesis, promotes)
-        let ps = compute_pr(&cs, None, None, &active_algs)?;
+        let pr = compute_pr(&sr, None, None, &active_algs)?;
 
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64, key);
 
         Ok(Self(PrincipalKind::Nascent(PrincipalCore {
-            ps,
-            ks,
+            pr,
+            kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
-            sr: Some(cs),
-            auth_root,
-            ds: None,
+            sr: Some(sr),
+            ar,
+            dr: None,
             auth: AuthLedger {
                 keys,
                 ..Default::default()
@@ -285,16 +285,16 @@ impl Principal {
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
-        // Collect thumbprints for KS computation
+        // Collect thumbprints for KR computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_kr(&thumbprints, None, &active_algs)?;
+        let kr = compute_kr(&thumbprints, None, &active_algs)?;
 
-        // AS = KS (no Commit ID yet)
-        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
+        // AR = KR (no Commit ID yet)
+        let ar = compute_ar(&kr, None, None, &active_algs)?;
         // SR = AR (no DR at genesis, promotes)
-        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        let sr = compute_sr(&ar, None, None, &active_algs)?;
         // PR = SR (no CR at genesis, promotes)
-        let ps = compute_pr(&cs, None, None, &active_algs)?;
+        let pr = compute_pr(&sr, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -302,14 +302,14 @@ impl Principal {
         }
 
         Ok(Self(PrincipalKind::Nascent(PrincipalCore {
-            ps,
-            ks,
+            pr,
+            kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
-            sr: Some(cs),
-            auth_root,
-            ds: None,
+            sr: Some(sr),
+            ar,
+            dr: None,
             auth: AuthLedger {
                 keys: key_map,
                 ..Default::default()
@@ -337,8 +337,8 @@ impl Principal {
     /// Returns `NoActiveKeys` if `keys` is empty.
     /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
     pub fn from_checkpoint(
-        pr: Option<PrincipalGenesis>,
-        auth_root: AuthRoot,
+        pg: Option<PrincipalGenesis>,
+        ar: AuthRoot,
         keys: Vec<Key>,
     ) -> Result<Self> {
         if keys.is_empty() {
@@ -351,14 +351,14 @@ impl Principal {
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
-        // Compute KS from provided keys
+        // Compute KR from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let ks = compute_kr(&thumbprints, None, &active_algs)?;
+        let kr = compute_kr(&thumbprints, None, &active_algs)?;
 
         // SR = AR (no DR at checkpoint, promotes)
-        let cs = compute_sr(&auth_root, None, None, &active_algs)?;
+        let sr = compute_sr(&ar, None, None, &active_algs)?;
         // PR = SR (no CR at checkpoint, promotes)
-        let ps = compute_pr(&cs, None, None, &active_algs)?;
+        let pr = compute_pr(&sr, None, None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -366,14 +366,14 @@ impl Principal {
         }
 
         let core = PrincipalCore {
-            ps,
-            ks,
+            pr,
+            kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(),
             cr: None,
-            sr: Some(cs),
-            auth_root,
-            ds: None,
+            sr: Some(sr),
+            ar,
+            dr: None,
             auth: AuthLedger {
                 keys: key_map,
                 ..Default::default()
@@ -385,8 +385,8 @@ impl Principal {
             max_clock_skew: 0,
         };
 
-        Ok(match pr {
-            Some(pr) => Self(PrincipalKind::Established { core, pr }),
+        Ok(match pg {
+            Some(pg) => Self(PrincipalKind::Established { core, pr: pg }),
             None => Self(PrincipalKind::Nascent(core)),
         })
     }
@@ -408,12 +408,12 @@ impl Principal {
 
     /// Get the current Principal State.
     pub fn pr(&self) -> &PrincipalRoot {
-        &self.ps
+        &self.pr
     }
 
     /// Get the current Auth State.
     pub fn auth_root(&self) -> &AuthRoot {
-        &self.auth_root
+        &self.ar
     }
 
     /// Get the current Principal State as a tagged digest string (alg:digest format).
@@ -428,7 +428,7 @@ impl Principal {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
-        let bytes = self.ps.0.get_or_err(first_alg)?;
+        let bytes = self.pr.0.get_or_err(first_alg)?;
 
         Ok(format!(
             "{}:{}",
@@ -439,7 +439,7 @@ impl Principal {
 
     /// Get the current Key State.
     pub fn key_root(&self) -> &KeyRoot {
-        &self.ks
+        &self.kr
     }
 
     /// Get the hash algorithm used by this principal.
@@ -661,16 +661,16 @@ impl Principal {
 
         // Recompute DS
         let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
-        self.ds = compute_dr(&czds, None, self.hash_alg);
+        self.dr = compute_dr(&czds, None, self.hash_alg);
 
         // Recompute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &[self.hash_alg])?;
+        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &[self.hash_alg])?;
         self.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, self.cr.as_ref(), None, &[self.hash_alg])?;
+        self.pr = compute_pr(&sr, self.cr.as_ref(), None, &[self.hash_alg])?;
 
-        Ok(&self.ps)
+        Ok(&self.pr)
     }
 
     /// Verify signature and record an action in one step.
@@ -755,7 +755,7 @@ impl Principal {
 
     /// Get the current Data State (None if no actions).
     pub fn data_root(&self) -> Option<&DataRoot> {
-        self.ds.as_ref()
+        self.dr.as_ref()
     }
 
     /// Get the number of recorded actions.
@@ -820,7 +820,7 @@ impl Principal {
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let sr = compute_sr(&auth_root, self.ds.as_ref(), None, &active_algs)?;
+        let sr = compute_sr(&auth_root, self.dr.as_ref(), None, &active_algs)?;
 
         let tx_alg = cz.hash_alg;
 
@@ -829,7 +829,7 @@ impl Principal {
         let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
         // Compute arrow = hash_sorted_concat(pre, sr, tmr)
-        let pre = &self.ps;
+        let pre = &self.pr;
         let pre_bytes = pre.0.get_or_err(tx_alg)?;
         let sr_bytes = sr.0.get_or_err(tx_alg)?;
         let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
@@ -937,12 +937,12 @@ impl Principal {
                 // Verify that `pre` matches the current PS (chain continuity)
                 self.verify_pre(pre)?;
                 // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
-                if id.0 != self.ps.0 {
+                if id.0 != self.pr.0 {
                     return Err(Error::StateMismatch);
                 }
                 // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
                 // establish_pg() is the ONLY code path that transitions Nascent → Established.
-                self.establish_pg(PrincipalGenesis::from_initial(&self.ps))?;
+                self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
             },
             CozKind::CommitCreate { .. } => {
                 // Finalize commit marker does not mutate state other than marking completion
@@ -958,7 +958,7 @@ impl Principal {
             self.latest_timestamp = cz.now;
         }
 
-        Ok(&self.auth_root)
+        Ok(&self.ar)
     }
 
     /// Finalize a commit with proper state recomputation.
@@ -992,7 +992,7 @@ impl Principal {
 
         // Recompute KS from current (post-mutation) key set
         let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.ks = compute_kr(&thumbprints, None, &self.active_algs)?;
+        self.kr = compute_kr(&thumbprints, None, &self.active_algs)?;
 
         // Extract the explicit transaction algorithms from the Arrow,
         // or fallback to the terminal coz alg, or the principal's init alg.
@@ -1011,10 +1011,10 @@ impl Principal {
         self.tr = Some(tr.clone());
 
         // Compute AR = MR(KR, RR?, embedding?)
-        self.auth_root = compute_ar(&self.ks, None, None, &self.active_algs)?;
+        self.ar = compute_ar(&self.kr, None, None, &self.active_algs)?;
 
         // Compute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&self.auth_root, self.ds.as_ref(), None, &self.active_algs)?;
+        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &self.active_algs)?;
         self.sr = Some(sr.clone());
 
         // Validate arrow field matches independently computed Arrow.
@@ -1025,11 +1025,11 @@ impl Principal {
             let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
             let tmr = tmr.ok_or(Error::EmptyCommit)?;
 
-            // pre is the PR *before* this commit. self.ps has not been updated
+            // pre is the PR *before* this commit. self.pr has not been updated
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let pre_bytes = self.ps.0.get_or_err(tx_alg)?;
+            let pre_bytes = self.pr.0.get_or_err(tx_alg)?;
             let sr_bytes = sr.0.get_or_err(tx_alg)?;
             let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
@@ -1082,10 +1082,10 @@ impl Principal {
         self.cr = Some(cr.clone());
 
         // Compute PR = MR(SR, CR?, embedding?)
-        self.ps = compute_pr(&sr, Some(&cr), None, &self.active_algs)?;
+        self.pr = compute_pr(&sr, Some(&cr), None, &self.active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(self.auth_root.clone(), sr, self.ps.clone(), &tx_algs)?;
+        let commit = pending.finalize(self.ar.clone(), sr, self.pr.clone(), &tx_algs)?;
 
         self.auth.commits.push(commit);
 
@@ -1157,7 +1157,7 @@ impl Principal {
     /// so `pre` is compared against the promoted auth_root.
     fn verify_pre(&self, pre: &PrincipalRoot) -> Result<()> {
         // Get the reference PS to compare against.
-        let current = self.ps.0.get_or_err(self.hash_alg)?;
+        let current = self.pr.0.get_or_err(self.hash_alg)?;
         let expected = pre.0.get_or_err(self.hash_alg)?;
         if current != expected {
             return Err(Error::InvalidPrior);

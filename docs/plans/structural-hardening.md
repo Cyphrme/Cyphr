@@ -117,16 +117,16 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 > Each phase is a self-contained /core invocation. The phases are ordered by
 > risk: low-blast-radius changes first, highest-blast-radius last.
 
-1. **Phase 1: Internal naming & constant cleanup** — eliminate cognitive friction
-   - [ ] **Go F1:** Remove `Typ*` string block from `parsed_coz.go`; rewrite
-         `typSuffix()` to derive from `CozKind.String()` rather than comparing
-         against a parallel constant set. Update all internal references.
-   - [ ] **Go F5:** Rename `TxRevoke` → `TxSelfRevoke` throughout `go/cyphr/`;
-         update dispatch in `applyCozInternal`, all tests, and error messages.
-   - [ ] **Rust F2:** Rename `ps→pr`, `ks→kr`, `auth_root→ar`, `ds→dr`,
-         `cs→sr` throughout `rs/cyphr/src/principal.rs`, `rs/cyphr/src/commit.rs`,
-         and all callers; confirm `cargo build` clean.
-   - **Commit boundary:** `refactor(go/cyphr): remove duplicate Typ constants, rename TxRevoke→TxSelfRevoke; refactor(rs/cyphr): harmonize state field names to SPEC (ps→pr, ks→kr, auth_root→ar, ds→dr)`
+1. **Phase 1: Internal naming & constant cleanup** — eliminate cognitive friction ✅
+   - [x] **Go F1:** Remove `Typ*` string block from `parsed_coz.go`; rewrite
+         `typSuffix()` to return `CozKind` directly rather than a parallel string.
+         ParseCoz switch now matches `CozKind` values directly — indirection eliminated.
+   - [x] **Go F5:** Rename `TxRevoke` → `TxSelfRevoke` throughout `go/cyphr/`;
+         updated dispatch in `applyCozInternal`, principal_test.go, and error messages.
+   - [x] **Rust F2:** Renamed `ps→pr`, `ks→kr`, `auth_root→ar`, `ds→dr`,
+         `cs→sr` throughout `rs/cyphr/src/principal.rs`, `rs/cyphr/src/commit.rs`;
+         all callers build clean; `cargo test` 125/125 pass.
+   - **Commit boundary:** `refactor(go,rs/cyphr): Phase 1 structural naming cleanup`
 
 2. **Phase 2: State derivation centralisation** — reduce derivation duplication
    - [ ] **Go F3:** Extract `recomputeStateFromKeys(p *Principal)` covering the
@@ -215,16 +215,18 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 
 ## Technical Debt
 
-| Item                               | Severity | Why Introduced                 | Follow-Up                                                      | Resolved |
-| :--------------------------------- | :------- | :----------------------------- | :------------------------------------------------------------- | :------: |
-| Checkpoint loading parity gap (Go) | MEDIUM   | Descoped from hardening window | Post-release — requires protocol-level checkpoint signing spec |    ☐     |
+| Item                                                | Severity | Why Introduced                                                        | Follow-Up                                                                              | Resolved |
+| :-------------------------------------------------- | :------- | :-------------------------------------------------------------------- | :------------------------------------------------------------------------------------- | :------: |
+| Checkpoint loading parity gap (Go)                  | MEDIUM   | Descoped from hardening window                                        | Post-release — requires protocol-level checkpoint signing spec                         |    ☐     |
+| TxSelfRevoke: parse-time no-ID enforcement deferred | LOW      | e2e intent files currently emit `id == signer` for self-revoke cozies | Phase 3: update intent files to omit `target` for self-revoke; then tighten `ParseCoz` |    ☐     |
 
 ---
 
 ## Deviation Log
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit  | Planned                                                   | Actual                                                         | Rationale                                                                                                                                                                                                                    |
+| :------ | :-------------------------------------------------------- | :------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase 1 | Parse-time `if pay.ID != ""` rejection for `TxSelfRevoke` | Reverted to runtime `id == signer` check in `applyCozInternal` | Existing e2e intent files use `target = signer` for self-revoke, producing a coz with `id == signer`. Strict no-ID enforcement at parse time required simultaneous Phase 3 intent-file edits. Deferred cleanly as tech debt. |
 
 ---
 

@@ -487,7 +487,7 @@ func (p *Principal) applyCozInternal(cz *ParsedCoz, newKey *coz.Key) error {
 	// Commit/create: authorization is verified by verifyCozWithSnapshot against
 	// the pre-commit key snapshot per [pre-mutation-key-rule]. The commit/create
 	// doesn't mutate state, so no further check is needed here.
-	if cz.Kind == TxRevoke && len(cz.ID) == 0 {
+	if cz.Kind == TxSelfRevoke {
 		// Self-revoke: signer revokes itself. Signer must be active but
 		// will be removed, so we verify below in the dispatch.
 	} else if cz.Kind == TxCommitCreate {
@@ -548,12 +548,12 @@ func (p *Principal) applyCozInternal(cz *ParsedCoz, newKey *coz.Key) error {
 		// Remove signer directly (bypassing NoActiveKeys check since we just added)
 		p.removeKeyDirect(cz.Signer)
 
-	case TxRevoke:
+	case TxSelfRevoke:
 		if err := p.verifyPre(cz.Pre); err != nil {
 			return err
 		}
-		// [no-revoke-non-self] / [revoke-self-signed]: Revoke MUST be
-		// self-signed. If id is specified, it must match the signer.
+		// [no-revoke-non-self] / [revoke-self-signed]: if ID is present it
+		// must match the signer. Phase 3 will enforce no-ID at parse time.
 		if len(cz.ID) > 0 && !bytes.Equal(cz.ID, cz.Signer) {
 			return ErrMalformedPayload
 		}

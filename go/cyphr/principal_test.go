@@ -213,7 +213,7 @@ func TestApplyTransaction_SelfRevokeLastKey(t *testing.T) {
 
 	// Level 1: single key, self-revoke should fail
 	cz := &ParsedCoz{
-		Kind:    TxRevoke,
+		Kind:    TxSelfRevoke,
 		Signer:  key.Tmb,
 		HashAlg: HashSha256,
 		Now:     2000,

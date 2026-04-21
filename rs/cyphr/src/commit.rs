@@ -28,11 +28,11 @@ pub struct Commit {
     /// Transaction Root: Merkle root of coz czds.
     tr: crate::transaction_root::TransactionRoot,
     /// Auth State at the end of this commit.
-    auth_root: AuthRoot,
+    ar: AuthRoot,
     /// State Root at the end of this commit.
     sr: StateRoot,
     /// Principal State at the end of this commit.
-    ps: PrincipalRoot,
+    pr: PrincipalRoot,
 }
 
 impl Commit {
@@ -45,9 +45,9 @@ impl Commit {
         transactions: Vec<crate::transaction::Transaction>,
         commit_tx: crate::transaction::CommitTransaction,
         tr: crate::transaction_root::TransactionRoot,
-        auth_root: AuthRoot,
+        ar: AuthRoot,
         sr: StateRoot,
-        ps: PrincipalRoot,
+        pr: PrincipalRoot,
     ) -> crate::error::Result<Self> {
         if transactions.is_empty() && commit_tx.0.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -56,9 +56,9 @@ impl Commit {
             transactions,
             commit_tx,
             tr,
-            auth_root,
+            ar,
             sr,
-            ps,
+            pr,
         })
     }
 
@@ -94,12 +94,12 @@ impl Commit {
 
     /// Get the Auth State at the end of this commit.
     pub fn auth_root(&self) -> &AuthRoot {
-        &self.auth_root
+        &self.ar
     }
 
     /// Get the Principal State at the end of this commit.
     pub fn pr(&self) -> &PrincipalRoot {
-        &self.ps
+        &self.pr
     }
 
     /// Get the number of cozies in this commit.
@@ -242,9 +242,9 @@ impl PendingCommit {
     /// Returns `EmptyCommit` if no cozies exist.
     pub fn finalize(
         self,
-        auth_root: AuthRoot,
+        ar: AuthRoot,
         sr: StateRoot,
-        ps: PrincipalRoot,
+        pr: PrincipalRoot,
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
         if self.is_empty() {
@@ -260,7 +260,7 @@ impl PendingCommit {
             .compute_tr(tx_algs)
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_tx, tr, auth_root, sr, ps)
+        Commit::new(self.transactions, commit_tx, tr, ar, sr, pr)
     }
 
     /// Consume the pending commit and return the cozies.
@@ -500,7 +500,7 @@ impl<'a> CommitScope<'a> {
             self.principal.auth.keys.values().map(|k| &k.tmb).collect();
         let ks = compute_kr(&thumbprints, None, &active_algs)?;
         let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let sr = compute_sr(&auth_root, self.principal.ds.as_ref(), None, &active_algs)?;
+        let sr = compute_sr(&auth_root, self.principal.dr.as_ref(), None, &active_algs)?;
 
         // For TMR we just use compute_roots early
         let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
@@ -509,8 +509,8 @@ impl<'a> CommitScope<'a> {
         // 2. Compute Arrow = MR(pre, sr, tmr)
         // Arrow computation requires pre, sr, tmr slices
         // Wait, pre is the principal root of the previous state!
-        // Where is pre? It's self.principal.ps!
-        let pre = &self.principal.ps;
+        // Where is pre? It's self.principal.pr!
+        let pre = &self.principal.pr;
 
         let pre_bytes = pre.0.get_or_err(signer_hash_alg)?;
         let sr_bytes = sr.0.get_or_err(signer_hash_alg)?;
