@@ -686,10 +686,19 @@ func (p *Principal) updateLastUsed(tmb coz.B64, timestamp int64) {
 
 // BeginCommit starts a new commit batch.
 //
-// Returns a CommitBatch that accumulates cozies. The caller MUST
-// call Finalize() to complete the commit, or abandon the batch.
+// Returns a [CommitBatch] that accumulates cozies. The caller MUST call
+// [CommitBatch.Finalize] to complete the commit, or discard the batch.
 //
-// For single-coz commits, use [Principal.ApplyCoz] instead.
+// For single-coz commits prefer [Principal.ApplyCoz].
+//
+// # Transitory-state hazard
+//
+// Between BeginCommit and [CommitBatch.Finalize], this Principal's key-set is
+// in a partially-mutated, uncommitted state. The caller MUST NOT read state
+// from this Principal (e.g. [Principal.AR], [Principal.ActiveKeys]) in that
+// window and treat the result as committed — it is not. See [CommitBatch] for
+// the full hazard description and the pre-commit key-set snapshot that
+// protects authorization checks within the batch.
 func (p *Principal) BeginCommit() *CommitBatch {
 	// Snapshot active keys for pre-mutation authorization checks
 	// per [pre-mutation-key-rule].
