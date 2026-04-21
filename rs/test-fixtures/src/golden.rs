@@ -1404,7 +1404,7 @@ impl<'a> Generator<'a> {
             coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
         );
         let commit_ref = scope
-            .finalize_with_arrow(signer_alg, prv_bytes, pub_bytes, &tmb, now)
+            .finalize_with_arrow(signer_alg, prv_bytes, pub_bytes, &tmb, now, "cyphr.me")
             .map_err(|e| Error::Generation {
                 name: "unknown".into(),
                 reason: e.to_string(),
@@ -1559,7 +1559,7 @@ principal = ["golden"]
 
 [[test.commit]]
 tx = [
-  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "alice"}]
+  [{typ = "cyphr.me/cyphr/key/create", now = 1700000000, signer = "golden", target = "alice"}]
 ]
 
 [test.expected]
@@ -1605,7 +1605,7 @@ level = 3
         let cz = &commit.cozies[0];
         let pay = cz.get("pay").expect("cz missing pay");
         assert_eq!(pay["alg"], "ES256");
-        assert_eq!(pay["typ"], "cyphr.me/key/create");
+        assert_eq!(pay["typ"], "cyphr.me/cyphr/key/create");
         assert_eq!(pay["now"], 1700000000);
         assert!(
             pay.get("pre").is_some(),
@@ -1614,7 +1614,7 @@ level = 3
 
         let cz2 = &commit.cozies[1];
         let pay2 = cz2.get("pay").expect("commit/create missing pay");
-        assert_eq!(pay2["typ"], "cyphr/commit/create");
+        assert_eq!(pay2["typ"], "cyphr.me/cyphr/commit/create");
         assert!(
             pay2.get("arrow").is_some(),
             "arrow should be populated on commit coz"
@@ -1657,7 +1657,7 @@ principal = ["golden"]
 
 [[test.commit]]
 tx = [
-  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "nonexistent_key", target = "alice"}]
+  [{typ = "cyphr.me/cyphr/key/create", now = 1700000000, signer = "nonexistent_key", target = "alice"}]
 ]
 "#;
 
@@ -1689,7 +1689,7 @@ principal = ["golden"]
 
 [[test.commit]]
 tx = [
-  [{typ = "cyphr.me/key/create", now = 1700000000, signer = "golden", target = "alice"}]
+  [{typ = "cyphr.me/cyphr/key/create", now = 1700000000, signer = "golden", target = "alice"}]
 ]
 "#;
 

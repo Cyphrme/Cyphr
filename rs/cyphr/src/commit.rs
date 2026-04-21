@@ -477,6 +477,7 @@ impl<'a> CommitScope<'a> {
         pub_key: &[u8],
         tmb: &coz::Thumbprint,
         now: i64,
+        authority: &str,
     ) -> crate::error::Result<&'a Commit> {
         use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
         use crate::state::{hash_alg_from_str, hash_sorted_concat_bytes};
@@ -527,15 +528,14 @@ impl<'a> CommitScope<'a> {
         );
 
         // 3. Construct commit/create payload
+        // Full typ = "{authority}/{suffix}" per SPEC §7.2.
+        let commit_typ = format!("{authority}/{}", crate::parsed_coz::typ::COMMIT_CREATE);
         let mut pay = serde_json::Map::new();
         pay.insert("alg".to_string(), json!(alg));
         pay.insert("arrow".to_string(), json!(arrow_tagged));
         pay.insert("now".to_string(), json!(now));
         pay.insert("tmb".to_string(), json!(tmb.to_b64()));
-        pay.insert(
-            "typ".to_string(),
-            json!(crate::parsed_coz::typ::COMMIT_CREATE),
-        );
+        pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
         // Ensure deterministic order
@@ -589,9 +589,9 @@ mod tests {
     /// creates a mutation coz (routes to transactions).
     fn make_test_tx(is_commit: bool, czd_byte: u8) -> VerifiedCoz {
         let typ = if is_commit {
-            "cyphr/commit/create"
+            "cyphr.me/cyphr/commit/create"
         } else {
-            "cyphr.me/key/create"
+            "cyphr.me/cyphr/key/create"
         };
         let mut pay = PayBuilder::new()
             .typ(typ)

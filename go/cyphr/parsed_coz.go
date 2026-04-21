@@ -7,20 +7,21 @@ import (
 	"github.com/cyphrme/coz"
 )
 
-// CozKind values are the canonical typ suffixes (SPEC §4.2).
-// Full typ is "<authority>/cyphr/<suffix>" per SPEC §7.2.
+// CozKind values are the canonical typ suffixes (SPEC §7.2).
+// Each is a protocol-qualified suffix: `cyphr/<noun>/<verb>`.
+// Full typ is `<authority>/cyphr/<noun>/<verb>` — authority injected at call-site.
 // typSuffix() performs authority-agnostic matching via HasSuffix.
 
 // CozKind represents the type of auth mutation.
 type CozKind string
 
 const (
-	TxKeyCreate       CozKind = "key/create"
-	TxKeyDelete       CozKind = "key/delete"
-	TxKeyReplace      CozKind = "key/replace"
-	TxSelfRevoke      CozKind = "key/revoke"       // Level 1+: signer revokes itself, no ID field
-	TxPrincipalCreate CozKind = "principal/create" // SPEC §5.1 genesis finalization
-	TxCommitCreate    CozKind = "commit/create"    // Arrow finality (SPEC §4.4)
+	TxKeyCreate       CozKind = "cyphr/key/create"
+	TxKeyDelete       CozKind = "cyphr/key/delete"
+	TxKeyReplace      CozKind = "cyphr/key/replace"
+	TxSelfRevoke      CozKind = "cyphr/key/revoke"       // Level 1+: signer revokes itself, no ID field
+	TxPrincipalCreate CozKind = "cyphr/principal/create" // SPEC §5.1 genesis finalization
+	TxCommitCreate    CozKind = "cyphr/commit/create"    // Arrow finality (SPEC §4.4)
 )
 
 // String returns the string representation of a CozKind.
@@ -231,8 +232,7 @@ func (cz *ParsedCoz) parseArrow(arrow string) error {
 }
 
 // typSuffix returns the CozKind matching typ via authority-agnostic suffix matching.
-// E.g., "cyphr.me/cyphr/key/create", "example.com/cyphr/key/create", or the
-// legacy "cyphr.me/key/create" all resolve to TxKeyCreate.
+// E.g., "cyphr.me/cyphr/key/create", "example.com/cyphr/key/create" all resolve to TxKeyCreate.
 func typSuffix(typ string) CozKind {
 	for _, kind := range []CozKind{
 		TxKeyCreate,

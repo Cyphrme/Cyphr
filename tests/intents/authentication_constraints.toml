@@ -10,7 +10,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+    { now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 

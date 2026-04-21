@@ -13,19 +13,25 @@ use crate::state::{AuthRoot, PrincipalRoot};
 // ParsedCoz Types (SPEC §4.2)
 // ============================================================================
 
-/// Type path suffixes for Cyphr cozies.
+/// Type path suffixes for Cyphr cozies (SPEC §7.2).
+///
+/// Each constant is a protocol-qualified suffix: `cyphr/<noun>/<verb>`.
+/// The full typ is constructed at the call site as `{authority}/{suffix}`,
+/// where authority is the deployment domain (e.g., `cyphr.me`).
+///
+/// Parsers match via `ends_with(suffix)` to remain authority-agnostic.
 pub mod typ {
-    /// `<authority>/key/create` - Create a new key (Level 3+)
-    pub const KEY_CREATE: &str = "key/create";
-    /// `<authority>/key/delete` - Remove key without invalidation (Level 3+)
-    pub const KEY_DELETE: &str = "key/delete";
-    /// `<authority>/key/replace` - Atomic key swap (Level 2+)
-    pub const KEY_REPLACE: &str = "key/replace";
-    /// `<authority>/key/revoke` - Revoke a key (Level 1+ self, Level 3+ other)
-    pub const KEY_REVOKE: &str = "key/revoke";
-    /// `<authority>/principal/create` - Explicit genesis finalization (Level 3+)
-    pub const PRINCIPAL_CREATE: &str = "principal/create";
-    /// `<authority>/commit/create` - Finalize a commit (Arrow finality)
+    /// `<authority>/cyphr/key/create` - Create a new key (Level 3+)
+    pub const KEY_CREATE: &str = "cyphr/key/create";
+    /// `<authority>/cyphr/key/delete` - Remove key without invalidation (Level 3+)
+    pub const KEY_DELETE: &str = "cyphr/key/delete";
+    /// `<authority>/cyphr/key/replace` - Atomic key swap (Level 2+)
+    pub const KEY_REPLACE: &str = "cyphr/key/replace";
+    /// `<authority>/cyphr/key/revoke` - Revoke a key (Level 1+ self, Level 3+ other)
+    pub const KEY_REVOKE: &str = "cyphr/key/revoke";
+    /// `<authority>/cyphr/principal/create` - Explicit genesis finalization (Level 3+)
+    pub const PRINCIPAL_CREATE: &str = "cyphr/principal/create";
+    /// `<authority>/cyphr/commit/create` - Finalize a commit (Arrow finality)
     pub const COMMIT_CREATE: &str = "cyphr/commit/create";
 }
 
@@ -84,12 +90,12 @@ pub enum CozKind {
 impl std::fmt::Display for CozKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CozKind::KeyCreate { .. } => write!(f, "key/create"),
-            CozKind::KeyDelete { .. } => write!(f, "key/delete"),
-            CozKind::KeyReplace { .. } => write!(f, "key/replace"),
-            CozKind::SelfRevoke { .. } => write!(f, "key/revoke"),
-            CozKind::PrincipalCreate { .. } => write!(f, "principal/create"),
-            CozKind::CommitCreate { .. } => write!(f, "commit/create"),
+            CozKind::KeyCreate { .. } => write!(f, "{}", typ::KEY_CREATE),
+            CozKind::KeyDelete { .. } => write!(f, "{}", typ::KEY_DELETE),
+            CozKind::KeyReplace { .. } => write!(f, "{}", typ::KEY_REPLACE),
+            CozKind::SelfRevoke { .. } => write!(f, "{}", typ::KEY_REVOKE),
+            CozKind::PrincipalCreate { .. } => write!(f, "{}", typ::PRINCIPAL_CREATE),
+            CozKind::CommitCreate { .. } => write!(f, "{}", typ::COMMIT_CREATE),
         }
     }
 }
@@ -433,7 +439,7 @@ mod tests {
     #[test]
     fn parse_key_add() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
+            .typ("cyphr.me/cyphr/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -451,7 +457,7 @@ mod tests {
     #[test]
     fn parse_key_delete() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/delete")
+            .typ("cyphr.me/cyphr/key/delete")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -468,7 +474,7 @@ mod tests {
     #[test]
     fn parse_key_replace() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/replace")
+            .typ("cyphr.me/cyphr/key/replace")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -485,7 +491,7 @@ mod tests {
     #[test]
     fn parse_self_revoke() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/revoke")
+            .typ("cyphr.me/cyphr/key/revoke")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -503,7 +509,7 @@ mod tests {
     #[test]
     fn parse_principal_create() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/principal/create")
+            .typ("cyphr.me/cyphr/principal/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
@@ -537,7 +543,7 @@ mod tests {
     #[test]
     fn parse_missing_pre_fails() {
         let mut pay = PayBuilder::new()
-            .typ("cyphr.me/key/create")
+            .typ("cyphr.me/cyphr/key/create")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))

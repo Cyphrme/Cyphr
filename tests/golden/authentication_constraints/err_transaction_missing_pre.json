@@ -17,9 +17,9 @@
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000001,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/key/create"
+            "typ": "cyphr.me/cyphr/key/create"
           },
-          "sig": "eH1WpdtaR3yNswwSGXmjmF31Ik6clWmSbdWvT6pkiRtJGfKtS1Y02HGsDx5VUeOuye_mdydwdRVw3tR-_LdoHA"
+          "sig": "6PVnulBgq0dcKRW-kqTRDf2Z3l9xwKd9aKOnVcQsMRZyV8VjqDPa0UqRBX03wT6g1nWqvIvGxr1j08--Eb0JTA"
         }
       ],
       "keys": [
@@ -35,7 +35,7 @@
       "pr": ""
     }
   ],
-  "digests": ["p1B-BZAULaZ9WYmbqTjf4NtxQbo1BZDAv_OkG-x6Jqk"],
+  "digests": ["IFjv9pgEc6m6UxZc2dfWorDXQmhvTuV-RWcbsSnFrGs"],
   "expected": {
     "key_count": 1,
     "level": 1,

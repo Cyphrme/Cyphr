@@ -8,7 +8,7 @@ principal = ["alice", "bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -24,7 +24,7 @@ principal = ["alice", "bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/key/replace" },
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/replace" },
   ],
 ]
 
@@ -40,7 +40,7 @@ principal = ["alice", "bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "bob", target = "carol", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -56,7 +56,7 @@ principal = ["alice", "bob", "carol"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/key/delete" },
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 

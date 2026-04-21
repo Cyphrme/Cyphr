@@ -260,7 +260,7 @@ func applyTxToBatch(pool *Pool, principal *cyphr.Principal, batch *cyphr.CommitB
 	}
 
 	if isFinal {
-		_, err := batch.FinalizeWithArrow(signerKey, cz.Now)
+		_, err := batch.FinalizeWithArrow(signerKey, cz.Now, "cyphr.me")
 		return err
 	}
 

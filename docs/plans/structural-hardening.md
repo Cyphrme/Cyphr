@@ -142,47 +142,49 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
    - **Commit boundary:** `refactor(go/cyphr): extract deriveAuthState helper` +
      `refactor(rs/cyphr): extract derive_auth_state helper`
 
-3. **Phase 3: typ-path consistency + fixture regeneration** — protocol wire correctness
+3. **Phase 3: typ-path consistency + fixture regeneration** — protocol wire correctness ✅
 
    > [!IMPORTANT]
    > This is the highest-blast-radius phase. The grammar `<authority>/cyphr/<noun>/<verb>`
    > is confirmed but **not currently used anywhere** in the codebase. Every source
    > file, every intent file, and every golden fixture must be updated. Tests will
    > not pass until all three layers are updated atomically within one commit.
-   - [ ] **Rust constant normalisation:** Update `typ` module constants to be
+   - [x] **Rust constant normalisation:** Updated `typ` module constants to be
          uniformly protocol-qualified suffixes — include the `cyphr/` protocol segment,
-         exclude the authority (the caller's domain). `COMMIT_CREATE` is already correct;
-         upgrade the remaining constants to match:
+         exclude the authority (the caller's domain). `COMMIT_CREATE` was already correct;
+         remaining constants upgraded to match:
      - `KEY_CREATE       = "cyphr/key/create"`
      - `KEY_DELETE       = "cyphr/key/delete"`
      - `KEY_REPLACE      = "cyphr/key/replace"`
      - `KEY_REVOKE       = "cyphr/key/revoke"`
      - `PRINCIPAL_CREATE = "cyphr/principal/create"`
      - `COMMIT_CREATE    = "cyphr/commit/create"` _(value unchanged)_
-   - [ ] **Rust `finalize_with_arrow` signature change:** Add `authority: &str`
-         parameter. Construct the full typ as
-         `format!("{}/{}", authority, typ::COMMIT_CREATE)`. Remove any hardcoded
-         authority string inside the function body.
-   - [ ] **Go constant normalisation:** In `parsed_coz.go` (or via
-         `CozKind.String()` if F1 folds them), upgrade `Typ*` constants to
-         protocol-qualified suffixes: `TypKeyCreate = "cyphr/key/create"` etc.
-   - [ ] **Go `FinalizeWithArrow` signature change:** Add `authority string`
-         parameter. Construct the full typ as `authority + "/" + TypCommitCreate`.
-         Remove the `Authority` constant reference from `commit.go`.
-   - [ ] **Intent file update:** Update all TOML/Go intent files under
-         `rs/test-fixtures/` and `go/testfixtures/` that hard-code
-         `"cyphr.me/key/create"` etc. to `"cyphr.me/cyphr/key/create"`. These are
-         the inputs to `fixture-gen`.
-   - [ ] **CLI update:** Update `rs/cyphr-cli/src/commands/key.rs` hard-coded
-         strings (`"cyphr.me/key/create"`, `"cyphr.me/key/revoke"`) to use the
-         library suffix constants with the CLI's concrete authority (`"cyphr.me"`).
-   - [ ] **`fixture-gen` update:** Pass `"cyphr.me"` as the `authority` argument
-         to `finalize_with_arrow` / `FinalizeWithArrow`. Update any intent-file
-         parsing that constructs typ strings.
-   - [ ] **Golden fixture regeneration:** Run `cargo run -p fixture-gen`. Verify
-         all generated fixtures contain `"cyphr.me/cyphr/key/create"` and
-         `"cyphr.me/cyphr/commit/create"`. Run `cargo test` and `go test ./...`.
-   - **Commit boundary:** `fix(rs/cyphr,go/cyphr): inject authority at call-site, normalize typ constants to cyphr/<noun>/<verb> suffixes; fix(rs/cyphr-cli): use suffix constants with concrete authority; fix(test-fixtures,fixture-gen): update intent files for new grammar; fix(tests/golden): regenerate all fixtures`
+   - [x] **Rust `finalize_with_arrow` signature change:** Added `authority: &str`
+         parameter. Constructs the full typ as
+         `format!("{authority}/{}", typ::COMMIT_CREATE)`. No hardcoded authority
+         in function body.
+   - [x] **Go constant normalisation:** `CozKind` constants in `parsed_coz.go`
+         upgraded to protocol-qualified suffixes: `TxKeyCreate = "cyphr/key/create"` etc.
+   - [x] **Go `FinalizeWithArrow` signature change:** Added `authority string`
+         parameter. Constructs the full typ as `authority + "/" + TxCommitCreate.String()`.
+         Hardcoded `"cyphr.me/cyphr/commit/create"` literal removed.
+   - [x] **Go FinalizeWithArrow `deriveAuthState` migration:** Inline KR→AR→SR
+         block in `commit.go::FinalizeWithArrow` (missed in Phase 2) now
+         replaced with `deriveAuthState()` call.
+   - [x] **Intent file update:** All TOML files under `tests/e2e/` and
+         `tests/intents/` updated: `"cyphr.me/key/"` → `"cyphr.me/cyphr/key/"`,
+         `"cyphr.me/principal/"` → `"cyphr.me/cyphr/principal/"`. Zero old-format
+         strings remain.
+   - [x] **CLI update:** `rs/cyphr-cli/src/commands/key.rs` hardcoded strings
+         replaced with `format!("cyphr.me/{}", typ::KEY_CREATE)` etc. Both
+         `finalize_with_arrow` call sites receive `"cyphr.me"` authority.
+   - [x] **`fixture-gen` update:** `apply_and_finalize` in `golden.rs` passes
+         `"cyphr.me"` as the `authority` argument to `finalize_with_arrow`.
+   - [x] **Golden fixture regeneration:** `cargo run -p fixture-gen` produced
+         47 fixtures. All contain `"cyphr.me/cyphr/key/create"` and
+         `"cyphr.me/cyphr/commit/create"`. Both `cargo test` (125+) and
+         `go test ./...` are green.
+   - **Commit boundary:** `fix(rs,go/cyphr): normalize typ to cyphr/ suffix, inject authority at call-site, regenerate fixtures`
 
 4. **Phase 4: Go CommitBatch transitory state hardening** — safety by convention
    - [ ] **Go F4:** Evaluate whether a lightweight wrapper type around
@@ -219,10 +221,11 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 
 ## Technical Debt
 
-| Item                                                | Severity | Why Introduced                                                        | Follow-Up                                                                              | Resolved |
-| :-------------------------------------------------- | :------- | :-------------------------------------------------------------------- | :------------------------------------------------------------------------------------- | :------: |
-| Checkpoint loading parity gap (Go)                  | MEDIUM   | Descoped from hardening window                                        | Post-release — requires protocol-level checkpoint signing spec                         |    ☐     |
-| TxSelfRevoke: parse-time no-ID enforcement deferred | LOW      | e2e intent files currently emit `id == signer` for self-revoke cozies | Phase 3: update intent files to omit `target` for self-revoke; then tighten `ParseCoz` |    ☐     |
+| Item                                                | Severity | Why Introduced                                                             | Follow-Up                                                                                                       | Resolved |
+| :-------------------------------------------------- | :------- | :------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------- | :------: |
+| Checkpoint loading parity gap (Go)                  | MEDIUM   | Descoped from hardening window                                             | Post-release — requires protocol-level checkpoint signing spec                                                  |    ☐     |
+| TxSelfRevoke: parse-time no-ID enforcement deferred | LOW      | e2e intent files currently emit `id == signer` for self-revoke cozies      | Update intent files to omit `target` for self-revoke; tighten `ParseCoz` parse-time                             |    ☐     |
+| CLI authority hardcoded as `"cyphr.me"` literal     | LOW      | Phase 3: authority injected at call-site but CLI has no `--authority` flag | Add `--authority` flag to `cyphr-cli` so the binary is deployable under alternate domains without recompilation |    ☐     |
 
 ---
 

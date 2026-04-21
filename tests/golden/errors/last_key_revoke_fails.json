@@ -18,9 +18,9 @@
             "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "rvk": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-            "typ": "cyphr.me/key/revoke"
+            "typ": "cyphr.me/cyphr/key/revoke"
           },
-          "sig": "F9z-xoa9lx9GwNj4WBZ0PgaiiTbzrbWoJL5GCPtXNq9NXVWJHxd-IP0Rj9xgBl9rDBcL0LDmls3VdSU41wsazA"
+          "sig": "EP2YfkfBKCffNNwTS8JVP5hbFdEfDHN8AjGTvopo1jUROI-3PJ1zqtaYHZVNEv2ySKquPR78763PeUOjC4UOgQ"
         }
       ],
       "keys": [],
@@ -30,7 +30,7 @@
       "pr": ""
     }
   ],
-  "digests": ["ZnPep6Tda-8Z3D9jV5QD7w_rTtVPzzxoiQ4vGsWw8B4"],
+  "digests": ["dfgcPRtTrNe3295XcA-XLz2dajZ8u6FrOHbvhBGJSsY"],
   "expected": {
     "key_count": 1,
     "level": 1,

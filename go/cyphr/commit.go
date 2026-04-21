@@ -359,6 +359,7 @@ func (b *CommitBatch) IsEmpty() bool {
 func (b *CommitBatch) FinalizeWithArrow(
 	signerKey *coz.Key,
 	now int64,
+	authority string,
 ) (*Commit, error) {
 	if b.pending.IsEmpty() {
 		return nil, ErrEmptyCommit
@@ -368,23 +369,15 @@ func (b *CommitBatch) FinalizeWithArrow(
 	// b.principal.activeAlgs may be stale if the mutation added/removed an
 	// algorithm. Derive from the current (post-mutation) key set to match
 	// what finalizeCommit will compute.
-	thumbprints := make([]coz.B64, len(b.principal.auth.Keys))
+	thumbs := make([]coz.B64, len(b.principal.auth.Keys))
 	keys := make([]*Key, len(b.principal.auth.Keys))
 	for i, k := range b.principal.auth.Keys {
-		thumbprints[i] = k.Tmb
+		thumbs[i] = k.Tmb
 		keys[i] = k
 	}
 	postAlgs := DeriveHashAlgs(keys)
 
-	kr, err := ComputeKR(thumbprints, nil, postAlgs)
-	if err != nil {
-		return nil, err
-	}
-	ar, err := ComputeAR(kr, nil, nil, postAlgs)
-	if err != nil {
-		return nil, err
-	}
-	sr, err := ComputeSR(ar, b.principal.dr, nil, postAlgs)
+	_, _, sr, err := deriveAuthState(thumbs, b.principal.dr, postAlgs)
 	if err != nil {
 		return nil, err
 	}
@@ -423,10 +416,11 @@ func (b *CommitBatch) FinalizeWithArrow(
 	}
 
 	// 5. Construct commit/create payload
+	// Full typ = authority + "/" + suffix, per SPEC §7.2.
 	payObj := map[string]any{
 		"alg":   string(signerKey.Alg),
 		"tmb":   signerKey.Tmb.String(),
-		"typ":   "cyphr.me/cyphr/commit/create",
+		"typ":   authority + "/" + TxCommitCreate.String(),
 		"now":   now,
 		"arrow": taggedArrow,
 	}

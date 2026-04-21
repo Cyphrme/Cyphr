@@ -118,7 +118,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
         "typ".to_string(),
-        Value::String("cyphr.me/key/create".to_string()),
+        Value::String(format!("cyphr.me/{}", cyphr::parsed_coz::typ::KEY_CREATE)),
     );
 
     let pay_value: Value = serde_json::to_value(&pay_map)?;
@@ -146,6 +146,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
         &signer_stored.pub_key,
         &tmb,
         now,
+        "cyphr.me",
     )?;
 
     // Store updated state
@@ -218,7 +219,7 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
         "typ".to_string(),
-        Value::String("cyphr.me/key/revoke".to_string()),
+        Value::String(format!("cyphr.me/{}", cyphr::parsed_coz::typ::KEY_REVOKE)),
     );
 
     let pay_value: Value = serde_json::to_value(&pay_map)?;
@@ -246,6 +247,7 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
         &signer_stored.pub_key,
         &tmb,
         now,
+        "cyphr.me",
     )?;
 
     // Store updated state

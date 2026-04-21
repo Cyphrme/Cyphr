@@ -11,9 +11,8 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
-    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_ar,
-    compute_dr, compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs,
-    hash_alg_from_str,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
+    compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.

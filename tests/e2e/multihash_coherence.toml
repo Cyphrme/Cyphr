@@ -18,7 +18,7 @@ principal = ["diana_es384"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "diana_es384", target = "key_a", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "diana_es384", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -34,7 +34,7 @@ principal = ["eve_ed25519"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "eve_ed25519", target = "key_a", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "eve_ed25519", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 

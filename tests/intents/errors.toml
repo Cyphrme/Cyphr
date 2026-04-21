@@ -30,7 +30,7 @@ revoke_key = "key_a"
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/key/delete" },
+    { now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 
@@ -67,7 +67,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/key/revoke" },
+    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
@@ -86,7 +86,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -104,7 +104,7 @@ principal = ["golden"]          # Only golden in principal
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "key_a", target = "key_b", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "key_a", target = "key_b", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -136,7 +136,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -158,14 +158,14 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000100, signer = "golden", target = "key_a", typ = "cyphr.me/key/create" },
+    { now = 1700000100, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000050, signer = "golden", target = "key_b", typ = "cyphr.me/key/create" },
+    { now = 1700000050, signer = "golden", target = "key_b", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -205,7 +205,7 @@ principal = ["alice", "bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/key/revoke" },
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
@@ -221,7 +221,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/key/delete" },
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 
@@ -236,7 +236,7 @@ principal = ["golden"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/delete" },
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/delete" },
   ],
 ]
 
