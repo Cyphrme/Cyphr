@@ -12,7 +12,8 @@ use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_ar,
-    compute_dr, compute_kr, compute_pr, compute_sr, derive_hash_algs, hash_alg_from_str,
+    compute_dr, compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs,
+    hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -235,12 +236,8 @@ impl Principal {
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
-        // KR = tmb (single key promotes)
-        let kr = compute_kr(&[&key.tmb], None, &active_algs)?;
-        // AR = KR (no Commit ID, promotes)
-        let ar = compute_ar(&kr, None, None, &active_algs)?;
-        // SR = AR (no DR at genesis, promotes)
-        let sr = compute_sr(&ar, None, None, &active_algs)?;
+        // KR → AR → SR (no DR at genesis)
+        let (kr, ar, sr) = derive_auth_state(&[&key.tmb], None, &active_algs)?;
         // PR = SR (no CR at genesis, promotes)
         let pr = compute_pr(&sr, None, None, &active_algs)?;
 
@@ -287,12 +284,8 @@ impl Principal {
 
         // Collect thumbprints for KR computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let kr = compute_kr(&thumbprints, None, &active_algs)?;
-
-        // AR = KR (no Commit ID yet)
-        let ar = compute_ar(&kr, None, None, &active_algs)?;
-        // SR = AR (no DR at genesis, promotes)
-        let sr = compute_sr(&ar, None, None, &active_algs)?;
+        // KR → AR → SR (no DR at genesis)
+        let (kr, ar, sr) = derive_auth_state(&thumbprints, None, &active_algs)?;
         // PR = SR (no CR at genesis, promotes)
         let pr = compute_pr(&sr, None, None, &active_algs)?;
 
@@ -355,7 +348,8 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let kr = compute_kr(&thumbprints, None, &active_algs)?;
 
-        // SR = AR (no DR at checkpoint, promotes)
+        // SR and PR: derive_auth_state is not used here because `ar` is provided
+        // by the checkpoint, not derived from `kr`. We enter the chain at SR directly.
         let sr = compute_sr(&ar, None, None, &active_algs)?;
         // PR = SR (no CR at checkpoint, promotes)
         let pr = compute_pr(&sr, None, None, &active_algs)?;
@@ -803,7 +797,7 @@ impl Principal {
         use crate::commit::PendingCommit;
         use crate::multihash::MultihashDigest;
         use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
-        use crate::state::{compute_ar, compute_kr, compute_sr, derive_hash_algs};
+        use crate::state::{derive_auth_state, derive_hash_algs};
 
         // Apply mutation eagerly (same as apply_verified_internal)
         let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
@@ -814,13 +808,11 @@ impl Principal {
         let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
         pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
-        // Compute SR from post-mutation state
+        // KR → AR → SR from post-mutation key set (local, does not mutate self)
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        let ks = compute_kr(&thumbprints, None, &active_algs)?;
-        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let sr = compute_sr(&auth_root, self.dr.as_ref(), None, &active_algs)?;
+        let (_kr, _ar, sr) = derive_auth_state(&thumbprints, self.dr.as_ref(), &active_algs)?;
 
         let tx_alg = cz.hash_alg;
 
@@ -990,12 +982,9 @@ impl Principal {
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         self.active_algs = derive_hash_algs(&key_refs);
 
-        // Recompute KS from current (post-mutation) key set
-        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        self.kr = compute_kr(&thumbprints, None, &self.active_algs)?;
-
-        // Extract the explicit transaction algorithms from the Arrow,
-        // or fallback to the terminal coz alg, or the principal's init alg.
+        // Extract tx algorithm set from the commit coz (independent of state chain).
+        // TX extraction reads only cozies/pending — no dependency on KR/AR/SR —
+        // so it is hoisted here; its prior placement between KR+AR and SR was incidental.
         let tx_algs: Vec<coz::HashAlg> = if let Some(last_coz) = cozies.last() {
             if let Some(arrow) = last_coz.arrow() {
                 arrow.algorithms().collect()
@@ -1010,11 +999,12 @@ impl Principal {
         let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
         self.tr = Some(tr.clone());
 
-        // Compute AR = MR(KR, RR?, embedding?)
-        self.ar = compute_ar(&self.kr, None, None, &self.active_algs)?;
-
-        // Compute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &self.active_algs)?;
+        // KR → AR → SR (post-mutation key set, existing DR).
+        // PR is computed below, after Arrow validation and CR assembly.
+        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        let (kr, ar, sr) = derive_auth_state(&thumbprints, self.dr.as_ref(), &self.active_algs)?;
+        self.kr = kr;
+        self.ar = ar;
         self.sr = Some(sr.clone());
 
         // Validate arrow field matches independently computed Arrow.

@@ -128,15 +128,19 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
          all callers build clean; `cargo test` 125/125 pass.
    - **Commit boundary:** `refactor(go,rs/cyphr): Phase 1 structural naming cleanup`
 
-2. **Phase 2: State derivation centralisation** — reduce derivation duplication
-   - [ ] **Go F3:** Extract `recomputeStateFromKeys(p *Principal)` covering the
-         full KR → AR → SR → PR chain with optional DR and CR. Replace the four
-         duplicated derivation blocks in `Implicit`, `Explicit`, `finalizeCommit`,
-         and `RecordAction`. Confirm `go test ./...` green.
-   - [ ] **Rust F3:** Extract `recompute_state` (free function or method) in
-         `principal.rs`; replace the five equivalent duplicated blocks. Confirm
-         `cargo test` green.
-   - **Commit boundary:** `refactor(go/cyphr): extract recomputeState helper; refactor(rs/cyphr): extract recompute_state helper`
+2. **Phase 2: State derivation centralisation** — reduce derivation duplication ✅
+   - [x] **Go F3:** Extracted `deriveAuthState(thumbprints, dr, algs) → (KR, AR, SR, error)` in
+         `state.go`, covering the KR→AR→SR chain. Replaced all three Go sites: `Implicit`,
+         `Explicit`, and commit `RecordAction` (tx extraction hoisted above state chain — it had
+         no dependency on KR/AR/SR). PR computed inline per site (CR input differs: nil at genesis,
+         MALT-derived at commit). `go test ./...` green, `gofmt -l` clean.
+   - [x] **Rust F3:** Extracted `derive_auth_state(thumbprints, dr, algs) → Result<(KR, AR, SR)>`
+         in `state.rs`. Replaced all five Rust sites: `implicit`, `explicit`, `apply_commit`,
+         `finalize_with_arrow` (commit.rs), `apply_transaction_test`. Stale `ks`/`auth_root`
+         variable names cleaned up. `from_checkpoint` intentionally excluded (AR is checkpoint-
+         provided, chain entered at SR). `cargo test` 125/125, `cargo fmt` clean.
+   - **Commit boundary:** `refactor(go/cyphr): extract deriveAuthState helper` +
+     `refactor(rs/cyphr): extract derive_auth_state helper`
 
 3. **Phase 3: typ-path consistency + fixture regeneration** — protocol wire correctness
 

@@ -772,6 +772,33 @@ pub fn compute_pr(
 }
 
 // ============================================================================
+// Composite derivation helpers
+// ============================================================================
+
+/// Compute KR → AR → SR from a set of thumbprints and an optional DataRoot.
+///
+/// This is the common derivation chain shared by genesis constructors
+/// (`implicit`, `explicit`) and the commit path (`apply_commit`,
+/// `finalize_with_arrow`, `apply_transaction_test`).
+///
+/// PR is intentionally excluded: its `cr` input differs per call site:
+/// - Genesis: `None` (SR promotes to PR implicitly)
+/// - Commit path: `Some(&cr)` from MALTs, computed after Arrow validation
+///
+/// `from_checkpoint` is excluded: `ar` is checkpoint-provided, not derived
+/// from `kr`, so it enters the chain at a different point.
+pub(crate) fn derive_auth_state(
+    thumbprints: &[&Thumbprint],
+    dr: Option<&DataRoot>,
+    algs: &[HashAlg],
+) -> crate::error::Result<(KeyRoot, AuthRoot, StateRoot)> {
+    let kr = compute_kr(thumbprints, None, algs)?;
+    let ar = compute_ar(&kr, None, None, algs)?;
+    let sr = compute_sr(&ar, dr, None, algs)?;
+    Ok((kr, ar, sr))
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

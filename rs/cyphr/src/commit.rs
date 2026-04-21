@@ -479,10 +479,7 @@ impl<'a> CommitScope<'a> {
         now: i64,
     ) -> crate::error::Result<&'a Commit> {
         use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
-        use crate::state::{
-            compute_ar, compute_kr, compute_sr, derive_hash_algs, hash_alg_from_str,
-            hash_sorted_concat_bytes,
-        };
+        use crate::state::{hash_alg_from_str, hash_sorted_concat_bytes};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
@@ -492,15 +489,17 @@ impl<'a> CommitScope<'a> {
 
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
-        // 1. Recompute roots to get TMR and post-mutation SR
+        // 1. Recompute KR → AR → SR to get post-mutation SR for Arrow construction.
+        //    This does not mutate self.principal; it reads the current key set.
         let key_refs: Vec<&crate::key::Key> = self.principal.auth.keys.values().collect();
-        let active_algs = derive_hash_algs(&key_refs);
-
+        let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
             self.principal.auth.keys.values().map(|k| &k.tmb).collect();
-        let ks = compute_kr(&thumbprints, None, &active_algs)?;
-        let auth_root = compute_ar(&ks, None, None, &active_algs)?;
-        let sr = compute_sr(&auth_root, self.principal.dr.as_ref(), None, &active_algs)?;
+        let (_kr, _ar, sr) = crate::state::derive_auth_state(
+            &thumbprints,
+            self.principal.dr.as_ref(),
+            &active_algs,
+        )?;
 
         // For TMR we just use compute_roots early
         let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
