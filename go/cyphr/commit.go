@@ -264,23 +264,28 @@ func (p *PendingCommit) IntoTransactions() []*ParsedCoz {
 
 // CommitBatch manages the lifecycle of a multi-coz commit.
 //
-// Following the database/sql Tx pattern:
+// Follows the [database/sql] Tx pattern:
 //
 //	batch := principal.BeginCommit()
-//	batch.Apply(vtx1)    // eagerly mutates principal
-//	batch.Apply(vtx2)    // second cz sees tx1's mutations
-//	commit := batch.Finalize()  // recomputes state, produces Commit
+//	batch.Apply(vtx1)           // eagerly mutates principal key-set
+//	batch.Apply(vtx2)           // tx₂ sees tx₁'s mutations
+//	commit, err := batch.Finalize() // recomputes state; produces immutable Commit
 //
-// For single-coz commits, use [Principal.ApplyCoz] instead.
+// For single-coz commits prefer [Principal.ApplyCoz].
 //
-// Unlike Rust's CommitScope, Go has no borrow checker, so intermediate state
-// IS observable between Apply() and Finalize(). This matches the database/sql
-// convention: between Begin() and Commit(), the caller is responsible for
-// not reading stale data.
+// # Transitory-state hazard
 //
-// Per [pre-mutation-key-rule], authorization is evaluated against the key
-// state that existed before any transactions in the commit are applied.
-// CommitBatch snapshots the active key set at creation time for this purpose.
+// Go has no borrow checker. Between [Apply] and [Finalize] the principal's
+// key-set is in a partially-mutated, uncommitted state. The caller MUST NOT
+// read principal state (e.g. active keys, state digests) in this window and
+// treat the result as committed — it is not. This matches [database/sql.Tx]:
+// between Begin and Commit the caller is responsible for not observing
+// intermediate state.
+//
+// Mechanical guard: [BeginCommit] snapshots the key-set into [preCommitKeys].
+// All authorization checks (via [VerifyAndApply]) are evaluated against that
+// snapshot, not the live state, so tx₂ cannot be authorized by a key that tx₁
+// itself just added.
 type CommitBatch struct {
 	principal     *Principal
 	pending       *PendingCommit

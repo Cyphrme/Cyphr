@@ -186,14 +186,19 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
          `go test ./...` are green.
    - **Commit boundary:** `fix(rs,go/cyphr): normalize typ to cyphr/ suffix, inject authority at call-site, regenerate fixtures`
 
-4. **Phase 4: Go CommitBatch transitory state hardening** — safety by convention
-   - [ ] **Go F4:** Evaluate whether a lightweight wrapper type around
-         `CommitBatch` meaningfully reduces the surface of the transitory-state
-         hazard given Go's absence of borrow checking. If so, introduce it and
-         update callsites. If the analysis finds the existing doc-comment warning
-         is sufficient, record the decision as "no structural change needed" in the
-         deviation log and close this finding.
-   - **Commit boundary:** `refactor(go/cyphr): [harden CommitBatch transitory state | document transitory state hazard — no structural change warranted]`
+4. **Phase 4: Go CommitBatch transitory state hardening** — safety by convention ✅
+   - [x] **Go F4:** Evaluated wrapper-type option. Analysis: a finalizer-guarded
+         type is fragile and non-idiomatic; a boolean flag would require panicking
+         on misuse, which library code must not do (AGENTS.md). The `preCommitKeys`
+         snapshot is the mechanical guard for the one concrete hazard
+         (authorization during a batch). Call-site audit confirmed all three
+         callers (e2e_runner, ApplyCoz, storage import) follow the correct
+         Begin→Apply→Finalize discipline with no stale reads.
+         Decision: **no structural change warranted.** CommitBatch doc-comment
+         hardened with explicit `# Transitory-state hazard` section naming the
+         hazard, the caller responsibility, and the mechanical guard. Recorded in
+         Deviation Log.
+   - **Commit boundary:** `docs(go/cyphr): harden CommitBatch transitory-state warning; no structural wrapper warranted`
 
 ---
 
@@ -231,9 +236,10 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 
 ## Deviation Log
 
-| Commit  | Planned                                                   | Actual                                                         | Rationale                                                                                                                                                                                                                    |
-| :------ | :-------------------------------------------------------- | :------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Phase 1 | Parse-time `if pay.ID != ""` rejection for `TxSelfRevoke` | Reverted to runtime `id == signer` check in `applyCozInternal` | Existing e2e intent files use `target = signer` for self-revoke, producing a coz with `id == signer`. Strict no-ID enforcement at parse time required simultaneous Phase 3 intent-file edits. Deferred cleanly as tech debt. |
+| Commit  | Planned                                                   | Actual                                                         | Rationale                                                                                                                                                                                                                                                                                                      |
+| :------ | :-------------------------------------------------------- | :------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase 1 | Parse-time `if pay.ID != ""` rejection for `TxSelfRevoke` | Reverted to runtime `id == signer` check in `applyCozInternal` | Existing e2e intent files use `target = signer` for self-revoke, producing a coz with `id == signer`. Strict no-ID enforcement at parse time required simultaneous Phase 3 intent-file edits. Deferred cleanly as tech debt.                                                                                   |
+| Phase 4 | Lightweight wrapper type around `CommitBatch`             | Doc-comment hardened; no structural change introduced          | A finalizer-guarded type is fragile and non-idiomatic Go. A boolean flag would require a library panic on misuse, which is prohibited. `preCommitKeys` snapshot is the mechanical authorization guard. Call-site audit confirmed all callers follow the correct discipline. Wrapper adds no meaningful safety. |
 
 ---
 
