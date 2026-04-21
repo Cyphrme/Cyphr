@@ -124,20 +124,8 @@ func Implicit(key *coz.Key) (*Principal, error) {
 		FirstSeen: 0, // Will be set by caller if known
 	}
 
-	// KS = tmb (single key promotes)
-	kr, err := ComputeKR([]coz.B64{key.Tmb}, nil, algs)
-	if err != nil {
-		return nil, err
-	}
-
-	// AR = KR (no RR, promotes)
-	ar, err := ComputeAR(kr, nil, nil, algs)
-	if err != nil {
-		return nil, err
-	}
-
-	// SR = AR (no DR at genesis, promotes)
-	sr, err := ComputeSR(ar, nil, nil, algs)
+	// KR → AR → SR (no DR at genesis)
+	kr, ar, sr, err := deriveAuthState([]coz.B64{key.Tmb}, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -189,20 +177,8 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 		keyIdx[string(k.Tmb.String())] = i
 	}
 
-	// KS = H(sort(tmb₀, tmb₁, ...)) or promoted if single
-	kr, err := ComputeKR(thumbprints, nil, algs)
-	if err != nil {
-		return nil, err
-	}
-
-	// AR = KR (no RR, promotes)
-	ar, err := ComputeAR(kr, nil, nil, algs)
-	if err != nil {
-		return nil, err
-	}
-
-	// SR = AR (no DR at genesis, promotes)
-	sr, err := ComputeSR(ar, nil, nil, algs)
+	// KR → AR → SR (no DR at genesis)
+	kr, ar, sr, err := deriveAuthState(thumbprints, nil, algs)
 	if err != nil {
 		return nil, err
 	}
@@ -766,25 +742,7 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	// algorithms supported by the post-mutation key set.
 	p.activeAlgs = DeriveHashAlgs(p.auth.Keys)
 
-	// Recompute KS from active keys
-	thumbprints := make([]coz.B64, len(p.auth.Keys))
-	for i, k := range p.auth.Keys {
-		thumbprints[i] = k.Tmb
-	}
-	kr, err := ComputeKR(thumbprints, nil, p.activeAlgs)
-	if err != nil {
-		return nil, err
-	}
-	p.kr = kr
-
-	// Recompute AR = MR(KR, RR?, embedding?)
-	ar, err := ComputeAR(p.kr, nil, nil, p.activeAlgs)
-	if err != nil {
-		return nil, err
-	}
-	p.ar = ar
-
-	// Extract the correct transaction algorithm set from the last cozy (the commit coz).
+	// Extract tx algorithm set from the commit coz (independent of state chain).
 	lastTx := cozies[len(cozies)-1]
 	var txAlgs []HashAlg
 	if lastTx.Arrow != nil {
@@ -805,12 +763,19 @@ func (p *Principal) finalizeCommit(pending *PendingCommit) (*Commit, error) {
 	}
 	p.tr = tr
 
-	// Recompute SR = MR(AR, DR?, embedding?)
-	sr, err := ComputeSR(p.ar, p.dr, nil, p.activeAlgs)
+	// KR → AR → SR (post-mutation key set, existing DR).
+	// TX extraction is hoisted above this block: it reads only cozies/pending,
+	// not state fields, so ordering is incidental.
+	// PR is computed below, after Arrow validation and CR assembly.
+	thumbprints := make([]coz.B64, len(p.auth.Keys))
+	for i, k := range p.auth.Keys {
+		thumbprints[i] = k.Tmb
+	}
+	kr, ar, sr, err := deriveAuthState(thumbprints, p.dr, p.activeAlgs)
 	if err != nil {
 		return nil, err
 	}
-	p.sr = sr
+	p.kr, p.ar, p.sr = kr, ar, sr
 
 	// Validate arrow field matches independently computed Arrow.
 	// Arrow = MR(pre, fwd_SR, TMR)

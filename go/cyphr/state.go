@@ -530,3 +530,28 @@ func ComputePR(sr StateRoot, cr *CommitRoot, embedding coz.B64, algs []HashAlg) 
 	}
 	return PrincipalRoot{mh}, nil
 }
+
+// deriveAuthState computes KR → AR → SR from a set of thumbprints and an optional
+// DataRoot, using the provided algorithm set. This is the common derivation chain
+// shared by genesis constructors (Implicit, Explicit) and the commit path.
+//
+// PR is NOT computed here because its CR input differs per call site:
+//   - Genesis: nil CR (SR promotes to PR implicitly)
+//   - Commit path: CR from MALTs, computed after Arrow validation (see RecordAction)
+//
+// from_checkpoint is excluded: AR is checkpoint-provided, not derived from KR.
+func deriveAuthState(thumbprints []coz.B64, dr *DataRoot, algs []HashAlg) (KeyRoot, AuthRoot, StateRoot, error) {
+	kr, err := ComputeKR(thumbprints, nil, algs)
+	if err != nil {
+		return KeyRoot{}, AuthRoot{}, StateRoot{}, err
+	}
+	ar, err := ComputeAR(kr, nil, nil, algs)
+	if err != nil {
+		return KeyRoot{}, AuthRoot{}, StateRoot{}, err
+	}
+	sr, err := ComputeSR(ar, dr, nil, algs)
+	if err != nil {
+		return KeyRoot{}, AuthRoot{}, StateRoot{}, err
+	}
+	return kr, ar, sr, nil
+}
