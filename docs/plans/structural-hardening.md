@@ -245,13 +245,45 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 
 ## Retrospective
 
-_(Filled after execution)_
-
 ### Process
+
+Execution across all four phases was largely on-target. The C.O.R.E. cadence worked well for
+a plan of this scope — each phase produced a single, well-bounded commit with a clear verify
+condition. The multi-round structure kept phases independent, which made the Phase 3 incidental
+discovery (stale inline `KR→AR→SR` in `FinalizeWithArrow`) easy to absorb without derailing scope.
+
+The Phase 4 wrapper-type analysis benefited from escalating to a more powerful model for the
+adversarial assessment. The dialectic between two evaluations surfaced a more rigorous conclusion
+than either would have produced alone — a productive application of Socratic primacy.
+
+A genuine omission surfaced after Phase 4: `BeginCommit` — the external caller's natural entry
+point to the batch API — lacked the hazard warning that `CommitBatch` carried. The safety contract
+was documented from the type's perspective but not from the caller's entry-point perspective.
+This was remediated before the plan was closed.
 
 ### Outcomes
 
+| Deliverable                                       | Status  | Notes                                                             |
+| :------------------------------------------------ | :------ | :---------------------------------------------------------------- |
+| Phase 1: internal naming & constant cleanup       | ✅ Done | `AuthState`→`AuthRoot`, CS variable normalization                 |
+| Phase 2: `deriveAuthState` centralization (Go+Rs) | ✅ Done | All 5 Rust inline blocks + Go genesis/commit sites unified        |
+| Phase 3: `typ` normalization + authority inject   | ✅ Done | 47 golden fixtures regenerated; zero old-format strings in tree   |
+| Phase 4: `CommitBatch` hazard documentation       | ✅ Done | No structural wrapper; doc-comment on type + entry point          |
+| Tech debt tracked                                 | ✅ Done | CLI `"cyphr.me"` hardcode + `TxSelfRevoke` parse enforcement      |
+| Deviation log populated                           | ✅ Done | Phase 1 revert + Phase 4 wrapper decision recorded with rationale |
+
 ### Pipeline Improvements
+
+- **Entry-point documentation discipline:** When documenting safety contracts, review the public
+  API surface from the _caller's_ entry point, not only from the type or function being modified.
+  In a multi-step API, callers encounter the factory (`BeginCommit`) before the type (`CommitBatch`);
+  both need the warning.
+- **Commit message fidelity:** The Phase 4 commit message omitted the decision rationale
+  ("no structural wrapper warranted") that the plan's documented commit boundary included. When
+  the primary deliverable is a design decision rather than a code change, the rationale belongs
+  in the commit message — it is the permanent record for future reviewers.
+- **Verification criterion precision:** "Zero X" criteria should explicitly scope to committed
+  files (i.e., use `git grep`, not filesystem grep) to avoid ambiguity during post-execution review.
 
 ---
 
