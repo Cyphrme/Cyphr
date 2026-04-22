@@ -206,13 +206,21 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
 
-    // Build pay Value for key/revoke (without commit — finalize_with_commit injects it)
+    // Self-revoke is the only revoke type the protocol supports (SPEC §3.2).
+    // The key being revoked must be the signer itself.
+    if key_tmb != signer_tmb {
+        return Err(crate::Error::InvalidArgument(
+            "key revoke only supports self-revoke: --key must equal --signer".into(),
+        ));
+    }
+
+    // Build pay Value for key/revoke. `id` MUST be absent for self-revoke;
+    // its presence is rejected at parse time.
     let now = current_timestamp();
     let pre = principal.pr_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
-    pay_map.insert("id".to_string(), Value::String(key_tmb.to_string()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
     pay_map.insert("pre".to_string(), Value::String(pre));
     pay_map.insert("rvk".to_string(), Value::Number(now.into()));

@@ -130,14 +130,12 @@ func ParseCoz(pay *CozPay, czd coz.B64) (*ParsedCoz, error) {
 		}
 
 	case TxSelfRevoke:
-		// [no-revoke-non-self]: signer IS the revoked key. ID, if present,
-		// must match the signer (enforced in applyCozInternal).
-		// Phase 3 will update intent files to omit ID and tighten this further.
+		// Self-revoke: signer IS the revoked key. `id` MUST be absent —
+		// its presence indicates a non-self revoke attempt, which is
+		// structurally forbidden. [no-revoke-non-self]
 		cz.Kind = TxSelfRevoke
 		if pay.ID != "" {
-			if err := cz.parseID(pay.ID); err != nil {
-				return nil, err
-			}
+			return nil, ErrMalformedPayload
 		}
 		if err := cz.parsePre(pay.Pre); err != nil {
 			return nil, err

@@ -88,7 +88,7 @@ principal = ["alice", "bob"]
 [[test.commit]]
 tx = [
   [
-    { now = 1700000001, rvk = 1700000001, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000001, rvk = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 

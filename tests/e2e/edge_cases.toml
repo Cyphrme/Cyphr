@@ -38,7 +38,7 @@ tx = [
 [[test.commit]]
 tx = [
   [
-    { now = 1700000003, rvk = 1700000003, signer = "key_a", target = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000003, rvk = 1700000003, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
@@ -66,21 +66,21 @@ tx = [
 [[test.commit]]
 tx = [
   [
-    { now = 1700000008, rvk = 1700000008, signer = "alice", target = "alice", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000008, rvk = 1700000008, signer = "alice", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000009, rvk = 1700000009, signer = "bob", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000009, rvk = 1700000009, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
 [[test.commit]]
 tx = [
   [
-    { now = 1700000010, rvk = 1700000010, signer = "carol", target = "carol", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000010, rvk = 1700000010, signer = "carol", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 

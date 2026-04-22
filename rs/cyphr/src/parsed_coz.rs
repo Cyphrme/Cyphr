@@ -217,14 +217,13 @@ impl ParsedCoz {
             let id = Self::extract_id(pay)?;
             Ok(CozKind::KeyReplace { pre, id })
         } else if typ.ends_with(typ::KEY_REVOKE) {
-            // Per protocol simplification, revoke requires pre like all other coz
+            // Self-revoke: signer revokes itself. `id` MUST be absent — the
+            // signer IS the revoked key. Presence of `id` is a malformed payload.
+            // [no-revoke-non-self]: non-self revoke is not permitted at any level.
             let pre = Self::extract_pre(pay)?;
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
-            // [no-revoke-non-self]: If id is present, it must match the signer.
-            if let Some(id) = Self::try_extract_id(pay) {
-                if id.to_b64() != _signer.to_b64() {
-                    return Err(Error::MalformedPayload);
-                }
+            if Self::try_extract_id(pay).is_some() {
+                return Err(Error::MalformedPayload);
             }
             Ok(CozKind::SelfRevoke { pre, rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
@@ -504,6 +503,29 @@ mod tests {
         let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
 
         assert!(matches!(cz.kind, CozKind::SelfRevoke { rvk: 1000, .. }));
+    }
+
+    #[test]
+    fn parse_self_revoke_with_id_fails() {
+        // id MUST be absent on a self-revoke; its presence is a parse-time error.
+        let mut pay = PayBuilder::new()
+            .typ("cyphr.me/cyphr/key/revoke")
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .rvk(1000)
+            .build();
+        pay.extra.insert("pre".into(), json!(TEST_PRE));
+        pay.extra.insert("id".into(), json!(TEST_ID)); // forbidden
+
+        let czd = Czd::from_bytes(vec![0; 32]);
+        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
+
+        assert!(
+            matches!(result, Err(Error::MalformedPayload)),
+            "expected MalformedPayload when id present on self-revoke, got {:?}",
+            result
+        );
     }
 
     #[test]

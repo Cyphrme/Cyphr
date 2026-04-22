@@ -104,7 +104,7 @@ tx = [
 [[test.commit]]
 tx = [
   [
-    { now = 1700000002, rvk = 1700000002, signer = "key_a", target = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
+    { now = 1700000002, rvk = 1700000002, signer = "key_a", typ = "cyphr.me/cyphr/key/revoke" },
   ],
 ]
 
