@@ -230,7 +230,7 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
 | :-------------------------------------------------- | :------- | :------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------- | :------: |
 | Checkpoint loading parity gap (Go)                  | MEDIUM   | Descoped from hardening window                                             | Post-release — requires protocol-level checkpoint signing spec                                                  |    ☐     |
 | TxSelfRevoke: parse-time no-ID enforcement deferred | LOW      | e2e intent files currently emit `id == signer` for self-revoke cozies      | Update intent files to omit `target` for self-revoke; tighten `ParseCoz` parse-time                             |    ✅    |
-| CLI authority hardcoded as `"cyphr.me"` literal     | LOW      | Phase 3: authority injected at call-site but CLI has no `--authority` flag | Add `--authority` flag to `cyphr-cli` so the binary is deployable under alternate domains without recompilation |    ☐     |
+| CLI authority hardcoded as `"cyphr.me"` literal     | LOW      | Phase 3: authority injected at call-site but CLI has no `--authority` flag | Add `--authority` flag to `cyphr-cli` so the binary is deployable under alternate domains without recompilation |    ✅    |
 
 ---
 

@@ -20,12 +20,12 @@ pub fn run(cli: &Cli, command: &KeyCommands) -> crate::Result<()> {
             identity,
             key,
             signer,
-        } => add(cli, identity, key.as_deref(), signer),
+        } => add(cli, identity, key.as_deref(), signer, &cli.authority),
         KeyCommands::Revoke {
             identity,
             key,
             signer,
-        } => revoke(cli, identity, key, signer),
+        } => revoke(cli, identity, key, signer, &cli.authority),
         KeyCommands::List { identity } => list(cli, identity.as_deref()),
     }
 }
@@ -61,7 +61,13 @@ fn generate(cli: &Cli, algo: &str, tag: Option<&str>) -> crate::Result<()> {
 }
 
 /// Add a key to an identity.
-fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> crate::Result<()> {
+fn add(
+    cli: &Cli,
+    identity: &str,
+    key_tmb: Option<&str>,
+    signer_tmb: &str,
+    authority: &str,
+) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_genesis(identity)?;
@@ -118,7 +124,11 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
         "typ".to_string(),
-        Value::String(format!("cyphr.me/{}", cyphr::parsed_coz::typ::KEY_CREATE)),
+        Value::String(format!(
+            "{}/{}",
+            authority,
+            cyphr::parsed_coz::typ::KEY_CREATE
+        )),
     );
 
     let pay_value: Value = serde_json::to_value(&pay_map)?;
@@ -146,7 +156,7 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
         &signer_stored.pub_key,
         &tmb,
         now,
-        "cyphr.me",
+        authority,
     )?;
 
     // Store updated state
@@ -177,7 +187,13 @@ fn add(cli: &Cli, identity: &str, key_tmb: Option<&str>, signer_tmb: &str) -> cr
 }
 
 /// Revoke a key from an identity.
-fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::Result<()> {
+fn revoke(
+    cli: &Cli,
+    identity: &str,
+    key_tmb: &str,
+    signer_tmb: &str,
+    authority: &str,
+) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let store = parse_store(&cli.store)?;
     let pr = parse_principal_genesis(identity)?;
@@ -227,7 +243,11 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
         "typ".to_string(),
-        Value::String(format!("cyphr.me/{}", cyphr::parsed_coz::typ::KEY_REVOKE)),
+        Value::String(format!(
+            "{}/{}",
+            authority,
+            cyphr::parsed_coz::typ::KEY_REVOKE
+        )),
     );
 
     let pay_value: Value = serde_json::to_value(&pay_map)?;
@@ -255,7 +275,7 @@ fn revoke(cli: &Cli, identity: &str, key_tmb: &str, signer_tmb: &str) -> crate::
         &signer_stored.pub_key,
         &tmb,
         now,
-        "cyphr.me",
+        authority,
     )?;
 
     // Store updated state

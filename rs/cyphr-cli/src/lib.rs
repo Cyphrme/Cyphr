@@ -80,6 +80,10 @@ pub struct Cli {
     #[arg(long, default_value = "./cyphr-keys.json")]
     pub keystore: PathBuf,
 
+    /// Authority domain for transaction typ URIs (e.g., example.com)
+    #[arg(long, default_value = "cyphr.me")]
+    pub authority: String,
+
     /// Output format
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
     pub output: OutputFormat,
