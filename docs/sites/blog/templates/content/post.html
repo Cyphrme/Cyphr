@@ -1,38 +1,86 @@
-{% extends "base.html" %} {% block title %}{{ page.title }} | {{ config.title
-}}{% endblock title %} {% block content %}
-<article class="post-with-toc">
-  <header class="post-header">
-    <h1>{{ page.title }}</h1>
-    {% if page.description %}
-    <p class="post-description">{{ page.description }}</p>
-    {% endif %}
-    <div class="post-meta">
-      {% if page.date %}
-      <time datetime="{{ page.date }}">{{ page.date }}</time>
-      {% endif %} {% if page.tags %}
-      <div class="post-tags">
-        {% for tag in page.tags %}
-        <a href="{{ prefix }}/tags/{{ tag }}.html">{{ tag }}</a>
-        {% endfor %}
-      </div>
-      {% endif %}
-    </div>
-  </header>
-  <section class="content">{{ content | safe }}</section>
-  {% if anchors %}
-  <aside class="toc-sidebar">
-    <nav class="toc-nav">
-      <input type="checkbox" id="toc-toggle" class="toc-toggle" checked />
-      <label for="toc-toggle" class="toc-label">Contents</label>
-      <ul class="toc-list">
-        {% for anchor in anchors %}
-        <li class="toc-level-{{ anchor.level }}">
-          <a href="#{{ anchor.id }}">{{ anchor.label | strip_parens }}</a>
-        </li>
-        {% endfor %}
-      </ul>
+{% extends "base.html" %}
+{% block header_extra %}
+{% if anchors | length > 2 %}
+<div class="mobile-toc">
+    <input type="checkbox" id="mobile-toc-toggle" class="toc-toggle" />
+    <label for="mobile-toc-toggle" class="mobile-toc-btn" aria-label="Table of contents">
+        <span></span><span></span><span></span>
+    </label>
+    <nav class="mobile-toc-panel">
+        <ul class="toc-list">
+            {% for anchor in anchors %}
+            <li class="toc-level-{{ anchor.level }}">
+                <a href="#{{ anchor.id }}" onclick="document.getElementById('mobile-toc-toggle').checked=false">{{
+                    anchor.label | split(pat="(") | first | split(pat="—") | first | trim
+                    }}</a>
+            </li>
+            {% endfor %}
+        </ul>
     </nav>
-  </aside>
-  {% endif %}
+</div>
+{% endif %}
+{% endblock header_extra %}
+{% block title %}{{ page.title }} | {{ config.title }}{% endblock title %}
+{% block content %}
+{% if anchors | length > 2 %}
+<div class="post-with-toc">
+    <article class="post">
+        <header class="post-header">
+            <h1>{{ page.title }}</h1>
+            {% if page.description %}
+            <p class="post-description">{{ page.description }}</p>
+            {% endif %}
+            {% if page.date or page.tags | length > 0 %}
+            <div class="post-meta">
+                {% if page.date %}<time datetime="{{ page.date }}">{{ page.date }}</time>{% endif %}
+                {% if page.tags | length > 0 %}
+                <div class="post-tags">
+                    {% for tag in page.tags %}
+                    <a href="{{ prefix }}/tags/{{ tag }}.html">{{ tag }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </header>
+        <section class="content">{{ content | safe }}</section>
+    </article>
+    <aside class="toc-sidebar">
+        <nav class="toc-nav">
+            <input type="checkbox" id="toc-toggle" class="toc-toggle" checked />
+            <label for="toc-toggle" class="toc-label">Contents</label>
+            <ul class="toc-list">
+                {% for anchor in anchors %}
+                <li class="toc-level-{{ anchor.level }}">
+                    <a href="#{{ anchor.id }}">{{ anchor.label | split(pat="(") | first | split(pat="—") | first | trim
+                        }}</a>
+                </li>
+                {% endfor %}
+            </ul>
+        </nav>
+    </aside>
+</div>
+{% else %}
+<article class="post">
+    <header class="post-header">
+        <h1>{{ page.title }}</h1>
+        {% if page.description %}
+        <p class="post-description">{{ page.description }}</p>
+        {% endif %}
+        {% if page.date or page.tags | length > 0 %}
+        <div class="post-meta">
+            {% if page.date %}<time datetime="{{ page.date }}">{{ page.date }}</time>{% endif %}
+            {% if page.tags | length > 0 %}
+            <div class="post-tags">
+                {% for tag in page.tags %}
+                <a href="{{ prefix }}/tags/{{ tag }}.html">{{ tag }}</a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </header>
+    <section class="content">{{ content | safe }}</section>
 </article>
+{% endif %}
 {% endblock content %}

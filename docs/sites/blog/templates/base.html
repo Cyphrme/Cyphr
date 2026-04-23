@@ -18,6 +18,7 @@
       {% for item in nav %}
       <a href="{{ prefix }}{{ item.path }}" {% if page_path==item.path %}class="active" {% endif %}>{{ item.label }}</a>
       {% endfor %}
+      {% block header_extra %}{% endblock header_extra %}
     </nav>
   </header>
   <main>{% block content %}{% endblock content %}</main>
