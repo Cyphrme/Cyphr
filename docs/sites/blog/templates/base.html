@@ -8,18 +8,56 @@
   <meta name="description" content="{{ page.description }}" />{% endif %}
   <title>{% block title %}{{ title }} | {{ config.title }}{% endblock title %}</title>
   <link rel="canonical" href="{{ config.base_url }}{{ page_path }}" />
+  <link rel="icon" href="{{ prefix }}/logo.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ prefix }}/style.css" />
+  <!-- Scroll-driven typewriter: inlined to bypass lightningcss stripping animation-timeline -->
+  <style>
+    @keyframes typewrite {
+      from { max-width: 0; }
+      to   { max-width: 35ch; }
+    }
+    @media (max-width: 1200px) {
+      @keyframes typewrite {
+        from { max-width: 0; }
+        to   { max-width: calc(100vw - 6rem); }
+      }
+    }
+    .page-title {
+      display: inline-block;
+      overflow: hidden;
+      white-space: nowrap;
+      vertical-align: bottom;
+      max-width: 0;
+      font-weight: 500;
+      font-size: 0.85rem;
+      color: var(--fg-muted);
+      animation: typewrite linear both;
+      animation-timeline: scroll();
+      animation-range: 0px 500px;
+    }
+  </style>
 </head>
 
 <body>
   <header class="site-header">
-    <a href="{{ prefix }}/index.html" class="site-title">cyphr</a>
-    <nav>
-      {% for item in nav %}
-      <a href="{{ prefix }}{{ item.path }}" {% if page_path==item.path %}class="active" {% endif %}>{{ item.label }}</a>
-      {% endfor %}
-      {% block header_extra %}{% endblock header_extra %}
-    </nav>
+    <div class="header-inner">
+      <a href="https://cyphr.me" class="site-title">
+        <svg class="site-logo" viewBox="0 0 200 200" width="34" height="34" fill="none" aria-hidden="true">
+          <circle cx="100" cy="100" r="80" stroke="currentColor" stroke-width="6"/>
+          <circle cx="100" cy="36" r="9" fill="currentColor"/>
+          <path d="M100 45 L100 92 M100 92 L58 150 M100 92 L142 150" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+          <circle cx="58" cy="150" r="9" fill="currentColor"/>
+          <circle cx="142" cy="150" r="9" fill="currentColor"/>
+        </svg>
+        cyphr{% if title and title != config.title %}<span class="page-title">&nbsp;· {{ title }}</span>{% endif %}
+      </a>
+      <nav>
+        {% for item in nav %}
+        <a href="{{ prefix }}{{ item.path }}" {% if page_path==item.path %}class="active" {% endif %}>{{ item.label }}</a>
+        {% endfor %}
+        {% block header_extra %}{% endblock header_extra %}
+      </nav>
+    </div>
   </header>
   <main>{% block content %}{% endblock content %}</main>
   <footer class="site-footer">

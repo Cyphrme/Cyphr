@@ -1,18 +1,23 @@
-{% extends "base.html" %} {% block content %}
-<article class="section-index">
-  <h1>{{ section.title }}</h1>
-  {% if section.description %}
-  <p class="lead">{{ section.description }}</p>
-  {% endif %}
-  <nav class="section-nav">
-    {% for item in items %}
-    <a href="{{ prefix }}{{ item.path }}" class="section-link">
-      <strong>{{ item.frontmatter.title }}</strong>
-      {% if item.frontmatter.description %}
-      <span>{{ item.frontmatter.description }}</span>
-      {% endif %}
-    </a>
-    {% endfor %}
-  </nav>
-</article>
+{% extends "base.html" %}
+{% block content %}
+<section class="landing">
+    {% if content | trim | length > 0 %}
+    <div class="landing-body">{{ content | safe }}</div>
+    {% endif %}
+    <ul class="post-list">
+        {% for item in items %}
+        <li>
+            <a href="{{ prefix }}{{ item.path }}" class="post-link">
+                <span class="post-title">{{ item.frontmatter.title }}</span>
+                {% if item.frontmatter.description %}
+                <span class="post-desc">{{ item.frontmatter.description }}</span>
+                {% endif %}
+            </a>
+            {% if item.frontmatter.date %}
+            <time>{{ item.frontmatter.date }}</time>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+</section>
 {% endblock content %}
