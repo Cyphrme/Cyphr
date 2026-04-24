@@ -1,16 +1,20 @@
 [package]
 categories             = ["authentication", "cryptography", "database"]
 description            = "Storage backends for Cyphr identity protocol"
+documentation          = "https://docs.rs/cyphr-storage"
 edition.workspace      = true
+homepage.workspace     = true
 keywords               = ["identity", "storage", "cryptography", "self-sovereign"]
+license-file.workspace = true
 name                   = "cyphr-storage"
+readme                 = "README.md"
 repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"
 
 [dependencies]
 coz        = { workspace = true }
-cyphr      = { path = "../cyphr" }
+cyphr      = { path = "../cyphr", version = "0.1.0" }
 serde      = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror  = { workspace = true }

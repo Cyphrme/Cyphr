@@ -1,7 +1,13 @@
 [package]
+categories             = ["command-line-utilities", "cryptography"]
 description            = "Reference CLI for the Cyphr identity protocol"
+documentation          = "https://docs.rs/cyphr-cli"
 edition.workspace      = true
+homepage.workspace     = true
+keywords               = ["cli", "identity", "authentication", "cryptography"]
+license-file.workspace = true
 name                   = "cyphr-cli"
+readme                 = "README.md"
 repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"
@@ -14,8 +20,8 @@ path = "src/main.rs"
 base64ct.workspace   = true
 clap.workspace       = true
 coz.workspace        = true
-cyphr                = { path = "../cyphr" }
-cyphr-storage        = { path = "../cyphr-storage" }
+cyphr                = { path = "../cyphr", version = "0.1.0" }
+cyphr-storage        = { path = "../cyphr-storage", version = "0.1.0" }
 indexmap             = { version = "2", features = ["serde"] }
 serde.workspace      = true
 serde_json.workspace = true

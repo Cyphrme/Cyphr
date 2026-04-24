@@ -1,9 +1,13 @@
 [package]
 categories             = ["authentication", "cryptography"]
 description            = "Cyphr self-sovereign identity protocol"
+documentation          = "https://docs.rs/cyphr"
 edition.workspace      = true
+homepage.workspace     = true
 keywords               = ["identity", "authentication", "cryptography", "self-sovereign"]
+license-file.workspace = true
 name                   = "cyphr"
+readme                 = "README.md"
 repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"

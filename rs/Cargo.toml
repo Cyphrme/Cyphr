@@ -10,6 +10,8 @@ resolver = "2"
 
 [workspace.package]
 edition      = "2024"
+homepage     = "https://cyphr.me"
+license-file = "../LICENSE"
 repository   = "https://github.com/Cyphrme/Cyphr"
 rust-version = "1.85"
 
