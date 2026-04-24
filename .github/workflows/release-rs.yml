@@ -1,10 +1,9 @@
-name: Release
+name: Rust Release
 
 on:
   push:
     tags:
       - "rs/v*"
-      - "go/v*"
 
 permissions:
   contents: write
@@ -13,33 +12,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Determine release scope from tag ───────────────────────
-  meta:
-    runs-on: ubuntu-latest
-    outputs:
-      scope: ${{ steps.parse.outputs.scope }}
-      version: ${{ steps.parse.outputs.version }}
-      tag: ${{ github.ref_name }}
-    steps:
-      - name: Parse tag
-        id: parse
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          SCOPE="${TAG%%/v*}"
-          VERSION="${TAG#*/}"
-          echo "scope=${SCOPE}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-  # ── Generate changelog scoped to the relevant directory ────
   changelog:
     runs-on: ubuntu-latest
-    needs: meta
     outputs:
       body: ${{ steps.cliff.outputs.content }}
+      version: ${{ steps.parse.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#*/}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          
       - name: Generate changelog
         id: cliff
         uses: orhun/git-cliff-action@v4
@@ -48,15 +37,13 @@ jobs:
           args: >-
             --latest
             --strip header
-            --include-path "${{ needs.meta.outputs.scope }}/**"
+            --include-path "rs/**"
             --include-path "tests/**"
             --include-path "SPEC.md"
             --include-path "docs/**"
 
-  # ── Cross-compile Rust CLI binaries ────────────────────────
   build-rs:
-    if: needs.meta.outputs.scope == 'rs'
-    needs: [meta, changelog]
+    needs: [changelog]
     strategy:
       matrix:
         include:
@@ -94,7 +81,6 @@ jobs:
         with:
           workspaces: rs
 
-      # Cross-compilation toolchain for aarch64-linux
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -125,15 +111,11 @@ jobs:
             rs/${{ matrix.artifact }}.zip
           if-no-files-found: error
 
-  # ── Create GitHub Release ──────────────────────────────────
   release:
-    needs: [meta, changelog, build-rs]
-    # Run even if build-rs was skipped (Go releases)
-    if: always() && needs.changelog.result == 'success'
+    needs: [changelog, build-rs]
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        if: needs.meta.outputs.scope == 'rs'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -142,7 +124,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: "${{ needs.meta.outputs.scope }} ${{ needs.meta.outputs.version }}"
+          name: "rs ${{ needs.changelog.outputs.version }}"
           body: ${{ needs.changelog.outputs.body }}
           files: |
             artifacts/**/*.tar.gz

@@ -1,0 +1,46 @@
+name: Go Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate changelog
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: >-
+            --latest
+            --strip header
+            --include-path "go/**"
+            --include-path "tests/**"
+            --include-path "SPEC.md"
+            --include-path "docs/**"
+
+  release:
+    needs: [changelog]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "go ${{ github.ref_name }}"
+          body: ${{ needs.changelog.outputs.body }}
+
+      - name: Trigger Go Proxy
+        run: |
+          # Ping the proxy to index the new release immediately
+          curl -s "https://proxy.golang.org/github.com/cyphrme/cyphr/@v/${{ github.ref_name }}.info" > /dev/null
