@@ -1,0 +1,24 @@
+[build]
+command = """
+curl -sSfL https://sukr.io/release/x86_64-linux/sukr -o /tmp/sukr && \
+chmod +x /tmp/sukr && \
+/tmp/sukr && \
+mkdir -p public/theme && \
+cp ../theme/*.css public/theme/
+"""
+publish = "public"
+
+[[headers]]
+for = "/*"
+[headers.values]
+Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+Permissions-Policy      = "camera=(), microphone=(), geolocation=()"
+Referrer-Policy         = "strict-origin-when-cross-origin"
+X-Content-Type-Options  = "nosniff"
+X-Frame-Options         = "DENY"
+
+[[redirects]]
+force  = false
+from   = "/*"
+status = 302
+to     = "/404.html"

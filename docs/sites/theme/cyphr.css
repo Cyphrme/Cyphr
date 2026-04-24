@@ -285,6 +285,22 @@ sup a {
   font-size: 0.7em;
 }
 
+.footnote-backref {
+  color: var(--fg-muted);
+  border-bottom: none;
+  font-size: 0.8em;
+  text-decoration: none;
+}
+
+.footnote-backref:hover {
+  color: var(--accent);
+}
+
+/* Render footnote number via CSS so it's invisible to TTS engines */
+.footnote-ref a::after {
+  content: attr(data-footnote);
+}
+
 /* ── Images ──────────────────────────────────────────────── */
 img {
   max-width: 100%;

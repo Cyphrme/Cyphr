@@ -1,11 +1,12 @@
-/* blog.cyphr.me — top-header blog layout */
-@import "../../theme/cyphr.css";
+/* blog.cyphr.me — editorial blog layout */
+@import "./theme/cyphr.css";
 
 /* ── Layout ──────────────────────────────────────────────── */
 body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  border-top: 3px solid var(--accent);
 }
 
 main {
@@ -16,48 +17,71 @@ main {
   width: 100%;
 }
 
-/* ── Header ──────────────────────────────────────────────── */
+/* ── Header (full-bleed band) ────────────────────────────── */
 .site-header {
-  max-width: 56rem;
-  margin: 0 auto;
-  padding: 1.25rem 2rem;
   border-bottom: 1px solid var(--rule);
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
   position: sticky;
   top: 0;
   z-index: 100;
   background: var(--bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.header-inner {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1.25rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .site-title {
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: var(--accent);
+  font-family: var(--sans);
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--fg);
   text-decoration: none;
-  letter-spacing: 0.02em;
-  text-transform: lowercase;
+  letter-spacing: -0.01em;
   border-bottom: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .site-title:hover {
-  color: var(--accent-hover);
+  color: var(--accent);
   border-bottom: none;
+}
+
+
+
+.site-logo {
+  flex-shrink: 0;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+
+.site-title:hover .site-logo {
+  opacity: 1;
 }
 
 .site-header nav {
   display: flex;
   gap: 1.5rem;
+  align-items: center;
 }
 
 .site-header nav a {
-  font-size: 0.85rem;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 500;
   color: var(--fg-muted);
   text-decoration: none;
-  letter-spacing: 0.02em;
-  border-bottom: 1px solid transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 2px solid transparent;
+  padding-bottom: 0.15rem;
   transition: color 0.15s, border-color 0.15s;
 }
 
@@ -70,8 +94,14 @@ main {
 /* ── Post Header ─────────────────────────────────────────── */
 .post-header {
   margin-bottom: 2.5rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--rule);
+  padding: 1.5rem 1.5rem 1.5rem 1.25rem;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: 0 6px 6px 0;
+}
+
+.post-header h1 {
+  margin-bottom: 0.5rem;
 }
 
 .post-description {
@@ -82,8 +112,9 @@ main {
 }
 
 .post-meta {
-  font-family: var(--mono);
-  font-size: 0.78rem;
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  font-weight: 400;
   color: var(--fg-muted);
   display: flex;
   align-items: center;
@@ -112,6 +143,45 @@ main {
   border-color: var(--accent);
 }
 
+/* ── Landing ─────────────────────────────────────────────── */
+.landing {
+  padding-top: 4rem;
+  padding-bottom: 4rem;
+}
+
+.landing-tagline {
+  font-size: 1.3rem;
+  font-weight: 400;
+  color: var(--fg-muted);
+  line-height: 1.6;
+  max-width: 32rem;
+}
+
+.landing-body {
+  margin-bottom: 2rem;
+  font-size: 1.05rem;
+  color: var(--fg-muted);
+  line-height: 1.65;
+}
+
+/* ── Generic Page (404, etc.) ────────────────────────────── */
+.page {
+  padding-top: 4rem;
+  padding-bottom: 4rem;
+}
+
+.page h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.page-body {
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
 /* ── Blog Listing ────────────────────────────────────────── */
 .post-list {
   list-style: none;
@@ -119,8 +189,15 @@ main {
 }
 
 .post-list li {
-  padding: 1.25rem 0;
+  padding: 1.25rem 0 1.25rem 1rem;
   border-bottom: 1px solid var(--rule);
+  border-left: 3px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.post-list li:hover {
+  border-left-color: var(--accent);
+  background: var(--bg-raised);
 }
 
 .post-list li:first-child {
@@ -137,8 +214,9 @@ main {
 }
 
 .post-list .post-title {
-  font-size: 1rem;
-  font-weight: 600;
+  font-family: var(--sans);
+  font-size: 1.05rem;
+  font-weight: 700;
   color: var(--fg);
   transition: color 0.15s;
 }
@@ -156,8 +234,9 @@ main {
 }
 
 .post-list time {
-  font-family: var(--mono);
-  font-size: 0.75rem;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 400;
   color: var(--fg-muted);
   display: block;
   margin-top: 0.35rem;
@@ -179,8 +258,7 @@ main {
 
 .toc-nav {
   position: sticky;
-  top: 2rem;
-  border-left: 1px solid var(--border);
+  top: 5.5rem;
   padding-left: 1rem;
 }
 
@@ -189,10 +267,10 @@ main {
 }
 
 .toc-label {
-  font-family: var(--mono);
-  font-size: 0.72rem;
+  font-family: var(--sans);
+  font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-muted);
   cursor: pointer;
@@ -232,34 +310,61 @@ main {
 }
 
 .toc-list a {
-  font-family: var(--mono);
-  font-size: 0.72rem;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-weight: 400;
   color: var(--fg-muted);
   border-bottom: none;
   line-height: 1.7;
   display: block;
   padding: 0.1rem 0;
   transition: color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .toc-list a:hover {
   color: var(--accent);
+  white-space: normal;
+  overflow: visible;
+}
+
+/* CSS Scrollspy — progressive enhancement
+ * Uses CSS Overflow Level 5: scroll-target-group + :target-current
+ * Browser support: Chrome 140+, Edge 140+, Opera 124+
+ * Graceful degradation: unsupported browsers simply don't highlight
+ */
+.toc-list {
+  scroll-target-group: auto;
+}
+
+.toc-list a:target-current {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Override nav's uppercase for mobile ToC */
+.mobile-toc-panel .toc-list a {
+  text-transform: none;
 }
 
 .toc-level-3 { padding-left: 0.4rem; }
 .toc-level-4 { padding-left: 0.8rem; }
+.toc-level-5 { padding-left: 1.2rem; }
+.toc-level-6 { padding-left: 1.6rem; }
 
 /* ── Footer ──────────────────────────────────────────────── */
 .site-footer {
-  max-width: 56rem;
-  margin: 0 auto;
-  padding: 2.5rem 2rem 2rem;
+  background: var(--bg-raised);
   border-top: 1px solid var(--rule);
-  font-family: var(--mono);
-  font-size: 0.72rem;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-weight: 400;
   color: var(--fg-muted);
   text-align: center;
   width: 100%;
+  padding: 2.5rem 2rem 2rem;
 }
 
 .site-footer span a {
@@ -271,15 +376,97 @@ main {
   color: var(--accent);
 }
 
+/* ── Mobile TOC (in header) ──────────────────────────────── */
+.mobile-toc {
+  display: none;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 1200px) {
+
+  /* Hide the sidebar TOC, use the header-based one */
   .toc-sidebar {
     display: none;
+  }
+
+  /* Show mobile TOC trigger */
+  .mobile-toc {
+    display: contents;
+  }
+
+  .site-header nav:has(.mobile-toc) {
+    padding-right: 2.5rem;
+  }
+
+  /* Hamburger button — standard three-line */
+  .mobile-toc-btn {
+    position: absolute;
+    right: 2rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    width: 20px;
+    height: 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .mobile-toc-btn span {
+    display: block;
+    width: 100%;
+    height: 2px;
+    background: var(--fg-muted);
+    border-radius: 1px;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    transform-origin: center;
+  }
+
+  .mobile-toc-btn:hover span {
+    background: var(--accent);
+  }
+
+  /* Hamburger → X morph */
+  .toc-toggle:checked ~ .mobile-toc-btn span:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+  }
+
+  .toc-toggle:checked ~ .mobile-toc-btn span:nth-child(2) {
+    opacity: 0;
+  }
+
+  .toc-toggle:checked ~ .mobile-toc-btn span:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+  }
+
+  /* Dropdown panel — absolute relative to header */
+  .mobile-toc-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 0 2rem;
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+    z-index: 200;
+  }
+
+  .toc-toggle:checked ~ .mobile-toc-panel {
+    max-height: calc(100vh - 5rem);
+    overflow-y: auto;
+    opacity: 1;
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
   }
 }
 
 @media (max-width: 600px) {
-  .site-header {
+  .header-inner {
     flex-direction: column;
     gap: 0.75rem;
     padding: 2rem 1.25rem 1rem;
@@ -305,3 +492,5 @@ main {
     max-width: none;
   }
 }
+
+
