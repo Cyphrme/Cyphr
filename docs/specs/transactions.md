@@ -22,13 +22,13 @@ what happens when it is processed.
 (Genesis), §6 (Key), §7 (`typ` Action Grammar).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 
 **Criticality Tier:** High — transaction processing errors compromise identity
 integrity and chain validity.
 
 **Cross-references:**
-[`state-tree.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/state-tree.md)
+[`state-tree.md`](./state-tree.md)
 — state computation rules that transactions produce.
 
 ## Constraints

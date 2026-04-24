@@ -20,17 +20,17 @@ covers embedding and conjunctive authorization for delegated identity.
 **Target System:** `SPEC.md` §12 (Embedding), §14 (Authentication), §16 (MSS).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 
 **Criticality Tier:** High — authentication errors compromise identity
 verification and access control.
 
 **Cross-references:**
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
+[`transactions.md`](./transactions.md)
 — authorization model.
-[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/principal-lifecycle.md)
+[`principal-lifecycle.md`](./principal-lifecycle.md)
 — lifecycle gate for authentication.
-[`state-tree.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/state-tree.md)
+[`state-tree.md`](./state-tree.md)
 — Merkle tree structure for embeddings.
 
 ## Constraints

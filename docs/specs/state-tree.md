@@ -23,7 +23,7 @@ TR) and the multihash mechanism that makes those identifiers algorithm-agnostic.
 (State Calculation), §20 (Multihash Identifiers).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 (produced prior to SPEC.md's recent structural changes — model re-audit pending)
 
 **Criticality Tier:** High — this is a cryptographic identity protocol. Digest

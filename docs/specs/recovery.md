@@ -21,15 +21,15 @@ control of a principal when keys are lost, compromised, or inaccessible.
 **Target System:** `SPEC.md` §18 (Recovery).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 
 **Criticality Tier:** High — recovery errors can permanently lock users out of
 their identities or allow unauthorized parties to take over accounts.
 
 **Cross-references:**
-[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/principal-lifecycle.md)
+[`principal-lifecycle.md`](./principal-lifecycle.md)
 — lifecycle states affected by recovery.
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
+[`transactions.md`](./transactions.md)
 — key lifecycle transactions used in recovery.
 
 ## Constraints

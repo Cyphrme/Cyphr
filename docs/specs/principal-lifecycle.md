@@ -21,15 +21,15 @@ principal-level operations (close, merge, fork) that alter identity.
 States), §19 (Close, Merge, Fork).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 
 **Criticality Tier:** High — lifecycle state errors can permanently lock users
 out of their identities.
 
 **Cross-references:**
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
+[`transactions.md`](./transactions.md)
 — transaction semantics that produce lifecycle transitions.
-[`state-tree.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/state-tree.md)
+[`state-tree.md`](./state-tree.md)
 — state computation underlying level-dependent structures.
 
 ## Constraints

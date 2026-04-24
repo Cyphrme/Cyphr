@@ -22,15 +22,15 @@ independent verifiability over global coordination.
 Conditions).
 
 **Model Reference:**
-[`principal-state-model.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/models/principal-state-model.md)
+[`principal-state-model.md`](../models/principal-state-model.md)
 
 **Criticality Tier:** High — consensus failures can allow fork propagation,
 history rewriting, or denial of service.
 
 **Cross-references:**
-[`transactions.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/transactions.md)
+[`transactions.md`](./transactions.md)
 — commit chain that consensus protects.
-[`principal-lifecycle.md`](file:///var/home/nrd/git/github.com/Cyphrme/Cyphr/docs/specs/principal-lifecycle.md)
+[`principal-lifecycle.md`](./principal-lifecycle.md)
 — lifecycle state transitions triggered by consensus violations.
 
 ## Constraints
