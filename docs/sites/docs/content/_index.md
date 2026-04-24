@@ -3,7 +3,15 @@ title = "cyphr"
 description = "Self-sovereign identity protocol — documentation"
 +++
 
-# cyphr
+<div style="text-align: center; margin: 1rem 0 2rem;">
+  <svg viewBox="0 0 200 200" width="120" height="120" fill="none" style="color: var(--accent);" aria-label="Cyphr logo">
+    <circle cx="100" cy="100" r="80" stroke="currentColor" stroke-width="6"/>
+    <circle cx="100" cy="36" r="9" fill="currentColor"/>
+    <path d="M100 45 L100 92 M100 92 L58 150 M100 92 L142 150" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="58" cy="150" r="9" fill="currentColor"/>
+    <circle cx="142" cy="150" r="9" fill="currentColor"/>
+  </svg>
+</div>
 
 **cyphr** is a self-sovereign identity protocol built on cryptographic state
 trees. It replaces passwords with public key cryptography, enabling secure
