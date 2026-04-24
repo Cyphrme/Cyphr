@@ -13,6 +13,9 @@ signed atomic actions — all without a central authority.
 Built on [Coz](https://github.com/Cyphrme/Coz) cryptographic JSON messaging
 and [MALT](https://github.com/Cyphrme/malt) append-only Merkle trees.
 
+> These docs are under active development. The protocol specification is the
+> canonical reference; the guides here will expand as the project matures.
+
 ## Getting Started
 
 <nav class="section-nav">
@@ -41,6 +44,3 @@ and [MALT](https://github.com/Cyphrme/malt) append-only Merkle trees.
 - Rust crate: [crates.io/crates/cyphr](https://crates.io/crates/cyphr)
 - Go module: [github.com/cyphrme/cyphr](https://pkg.go.dev/github.com/cyphrme/cyphr)
 - Blog: [blog.cyphr.me](https://blog.cyphr.me)
-
-> These docs are under active development. The protocol specification is the
-> canonical reference; the guides here will expand as the project matures.

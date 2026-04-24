@@ -116,6 +116,20 @@ body {
   color: var(--accent);
 }
 
+/* CSS-only scrollspy (progressive enhancement)
+ * Uses CSS Overflow Level 5: scroll-target-group + :target-current
+ * Browser support: Chrome 140+, Edge 140+, Opera 124+
+ * Graceful degradation: unsupported browsers ignore these properties
+ */
+.sidebar .nav-anchors {
+  scroll-target-group: auto;
+}
+
+.sidebar .nav-anchors .anchor-link:target-current {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .sidebar .nav-anchors .level-3 { margin-left: 0.5rem; }
 .sidebar .nav-anchors .level-4 { margin-left: 1rem; }
 .sidebar .nav-anchors .level-5 { margin-left: 1.5rem; }
