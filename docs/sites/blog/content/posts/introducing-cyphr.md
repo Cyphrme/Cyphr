@@ -88,9 +88,7 @@ one protocol.
 
 ## Introducing the Cyphr Protocol
 
-Cyphr is a self-sovereign identity protocol built on cryptographic state
-trees. A Cyphr identity, called a **principal**, is not an account on a
-server. It is a Merkle tree of cryptographic state whose root hash _is_
+Cyphr is a self-sovereign identity protocol built on cryptographic state trees.[^video-intro] A Cyphr identity, called a **principal**, is not an account on a server. It is a Merkle tree of cryptographic state whose root hash _is_
 the identity. That hash, the **Principal Root** (PR), is the only
 identifier you need. It is self-certifying: anyone who has the state tree
 can recompute the root and verify that the principal is authentic, with
@@ -535,3 +533,5 @@ Your identity is yours.
 [^mss]: Mutual State Synchronization is specified in [SPEC §13](https://docs.cyphr.me). MSS draws from the same architectural insight as double-entry bookkeeping: independent verification of shared state eliminates single points of failure in state tracking. Both user and service maintain cryptographically verifiable views of each other's principal state.
 
 [^sovereign-source]: The broader structural analysis of why centralized systems converge on authoritarian outcomes, and why self-sovereignty is a precondition rather than a preference, is developed in [Sovereign Source](https://nrd.sh/blog/sovereign-source.html).
+
+[^video-intro]: For a visual summary of the protocol's architecture, see the [Introducing Cyphr](https://www.youtube.com/watch?v=NggaT3BrNco) video overview.
