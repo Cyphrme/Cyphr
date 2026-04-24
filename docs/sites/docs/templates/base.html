@@ -8,13 +8,23 @@
   <meta name="description" content="{{ page.description }}" />{% endif %}
   <title>{% block title %}{{ title }} | {{ config.title }}{% endblock title %}</title>
   <link rel="canonical" href="{{ config.base_url }}{{ page_path }}" />
+  <link rel="icon" href="{{ prefix }}/logo.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="{{ prefix }}/style.css" />
 </head>
 
 <body>
   <aside class="sidebar">
     <header>
-      <a href="{{ prefix }}/index.html" class="logo">cyphr</a>
+      <a href="{{ prefix }}/index.html" class="logo">
+        <svg class="site-logo" viewBox="0 0 200 200" width="24" height="24" fill="none" aria-hidden="true">
+          <circle cx="100" cy="100" r="80" stroke="currentColor" stroke-width="6"/>
+          <circle cx="100" cy="36" r="9" fill="currentColor"/>
+          <path d="M100 45 L100 92 M100 92 L58 150 M100 92 L142 150" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+          <circle cx="58" cy="150" r="9" fill="currentColor"/>
+          <circle cx="142" cy="150" r="9" fill="currentColor"/>
+        </svg>
+        cyphr
+      </a>
       <span class="tagline">protocol documentation</span>
       <input type="checkbox" id="nav-toggle" class="nav-toggle" />
       <label for="nav-toggle" class="hamburger" aria-label="Toggle navigation">

@@ -37,6 +37,10 @@ body {
   gap: 0.5rem;
 }
 
+.sidebar .logo .site-logo {
+  flex-shrink: 0;
+}
+
 .sidebar .logo:hover {
   color: var(--accent-hover);
 }
