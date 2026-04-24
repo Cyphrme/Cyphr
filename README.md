@@ -125,18 +125,25 @@ Genesis (tmb)  ──pre──▶  key/create  ──pre──▶  key/revoke  �
 ```
 Cyphr/
 ├── SPEC.md                 # Full protocol specification
-├── docs/                   # Plans, models, ADRs
-├── go/                     # Go implementation
+├── docs/                   # Documentation and planning
+│   ├── sites/blog/         # blog.cyphr.me source
+│   ├── sites/docs/         # docs.cyphr.me source
+│   └── ...                 # Plans, models, charters
+├── go/                     # Go implementation (flat package)
+│   ├── storage/            # Storage backends
+│   ├── testfixtures/       # Test fixture loading
 │   └── README.md           # Go-specific documentation
 ├── rs/                     # Rust implementation
 │   ├── cyphr/              # Core crate
 │   ├── cyphr-storage/      # Storage crate
 │   ├── cyphr-cli/          # CLI binary
-│   ├── malt/               # Merkle Append-only Log Tree
+│   ├── fixture-gen/        # Golden fixture generation
+│   ├── test-fixtures/      # Golden fixture definitions
 │   └── README.md           # Rust-specific documentation
-├── tests/                  # Language-agnostic test fixtures
-│   ├── golden/             # Pre-computed golden fixtures (47 tests)
-│   ├── e2e/                # E2E intent files (5 scenarios)
+├── tests/                  # Language-agnostic test vectors
+│   ├── golden/             # Pre-computed golden fixtures
+│   ├── e2e/                # E2E scenario files
+│   ├── intents/            # Intent definitions per category
 │   └── README.md           # Test fixture documentation
 ```
 
@@ -151,12 +158,15 @@ Both implementations support Levels 1-4 (single key through authenticated action
 
 All tests pass using shared language-agnostic test vectors.
 
-## Built On Coz
+## Built On
 
-Cyphr uses [Coz](https://github.com/Cyphrme/Coz) for all cryptographic operations. Coz is a JSON messaging specification supporting ES256, ES384, ES512, and Ed25519.
+- **[Coz](https://github.com/Cyphrme/Coz)** — Cryptographic JSON messaging (ES256, ES384, ES512, Ed25519)
+- **[MALT](https://github.com/Cyphrme/malt)** — Merkle Append-only Log Tree
 
 ## Documentation
 
+- **[docs.cyphr.me](https://docs.cyphr.me)** — Getting started guides, CLI reference, and glossary
+- **[blog.cyphr.me](https://blog.cyphr.me)** — Project blog
 - **[SPEC.md](SPEC.md)** — Full protocol specification
 - **[go/README.md](go/README.md)** — Go implementation guide
 - **[rs/README.md](rs/README.md)** — Rust implementation guide
