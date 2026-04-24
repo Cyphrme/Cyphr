@@ -1,5 +1,4 @@
 [build]
-base = "docs/sites/blog"
 command = """
 curl -sSfL https://sukr.io/release/x86_64-linux/sukr -o /tmp/sukr && \
 chmod +x /tmp/sukr && \
@@ -7,7 +6,7 @@ chmod +x /tmp/sukr && \
 mkdir -p public/theme && \
 cp ../theme/*.css public/theme/
 """
-publish = "docs/sites/blog/public"
+publish = "public"
 
 [[headers]]
 for = "/*"
