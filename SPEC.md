@@ -1,4 +1,4 @@
-# Cyphrpass
+# Cyphr
 
 Protocol Specification
 
@@ -13,7 +13,7 @@ Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
 ## 1. Introduction
 
-Cyphrpass is a self-sovereign identity and authentication protocol. It provides
+Cyphr is a self-sovereign identity and authentication protocol. It provides
 a decentralized authentication layer for the Internet. Briefly, it enables:
 
 - Password-free and email-free authentication via public key cryptography
@@ -23,7 +23,7 @@ a decentralized authentication layer for the Internet. Briefly, it enables:
 - Multi-device key management with revocation
 - Data provenance
 
-| Feature            | Cyphrpass                        | Legacy Passwords/SSO |
+| Feature            | Cyphr                            | Legacy Passwords/SSO |
 | ------------------ | -------------------------------- | -------------------- |
 | **Identity**       | Public Keys and Merkle Root      | Password or Provider |
 | **Authentication** | Authenticated Atomic Action      | Bearer Tokens        |
@@ -33,7 +33,7 @@ a decentralized authentication layer for the Internet. Briefly, it enables:
 | **State Tracking** | Push/Pull - Bidirectional(MSS)   | Centralized Service  |
 
 
-Importantly, Cyphrpass enables an entire identity, both authentication and
+Importantly, Cyphr enables an entire identity, both authentication and
 data, to be represented by a single digest.
 
 ---
@@ -102,7 +102,7 @@ forward state tree (ST).
 
 | Term                 | Abv | Definition                                      |
 | -------------------- | --- | ------------------------------------------------|
-| **Principal**        | -   | An identity in Cyphrpass, replaces "account"    |
+| **Principal**        | -   | An identity in Cyphr, replaces "account"    |
 | **Principal Genesis**| PG  | The initial, permanent principal identifier     |
 | **Principal Root**   | PR  | Top-level digest. `MR(SR, CR?, ...)`            |
 | **State Root**       | SR  | Principal non-commit state. `MR(AR, DR, ...)`   |
@@ -171,7 +171,7 @@ See section [Authenticated Atomic Action](#71-authenticated-atomic-action).
 #### 2.2.9 Embedding
 An **embedded node** is an external tree reference.   Its value may be a `tmb`,
 KR, AR, PR, nonce, or other node value. An **embedded principal** is a full
-Cyphrpass identity embedded into another principal. See section
+Cyphr identity embedded into another principal. See section
 [Embedding](#10-embedding).
 
 #### 2.2.10 Reveal
@@ -195,7 +195,7 @@ recovery path within the protocol.  See section [Unrecoverable](#Unrecoverable).
 
 ### 2.3 Core Protocol Constraints
 #### 2.3.1 Coz Required Fields
-Cyphrpass requires specific fields for Coz messages.  All cozies must have the
+Cyphr requires specific fields for Coz messages.  All cozies must have the
 fields:
 
 - `alg`: Following Coz semantics, `alg` is the algorithm of the signing key and
@@ -232,7 +232,7 @@ may impose additional structure on DT.
 
 ## 3 State
 ### 3.0 Feature Levels
-Cyphrpass has six operational levels. Each level increases complexity and each
+Cyphr has six operational levels. Each level increases complexity and each
 level builds on the previous level; level 2 has the same semantics as level 1
 with the addition of key replacement. Clients may choose to remain compatible
 with a particular level.
@@ -471,7 +471,7 @@ to itself.
     "pay":{
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/commit/create",
+        "typ": "cyphr.me/cyphr/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "arrow":"<b64ut>" // Transition arrow: MR(pre, fwd, TMR)
       },
@@ -561,7 +561,7 @@ Wire Format:
 
 ### 4.6 Comparison to `git`
 In git, commits are digest of metadata objects, including fields like author and
-date, but critically parent and commit tree a design similar to Cyphrpass's.
+date, but critically parent and commit tree a design similar to Cyphr's.
   - `"arrow":<pre, fwd, TMR>` is equivalent to the git tree root, which is
     referenced in the git commit.
   - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
@@ -569,7 +569,7 @@ date, but critically parent and commit tree a design similar to Cyphrpass's.
     parents (see section Explicit Fork).
 
 ### 4.7 Trust Anchor
-For a Cyphrpass client, the last known trusted state for a particular principal
+For a Cyphr client, the last known trusted state for a particular principal
 is the **trust anchor**, and points to an auth root ARₐ. The ordered sequence of
 transactions linking two known Auth Roots ARₐ → ARₓ is called the **`tx_path`**.
 The transactions that must actually be fetched and verified to move from ARₐ to
@@ -617,7 +617,7 @@ transaction is signed, which updates the value of DR in the PR tree:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/ds/create",
+    "typ": "cyphr.me/cyphr/ds/create",
     "id":  "<computed new DR = MR(DT)>"
   },
   "sig": "<b64ut>"
@@ -677,7 +677,7 @@ the coz.
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/key/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
       },
@@ -686,7 +686,7 @@ the coz.
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/principal/create",
+        "typ": "cyphr.me/cyphr/principal/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "id":"U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG
       },
@@ -697,7 +697,7 @@ the coz.
     "pay":{
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/commit/create",
+        "typ": "cyphr.me/cyphr/commit/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "arrow":"<b64ut>"
       },
@@ -751,14 +751,14 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/key/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
         "id":  "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"  // The `tmb` of the new key.  In this case, itself.
     }}],[{ // TX1: Second Key
       "pay": {
         "alg": "ES256",
         "now": 1623132000,
-        "typ": "cyphr.me/cyphrpass/key/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
         "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key's `tmb`
       },
@@ -768,7 +768,7 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/principal/create",
+        "typ": "cyphr.me/cyphr/principal/create",
         "id":"<b64ut>" // ID == PG
       },
       "sig": "<b64ut>",
@@ -777,7 +777,7 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/commit/create",
+        "typ": "cyphr.me/cyphr/commit/create",
         "arrow":"<b64ut>" 
       },
       "sig": "<b64ut>",
@@ -806,7 +806,7 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
 
 ## 6 Key
 
-Cyphrpass uses Coz which specifies the structure for cryptographic keys. `tmb`
+Cyphr uses Coz which specifies the structure for cryptographic keys. `tmb`
 is the digest of the canonical public key representation using the hash
 algorithm associated with `alg`.
 
@@ -852,7 +852,7 @@ transaction should be included in `txs`.
       "alg": "ES256",
       "now": 1623132000,
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-      "typ": "cyphr.me/cyphrpass/key/create",
+      "typ": "cyphr.me/cyphr/key/create",
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key
     },
     "sig": "<b64ut>"
@@ -905,7 +905,7 @@ deleted and later re-added (each re-addition starts a new active period).
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/key/delete",
+    "typ": "cyphr.me/cyphr/key/delete",
     "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
   "sig": "<b64ut>"
@@ -926,7 +926,7 @@ previous key (AR == KR == tmb).
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
-    "typ": "cyphr.me/cyphrpass/key/replace",
+    "typ": "cyphr.me/cyphr/key/replace",
     "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
   },
     "sig": "<b64ut>"}],
@@ -967,9 +967,9 @@ Example Naked Revoke:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/key/revoke",
+    "typ": "cyphr.me/cyphr/key/revoke",
     "rvk": 1623132000,
-    "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphr"
   },
   "sig": "<b64ut>"
 }
@@ -977,7 +977,7 @@ Example Naked Revoke:
 
 Note that a commit is not required for a revoke. This is termed a **naked
 revoke**. Third parties may sign the revoke, declaring the key compromised,
-without any other knowledge of the principal root, and Cyphrpass must
+without any other knowledge of the principal root, and Cyphr must
 appropriately interpret this event.
 
 A naked revoke, or a revoke without a subsequent `delete`, puts the principal in
@@ -992,9 +992,9 @@ commit. A client may include `msg` detailing why the key was revoked.
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/key/revoke",
+    "typ": "cyphr.me/cyphr/key/revoke",
     "rvk": 1623132000,
-    "msg": "Private key was uploaded to Github repo: cyphrme/cyphrpass"
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphr"
   },
   "sig": "<b64ut>"
 }
@@ -1037,7 +1037,7 @@ disappears.
 
 
 ### 7.2 `typ`
-Cyphrpass follows a `typ` grammar system, denoting a cozies' action, consisting
+Cyphr follows a `typ` grammar system, denoting a cozies' action, consisting
 of these core components: `auth` (authority), `act` (action), `noun`, and
 `verb`.
 
@@ -1055,8 +1055,8 @@ of these core components: `auth` (authority), `act` (action), `noun`, and
   (e.g., `user/image`).
 - **verb**: The final unit, the operation to perform.
 
-Cyphrpass recommends that the authority be either a domain or a PG/PR. When a
-domain is used as authority, that domain should provide a Cyphrpass identity.
+Cyphr recommends that the authority be either a domain or a PG/PR. When a
+domain is used as authority, that domain should provide a Cyphr identity.
 
 Example: `"cyphr.me/user/image/create"`
 
@@ -1067,9 +1067,9 @@ Example: `"cyphr.me/user/image/create"`
 
 **Other Examples:**
 
-- `cyphr.me/cyphrpass/key/upsert`
-- `cyphr.me/cyphrpass/key/revoke`
-- `cyphr.me/cyphrpass/principal/merge`
+- `cyphr.me/cyphr/key/upsert`
+- `cyphr.me/cyphr/key/revoke`
+- `cyphr.me/cyphr/principal/merge`
 - `cyphr.me/comment/create`
 
 **Required fields for verbs**
@@ -1084,20 +1084,20 @@ to `tmb`.
 ### 7.3 Special verbs
 
 In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
-`upsert`, `delete`), Cyphrpass defines the following special verbs for
+`upsert`, `delete`), Cyphr defines the following special verbs for
 protocol-level operations.  See the relevant sections for more detail.
 
 - `key/revoke`                       (Terminal, inherited from Coz)
-- `cyphrpass/key/replace`            (Atomicity)
-- `cyphrpass/principal/merge`        (Merge)
-- `cyphrpass/principal/merge-ack`    (Merge Acknowledgement)
+- `cyphr/key/replace`            (Atomicity)
+- `cyphr/principal/merge`        (Merge)
+- `cyphr/principal/merge-ack`    (Merge Acknowledgement)
 
 ### 7.4 Authority and `typ`
 
 The authority defines the acceptance rules for a type. These rules may be
 enforced by a consensus mechanism like a blockchain, a VM, a centralized
-service, or other processes. Although Cyphrpass itself agnosticly does not set
-permissions outside of the core authentication rules, Cyphrpass acknowledges
+service, or other processes. Although Cyphr itself agnosticly does not set
+permissions outside of the core authentication rules, Cyphr acknowledges
 that rules must be implemented by an authority (like`cyphr.me`).
 
 ### 7.5 Authority and Noun Properties
@@ -1112,10 +1112,10 @@ For upsert, properties applying to `create` apply to upsert only on creation,
 and properties applying to `update` apply to upsert on update.
 
 ### 7.6 Idempotency and Uniqueness Enforcement
-Cyphrpass transaction mutations are idempotent. Replaying an already applied coz
+Cyphr transaction mutations are idempotent. Replaying an already applied coz
 is ignored and produces no state change.
 
-All `create` operations in Cyphrpass enforce uniqueness. If the target item
+All `create` operations in Cyphr enforce uniqueness. If the target item
 (e.g., key, rule, principal) already exists, the operation returns error
 `DUPLICATE`.
 
@@ -1145,7 +1145,7 @@ do not bypass genesis rules.
 
 ## 8 Declaration
 
-Detailed in this document so far is iterative state mutation. Cyphrpass also
+Detailed in this document so far is iterative state mutation. Cyphr also
 supports a declarative datastructure.  Transactional (imperative) and
 declarative are isomorphic.
 
@@ -1196,7 +1196,7 @@ the secretes.
       "alg": "ES256",
       "now": 1623132000,
       "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "typ": "cyphr.me/cyphrpass/key/create",
+      "typ": "cyphr.me/cyphr/key/create",
       "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
       "arrow": "<b64ut>"
       }],
@@ -1215,7 +1215,7 @@ the secretes.
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
-        "typ": "cyphr.me/cyphrpass/key/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
       },
       "sig": "<b64ut>"
@@ -1237,7 +1237,7 @@ Since declarative transaction enumerate the full principal root, they
 inherently act as checkpoints (see section Checkpoint). As always, the
 declarative structure is compactified according to Coz.
 
-`cyphrpass/principal/checkpoint/create`
+`cyphr/principal/checkpoint/create`
 
 Example declarative principal.  Note that RR (RT) is omitted on empty:
 
@@ -1273,7 +1273,7 @@ Embedded into a coz transaction:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/checkpoint/create",
+    "typ": "cyphr.me/cyphr/checkpoint/create",
     "id": "<b64UT>", // The computed AR of the declared state
     "PT": {...}
   },
@@ -1317,14 +1317,14 @@ for creation, and any rule applying to `*/update` also applies to `*/upsert` for
 update.
 
 
-For example, for "2-out-of-3" for a `cyphrpass/key/create`, two cozies need to
+For example, for "2-out-of-3" for a `cyphr/key/create`, two cozies need to
 be signed by independent keys of weight 1 for the transaction to be valid.
 
 First, rules are defined:
 
 ```json5
 "weights":{
-  "cyphrpass/key/create": 2,
+  "cyphr/key/create": 2,
 }
 ```
 
@@ -1336,10 +1336,10 @@ The rule is added to RR via a `rule/create` transaction.
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/rule/create",
+    "typ": "cyphr.me/cyphr/rule/create",
     "rule":{
       "weights":{
-        "cyphrpass/key/create": 2,
+        "cyphr/key/create": 2,
       }
     }
   },
@@ -1358,7 +1358,7 @@ signed for a valid total transaction:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "<signing key tmb>", // First Existing key
-        "typ": "<authority>/cyphrpass/key/create",
+        "typ": "<authority>/cyphr/key/create",
         "id": "<new keys tmb>",
       },
       "sig": "<b64ut>",
@@ -1368,7 +1368,7 @@ signed for a valid total transaction:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "<signing key tmb>", // Second Existing key
-        "typ": "<authority>/cyphrpass/key/create",
+        "typ": "<authority>/cyphr/key/create",
         "id": "<new keys tmb>",
       },
       "sig": "<b64ut>",
@@ -1389,7 +1389,7 @@ value is the time in seconds.
 ```json5
 {
   "timelock": {
-    "cyphrpass/key/create": 604800, // 604800 seconds is 7 days.
+    "cyphr/key/create": 604800, // 604800 seconds is 7 days.
   }
 }
 ```
@@ -1400,10 +1400,10 @@ value is the time in seconds.
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/rule/create",
+    "typ": "cyphr.me/cyphr/rule/create",
     "rule":{
       "timelock": {
-        "cyphrpass/key/create": 604800, // 604800 seconds is 7 days.
+        "cyphr/key/create": 604800, // 604800 seconds is 7 days.
       }
     }
   },
@@ -1434,7 +1434,7 @@ Virtual machine may or may not be Turing complete.
 
 ## 10 Embedding
 An embedding is a digest reference to an external node, such as a principal (PR),
-key, or key tree. Embedding is the mechanism by which Cyphrpass achieves
+key, or key tree. Embedding is the mechanism by which Cyphr achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
 The default weight of an embedded node is one, regardless of how man children
@@ -1448,7 +1448,7 @@ embeds A, verifying A includes B's members but does not recursively resolve B's
 embedding of A.
 
 ### 10.1 Nonce, Embedding, and Opaque Nodes
-Cyphrpass permits nonces, embeddings, or otherwise opaque nodes anywhere in the
+Cyphr permits nonces, embeddings, or otherwise opaque nodes anywhere in the
 Principal Tree. Embeddings are indistinguishable from other digest values unless
 revealed by the client.  One or more nonces may be included at any level of the
 state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
@@ -1459,7 +1459,7 @@ state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphrpass/nonce/create",
+    "typ": "cyphr/nonce/create",
     "nonce": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8"
   },
   "sig": "<b64ut>" 
@@ -1472,15 +1472,15 @@ Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
 state tree. `typ` specifies the path for insertion.  A `nonce/delete`, where
 `id` == nonce removes the nonce.
 
-`cyphrpass/nonce/create`    // Principal Genesis
-`cyphrpass/AT/nonce/create` // Nonce is inserted at the root of AT.
-`cyphrpass/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
+`cyphr/nonce/create`    // Principal Genesis
+`cyphr/AT/nonce/create` // Nonce is inserted at the root of AT.
+`cyphr/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
 
 
 ### 10.2 Nonce
 Although used with a slightly different connotation in the broader industry, in
-Cyphrpass a **nonce** is a unique, high-entropy value. Unless explicitly labeled
-or revealed, Cyphrpass is unable to distinguish a nonce from any other node type
+Cyphr a **nonce** is a unique, high-entropy value. Unless explicitly labeled
+or revealed, Cyphr is unable to distinguish a nonce from any other node type
 such as an embedding. Nonces serve a few purposes:
 
 - **Obfuscation**: Nonces are indistinguishable from key thumbprints and
@@ -1506,7 +1506,7 @@ Design notes:
   values are calculated from a prior value. (See section Conversion.)
 
 Unlike systems that rely on incrementing counters to enforce “used only once”
-(nonce meaning "number used once") behavior, Cyphrpass is distributed and cannot
+(nonce meaning "number used once") behavior, Cyphr is distributed and cannot
 guarantee sequential uniqueness across principals. Instead, a sufficiently large
 random value provides probabilistic uniqueness that is guaranteed in practice.
 As an aside outside of scope, cryptographic signatures and other identifiers may
@@ -1515,7 +1515,7 @@ also act as entropy sources.
 ### 10.3 Embedded Principal
 
 Authorization is transitively conferred through embedding. An **embedded
-principal** is a full Cyphrpass identity embedded into another principal. An
+principal** is a full Cyphr identity embedded into another principal. An
 embedded principal has the default weight of a single node and appears in the
 Merkle tree of another principal as the digest of the external Principal Root
 (PR).
@@ -1737,7 +1737,7 @@ existing principal keys.
 
 ### 11.3 Unrecoverable
 An **unrecoverable** principal is where recovery is impossible within the
-Cyphrpass protocol rules. Transactions and recovery are impossible, although
+Cyphr protocol rules. Transactions and recovery are impossible, although
 some data actions may still be possible.  Unrecoverable is a partially ambiguous
 classification: the principal cannot mutate AR (`¬CanMutateAR`) and is not
 deleted, but whether data actions remain possible is not connoted. Once
@@ -1763,7 +1763,7 @@ existing keys (unless those keys were revoked).
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<target signing key tmb>",
-    "typ": "cyphr.me/cyphrpass/principal/delete",
+    "typ": "cyphr.me/cyphr/principal/delete",
     "pre": "<target PR>"
   },
   "sig": "<b64ut>"
@@ -1816,7 +1816,7 @@ Example source principal merge transaction:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<source signing key tmb>",
-    "typ": "cyphr.me/cyphrpass/principal/merge",
+    "typ": "cyphr.me/cyphr/principal/merge",
     "pre": "<list of source's PRs>",
     "merge_to_pr": "<target Principal Root>"
   },
@@ -1832,7 +1832,7 @@ And the merge acknowledgement by the target principal:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<target signing key tmb>",
-    "typ": "cyphr.me/cyphrpass/principal/merge-ack",
+    "typ": "cyphr.me/cyphr/principal/merge-ack",
     "pre": "<target PR>",
     "merge_from_pr": "<list of source Principal Root>"
   },
@@ -1848,7 +1848,7 @@ merging in their state.
 Forking is where one principal, the **source**, creates a new principal, the
 **target**, effectively splitting identities while preserving the source's
 original PG and a new PG for the target. A fork is created by signing
-`cyphrpass/principal/fork/create`, `cyphrpass/principal/create` (for atomic
+`cyphr/principal/fork/create`, `cyphr/principal/create` (for atomic
 orthogonality), and adding at least one key. This transaction bundle is
 equivalent to a genesis transaction. In the case of a fork, CR is calculated as
 TODO and `pre` is the source.
@@ -1865,7 +1865,7 @@ Example principal fork, consisting of two transactions:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/key/create",
+        "typ": "cyphr.me/cyphr/key/create",
         "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
         "pre": "<source PR>",
       },
@@ -1876,7 +1876,7 @@ Example principal fork, consisting of two transactions:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-        "typ": "cyphr.me/cyphrpass/principal/create",
+        "typ": "cyphr.me/cyphr/principal/create",
         "id": "<b64ut>", 
         "pre":"<source PR>",
       },
@@ -1887,7 +1887,7 @@ Example principal fork, consisting of two transactions:
         "alg": "ES256",
         "now": 1623132000,
         "tmb": "<signing tmb>",
-        "typ": "cyphr.me/cyphrpass/principal/fork/create",
+        "typ": "cyphr.me/cyphr/principal/fork/create",
         "pre": "<source PR>",
         "fork_pr": "<fresh PG digest, which in this case is just KR>",
         "arrow":"<b64ut>"
@@ -1917,11 +1917,11 @@ A **multihash identifier** is a set of digests that addresses content. Multihash
 identifiers are calculated on a per commit basis for each hash algorithm
 referenced by the principal in KT at the time of commit.
 
-In Cyphrpass, cryptographic algorithms are pluggable: no single cryptographic
+In Cyphr, cryptographic algorithms are pluggable: no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
 This abstraction enables flexibility in algorithm choice, security upgrades, and
 rapid removal of broken algorithms. No single algorithm is canonical. All
-variants in a multihash identifier are considered equivalent by Cyphrpass and
+variants in a multihash identifier are considered equivalent by Cyphr and
 security judgments are out-of-scope.
 
 In summary:
@@ -1931,7 +1931,7 @@ In summary:
 - Digests are computed for all hashing algorithms referenced in KT (keys, embeddings).
 - When an  algorithm primitive is removed, its hash is no longer computed. When
   a primitive is added, its algorithm's variant begins computation.
-- Cyphrpass makes no relative security judgements. All variants are considered
+- Cyphr makes no relative security judgements. All variants are considered
   equivalent.
 
 **Algorithm Mapping**:
@@ -2046,11 +2046,11 @@ For uniform security, keys from one strength category may be used.
 Equivalence across multihash algorithm variants is assumed by the protocol and
 no relative strength ordering is enforced at the protocol level. When multiple
 algorithms are supported, there may be a tie at the time of conversion.
-Cyphrpass provides a default rank. Rank is a tiebreaker only and not a security
+Cyphr provides a default rank. Rank is a tiebreaker only and not a security
 indicator. Misuse may have security implications.
 
 Perhaps in the future, principals may set a rank order via
-`cyphrpass/alg/rank/create` transaction (stored as a rule), but for now
+`cyphr/alg/rank/create` transaction (stored as a rule), but for now
 this is out-of-scope.
 
 ### 12.5 Algorithm Incompatibility
@@ -2058,7 +2058,7 @@ this is out-of-scope.
 A multihash component is deemed **incompatible** if a client cannot support
 the specific algorithm (alg) used in a principal's message.
 
-However, due to Cyphrpass’s use of encapsulation, implicit promotion, and other
+However, due to Cyphr’s use of encapsulation, implicit promotion, and other
 features, a clients do not always require full algorithm support. For example,
 if a service can process the top-level digests, it may remain compatible even if
 it cannot verify the underlying primitives of nested components.
@@ -2071,7 +2071,7 @@ attempted using an unsupported algorithm, the services are incompatible.
 # Extended
 
 The following sections contain advice, exposition, non-normative, or additions
-to the core Cyphrpass protocol.
+to the core Cyphr protocol.
 
 
 
@@ -2080,10 +2080,10 @@ to the core Cyphrpass protocol.
 
 ## 13 Mutual State Synchronization (MSS)
 
-Cyphrpass enables symmetric, bidirectional state awareness that eliminates the
+Cyphr enables symmetric, bidirectional state awareness that eliminates the
 one-sided dependency inherent in traditional password-based or federated
-authentication models. Cyphrpass's distributed model does not distinguish
-between users and services; both are represented by a Cyphrpass principal,
+authentication models. Cyphr's distributed model does not distinguish
+between users and services; both are represented by a Cyphr principal,
 allowing users to track services without depending on legacy systems such as
 certificate authorities (CA) or email.
 
@@ -2094,12 +2094,12 @@ service-specific, and often funneled through email, creating a central point of
 failure and control. Programmatic key rotation or bulk recovery is typically
 impossible without service cooperation.
 
-Cyphrpass inverts and symmetrizes these concerns through Mutual State
+Cyphr inverts and symmetrizes these concerns through Mutual State
 Synchronization (MSS):
 
-- Services and users are represented as Cyphrpass principals and maintain
+- Services and users are represented as Cyphr principals and maintain
   independent, cryptographically verifiable views of each other's state.
-- Cyphrpass clients push state mutations to registered services after local
+- Cyphr clients push state mutations to registered services after local
   application.
 - During authentication, services verify these pushes against the principal's
   current chain, reducing round-trips.
@@ -2108,11 +2108,11 @@ MSS directly addresses concerns about stale distributed state. This practice is
 similar to double entry accounting, where instead of one entry in a ledger being
 depended upon as a single source of truth, two entries are cross-checked.
 
-Although Cyphrpass provides single-sign-on semantics, it differs from historic
+Although Cyphr provides single-sign-on semantics, it differs from historic
 systems by eliminating passwords, email dependency, and unidirectional state
 tracking. MSS addresses centralization risks in legacy SSO (passwords + email as
 de facto recovery root) and bearer-token models (service as sole state oracle).
-By making state mutual, verifiable, and push-capable, Cyphrpass enables:
+By making state mutual, verifiable, and push-capable, Cyphr enables:
 
 - Low-latency authentication flows.
 - Independence from email/CA choke points.
@@ -2163,7 +2163,7 @@ mutations to all registered third parties.
 ### 13.4 MSS API 
 (Non-Normative)
 
-Cyphrpass's `typ` system builds a ready to use API. However, there are a few
+Cyphr's `typ` system builds a ready to use API. However, there are a few
 endpoints not enumerated by `typ`, such as synchronization. Services should
 expose an interface for MSS (like HTTP API). Services may of course limit depth
 and have other rate limits. A gossip communication layer may be used to keep
@@ -2200,7 +2200,7 @@ clients of the registration of external witnesses, which themselves are
 represented as principals.  This message is not included in AR, and is instead
 may be included in DR as a data action, so that PR may remain unmodified. 
 
-`cyphr.me/cyphrpass/witness/register/create`: Value of the Principal's PG.
+`cyphr.me/cyphr/witness/register/create`: Value of the Principal's PG.
 
 This message is transported to the external witness for registration. The
 witness is removed with a `delete`.
@@ -2304,7 +2304,7 @@ of the attempted recovery.
 
 ### 18.5 Recovery Transactions
 
-#### 18.5.1 `cyphrpass/recovery/create` — Register Fallback
+#### 18.5.1 `cyphr/recovery/create` — Register Fallback
 
 Registers a recovery agent (backup key, service, or social contacts).
 
@@ -2314,7 +2314,7 @@ Registers a recovery agent (backup key, service, or social contacts).
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/recovery/create",
+    "typ": "<authority>/cyphr/recovery/create",
     "pre": "<targeted PR>",
     "recovery": {
       "agent": "<recovery agent PG or tmb>",
@@ -2381,7 +2381,7 @@ the Recovery Authority's recovery transaction.
 }
 ```
 
-Because the agent was designated via `cyphrpass/recovery/create`, their `key/create` is valid even though no regular user key signed it.
+Because the agent was designated via `cyphr/recovery/create`, their `key/create` is valid even though no regular user key signed it.
 
 ### 18.7 External Recovery
 External recovery is accomplished through embedded principals, where some
@@ -2413,7 +2413,7 @@ service policy. Freezes are global and apply to all principal actions.
 
 A user may initiate a freeze if they suspect their keys are compromised but do not yet want to revoke them (e.g., lost device).
 
-- **Mechanism**: User signs a `cyphrpass/freeze/create` transaction with an active key.
+- **Mechanism**: User signs a `cyphr/freeze/create` transaction with an active key.
 - **Effect**: Stops all mutations until unfrozen.
 
 ```json5
@@ -2422,7 +2422,7 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/freeze/create",
+    "typ": "<authority>/cyphr/freeze/create",
     "pre": "<targeted PR>"
   },
   "sig": "<b64ut>"
@@ -2432,13 +2432,13 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 A designated **Recovery Authority** may initiate a freeze based on heuristics
 (irregular activity) or out-of-band communication (user phone call).
 
-- **Mechanism**: Recovery agent signs `cyphrpass/freeze/create`.
+- **Mechanism**: Recovery agent signs `cyphr/freeze/create`.
 - **Effect**: Same as self-freeze.
 - **Trust**: The principal explicitly delegates this power to the authority via
-  `cyphrpass/recovery/create`.
+  `cyphr/recovery/create`.
 
 #### 18.9.3 Unfreeze (Thaw)
-To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
+To unfreeze an account, a `cyphr/freeze/delete` is signed:
 
 ```json5
 {
@@ -2446,7 +2446,7 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "<signing key tmb>",
-    "typ": "<authority>/cyphrpass/freeze/delete",
+    "typ": "<authority>/cyphr/freeze/delete",
     "pre": "<targeted PR>"
   },
   "sig": "<b64ut>"
@@ -2468,12 +2468,12 @@ To unfreeze an account, a `cyphrpass/freeze/delete` is signed:
 Retroactivity is undoing actions to a given timestamp. This is a complex issue
 for services.  
 
-Unlike Git, and outside of consensus, Cyphrpass does not use reversion, that is
+Unlike Git, and outside of consensus, Cyphr does not use reversion, that is
 undoing past actions.  Instead, clients should mutate their state using the
 appropriate verbs, `create` and `delete`, as needed for a targeted state. 
 
 For example, even though a `key/revoke` can be postdated to the time of an
-attack, Cyphrpass should interpret transaction based on current `now` and not
+attack, Cyphr should interpret transaction based on current `now` and not
 `rvk`.
 
 If an attacker gains access to keys and is able to sign actions unauthorized by
@@ -2538,7 +2538,7 @@ However disowning does not mutate AR.
 ## 17 Consensus
 ### Consensus Philosophy
 
-Cyphrpass is a self-sovereign protocol in which the principal is the primary
+Cyphr is a self-sovereign protocol in which the principal is the primary
 custodian of its own security and state. Consensus rules are deliberately
 minimal. They detect and respond only to clear, cryptographically undeniable
 violations such as invalid signatures, contradictions, and conflicting commits
@@ -2573,7 +2573,7 @@ For conflict resolution beyond consensus rules, see section "Recovery".
 
 ### 17.1 Proof of Error
 
-All messages in Cyphrpass are signed by the principal, making errors auditable
+All messages in Cyphr are signed by the principal, making errors auditable
 and attributable. Witnesses may retain invalid messages as **proof of error**, a
 signed message demonstrating bad behavior (e.g., an invalid signature or
 conflicting commit). This proof can be shared via gossip, **proactive error
@@ -2617,7 +2617,7 @@ A principal may re-iterate an existing state as authoritative without mutating
 PR/AR through a resync POP.
 - **PoP Confirmation**: To accelerate resync or confirm intent, the principal
   may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
-  `typ: "cyphr.me/cyphrpass/resync/create"`) with an active key. This helps
+  `typ: "cyphr.me/cyphr/resync/create"`) with an active key. This helps
   distinguish transient errors from genuine issues.
 
 Resync PoP is also useful for expired timestamps.  When a client has been
@@ -2694,13 +2694,13 @@ Errors:
 - `MALFORMED_PAYLOAD`
 - `JUMP_INVALID`: State jump fails (e.g., revoked key in path).
 - `INVALID_FORK`: Conflicting commits (see below).
-- `DUPLICATE`: `*/create` for existing items. Cyphrpass `create` rejects duplicates.
+- `DUPLICATE`: `*/create` for existing items. Cyphr `create` rejects duplicates.
 - `STATE_MISMATCH`: Computed PR/AR differs from claimed.
 
 
 ### 17.4 Consensus and Witnesses
 
-Cyphrpass assumes a single linear chain per principal. An invalid fork occurs
+Cyphr assumes a single linear chain per principal. An invalid fork occurs
 when two or more conflicting commits reference the same pre (prior PR),
 violating this assumption.
 
@@ -2755,7 +2755,7 @@ prevent history rewriting, and rejecting future-dated messages.
 
 Clients maintain their own persistent last-seen timestamp to detect offline
 periods and trigger Resync PoP when rejoining. Time servers can be compromised.
-Cyphrpass remains durable by relying on relative ordering and possession proofs
+Cyphr remains durable by relying on relative ordering and possession proofs
 rather than absolute trusted time.
 
 
@@ -2766,7 +2766,7 @@ rather than absolute trusted time.
 
 ### 15.1 Client/Principal Storage
 
-Cyphrpass distinguishes between several storage contexts. Clients are
+Cyphr distinguishes between several storage contexts. Clients are
 categorized as **thin**, **fat**, or **full**, based on storage capacity:
 
 **Thin clients** rely on services for state resolution and only the private key
@@ -2832,12 +2832,12 @@ appropriate to their deployment context.
 
 The recommended export format is newline-delimited JSON (JSONL).  Transactions
 are saved to one file `transactions.jsonl` and data actions to
-`data_actions.jsonl`. Entries with `typ` prefix `<authority>/cyphrpass/*` are
+`data_actions.jsonl`. Entries with `typ` prefix `<authority>/cyphr/*` are
 authentication transactions; all others are data actions.
 
 ```jsonl
-{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
-{"typ":"cyphr.me/cyphrpass/key/create","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphr/key/create","pay":{...},"sig":"...","key":{...}}
+{"typ":"cyphr.me/cyphr/key/create","pay":{...},"sig":"...","key":{...}}
 ```
 
 ```jsonl
@@ -2863,11 +2863,11 @@ Storage backends provide:
 - **Existence check**: Determine if a principal exists
 
 Semantic operations (verification, state computation, key validity) are handled
-by the Cyphrpass protocol layer, not storage.
+by the Cyphr protocol layer, not storage.
 
 ### 15.4 Append Only Verifiable Logs
 
-Cyphrpass's commit chain forms a verifiable, append-only log of state mutations.
+Cyphr's commit chain forms a verifiable, append-only log of state mutations.
 Each commit references the prior via pre and is anchored in the Merkle root
 (MR), enabling efficient verification of history without full chain replay. This
 supports tamper-evident auditing and is useful for compliance requirements, such
@@ -2891,12 +2891,12 @@ discarded (immutable implementation).
 
 ## 14. Authentication
 
-Cyphrpass replaces password-based authentication with cryptographic Proof of
+Cyphr replaces password-based authentication with cryptographic Proof of
 Possession (PoP).
 
-Cyphrpass recommends AAA (Authenticated Atomic Action) over bearer tokens when
+Cyphr recommends AAA (Authenticated Atomic Action) over bearer tokens when
 possible, but bearer tokens remain useful for access control and for upgrading
-legacy password systems to Cyphrpass.
+legacy password systems to Cyphr.
 
 ### 14.1 Proof of Possession (PoP)
 
@@ -2929,7 +2929,7 @@ To authenticate to a service:
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "typ": "cyphr.me/cyphrpass/auth/login",
+    "typ": "cyphr.me/cyphr/auth/login",
     "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service.
   },
   "sig": "<b64ut>"
@@ -3001,9 +3001,9 @@ token came from the expected service.
 
 ### 14.5 Single Sign-On (SSO)
 
-Cyphrpass provides single sign-on semantics but differs from traditional SSO
+Cyphr provides single sign-on semantics but differs from traditional SSO
 systems that depend on passwords and email. Traditional SSO creates
-centralization around identity providers. In Cyphrpass, the principal's
+centralization around identity providers. In Cyphr, the principal's
 cryptographic keys are the sole authentication factor, verifiable by any party
 without a central authority.
 
@@ -3033,7 +3033,7 @@ coz.  For example, a `cyphr.me/comment/create` is colloquially named a "comment
 action".  
 
 ### Sharing Keys
-Nothing in Cyphrpass stops various principals from sharing keys,
+Nothing in Cyphr stops various principals from sharing keys,
 as long as genesis does not result in the same PG. Any set of keys that has not
 been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
@@ -3052,19 +3052,19 @@ from being misinterpreted or reused; explicit algorithm prefixes may not always
 be strictly required in practice.
 
 ### HTTP and `typ`:  Unified Intent + Resource + Verb Descriptor
-Cyphrpass's `typ` is an alternative to HTTP semantics. `typ` is not just a
+Cyphr's `typ` is an alternative to HTTP semantics. `typ` is not just a
 naming convention, it's a deliberate design choice that rethinks invoking
 actions, addressing resources, and expressing intent in a cryptographically
 native, decentralized way.  Its full power is realized in Authenticated Atomic
 Action (AAA).
 
-Unlike most Internet systems, Cyphrpass is designed to work in parallel to HTTP,
+Unlike most Internet systems, Cyphr is designed to work in parallel to HTTP,
 not necessarily on top of it. Where HTTP has Method
 (GET/POST/PUT/DELETE/PATCH...), Path (/users/123/profile/photo), Headers
-(Accept, Content-Type, Authorization...) Cyphrpass collapses almost all of that
+(Accept, Content-Type, Authorization...) Cyphr collapses almost all of that
 expressive into one field: `typ`.
 
-For example, `cyphr.me/cyphrpass/key/create`
+For example, `cyphr.me/cyphr/key/create`
 
 This is close to a RESTful path plus method, but:
 
@@ -3086,17 +3086,17 @@ Advantages Over HTTP:
   service.
 - Decentralized addressing. The Principal root my be outside DNS/CA entirely.
 - Append-only mutable state via transactions. Instead of PUT/PATCH fighting over
-  eventual consistency, Cyphrpass provides a verifiable chain of mutations.
+  eventual consistency, Cyphr provides a verifiable chain of mutations.
 
 Actions are first-class and atomic. AAA means the "API call" is individually
 verifiable forever, not just during a session.
 
 
-### 21.3 Where Cyphrpass Diverges from Being a Full HTTP Replacement
+### 21.3 Where Cyphr Diverges from Being a Full HTTP Replacement
 
-Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers an **alternative interaction model**:
+Cyphr's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers an **alternative interaction model**:
 
-| Aspect           | HTTP                       | Cyphrpass `typ` + Coz Model                             |
+| Aspect           | HTTP                       | Cyphr `typ` + Coz Model                             |
 | ---------------- | -------------------------- | ------------------------------------------------------- |
 | Addressing       | URL + method               | `typ` string (authority + noun/verb)                    |
 | Authentication   | Headers / tokens / cookies | Embedded PoP (signature over the whole intent)          |
@@ -3115,12 +3115,12 @@ Cyphrpass's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offe
 ---
 
 
-## 21 Cyphrpass Type System and Ownership
+## 21 Cyphr Type System and Ownership
 
 
 # Ownership change
 
-In Cyphrpass, transferable is cryptographically implementable via key change,
+In Cyphr, transferable is cryptographically implementable via key change,
 but recording such changes in a ledger potentially results in human unreadable
 transactions. Also, authorities may prohibit key updates to keys outside of the
 principal, making transfer impossible.
@@ -3143,7 +3143,7 @@ There are three main categories of ownership:
 
 These three can be summarized as three points: **Keys, Data, Right**
 
-#### 22.1 Cyphrpass Goal
+#### 22.1 Cyphr Goal
 
 The protocol seeks to maximize user ownership across all three dimensions:
 
@@ -3165,7 +3165,7 @@ remain user-controlled.
 ownership is tracked on a ledger (e.g., bitcoin). Right is proven in a
 cryptographic system using private keys and PoP.
 
-Cyphrpass seeks to help users own their keys, data, and rights.
+Cyphr seeks to help users own their keys, data, and rights.
 
 ### 22.2 Natural Ownership
 
@@ -3220,7 +3220,7 @@ PR, for example in circumstances where keys have been revoked. In anticipation
 of a state jump, clients may pre-sign jumps.
 
 Clients may also reject state jumps as state jumps are an optimization that
-delegates some trust to third party services. By default, the Cyphrpass
+delegates some trust to third party services. By default, the Cyphr
 reference client rejects state jumps, preserving a conservative security
 baseline.
 
@@ -3301,7 +3301,7 @@ Verification rules for the jump transaction:
     alg: "ES256",
     now: 1623132000,
     tmb: "<active key tmb from anchor>",
-    typ: "cyphr.me/cyphrpass/principal/state_jump/create",
+    typ: "cyphr.me/cyphr/principal/state_jump/create",
     pre: "<old trust anchor PR>",
     jump_to_ps: "<tip PR>",
   },
@@ -3318,7 +3318,7 @@ Verification rules for the jump transaction:
 - Services may enforce maximum jump distance or require multi-signature for
   large jumps to mitigate abuse.
 
-State jumping preserves Cyphrpass's core properties (verifiable history, no
+State jumping preserves Cyphr's core properties (verifiable history, no
 trusted central oracle) while enabling scalable operation for long-lived
 principals.
 
@@ -3351,7 +3351,7 @@ suggesting viable jump points when the direct jump fails due to revocation.
 
 In addition to state jumping, other future related designs include zero-knowledge
 proofs and trusted third parties. (Ethereum uses Infura; similar infrastructure
-may be useful for some client situations, although Cyphrpass is designed for
+may be useful for some client situations, although Cyphr is designed for
 decentralization.)
 
 See also §7.3.3 Checkpoints.
@@ -3384,7 +3384,7 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | Error                     | Condition                                                        | Level |
 | ------------------------- | ---------------------------------------------------------------- | ----- |
 | `UNRECOVERABLE_PRINCIPAL` | No keys capable of transaction and no designated recovery agents | All   |
-| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `cyphrpass/recovery/create`             | 3+    |
+| `RECOVERY_NOT_DESIGNATED` | Agent not registered via `cyphr/recovery/create`             | 3+    |
 
 ### 24.3 State Errors
 
@@ -3449,11 +3449,11 @@ Language-agnostic test vectors are provided in `/tests`.
 }
 ```
 
-#### 25.1.2 Golden Key: "Cyphrpass Server Key A" (ES256)
+#### 25.1.2 Golden Key: "Cyphr Server Key A" (ES256)
 
 ```json
 {
-  "tag": "Cyphrpass Server Key A",
+  "tag": "Cyphr Server Key A",
   "tmb": "T0jUB_Bk4pzgvnNWMGfmV0pK4Gu63g_M08pu8HIUGkA",
   "alg": "ES256",
   "now": 1623132000,
@@ -3512,7 +3512,7 @@ Since cryptographic digests are suitable, all `GETS` may simply be looked up by 
 
 ## Appendix
 
-### Cyphrpass Applications
+### Cyphr Applications
 
 - Cryptographically verifiable, internet-wide, web archive service.
 - Unstoppable, internet-wide user comments
@@ -3544,7 +3544,7 @@ Other key Coz requirements:
 - State digests use the hash algorithm of the signing key
 
 Algorithm governance is delegated to Coz. Weak algorithm sunsetting is handled
-by Coz and is inherited by Cyphrpass. If an algorithm is weakened, Coz will mark
+by Coz and is inherited by Cyphr. If an algorithm is weakened, Coz will mark
 it deprecated; principals should discontinue via key removal. Implementations
 should warn and appropriately and remove support for deprecated algorithms. 
 
