@@ -44,6 +44,14 @@ and [MALT](https://github.com/Cyphrme/malt) append-only Merkle trees.
     <strong>Protocol Specification</strong>
     <span>The authoritative protocol specification — state trees, transactions, commits, and beyond.</span>
   </a>
+  <a href="cli.html" class="section-link">
+    <strong>CLI Reference</strong>
+    <span>Create identities, manage keys, and verify state from the command line.</span>
+  </a>
+  <a href="glossary.html" class="section-link">
+    <strong>Glossary</strong>
+    <span>Protocol terminology — state tree nodes, roots, transaction types, and levels.</span>
+  </a>
 </nav>
 
 ## Links
