@@ -678,3 +678,38 @@ Not cacheable (always have to recalculate at the time of a commit):
 
 Don't need 
  - Forward CR. 
+
+
+ wants to reuse keys from the source account, it
+
+
+
+
+### 12.4 Rank
+
+Equivalence across multihash algorithm variants is assumed by the protocol and
+no relative strength ordering is enforced at the protocol level. When multiple
+algorithms are supported, there may be a tie at the time of conversion.
+Cyphr provides a default rank. Rank is a tiebreaker only and not a security
+indicator. Misuse may have security implications.
+
+Perhaps in the future, principals may set a rank order via
+`cyphr/alg/rank/create` transaction (stored as a rule), but for now
+this is out-of-scope.
+
+
+
+
+No `keys` label.  KT is an array of either keys or embeddings.
+```json5
+{"PT":{ // The actual Principal Tree, at the point of this commit
+    "AT":{   // Auth Tree
+      "KT": { // Key tree
+          "...":{...}, // Principal's key 1
+          "...":{...}, // Principal's key 2
+          "SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":"" // External Embedding
+}}}}
+```
+
+Thought Experiment: Labeled Objects. No `keys` label, digest labels for all nodes.
+
