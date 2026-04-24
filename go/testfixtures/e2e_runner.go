@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphr/cyphr"
-	"github.com/cyphrme/cyphr/storage"
+	"github.com/cyphrme/cyphr/go"
+	"github.com/cyphrme/cyphr/go/storage"
 )
 
 // E2EResult contains the result of running an e2e test.

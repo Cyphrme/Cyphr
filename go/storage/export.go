@@ -1,6 +1,6 @@
 package storage
 
-import "github.com/cyphrme/cyphr/cyphr"
+import "github.com/cyphrme/cyphr/go"
 
 // ExportEntries exports all entries from a Principal for storage.
 //

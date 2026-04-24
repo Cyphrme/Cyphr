@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cyphrme/cyphr/testfixtures"
+	"github.com/cyphrme/cyphr/go/testfixtures"
 )
 
 // testsDir returns the path to tests/ directory.

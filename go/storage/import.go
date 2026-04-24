@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cyphrme/coz"
-	"github.com/cyphrme/cyphr/cyphr"
+	"github.com/cyphrme/cyphr/go"
 )
 
 // Genesis represents how a principal was created.

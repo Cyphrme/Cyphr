@@ -1,6 +1,6 @@
 package storage
 
-import "github.com/cyphrme/cyphr/cyphr"
+import "github.com/cyphrme/cyphr/go"
 
 // Store defines the minimal interface for Cyphr storage backends.
 //
