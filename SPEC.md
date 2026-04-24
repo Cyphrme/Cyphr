@@ -1375,7 +1375,9 @@ Level 5 introduces the Rule Root (RR), which denotes **weighs** and
 rules may be defined in bytecode and executed by a designated virtual machine.
 
 ### 9.1 Weights
+
 Unless otherwise defined, each key, action, and transaction weight is implicitly
+
 1.
 
 Weights:
