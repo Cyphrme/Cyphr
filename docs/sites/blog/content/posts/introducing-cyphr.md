@@ -1,7 +1,7 @@
 +++
 title       = "Introducing Cyphr"
 description = "Authentication for the Internet"
-date        = 2026-04-25
+date        = 2026-04-24
 authors     = ["Cyphr Contributors"]
 tags        = ["protocol", "identity", "release"]
 +++
