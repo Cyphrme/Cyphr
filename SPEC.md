@@ -60,7 +60,7 @@ Principal Tree (PT)
 
 The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
 roots representing components of the PT calculated for each commit. The first PR
-is the Principal Genesis (PG).
+is the **principal genesis** (PG).
 
 ```text
 Principal Root (PR)
@@ -86,7 +86,7 @@ forward state tree (ST).
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +---------------+
  |                | Commit |                | Commit |               |  (Future)
- |    PG(SR, CR)  | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)  | ==>
+ |    PG(SR)      | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)  | ==>
  |                |        |            |   |        |           |   |
  +----------------+        +------------V---+        +-----------V---+
                  ^                      |  ^                     |
@@ -1051,10 +1051,11 @@ without any other knowledge of the principal root, and Cyphr must
 appropriately interpret this event.
 
 A naked revoke, or a revoke without a subsequent `delete`, puts the principal in
-an error state. An uncommitted revoke does not mutate PR. See section "Consensus" and "Recovery"
-for error recovery, but in sort, when a principal receives a naked revoke, it
-should sign a revoke, a subsequent `key/delete` to remove the key from, and
-commit. A client may include `msg` detailing why the key was revoked.
+an error state. An uncommitted revoke does not mutate PR. See section
+"Consensus" and "Recovery" for error recovery, but in sort, when a principal
+receives a naked revoke, it should sign a revoke, a subsequent `key/delete` to
+remove the key from, and commit. A client may include `msg` detailing why the
+key was revoked.
 
 ```json5
 {
@@ -1177,7 +1178,7 @@ Nouns have properties as set by an authority:
 - Creatable - Items that are able to be created, like `comment/create`
 - Updatable - Items that are able to be mutated after the fact. `comment/update`
 - Deletable - Items that can be deleted. `comment/delete`
-- Ownable - Items that reserve some rights, such as mutation, only to owner. `comment`
+- Ownable - Items that reserve some rights only to owner. `comment`
 - Transferable - Items that are able to be transferred.
 
 For upsert, properties applying to `create` apply to upsert only on creation,
@@ -1374,14 +1375,14 @@ Level 5 introduces the Rule Root (RR), which denotes **weighs** and
 rules may be defined in bytecode and executed by a designated virtual machine.
 
 ### 9.1 Weights
+Unless otherwise defined, each key, action, and transaction weight is implicitly
+1.
 
 Weights:
 
 - Every key and every action has a weight score default of `1`.
 - Actions require meeting a threshold weight.
 - Enables tiered permissions (e.g., admin keys vs. limited keys)
-
-Unless otherwise defined, each key, action, and transaction weight is implicitly 1.
 
 As a special case, any rule applying to `*/create` also applies to `*/upsert`
 for creation, and any rule applying to `*/update` also applies to `*/upsert` for
@@ -1577,7 +1578,8 @@ Design notes:
   digest or entropic value.
 - At any tree level, multiple nonces are permitted.
 - For any opaque value, specific structure may need to be revealed for specific
-- operations. For example, an opaque public key cannot be used until it is revealed.
+- operations. For example, an opaque public key cannot be used until it is
+  revealed.
 - Like other digest values, when calculating a new hashing algorithm value, new
   values are calculated from a prior value. (See section Conversion.)
 
@@ -1847,9 +1849,9 @@ Merging where a **source** adopts the state of another principal, the
 (Level 3+).
 
 The source signs a `principal/merge` transaction where the source is denoted via
-`merge_from` and the target's PR is denoted via `merge_to`. The target accepts the
-merge by signing a `principal/merge-ack` transaction containing the PR of the
-source. Optionally, the source may delete all keys and/or sign a
+`merge_from` and the target's PR is denoted via `merge_to`. The target accepts
+the merge by signing a `principal/merge-ack` transaction containing the PR of
+the source. Optionally, the source may delete all keys and/or sign a
 `principal/delete`.
 
 Note the target account must explicitly add keys from the source account (if the
@@ -1980,9 +1982,10 @@ In summary:
 
 - PG, PR, AR, KR and nodes in the Merkle trees are referenced by multihash
   identifiers, with one variant per hash algorithm.
-- Digests are computed for all hashing algorithms referenced in KT (keys, embeddings).
-- When an algorithm primitive is removed, its hash is no longer computed. When
-  a primitive is added, its algorithm's variant begins computation.
+- Digests are computed for all hashing algorithms referenced in KT (keys,
+  embeddings).
+- When an algorithm primitive is removed, its hash is no longer computed. When a
+  primitive is added, its algorithm's variant begins computation.
 - Cyphr makes no relative security judgements. All variants are considered
   equivalent.
 
