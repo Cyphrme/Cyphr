@@ -261,6 +261,17 @@ honest witness is sufficient to detect equivocation. This scales linearly
 with the number of witnesses, not with the total population of the
 network.
 
+Put differently, Cyphr sits _below_ blockchain in the abstraction
+hierarchy. A blockchain entangles two independent concerns: cryptographic
+state trees and global consensus. Cyphr isolates the first without
+imposing the second. You could layer a consensus protocol atop Cyphr's
+commit chains to build a blockchain, but you cannot decompose a
+blockchain to recover Cyphr's per-principal sovereignty. The
+relationship is strictly one-directional. What the blockchain era
+obscured, by bundling everything into a single global ledger, was that
+most identity operations never needed global agreement in the first
+place.
+
 ### Mutual State Synchronization
 
 Traditional authentication is asymmetric in a way that has nothing to do
