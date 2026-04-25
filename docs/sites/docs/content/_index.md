@@ -58,5 +58,5 @@ and [MALT](https://github.com/Cyphrme/malt) append-only Merkle trees.
 
 - Source: [github.com/Cyphrme/Cyphr](https://github.com/Cyphrme/Cyphr)
 - Rust crate: [crates.io/crates/cyphr](https://crates.io/crates/cyphr)
-- Go module: [github.com/cyphrme/cyphr](https://pkg.go.dev/github.com/cyphrme/cyphr)
+- Go API reference: [go.cyphr.me](https://go.cyphr.me)
 - Blog: [blog.cyphr.me](https://blog.cyphr.me)

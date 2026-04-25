@@ -166,6 +166,7 @@ All tests pass using shared language-agnostic test vectors.
 ## Documentation
 
 - **[docs.cyphr.me](https://docs.cyphr.me)** — Getting started guides, CLI reference, and glossary
+- **[go.cyphr.me](https://go.cyphr.me)** — Go API reference
 - **[blog.cyphr.me](https://blog.cyphr.me)** — Project blog
 - **[SPEC.md](SPEC.md)** — Full protocol specification
 - **[go/README.md](go/README.md)** — Go implementation guide

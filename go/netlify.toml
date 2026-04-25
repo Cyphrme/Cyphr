@@ -1,0 +1,11 @@
+[build]
+command = "go run go.abhg.dev/doc2go@latest -C .. -home github.com/cyphrme/cyphr/go -out go/public ./go/..."
+publish = "public"
+
+[build.environment]
+GO_VERSION = "1.25"
+
+[[redirects]]
+from   = "/*"
+status = 404
+to     = "/index.html"
