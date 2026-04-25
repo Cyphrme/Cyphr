@@ -438,14 +438,14 @@ principal's auth tree (AT).
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    typ: "cyphr.me/key/create",
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Existing key
-    id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key's tmb
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "typ": "cyphr.me/key/create",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Existing key
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key's tmb
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -489,22 +489,18 @@ to itself.
 
 ```json5
 {
-  txs: [
-    [
-      {
-        // Commit transaction (last entry in `txs`)
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/commit/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          arrow: "<b64ut>", // Transition arrow: MR(pre, fwd, TMR)
+  "txs": [[ // Commit transaction (last entry in `txs`)
+      { 
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/commit/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "arrow": "<b64ut>" // Transition arrow: MR(pre, fwd, TMR)
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-}
+        "sig": "<b64ut>"
+      }
+]]}
 ```
 
 ### 4.4 Commit Tree
@@ -613,16 +609,16 @@ lightweight for common use cases (comments, posts, etc.).
 - DR is computed from action `czd`s.
 - Ordered by `now` and if needed lexical as tie-breaker.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/comment/create",
-    msg: "Hello, world!",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/comment/create",
+    "msg": "Hello, world!"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -712,60 +708,46 @@ the coz.
 
 ```json5
 {
-  txs: [
+  "txs": [
     // Transaction array
     // Mutation transactions
-    [
-      // TX0
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The `tmb` of the new key.  In this case, itself.
+    [{// TX0
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
+        "sig": "<b64ut>"
+      }],[{
         // TX1
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/principal/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG == SR (No Commit, no CR)
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/principal/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // ID == PG == SR (No Commit, no CR)
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      // Commit transaction
-      {
-        // TX2
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/commit/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          arrow: "<b64ut>",
+        "sig": "<b64ut>"
+      }],[{// Commit transaction, TX2
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/commit/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
-    {
+        "sig": "<b64ut>"
+  }]],
+  "keys": [{
       // key public material
-      tag: "User Key 0",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-    },
-  ],
+      "tag": "User Key 0",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+  }]
 }
 ```
 
@@ -802,76 +784,55 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
 
 ```json5
 {
-  txs: [
-    [
-      {
-        // TX0: First Key
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The `tmb` of the new key.  In this case, itself.
+  "txs": [
+    [{ // TX0: First Key
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
+        }}],[{ // TX1: Second Key
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key's `tmb`
         },
-      },
-    ],
-    [
-      {
-        // TX1: Second Key
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
-          id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
+        "sig": "<b64ut>"
+      }],[{ // TX2: Principal Declaration
+        "pay: {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/principal/create",
+          "id": "<b64ut>" // ID == PG == SR
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        // TX2: Principal Declaration
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/principal/create",
-          id: "<b64ut>", // ID == PG
+        "sig": "<b64ut>"
+      }],[{  // TX3: Commit (finality)
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/commit/create",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        // TX3: Commit (finality)
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/commit/create",
-          arrow: "<b64ut>",
-        },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
-    {
-      // Public keys material
-      tag: "User Key 0",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    },
-    {
-      tag: "User Key 1",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-    },
-  ],
+        "sig": "<b64ut>"
+      }]],
+  "keys": [{// Public key material
+      "tag": "User Key 0",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },{
+      "tag": "User Key 1",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+    }]
 }
 ```
 
@@ -887,12 +848,12 @@ Example private Coz key with standard fields:
 
 ```json5
 {
-  tag: "User Key 0", // Optional human label, non-programmatic.
-  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
-  alg: "ES256", // Key algorithm.
-  now: 1623132000, // Creation timestamp
-  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
+  "tag": "User Key 0", // Optional human label, non-programmatic.
+  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
+  "alg": "ES256", // Key algorithm.
+  "now": 1623132000, // Creation timestamp
+  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
 }
 ```
 
@@ -972,16 +933,16 @@ deleted and later re-added (each re-addition starts a new active period).
 
 - `id`: `tmb` of the key being removed
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/delete",
-    id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/key/delete",
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -998,19 +959,18 @@ single-key invariant for Level 2 devices.
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
     "typ": "cyphr.me/cyphr/key/replace",
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key's `tmb`
   },
     "sig": "<b64ut>"}],
-  [{...}]// commit transaction
+  [{...}]// commit transaction // TODO
   ],
   "keys": [{
   "tag": "User Key 1",
   "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
   "alg": "ES256",
   "now": 1623132000,
-  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-}],
-}
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ"
+}]}
 ```
 
 #### 6.4 `key/revoke` - Revoke a Key (Level 1+)
@@ -1031,17 +991,17 @@ Revoke is built into the Coz standard:
 
 Example Naked Revoke:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/revoke",
-    rvk: 1623132000,
-    msg: "Private key was uploaded to Github repo: cyphrme/cyphr",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/key/revoke",
+    "rvk": 1623132000,
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphr"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1057,17 +1017,17 @@ receives a naked revoke, it should sign a revoke, a subsequent `key/delete` to
 remove the key from, and commit. A client may include `msg` detailing why the
 key was revoked.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/revoke",
-    rvk: 1623132000,
-    msg: "Private key was uploaded to Github repo: cyphrme/cyphr",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/key/revoke",
+    "rvk": 1623132000,
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphr"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1245,25 +1205,26 @@ the secretes.
 
 // The actual Principal Tree, at the point of this commit
 "PT":{
-  "AT":{   // Auth Root
-    "KT": {
-      "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
-        "tag": "User Key 0",
-        "alg": "ES256",
-        "now": 1623132000,
-        "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-        "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-        },
-      "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M":{
-        "tag": "User Key 1",
-        "alg": "ES256",
-        "now": 1623132000,
-        "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-        "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
-        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        }
-    },
+  "ST":{
+    "AT":{   // Auth Root
+      "KT": {
+        "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
+          "tag": "User Key 0",
+          "alg": "ES256",
+          "now": 1623132000,
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+          },
+        "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M":{
+          "tag": "User Key 1",
+          "alg": "ES256",
+          "now": 1623132000,
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          }
+    }}},
     "CT":[ // Commit tree
       {
       "pay": {
@@ -1290,7 +1251,7 @@ the secretes.
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "typ": "cyphr.me/cyphr/key/create",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // genesis key tmb
       },
       "sig": "<b64ut>"
     }
@@ -1310,14 +1271,15 @@ secretes.)
 
 Since declarative transactions enumerate the full principal root, they
 inherently act as checkpoints (see section Checkpoint). As always, the
-declarative structure is compactified according to Coz.
+declarative structure is compactified according to Coz.  `checkpoint/create`
+contains `id` where the value is the forward SR.
 
 Example declarative principal:
 
-```json5
+```json
 {
-"PT":{ // The actual Principal Tree, at the point of this commit
-  "AT":{   // Auth Tree
+"ST":{
+  "AT":{
     "KT": {
       "keys": [{
         "tag": "User Key 0",
@@ -1330,27 +1292,28 @@ Example declarative principal:
         "alg": "ES256",
         "now": 1623132000,
         "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
         }
-      ],
-    },
-  }
-}
+]}}}}
 ```
 
 Embedded into a `cyphr/principal/checkpoint/create` transaction:
 
 ```JSON
 {
+  "txs":[[{
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphr/checkpoint/create",
-    "id": "<b64UT>", // The computed AR of the declared state
-    "PT": {...}
+    "id": "<b64UT>", // The computed SR of the declared state 
   },
   "sig": "<b64ut>"
+  }],
+  [...] // commit transaction
+  ],
+  "ST": {...} // ST is an external structure, referred to by SR.
 }
 ```
 
@@ -1393,10 +1356,10 @@ be signed by independent keys of weight 1 for the transaction to be valid.
 
 First, rules are defined:
 
-```json5
-"weights":{
+```json
+{"weights":{
   "cyphr/key/create": 2,
-}
+}}
 ```
 
 The rule is added to RR via a `rule/create` transaction.
@@ -1423,31 +1386,28 @@ signed for a valid total transaction:
 
 ```json5
 {
-  txs: [
-    [
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing key tmb>", // First Existing key
-          typ: "<authority>/cyphr/key/create",
-          id: "<new keys tmb>",
+  "txs": [[{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing key tmb>", // First Existing key
+          "typ": "<authority>/cyphr/key/create",
+          "id": "<new keys tmb>"
         },
-        sig: "<b64ut>",
-      },
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing key tmb>", // Second Existing key
-          typ: "<authority>/cyphr/key/create",
-          id: "<new keys tmb>",
+        "sig": "<b64ut>"
+      },{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing key tmb>", // Second Existing key
+          "typ": "<authority>/cyphr/key/create",
+          "id": "<new keys tmb>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
+        "sig": "<b64ut>"
+      }],
+      [{...}] //Commit Transaction
+      ],
+  "keys": [
     {
       /* new key */
     },
@@ -1465,12 +1425,12 @@ value is the time in seconds.
 ```json5
 {
   timelock: {
-    "cyphr/key/create": 604800, // 604800 seconds is 7 days.
+    "cyphr/key/create": 604800 // 604800 seconds is 7 days.
   },
 }
 ```
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -1498,10 +1458,10 @@ defined in bytecode and executed by a designated virtual machine.
 Virtual machine may or may not be Turing complete.
 
 ```json5
-"VM":{
+{"VM":{
   "machine":<digest value>,
   "rule":<digest value>
-}
+}}
 ```
 
 ---
@@ -1625,9 +1585,9 @@ Embedded nodes use b64ut digest as the JSON name in tree structure. For example:
 
 ```json5
 {
-  PT: {
-    AT: {
-      KT: {
+  "PT": {
+    "AT": {
+      "KT": {
         "SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8": "", // External Embedding
       },
     },
@@ -1638,8 +1598,8 @@ Embedded nodes use b64ut digest as the JSON name in tree structure. For example:
 Principal's Keys labeled as an embedding
 
 ````json5
-```json5
-{"PT":{
+{
+  "PT":{
     "AT":{
       "KT": {
         "SHA256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
@@ -1684,13 +1644,13 @@ principal's own items.
 Example external opaque embedding:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":"", // Opaque External Embedding.  Unknown type.
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":""} // Opaque External Embedding.  Unknown type.
 ```
 
 Example external non-opaque embedding:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{"keys":[...]}, // Non-opaque External Embedding.
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{"keys":[...]}} // Non-opaque External Embedding.
 ```
 
 ### 10.5 Conjunctive Authorization
@@ -1717,16 +1677,10 @@ enforceable due to opaqueness.
 
 ### 10.7 Pinning
 
-For PG, PR, and AR exclusively, embedded references trigger tip retrieval on
-authentication, but synchronization isn't always desired. Pinned identifiers
-denote static states that prohibit updates, ensuring immutable authorization
-rules.
-
-A pin prefixes the digest value (`PIN:<alg>:<value:`):
-
-```
-PIN:ES256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
-```
+For PG and PR exclusively, embedded references trigger tip retrieval on
+authentication, but synchronization isn't always desired. Pinned identifiers,
+SR, AR, KR, and RR, are static states that prohibit updates, ensuring immutable
+authorization rules.
 
 ---
 
@@ -1806,16 +1760,16 @@ recovered; no transactions or actions are possible on a closed account. However,
 the protocol does not prevent a user from creating a new principal reusing the
 existing keys (unless those keys were revoked).
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<target signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/delete",
-    id: "<target PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/delete",
+    "id": "<target PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1862,33 +1816,33 @@ inactive.
 
 Example source principal merge transaction:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<source signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/merge",
-    merge_from: "<list of source's PRs>",
-    merge_to_pr: "<target Principal Root>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<source signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/merge",
+    "merge_from": "<list of source's PRs>",
+    "merge_to_pr": "<target Principal Root>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
 And the merge acknowledgement by the target principal:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<target signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/merge-ack",
-    merge_from: "<list of source's PRs>",
-    merge_to_pr: "<target Principal Root>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/merge-ack",
+    "merge_from": "<list of source's PRs>",
+    "merge_to_pr": "<target Principal Root>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1908,54 +1862,52 @@ section "Consensus".
 
 Example principal fork, consisting of two transactions:
 
-```json5
+```json
 {
-  txs: [
+  "txs": [[{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/key/create",
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+        },
+        "sig": "<b64ut>"
+      }
+    ],
     [
       {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/key/create",
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/principal/create",
+          "id": "<b64ut>"
         },
-        sig: "<b64ut>",
+        "sig": "<b64ut>"
       },
     ],
     [
       {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/principal/create",
-          id: "<b64ut>",
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing tmb>",
+          "typ": "cyphr.me/cyphr/principal/fork/create",
+          "fork_pr": "<fresh PG digest, which in this case is just KR>",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing tmb>",
-          typ: "cyphr.me/cyphr/principal/fork/create",
-          fork_pr: "<fresh PG digest, which in this case is just KR>",
-          arrow: "<b64ut>",
-        },
-        sig: "<b64ut>",
+        "sig": "<b64ut>"
       },
     ],
   ],
-  keys: [
+  "keys": [
     {
-      tag: "User Key 0",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "tag": "User Key 0",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     },
   ],
 }
@@ -2082,13 +2034,13 @@ different hashing algorithm), the node is converted into a SHA384 node.
 The ES256 Key node:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{<key data>}
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{<key data>}}
 ```
 
 The ES256 key node is converted to SHA384:
 
 ```json
-"SHA384:NLDDkOyBHNVG4H6yHwSf8AwvI82B-tRhleeuBhYR4LCdvP9Is2-HjXMbllTv0NJk":""
+{"SHA384:NLDDkOyBHNVG4H6yHwSf8AwvI82B-tRhleeuBhYR4LCdvP9Is2-HjXMbllTv0NJk":""}
 ```
 
 **Conversion Security Considerations**
@@ -2368,19 +2320,19 @@ of the attempted recovery.
 
 Registers a recovery agent (backup key, service, or social contacts).
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/recovery/create",
-    recovery: {
-      agent: "<recovery agent PG or tmb>",
-      threshold: 1,
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/recovery/create",
+    "recovery": {
+      "agent": "<recovery agent PG or tmb>",
+      "threshold": 1,
     },
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2393,18 +2345,18 @@ Registers a recovery agent (backup key, service, or social contacts).
 
 Removes a previously designated recovery agent.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/recovery/delete",
-    recovery: {
-      agent: "<recovery agent PG or tmb>",
-    },
+ "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/recovery/delete",
+    "recovery": {
+      "agent": "<recovery agent PG or tmb>",
+    }
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2424,17 +2376,17 @@ the Recovery Authority's recovery transaction.
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<recovery agent tmb>",
-    typ: "<authority>/key/create",
-    id: "<new user key tmb>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<recovery agent tmb>",
+    "typ": "<authority>/key/create",
+    "id": "<new user key tmb>"
   },
-  key: {
+  "key": {
     /* new user key */
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2476,14 +2428,14 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/freeze/create",
-    id: "<targeted PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/freeze/create",
+    "id": "<targeted PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2501,14 +2453,14 @@ To unfreeze an account, a `cyphr/freeze/delete` is signed:
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/freeze/delete",
-    id: "<targeted PR>",
+  "pay: {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/freeze/delete",
+    "id": "<targeted PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2927,14 +2879,14 @@ To authenticate to a service:
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/auth/login",
-    challenge: "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8", // 256 bit nonce from service.
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/auth/login",
+    "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service.
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2954,7 +2906,7 @@ To authenticate to a service:
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "<authority>/<service>/auth/login"
   },
   "sig": "<b64ut>"
@@ -2983,18 +2935,18 @@ After successful PoP, the service issues a bearer token:
 - Contains: principal PG, authorized permissions, expiry
 - Used for subsequent requests (avoids re-signing each request)
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<service key tmb>",
-    typ: "<service>/auth/token",
-    pr: "<principal genesis>",
-    exp: 1623132000,
-    perms: ["read", "write"],
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<service key tmb>",
+    "typ": "<service>/auth/token",
+    "pr": "<principal genesis>",
+    "exp": 1623132000,
+    "perms": ["read", "write"]
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -3102,17 +3054,17 @@ Verification rules for the jump transaction:
 
 ### 18.2 Example State Jump Transaction
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<active key tmb from anchor>",
-    typ: "cyphr.me/cyphr/principal/state_jump/create",
-    pre: "<old trust anchor PR>",
-    jump_to_ps: "<tip PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<active key tmb from anchor>",
+    "typ": "cyphr.me/cyphr/principal/state_jump/create",
+    "pre": "<old trust anchor PR>",
+    "jump_to_ps": "<tip PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -3543,7 +3495,8 @@ Soulbound-like: set transferable=false
 - JSON example should be in valid json, not json5 **EXCEPT** for examples with
   JSON comments. ONLY for examples with JSON comments should be markdown JSON5,
   all other examples should be markdown JSON. (Use `json5` on the markdown so
-  that the comments are valid.)
+  that the comments are valid.)  JSON5 examples, other than comments, should be
+  valid JSON.  NO trailing commas, NO omitting quotes!  THIS IS VERY IMPORTANT.
 
 # TODO
 
@@ -3561,3 +3514,4 @@ Soulbound-like: set transferable=false
   - Singleton Bypass
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
+- I think we can remove pinning
