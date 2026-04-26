@@ -6,7 +6,7 @@ authors     = ["Cyphr Contributors"]
 tags        = ["protocol", "identity", "release"]
 +++
 
-In 1961, MIT built the first computer password. By 1979, its designers had
+In 1961, MIT introduced the first computer password. By 1979, its designers had
 published a paper documenting why passwords were structurally
 broken.[^morris-thompson] We've spent the decades since building
 mitigations: salted hashes, Kerberos, SSL certificates, OAuth,
@@ -24,7 +24,7 @@ providers; when Google suspended Andrew Spinks' account without explanation
 in 2021, he lost fifteen years of email, his YouTube channel, and thousands
 of dollars in purchases, with no human to appeal to.[^spinks] WebAuthn
 moved trust to hardware vendors and their attestation chains. Passkeys
-moved it to cloud sync infrastructure. Each generation solved the previous
+moved it to cloud sync infrastructure. Each generation addressed the previous
 generation's failure mode. None eliminated the structural dependency.
 
 Ken Thompson saw the deeper pattern forty years ago. His 1984 Turing
@@ -88,7 +88,7 @@ one protocol.
 
 ## Introducing the Cyphr Protocol
 
-Cyphr is a self-sovereign identity protocol built on cryptographic state trees.[^video-intro] A Cyphr identity, called a **principal**, is not an account on a server. It is a Merkle tree of cryptographic state whose root hash _is_
+Cyphr is a self-sovereign identity protocol built on cryptographic state trees.[^video-intro] A Cyphr identity, called a **principal**, is not an account on a server. It is a Merkle tree over cryptographic state whose root hash _is_
 the identity. That hash, the **Principal Root** (PR), is the only
 identifier you need. It is self-certifying: anyone who has the state tree
 can recompute the root and verify that the principal is authentic, with
@@ -147,7 +147,7 @@ which key. The stolen credential can't retroactively attribute
 authorship, because there is no credential to steal; there are only
 individually signed statements.[^aaa-model]
 
-The forensic advantage is real, but it understates what data actions open
+The forensic advantage is real, but to focus on it alone understates what data actions open
 up. When every action is signed by a self-sovereign key and bound to a
 portable state tree, the data itself becomes independently distributable
 and independently verifiable. It isn't trapped in a platform's database.
@@ -446,7 +446,7 @@ principal creation through key rotation to authenticated actions against
 a live service. That migration is underway.
 
 Beyond that: a CLI tutorial for developer workflows, git commit signing
-integration, and the sustained engineering of proving that a
+integration, and the sustained work of demonstrating that a
 self-sovereign identity protocol can operate at the scale the internet
 demands.
 
