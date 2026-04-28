@@ -11,8 +11,8 @@ Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
 ## 1. Introduction
 
-Cyphr is a self-sovereign identity and authentication protocol. It provides
-a decentralized authentication layer for the Internet. Briefly, it enables:
+Cyphr is a self-sovereign identity and authentication protocol. It provides a
+decentralized authentication layer for the Internet. Briefly, it enables:
 
 - Password-free and email-free authentication via public key cryptography
 - Authenticated Atomic Actions (AAA): individually signed, independently
@@ -30,8 +30,8 @@ a decentralized authentication layer for the Internet. Briefly, it enables:
 | **Recovery**       | Revoke/Rotation, Social Recovery | Admin-reset or Email |
 | **State Tracking** | Push/Pull - Bidirectional(MSS)   | Centralized Service  |
 
-Importantly, Cyphr enables an entire identity, both authentication and
-data, to be represented by a single digest.
+Importantly, Cyphr enables an entire identity, both authentication and data, to
+be represented by a single digest.
 
 ---
 
@@ -86,7 +86,7 @@ forward state tree (ST).
   Genesis, State 0              State 1                   State 2
  +----------------+        +----------------+        +---------------+
  |                | Commit |                | Commit |               |  (Future)
- |    PG(SR)      | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)  | ==>
+ |     PG(SR)     | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)  | ==>
  |                |        |            |   |        |           |   |
  +----------------+        +------------V---+        +-----------V---+
                  ^                      |  ^                     |
@@ -110,24 +110,24 @@ forward state tree (ST).
 | **Commit Root**       | CR  | MALTR of transactions `MALTR(TR₀, TR₁?, ...)`  |
 | **Tip**               | -   | The latest PR (digest identifier)              |
 | **Action**            | -   | A signed coz identified by `typ`, basis of AAA |
-| **trust anchor**      | -   | Last known valid state for a principal         |
+| **Trust Anchor**      | -   | Last known valid state for a principal         |
 
 PG, PR, SR, AR, KR, RR, DR, and CR are all MultiHash Merkle Root (MHMR) digest
 values. Each digest identifier corresponds to a tree datastructure: Principal
 Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT) and the
 Commit Tree (CT) (PT, AT, KT, RT, DT, CT).
 
-Cozies that authorize operations are actions, and as such, "action" is the
-hypernym of "transaction" and "data action". Concrete resources such as keys,
-rules, user comments, and binary files are not actions.
+Cozies that authorize operations are actions. "Action" is the hypernym of
+"transaction" and "data action". Concrete resources such as keys, rules, user
+comments, and binary files are not actions.
 
 #### 2.2.2 Digest
 
 A digest is the binary output of a cryptographic hashing algorithm. Digest
 values are encoded as **b64ut** ("Base64 URI canonical Truncated", RFC 4648
 base64 URL alphabet and encoding method, errors on non-canonical encodings, and
-no padding). All digest values are opaque bytes; byte sequences are treated
-as a whole unit without internal structural or meaning.
+no padding). All digest values are opaque bytes treated as a whole unit without
+internal meaning.
 
 #### 2.2.3 Identifier
 
@@ -140,7 +140,7 @@ semantics, all digest identifiers inside a coz must aligned with algorithm
 #### 2.2.4 Nonce
 
 A **nonce** is a unique, high-entropy value used to add entropy, obscure
-content, and/or ensure uniqueness. See section Nonce.
+content, and/or ensure uniqueness. See section [Nonce](#102-nonce).
 
 #### 2.2.5 Merkle Root
 
@@ -148,23 +148,24 @@ A **Merkle tree** (MT) is a binary hash tree where each leaf is a hash of data
 and each non-leaf node is the hash of its two children, culminating in a single
 **Merkle root** (MR). CT uses a verifiable data structure, specifically a
 Merkle, Append-Only, Log Tree, (**MALT**), with left, dense filling. See section
-Commit.
+[Commit](#4-commit).
 
 #### 2.2.6 Commit
 
 A commit is a finalized bundle of transaction cozies that mutate PT and result
-in a new PR. See section commit.
+in a new PR. See section [Commit](#4-commit).
 
 #### 2.2.7 Implicit Promotion
 
 A value is **implicitly promoted** to the parent without additional hashing when
 a tree component has only one node. Promotion is recursive; items deep in a tree
-can be promoted to the root level. For example:
+can be promoted to the root level. 
 
+For example:
 - Single key: `tmb` is promoted to KR, then AR, then PR, which equals PG on
   genesis.
-- No DR present: AR is promoted to PR.
-- Only KR present (no RR): KR is promoted to AR.
+- No DR present: AR is promoted to SR and then PR.
+- Only KR present (no RR, DR, or CR): KR is promoted to SR, AR, and PR.
 
 #### 2.2.8 Authenticated Atomic Action
 
@@ -174,10 +175,10 @@ See section [Authenticated Atomic Action](#71-authenticated-atomic-action).
 
 #### 2.2.9 Embedding
 
-An **embedded node** is an external tree reference. Its value may be a `tmb`,
-KR, AR, PR, nonce, or other node value. An **embedded principal** is a full
-Cyphr identity embedded into another principal. See section
-[Embedding](#10-embedding).
+An **embedded node** is a digest with external reference. Its value may be a
+`tmb`, PR, SR, KR, AR, nonce, or other Cyphr node type. An **embedded
+principal** is a full Cyphr identity embedded into another principal. See
+section [Embedding](#10-embedding).
 
 #### 2.2.10 Reveal
 
@@ -198,19 +199,20 @@ appropriately processed.
 
 #### 2.2.12 Unrecoverable Principal
 
-A principal with no keys capable of meaningfully mutating AT and no viable
-recovery path within the protocol. See section [Unrecoverable](#Unrecoverable).
+An unrecoverable principal is a principal with no keys capable of meaningfully
+mutating AT and no viable recovery path within the protocol. See section
+[Unrecoverable](#Unrecoverable).
 
 ### 2.3 Core Protocol Constraints
 
 #### 2.3.1 Coz Required Fields
 
-Cyphr requires specific fields for Coz messages. All cozies must have the
-fields:
+Cyphr requires specific fields and follows Coz semantics. All cozies must have
+the fields:
 
-- `alg`: Following Coz semantics, `alg` is the algorithm of the signing key and
-  a paired hashing algorithm, and also denotes the algorithm for other values
-  contained in `pay` unless explicitly denoted otherwise.
+- `alg`: Algorithm of the signing key and a paired hashing algorithm. Also
+  denotes the algorithm for other values contained in `pay` unless explicitly
+  denoted otherwise.
 - `tmb`: Thumbprint of the signing key.
 - `now`: The timestamp of the current time.
 - `typ`: Denotes the intent of the coz.
@@ -218,15 +220,16 @@ fields:
 #### 2.3.2 Protocol Guarantees
 
 1. **Commits are append-only**: Commits are never removed from the chain and
-   implicit forks are prohibited by the protocol. See section Implicit Forks.
+   implicit forks are prohibited by the protocol. See section [Implicit
+   Forks](#1152-fork).
 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
 
 #### 2.3.3 AT/DT Duality
 
 Auth Tree (AT) and Data Tree (DT) have fundamentally different structural
 properties. AT has protocol defined rules while DT is a general-purpose data
-action ledger. While not defined by this protocol, applications (authorities)
-may impose additional structure on DT.
+action ledger. While not strictly defined by this protocol, applications
+(authorities) may impose additional structure on DT.
 
 | Property     | Auth Tree (AT)                  | Data Tree (DT)              |
 | :----------- | :------------------------------ | :-------------------------- |
@@ -266,7 +269,7 @@ authorized if and only if all three conditions hold:
    active in the principal's current state before the transaction is applied.
 2. **Lifecycle gate**: The principal's current lifecycle state must permit the
    operation. For example, a frozen principal rejects mutations; a deleted
-   principal rejects everything. (See section Lifecycle.)
+   principal rejects everything. (See section [Lifecycle](#11-lifecycle).)
 3. **Capability gate**: The principal must have the state components required
    for the operation. Principal genesis is required for commits. Data actions
    require DT to exist and data actions require inclusion. Rule operations
@@ -379,14 +382,14 @@ Rule Root (RR) is calculated as:
 Auth Root (AR) combines authentication-related trees:
 
 ```
-  AR = MR(KR, RR?,  embedding?)      # nil components excluded from sort
+  AR = MR(KR, RR?,  embedding?)
 ```
 
 ### 3.7.5 Transaction Root
 
 Transaction Root (TR) (Level 3+) is the MR of all transactions in a commit
 structured as MR(TMR, TCR), where TMR is transaction mutation root and TCR is
-the transaction commit root. See section Commit.
+the transaction commit root. See section [Commit](#4-commit).
 
 ```
   TX  = MR(czd₀, czd₁?, ...)
@@ -397,7 +400,7 @@ the transaction commit root. See section Commit.
 
 #### 3.7.6 Commit Root
 
-Commit Root (CR) is the the MALT root (MALTR) of the commit tree (CT). Each
+Commit Root (CR) is the MALT root (MALTR) of the commit tree (CT). Each
 node in the CT is a TR.
 
 ```
@@ -406,23 +409,23 @@ node in the CT is a TR.
 
 #### 3.7.7 Data Root
 
-Data Root (DR) (Level 4+) is the digest of all data action `czd`s. DR is
+Data Root (DR) (Level 4+) is the digest of all data actions `czd`s. DR is
 sorted by `now` and secondarily `czd`.
 
 ```
-DR = MR(czd₀, czd₁?, ..., embedding?)
+DR = MR(czd₀, czd₁?, embedding?, ...)
 ```
 
 ---
 
 ## 4 Commit
 
-A **commit** is an ordered, finalized atomic bundle that mutates PT. A commit
-consist of one to many transactions, denoted by `typ`, and transactions
-themselves consist of one to many cozies. Many mutations may occur per commit
-and are applied one-by-one using a given order as dictated by the principal.
-Unlike other systems, there are no minting fees, gas, or need for a global
-ledger.
+A **commit** is an ordered, finalized atomic bundle that mutates the Principal
+Tree (PT). A commit consist of one to many transactions, denoted by `typ`, and
+transactions themselves consist of one to many cozies. Many mutations may occur
+per commit and are applied one-by-one using a given order as dictated by the
+principal. Unlike other systems, there are no minting fees, gas, or need for a
+global ledger.
 
 For example, a commit may have three transactions: one transaction for
 `key/replace`, signed by two keys and consisting of two cozies, one for
@@ -432,9 +435,9 @@ For example, a commit may have three transactions: one transaction for
 ### 4.1 Transaction
 
 A transaction consists of one or more signed cozies that results in a mutation
-of the Principal Tree (PT). All cozies for a particular transaction contain an
-identical `typ`, which defines intent. Clients verify transactions based on the
-principal's auth tree (AT).
+of PT. All cozies for a particular transaction contain an identical `typ`, which
+defines intent. Clients verify transactions based on the principal's auth tree
+(AT).
 
 ```json5
 {
@@ -505,20 +508,20 @@ to itself.
 
 ### 4.4 Commit Tree
 
-The Commit Tree (CT) is a MALT. New commits are appended sequentially from the
-left, maintaining a dense prefix with no gaps, following the growth pattern used
-in RFC 9162.
+The Commit Tree (CT) is a MALT and Commit Root (CR) is the MALTR of all commits.
+Commits are ordered and new commits are appended sequentially from the left,
+maintaining a dense prefix with no gaps, following the growth pattern used in
+RFC 9162.
 
-Commits are ordered. The Merkle root after incorporating commit N becomes the
-Commit Root(CR) for that commit (CR_N). Clients obtain inclusion proofs for
-specific commits and consistency proofs between known roots using standard
-Merkle path proofs. To prevent client misbehavior, finality may be used as a
-proof of error (see section Proof of Error).
+The Merkle root after incorporating commit N becomes the CR for that commit
+(CR_N). Clients obtain inclusion proofs for specific commits and consistency
+proofs between known roots using standard Merkle path proofs. To prevent client
+misbehavior, finality may be used as a proof of error 
+(see section [Proof of Error](#152-proof-of-error)).
 
-Commit Root (CR) is the MALTR of all commits. A commit is finalized with a
-commit transaction, `commit/create` with the field `"arrow":<MR(pre, fwd,
-TMR)>`. When CT exists (level 3+), PR is the MR of PT including the last commit
-(commit id), so that PR = MR(SR, CR).
+A commit is finalized with a commit transaction, `commit/create`, with the field
+`"arrow":<MR(pre, fwd, TMR)>`. When CT exists (level 3+), PR is the MR of PT
+including the last commit (commit id), so that PR = MR(SR, CR).
 
 ### 4.5 JSON Wire Format
 
@@ -528,7 +531,7 @@ For various components, JSON components are labeled. If a plural is possibly
 valid, the plural is always used ensuring only one payload representation.
 
 **Singular**:
-// For use inside a `coz`
+For use inside a `coz`:
 
 - `pay`
 - `sig`
@@ -567,13 +570,13 @@ Wire Format:
 #### 4.5.3 JSON Meta Fields
 
 - `arrow`: <b64ut> (Principal transition) MR(pre, fwd, TMR)
-- `pre`: <b64ut> The prior Principal Root (PR), the state being mutate.
-- `fwd`: <b64ut> The forward State Tree Root (SR), the state after mutation.
+- `pre`:   <b64ut> The prior Principal Root (PR), the state being mutated.
+- `fwd`:   <b64ut> The forward State Tree Root (SR), the state after mutation.
 
-- `TX`: <b64ut> MR(czd₀, czd₁?, ...)
+- `TX`:  <b64ut> MR(czd₀, czd₁?, ...)
 - `TMR`: <b64ut> MR(txm₀?, txm₁?, ...)
 - `TCR`: <b64ut> MR(txc)
-- `TR`: <b64ut> MR(TMR, TCR)
+- `TR`:  <b64ut> MR(TMR, TCR)
 
 - `SR`: <b64ut> The state tree root after commit.
 - `CR`: <b64ut> MALTR(TR₀, TR₁?, ...)
@@ -595,7 +598,7 @@ date, but critically parent and commit tree a design similar to Cyphr's.
   referenced in the git commit.
 - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
   Merkle DAG (instead of a simple binary Merkle tree) where `pre` is a list of
-  parents (see section Explicit Fork).
+  parents (see section [Fork](#1152-fork)).
 
 ### 4.7 Data
 
@@ -702,9 +705,8 @@ unique PG.
 
 ### 5.2 Single Key Genesis
 
-The following is an example single key genesis. Note that outside of the cozies
-is `key`, which is the unsigned public key material, but `tmb` is signed within
-the coz.
+In the following example note that `keys` is unsigned public key material
+outside of the transactions with only `tmb` signed within the coz.
 
 ```json5
 {
@@ -751,7 +753,7 @@ the coz.
 }
 ```
 
-Accompanying the `txs` object, clients may also send a `txs_meta` object:
+Accompanying `txs`, clients may also send `txs_meta`:
 
 ```json5
 {"txs_meta":{
@@ -1012,7 +1014,7 @@ appropriately interpret this event.
 
 A naked revoke, or a revoke without a subsequent `delete`, puts the principal in
 an error state. An uncommitted revoke does not mutate PR. See section
-"Consensus" and "Recovery" for error recovery, but in sort, when a principal
+[Consensus](#15-consensus) and [Recovery](#14-recovery) for error recovery, but in sort, when a principal
 receives a naked revoke, it should sign a revoke, a subsequent `key/delete` to
 remove the key from, and commit. A client may include `msg` detailing why the
 key was revoked.
@@ -1146,12 +1148,10 @@ and properties applying to `update` apply to upsert only on update.
 
 ### 7.6 Idempotency and Uniqueness Enforcement
 
-Cyphr transaction mutations are idempotent. Replaying an already applied coz
-is ignored and produces no state change.
-
-All `create` operations in Cyphr enforce uniqueness. If the target item
-(e.g., key, rule, principal) already exists, the operation returns error
-`DUPLICATE`.
+Cyphr transaction mutations are idempotent. Replaying an already applied coz is
+ignored and produces no state change. All `create` operations in Cyphr enforce
+uniqueness. If the target item (e.g., key, rule, principal) already exists, the
+operation returns error `DUPLICATE`.
 
 ### 7.7 Atomic Orthogonality
 
@@ -1185,10 +1185,10 @@ declarative are isomorphic.
 ### 8.1 Client Principal JSON Dump
 
 The following is a client principal JSON dump, which includes meta values and
-values that would be secrete only to the client. This represents the client's
+values that would be secret only to the client. This represents the client's
 internal state of a principal, and includes fields useful for client
 calculation. Witnesses in the same way keep a similar data structure without
-the secretes.
+the secrets.
 
 ```json5
 {
@@ -1264,15 +1264,15 @@ the secretes.
 
 ### 8.2 Declarative Transaction
 
-Instead of imperatively mutating or creating principal root, state may be
-exhaustively declared in JSON. All client secretes are stripped before signing.
+In addition to imperatively mutating or creating principal root, state may be
+exhaustively declared in JSON. All client secrets are stripped before signing.
 (The Go/Rust implementation accomplishes this by using types that preclude
-secretes.)
+secrets.)
 
 Since declarative transactions enumerate the full principal root, they
-inherently act as checkpoints (see section Checkpoint). As always, the
-declarative structure is compactified according to Coz.  `checkpoint/create`
-contains `id` where the value is the forward SR.
+inherently act as checkpoints (see section [Checkpoint](#83-checkpoint)). As
+always, the declarative structure is compactified according to Coz.
+`checkpoint/create` contains `id` where the value is the forward SR.
 
 Example declarative principal:
 
@@ -1317,17 +1317,17 @@ Embedded into a `cyphr/principal/checkpoint/create` transaction:
 }
 ```
 
-### 8.3 Checkpoints
+### 8.3 Checkpoint
 
-**Checkpoints** are self-contained snapshots of the authentication-relevant
+A **Checkpoint** is a self-contained snapshots of the authentication-relevant
 state at a particular point in the chain, and once verified, allows verification
 from the checkpoint forward without needing to fetch or replay earlier parts of
 the history.
 
 For a particular commit, each state digest (PR, AR) encapsulates the full state
-tree (PT, AT). Checkpoints do not rely on prior history to reconstruct AT
-as all required material is included. Genesis is the foundational checkpoint;
-services should cache later checkpoints to reduce chain length for verification.
+tree (PT, AT). Checkpoints do not rely on prior history to reconstruct AT as all
+required material is included. Genesis is the foundational checkpoint; services
+should cache later checkpoints to reduce chain length for verification.
 
 ---
 
@@ -1452,10 +1452,9 @@ where id denotes the `czd`s of the transaction.
 
 ### 9.3 VM
 
-Level 6 introduces virtual machine (**VM**) execution, where rules may be
-defined in bytecode and executed by a designated virtual machine.
-
-Virtual machine may or may not be Turing complete.
+Level 6 introduces virtual machine (**VM**) execution, where rules are defined
+by bytecode and executed by a designated virtual machine. Virtual machines may
+or may not be Turing complete.
 
 ```json5
 {"VM":{
@@ -1472,7 +1471,7 @@ An embedding is a digest reference to an external node, such as a principal (PR)
 key, or key tree. Embedding is the mechanism by which Cyphr achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
-The default weight of an embedded node is one, regardless of how man children
+The default weight of an embedded node is one, regardless of how many children
 that node contains. Like all nodes, an embedded node may be assigned a different
 weight by a rule. For example, a principal embedded into KR by default has
 a weight of one regardless of how nodes are weighed for the embedded principal.
@@ -1482,12 +1481,23 @@ infinite recursion. For example, when principal A embeds principal B, and B
 embeds A, verifying A includes B's members but does not recursively resolve B's
 embedding of A.
 
-### 10.1 Nonce, Embedding, and Opaque Nodes
+### 10.1 Nonce, Embedding, and Opaque Node Pathing
 
 Cyphr permits nonces, embeddings, or otherwise opaque nodes anywhere in the
 Principal Tree. Embeddings are indistinguishable from other digest values unless
 revealed by the client. One or more nonces may be included at any level of the
 state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
+
+Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
+state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
+`id` == nonce removes the nonce.
+
+Example pathing:
+ - `cyphr/nonce/create` - Principal Root
+ - `cyphr/AT/nonce/create`  - Nonce is inserted at the root of AT.
+ - `cyphr/AT/KT/nonce/create` - Nonce is inserted at the root of KT.
+
+Example `nonce/create`:
 
 ```json
 {
@@ -1502,21 +1512,11 @@ state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
 }
 ```
 
-#### 10.1.1 Embedding path
-
-Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
-state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
-`id` == nonce removes the nonce.
-
-`cyphr/nonce/create` // Principal Genesis
-`cyphr/AT/nonce/create` // Nonce is inserted at the root of AT.
-`cyphr/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
-
 ### 10.2 Nonce
 
 Although used with a slightly different connotation in the broader industry, in
-Cyphr a **nonce** is a unique, high-entropy value. Unless explicitly labeled
-or revealed, Cyphr is unable to distinguish a nonce from any other node type
+Cyphr a **nonce** is a unique, high-entropy value. Unless explicitly labeled or
+revealed, the protocol is unable to distinguish a nonce from any other node type
 such as an embedding. Nonces serve a few purposes:
 
 - **Obfuscation**: Nonces are indistinguishable from key thumbprints and
@@ -1858,7 +1858,7 @@ original PG and a new PG for the target. A fork is created by signing
 `cyphr/principal/fork/create`, `cyphr/principal/create` (for atomic
 orthogonality), and adding at least one key. This transaction bundle is
 equivalent to a genesis transaction. For "bad faith" forking (invalid fork), see
-section "Consensus".
+section [Consensus](#15-consensus).
 
 Example principal fork, consisting of two transactions:
 
@@ -2524,11 +2524,11 @@ The design accommodates diverse implementations (including smart-contract
 clients on external hosted blockchains) and accepts that incompatibility between
 clients can be an intentional choice. This consensus model also permits logical
 deduction. Retained errors and timestamps serve as transparent signals of client
-honesty. It represents a fundamentally different philosophy: consensus emerges
-from what actually occurred and who published what when, not strictly from
-coordinated rule enforcement or majority vote, and opens the door for
-intelligent agents to detect violations through reasoning instead of strict rule
-matching.
+honesty (proof of error). It represents a fundamentally different philosophy:
+consensus emerges from what actually occurred and who published what when, not
+strictly from coordinated rule enforcement or majority vote, and opens the door
+for intelligent agents to detect violations through reasoning instead of strict
+rule matching.
 
 Although outside of the scope of this document, consensus rules attempt to
 accommodate a wide set of circumstances and implementation, and should assume
