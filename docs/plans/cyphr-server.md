@@ -163,21 +163,21 @@ Protocol as a deployable network service.
    - [x] Integration test: round-trip raw coz bytes through BlobStore
 
 2. **Phase 2: Indexer Foundation** — relational index with async SQLite
-   - [ ] `Indexer` trait definition (`cyphr-storage/src/index/mod.rs`)
-     - [ ] `index_commit(principal_id, commit_data, blob_hashes) -> Result<()>`
-     - [ ] `get_tip(principal_id) -> Result<Option<TipState>>`
-     - [ ] `get_commit_chain(principal_id, from, to) -> Result<Vec<CommitRef>>`
-     - [ ] `resolve_digest(tagged_digest) -> Result<Option<EntityRef>>`
-     - [ ] `list_principals() -> Result<Vec<PrincipalSummary>>`
+   - [x] `Indexer` trait definition (`cyphr-storage/src/index/mod.rs`)
+     - [x] `index_commit(&IndexableCommit) -> Result<()>`
+     - [x] `get_tip(principal_id) -> Result<Option<TipState>>`
+     - [x] `get_commit_chain(principal_id, from, to) -> Result<Vec<CommitRef>>`
+     - [x] `resolve_digest(&TaggedDigest) -> Result<Option<EntityRef>>`
+     - [x] `list_principals() -> Result<Vec<PrincipalSummary>>`
    - [ ] `SqliteIndexer` implementation
      - [ ] 6-table schema: `principals`, `commits`, `transactions`, `entries`, `digest_index`, `data_actions`
      - [ ] WAL mode, busy timeout configuration
      - [ ] `json_extract()` for variable payload fields
    - [ ] Async wrapper for `SqliteIndexer`
      - [ ] Actor model (dedicated thread + `tokio::sync::mpsc`) or `tokio-rusqlite`
-   - [ ] `MemoryIndexer` implementation for testing
+   - [x] `MemoryIndexer` implementation for testing
    - [ ] Index recovery: scan BlobStore for unindexed blobs, re-parse, re-index
-   - [ ] Unit tests for schema operations, digest resolution, and recovery
+   - [x] Unit tests for trait operations (11 tests: tip CRUD, commit chain, digest resolution, principal listing)
 
 3. **Phase 3: Engine Orchestration** — coordinated write/read paths
    - [ ] `StorageEngine` struct wrapping `BlobStore` + `Indexer`
@@ -271,8 +271,12 @@ Protocol as a deployable network service.
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item | Severity | Why Introduced | Follow-Up | Resolved |
-| :--- | :------- | :------------- | :-------- | :------: |
+| Item                                          | Severity | Why Introduced                           | Follow-Up                                              | Resolved |
+| :-------------------------------------------- | :------- | :--------------------------------------- | :----------------------------------------------------- | :------: |
+| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                | Add before 1.0                                         |          |
+| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                | Add before 1.0                                         |          |
+| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized | Add when engine needs `Arc<dyn Indexer + Send + Sync>` |          |
+| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                 | SQLite impl stores real TaggedDigest strings           |          |
 
 ## Deviation Log
 
@@ -280,8 +284,11 @@ Protocol as a deployable network service.
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Commit | Planned | Actual | Rationale |
-| :----- | :------ | :----- | :-------- |
+| Commit   | Planned                                                | Actual                                                    | Rationale                                        |
+| :------- | :----------------------------------------------------- | :-------------------------------------------------------- | :----------------------------------------------- |
+| Phase 2a | `index_commit(principal_id, commit_data, blob_hashes)` | `index_commit(&IndexableCommit)`                          | Single struct cleaner than 3+ loose params       |
+| Phase 2a | `resolve_digest(tagged_digest)` — untyped              | `resolve_digest(&TaggedDigest)`                           | Protocol type provides parse-time validation     |
+| Phase 2a | Phase 2 as single CORE session                         | Split into 2a (trait+memory) / 2b (SQLite+async+recovery) | Exceeds granularity cap; mirrors Phase 1 pattern |
 
 ## Retrospective
 

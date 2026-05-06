@@ -26,6 +26,7 @@ pub mod blob;
 mod export;
 mod file;
 mod import;
+pub mod index;
 
 pub use export::{ExportError, PersistError, export_commits, export_entries, persist_entries};
 pub use file::{FileStore, FileStoreError};
