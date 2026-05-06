@@ -109,7 +109,7 @@ pub enum LoadError {
 ///
 /// Transactions are: key/*, principal/create, commit/create
 /// Everything else is an action.
-fn is_transaction_typ(typ: &str) -> bool {
+pub(crate) fn is_transaction_typ(typ: &str) -> bool {
     typ.contains("/key/") || typ.contains("/principal/create") || typ.contains("/commit/create")
 }
 
@@ -336,7 +336,10 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
 /// Uses `CommitScope` to properly group cozies into commits.
 /// Key material is read from the commit-level `keys[]` array, not from
 /// per-cz embedded fields.
-fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
+pub(crate) fn replay_commits(
+    principal: &mut Principal,
+    commits: &[CommitEntry],
+) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
@@ -456,12 +459,12 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
 }
 
 /// Returns true if a coz type introduces new key material.
-fn is_key_introducing_typ(typ: &str) -> bool {
+pub(crate) fn is_key_introducing_typ(typ: &str) -> bool {
     typ.contains("/key/create") || typ.contains("/key/replace")
 }
 
 /// Convert a commit-level KeyEntry to a Principal Key.
-fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
+pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).map_err(|e| {
@@ -492,7 +495,7 @@ fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
 /// Used by `replay_entries()` (legacy flat format) where key material
 /// is embedded in each coz entry. For commit-based format,
 /// use `key_entry_to_key()` with commit-level `keys[]` instead.
-fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
+pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let key_obj = raw.get("key")?;
@@ -518,7 +521,11 @@ fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 ///
 /// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
 /// consistent hash computation matching the signing path.
-fn compute_czd(pay_json: &[u8], sig: &[u8], principal: &Principal) -> Result<coz::Czd, LoadError> {
+pub(crate) fn compute_czd(
+    pay_json: &[u8],
+    sig: &[u8],
+    principal: &Principal,
+) -> Result<coz::Czd, LoadError> {
     use cyphr::state::HashAlg;
 
     // Map principal's hash algorithm to coz algorithm name

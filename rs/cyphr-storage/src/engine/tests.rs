@@ -182,3 +182,212 @@ fn multi_principal_isolation() {
     assert_eq!(alice_patch.entries.len(), 1);
     assert_eq!(alice_patch.entries[0].blobs[0], b"alice-genesis");
 }
+
+// ========================================================================
+// Principal lifecycle tests
+// ========================================================================
+
+/// Load a golden fixture from the shared test vectors.
+fn load_golden(category: &str, name: &str) -> serde_json::Value {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/golden")
+        .join(category)
+        .join(format!("{name}.json"));
+    let content =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+    serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse {path:?}: {e}"))
+}
+
+/// Convert a golden fixture's genesis key JSON to a cyphr::Key.
+fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
+    use coz::Thumbprint;
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let alg = gk["alg"].as_str().unwrap();
+    let pub_b64 = gk["pub"].as_str().unwrap();
+    let tmb_b64 = gk["tmb"].as_str().unwrap();
+
+    let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
+    let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
+
+    cyphr::Key {
+        alg: alg.to_string(),
+        tmb: Thumbprint::from_bytes(tmb_bytes),
+        pub_key: pub_bytes,
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    }
+}
+
+/// Build genesis from a golden fixture's genesis_keys array.
+fn make_genesis(genesis_keys: &[serde_json::Value]) -> crate::Genesis {
+    let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
+    if keys.len() == 1 {
+        crate::Genesis::Implicit(keys.into_iter().next().unwrap())
+    } else {
+        crate::Genesis::Explicit(keys)
+    }
+}
+
+/// Ingest a golden fixture's commits into the engine.
+///
+/// Each coz in the fixture becomes a separate blob. Key material from the
+/// commit-level `keys[]` array is embedded into the corresponding coz blob's
+/// `"key"` field, mirroring the wire format a server would receive.
+fn ingest_fixture(
+    engine: &StorageEngine<MemoryBlobStore, MemoryIndexer>,
+    principal_id: &str,
+    commits: &[serde_json::Value],
+) {
+    for (seq, commit) in commits.iter().enumerate() {
+        let cozies = commit["txs"].as_array().expect("txs array");
+        let keys = commit["keys"].as_array();
+        let mut key_idx = 0;
+
+        let mut blobs: Vec<Vec<u8>> = Vec::new();
+
+        for coz_value in cozies {
+            let mut coz = coz_value.clone();
+
+            // If this is a key-introducing transaction, embed the key
+            // material from the commit-level keys[] into the blob.
+            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+            let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+
+            if is_key_introducing {
+                if let Some(ks) = keys {
+                    if key_idx < ks.len() {
+                        coz.as_object_mut()
+                            .unwrap()
+                            .insert("key".to_string(), ks[key_idx].clone());
+                        key_idx += 1;
+                    }
+                }
+            }
+
+            blobs.push(serde_json::to_vec(&coz).unwrap());
+        }
+
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+
+        let meta = IngestMeta {
+            principal_id: principal_id.to_string(),
+            commit_id: commit["commit_id"]
+                .as_str()
+                .unwrap_or(&format!("commit-{seq}"))
+                .to_string(),
+            sequence: seq as u64,
+            pr: commit["pr"].as_str().unwrap_or("").to_string(),
+            sr: commit["sr"].as_str().unwrap_or("").to_string(),
+            ar: commit["ar"].as_str().unwrap_or("").to_string(),
+            transaction_types: cozies
+                .iter()
+                .filter_map(|c| c["pay"]["typ"].as_str().map(String::from))
+                .collect(),
+            timestamp: cozies
+                .last()
+                .and_then(|c| c["pay"]["now"].as_i64())
+                .unwrap_or(0),
+        };
+
+        engine
+            .ingest_commit(&blob_slices, meta)
+            .unwrap_or_else(|e| panic!("ingest commit {seq} failed: {e}"));
+    }
+}
+
+#[test]
+fn load_principal_genesis_only() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+
+    let engine = test_engine();
+
+    // No commits ingested — load should return genesis-only principal.
+    let principal = engine
+        .load_principal("test-principal", genesis)
+        .expect("load_principal failed");
+
+    assert_eq!(principal.active_key_count(), 1);
+}
+
+#[test]
+fn load_principal_after_ingest() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let expected = &fixture["expected"];
+
+    let engine = test_engine();
+    let principal_id = "test-principal";
+
+    // Ingest the fixture's commits.
+    ingest_fixture(&engine, principal_id, commits);
+
+    // Load the principal back from storage.
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .expect("load_principal failed");
+
+    // Verify against fixture expectations.
+    if let Some(kc) = expected["key_count"].as_u64() {
+        assert_eq!(
+            principal.active_key_count(),
+            kc as usize,
+            "key_count mismatch"
+        );
+    }
+    if let Some(level) = expected["level"].as_u64() {
+        assert_eq!(principal.level() as u64, level, "level mismatch");
+    }
+}
+
+#[test]
+fn load_principal_multi_commit_replay() {
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let expected = &fixture["expected"];
+
+    let engine = test_engine();
+    let principal_id = "seq-principal";
+
+    ingest_fixture(&engine, principal_id, commits);
+
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .expect("load_principal failed");
+
+    if let Some(kc) = expected["key_count"].as_u64() {
+        assert_eq!(
+            principal.active_key_count(),
+            kc as usize,
+            "key_count mismatch after multi-commit replay"
+        );
+    }
+}
+
+#[test]
+fn load_principal_unknown_returns_genesis() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+
+    let engine = test_engine();
+
+    // Load from a principal_id with no indexed commits.
+    let principal = engine
+        .load_principal("nonexistent", genesis)
+        .expect("load should succeed with no commits");
+
+    assert_eq!(principal.active_key_count(), 1, "should be genesis-only");
+}

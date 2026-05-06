@@ -204,6 +204,128 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         Ok(IngestResult { blob_hashes })
     }
+
+    // ========================================================================
+    // Principal lifecycle
+    // ========================================================================
+
+    /// Reconstruct a live [`cyphr::Principal`] by replaying stored commits.
+    ///
+    /// Fetches the full commit chain from the indexer, retrieves each
+    /// blob from the blob store, and delegates to the existing
+    /// [`import::replay_commits`] infrastructure.
+    ///
+    /// # Arguments
+    ///
+    /// * `principal_id` — The tagged-digest identifier for the principal.
+    /// * `genesis` — How this principal was originally created.
+    ///
+    /// # Errors
+    ///
+    /// - `EngineError::Indexer` — commit chain lookup failed.
+    /// - `EngineError::BlobStore` — blob retrieval failed.
+    /// - `EngineError::NotFound` — blob referenced by index is missing.
+    /// - `EngineError::MalformedBlob` — stored blob is not valid JSON.
+    /// - `EngineError::Load` — replay/validation failed.
+    pub fn load_principal(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+    ) -> Result<cyphr::Principal, EngineError> {
+        use crate::CommitEntry;
+        use crate::import::replay_commits;
+
+        // 1. Construct the principal from genesis (no commits yet).
+        let mut principal = match genesis {
+            crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key)?,
+            crate::Genesis::Explicit(keys) => {
+                if keys.is_empty() {
+                    return Err(EngineError::InvalidInput(
+                        "genesis requires at least one key".into(),
+                    ));
+                }
+                cyphr::Principal::explicit(keys)?
+            },
+        };
+
+        // 2. Get the full commit chain from the indexer.
+        let chain = self.indexer.get_commit_chain(principal_id, None, None)?;
+        if chain.is_empty() {
+            return Ok(principal);
+        }
+
+        // 3. For each CommitRef, fetch blobs and build a CommitEntry.
+        let mut commit_entries = Vec::with_capacity(chain.len());
+        for commit_ref in &chain {
+            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
+            let mut keys = Vec::new();
+
+            for hash in &commit_ref.blob_hashes {
+                let data = self.blob_store.get(hash)?.ok_or_else(|| {
+                    EngineError::NotFound(format!(
+                        "blob {hash} referenced by commit {} missing",
+                        commit_ref.commit_id
+                    ))
+                })?;
+
+                // Parse blob as JSON.
+                let json_str = String::from_utf8(data).map_err(|e| {
+                    EngineError::MalformedBlob(format!("blob {hash} is not UTF-8: {e}"))
+                })?;
+                let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+                    EngineError::MalformedBlob(format!("blob {hash} is not valid JSON: {e}"))
+                })?;
+
+                // Extract key material from the coz envelope's "key" field
+                // (for key-introducing transactions).
+                if let Some(key_obj) = value.get("key") {
+                    if let Some(ke) = key_value_to_entry(key_obj) {
+                        keys.push(ke);
+                    }
+                }
+
+                cozies.push(value);
+            }
+
+            // replay_commits only reads `cozies` and `keys`;
+            // state digest fields are inert during replay.
+            commit_entries.push(CommitEntry::new(
+                cozies,
+                keys,
+                commit_ref.commit_id.clone(),
+                String::new(), // ar — unused during replay
+                String::new(), // sr — unused during replay
+                commit_ref.pr.clone(),
+            ));
+        }
+
+        // 4. Replay commits onto the principal.
+        replay_commits(&mut principal, &commit_entries)?;
+
+        Ok(principal)
+    }
+}
+
+/// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.
+///
+/// Returns `None` if the object is missing required fields.
+fn key_value_to_entry(key_obj: &serde_json::Value) -> Option<crate::KeyEntry> {
+    let alg = key_obj.get("alg")?.as_str()?;
+    let pub_key = key_obj.get("pub")?.as_str()?;
+    let tmb = key_obj.get("tmb")?.as_str()?;
+    let tag = key_obj
+        .get("tag")
+        .and_then(|t| t.as_str())
+        .map(String::from);
+    let now = key_obj.get("now").and_then(|n| n.as_i64());
+
+    Some(crate::KeyEntry {
+        alg: alg.to_string(),
+        pub_key: pub_key.to_string(),
+        tmb: tmb.to_string(),
+        tag,
+        now,
+    })
 }
 
 #[cfg(test)]

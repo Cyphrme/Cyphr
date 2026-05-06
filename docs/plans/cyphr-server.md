@@ -193,11 +193,12 @@ Protocol as a deployable network service.
      - [x] `get_tip()`: principal current state from index
      - [x] `get_patch()`: delta between two states (commit chain query + blob fetch)
      - [x] `get_entity()`: content-addressed lookup via `digest_index` → BlobStore
-   - [ ] Principal lifecycle
-     - [ ] Load existing principal from storage (replay from BlobStore via index ordering)
-     - [ ] Create new principal (genesis)
+   - [/] Principal lifecycle
+     - [x] Load existing principal from storage (replay from BlobStore via index ordering)
+     - [x] Create new principal (genesis, implicit + explicit)
      - [ ] Resume from checkpoint
-   - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (9 tests)
+     - [ ] Validated write path (`submit_commit`)
+   - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (13 tests)
 
 4. **Phase 4: HTTP Server (MSS API)** — deployable authority server
    - [ ] `cyphr-server` crate scaffolding
@@ -271,14 +272,16 @@ Protocol as a deployable network service.
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                          | Severity | Why Introduced                           | Follow-Up                                              | Resolved |
-| :-------------------------------------------- | :------- | :--------------------------------------- | :----------------------------------------------------- | :------: |
-| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                | Add before 1.0                                         |          |
-| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                | Add before 1.0                                         |          |
-| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized | Add when engine needs `Arc<dyn Indexer + Send + Sync>` |          |
-| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                 | SQLite impl stores real TaggedDigest strings           |          |
-| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless       | Production backend: coordinate via DB transactions     |          |
-| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                     | Streaming patches for Phase 4+                         |          |
+| Item                                          | Severity | Why Introduced                           | Follow-Up                                               | Resolved |
+| :-------------------------------------------- | :------- | :--------------------------------------- | :------------------------------------------------------ | :------: |
+| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                | Add before 1.0                                          |          |
+| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                | Add before 1.0                                          |          |
+| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized | Add when engine needs `Arc<dyn Indexer + Send + Sync>`  |          |
+| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                 | SQLite impl stores real TaggedDigest strings            |          |
+| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless       | Production backend: coordinate via DB transactions      |          |
+| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                     | Streaming patches for Phase 4+                          |          |
+| `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests   | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
+| Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic   | Document in SPEC or assert in engine ingestion path     |          |
 
 ## Deviation Log
 
