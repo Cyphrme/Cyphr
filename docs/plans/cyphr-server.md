@@ -183,10 +183,9 @@ Protocol as a deployable network service.
    - [x] `StorageEngine` struct wrapping `BlobStore` + `Indexer`
      - [x] Constructor with configuration
      - [ ] Startup: load index, verify consistency, recover if needed
-   - [/] Write path
+   - [x] Write path
      - [x] `ingest_commit()`: store blobs + index pre-validated metadata
-     - [ ] Load/create `Principal` from storage
-     - [ ] Validate via `cyphr::Principal` (signatures, chain, state)
+     - [x] `submit_commit()`: validated write path (verify via CommitScope → persist)
      - [x] `BlobStore::put()` for each coz in the commit
      - [x] `Indexer::index_commit()` for relational tracking
    - [x] Read path
@@ -197,8 +196,7 @@ Protocol as a deployable network service.
      - [x] Load existing principal from storage (replay from BlobStore via index ordering)
      - [x] Create new principal (genesis, implicit + explicit)
      - [ ] Resume from checkpoint
-     - [ ] Validated write path (`submit_commit`)
-   - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (13 tests)
+   - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (17 tests)
 
 4. **Phase 4: HTTP Server (MSS API)** — deployable authority server
    - [ ] `cyphr-server` crate scaffolding
@@ -282,6 +280,9 @@ Protocol as a deployable network service.
 | `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                     | Streaming patches for Phase 4+                          |          |
 | `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests   | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
 | Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic   | Document in SPEC or assert in engine ingestion path     |          |
+| `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate        | Add conversion method to cyphr crate                    |          |
+| `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling      | Support action recording in submit_commit (Phase 4+)    |          |
+| `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe        | Document contract or pass raw bytes through             |          |
 
 ## Deviation Log
 

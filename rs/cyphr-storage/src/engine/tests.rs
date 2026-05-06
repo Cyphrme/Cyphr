@@ -391,3 +391,180 @@ fn load_principal_unknown_returns_genesis() {
 
     assert_eq!(principal.active_key_count(), 1, "should be genesis-only");
 }
+
+// ========================================================================
+// submit_commit tests (validated write path)
+// ========================================================================
+
+/// Build raw coz blobs from a golden fixture's commit, ready for submit_commit.
+///
+/// Embeds key material from commit-level `keys[]` into each key-introducing
+/// coz blob, matching the wire format a client would send.
+fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
+    let cozies = commit["txs"].as_array().expect("txs array");
+    let keys = commit["keys"].as_array();
+    let mut key_idx = 0;
+    let mut blobs = Vec::new();
+
+    for coz_value in cozies {
+        let mut coz = coz_value.clone();
+
+        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+
+        if is_key_introducing {
+            if let Some(ks) = keys {
+                if key_idx < ks.len() {
+                    coz.as_object_mut()
+                        .unwrap()
+                        .insert("key".to_string(), ks[key_idx].clone());
+                    key_idx += 1;
+                }
+            }
+        }
+
+        blobs.push(serde_json::to_vec(&coz).unwrap());
+    }
+
+    blobs
+}
+
+#[test]
+fn submit_commit_valid_fixture() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let expected = &fixture["expected"];
+
+    let engine = test_engine();
+    let principal_id = "submit-test";
+
+    // Submit each commit in the fixture through the validated write path.
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let genesis = make_genesis(genesis_keys);
+
+        engine
+            .submit_commit(principal_id, genesis, &blob_slices)
+            .expect("submit_commit failed");
+    }
+
+    // Verify stored state via tip.
+    let tip = engine
+        .get_tip(principal_id)
+        .expect("get_tip failed")
+        .expect("tip should exist after submit");
+
+    assert_eq!(tip.commit_count, commits.len() as u64);
+
+    // Verify loadable principal matches expected state.
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .expect("load after submit failed");
+
+    if let Some(kc) = expected["key_count"].as_u64() {
+        assert_eq!(
+            principal.active_key_count(),
+            kc as usize,
+            "key_count mismatch"
+        );
+    }
+    if let Some(level) = expected["level"].as_u64() {
+        assert_eq!(principal.level() as u64, level, "level mismatch");
+    }
+}
+
+#[test]
+fn submit_commit_bad_signature_rejected() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let engine = test_engine();
+    let principal_id = "submit-bad-sig";
+
+    // Build blobs from the first commit but tamper with the signature.
+    let first_commit = &commits[0];
+    let mut blobs = build_raw_blobs(first_commit);
+
+    // Tamper: flip a byte in the first blob's sig field.
+    let mut tampered: serde_json::Value = serde_json::from_slice(&blobs[0]).unwrap();
+    if let Some(sig) = tampered.get("sig").and_then(|s| s.as_str()) {
+        let mut sig_chars: Vec<char> = sig.chars().collect();
+        if !sig_chars.is_empty() {
+            // Flip the first character.
+            sig_chars[0] = if sig_chars[0] == 'A' { 'B' } else { 'A' };
+        }
+        let tampered_sig: String = sig_chars.into_iter().collect();
+        tampered["sig"] = serde_json::Value::String(tampered_sig);
+    }
+    blobs[0] = serde_json::to_vec(&tampered).unwrap();
+
+    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    let genesis = make_genesis(genesis_keys);
+
+    // Submission should fail — protocol error, not stored.
+    let result = engine.submit_commit(principal_id, genesis, &blob_slices);
+    assert!(result.is_err(), "tampered commit should be rejected");
+
+    // Verify nothing was stored.
+    let tip = engine.get_tip(principal_id).expect("get_tip failed");
+    assert!(tip.is_none(), "no tip should exist after rejected submit");
+}
+
+#[test]
+fn submit_commit_empty_rejected() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+
+    let engine = test_engine();
+    let genesis = make_genesis(genesis_keys);
+
+    let result = engine.submit_commit("empty-test", genesis, &[]);
+    assert!(result.is_err(), "empty blob list should be rejected");
+}
+
+#[test]
+fn submit_then_load_round_trip() {
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let expected = &fixture["expected"];
+
+    let engine = test_engine();
+    let principal_id = "round-trip-submit";
+
+    // Submit all commits.
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let genesis = make_genesis(genesis_keys);
+
+        engine
+            .submit_commit(principal_id, genesis, &blob_slices)
+            .expect("submit_commit failed");
+    }
+
+    // Load and verify.
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .expect("load_principal failed");
+
+    if let Some(kc) = expected["key_count"].as_u64() {
+        assert_eq!(
+            principal.active_key_count(),
+            kc as usize,
+            "key_count mismatch in round-trip"
+        );
+    }
+
+    // Verify sequence count.
+    let tip = engine
+        .get_tip(principal_id)
+        .expect("get_tip failed")
+        .expect("tip should exist");
+    assert_eq!(tip.commit_count, commits.len() as u64);
+}

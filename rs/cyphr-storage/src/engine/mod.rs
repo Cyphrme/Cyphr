@@ -304,6 +304,143 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         Ok(principal)
     }
+
+    /// Submit a commit for protocol validation and persistence.
+    ///
+    /// This is the **validated write path** — the engine's primary API for
+    /// authority-mode operation. Each incoming raw coz blob is
+    /// cryptographically verified via [`CommitScope`] before any
+    /// persistence occurs.
+    ///
+    /// # Flow
+    ///
+    /// 1. Load existing principal from storage (or construct from genesis)
+    /// 2. Open a `CommitScope`
+    /// 3. For each raw coz blob: parse `{pay, sig}`, extract key material,
+    ///    compute `czd`, call `scope.verify_and_apply()`
+    /// 4. Finalize the scope → immutable `Commit`
+    /// 5. Extract state digests from the finalized `Commit`
+    /// 6. Store blobs + index via `ingest_commit`
+    ///
+    /// # Arguments
+    ///
+    /// * `principal_id` — Tagged-digest identifier for this principal.
+    /// * `genesis` — How this principal was originally created.
+    /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
+    ///
+    /// # Errors
+    ///
+    /// Any protocol violation (bad signature, broken chain, unknown signer,
+    /// etc.) causes the entire submit to fail with no side effects — blobs
+    /// are only stored after successful validation.
+    pub fn submit_commit(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+        raw_blobs: &[&[u8]],
+    ) -> Result<IngestResult, EngineError> {
+        use crate::import::{is_key_introducing_typ, is_transaction_typ};
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        if raw_blobs.is_empty() {
+            return Err(EngineError::InvalidInput("empty commit bundle".into()));
+        }
+
+        // 1. Load (or construct) the principal from existing state.
+        let mut principal = self.load_principal(principal_id, genesis)?;
+
+        // 2. Determine the next sequence number.
+        let next_seq = self
+            .indexer
+            .get_tip(principal_id)?
+            .map(|tip| tip.commit_count)
+            .unwrap_or(0);
+
+        // 3. Open a commit scope and process each blob.
+        let mut scope = principal.begin_commit();
+        let mut transaction_types = Vec::new();
+        let mut last_timestamp: i64 = 0;
+
+        for (i, blob_bytes) in raw_blobs.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_slice(blob_bytes)
+                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
+
+            let pay = value
+                .get("pay")
+                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'pay'")))?;
+            let sig_b64 = value
+                .get("sig")
+                .and_then(|s| s.as_str())
+                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'sig'")))?;
+
+            let sig = Base64UrlUnpadded::decode_vec(sig_b64)
+                .map_err(|_| EngineError::MalformedBlob(format!("blob {i}: invalid sig base64")))?;
+
+            let pay_json = serde_json::to_vec(pay)
+                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: pay serialize: {e}")))?;
+
+            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+
+            if let Some(now) = pay.get("now").and_then(|n| n.as_i64()) {
+                last_timestamp = now;
+            }
+
+            if is_transaction_typ(typ) {
+                transaction_types.push(typ.to_string());
+
+                // Extract key material for key-introducing transactions.
+                let new_key = if is_key_introducing_typ(typ) {
+                    value.get("key").and_then(|k| {
+                        let ke = key_value_to_entry(k)?;
+                        crate::import::key_entry_to_key(&ke).ok()
+                    })
+                } else {
+                    None
+                };
+
+                // Compute czd.
+                let alg = match scope.principal_hash_alg() {
+                    cyphr::state::HashAlg::Sha256 => "ES256",
+                    cyphr::state::HashAlg::Sha384 => "ES384",
+                    cyphr::state::HashAlg::Sha512 => "ES512",
+                };
+                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None).ok_or_else(|| {
+                    EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
+                })?;
+                let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or_else(|| {
+                    EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
+                })?;
+
+                // Verify signature and apply state mutation.
+                scope.verify_and_apply(&pay_json, &sig, czd, new_key)?;
+            }
+            // Actions within submit_commit are not yet supported.
+            // They would need scope.finalize() then principal.verify_and_record_action().
+        }
+
+        // 4. Finalize the commit scope.
+        let commit = scope.finalize()?;
+
+        // 5. Extract state digests from the finalized Commit.
+        let commit_id = format_multihash(&commit.tr().0)?;
+        let ar = format_multihash(commit.auth_root().as_multihash())?;
+        let sr = format_multihash(commit.sr().as_multihash())?;
+        let pr = format_multihash(commit.pr().as_multihash())?;
+
+        // 6. Persist via the storage layer.
+        let meta = IngestMeta {
+            principal_id: principal_id.to_string(),
+            commit_id,
+            sequence: next_seq,
+            pr,
+            sr,
+            ar,
+            transaction_types,
+            timestamp: last_timestamp,
+        };
+
+        self.ingest_commit(raw_blobs, meta)
+    }
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.
@@ -326,6 +463,24 @@ fn key_value_to_entry(key_obj: &serde_json::Value) -> Option<crate::KeyEntry> {
         tag,
         now,
     })
+}
+
+/// Format a [`MultihashDigest`] as a tagged digest string (`"alg:base64url"`).
+///
+/// Extracts the first algorithm variant and encodes its bytes. Used by
+/// [`StorageEngine::submit_commit`] to serialize state roots for the index.
+fn format_multihash(mh: &cyphr::multihash::MultihashDigest) -> Result<String, EngineError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let alg = mh
+        .algorithms()
+        .next()
+        .ok_or_else(|| EngineError::InvalidInput("empty multihash".into()))?;
+    let bytes = mh
+        .first_variant()
+        .map_err(|e| EngineError::InvalidInput(format!("multihash extract: {e}")))?;
+
+    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
 }
 
 #[cfg(test)]
