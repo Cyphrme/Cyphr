@@ -180,24 +180,24 @@ Protocol as a deployable network service.
    - [x] Unit tests for trait operations (11 tests: tip CRUD, commit chain, digest resolution, principal listing)
 
 3. **Phase 3: Engine Orchestration** — coordinated write/read paths
-   - [ ] `StorageEngine` struct wrapping `BlobStore` + `Indexer`
-     - [ ] Constructor with configuration
+   - [x] `StorageEngine` struct wrapping `BlobStore` + `Indexer`
+     - [x] Constructor with configuration
      - [ ] Startup: load index, verify consistency, recover if needed
-   - [ ] Write path
-     - [ ] Accept raw commit bundle bytes
+   - [/] Write path
+     - [x] `ingest_commit()`: store blobs + index pre-validated metadata
      - [ ] Load/create `Principal` from storage
      - [ ] Validate via `cyphr::Principal` (signatures, chain, state)
-     - [ ] `BlobStore::put()` for each coz in the commit
-     - [ ] `Indexer::index_commit()` for relational tracking
-   - [ ] Read path
-     - [ ] `get_tip()`: principal current state from index
-     - [ ] `get_patch()`: delta between two states (commit chain query + blob fetch)
-     - [ ] `get_entity()`: content-addressed lookup via `digest_index` → BlobStore
+     - [x] `BlobStore::put()` for each coz in the commit
+     - [x] `Indexer::index_commit()` for relational tracking
+   - [x] Read path
+     - [x] `get_tip()`: principal current state from index
+     - [x] `get_patch()`: delta between two states (commit chain query + blob fetch)
+     - [x] `get_entity()`: content-addressed lookup via `digest_index` → BlobStore
    - [ ] Principal lifecycle
      - [ ] Load existing principal from storage (replay from BlobStore via index ordering)
      - [ ] Create new principal (genesis)
      - [ ] Resume from checkpoint
-   - [ ] Integration tests using `MemoryBlobStore` + `MemoryIndexer`
+   - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (9 tests)
 
 4. **Phase 4: HTTP Server (MSS API)** — deployable authority server
    - [ ] `cyphr-server` crate scaffolding
@@ -277,6 +277,8 @@ Protocol as a deployable network service.
 | `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                | Add before 1.0                                         |          |
 | `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized | Add when engine needs `Arc<dyn Indexer + Send + Sync>` |          |
 | `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                 | SQLite impl stores real TaggedDigest strings           |          |
+| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless       | Production backend: coordinate via DB transactions     |          |
+| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                     | Streaming patches for Phase 4+                         |          |
 
 ## Deviation Log
 
@@ -289,6 +291,8 @@ Protocol as a deployable network service.
 | Phase 2a | `index_commit(principal_id, commit_data, blob_hashes)` | `index_commit(&IndexableCommit)`                          | Single struct cleaner than 3+ loose params       |
 | Phase 2a | `resolve_digest(tagged_digest)` — untyped              | `resolve_digest(&TaggedDigest)`                           | Protocol type provides parse-time validation     |
 | Phase 2a | Phase 2 as single CORE session                         | Split into 2a (trait+memory) / 2b (SQLite+async+recovery) | Exceeds granularity cap; mirrors Phase 1 pattern |
+| Phase 3a | Phase 2b (SQLite) before Phase 3                       | Phase 3 first with memory backends                        | Engine stress-tests traits before SQL schema     |
+| Phase 3a | Write path: accept raw commit bundle bytes             | `ingest_commit` takes pre-validated blobs + metadata      | Principal validation deferred to Phase 3b        |
 
 ## Retrospective
 

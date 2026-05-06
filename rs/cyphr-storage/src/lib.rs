@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod blob;
+pub mod engine;
 mod export;
 mod file;
 mod import;
