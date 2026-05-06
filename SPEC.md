@@ -874,11 +874,11 @@ Example public key:
 #### 6.1 `key/create` - Add a Key (Level 3+)
 
 The following example adds a new key to KR for an existing principal. Note that
-`key` is included in the JSON payload, but not the signed payload, as reference
+`key` is included in the JSON payload, but not the signed portion, as reference
 for client. The key may be transmitted through sideband or known previously. The
 construction of sending the public key along with the `key/create` is good
 practice. Also note, this example includes `txs`. For brevity, this example does
-not include the commit, and future example include only the transaction, but
+not include the commit, and future examples include only the transaction, but
 transaction should be included in `txs`.
 
 ```json5
@@ -1014,10 +1014,10 @@ appropriately interpret this event.
 
 A naked revoke, or a revoke without a subsequent `delete`, puts the principal in
 an error state. An uncommitted revoke does not mutate PR. See section
-[Consensus](#15-consensus) and [Recovery](#14-recovery) for error recovery, but in sort, when a principal
-receives a naked revoke, it should sign a revoke, a subsequent `key/delete` to
-remove the key from, and commit. A client may include `msg` detailing why the
-key was revoked.
+[Consensus](#15-consensus) and [Recovery](#14-recovery) for error recovery, but
+in short, when a principal receives a naked revoke, it should sign a revoke, a
+subsequent `key/delete` to remove the key from, and commit. A client may include
+`msg` detailing why the key was revoked.
 
 ```json
 {
