@@ -2178,7 +2178,7 @@ clients in sync. See also section `API`.
 - `GET /patch?pr=<principal-root>&from=<ps>&to=<target-ps>` - Full form
 - `GET /patch?from=<ps>` - From PR to current
 - `GET /patch?pr=<principal-root>` from PG to current
-- `GET /patch?pr=<principal-root>from=<ps>` from PR, for particular PG, to current
+- `GET /patch?pr=<principal-root>&from=<ps>` from PR, for particular PG, to current
 - `GET /patch?from=<ps>&to=<target-ps-or-empty>` - Range
 
 `to` is optional and on omission is `tip`.
@@ -2255,11 +2255,11 @@ identifier, e.g. `SHA256:<B64-value>`.
 
 Since cryptographic digests are suitable, all `GETS` may simply be looked up by digest.
 
-- `GET /<diget-value>`
+- `GET /<digest-value>`
 
-- Alternatively, `e` for everything is suggest:
+- Alternatively, `e` for everything is suggested:
 
-- `GET /e/<diget-value>`
+- `GET /e/<digest-value>`
 
 ---
 
@@ -2680,7 +2680,7 @@ violating this assumption.
 Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
 may broadcast it via gossip for other witnesses to confirm.
 
-### 17.5 Invalid Forks, Fork Detection, and Duplicitous Behavior
+### 15.7.1 Invalid Forks, Fork Detection, and Duplicitous Behavior
 
 An invalid fork occurs when two or more commits reference the same pre,
 violating the single-chain rule. Quick succession (e.g., within timestamp
@@ -2819,9 +2819,53 @@ authentication transactions; all others are data actions.
 Past entries are not modified (unless invalid fork or data action removal) and
 each line is a complete, signed Coz message.
 
-### 16.3.2 Blob Store
+### 16.3.2 Two-Tier Decoupled Storage (Non-Normative)
 
-#### 16.3.3 Storage Capabilities
+Implementations SHOULD separate storage into two independent layers:
+
+**Layer 0 — Blob Store (Content-Addressed):**
+
+A key-value store mapping content digests to raw Coz wire-format bytes.
+Algorithm-agnostic: the BlobStore computes its own digest (e.g., SHA-256) for
+addressing, independent of the principal's hash algorithm set. Blobs are
+immutable once stored.
+
+**Layer 1 — Indexer (Relational):**
+
+A relational index storing principal metadata, commit chain topology,
+transaction history, and digest mappings. The indexer is fully rebuildable from
+the BlobStore — if the index is lost or corrupted, it can be reconstructed by
+replaying all blobs through the protocol engine.
+
+**Separation of Concerns:**
+
+The protocol engine (Principal, CommitScope, state computation) operates
+exclusively on in-memory types and MUST NOT have any awareness of storage
+backends. Storage layers load data and hand it to the protocol engine for
+validation; the protocol engine returns validated state which storage layers then
+persist. This is the **validate-first write path**: all cryptographic
+verification (signatures, state chains, Merkle roots) occurs in-memory before
+any persistence. Failure during write is recoverable via re-indexing.
+
+**Digest Index:**
+
+A generalized digest index maps tagged digest variants (PG, PR, AR, KR, etc.) to
+their corresponding entities, enabling O(1) lookup by any algorithm variant. This
+supports the multihash nature of the protocol — a single principal state has
+digests under multiple hash algorithms, and any of them may be used as a lookup
+key.
+
+#### 16.3.3 Per-Principal Sharding
+
+Implementations SHOULD support per-principal sharding from the outset. Each
+principal's data (blobs, index entries) is partitioned by PG. This enables
+horizontal scaling of storage backends and simplifies access control — a
+principal's data is self-contained within its shard.
+
+Inter-principal sharding (partitioning across multiple storage nodes) is
+deferred but the per-principal model lays the foundation for it.
+
+#### 16.3.4 Storage Capabilities
 
 Storage backends provide:
 
