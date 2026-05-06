@@ -150,17 +150,17 @@ Protocol as a deployable network service.
 -->
 
 1. **Phase 1: BlobStore Foundation** — content-addressed blob storage with BLAKE3
-   - [ ] `BlobStore` trait definition (`cyphr-storage/src/blob/mod.rs`)
-     - [ ] `put(raw_bytes) -> Result<Blake3Hash>`
-     - [ ] `get(hash) -> Result<Option<Vec<u8>>>`
-     - [ ] `exists(hash) -> Result<bool>`
-     - [ ] `iter() -> Result<Box<dyn Iterator<Item = Result<(Blake3Hash, Vec<u8>)>>>>`
-   - [ ] `FjallBlobStore` implementation
-     - [ ] Single fjall partition: `blake3_hash -> raw_bytes`
-     - [ ] Directory-based configuration (storage path)
-   - [ ] `MemoryBlobStore` implementation (`HashMap`-backed)
-   - [ ] Unit tests for both implementations
-   - [ ] Integration test: round-trip raw coz bytes through BlobStore
+   - [x] `BlobStore` trait definition (`cyphr-storage/src/blob/mod.rs`)
+     - [x] `put(raw_bytes) -> Result<Blake3Hash>`
+     - [x] `get(hash) -> Result<Option<Vec<u8>>>`
+     - [x] `exists(hash) -> Result<bool>`
+     - [x] `iter() -> Result<Box<dyn Iterator<Item = Result<(Blake3Hash, Vec<u8>)>>>>`
+   - [x] `FjallBlobStore` implementation
+     - [x] Single fjall partition: `blake3_hash -> raw_bytes`
+     - [x] Directory-based configuration (storage path)
+   - [x] `MemoryBlobStore` implementation (`HashMap`-backed)
+   - [x] Unit tests for both implementations
+   - [x] Integration test: round-trip raw coz bytes through BlobStore
 
 2. **Phase 2: Indexer Foundation** — relational index with async SQLite
    - [ ] `Indexer` trait definition (`cyphr-storage/src/index/mod.rs`)

@@ -19,6 +19,10 @@ rust-version = "1.85"
 # Core crypto - from coz-rs (re-exports digest, sha2)
 coz = { package = "coz-rs", version = "0.4.1" }
 
+# Storage
+blake3 = "1"
+fjall  = "2"
+
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
 indexmap   = { version = "2", features = ["serde"] }

@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod blob;
 mod export;
 mod file;
 mod import;
