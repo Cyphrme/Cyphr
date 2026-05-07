@@ -169,20 +169,20 @@ Protocol as a deployable network service.
      - [x] `get_commit_chain(principal_id, from, to) -> Result<Vec<CommitRef>>`
      - [x] `resolve_digest(&TaggedDigest) -> Result<Option<EntityRef>>`
      - [x] `list_principals() -> Result<Vec<PrincipalSummary>>`
-   - [ ] `SqliteIndexer` implementation
-     - [ ] 6-table schema: `principals`, `commits`, `transactions`, `entries`, `digest_index`, `data_actions`
-     - [ ] WAL mode, busy timeout configuration
-     - [ ] `json_extract()` for variable payload fields
-   - [ ] Async wrapper for `SqliteIndexer`
-     - [ ] Actor model (dedicated thread + `tokio::sync::mpsc`) or `tokio-rusqlite`
+   - [x] `SqliteIndexer` implementation
+     - [x] 6-table schema: `principals`, `commits`, `transactions`, `entries`, `digest_index`, `data_actions`
+     - [x] WAL mode, busy timeout configuration
+     - [x] `json_extract()` for variable payload fields
+   - [x] Async wrapper for `SqliteIndexer`
+     - [x] Actor model (dedicated thread + `tokio::sync::mpsc`) or `tokio-rusqlite`
    - [x] `MemoryIndexer` implementation for testing
-   - [ ] Index recovery: scan BlobStore for unindexed blobs, re-parse, re-index
+   - [x] Index recovery: scan BlobStore for unindexed blobs, re-parse, re-index
    - [x] Unit tests for trait operations (11 tests: tip CRUD, commit chain, digest resolution, principal listing)
 
 3. **Phase 3: Engine Orchestration** — coordinated write/read paths
    - [x] `StorageEngine` struct wrapping `BlobStore` + `Indexer`
      - [x] Constructor with configuration
-     - [ ] Startup: load index, verify consistency, recover if needed
+     - [x] Startup: load index, verify consistency, recover if needed
    - [x] Write path
      - [x] `ingest_commit()`: store blobs + index pre-validated metadata
      - [x] `submit_commit()`: validated write path (verify via CommitScope → persist)
@@ -195,47 +195,47 @@ Protocol as a deployable network service.
    - [/] Principal lifecycle
      - [x] Load existing principal from storage (replay from BlobStore via index ordering)
      - [x] Create new principal (genesis, implicit + explicit)
-     - [ ] Resume from checkpoint
+     - [x] Resume from checkpoint
    - [x] Integration tests using `MemoryBlobStore` + `MemoryIndexer` (17 tests)
 
 4. **Phase 4: HTTP Server (MSS API)** — deployable authority server
-   - [ ] `cyphr-server` crate scaffolding
-     - [ ] `Cargo.toml` with dependencies (axum, tokio, tower-http, tracing, clap)
-     - [ ] `main.rs`: entrypoint, config parsing, server startup
-   - [ ] MSS API routes
+   - [x] `cyphr-server` crate scaffolding
+     - [x] `Cargo.toml` with dependencies (axum, tokio, tower-http, tracing, clap)
+     - [x] `main.rs`: entrypoint, config parsing, server startup
+   - [/] MSS API routes
      - [ ] `GET /tip?pr=<PG>` — current principal state
      - [ ] `GET /patch?pr=<PG>&from=<ps>&to=<ps>` — delta fetch
      - [ ] `POST /push` — accept and validate signed commit bundle
      - [ ] `GET /e/<digest>` — content-addressed entity lookup
    - [ ] Request/response types (JSON serialization)
-   - [ ] Error handling (structured error responses)
-   - [ ] 12-factor configuration (figment + clap)
-     - [ ] `ServerConfig` struct with `#[derive(Deserialize, Parser)]`
-     - [ ] figment provider: load `cyphr-server.toml` (TOML)
-     - [ ] clap: CLI flags (`--listen`, `--data-dir`, `--mode`, `--log-level`)
-     - [ ] clap env integration: `#[arg(env = "CYPHR_LISTEN")]` etc. (shows in `--help`)
-     - [ ] Merge order: figment defaults → TOML file → clap (env + CLI)
-     - [ ] `[server]` — `listen` address (default `127.0.0.1:3000`), `log_format` (`json`|`pretty`)
-     - [ ] `[storage]` — `data_dir` path (default `./data`)
-     - [ ] `[mode]` — `role = "authority"` or `role = "witness"`
-     - [ ] Authority mode: accept `/push` from authenticated clients
-     - [ ] Witness mode: read-only API, sync from configured authority URLs
-   - [ ] Observability (tracing — composable registry)
-     - [ ] `tracing_subscriber::registry()` with `.with()` layer composition
-     - [ ] `EnvFilter` from `RUST_LOG` (default `cyphr_server=info,tower_http=info`)
-     - [ ] JSON fmt layer (production) vs. pretty fmt layer (dev), switchable via `log_format` config
-     - [ ] All output to stderr (Factor XI — logs as event stream, not files)
-     - [ ] `tower-http::TraceLayer` on all routes (method, URI, status, latency)
+   - [x] Error handling (structured error responses)
+   - [x] 12-factor configuration (figment + clap)
+     - [x] `ServerConfig` struct with `#[derive(Deserialize, Parser)]`
+     - [x] figment provider: load `cyphr-server.toml` (TOML)
+     - [x] clap: CLI flags (`--listen`, `--data-dir`, `--mode`, `--log-level`)
+     - [x] clap env integration: `#[arg(env = "CYPHR_LISTEN")]` etc. (shows in `--help`)
+     - [x] Merge order: figment defaults → TOML file → clap (env + CLI)
+     - [x] `[server]` — `listen` address (default `127.0.0.1:3000`), `log_format` (`json`|`pretty`)
+     - [x] `[storage]` — `data_dir` path (default `./data`)
+     - [x] `[mode]` — `role = "authority"` or `role = "witness"`
+     - [x] Authority mode: accept `/push` from authenticated clients
+     - [x] Witness mode: read-only API, sync from configured authority URLs
+   - [x] Observability (tracing — composable registry)
+     - [x] `tracing_subscriber::registry()` with `.with()` layer composition
+     - [x] `EnvFilter` from `RUST_LOG` (default `cyphr_server=info,tower_http=info`)
+     - [x] JSON fmt layer (production) vs. pretty fmt layer (dev), switchable via `log_format` config
+     - [x] All output to stderr (Factor XI — logs as event stream, not files)
+     - [x] `tower-http::TraceLayer` on all routes (method, URI, status, latency)
      - [ ] Request correlation ID middleware (generate UUID, attach to span)
      - [ ] `#[instrument]` on `StorageEngine` public methods and route handlers
-     - [ ] Registry is explicitly extensible: future `tracing-opentelemetry` layer is additive, not a rewrite
-   - [ ] Admin subcommands (Factor XII)
-     - [ ] `cyphr-server serve` — run the HTTP server (default)
-     - [ ] `cyphr-server rebuild-index` — rebuild SQLite index from BlobStore
-     - [ ] `cyphr-server export <pr>` — export principal data
-   - [ ] Graceful startup/shutdown (Factor IX)
-     - [ ] SIGTERM handler: drain active connections, flush pending writes
-     - [ ] Startup: load config → init storage → verify/recover index → bind port
+     - [x] Registry is explicitly extensible: future `tracing-opentelemetry` layer is additive, not a rewrite
+   - [/] Admin subcommands (Factor XII)
+     - [x] `cyphr-server serve` — run the HTTP server (default)
+     - [/] `cyphr-server rebuild-index` — rebuild SQLite index from BlobStore
+     - [/] `cyphr-server export <pr>` — export principal data
+   - [/] Graceful startup/shutdown (Factor IX)
+     - [x] SIGTERM handler: drain active connections, flush pending writes
+     - [/] Startup: load config → init storage → verify/recover index → bind port
    - [ ] End-to-end test: create principal → push commits → query `/tip` → fetch `/patch`
 
 5. **Phase 5: Authentication (PoP)** — proof of possession per SPEC §17
@@ -283,6 +283,10 @@ Protocol as a deployable network service.
 | `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate        | Add conversion method to cyphr crate                    |          |
 | `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling      | Support action recording in submit_commit (Phase 4+)    |          |
 | `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe        | Document contract or pass raw bytes through             |          |
+| Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented       | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
+| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate    | Add uuid-based span middleware with route wiring        |          |
+| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine            | Add when routes are wired (Step 2)                      |          |
+| Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs          | Add middleware guard on `/push` (Phase 5)               |          |
 
 ## Deviation Log
 

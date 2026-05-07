@@ -2,6 +2,7 @@
 members = [
   "cyphr",
   "cyphr-storage",
+  "cyphr-server",
   "cyphr-cli",
   "test-fixtures",
   "fixture-gen",
@@ -31,7 +32,15 @@ serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 toml       = "0.8"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+# Server
+axum               = "0.8"
+figment            = { version = "0.10", features = ["toml", "env"] }
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http         = { version = "0.6", features = ["trace"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 thiserror = "2"
