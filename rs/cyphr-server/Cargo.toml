@@ -31,3 +31,11 @@ tower-http.workspace         = true
 tracing.workspace            = true
 tracing-subscriber.workspace = true
 uuid.workspace               = true
+
+[dev-dependencies]
+coz            = { workspace = true }
+http-body-util = "0.1"
+serde_json     = { workspace = true }
+test-fixtures  = { path = "../test-fixtures" }
+tokio          = { workspace = true }
+tower          = { version = "0.5", features = ["util"] }

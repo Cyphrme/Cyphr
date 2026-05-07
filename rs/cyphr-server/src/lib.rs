@@ -52,15 +52,12 @@ impl AppState {
 // Server lifecycle
 // ========================================================================
 
-/// Start the HTTP server with graceful shutdown.
+/// Build the application router with all routes and middleware.
 ///
-/// Binds to `config.listen`, wires routes, and blocks until
-/// SIGTERM/SIGINT.
-pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let listen_addr = config.listen.clone();
-    let state = Arc::new(AppState::new(config));
-
-    let app = axum::Router::new()
+/// Separated from [`serve`] to enable integration testing without
+/// binding a TCP listener.
+pub fn build_router(state: Arc<AppState>) -> axum::Router {
+    axum::Router::new()
         .route("/tip", axum::routing::get(routes::tip))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
@@ -78,7 +75,17 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
                     )
                 },
             ),
-        );
+        )
+}
+
+/// Start the HTTP server with graceful shutdown.
+///
+/// Binds to `config.listen`, wires routes, and blocks until
+/// SIGTERM/SIGINT.
+pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let listen_addr = config.listen.clone();
+    let state = Arc::new(AppState::new(config));
+    let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(listen = %listen_addr, "server started");

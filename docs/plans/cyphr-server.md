@@ -236,7 +236,7 @@ Protocol as a deployable network service.
    - [/] Graceful startup/shutdown (Factor IX)
      - [x] SIGTERM handler: drain active connections, flush pending writes
      - [/] Startup: load config → init storage → verify/recover index → bind port
-   - [ ] End-to-end test: create principal → push commits → query `/tip` → fetch `/patch`
+   - [x] End-to-end test: create principal → push commits → query `/tip` → fetch `/patch`
 
 5. **Phase 5: Authentication (PoP)** — proof of possession per SPEC §17
    - [ ] Server principal bootstrapping
@@ -270,24 +270,26 @@ Protocol as a deployable network service.
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                          | Severity | Why Introduced                                      | Follow-Up                                               | Resolved |
-| :-------------------------------------------- | :------- | :-------------------------------------------------- | :------------------------------------------------------ | :------: |
-| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                           | Add before 1.0                                          |          |
-| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                           | Add before 1.0                                          |          |
-| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized            | Add when engine needs `Arc<dyn Indexer + Send + Sync>`  |          |
-| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                            | SQLite impl stores real TaggedDigest strings            |          |
-| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless                  | Production backend: coordinate via DB transactions      |          |
-| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                                | Streaming patches for Phase 4+                          |          |
-| `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests              | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
-| Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic              | Document in SPEC or assert in engine ingestion path     |          |
-| `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate                   | Add conversion method to cyphr crate                    |          |
-| `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling                 | Support action recording in submit_commit (Phase 4+)    |          |
-| `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe                   | Document contract or pass raw bytes through             |          |
-| Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented                  | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
-| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate               | Add uuid-based span middleware with route wiring        |    ✓     |
-| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine                       | Add when routes are wired (Step 2)                      |    ✓     |
-| Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs                     | Add middleware guard on `/push` (Phase 5)               |          |
-| `resolve_genesis` only produces `Implicit`    | Low      | Explicit multi-key genesis needs richer wire format | Extend when explicit genesis support is needed          |          |
+| Item                                          | Severity | Why Introduced                                         | Follow-Up                                               | Resolved |
+| :-------------------------------------------- | :------- | :----------------------------------------------------- | :------------------------------------------------------ | :------: |
+| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                              | Add before 1.0                                          |          |
+| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                              | Add before 1.0                                          |          |
+| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized               | Add when engine needs `Arc<dyn Indexer + Send + Sync>`  |          |
+| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                               | SQLite impl stores real TaggedDigest strings            |          |
+| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless                     | Production backend: coordinate via DB transactions      |          |
+| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                                   | Streaming patches for Phase 4+                          |          |
+| `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests                 | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
+| Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic                 | Document in SPEC or assert in engine ingestion path     |          |
+| `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate                      | Add conversion method to cyphr crate                    |          |
+| `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling                    | Support action recording in submit_commit (Phase 4+)    |          |
+| `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe                      | Document contract or pass raw bytes through             |          |
+| Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented                     | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
+| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate                  | Add uuid-based span middleware with route wiring        |    ✓     |
+| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine                          | Add when routes are wired (Step 2)                      |    ✓     |
+| Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs                        | Add middleware guard on `/push` (Phase 5)               |          |
+| `resolve_genesis` only produces `Implicit`    | Low      | Explicit multi-key genesis needs richer wire format    | Extend when explicit genesis support is needed          |          |
+| No genesis-from-scratch test fixture          | Medium   | Fixtures model existing principals adding keys         | Create fixture where first key/create is self-signed    |          |
+| E2E push test bootstraps via engine, not HTTP | Low      | Fixtures lack self-signed genesis for HTTP auto-detect | Add once genesis-from-scratch fixture exists            |          |
 
 ## Deviation Log
 
