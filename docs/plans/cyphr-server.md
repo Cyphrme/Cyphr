@@ -202,12 +202,12 @@ Protocol as a deployable network service.
    - [x] `cyphr-server` crate scaffolding
      - [x] `Cargo.toml` with dependencies (axum, tokio, tower-http, tracing, clap)
      - [x] `main.rs`: entrypoint, config parsing, server startup
-   - [/] MSS API routes
-     - [ ] `GET /tip?pr=<PG>` — current principal state
-     - [ ] `GET /patch?pr=<PG>&from=<ps>&to=<ps>` — delta fetch
-     - [ ] `POST /push` — accept and validate signed commit bundle
-     - [ ] `GET /e/<digest>` — content-addressed entity lookup
-   - [ ] Request/response types (JSON serialization)
+   - [x] MSS API routes
+     - [x] `GET /tip?pr=<PG>` — current principal state
+     - [x] `GET /patch?pr=<PG>&from=<ps>&to=<ps>` — delta fetch
+     - [x] `POST /push` — accept and validate signed commit bundle
+     - [x] `GET /e/<digest>` — content-addressed entity lookup
+   - [x] Request/response types (JSON serialization)
    - [x] Error handling (structured error responses)
    - [x] 12-factor configuration (figment + clap)
      - [x] `ServerConfig` struct with `#[derive(Deserialize, Parser)]`
@@ -270,29 +270,34 @@ Protocol as a deployable network service.
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item                                          | Severity | Why Introduced                           | Follow-Up                                               | Resolved |
-| :-------------------------------------------- | :------- | :--------------------------------------- | :------------------------------------------------------ | :------: |
-| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                | Add before 1.0                                          |          |
-| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                | Add before 1.0                                          |          |
-| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized | Add when engine needs `Arc<dyn Indexer + Send + Sync>`  |          |
-| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                 | SQLite impl stores real TaggedDigest strings            |          |
-| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless       | Production backend: coordinate via DB transactions      |          |
-| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                     | Streaming patches for Phase 4+                          |          |
-| `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests   | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
-| Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic   | Document in SPEC or assert in engine ingestion path     |          |
-| `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate        | Add conversion method to cyphr crate                    |          |
-| `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling      | Support action recording in submit_commit (Phase 4+)    |          |
-| `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe        | Document contract or pass raw bytes through             |          |
-| Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented       | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
-| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate    | Add uuid-based span middleware with route wiring        |          |
-| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine            | Add when routes are wired (Step 2)                      |          |
-| Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs          | Add middleware guard on `/push` (Phase 5)               |          |
+| Item                                          | Severity | Why Introduced                                      | Follow-Up                                               | Resolved |
+| :-------------------------------------------- | :------- | :-------------------------------------------------- | :------------------------------------------------------ | :------: |
+| `BlobStoreError` missing `#[non_exhaustive]`  | Low      | Pre-alpha                                           | Add before 1.0                                          |          |
+| `IndexerError` missing `#[non_exhaustive]`    | Low      | Pre-alpha                                           | Add before 1.0                                          |          |
+| `Indexer` trait lacks `Send + Sync` bounds    | Medium   | Phase 3 requirement not yet materialized            | Add when engine needs `Arc<dyn Indexer + Send + Sync>`  |          |
+| `MemoryIndexer::resolve_digest` uses hex keys | Low      | Test-only simplification                            | SQLite impl stores real TaggedDigest strings            |          |
+| `ingest_commit` non-atomic (blobs vs index)   | Low      | Content-addressed orphans harmless                  | Production backend: coordinate via DB transactions      |          |
+| `PatchResponse` loads all blobs into memory   | Low      | Pre-alpha simplicity                                | Streaming patches for Phase 4+                          |          |
+| `CommitEntry.{ar,sr}` empty strings in replay | Low      | `replay_commits` ignores state digests              | Refactor `CommitEntry` or expand `CommitRef` with ar/sr |          |
+| Wire format: key-embed invariant undocumented | Low      | Implicit in `key_value_to_entry` logic              | Document in SPEC or assert in engine ingestion path     |          |
+| `submit_commit` HashAlg→alg_str static match  | Low      | No HashAlg→str API in cyphr crate                   | Add conversion method to cyphr crate                    |          |
+| `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling                 | Support action recording in submit_commit (Phase 4+)    |          |
+| `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe                   | Document contract or pass raw bytes through             |          |
+| Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented                  | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
+| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate               | Add uuid-based span middleware with route wiring        |          |
+| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine                       | Add when routes are wired (Step 2)                      |          |
+| Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs                     | Add middleware guard on `/push` (Phase 5)               |          |
+| `resolve_genesis` only produces `Implicit`    | Low      | Explicit multi-key genesis needs richer wire format | Extend when explicit genesis support is needed          |          |
 
 ## Deviation Log
 
 <!--
   Populated during CORE execution. Empty at plan creation.
 -->
+
+| ID  | Date       | Description                                                                           | Impact                                                     |
+| --- | ---------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| D1  | 2026-05-07 | `submit_commit` changed to `Option<Genesis>` — engine auto-detects from storage/blobs | Cleaner server API; engine encapsulates genesis resolution |
 
 | Commit   | Planned                                                | Actual                                                    | Rationale                                        |
 | :------- | :----------------------------------------------------- | :-------------------------------------------------------- | :----------------------------------------------- |

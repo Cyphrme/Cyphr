@@ -19,6 +19,8 @@ path = "src/main.rs"
 [dependencies]
 axum.workspace               = true
 clap.workspace               = true
+coz.workspace                = true
+cyphr                        = { path = "../cyphr", version = "0.1.0" }
 cyphr-storage                = { path = "../cyphr-storage", version = "0.1.0" }
 figment.workspace            = true
 serde.workspace              = true

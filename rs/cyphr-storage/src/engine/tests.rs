@@ -446,7 +446,7 @@ fn submit_commit_valid_fixture() {
         let genesis = make_genesis(genesis_keys);
 
         engine
-            .submit_commit(principal_id, genesis, &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &blob_slices)
             .expect("submit_commit failed");
     }
 
@@ -506,7 +506,7 @@ fn submit_commit_bad_signature_rejected() {
     let genesis = make_genesis(genesis_keys);
 
     // Submission should fail — protocol error, not stored.
-    let result = engine.submit_commit(principal_id, genesis, &blob_slices);
+    let result = engine.submit_commit(principal_id, Some(genesis), &blob_slices);
     assert!(result.is_err(), "tampered commit should be rejected");
 
     // Verify nothing was stored.
@@ -522,7 +522,7 @@ fn submit_commit_empty_rejected() {
     let engine = test_engine();
     let genesis = make_genesis(genesis_keys);
 
-    let result = engine.submit_commit("empty-test", genesis, &[]);
+    let result = engine.submit_commit("empty-test", Some(genesis), &[]);
     assert!(result.is_err(), "empty blob list should be rejected");
 }
 
@@ -543,7 +543,7 @@ fn submit_then_load_round_trip() {
         let genesis = make_genesis(genesis_keys);
 
         engine
-            .submit_commit(principal_id, genesis, &blob_slices)
+            .submit_commit(principal_id, Some(genesis), &blob_slices)
             .expect("submit_commit failed");
     }
 

@@ -314,18 +314,21 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     ///
     /// # Flow
     ///
-    /// 1. Load existing principal from storage (or construct from genesis)
-    /// 2. Open a `CommitScope`
-    /// 3. For each raw coz blob: parse `{pay, sig}`, extract key material,
+    /// 1. Resolve genesis (from argument, storage, or submitted blobs)
+    /// 2. Load existing principal from storage (or construct from genesis)
+    /// 3. Open a `CommitScope`
+    /// 4. For each raw coz blob: parse `{pay, sig}`, extract key material,
     ///    compute `czd`, call `scope.verify_and_apply()`
-    /// 4. Finalize the scope → immutable `Commit`
-    /// 5. Extract state digests from the finalized `Commit`
-    /// 6. Store blobs + index via `ingest_commit`
+    /// 5. Finalize the scope → immutable `Commit`
+    /// 6. Extract state digests from the finalized `Commit`
+    /// 7. Store blobs + index via `ingest_commit`
     ///
     /// # Arguments
     ///
     /// * `principal_id` — Tagged-digest identifier for this principal.
-    /// * `genesis` — How this principal was originally created.
+    /// * `genesis` — How this principal was originally created, or `None`
+    ///   to auto-detect from storage (existing principal) or from the
+    ///   submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
     ///
     /// # Errors
@@ -336,7 +339,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     pub fn submit_commit(
         &self,
         principal_id: &str,
-        genesis: crate::Genesis,
+        genesis: Option<crate::Genesis>,
         raw_blobs: &[&[u8]],
     ) -> Result<IngestResult, EngineError> {
         use crate::import::{is_key_introducing_typ, is_transaction_typ};
@@ -346,17 +349,23 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
-        // 1. Load (or construct) the principal from existing state.
+        // 1. Resolve genesis.
+        let genesis = match genesis {
+            Some(g) => g,
+            None => self.resolve_genesis(principal_id, raw_blobs)?,
+        };
+
+        // 2. Load (or construct) the principal from existing state.
         let mut principal = self.load_principal(principal_id, genesis)?;
 
-        // 2. Determine the next sequence number.
+        // 3. Determine the next sequence number.
         let next_seq = self
             .indexer
             .get_tip(principal_id)?
             .map(|tip| tip.commit_count)
             .unwrap_or(0);
 
-        // 3. Open a commit scope and process each blob.
+        // 4. Open a commit scope and process each blob.
         let mut scope = principal.begin_commit();
         let mut transaction_types = Vec::new();
         let mut last_timestamp: i64 = 0;
@@ -418,16 +427,16 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             // They would need scope.finalize() then principal.verify_and_record_action().
         }
 
-        // 4. Finalize the commit scope.
+        // 5. Finalize the commit scope.
         let commit = scope.finalize()?;
 
-        // 5. Extract state digests from the finalized Commit.
+        // 6. Extract state digests from the finalized Commit.
         let commit_id = format_multihash(&commit.tr().0)?;
         let ar = format_multihash(commit.auth_root().as_multihash())?;
         let sr = format_multihash(commit.sr().as_multihash())?;
         let pr = format_multihash(commit.pr().as_multihash())?;
 
-        // 6. Persist via the storage layer.
+        // 7. Persist via the storage layer.
         let meta = IngestMeta {
             principal_id: principal_id.to_string(),
             commit_id,
@@ -440,6 +449,59 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         };
 
         self.ingest_commit(raw_blobs, meta)
+    }
+
+    /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
+    ///
+    /// - If the principal already exists in storage, extracts key material
+    ///   from the first stored commit's blobs.
+    /// - If the principal is new, extracts key material from the first
+    ///   submitted blob's `"key"` field.
+    fn resolve_genesis(
+        &self,
+        principal_id: &str,
+        raw_blobs: &[&[u8]],
+    ) -> Result<crate::Genesis, EngineError> {
+        // Check if the principal already exists.
+        let chain = self
+            .indexer
+            .get_commit_chain(principal_id, Some(0), Some(0))?;
+
+        if let Some(first_commit) = chain.first() {
+            // Existing principal — extract genesis from the first stored blob.
+            let first_hash = first_commit
+                .blob_hashes
+                .first()
+                .ok_or_else(|| EngineError::InvalidInput("first commit has no blobs".into()))?;
+            let data = self.blob_store.get(first_hash)?.ok_or_else(|| {
+                EngineError::NotFound(format!("genesis blob {first_hash} not found in store"))
+            })?;
+            Self::genesis_from_blob(&data)
+        } else {
+            // New principal — extract genesis from the first submitted blob.
+            Self::genesis_from_blob(raw_blobs[0])
+        }
+    }
+
+    /// Extract an implicit genesis key from a raw coz blob's `"key"` field.
+    fn genesis_from_blob(blob: &[u8]) -> Result<crate::Genesis, EngineError> {
+        let value: serde_json::Value = serde_json::from_slice(blob)
+            .map_err(|e| EngineError::MalformedBlob(format!("genesis blob: {e}")))?;
+
+        let key_obj = value.get("key").ok_or_else(|| {
+            EngineError::MalformedBlob("genesis blob must contain a 'key' field".into())
+        })?;
+
+        let ke = key_value_to_entry(key_obj).ok_or_else(|| {
+            EngineError::MalformedBlob(
+                "genesis blob 'key' missing required fields (alg, pub, tmb)".into(),
+            )
+        })?;
+
+        let key = crate::import::key_entry_to_key(&ke)
+            .map_err(|e| EngineError::MalformedBlob(format!("genesis key conversion: {e}")))?;
+
+        Ok(crate::Genesis::Implicit(key))
     }
 }
 

@@ -61,3 +61,35 @@ impl std::fmt::Display for AppError {
 }
 
 impl std::error::Error for AppError {}
+
+// ========================================================================
+// EngineError → AppError mapping
+// ========================================================================
+
+impl AppError {
+    /// Map a [`cyphr_storage::engine::EngineError`] to an HTTP response.
+    ///
+    /// Variant mapping:
+    /// - `NotFound` → 404
+    /// - `InvalidInput`, `MalformedBlob` → 400
+    /// - `Protocol` → 422 Unprocessable Entity (valid JSON, invalid protocol)
+    /// - `BlobStore`, `Indexer`, `Load` → 500
+    pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
+        use cyphr_storage::engine::EngineError;
+
+        match &err {
+            EngineError::NotFound(_) => Self::not_found(err.to_string()),
+            EngineError::InvalidInput(_) | EngineError::MalformedBlob(_) => {
+                Self::bad_request(err.to_string())
+            },
+            EngineError::Protocol(_) => Self {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                message: err.to_string(),
+            },
+            EngineError::BlobStore(_) | EngineError::Indexer(_) | EngineError::Load(_) => {
+                tracing::error!(error = %err, "internal engine error");
+                Self::internal("internal storage error")
+            },
+        }
+    }
+}
