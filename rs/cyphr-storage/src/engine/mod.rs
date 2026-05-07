@@ -105,6 +105,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// Retrieve the current tip state for a principal.
     ///
     /// Delegates directly to the indexer.
+    #[tracing::instrument(skip(self))]
     pub fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
         Ok(self.indexer.get_tip(principal_id)?)
     }
@@ -114,6 +115,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// For each commit in the range, fetches the raw blob bytes from
     /// the blob store. This is the engine's primary coordination value —
     /// neither trait can serve this alone.
+    #[tracing::instrument(skip(self))]
     pub fn get_patch(
         &self,
         principal_id: &str,
@@ -150,6 +152,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     ///
     /// Two-step: resolve digest → entity ref (index), then
     /// fetch blob content (blob store).
+    #[tracing::instrument(skip(self))]
     pub fn get_entity(&self, digest: &TaggedDigest) -> Result<Option<Vec<u8>>, EngineError> {
         let entity = match self.indexer.resolve_digest(digest)? {
             Some(e) => e,
@@ -176,6 +179,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// **Note:** This method does NOT validate protocol-level
     /// signatures or state transitions. That responsibility belongs
     /// to the protocol validation layer (Phase 3b).
+    #[tracing::instrument(skip(self, blobs), fields(principal_id = %metadata.principal_id, blob_count = blobs.len()))]
     pub fn ingest_commit(
         &self,
         blobs: &[&[u8]],
@@ -227,6 +231,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// - `EngineError::NotFound` — blob referenced by index is missing.
     /// - `EngineError::MalformedBlob` — stored blob is not valid JSON.
     /// - `EngineError::Load` — replay/validation failed.
+    #[tracing::instrument(skip(self, genesis))]
     pub fn load_principal(
         &self,
         principal_id: &str,
@@ -336,6 +341,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// Any protocol violation (bad signature, broken chain, unknown signer,
     /// etc.) causes the entire submit to fail with no side effects — blobs
     /// are only stored after successful validation.
+    #[tracing::instrument(skip(self, genesis, raw_blobs), fields(blob_count = raw_blobs.len()))]
     pub fn submit_commit(
         &self,
         principal_id: &str,

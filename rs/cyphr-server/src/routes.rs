@@ -93,6 +93,7 @@ pub struct PushResponse {
 // ========================================================================
 
 /// `GET /tip?pr=<PG>` — current principal state.
+#[tracing::instrument(skip(state))]
 pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
@@ -117,6 +118,7 @@ pub async fn tip(
 }
 
 /// `GET /patch?pr=<PG>&from=<n>&to=<n>` — commit chain delta.
+#[tracing::instrument(skip(state))]
 pub async fn patch(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PatchQuery>,
@@ -150,6 +152,7 @@ pub async fn patch(
 }
 
 /// `POST /push` — accept and validate a signed commit bundle.
+#[tracing::instrument(skip(state, request), fields(principal_id = %request.principal_id, blob_count = request.blobs.len()))]
 pub async fn push(
     State(state): State<Arc<AppState>>,
     Json(request): Json<PushRequest>,
@@ -189,6 +192,7 @@ pub async fn push(
 }
 
 /// `GET /e/{digest}` — content-addressed entity lookup.
+#[tracing::instrument(skip(state))]
 pub async fn entity(
     State(state): State<Arc<AppState>>,
     Path(digest_str): Path<String>,

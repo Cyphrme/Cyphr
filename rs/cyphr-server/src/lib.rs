@@ -66,7 +66,19 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
         .route("/push", axum::routing::post(routes::push))
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .with_state(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(
+                |request: &axum::http::Request<_>| {
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id = %request_id,
+                    )
+                },
+            ),
+        );
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(listen = %listen_addr, "server started");

@@ -226,8 +226,8 @@ Protocol as a deployable network service.
      - [x] JSON fmt layer (production) vs. pretty fmt layer (dev), switchable via `log_format` config
      - [x] All output to stderr (Factor XI — logs as event stream, not files)
      - [x] `tower-http::TraceLayer` on all routes (method, URI, status, latency)
-     - [ ] Request correlation ID middleware (generate UUID, attach to span)
-     - [ ] `#[instrument]` on `StorageEngine` public methods and route handlers
+     - [x] Request correlation ID middleware (generate UUID, attach to span)
+     - [x] `#[instrument]` on `StorageEngine` public methods and route handlers
      - [x] Registry is explicitly extensible: future `tracing-opentelemetry` layer is additive, not a rewrite
    - [/] Admin subcommands (Factor XII)
      - [x] `cyphr-server serve` — run the HTTP server (default)
@@ -284,8 +284,8 @@ Protocol as a deployable network service.
 | `submit_commit` silently skips action coz     | Low      | Actions need post-finalize handling                 | Support action recording in submit_commit (Phase 4+)    |          |
 | `submit_commit` re-serializes pay JSON        | Low      | Canonical hashing makes this safe                   | Document contract or pass raw bytes through             |          |
 | Server uses `MemoryBlobStore`+`MemoryIndexer` | Medium   | SQLite indexer not yet implemented                  | Wire FjallBlobStore + SQLiteIndexer (Phase 2b)          |          |
-| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate               | Add uuid-based span middleware with route wiring        |          |
-| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine                       | Add when routes are wired (Step 2)                      |          |
+| No request correlation ID middleware          | Low      | Stub routes; no requests to correlate               | Add uuid-based span middleware with route wiring        |    ✓     |
+| No `#[instrument]` on engine/handlers         | Low      | Stub routes don't call engine                       | Add when routes are wired (Step 2)                      |    ✓     |
 | Authority/Witness mode not enforced at route  | Low      | Scaffold — routes are 501 stubs                     | Add middleware guard on `/push` (Phase 5)               |          |
 | `resolve_genesis` only produces `Implicit`    | Low      | Explicit multi-key genesis needs richer wire format | Extend when explicit genesis support is needed          |          |
 
