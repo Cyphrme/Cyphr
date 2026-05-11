@@ -141,9 +141,12 @@ synchronization. The protocol must function correctly regardless of witness
 > SPEC §16.2: "Pruning: Services may discard irrelevant user data."
 
 **4. Proof-Verifiable State.** Witnesses maintain local state (tip root,
-active keys, tree size) as trust anchors. This state is not authoritative —
-it is a _materialized view_ of events the witness has observed. Its integrity
-is verifiable via MALT consistency proofs without replaying the full history.
+active keys, tree size) as trust anchors. This TipState is the **incremental
+trust anchor** — established at genesis or by prior verified ingestion, and
+bridged forward by consistency proofs on each push. It is authoritative for
+the state the witness has verified: an honest witness can trust it. It may
+lag behind the principal's latest state (staleness), but it cannot be wrong
+about what it has cryptographically confirmed.
 
 > SPEC §16.4: "Enabling efficient verification of history without full
 > chain replay."
@@ -220,14 +223,24 @@ new root (CR_new, size n), and proof path, proves the new tree is a strict
 extension of the old — no entries altered or removed. Verifiable with only
 the two roots + proof — O(log n) nodes.
 
-**Composition** (RFC 9162 §8.1.5): Both are used together. A witness:
+**Composition** (RFC 9162 §8.1.5): Both proof types are **required** for
+thin-witness push verification. They answer orthogonal questions:
 
-1. Receives new root CR_new from the pushing principal
-2. Verifies **consistency** from stored CR_old → CR_new (append-only guarantee)
-3. Optionally verifies **inclusion** of specific commits (membership guarantee)
+1. **Consistency**: the tree extended honestly (append-only structural
+   integrity) — but does not bind received blobs to the tree.
+2. **Inclusion**: the received blobs are exactly what was committed to the
+   tree (integrity binding) — prevents blob-swap attacks in transit.
 
-Neither requires the full leaf set. This is the property that enables thin
-witnesses.
+Without inclusion, a MitM could swap blobs while forwarding a valid
+consistency proof. The witness would store corrupted data under a valid CR.
+Inclusion ties the received content to the tree's cryptographic commitment.
+
+> Note: since `czd = H(cad || sig)`, inclusion implicitly binds the signature
+> bytes — if a signature is modified, the czd changes, the TR changes, and
+> the inclusion proof fails.
+
+Neither proof type requires the full leaf set. This is the property that
+enables thin witnesses.
 
 **Current `malt` crate API:**
 
@@ -268,20 +281,34 @@ active_keys)`, the request must carry:
 
 1. The commit blobs (signed cozies)
 2. A consistency proof: `(CR_old, tree_size) → (CR_new, new_size)`
-3. The signer's public key (if not already known to the witness)
-4. Optionally: inclusion proof for the new TR within CR_new
+3. An inclusion proof: TR_new is leaf `new_size - 1` in tree with root CR_new
+4. The signer's public key (if not already known to the witness)
+5. Claimed new state: `(CR_new, new_size, active_keys_new)`
 
-The witness verifies:
+The witness verifies (thin-witness path):
 
-1. Signature on each coz is valid
-2. `pay.tmb` is in active key set (local lookup)
-3. Consistency proof verifies against stored CR_old
-4. `pre` in the commit chains to stored tip PR
-5. Timestamps within acceptable window
-6. Update stored state: `CR_old ← CR_new`, `tree_size ← new_size`
+| Step | Operation                                        | Cost     | Proves                                   |
+| :--- | :----------------------------------------------- | :------- | :--------------------------------------- |
+| 1    | Compute TR from received blobs                   | O(k)     | Derive expected leaf from content        |
+| 2    | `verify_consistency(CR_old → CR_new)`            | O(log n) | Tree extended honestly (append-only)     |
+| 3    | `verify_inclusion(TR, CR_new)`                   | O(log n) | Blobs match the tree (integrity binding) |
+| 4    | `coz::verify()` each transaction sig             | O(k)     | Transactions authorized by active keys   |
+| 5    | `pay.tmb` in stored `active_keys` (local lookup) | O(k)     | Signing key is in known active set       |
+| 6    | Accept claimed `active_keys_new`, persist blobs  | O(1)     | —                                        |
+
+Total: **O(log n + k)** where k = transactions in this commit.
+
+The thin witness does NOT re-derive key state from transaction semantics
+(e.g., compute the effect of `key/create` or `key/revoke`). It accepts the
+principal's claimed new `active_keys` because the consistency proof
+guarantees append-only extension — the principal cannot retroactively
+undo a key revocation.
+
+The fat witness path (full replay) independently derives all state from
+genesis. It is used for bootstrap, audit, and recovery.
 
 > **SPEC gap (G1):** §13.4 says "verifies chain validity" without defining
-> what validation is required. This ADR's verification list is our
+> what validation is required. This ADR's verification table is our
 > working model pending SPEC clarification.
 
 ---
