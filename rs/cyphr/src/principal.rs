@@ -319,6 +319,11 @@ impl Principal {
     /// This is used by storage import when loading from a checkpoint
     /// rather than replaying full history from genesis.
     ///
+    /// When `trees` is `Some`, the MALT state is restored from the provided
+    /// `CommitTrees`, enabling proof generation from the checkpoint forward.
+    /// When `trees` is `None`, empty trees are initialized (backward-compatible
+    /// for callers without MALT state).
+    ///
     /// # Security
     ///
     /// The caller must establish trust in the checkpoint before calling this.
@@ -332,6 +337,7 @@ impl Principal {
         pg: Option<PrincipalGenesis>,
         ar: AuthRoot,
         keys: Vec<Key>,
+        trees: Option<crate::commit_root::CommitTrees>,
     ) -> Result<Self> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
@@ -347,11 +353,20 @@ impl Principal {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let kr = compute_kr(&thumbprints, None, &active_algs)?;
 
+        // Restore MALT state if provided, otherwise start fresh.
+        let (commit_trees, cr) = match trees {
+            Some(t) => {
+                let cr = crate::commit_root::commit_root_from_trees(&t)?;
+                (t, Some(cr))
+            },
+            None => (crate::commit_root::CommitTrees::new(), None),
+        };
+
         // SR and PR: derive_auth_state is not used here because `ar` is provided
         // by the checkpoint, not derived from `kr`. We enter the chain at SR directly.
         let sr = compute_sr(&ar, None, None, &active_algs)?;
-        // PR = SR (no CR at checkpoint, promotes)
-        let pr = compute_pr(&sr, None, None, &active_algs)?;
+        // PR = MR(SR, CR?, embedding?)
+        let pr = compute_pr(&sr, cr.as_ref(), None, &active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -362,8 +377,8 @@ impl Principal {
             pr,
             kr,
             tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(),
-            cr: None,
+            commit_trees,
+            cr,
             sr: Some(sr),
             ar,
             dr: None,
@@ -524,12 +539,72 @@ impl Principal {
         self.cr.as_ref()
     }
 
+    /// Get a reference to the per-algorithm MALT trees.
+    ///
+    /// Used by checkpoint export to persist MALT state for later
+    /// restoration via [`from_checkpoint`](Self::from_checkpoint).
+    pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees {
+        &self.commit_trees
+    }
+
     /// Get the current State Root.
     ///
     /// Returns `None` only if no state has been computed (shouldn't happen
     /// after genesis). At genesis, SR is promoted from AR.
     pub fn sr(&self) -> Option<&StateRoot> {
         self.sr.as_ref()
+    }
+
+    // ========================================================================
+    // MALT Proof Generation
+    // ========================================================================
+
+    /// Generate an inclusion proof for the commit at `index` in the
+    /// per-algorithm MALT for `alg`.
+    ///
+    /// The returned proof can be verified standalone with
+    /// [`malt::verify_inclusion`] using the tree's root and the
+    /// corresponding [`CyphrHasher`](crate::commit_root::CyphrHasher).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
+    /// - Propagates [`malt::Error`] for empty tree or out-of-bounds index.
+    pub fn inclusion_proof(
+        &self,
+        alg: HashAlg,
+        index: u64,
+    ) -> Result<malt::InclusionProof<Vec<u8>>> {
+        let log = self
+            .commit_trees
+            .get(&alg)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        log.inclusion_proof(index)
+            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
+    }
+
+    /// Generate a consistency proof from `old_size` to the current tree
+    /// size for the per-algorithm MALT at `alg`.
+    ///
+    /// The returned proof can be verified standalone with
+    /// [`malt::verify_consistency`] using the old and new roots and the
+    /// corresponding [`CyphrHasher`](crate::commit_root::CyphrHasher).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
+    /// - Propagates [`malt::Error`] for invalid old_size.
+    pub fn consistency_proof(
+        &self,
+        alg: HashAlg,
+        old_size: u64,
+    ) -> Result<malt::ConsistencyProof<Vec<u8>>> {
+        let log = self
+            .commit_trees
+            .get(&alg)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        log.consistency_proof(old_size)
+            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
     /// Begin a new commit scope.
@@ -1228,6 +1303,7 @@ impl Principal {
 #[cfg(test)]
 mod tests {
     use coz::Thumbprint;
+    use malt::TreeHasher;
 
     use super::*;
     use crate::key::Key;
@@ -1720,5 +1796,249 @@ mod tests {
         principal.record_action(action).unwrap();
 
         assert_eq!(principal.get_key(&key.tmb).unwrap().last_used, Some(3000));
+    }
+
+    // ========================================================================
+    // MALT Proof Generation Tests
+    // ========================================================================
+
+    /// Helper: build a principal with N commits via key/create transactions.
+    /// Returns the principal and the list of keys (genesis + added).
+    fn build_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+        let mut keys = vec![make_test_key(0x01)];
+        let mut principal = Principal::implicit(keys[0].clone()).unwrap();
+
+        for i in 0..n_commits {
+            let new_key = make_test_key((i + 2) as u8);
+            let pre = principal.pr().clone();
+            let signer = keys.last().unwrap().tmb.clone();
+
+            let cz = ParsedCoz {
+                kind: CozKind::KeyCreate {
+                    pre,
+                    id: new_key.tmb.clone(),
+                },
+                signer: signer.clone(),
+                now: (1000 + (i as i64 + 1) * 1000),
+                czd: Czd::from_bytes(vec![0xA0 + i as u8; 32]),
+                hash_alg: HashAlg::Sha256,
+                arrow: None,
+                raw: dummy_coz_json(),
+            };
+
+            principal
+                .apply_transaction_test(cz, Some(new_key.clone()))
+                .unwrap();
+            keys.push(new_key);
+        }
+
+        (principal, keys)
+    }
+
+    #[test]
+    fn inclusion_proof_verifies() {
+        let (principal, _keys) = build_principal_with_commits(4);
+
+        let alg = principal.hash_alg();
+        let log = principal.commit_trees().get(&alg).unwrap();
+        let root = log.root();
+
+        // Verify inclusion for every committed leaf.
+        for i in 0..log.size() {
+            let proof = principal.inclusion_proof(alg, i).unwrap();
+            let leaf_hash = log.hasher().leaf(
+                principal
+                    .commits()
+                    .nth(i as usize)
+                    .unwrap()
+                    .tr()
+                    .0
+                    .get_or_err(alg)
+                    .unwrap(),
+            );
+            assert!(
+                malt::verify_inclusion(log.hasher(), &leaf_hash, &proof, &root),
+                "inclusion proof failed for index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn consistency_proof_verifies() {
+        use crate::commit_root::CyphrHasher;
+
+        let (principal, _keys) = build_principal_with_commits(5);
+
+        let alg = principal.hash_alg();
+        let log = principal.commit_trees().get(&alg).unwrap();
+        let new_root = log.root();
+        let hasher = CyphrHasher::new(alg);
+
+        // Build a reference log to capture intermediate roots.
+        let mut ref_log = malt::Log::new(CyphrHasher::new(alg));
+        let mut roots = Vec::new();
+        for commit in principal.commits() {
+            let tr_bytes = commit.tr().0.get_or_err(alg).unwrap();
+            ref_log.append(tr_bytes);
+            roots.push(ref_log.root());
+        }
+
+        // Verify consistency from each prior size to current.
+        for old_size in 1..log.size() {
+            let proof = principal.consistency_proof(alg, old_size).unwrap();
+            let old_root = &roots[(old_size - 1) as usize];
+            assert!(
+                malt::verify_consistency(&hasher, &proof, old_root, &new_root),
+                "consistency proof failed for old_size {old_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn inclusion_proof_out_of_bounds() {
+        let (principal, _keys) = build_principal_with_commits(3);
+        let alg = principal.hash_alg();
+
+        // Index == tree_size should fail.
+        let result = principal.inclusion_proof(alg, 3);
+        assert!(result.is_err(), "should reject out-of-bounds index");
+
+        // Large index should also fail.
+        let result = principal.inclusion_proof(alg, 999);
+        assert!(result.is_err(), "should reject large index");
+    }
+
+    #[test]
+    fn consistency_proof_invalid_old_size() {
+        let (principal, _keys) = build_principal_with_commits(3);
+        let alg = principal.hash_alg();
+
+        // old_size == 0 should fail.
+        let result = principal.consistency_proof(alg, 0);
+        assert!(result.is_err(), "should reject old_size=0");
+
+        // old_size >= tree_size should fail.
+        let result = principal.consistency_proof(alg, 3);
+        assert!(result.is_err(), "should reject old_size >= tree_size");
+    }
+
+    #[test]
+    fn proof_rejects_unknown_algorithm() {
+        let (principal, _keys) = build_principal_with_commits(2);
+
+        // SHA-384 was never introduced (all test keys use ES256/SHA-256).
+        let result = principal.inclusion_proof(HashAlg::Sha384, 0);
+        assert!(result.is_err(), "should reject unknown algorithm");
+
+        let result = principal.consistency_proof(HashAlg::Sha384, 1);
+        assert!(result.is_err(), "should reject unknown algorithm");
+    }
+
+    #[test]
+    fn checkpoint_round_trip_preserves_malt_state() {
+        let (principal, keys) = build_principal_with_commits(4);
+
+        let alg = principal.hash_alg();
+        let original_cr = principal.cr().cloned();
+        let original_trees = principal.commit_trees().clone();
+
+        // Round-trip: extract MALT state → from_checkpoint → verify.
+        let restored = Principal::from_checkpoint(
+            principal.pg().cloned(),
+            principal.auth_root().clone(),
+            keys,
+            Some(original_trees),
+        )
+        .unwrap();
+
+        // CR must match.
+        assert_eq!(
+            restored.cr().map(|c| c.as_multihash().clone()),
+            original_cr.map(|c| c.as_multihash().clone()),
+            "checkpoint round-trip must preserve CR"
+        );
+
+        // Proof generation must still work on the restored principal.
+        let proof = restored.inclusion_proof(alg, 0).unwrap();
+        let log = restored.commit_trees().get(&alg).unwrap();
+        let root = log.root();
+        let leaf_hash = log.hasher().leaf(
+            principal
+                .commits()
+                .next()
+                .unwrap()
+                .tr()
+                .0
+                .get_or_err(alg)
+                .unwrap(),
+        );
+        assert!(
+            malt::verify_inclusion(log.hasher(), &leaf_hash, &proof, &root),
+            "inclusion proof must verify on checkpoint-restored principal"
+        );
+    }
+
+    #[test]
+    fn checkpoint_without_trees_has_no_cr() {
+        let (principal, keys) = build_principal_with_commits(3);
+
+        // from_checkpoint with None trees should yield cr() == None
+        // (backward-compatible behavior).
+        let restored = Principal::from_checkpoint(
+            principal.pg().cloned(),
+            principal.auth_root().clone(),
+            keys,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            restored.cr().is_none(),
+            "from_checkpoint without trees must have no CR"
+        );
+        assert!(
+            restored.commit_trees().is_empty(),
+            "from_checkpoint without trees must have empty commit_trees"
+        );
+    }
+
+    #[test]
+    fn checkpoint_pr_includes_cr_when_trees_provided() {
+        let (principal, keys) = build_principal_with_commits(3);
+        let trees = principal.commit_trees().clone();
+
+        // Restore with trees: PR should be MR(SR, CR), not just SR.
+        let with_trees = Principal::from_checkpoint(
+            principal.pg().cloned(),
+            principal.auth_root().clone(),
+            keys.clone(),
+            Some(trees),
+        )
+        .unwrap();
+
+        // Restore without trees: PR should be MR(SR), with CR absent.
+        let without_trees = Principal::from_checkpoint(
+            principal.pg().cloned(),
+            principal.auth_root().clone(),
+            keys,
+            None,
+        )
+        .unwrap();
+
+        // The two PRs must differ because CR is present in one and not the other.
+        let pr_with = with_trees.pr().get(with_trees.hash_alg()).unwrap().to_vec();
+        let pr_without = without_trees
+            .pr()
+            .get(without_trees.hash_alg())
+            .unwrap()
+            .to_vec();
+
+        assert_ne!(
+            pr_with, pr_without,
+            "PR must differ when CR is present vs absent"
+        );
     }
 }

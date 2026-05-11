@@ -37,6 +37,7 @@ pub mod transaction_root;
 // Re-exports
 pub use action::Action;
 pub use commit::{Commit, CommitScope, PendingCommit};
+pub use commit_root::{CommitLog, CommitRoot, CommitTrees, CyphrHasher};
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;
@@ -48,3 +49,7 @@ pub use state::{
 };
 pub use transaction::{CommitTransaction, Transaction};
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
+
+// MALT proof types and standalone verifiers.
+// Re-exported so consumers can verify proofs without depending on `malt` directly.
+pub use malt::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};

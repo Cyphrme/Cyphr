@@ -198,7 +198,7 @@ pub fn load_from_checkpoint(
     // Construct principal at checkpoint state
     // We use the first key to determine hash algorithm, then add remaining keys
     let mut principal =
-        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys)?;
+        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys, None)?;
 
     // Replay entries from checkpoint
     replay_entries(&mut principal, entries)?;

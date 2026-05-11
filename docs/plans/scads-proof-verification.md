@@ -210,8 +210,9 @@ No design-level open questions remain. Implementation-level decisions
   Populated during CORE execution. Empty at plan creation.
 -->
 
-| Item | Severity | Why Introduced | Follow-Up | Resolved |
-| :--- | :------- | :------------- | :-------- | :------: |
+| Item                                                                                                                                                                                                                                                  | Severity | Why Introduced                                                                                                                                           | Follow-Up                                                                                                                                                                        | Resolved |
+| :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------: |
+| `malt::Error` mapped to `Error::UnsupportedAlgorithm(msg)` — semantically imprecise. `IndexOutOfBounds` and `EmptyTree` from malt are not "unsupported algorithm" errors; the error message is preserved in the string but the variant is misleading. | LOW      | Pre-alpha error enum; adding a dedicated `ProofError` variant was out of scope for the proof API commit. No downstream consumers parse this variant yet. | Introduce `Error::ProofError(String)` or `Error::Proof(malt::Error)` when the error taxonomy is revisited (likely during Phase 2 `advance_tip` which will consume these errors). |    ☐     |
 
 ## Deviation Log
 
