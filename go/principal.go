@@ -203,6 +203,88 @@ func Explicit(keys []*coz.Key) (*Principal, error) {
 	}, nil
 }
 
+// FromCheckpoint creates a principal from a trusted checkpoint.
+//
+// This is used by storage import when loading from a checkpoint rather than
+// replaying full history from genesis.
+//
+// When trees is non-nil, the MALT state is restored from the provided
+// CommitTrees, enabling proof generation from the checkpoint forward.
+// When trees is nil, empty trees are initialized (backward-compatible for
+// callers without MALT state).
+//
+// # Security
+//
+// The caller must establish trust in the checkpoint before calling this.
+// The pr is accepted as-is (cannot be computed from checkpoint alone).
+//
+// Returns ErrNoActiveKeys if keys is empty.
+// Returns ErrUnsupportedAlgorithm if key algorithm is unknown.
+func FromCheckpoint(pg *PrincipalGenesis, ar AuthRoot, keys []*Key, trees CommitTrees) (*Principal, error) {
+	if len(keys) == 0 {
+		return nil, ErrNoActiveKeys
+	}
+
+	hashAlg := HashAlgFromSEAlg(keys[0].Alg)
+	algs := DeriveHashAlgs(keys)
+
+	// Compute KR from provided keys.
+	thumbprints := make([]coz.B64, len(keys))
+	keyIdx := make(map[string]int, len(keys))
+	for i, k := range keys {
+		thumbprints[i] = k.Tmb
+		keyIdx[string(k.Tmb.String())] = i
+	}
+	kr, err := ComputeKR(thumbprints, nil, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Restore MALT state if provided, otherwise start fresh.
+	var commitTrees CommitTrees
+	var cr *CommitRoot
+	if trees != nil {
+		commitTrees = trees
+		computed, err := NewCommitRootFromTrees(commitTrees)
+		if err != nil {
+			return nil, err
+		}
+		cr = computed
+	} else {
+		commitTrees = make(CommitTrees)
+	}
+
+	// SR from checkpoint-provided AR.
+	sr, err := ComputeSR(ar, nil, nil, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	// PR = MR(SR, CR?, embedding?)
+	pr, err := ComputePR(sr, cr, nil, algs)
+	if err != nil {
+		return nil, err
+	}
+
+	p := &Principal{
+		pg:          pg,
+		pr:          pr,
+		kr:          kr,
+		ar:          ar,
+		sr:          sr,
+		commitTrees: commitTrees,
+		cr:          cr,
+		hashAlg:     hashAlg,
+		activeAlgs:  algs,
+		auth: authLedger{
+			Keys:   keys,
+			keyIdx: keyIdx,
+		},
+	}
+
+	return p, nil
+}
+
 // PR returns the Principal Root, or nil if not yet established (L1/L2).
 //
 // PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
@@ -225,6 +307,46 @@ func (p *Principal) AR() AuthRoot {
 // CR returns the current Commit Root.
 func (p *Principal) CR() *CommitRoot {
 	return p.cr
+}
+
+// CommitTreesAccessor returns the per-algorithm MALT trees.
+//
+// Used by checkpoint export to persist MALT state for later restoration
+// via FromCheckpoint.
+func (p *Principal) CommitTreesAccessor() CommitTrees {
+	return p.commitTrees
+}
+
+// InclusionProof generates an inclusion proof for the commit at index in the
+// per-algorithm MALT for alg.
+//
+// The returned proof can be verified standalone with malt.VerifyInclusion
+// using the tree's root and the corresponding CyphrHasher.
+//
+// Returns ErrUnsupportedAlgorithm if alg has no MALT.
+// Propagates malt errors for empty tree or out-of-bounds index.
+func (p *Principal) InclusionProof(alg HashAlg, index uint64) (*malt.InclusionProof[string], error) {
+	log, ok := p.commitTrees[alg]
+	if !ok {
+		return nil, ErrUnsupportedAlgorithm
+	}
+	return log.InclusionProof(index)
+}
+
+// ConsistencyProof generates a consistency proof from oldSize to the current
+// tree size for the per-algorithm MALT at alg.
+//
+// The returned proof can be verified standalone with malt.VerifyConsistency
+// using the old and new roots and the corresponding CyphrHasher.
+//
+// Returns ErrUnsupportedAlgorithm if alg has no MALT.
+// Propagates malt errors for invalid oldSize.
+func (p *Principal) ConsistencyProof(alg HashAlg, oldSize uint64) (*malt.ConsistencyProof[string], error) {
+	log, ok := p.commitTrees[alg]
+	if !ok {
+		return nil, ErrUnsupportedAlgorithm
+	}
+	return log.ConsistencyProof(oldSize)
 }
 
 // KS returns the current Key State.
