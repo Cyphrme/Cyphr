@@ -36,14 +36,15 @@ plan cycle.
 
 ## Decisions
 
-| Decision                          | Choice                                      | Rationale                                                                                                                                                                                                                                                                                               |
-| :-------------------------------- | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Core crate modifications          | Yes — expose proof generation API           | Proof generation is a core protocol capability (prover side). `pub(crate)` visibility on `commit_trees` is encapsulation theater at pre-alpha.                                                                                                                                                          |
-| Thin witness path skips Principal | Yes — standalone `malt::verify_consistency` | The thin witness verifies only the MALT consistency proof (append-only extension) and stores blobs. No signature verification, no transaction-effect parsing, no `Principal` construction. The principal provides its new state as part of the push; the consistency proof guarantees honest extension. |
-| Per-request path selection        | Proof presence on request, not config flag  | Fat witnesses accept both proofed and unproofed pushes. Thin witnesses require proofs. Engine inspects the request, not a global mode flag.                                                                                                                                                             |
-| Verification tier determines path | Thin = proof only; Fat = full replay        | The proof-based path IS the thin witness path. It does not re-derive state — the principal is sovereign. Independent state verification is a fat witness concern handled by the existing full-replay path. This mirrors CT: the log stores, auditors verify.                                            |
-| Wire format provisional           | Designed but marked unstable                | G5/G6 unresolved. Cost of redesigning proof structs when SPEC stabilizes is low. Cost of waiting indefinitely is high.                                                                                                                                                                                  |
-| Go parity                         | Required for core crate changes only        | Both implementations share the protocol layer. Go `malt` library has identical proof API (confirmed: `proof.go`). Engine/server changes are Rust-only.                                                                                                                                                  |
+| Decision                   | Choice                                            | Rationale                                                                                                                                                                                                                            |
+| :------------------------- | :------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core crate modifications   | Yes — expose proof generation API                 | Proof generation is a core protocol capability (prover side). `pub(crate)` visibility on `commit_trees` is encapsulation theater at pre-alpha.                                                                                       |
+| Proof path skips Principal | Yes — standalone `malt::verify_*` + `coz::verify` | The proof path verifies consistency (append-only), inclusion (blob-tree binding), and signatures (authorization) without constructing a `Principal`. Accepts claimed key state for transitions.                                      |
+| `ProofBundle` is required  | Always — not optional                             | Proofs are the push protocol, not an optimization. Bootstrap, steady-state, and catch-up all use proof-based verification. Full replay is an audit operation, not a push acceptance path.                                            |
+| Thin/fat is witness state  | Not an API distinction                            | A thin witness becomes fat by receiving historical blobs. The API doesn't bifurcate — `submit_commit` always requires `ProofBundle`. Fat witnesses also have the ability to audit via replay, but that's a separate operation.       |
+| Fix `from_checkpoint`      | In scope — restore MALT state                     | `from_checkpoint` currently discards MALT state (`CommitTrees::new()`). This is a pre-existing design flaw. A checkpoint must include MALT state (CR + tree_size per algorithm at minimum). Required for correct TipState operation. |
+| Wire format provisional    | Designed but marked unstable                      | G5/G6 unresolved. Cost of redesigning proof structs when SPEC stabilizes is low. Cost of waiting indefinitely is high.                                                                                                               |
+| Go parity                  | Required for core crate changes only              | Both implementations share the protocol layer. Go `malt` library has identical proof API (confirmed: `proof.go`). Engine/server changes are Rust-only.                                                                               |
 
 ## Risks & Assumptions
 
@@ -55,26 +56,12 @@ plan cycle.
 | TipState schema migration                    | LOW      | Accepted     | Only `MemoryIndexer` exists. Pre-alpha, no production data to migrate.                                                                                                                                                             |
 | `malt` crate proof API is sufficient         | —        | ✅ Validated | Rust: `verify_inclusion`, `verify_consistency` (standalone, no `Log`). Go: `VerifyInclusion`, `VerifyConsistency` (standalone). Full parity confirmed.                                                                             |
 | Proof generation requires full MALT tree     | —        | ✅ Validated | `Log` stores all leaves. `inclusion_proof(index)` and `consistency_proof(old_size)` traverse the stored tree. Only the entity with the full log (prover) can generate proofs.                                                      |
-| `from_checkpoint` creates empty MALT trees   | —        | ✅ Validated | principal.rs:365 — `CommitTrees::new()`. Checkpoint-resumed principals cannot generate proofs. Verifier path uses standalone functions, not `Principal`.                                                                           |
+| `from_checkpoint` creates empty MALT trees   | MEDIUM   | Fix in scope | principal.rs:365 — `CommitTrees::new()`. Pre-existing design flaw: a checkpoint without MALT state is not a real checkpoint. Fix: accept MALT state (CR + tree_size per algorithm). Required for correct TipState bootstrapping.   |
 
 ## Open Questions
 
-- **Proof wire format encoding.** Proof paths are `Vec<Vec<u8>>` (Rust) /
-  `[]D` (Go). Wire encoding options: base64url array in JSON, CBOR, or raw
-  bytes. Provisional decision deferred to Phase 3 implementation; JSON with
-  base64url arrays is the likely starting point for consistency with existing
-  coz encoding.
-
-- **Key material in TipState.** The thin witness verifies signatures against
-  its stored `active_keys` (authorization), then accepts the principal's
-  claimed new key state for key transitions (consistency proof guarantees
-  append-only extension). TipState stores the last accepted key state; format
-  mirrors `from_checkpoint`'s parameter list (`Vec<Key>`).
-
-- **Should `submit_commit` branch or split?** Either add proof-optional
-  parameters to the existing method, or create a separate
-  `submit_commit_with_proof()`. Deferred to Phase 2 implementation; single
-  method with `Option<ProofBundle>` is likely cleaner.
+No design-level open questions remain. Implementation-level decisions
+(Phase 4 sync API design) are scoped within that phase.
 
 ## Scope
 
@@ -82,12 +69,14 @@ plan cycle.
 
 - `Principal::consistency_proof()` and `Principal::inclusion_proof()` (Rust)
 - Go parity: equivalent methods on `Principal`
+- Fix `from_checkpoint` to accept MALT state (Rust + Go)
 - `TipState` extension: `active_keys`, `cr`, `tree_size`
 - `IndexableCommit` extension: corresponding new fields
 - `MemoryIndexer` updates for new fields
-- Engine proof-based verification path (standalone `malt::verify_*`)
+- Engine `advance_tip` (proof-verified tip advancement)
+- Engine `sync` (chain data transfer + optional verification)
 - `PushRequest` wire format expansion (provisional)
-- HTTP route updates to pass proof material to engine
+- HTTP route updates for `advance_tip` and `sync`
 - Documentation of fork detection limitation
 - Tests at each layer
 
@@ -113,8 +102,13 @@ plan cycle.
   test proofs, so it does NOT depend on Phase 1.
 -->
 
-1. **Phase 1: Core Crate Proof Generation (Rust + Go)** — expose MALT proof
-   generation from `Principal` for client/prover use
+1. **Phase 1: Core Crate — Proof Generation + Checkpoint Fix (Rust + Go)**
+   — expose MALT proof generation from `Principal` and fix `from_checkpoint`
+   to restore MALT state
+   - [ ] Fix `from_checkpoint` to accept MALT state (CR + tree_size per
+         algorithm, or full `CommitTrees`). A checkpoint without MALT state
+         is not a real checkpoint.
+   - [ ] Go: equivalent fix to `FromCheckpoint`
    - [ ] Rust: `Principal::consistency_proof(old_size: u64)` → per-algorithm
          consistency proofs from `commit_trees`
    - [ ] Rust: `Principal::inclusion_proof(index: u64)` → per-algorithm
@@ -125,12 +119,13 @@ plan cycle.
    - [ ] Go: `(p *Principal) ConsistencyProof(oldSize uint64)` with
          equivalent per-algorithm proof generation
    - [ ] Go: `(p *Principal) InclusionProof(index uint64)` with equivalent
-   - [ ] Tests (Rust): build principal from fixture, append commits, generate
-         proofs, verify with standalone verifiers
+   - [ ] Tests (Rust): build principal, append commits, generate proofs,
+         verify with standalone verifiers. Verify checkpoint round-trip
+         preserves MALT state.
    - [ ] Tests (Go): mirror Rust test structure
 
-2. **Phase 2: Engine Proof Verification Path** — add lightweight proof-based
-   write path that skips `Principal` construction entirely
+2. **Phase 2: Engine `advance_tip`** — proof-verified tip advancement,
+   replacing the full-replay push path
    - [ ] Extend `TipState` with `active_keys: Vec<SerializedKey>`, `cr: String`,
          `tree_size: u64`
    - [ ] Extend `IndexableCommit` with corresponding fields
@@ -138,8 +133,9 @@ plan cycle.
    - [ ] Define `ProofBundle` type: per-algorithm consistency proofs +
          per-algorithm inclusion proofs + new CR + new tree_size +
          claimed new state (active_keys, AR, SR, PR)
-   - [ ] Implement thin-witness engine path:
-     - [ ] Read `TipState` from index (trust anchor)
+   - [ ] Implement `advance_tip`:
+     - [ ] Read `TipState` from index (trust anchor). If absent (bootstrap),
+           verify genesis + spanning proof to establish initial TipState.
      - [ ] Compute TR from received blobs (derive expected leaf)
      - [ ] `malt::verify_consistency()` per algorithm (old_cr → new_cr)
      - [ ] `malt::verify_inclusion()` per algorithm (TR matches tree)
@@ -147,36 +143,66 @@ plan cycle.
            `active_keys` (authorization)
      - [ ] Accept claimed new state (key transitions), persist blobs,
            update TipState
-   - [ ] Preserve existing full-replay path as fat-witness fallback
+   - [ ] Retain `load_principal` as an audit/recovery utility (not a push path)
    - [ ] Tests: construct `malt::Log` directly, generate consistency +
-         inclusion proofs, submit through thin-witness path, verify
+         inclusion proofs, submit through `advance_tip`, verify
          TipState update
-   - [ ] Tests: verify fallback to full-replay when no proof material present
+   - [ ] Tests: bootstrap — genesis + spanning proof establishes TipState
    - [ ] Tests: invalid consistency proof rejected
    - [ ] Tests: invalid inclusion proof rejected (blob-swap detection)
    - [ ] Tests: invalid signature rejected
 
-3. **Phase 3: Wire Format Integration** — connect HTTP layer to engine proof
-   path (provisional format)
-   - [ ] Expand `PushRequest` with optional `proof` field containing
-         `ProofBundle` (JSON serialization, base64url proof paths)
+3. **Phase 3: Wire Format Integration** — connect HTTP layer to `advance_tip`
+   (provisional format)
+   - [ ] Update `PushRequest` to require `ProofBundle` field (JSON
+         serialization, base64url proof paths)
    - [ ] Update `/push` route handler to extract proof material and pass to
-         engine
+         `advance_tip`
    - [ ] Mark wire format as provisional (doc comment + SPEC gap reference)
-   - [ ] E2E test: proofed push via HTTP → verify TipState reflects new state
-   - [ ] E2E test: unproofed push via HTTP → verify fallback to replay path
+   - [ ] E2E test: push via HTTP → verify TipState reflects new state
+   - [ ] E2E test: bootstrap push via HTTP → new principal established
    - [ ] Document fork detection limitation in server README or doc comments
+
+4. **Phase 4: Chain Sync** — data transfer operation for historical blob
+   ingestion, distinct from tip advancement
+
+   <!--
+     `advance_tip` and `sync` are fundamentally different operations:
+     - advance_tip: "my chain grew, here's the proof" (O(log n + k))
+     - sync: "here's chain data you don't have" (data transfer)
+
+     A thin witness becomes fat by receiving sync data. The witness's
+     "thinness" is its current state, not an inherent property.
+   -->
+   - [ ] Design `sync` API. Open design questions:
+     - Partial range sync: how does the witness verify received blobs belong
+       to the tree? Likely needs inclusion proofs per blob.
+     - Full chain sync: if syncing to tip, state verification happens
+       naturally. Witness should update TipState as part of the sync.
+     - Streaming interface: for large chain transfers, `&[&[u8]]` is
+       inadequate. Consider `impl Iterator<Item = &[u8]>` or `Read` trait.
+   - [ ] Implement `sync` at engine layer:
+     - [ ] Accept blob range (not necessarily contiguous)
+     - [ ] Optionally verify blobs via inclusion proofs against stored CR
+     - [ ] Store blobs in BlobStore
+     - [ ] If syncing to tip, update TipState with verified state
+   - [ ] Wire HTTP route for sync (provisional)
+   - [ ] Tests: sync partial range, verify blobs stored
+   - [ ] Tests: sync to tip, verify TipState updated
+   - [ ] Tests: sync with invalid blobs rejected (if inclusion proofs provided)
 
 ## Verification
 
 - [ ] `cargo test` passes for `cyphr`, `cyphr-storage`, `cyphr-server`
 - [ ] `go test ./...` passes in `go/`
-- [ ] Proof round-trip: principal generates consistency proof → engine verifies
-      it via standalone path → TipState updated correctly
-- [ ] Fallback: push without proof material still works via full-replay
-- [ ] Rejection: invalid consistency proof rejected with appropriate error
+- [ ] Proof round-trip: principal generates consistency proof → `advance_tip`
+      verifies via standalone path → TipState updated correctly
+- [ ] Bootstrap: genesis + spanning proof establishes new principal
+- [ ] Rejection: invalid consistency/inclusion proof rejected
+- [ ] Rejection: invalid signature rejected
 - [ ] Multi-algorithm: principal with 2+ algorithms generates per-algorithm
       proofs, all verified independently
+- [ ] Sync: partial and full chain data transfer verified
 
 ## Technical Debt
 
