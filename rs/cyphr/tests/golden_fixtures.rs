@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cyphr::Principal;
+use cyphr::{Principal, StateDigest};
 use cyphr::key::Key;
 use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
 
@@ -176,7 +176,11 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
     if let Some(ref ds) = expected.dr {
         let principal_ds = principal
             .data_root()
-            .map(|d| cad_to_b64(&d.0))
+            .and_then(|d| d.0.first_variant().ok())
+            .map(|bytes| {
+                use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                Base64UrlUnpadded::encode_string(bytes)
+            })
             .unwrap_or_else(|| "<no ds>".to_string());
         assert_eq!(principal_ds, *ds, "{}: ds mismatch", test_name);
     }
@@ -319,11 +323,27 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
     };
 
     // Create principal
-    let mut principal = if genesis_keys.len() == 1 {
+    let principal_res = if genesis_keys.len() == 1 {
         Principal::implicit(genesis_keys.into_iter().next().unwrap())
-            .expect("implicit genesis failed")
     } else {
-        Principal::explicit(genesis_keys).expect("explicit genesis failed")
+        Principal::explicit(genesis_keys)
+    };
+
+    let mut principal = match principal_res {
+        Ok(p) => p,
+        Err(e) => {
+            let err_str = error_name(&e);
+            if let Some(expected) = expected_error {
+                if expected == err_str {
+                    println!("  ✓ {} (expected error: {})", fixture.name, expected);
+                    return;
+                }
+            }
+            panic!(
+                "{}: genesis failed with {:?}, but expected error was {:?}",
+                fixture.name, e, expected_error
+            );
+        }
     };
 
     // Apply setup modifiers (e.g., pre-revoke keys)

@@ -1,0 +1,3254 @@
+# E2E Features Matrix Tests
+# Generated automatically by generate_e2e_features.py
+# Covers 16 features across 4 tiers with a minimum of 184 cases.
+
+[[test]]
+name      = "t1_f01_case1"
+principal = ["golden"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+[[test]]
+name      = "t1_f01_case2"
+principal = ["alice"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+[[test]]
+name      = "t1_f01_case3"
+principal = ["bob"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+[[test]]
+name      = "t1_f01_case4"
+principal = ["diana_es384"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+[[test]]
+name      = "t1_f01_case5"
+principal = ["eve_ed25519"]
+
+[test.expected]
+key_count = 1
+level     = 1
+
+[[test]]
+name      = "t1_f02_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f02_case2"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f02_case3"
+principal = ["bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f02_case4"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f02_case5"
+principal = ["eve_ed25519"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "eve_ed25519", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f03_case1"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f03_case2"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f03_case3"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f03_case4"
+principal = ["golden", "alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f03_case5"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, rvk = 1700000001, signer = "carol", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f04_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f04_case2"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f04_case3"
+principal = ["bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f04_case4"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "golden", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f04_case5"
+principal = ["eve_ed25519"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "eve_ed25519", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f05_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "key_a", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f05_case2"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f05_case3"
+principal = ["bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f05_case4"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "golden", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f05_case5"
+principal = ["eve_ed25519"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "eve_ed25519", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f06_case1"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f06_case2"
+principal = ["bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f06_case3"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f06_case4"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "diana_es384", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f06_case5"
+principal = ["eve_ed25519"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "eve_ed25519", target = "golden", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "eve_ed25519", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t1_f07_case1"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f07_case2"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f07_case3"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f07_case4"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f07_case5"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f08_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f08_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f08_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f08_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f08_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f09_case1"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f09_case2"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f09_case3"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f09_case4"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f09_case5"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f10_case1"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f10_case2"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f10_case3"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f10_case4"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f10_case5"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t1_f11_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f11_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f11_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f11_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f11_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f12_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f12_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f12_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f12_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f12_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f13_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t1_f13_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 4
+
+[[test]]
+name      = "t1_f13_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 5
+
+[[test]]
+name      = "t1_f13_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000004, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 6
+
+[[test]]
+name      = "t1_f13_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "golden", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000004, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000005, signer = "golden", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 7
+
+[[test]]
+name      = "t1_f14_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f14_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f14_case3"
+principal = ["diana_es384"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "diana_es384", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f14_case4"
+principal = ["eve_ed25519"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "eve_ed25519", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f14_case5"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+
+[[test]]
+name      = "t1_f15_case1"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+msg    = "Tier 1 F-15 Case"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f15_case2"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/comment/create"
+now    = 1700000000
+signer = "golden"
+msg    = "Tier 1 F-15 Case"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f15_case3"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/post/create"
+now    = 1700000000
+signer = "golden"
+msg    = "Tier 1 F-15 Case"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f15_case4"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+msg    = "Tier 1 F-15 Case"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f15_case5"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+msg    = "Tier 1 F-15 Case"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f16_case1"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f16_case2"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f16_case3"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f16_case4"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t1_f16_case5"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.expected]
+level     = 4
+
+[[test]]
+name      = "t2_f01_case1"
+principal = []
+
+[test.expected]
+error     = "NoGenesisKeys"
+
+[[test]]
+name      = "t2_f01_case2"
+principal = ["unsupported_key"]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f01_case3"
+principal = ["unsupported_key", "golden"]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f01_case4"
+principal = ["unsupported_key", "unsupported_key"]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f01_case5"
+principal = []
+
+[test.setup]
+revoke_key = "golden"
+
+[test.expected]
+error     = "NoGenesisKeys"
+
+[[test]]
+name      = "t2_f02_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f02_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f02_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f02_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f02_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f03_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "[naked-revoke-error]"
+
+[[test]]
+name      = "t2_f03_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "[naked-revoke-error]"
+
+[[test]]
+name      = "t2_f03_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "[naked-revoke-error]"
+
+[[test]]
+name      = "t2_f03_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "[naked-revoke-error]"
+
+[[test]]
+name      = "t2_f03_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "golden", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "[naked-revoke-error]"
+
+[[test]]
+name      = "t2_f04_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f04_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f04_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f04_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f04_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "key_a", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f05_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f05_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f05_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f05_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f05_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f06_case1"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f06_case2"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f06_case3"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f06_case4"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f06_case5"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f07_case1"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f07_case2"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f07_case3"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f07_case4"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f07_case5"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f08_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[create-uniqueness]"
+
+[[test]]
+name      = "t2_f08_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[create-uniqueness]"
+
+[[test]]
+name      = "t2_f08_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[create-uniqueness]"
+
+[[test]]
+name      = "t2_f08_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[create-uniqueness]"
+
+[[test]]
+name      = "t2_f08_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[create-uniqueness]"
+
+[[test]]
+name      = "t2_f09_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f09_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f09_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f09_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f09_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f10_case1"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+error     = "[no-revoke-non-self]"
+
+[[test]]
+name      = "t2_f10_case2"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+error     = "[no-revoke-non-self]"
+
+[[test]]
+name      = "t2_f10_case3"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+error     = "[no-revoke-non-self]"
+
+[[test]]
+name      = "t2_f10_case4"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+error     = "[no-revoke-non-self]"
+
+[[test]]
+name      = "t2_f10_case5"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+error     = "[no-revoke-non-self]"
+
+[[test]]
+name      = "t2_f11_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error     = "[commit-one-or-more]"
+
+[[test]]
+name      = "t2_f11_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error     = "[commit-one-or-more]"
+
+[[test]]
+name      = "t2_f11_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error     = "[commit-one-or-more]"
+
+[[test]]
+name      = "t2_f11_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error     = "[commit-one-or-more]"
+
+[[test]]
+name      = "t2_f11_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+empty_commit = true
+
+[test.expected]
+error     = "[commit-one-or-more]"
+
+[[test]]
+name      = "t2_f12_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error     = "[commit-pre-chain]"
+
+[[test]]
+name      = "t2_f12_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error     = "[commit-pre-chain]"
+
+[[test]]
+name      = "t2_f12_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error     = "[commit-pre-chain]"
+
+[[test]]
+name      = "t2_f12_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error     = "[commit-pre-chain]"
+
+[[test]]
+name      = "t2_f12_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.override]
+pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[test.expected]
+error     = "[commit-pre-chain]"
+
+[[test]]
+name      = "t2_f13_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[verification-timestamp-order]"
+
+[[test]]
+name      = "t2_f13_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[verification-timestamp-order]"
+
+[[test]]
+name      = "t2_f13_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[verification-timestamp-order]"
+
+[[test]]
+name      = "t2_f13_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[verification-timestamp-order]"
+
+[[test]]
+name      = "t2_f13_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "[verification-timestamp-order]"
+
+[[test]]
+name      = "t2_f14_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "unsupported_key", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f14_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "unsupported_key", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f14_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "unsupported_key", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f14_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "unsupported_key", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f14_case5"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "unsupported_key", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+error     = "UnsupportedAlgorithm"
+
+[[test]]
+name      = "t2_f15_case1"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.override]
+inject_pre = true
+
+[test.expected]
+error     = "[data-action-no-pre]"
+
+[[test]]
+name      = "t2_f15_case2"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.override]
+inject_pre = true
+
+[test.expected]
+error     = "[data-action-no-pre]"
+
+[[test]]
+name      = "t2_f15_case3"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.override]
+inject_pre = true
+
+[test.expected]
+error     = "[data-action-no-pre]"
+
+[[test]]
+name      = "t2_f15_case4"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.override]
+inject_pre = true
+
+[test.expected]
+error     = "[data-action-no-pre]"
+
+[[test]]
+name      = "t2_f15_case5"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[test.override]
+inject_pre = true
+
+[test.expected]
+error     = "[data-action-no-pre]"
+
+[[test]]
+name      = "t2_f16_case1"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f16_case2"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f16_case3"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f16_case4"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t2_f16_case5"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+
+[test.expected]
+error     = "UnknownSigner"
+
+[[test]]
+name      = "t3_case1"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000001
+signer = "alice"
+
+[test.expected]
+key_count = 1
+level     = 4
+
+[[test]]
+name      = "t3_case2"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, rvk = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t3_case3"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000001
+signer = "alice"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+level     = 4
+
+[[test]]
+name      = "t3_case4"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 3
+
+[[test]]
+name      = "t3_case5"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t3_case6"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t3_case7"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, rvk = 1700000000, signer = "alice", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t3_case8"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "bob"
+
+[test.expected]
+key_count = 2
+level     = 4
+
+[[test]]
+name      = "t3_case9"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 4
+
+[[test]]
+name      = "t3_case10"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t3_case11"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, rvk = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "golden"
+
+[test.expected]
+key_count = 1
+level     = 4
+
+[[test]]
+name      = "t3_case12"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "diana_es384"
+
+[test.expected]
+key_count = 3
+level     = 4
+
+[[test]]
+name      = "t3_case13"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+[[test]]
+name      = "t3_case14"
+principal = ["alice", "bob"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, rvk = 1700000001, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+[[test]]
+name      = "t3_case15"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "alice"
+
+[test.expected]
+key_count = 1
+level     = 4
+
+[[test]]
+name      = "t3_case16"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t4_s01"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "bob", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, rvk = 1700000003, signer = "carol", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[test.expected]
+key_count = 3
+level     = 3
+
+[[test]]
+name      = "t4_s02"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000001
+signer = "alice"
+msg    = "Log 1 after rotation 1"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "alice"
+msg    = "Log 2 after rotation 1"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000004
+signer = "bob"
+msg    = "Log 1 after rotation 2"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000005
+signer = "bob"
+msg    = "Log 2 after rotation 2"
+
+[test.expected]
+key_count = 1
+level     = 4
+
+[[test]]
+name      = "t4_s03"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, rvk = 1700000002, signer = "diana_es384", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000003
+signer = "eve_ed25519"
+
+[test.expected]
+key_count = 2
+level     = 4
+
+[[test]]
+name      = "t4_s04"
+principal = ["alice", "bob", "carol"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "bob", target = "carol", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/delete" },
+  ],
+]
+
+[test.expected]
+key_count = 1
+
+[[test]]
+name      = "t4_s05"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000001
+signer = "golden"
+msg    = "Bulk doc 1"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000002
+signer = "alice"
+msg    = "Bulk doc 2"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000003
+signer = "bob"
+msg    = "Bulk doc 3"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000004
+signer = "golden"
+msg    = "Bulk doc 4"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000005
+signer = "alice"
+msg    = "Bulk doc 5"
+
+[test.expected]
+key_count = 3
+level     = 4
+
+[[test]]
+name      = "t4_s06"
+principal = ["alice"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "alice", typ = "cyphr.me/cyphr/principal/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, rvk = 1700000002, signer = "bob", typ = "cyphr.me/cyphr/key/revoke" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000003, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 3
+
+[[test]]
+name      = "t4_s07"
+principal = ["alice", "bob"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "alice"
+msg    = "Action 1"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000001
+signer = "bob"
+msg    = "Action 2"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000003
+signer = "bob"
+msg    = "Action 3"
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000004
+signer = "carol"
+msg    = "Action 4"
+
+[test.expected]
+key_count = 3
+level     = 4
+
+[[test]]
+name      = "t4_s08"
+principal = ["golden"]
+
+[[test.action]]
+typ    = "cyphr.me/action"
+now    = 1700000000
+signer = "golden"
+msg    = "Escalate to L4"
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/replace" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000002, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
+  ],
+]
+
+[test.expected]
+key_count = 2
+level     = 4
