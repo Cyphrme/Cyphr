@@ -1,5 +1,6 @@
 //! Identity inspection command.
 
+use cyphr::StateDigest;
 use cyphr_storage::load_principal_from_commits;
 
 use super::common::{

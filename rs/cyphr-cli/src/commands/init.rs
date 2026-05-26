@@ -1,6 +1,6 @@
 //! Identity initialization command.
 
-use cyphr::Principal;
+use cyphr::{Principal, StateDigest};
 use cyphr_storage::export_commits;
 
 use super::common::{generate_key, load_key_from_keystore, parse_store};

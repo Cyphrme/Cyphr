@@ -1,5 +1,6 @@
 //! ParsedCoz commands.
 
+use cyphr::StateDigest;
 use cyphr_storage::{Genesis, load_principal_from_commits};
 
 use super::common::{
