@@ -5,6 +5,7 @@
 
 use crate::{CommitEntry, Entry, KeyEntry, Store};
 use cyphr::Principal;
+use cyphr::state::StateDigest;
 
 /// Errors that can occur during export.
 #[derive(Debug, thiserror::Error)]

@@ -343,6 +343,10 @@ pub(crate) fn replay_commits(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
+        eprintln!("  [replay_commits] commit_idx={}, cozies_count={}", commit_idx, commit.cozies.len());
+        if commit.cozies.is_empty() {
+            return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
+        }
         // Collect actions to replay after the commit scope is finalized.
         // Actions don't participate in the commit lifecycle but may appear
         // in the same bundle.
@@ -390,12 +394,11 @@ pub(crate) fn replay_commits(
                     None
                 };
 
-                // Compute czd via the scope's hash algorithm
-                let alg = match scope.principal_hash_alg() {
-                    cyphr::state::HashAlg::Sha256 => "ES256",
-                    cyphr::state::HashAlg::Sha384 => "ES384",
-                    cyphr::state::HashAlg::Sha512 => "ES512",
-                };
+                // Compute czd via the payload's hash algorithm
+                let alg = pay
+                    .get("alg")
+                    .and_then(|a| a.as_str())
+                    .ok_or(LoadError::UnsupportedAlgorithm)?;
                 let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
                     .ok_or(LoadError::UnsupportedAlgorithm)?;
                 let czd =
@@ -526,14 +529,12 @@ pub(crate) fn compute_czd(
     sig: &[u8],
     principal: &Principal,
 ) -> Result<coz::Czd, LoadError> {
-    use cyphr::state::HashAlg;
-
-    // Map principal's hash algorithm to coz algorithm name
-    let alg = match principal.hash_alg() {
-        HashAlg::Sha256 => "ES256",
-        HashAlg::Sha384 => "ES384",
-        HashAlg::Sha512 => "ES512",
-    };
+    let pay: serde_json::Value = serde_json::from_slice(pay_json)
+        .map_err(|e| LoadError::Json { index: 0, source: e })?;
+    let alg = pay
+        .get("alg")
+        .and_then(|a| a.as_str())
+        .ok_or(LoadError::UnsupportedAlgorithm)?;
 
     // Compute cad using canonical hash (compacts JSON first)
     let cad =

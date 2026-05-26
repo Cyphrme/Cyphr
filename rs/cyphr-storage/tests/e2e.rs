@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use cyphr::StateDigest;
 
 use cyphr_storage::{
     CommitEntry, Entry, Genesis, LoadError, export_commits, load_principal_from_commits,
@@ -453,7 +454,18 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .generate_test(test)
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
-    let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
+    if golden.genesis_keys.is_none() {
+        assert_eq!(
+            golden.expected.error.as_deref().map(resolve_constraint_tag),
+            Some(expected_error),
+            "{}: wrong error type during genesis generation. Got {:?}, expected {:?}",
+            test.name, golden.expected.error, expected_error
+        );
+        eprintln!("  ✓ {} (expected genesis error: {})", test.name, expected_error);
+        return;
+    }
+
+    let genesis_keys = golden.genesis_keys.as_ref().unwrap();
     let commits = golden.commits.as_ref().expect("missing commits");
 
     let genesis = make_genesis(genesis_keys);
@@ -496,6 +508,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
             );
         },
         Err(e) => {
+            eprintln!("DEBUG: e = {:?}", e);
             let actual_error = load_error_name(&e);
             assert_eq!(
                 actual_error, expected_error,
@@ -516,6 +529,26 @@ fn e2e_dynamic_error_conditions() {
     for test in &intent.test {
         run_e2e_error_test(&pool, test);
     }
+}
+
+/// Data-driven e2e test: loads the dynamic feature matrix and executes happy & error paths.
+#[test]
+fn e2e_dynamic_features_matrix() {
+    let pool = load_pool();
+    let intent = load_e2e_intents("e2e_features.toml");
+    let mut happy_count = 0;
+    let mut error_count = 0;
+
+    for test in &intent.test {
+        if test.is_error_test() {
+            run_e2e_error_test(&pool, test);
+            error_count += 1;
+        } else {
+            run_e2e_round_trip(&pool, test);
+            happy_count += 1;
+        }
+    }
+    println!("Ran {} happy-path and {} error-path feature matrix tests.", happy_count, error_count);
 }
 
 // ============================================================================

@@ -21,7 +21,7 @@ mod error;
 
 pub use error::EngineError;
 
-use cyphr::state::TaggedDigest;
+use cyphr::state::{TaggedDigest, StateDigest};
 
 use crate::blob::{Blake3Hash, BlobStore};
 use crate::index::{CommitRef, IndexableCommit, Indexer, TipState};

@@ -4,7 +4,7 @@
 //! with one commit bundle per line (commit-based format).
 
 use crate::{CommitEntry, Entry, EntryError, QueryOpts, Store};
-use cyphr::state::PrincipalGenesis;
+use cyphr::state::{PrincipalGenesis, StateDigest};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
