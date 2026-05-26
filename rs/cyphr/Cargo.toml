@@ -13,7 +13,8 @@ rust-version.workspace = true
 version                = "0.1.0"
 
 [dependencies]
-malt = "0.1.1"
+eml = { workspace = true }
+futures = { workspace = true }
 
 coz        = { workspace = true }
 indexmap   = { workspace = true }

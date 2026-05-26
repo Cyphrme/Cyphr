@@ -1,6 +1,7 @@
 //! Principal (identity) types.
 //!
 //! A Principal is a self-sovereign identity in the Cyphr protocol.
+use std::collections::BTreeMap;
 
 use coz::Thumbprint;
 use indexmap::IndexMap;
@@ -11,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
-    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, StateDigest, compute_dr,
     compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
 };
 
@@ -109,6 +110,8 @@ pub struct PrincipalCore {
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from server time).
     pub(crate) max_clock_skew: i64,
+    /// Base64 thumbprints of the genesis keys (keys present at construction).
+    pub(crate) genesis_keys: Vec<String>,
 }
 
 impl Default for PrincipalCore {
@@ -119,7 +122,7 @@ impl Default for PrincipalCore {
             pr: PrincipalRoot::default(),
             kr: KeyRoot::default(),
             tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(),
+            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
             cr: None,
             sr: None,
             ar: AuthRoot::default(),
@@ -130,6 +133,7 @@ impl Default for PrincipalCore {
             active_algs: Vec::new(),
             latest_timestamp: 0,
             max_clock_skew: 0,
+            genesis_keys: Vec::new(),
         }
     }
 }
@@ -241,13 +245,13 @@ impl Principal {
         let pr = compute_pr(&sr, None, None, &active_algs)?;
 
         let mut keys = IndexMap::new();
-        keys.insert(tmb_b64, key);
+        keys.insert(tmb_b64.clone(), key);
 
         Ok(Self(PrincipalKind::Nascent(PrincipalCore {
             pr,
             kr,
             tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(),
+            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
             cr: None,
             sr: Some(sr),
             ar,
@@ -261,6 +265,7 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
+            genesis_keys: vec![tmb_b64],
         })))
     }
 
@@ -283,6 +288,7 @@ impl Principal {
 
         // Collect thumbprints for KR computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
         // KR → AR → SR (no DR at genesis)
         let (kr, ar, sr) = derive_auth_state(&thumbprints, None, &active_algs)?;
         // PR = SR (no CR at genesis, promotes)
@@ -297,7 +303,7 @@ impl Principal {
             pr,
             kr,
             tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(),
+            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
             cr: None,
             sr: Some(sr),
             ar,
@@ -311,6 +317,7 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
+            genesis_keys,
         })))
     }
 
@@ -356,10 +363,10 @@ impl Principal {
         // Restore MALT state if provided, otherwise start fresh.
         let (commit_trees, cr) = match trees {
             Some(t) => {
-                let cr = crate::commit_root::commit_root_from_trees(&t)?;
+                let cr = crate::commit_root::commit_root_from_trees(&t, &active_algs)?;
                 (t, Some(cr))
             },
-            None => (crate::commit_root::CommitTrees::new(), None),
+            None => (crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()), None),
         };
 
         // SR and PR: derive_auth_state is not used here because `ar` is provided
@@ -368,11 +375,11 @@ impl Principal {
         // PR = MR(SR, CR?, embedding?)
         let pr = compute_pr(&sr, cr.as_ref(), None, &active_algs)?;
 
+        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb.to_b64()).collect();
         let mut key_map = IndexMap::new();
         for k in keys {
             key_map.insert(k.tmb.to_b64(), k);
         }
-
         let core = PrincipalCore {
             pr,
             kr,
@@ -391,6 +398,7 @@ impl Principal {
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
+            genesis_keys,
         };
 
         Ok(match pg {
@@ -574,12 +582,12 @@ impl Principal {
         &self,
         alg: HashAlg,
         index: u64,
-    ) -> Result<malt::InclusionProof<Vec<u8>>> {
-        let log = self
-            .commit_trees
-            .get(&alg)
-            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        log.inclusion_proof(index)
+    ) -> Result<crate::InclusionProof> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        if !self.commit_trees.has_algorithm(alg_id) {
+            return Err(Error::UnsupportedAlgorithm(alg.to_string()));
+        }
+        self.commit_trees.inclusion_proof(alg_id, index)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
@@ -587,23 +595,23 @@ impl Principal {
     /// size for the per-algorithm MALT at `alg`.
     ///
     /// The returned proof can be verified standalone with
-    /// [`malt::verify_consistency`] using the old and new roots and the
-    /// corresponding [`CyphrHasher`](crate::commit_root::CyphrHasher).
+    /// [`verify_consistency`] using the old and new roots and the
+    /// corresponding [`MaltHasher`](crate::commit_root::MaltHasher).
     ///
     /// # Errors
     ///
     /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
-    /// - Propagates [`malt::Error`] for invalid old_size.
+    /// - Propagates [`Error`] for invalid old_size.
     pub fn consistency_proof(
         &self,
         alg: HashAlg,
         old_size: u64,
-    ) -> Result<malt::ConsistencyProof<Vec<u8>>> {
-        let log = self
-            .commit_trees
-            .get(&alg)
-            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        log.consistency_proof(old_size)
+    ) -> Result<crate::ConsistencyProof> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        if !self.commit_trees.has_algorithm(alg_id) {
+            return Err(Error::UnsupportedAlgorithm(alg.to_string()));
+        }
+        self.commit_trees.consistency_proof(alg_id, old_size)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
@@ -970,6 +978,8 @@ impl Principal {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
+                // Verify algorithm is supported
+                let _ = hash_alg_from_str(&key.alg)?;
                 // Check for duplicate key
                 if self.auth.keys.contains_key(&id.to_b64()) {
                     return Err(Error::DuplicateKey);
@@ -986,6 +996,8 @@ impl Principal {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
+                // Verify algorithm is supported
+                let _ = hash_alg_from_str(&key.alg)?;
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, cz.now);
@@ -1000,10 +1012,15 @@ impl Principal {
             },
             CozKind::PrincipalCreate { pre, id } => {
                 // Genesis finalization (SPEC §5.1)
+                // Verify signer is a genesis key
+                let signer_b64 = cz.signer.to_b64();
+                if !self.genesis_keys.contains(&signer_b64) {
+                    return Err(Error::UnknownKey);
+                }
                 // Verify that `pre` matches the current PS (chain continuity)
                 self.verify_pre(pre)?;
                 // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
-                if id.0 != self.pr.0 {
+                if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
                 // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
@@ -1106,43 +1123,30 @@ impl Principal {
             }
         }
 
-        // Ensure per-algorithm MALTs exist for all active algorithms.
-        // New algorithms get a fresh MALT populated with prior TRs via [conversion].
-        // Clone active_algs to avoid borrow conflict with self.commit_trees.
+        // Ensure all active algorithms are registered in the unified EML Log.
         let algs = self.active_algs.clone();
         for &alg in &algs {
-            // Note: clippy::map_entry suggests using the Entry API here, but that
-            // creates a borrow conflict: entry() borrows commit_trees mutably while
-            // self.auth.commits is needed immutably to build the log. We suppress
-            // the lint because the borrow checker forces this two-step pattern.
-            #[allow(clippy::map_entry)]
-            if !self.commit_trees.contains_key(&alg) {
-                // New algorithm — create MALT and replay prior commits.
-                // [conversion]: tr.get_or_err(alg) returns the native variant
-                // if available, otherwise the first variant's bytes.
-                let hasher = crate::commit_root::CyphrHasher::new(alg);
-                let mut log = malt::Log::new(hasher);
-                for prior_commit in &self.auth.commits {
-                    let prior_tr = prior_commit.tr();
-                    if let Ok(bytes) = prior_tr.0.get_or_err(alg) {
-                        log.append(bytes);
-                    }
-                }
-                self.commit_trees.insert(alg, log);
+            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+            if !self.commit_trees.has_algorithm(alg_id) {
+                let hasher = Box::new(crate::commit_root::MaltHasher::new(alg));
+                self.commit_trees.add_algorithm(alg_id, hasher)
+                    .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
             }
         }
 
-        // Append current TR to all active MALTs and assemble CR.
-        // Only active algorithms contribute to the current CR;
-        // stale algorithm MALTs are retained but excluded.
-        let mut active_trees = crate::commit_root::CommitTrees::new();
-        for &alg in &algs {
-            let log = self.commit_trees.get_mut(&alg).ok_or(Error::EmptyCommit)?;
-            let bytes = tr.0.get_or_err(alg)?;
-            log.append(bytes);
-            active_trees.insert(alg, log.clone());
+        // Append current TR once to the unified EML Log.
+        let mut mapped_variants = BTreeMap::new();
+        for (&alg, val) in tr.0.variants() {
+            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+            mapped_variants.insert(alg_id, val.clone());
         }
-        let cr = crate::commit_root::commit_root_from_trees(&active_trees)?;
+        let serialized = serde_json::to_vec(&mapped_variants)
+            .map_err(|_| Error::MalformedPayload)?;
+        self.commit_trees.append(&serialized)
+            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+
+        // Assemble CR from the EML Log for all active algorithms.
+        let cr = crate::commit_root::commit_root_from_trees(&self.commit_trees, &algs)?;
         self.cr = Some(cr.clone());
 
         // Compute PR = MR(SR, CR?, embedding?)
@@ -1220,9 +1224,9 @@ impl Principal {
     /// At genesis (no prior commits), PS is implicitly promoted from AS,
     /// so `pre` is compared against the promoted auth_root.
     fn verify_pre(&self, pre: &PrincipalRoot) -> Result<()> {
-        // Get the reference PS to compare against.
-        let current = self.pr.0.get_or_err(self.hash_alg)?;
-        let expected = pre.0.get_or_err(self.hash_alg)?;
+        let alg = pre.0.algorithms().next().ok_or(Error::EmptyMultihash)?;
+        let current = self.pr.0.get_or_err(alg)?;
+        let expected = pre.0.get_or_err(alg)?;
         if current != expected {
             return Err(Error::InvalidPrior);
         }
@@ -1303,7 +1307,9 @@ impl Principal {
 #[cfg(test)]
 mod tests {
     use coz::Thumbprint;
-    use malt::TreeHasher;
+    use crate::state::StateDigest;
+    use crate::commit_root::MaltHasher;
+    use eml::Hasher;
 
     use super::*;
     use crate::key::Key;
@@ -1843,24 +1849,24 @@ mod tests {
         let (principal, _keys) = build_principal_with_commits(4);
 
         let alg = principal.hash_alg();
-        let log = principal.commit_trees().get(&alg).unwrap();
-        let root = log.root();
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        let root = principal.commit_trees().root(alg_id).unwrap();
+        let hasher = MaltHasher::new(alg);
+        let size = principal.commit_trees().tree_size(alg_id).unwrap();
 
         // Verify inclusion for every committed leaf.
-        for i in 0..log.size() {
+        for i in 0..size {
             let proof = principal.inclusion_proof(alg, i).unwrap();
-            let leaf_hash = log.hasher().leaf(
-                principal
-                    .commits()
-                    .nth(i as usize)
-                    .unwrap()
-                    .tr()
-                    .0
-                    .get_or_err(alg)
-                    .unwrap(),
-            );
+            let commit_tr = principal.commits().nth(i as usize).unwrap().tr();
+            let mut mapped_variants = BTreeMap::new();
+            for (&a, val) in commit_tr.0.variants() {
+                let a_id = crate::commit_root::hash_alg_to_u64(a);
+                mapped_variants.insert(a_id, val.clone());
+            }
+            let serialized = serde_json::to_vec(&mapped_variants).unwrap();
+            let leaf_hash = hasher.leaf(&serialized);
             assert!(
-                malt::verify_inclusion(log.hasher(), &leaf_hash, &proof, &root),
+                crate::verify_inclusion(&hasher, &leaf_hash, &proof, &root),
                 "inclusion proof failed for index {i}"
             );
         }
@@ -1868,30 +1874,35 @@ mod tests {
 
     #[test]
     fn consistency_proof_verifies() {
-        use crate::commit_root::CyphrHasher;
-
         let (principal, _keys) = build_principal_with_commits(5);
 
         let alg = principal.hash_alg();
-        let log = principal.commit_trees().get(&alg).unwrap();
-        let new_root = log.root();
-        let hasher = CyphrHasher::new(alg);
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        let new_root = principal.commit_trees().root(alg_id).unwrap();
+        let hasher = MaltHasher::new(alg);
 
-        // Build a reference log to capture intermediate roots.
-        let mut ref_log = malt::Log::new(CyphrHasher::new(alg));
+        // Build a reference EML log to capture intermediate roots.
+        let mut ref_log = eml::Log::new(eml::MemoryStorage::new());
+        futures::executor::block_on(ref_log.add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))).unwrap();
         let mut roots = Vec::new();
         for commit in principal.commits() {
-            let tr_bytes = commit.tr().0.get_or_err(alg).unwrap();
-            ref_log.append(tr_bytes);
-            roots.push(ref_log.root());
+            let mut mapped_variants = BTreeMap::new();
+            for (&a, val) in commit.tr().0.variants() {
+                let a_id = crate::commit_root::hash_alg_to_u64(a);
+                mapped_variants.insert(a_id, val.clone());
+            }
+            let tr_bytes = serde_json::to_vec(&mapped_variants).unwrap();
+            futures::executor::block_on(ref_log.append(&tr_bytes)).unwrap();
+            roots.push(ref_log.root(alg_id).unwrap());
         }
 
         // Verify consistency from each prior size to current.
-        for old_size in 1..log.size() {
+        let size = principal.commit_trees().tree_size(alg_id).unwrap();
+        for old_size in 1..size {
             let proof = principal.consistency_proof(alg, old_size).unwrap();
             let old_root = &roots[(old_size - 1) as usize];
             assert!(
-                malt::verify_consistency(&hasher, &proof, old_root, &new_root),
+                crate::verify_consistency(&hasher, &proof, old_root, &new_root),
                 "consistency proof failed for old_size {old_size}"
             );
         }
@@ -1963,20 +1974,19 @@ mod tests {
 
         // Proof generation must still work on the restored principal.
         let proof = restored.inclusion_proof(alg, 0).unwrap();
-        let log = restored.commit_trees().get(&alg).unwrap();
-        let root = log.root();
-        let leaf_hash = log.hasher().leaf(
-            principal
-                .commits()
-                .next()
-                .unwrap()
-                .tr()
-                .0
-                .get_or_err(alg)
-                .unwrap(),
-        );
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        let root = restored.commit_trees().root(alg_id).unwrap();
+        let hasher = MaltHasher::new(alg);
+        let commit_tr = principal.commits().next().unwrap().tr();
+        let mut mapped_variants = BTreeMap::new();
+        for (&a, val) in commit_tr.0.variants() {
+            let a_id = crate::commit_root::hash_alg_to_u64(a);
+            mapped_variants.insert(a_id, val.clone());
+        }
+        let serialized = serde_json::to_vec(&mapped_variants).unwrap();
+        let leaf_hash = hasher.leaf(&serialized);
         assert!(
-            malt::verify_inclusion(log.hasher(), &leaf_hash, &proof, &root),
+            crate::verify_inclusion(&hasher, &leaf_hash, &proof, &root),
             "inclusion proof must verify on checkpoint-restored principal"
         );
     }

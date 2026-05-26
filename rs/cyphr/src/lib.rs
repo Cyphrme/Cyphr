@@ -37,7 +37,7 @@ pub mod transaction_root;
 // Re-exports
 pub use action::Action;
 pub use commit::{Commit, CommitScope, PendingCommit};
-pub use commit_root::{CommitLog, CommitRoot, CommitTrees, CyphrHasher};
+pub use commit_root::{CommitRoot, CommitTrees, MaltHasher};
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;
@@ -45,11 +45,12 @@ pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, verify_coz};
 pub use principal::Principal;
 pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot,
+    StateDigest,
     compute_ar, compute_commit_id, compute_dr, compute_kr, compute_pr, compute_sr,
 };
 pub use transaction::{CommitTransaction, Transaction};
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
 
-// MALT proof types and standalone verifiers.
-// Re-exported so consumers can verify proofs without depending on `malt` directly.
-pub use malt::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};
+// EML proof types and standalone verifiers.
+// Re-exported so consumers can verify proofs without depending on `eml` directly.
+pub use eml::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};

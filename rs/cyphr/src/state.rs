@@ -11,6 +11,21 @@ use coz::{Cad, Czd, Thumbprint};
 use crate::multihash::MultihashDigest;
 
 // ============================================================================
+// State Digest Trait
+// ============================================================================
+
+/// Trait implemented by all state newtype wrappers to retrieve their MultihashDigest.
+pub trait StateDigest {
+    /// Retrieve the multihash digest.
+    fn as_multihash(&self) -> &MultihashDigest;
+
+    /// Get the digest for a specific algorithm variant.
+    fn get(&self, alg: HashAlg) -> Option<&[u8]> {
+        self.as_multihash().get(alg)
+    }
+}
+
+// ============================================================================
 // State newtypes
 // ============================================================================
 
@@ -23,17 +38,9 @@ use crate::multihash::MultihashDigest;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyRoot(pub crate::multihash::MultihashDigest);
 
-impl KeyRoot {
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
+impl StateDigest for KeyRoot {
+    fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
@@ -47,17 +54,9 @@ impl KeyRoot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommitID(pub crate::multihash::MultihashDigest);
 
-impl CommitID {
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
+impl StateDigest for CommitID {
+    fn as_multihash(&self) -> &crate::multihash::MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
@@ -69,17 +68,9 @@ impl CommitID {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AuthRoot(pub MultihashDigest);
 
-impl AuthRoot {
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &MultihashDigest {
+impl StateDigest for AuthRoot {
+    fn as_multihash(&self) -> &MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
@@ -93,29 +84,30 @@ impl AuthRoot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StateRoot(pub MultihashDigest);
 
-impl StateRoot {
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &MultihashDigest {
+impl StateDigest for StateRoot {
+    fn as_multihash(&self) -> &MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
 /// Data State (DS) - SPEC §7.4
 ///
 /// State of user actions (Level 4+).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataRoot(pub Cad);
+///
+/// Holds a [`MultihashDigest`] with one variant per active hash algorithm.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DataRoot(pub MultihashDigest);
 
 impl DataRoot {
-    /// Get the inner Cad.
-    pub fn as_cad(&self) -> &Cad {
+    /// Get the inner Cad for a specific algorithm.
+    pub fn to_cad(&self, alg: HashAlg) -> crate::error::Result<Cad> {
+        let bytes = self.0.get_or_err(alg)?;
+        Ok(Cad::from_bytes(bytes.to_vec()))
+    }
+}
+
+impl StateDigest for DataRoot {
+    fn as_multihash(&self) -> &MultihashDigest {
         &self.0
     }
 }
@@ -127,17 +119,9 @@ impl DataRoot {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrincipalRoot(pub MultihashDigest);
 
-impl PrincipalRoot {
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &MultihashDigest {
+impl StateDigest for PrincipalRoot {
+    fn as_multihash(&self) -> &MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
@@ -158,17 +142,11 @@ impl PrincipalGenesis {
     pub fn from_initial(ps: &PrincipalRoot) -> Self {
         Self(ps.0.clone())
     }
+}
 
-    /// Get the full multihash.
-    #[must_use]
-    pub fn as_multihash(&self) -> &MultihashDigest {
+impl StateDigest for PrincipalGenesis {
+    fn as_multihash(&self) -> &MultihashDigest {
         &self.0
-    }
-
-    /// Get a specific algorithm variant as bytes.
-    #[must_use]
-    pub fn get(&self, alg: HashAlg) -> Option<&[u8]> {
-        self.0.get(alg)
     }
 }
 
@@ -689,7 +667,7 @@ pub fn compute_sr(
 
         let mut components: Vec<&[u8]> = vec![ar_bytes];
         if let Some(d) = ds {
-            components.push(d.0.as_bytes());
+            components.push(d.0.get_or_err(alg)?);
         }
         if let Some(e) = embedding {
             components.push(e);
@@ -713,9 +691,9 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
 
     // Implicit promotion
     if action_czds.len() == 1 && nonce.is_none() {
-        return Some(DataRoot(Cad::from_bytes(
-            action_czds[0].as_bytes().to_vec(),
-        )));
+        let digest_bytes = action_czds[0].as_bytes();
+        let mh = MultihashDigest::from_single(alg, digest_bytes.to_vec());
+        return Some(DataRoot(mh));
     }
 
     let mut components: Vec<&[u8]> = action_czds.iter().map(|c| c.as_bytes()).collect();
@@ -723,7 +701,9 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
         components.push(n);
     }
 
-    Some(DataRoot(hash_sorted_concat(alg, &components)))
+    let bytes = hash_sorted_concat_bytes(alg, &components);
+    let mh = MultihashDigest::from_single(alg, bytes);
+    Some(DataRoot(mh))
 }
 
 /// Compute Principal Root — SPEC §3.7.1.

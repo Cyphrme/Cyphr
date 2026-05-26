@@ -131,6 +131,26 @@ impl MultihashDigest {
             .map(AsRef::as_ref)
             .ok_or(crate::error::Error::EmptyMultihash)
     }
+
+    /// Check if this multihash matches another on all common algorithms.
+    ///
+    /// Returns true if there is at least one common algorithm and all common
+    /// algorithms have matching digests.
+    #[must_use]
+    pub fn matches(&self, other: &Self) -> bool {
+        let mut common = false;
+        for alg in self.algorithms() {
+            if let Some(d1) = self.get(alg) {
+                if let Some(d2) = other.get(alg) {
+                    if d1 != d2 {
+                        return false;
+                    }
+                    common = true;
+                }
+            }
+        }
+        common
+    }
 }
 
 // ============================================================================
