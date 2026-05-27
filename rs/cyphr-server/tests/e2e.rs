@@ -113,7 +113,7 @@ fn test_state() -> Arc<AppState> {
 }
 
 /// Bootstrap a principal into the engine via the validated write path.
-fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_json::Value) {
+async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_json::Value) {
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
 
@@ -125,6 +125,7 @@ fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_jso
         state
             .engine
             .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .await
             .expect("bootstrap submit_commit failed");
     }
 }
@@ -140,7 +141,7 @@ async fn tip_after_bootstrap() {
     let principal_id = "e2e-tip";
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture);
+    bootstrap_principal(&state, principal_id, &fixture).await;
 
     let app = build_router(state);
 
@@ -171,7 +172,7 @@ async fn patch_after_bootstrap() {
     let principal_id = "e2e-patch";
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture);
+    bootstrap_principal(&state, principal_id, &fixture).await;
 
     let app = build_router(state);
 
@@ -215,7 +216,7 @@ async fn patch_with_range() {
     let principal_id = "e2e-patch-range";
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture);
+    bootstrap_principal(&state, principal_id, &fixture).await;
 
     let app = build_router(state);
 

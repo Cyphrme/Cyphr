@@ -98,7 +98,11 @@ pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tip = state.engine.get_tip(&query.pr).map_err(AppError::engine)?;
+    let tip = state
+        .engine
+        .get_tip(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
 
     match tip {
         Some(t) => Ok(Json(TipResponse {
@@ -128,6 +132,7 @@ pub async fn patch(
     let response = state
         .engine
         .get_patch(&query.pr, query.from, query.to)
+        .await
         .map_err(AppError::engine)?;
 
     let entries = response
@@ -181,6 +186,7 @@ pub async fn push(
     let result = state
         .engine
         .submit_commit(&request.principal_id, None, &blob_refs)
+        .await
         .map_err(AppError::engine)?;
 
     Ok((
@@ -201,7 +207,11 @@ pub async fn entity(
         .parse()
         .map_err(|e| AppError::bad_request(format!("invalid digest: {e}")))?;
 
-    let data = state.engine.get_entity(&digest).map_err(AppError::engine)?;
+    let data = state
+        .engine
+        .get_entity(&digest)
+        .await
+        .map_err(AppError::engine)?;
 
     match data {
         Some(bytes) => Ok((
