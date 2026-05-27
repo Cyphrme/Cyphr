@@ -32,7 +32,7 @@ pub fn compute_tx(czds: &[TaggedCzd<'_>], algs: &[HashAlg]) -> Option<MultihashD
     if czds.len() == 1 {
         let target_alg = algs.first().copied().unwrap_or(HashAlg::Sha256);
         let converted = czds[0].convert_to(target_alg);
-        return Some(MultihashDigest::from_single(target_alg, converted));
+        return MultihashDigest::from_single(target_alg, converted).ok();
     }
 
     let mut variants = BTreeMap::new();

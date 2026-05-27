@@ -6,8 +6,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cyphr::{Principal, StateDigest};
 use cyphr::key::Key;
+use cyphr::{Principal, StateDigest};
 use test_fixtures::{Golden, GoldenExpected, Pool, PoolKey};
 
 // ============================================================================
@@ -343,7 +343,7 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 "{}: genesis failed with {:?}, but expected error was {:?}",
                 fixture.name, e, expected_error
             );
-        }
+        },
     };
 
     // Apply setup modifiers (e.g., pre-revoke keys)

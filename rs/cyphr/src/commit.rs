@@ -670,18 +670,11 @@ mod tests {
         let cz = make_test_tx(true, 0x01);
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
-        let auth_root = AuthRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xAA; 32],
-        ));
-        let sr = StateRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xCC; 32],
-        ));
-        let ps = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xBB; 32],
-        ));
+        let auth_root =
+            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
+        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
+        let ps =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let commit = pending.finalize(
             auth_root.clone(),
@@ -705,18 +698,11 @@ mod tests {
         let cz = make_test_tx(false, 0x01); // No finalizer marker
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
 
-        let auth_root = AuthRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xAA; 32],
-        ));
-        let sr = StateRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xCC; 32],
-        ));
-        let ps = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xBB; 32],
-        ));
+        let auth_root =
+            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
+        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
+        let ps =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let result = pending.finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256]);
         assert!(
@@ -729,18 +715,11 @@ mod tests {
     fn pending_commit_finalize_fails_when_empty() {
         let pending = PendingCommit::new();
 
-        let auth_root = AuthRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xAA; 32],
-        ));
-        let sr = StateRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xCC; 32],
-        ));
-        let ps = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xBB; 32],
-        ));
+        let auth_root =
+            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
+        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
+        let ps =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let result = pending.finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256]);
         assert!(result.is_err(), "should fail when empty");
@@ -771,18 +750,11 @@ mod tests {
             true, 0x01,
         )]));
 
-        let auth_root = AuthRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xAA; 32],
-        ));
-        let sr = StateRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xCC; 32],
-        ));
-        let ps = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xBB; 32],
-        ));
+        let auth_root =
+            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
+        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
+        let ps =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let commit = pending
             .finalize(
@@ -816,18 +788,11 @@ mod tests {
             true, 0x03,
         )])); // finalizer
 
-        let auth_root = AuthRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xAA; 32],
-        ));
-        let sr = StateRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xCC; 32],
-        ));
-        let ps = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xBB; 32],
-        ));
+        let auth_root =
+            AuthRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xAA; 32]).unwrap());
+        let sr = StateRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xCC; 32]).unwrap());
+        let ps =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
         let commit = pending
             .finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256])

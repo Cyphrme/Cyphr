@@ -51,15 +51,41 @@ impl MultihashDigest {
         if variants.is_empty() {
             return Err(crate::error::Error::EmptyMultihash);
         }
+        for (&alg, digest) in &variants {
+            let expected = match alg {
+                HashAlg::Sha256 => 32,
+                HashAlg::Sha384 => 48,
+                HashAlg::Sha512 => 64,
+            };
+            if digest.len() != expected {
+                return Err(crate::error::Error::DigestLengthMismatch {
+                    alg,
+                    expected,
+                    actual: digest.len(),
+                });
+            }
+        }
         Ok(Self { variants })
     }
 
     /// Create from a single-algorithm digest.
-    #[must_use]
-    pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> Self {
+    pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> crate::error::Result<Self> {
+        let digest_box = digest.into();
+        let expected = match alg {
+            HashAlg::Sha256 => 32,
+            HashAlg::Sha384 => 48,
+            HashAlg::Sha512 => 64,
+        };
+        if digest_box.len() != expected {
+            return Err(crate::error::Error::DigestLengthMismatch {
+                alg,
+                expected,
+                actual: digest_box.len(),
+            });
+        }
         let mut variants = BTreeMap::new();
-        variants.insert(alg, digest.into());
-        Self { variants }
+        variants.insert(alg, digest_box);
+        Ok(Self { variants })
     }
 
     /// Get the digest for a specific algorithm.
@@ -163,8 +189,8 @@ mod tests {
 
     #[test]
     fn from_single_creates_one_variant() {
-        let digest = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, digest.clone());
+        let digest = vec![0xDE; 32];
+        let mh = MultihashDigest::from_single(HashAlg::Sha256, digest.clone()).unwrap();
 
         assert_eq!(mh.len(), 1);
         assert!(mh.contains(HashAlg::Sha256));
@@ -187,6 +213,13 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_invalid_lengths() {
+        let mut variants = BTreeMap::new();
+        variants.insert(HashAlg::Sha256, vec![0u8; 31].into_boxed_slice());
+        assert!(MultihashDigest::new(variants).is_err());
+    }
+
+    #[test]
     fn algorithms_iterates_in_order() {
         let mut variants = BTreeMap::new();
         variants.insert(HashAlg::Sha512, vec![0u8; 64].into_boxed_slice());
@@ -201,15 +234,15 @@ mod tests {
 
     #[test]
     fn get_returns_none_for_missing() {
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]);
+        let mh = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]).unwrap();
         assert!(mh.get(HashAlg::Sha384).is_none());
     }
 
     #[test]
     fn equality_checks_all_variants() {
-        let mh1 = MultihashDigest::from_single(HashAlg::Sha256, vec![1, 2, 3]);
-        let mh2 = MultihashDigest::from_single(HashAlg::Sha256, vec![1, 2, 3]);
-        let mh3 = MultihashDigest::from_single(HashAlg::Sha256, vec![4, 5, 6]);
+        let mh1 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
+        let mh2 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
+        let mh3 = MultihashDigest::from_single(HashAlg::Sha256, vec![4; 32]).unwrap();
 
         assert_eq!(mh1, mh2);
         assert_ne!(mh1, mh3);

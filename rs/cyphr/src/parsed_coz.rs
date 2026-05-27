@@ -253,10 +253,10 @@ impl ParsedCoz {
         // Parse tagged digest (validates algorithm and length)
         let tagged: TaggedDigest = pre_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(PrincipalRoot(MultihashDigest::from_single(
-            tagged.alg(),
-            tagged.as_bytes().to_vec(),
-        )))
+        Ok(PrincipalRoot(
+            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+                .map_err(|_| Error::MalformedPayload)?,
+        ))
     }
 
     /// Extract `id` field (target key thumbprint) from pay.extra.
@@ -286,10 +286,10 @@ impl ParsedCoz {
         // Parse tagged digest (validates algorithm and length)
         let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(AuthRoot(MultihashDigest::from_single(
-            tagged.alg(),
-            tagged.as_bytes().to_vec(),
-        )))
+        Ok(AuthRoot(
+            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+                .map_err(|_| Error::MalformedPayload)?,
+        ))
     }
 
     // Extract optional `arrow` field.
@@ -311,10 +311,10 @@ impl ParsedCoz {
         let arrow_str = arrow_value.as_str().ok_or(Error::MalformedPayload)?;
         let tagged: TaggedDigest = arrow_str.parse().map_err(|_| Error::MalformedPayload)?;
 
-        Ok(Some(MultihashDigest::from_single(
-            tagged.alg(),
-            tagged.as_bytes().to_vec(),
-        )))
+        Ok(Some(
+            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+                .map_err(|_| Error::MalformedPayload)?,
+        ))
     }
 }
 

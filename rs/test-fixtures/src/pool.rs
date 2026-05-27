@@ -167,7 +167,10 @@ impl Pool {
         use std::str::FromStr;
         for key in &self.pool.key {
             if coz::Alg::from_str(&key.alg).is_none() {
-                errors.push(format!("key '{}': unsupported algorithm: {}", key.name, key.alg));
+                errors.push(format!(
+                    "key '{}': unsupported algorithm: {}",
+                    key.name, key.alg
+                ));
             }
         }
 

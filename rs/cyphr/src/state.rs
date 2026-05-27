@@ -135,7 +135,7 @@ impl PrincipalGenesis {
     /// Create a PrincipalGenesis from raw bytes (e.g., for testing).
     /// Assumes SHA-256 algorithm for single-variant construction.
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self(MultihashDigest::from_single(HashAlg::Sha256, bytes))
+        Self(MultihashDigest::from_single(HashAlg::Sha256, bytes).unwrap())
     }
 
     /// Create PR from the initial principal state (at genesis).
@@ -331,87 +331,36 @@ fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
 ///
 /// Same as [`hash_sorted_concat`] but returns raw bytes for MultihashDigest construction.
 pub(crate) fn hash_sorted_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
+    use crate::hasher::CyphrHasher;
     // Sort lexicographically
     let mut sorted: Vec<&[u8]> = components.to_vec();
     sorted.sort();
 
-    // Hash based on algorithm
-    match alg {
-        HashAlg::Sha256 => {
-            let mut h = Sha256::new();
-            for c in sorted {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha384 => {
-            let mut h = Sha384::new();
-            for c in sorted {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha512 => {
-            let mut h = Sha512::new();
-            for c in sorted {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
+    let mut concat = Vec::new();
+    for c in sorted {
+        concat.extend_from_slice(c);
     }
+    alg.hash(&concat)
 }
 
 /// Compute `H(components...)` in array order (no sort).
 ///
 /// Used for CommitID where coz order is significant (SPEC §8.5).
 pub(crate) fn hash_concat_bytes(alg: HashAlg, components: &[&[u8]]) -> Vec<u8> {
-    // Hash based on algorithm — no sort, preserve insertion order
-    match alg {
-        HashAlg::Sha256 => {
-            let mut h = Sha256::new();
-            for c in components {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha384 => {
-            let mut h = Sha384::new();
-            for c in components {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha512 => {
-            let mut h = Sha512::new();
-            for c in components {
-                h.update(c);
-            }
-            h.finalize().to_vec()
-        },
+    use crate::hasher::CyphrHasher;
+    let mut concat = Vec::new();
+    for c in components {
+        concat.extend_from_slice(c);
     }
+    alg.hash(&concat)
 }
 
 /// Hash raw bytes using the specified algorithm (SPEC §14.2 conversion).
 ///
 /// Used when converting a czd from one algorithm to another.
 pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
-    match alg {
-        HashAlg::Sha256 => {
-            let mut h = Sha256::new();
-            h.update(data);
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha384 => {
-            let mut h = Sha384::new();
-            h.update(data);
-            h.finalize().to_vec()
-        },
-        HashAlg::Sha512 => {
-            let mut h = Sha512::new();
-            h.update(data);
-            h.finalize().to_vec()
-        },
-    }
+    use crate::hasher::CyphrHasher;
+    alg.hash(data)
 }
 
 // ============================================================================
@@ -449,7 +398,7 @@ pub fn compute_kr(
         return Ok(KeyRoot(MultihashDigest::from_single(
             alg,
             thumbprints[0].as_bytes().to_vec(),
-        )));
+        )?));
     }
 
     // Collect components
@@ -488,11 +437,14 @@ pub fn compute_commit_id(
     // Store the czd bytes as the digest for all algorithm variants
     if czds.len() == 1 && nonce.is_none() {
         let czd_bytes = czds[0].as_bytes();
-        return Some(CommitID(MultihashDigest::from_single(
-            // Use first algorithm for single-variant multihash
-            algs.first().copied().unwrap_or(HashAlg::Sha256),
-            czd_bytes.to_vec(),
-        )));
+        return Some(CommitID(
+            MultihashDigest::from_single(
+                // Use first algorithm for single-variant multihash
+                algs.first().copied().unwrap_or(HashAlg::Sha256),
+                czd_bytes.to_vec(),
+            )
+            .ok()?,
+        ));
     }
 
     let mut components: Vec<&[u8]> = czds.iter().map(|c| c.as_bytes()).collect();
@@ -566,9 +518,9 @@ pub fn compute_commit_id_tagged(
     if czds.len() == 1 && nonce.is_none() {
         let target_alg = algs.first().copied().unwrap_or(HashAlg::Sha256);
         let converted = czds[0].convert_to(target_alg);
-        return Some(CommitID(MultihashDigest::from_single(
-            target_alg, converted,
-        )));
+        return Some(CommitID(
+            MultihashDigest::from_single(target_alg, converted).ok()?,
+        ));
     }
 
     // Compute hash for each target algorithm variant
@@ -679,21 +631,43 @@ pub fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
+fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
+    match len {
+        32 => Some(HashAlg::Sha256),
+        48 => Some(HashAlg::Sha384),
+        64 => Some(HashAlg::Sha512),
+        _ => None,
+    }
+}
+
 /// Compute Data State (SPEC §7.4).
 ///
 /// - No actions, no nonce: DS = None
 /// - Single action, no nonce: DS = czd (implicit promotion)
 /// - Otherwise: DS = H(sort(czd₀, czd₁, nonce?, ...))
-pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> Option<DataRoot> {
+pub fn compute_dr(
+    action_czds: &[&Czd],
+    nonce: Option<&[u8]>,
+    algs: &[HashAlg],
+) -> crate::error::Result<Option<DataRoot>> {
+    use crate::multihash::MultihashDigest;
+    use std::collections::BTreeMap;
+
     if action_czds.is_empty() && nonce.is_none() {
-        return None;
+        return Ok(None);
     }
 
     // Implicit promotion
     if action_czds.len() == 1 && nonce.is_none() {
         let digest_bytes = action_czds[0].as_bytes();
-        let mh = MultihashDigest::from_single(alg, digest_bytes.to_vec());
-        return Some(DataRoot(mh));
+        let alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
+            crate::error::Error::UnsupportedAlgorithm(format!(
+                "invalid digest length: {}",
+                digest_bytes.len()
+            ))
+        })?;
+        let mh = MultihashDigest::from_single(alg, digest_bytes.to_vec())?;
+        return Ok(Some(DataRoot(mh)));
     }
 
     let mut components: Vec<&[u8]> = action_czds.iter().map(|c| c.as_bytes()).collect();
@@ -701,9 +675,18 @@ pub fn compute_dr(action_czds: &[&Czd], nonce: Option<&[u8]>, alg: HashAlg) -> O
         components.push(n);
     }
 
-    let bytes = hash_sorted_concat_bytes(alg, &components);
-    let mh = MultihashDigest::from_single(alg, bytes);
-    Some(DataRoot(mh))
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        let bytes = hash_sorted_concat_bytes(alg, &components);
+        variants.insert(alg, digest_into_boxed_slice(bytes));
+    }
+
+    let mh = MultihashDigest::new(variants)?;
+    Ok(Some(DataRoot(mh)))
+}
+
+fn digest_into_boxed_slice(v: Vec<u8>) -> Box<[u8]> {
+    v.into_boxed_slice()
 }
 
 /// Compute Principal Root — SPEC §3.7.1.
@@ -789,7 +772,7 @@ mod tests {
     #[test]
     fn ks_single_key_promotion() {
         // Single key: KS = tmb (no hashing), stored as single-variant multihash
-        let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
+        let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
 
         // Should have exactly one variant
@@ -801,8 +784,8 @@ mod tests {
     #[test]
     fn ks_multi_key_hashes() {
         // Multiple keys: KS = H(sort(tmb₀, tmb₁))
-        let tmb1 = Thumbprint::from_bytes(vec![1, 2, 3]);
-        let tmb2 = Thumbprint::from_bytes(vec![4, 5, 6]);
+        let tmb1 = Thumbprint::from_bytes(vec![1; 32]);
+        let tmb2 = Thumbprint::from_bytes(vec![2; 32]);
         let ks = compute_kr(&[&tmb1, &tmb2], None, &[HashAlg::Sha256]).unwrap();
 
         let digest = ks.get(HashAlg::Sha256).unwrap();
@@ -814,7 +797,7 @@ mod tests {
     #[test]
     fn ks_with_nonce_hashes() {
         // Single key with nonce: still hashes (no promotion)
-        let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
+        let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let nonce = vec![0xAA, 0xBB];
         let ks = compute_kr(&[&tmb], Some(&nonce), &[HashAlg::Sha256]).unwrap();
 
@@ -831,7 +814,7 @@ mod tests {
 
     #[test]
     fn commit_id_single_czd_promotion() {
-        let czd = Czd::from_bytes(vec![10, 20, 30]);
+        let czd = Czd::from_bytes(vec![10; 32]);
         let cid = compute_commit_id(&[&czd], None, &[HashAlg::Sha256]);
         let cid_bytes = cid.as_ref().map(|c| c.get(HashAlg::Sha256).unwrap());
         assert_eq!(cid_bytes.unwrap(), czd.as_bytes());
@@ -840,7 +823,7 @@ mod tests {
     #[test]
     fn as_promotion_from_ks() {
         // Only KS, no RS: AS = KS (the specified algorithm variant)
-        let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
+        let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
 
@@ -853,11 +836,13 @@ mod tests {
 
     #[test]
     fn cs_with_ds_hashes() {
-        let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
+        let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
-        let czd = Czd::from_bytes(vec![10, 20, 30]);
-        let ds = compute_dr(&[&czd], None, HashAlg::Sha256).unwrap();
+        let czd = Czd::from_bytes(vec![10; 32]);
+        let ds = compute_dr(&[&czd], None, &[HashAlg::Sha256])
+            .unwrap()
+            .unwrap();
 
         let cs = compute_sr(&auth_root, Some(&ds), None, &[HashAlg::Sha256]).unwrap();
 
@@ -870,7 +855,7 @@ mod tests {
     #[test]
     fn ps_promotion_from_sr() {
         // Only SR, no CR: PR = SR (implicit promotion)
-        let tmb = Thumbprint::from_bytes(vec![1, 2, 3, 4]);
+        let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
@@ -885,7 +870,7 @@ mod tests {
     #[test]
     fn full_promotion_chain() {
         // Level 1: PR = SR = AR = KR = tmb
-        let tmb = Thumbprint::from_bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let tmb = Thumbprint::from_bytes(vec![0xDE; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();

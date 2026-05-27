@@ -12,8 +12,9 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::state::{
-    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, StateDigest, compute_dr,
-    compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
+    AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest, StateRoot,
+    compute_dr, compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs,
+    hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -102,8 +103,6 @@ pub struct PrincipalCore {
     pub(crate) auth: AuthLedger,
     /// Data ledger (Level 4+).
     pub(crate) data: DataLedger,
-    /// Primary hash algorithm (from first key's alg).
-    pub(crate) hash_alg: HashAlg,
     /// Active hash algorithms derived from current active keys (SPEC §14).
     pub(crate) active_algs: Vec<HashAlg>,
     /// Latest timestamp seen (SPEC §14.1).
@@ -129,7 +128,6 @@ impl Default for PrincipalCore {
             dr: None,
             auth: AuthLedger::default(),
             data: DataLedger::default(),
-            hash_alg: HashAlg::Sha256,
             active_algs: Vec::new(),
             latest_timestamp: 0,
             max_clock_skew: 0,
@@ -261,7 +259,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            hash_alg,
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
@@ -280,7 +277,7 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        let hash_alg = hash_alg_from_str(&keys[0].alg)?;
+        let _ = hash_alg_from_str(&keys[0].alg)?;
 
         // Derive active algorithms from all keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
@@ -313,7 +310,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            hash_alg,
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
@@ -350,7 +346,7 @@ impl Principal {
             return Err(Error::NoActiveKeys);
         }
 
-        let hash_alg = hash_alg_from_str(&keys[0].alg)?;
+        let _ = hash_alg_from_str(&keys[0].alg)?;
 
         // Derive active algorithms from checkpoint keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
@@ -366,7 +362,10 @@ impl Principal {
                 let cr = crate::commit_root::commit_root_from_trees(&t, &active_algs)?;
                 (t, Some(cr))
             },
-            None => (crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()), None),
+            None => (
+                crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
+                None,
+            ),
         };
 
         // SR and PR: derive_auth_state is not used here because `ar` is provided
@@ -394,7 +393,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            hash_alg,
             active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
@@ -443,7 +441,11 @@ impl Principal {
     pub fn pr_tagged(&self) -> Result<String> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-        let first_alg = self.active_algs.first().copied().unwrap_or(self.hash_alg);
+        let first_alg = self
+            .active_algs
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.hash_alg());
         let bytes = self.pr.0.get_or_err(first_alg)?;
 
         Ok(format!(
@@ -460,7 +462,7 @@ impl Principal {
 
     /// Get the hash algorithm used by this principal.
     pub fn hash_alg(&self) -> HashAlg {
-        self.hash_alg
+        self.active_algs.first().copied().unwrap_or(HashAlg::Sha256)
     }
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).
@@ -578,16 +580,13 @@ impl Principal {
     ///
     /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT.
     /// - Propagates [`malt::Error`] for empty tree or out-of-bounds index.
-    pub fn inclusion_proof(
-        &self,
-        alg: HashAlg,
-        index: u64,
-    ) -> Result<crate::InclusionProof> {
+    pub fn inclusion_proof(&self, alg: HashAlg, index: u64) -> Result<crate::InclusionProof> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
         if !self.commit_trees.has_algorithm(alg_id) {
             return Err(Error::UnsupportedAlgorithm(alg.to_string()));
         }
-        self.commit_trees.inclusion_proof(alg_id, index)
+        self.commit_trees
+            .inclusion_proof(alg_id, index)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
@@ -611,7 +610,8 @@ impl Principal {
         if !self.commit_trees.has_algorithm(alg_id) {
             return Err(Error::UnsupportedAlgorithm(alg.to_string()));
         }
-        self.commit_trees.consistency_proof(alg_id, old_size)
+        self.commit_trees
+            .consistency_proof(alg_id, old_size)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
@@ -737,14 +737,14 @@ impl Principal {
 
         // Recompute DS
         let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
-        self.dr = compute_dr(&czds, None, self.hash_alg);
+        self.dr = compute_dr(&czds, None, &self.active_algs)?;
 
         // Recompute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &[self.hash_alg])?;
+        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &self.active_algs)?;
         self.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
-        self.pr = compute_pr(&sr, self.cr.as_ref(), None, &[self.hash_alg])?;
+        self.pr = compute_pr(&sr, self.cr.as_ref(), None, &self.active_algs)?;
 
         Ok(&self.pr)
     }
@@ -910,8 +910,7 @@ impl Principal {
 
         let arrow_digest =
             crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
-        let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest);
-
+        let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest)?;
         // Create synthetic commit/create coz with arrow
         let commit_coz = ParsedCoz {
             kind: CozKind::CommitCreate {
@@ -1129,7 +1128,8 @@ impl Principal {
             let alg_id = crate::commit_root::hash_alg_to_u64(alg);
             if !self.commit_trees.has_algorithm(alg_id) {
                 let hasher = Box::new(crate::commit_root::MaltHasher::new(alg));
-                self.commit_trees.add_algorithm(alg_id, hasher)
+                self.commit_trees
+                    .add_algorithm(alg_id, hasher)
                     .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
             }
         }
@@ -1140,9 +1140,10 @@ impl Principal {
             let alg_id = crate::commit_root::hash_alg_to_u64(alg);
             mapped_variants.insert(alg_id, val.clone());
         }
-        let serialized = serde_json::to_vec(&mapped_variants)
-            .map_err(|_| Error::MalformedPayload)?;
-        self.commit_trees.append(&serialized)
+        let serialized =
+            serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
+        self.commit_trees
+            .append(&serialized)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
 
         // Assemble CR from the EML Log for all active algorithms.
@@ -1306,9 +1307,9 @@ impl Principal {
 
 #[cfg(test)]
 mod tests {
-    use coz::Thumbprint;
-    use crate::state::StateDigest;
     use crate::commit_root::MaltHasher;
+    use crate::state::StateDigest;
+    use coz::Thumbprint;
     use eml::Hasher;
 
     use super::*;
@@ -1517,10 +1518,8 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Wrong pre value
-        let wrong_pre = PrincipalRoot(MultihashDigest::from_single(
-            HashAlg::Sha256,
-            vec![0xFF; 32],
-        ));
+        let wrong_pre =
+            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xFF; 32]).unwrap());
         let key2 = make_test_key(0x22);
         let cz = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
 
@@ -1883,7 +1882,8 @@ mod tests {
 
         // Build a reference EML log to capture intermediate roots.
         let mut ref_log = eml::Log::new(eml::MemoryStorage::new());
-        futures::executor::block_on(ref_log.add_algorithm(alg_id, Box::new(MaltHasher::new(alg)))).unwrap();
+        futures::executor::block_on(ref_log.add_algorithm(alg_id, Box::new(MaltHasher::new(alg))))
+            .unwrap();
         let mut roots = Vec::new();
         for commit in principal.commits() {
             let mut mapped_variants = BTreeMap::new();

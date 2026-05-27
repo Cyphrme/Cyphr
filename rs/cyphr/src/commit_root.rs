@@ -31,7 +31,7 @@ impl eml::Hasher for MaltHasher {
             Some(b) => b,
             None => return self.empty(),
         };
-        
+
         let mut prefix_data = Vec::with_capacity(1 + bytes.len());
         prefix_data.push(0x00);
         prefix_data.extend_from_slice(bytes);
@@ -94,7 +94,8 @@ impl CloneableLog {
 
     /// Check if the algorithm is registered.
     pub fn has_algorithm(&self, alg_id: u64) -> bool {
-        self.0.lock()
+        self.0
+            .lock()
             .map(|guard| guard.algorithm_ids().any(|id| id == alg_id))
             .unwrap_or(false)
     }
@@ -123,7 +124,8 @@ impl CloneableLog {
 
     /// Get root hash for the algorithm.
     pub fn root(&self, alg_id: u64) -> eml::Result<Vec<u8>> {
-        self.0.lock()
+        self.0
+            .lock()
             .map_err(|e| {
                 eml::Error::Storage(Box::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -145,7 +147,11 @@ impl CloneableLog {
     }
 
     /// Generate a consistency proof.
-    pub fn consistency_proof(&self, alg_id: u64, old_size: u64) -> eml::Result<eml::ConsistencyProof> {
+    pub fn consistency_proof(
+        &self,
+        alg_id: u64,
+        old_size: u64,
+    ) -> eml::Result<eml::ConsistencyProof> {
         let log = self.0.lock().map_err(|e| {
             eml::Error::Storage(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -168,7 +174,8 @@ impl CloneableLog {
 
     /// Check if the log has no algorithms registered.
     pub fn is_empty(&self) -> bool {
-        self.0.lock()
+        self.0
+            .lock()
             .map(|guard| guard.algorithm_ids().next().is_none())
             .unwrap_or(true)
     }
@@ -203,7 +210,8 @@ pub fn commit_root_from_trees(
     let mut variants = BTreeMap::new();
     for &alg in algs {
         let alg_id = hash_alg_to_u64(alg);
-        let root = log.root(alg_id)
+        let root = log
+            .root(alg_id)
             .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
@@ -226,8 +234,8 @@ pub fn compute_cr(trs: &[&MultihashDigest], algs: &[HashAlg]) -> crate::error::R
         for (&alg, digest) in tr.variants() {
             map.insert(hash_alg_to_u64(alg), digest.clone());
         }
-        let serialized = serde_json::to_vec(&map)
-            .map_err(|_| crate::error::Error::MalformedPayload)?;
+        let serialized =
+            serde_json::to_vec(&map).map_err(|_| crate::error::Error::MalformedPayload)?;
         log.append(&serialized)
             .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
     }
