@@ -7,17 +7,18 @@ use std::path::Path;
 use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
-use super::common::{extract_genesis_from_commits, parse_principal_genesis, parse_store};
+use super::common::{
+    extract_genesis_from_commits, parse_store, get_commits_from_engine,
+    get_principal_id, save_principal_to_engine,
+};
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
 pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
-
+    let store = parse_store(&cli.store, &cli.keystore)?;
     // Get commits from storage
-    let commits = store.get_commits(&pr)?;
+    let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
         return Err(Error::Storage(
@@ -57,7 +58,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 /// Run the import command.
 pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store)?;
+    let store = parse_store(&cli.store, &cli.keystore)?;
 
     // Read commits from JSONL file
     let file = File::open(input)?;
@@ -97,8 +98,13 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     };
 
     // Check if identity already exists in storage
-    let existing = store.get_commits(&pr).unwrap_or_default();
-    if !existing.is_empty() {
+    let pr_id = get_principal_id(&pr)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let tip = rt.block_on(async { store.get_tip(&pr_id).await })
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};
         let pr_b64 = pr
             .as_multihash()
@@ -112,9 +118,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     }
 
     // Store commits
-    for commit in &commits {
-        store.append_commit(&pr, commit)?;
-    }
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     match cli.output {
         OutputFormat::Json => {

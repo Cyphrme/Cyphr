@@ -52,10 +52,6 @@ pub enum Error {
     #[error("{0}")]
     Storage(String),
 
-    /// File store error.
-    #[error("{0}")]
-    FileStore(#[from] cyphr_storage::FileStoreError),
-
     /// Load error (importing/replaying commits).
     #[error("{0}")]
     Load(#[from] cyphr_storage::LoadError),

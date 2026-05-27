@@ -1,13 +1,10 @@
-//! Key management commands.
-
 use coz::base64ct::Encoding;
-use cyphr_storage::{Genesis, export_commits, load_principal_from_commits};
 use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    current_timestamp, extract_genesis_from_commits, generate_key, load_key_from_keystore,
-    parse_principal_genesis, parse_store,
+    current_timestamp, generate_key, load_key_from_keystore, parse_store,
+    load_principal_from_engine, save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, KeyCommands, OutputFormat};
@@ -69,29 +66,8 @@ fn add(
     authority: &str,
 ) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    // Load current principal state
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let mut principal = if commits.is_empty() {
-        // Genesis state - reconstruct from keystore
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        cyphr::Principal::implicit(genesis_key)?
-    } else if is_implicit_genesis {
-        // Implicit genesis with commits: use keystore key as genesis
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let store = parse_store(&cli.store, &cli.keystore)?;
+    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Get or generate the new key
     let (new_key_tmb, new_key) = match key_tmb {
@@ -160,11 +136,7 @@ fn add(
     )?;
 
     // Store updated state
-    let new_commits = export_commits(&principal)?;
-    // Only append new commits (the ones after current)
-    for commit in new_commits.iter().skip(commits.len()) {
-        store.append_commit(&pr, commit)?;
-    }
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     match cli.output {
         OutputFormat::Json => {
@@ -195,29 +167,8 @@ fn revoke(
     authority: &str,
 ) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    // Load current principal state
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let mut principal = if commits.is_empty() {
-        // Genesis state - reconstruct from keystore
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        cyphr::Principal::implicit(genesis_key)?
-    } else if is_implicit_genesis {
-        // Implicit genesis with commits: use keystore key as genesis
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let store = parse_store(&cli.store, &cli.keystore)?;
+    let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Get signer key for signing
     let signer_stored = keystore.get(signer_tmb)?;
@@ -279,10 +230,7 @@ fn revoke(
     )?;
 
     // Store updated state
-    let new_commits = export_commits(&principal)?;
-    for commit in new_commits.iter().skip(commits.len()) {
-        store.append_commit(&pr, commit)?;
-    }
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     match cli.output {
         OutputFormat::Json => {
@@ -354,25 +302,8 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 /// List keys for an identity.
 fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let principal = if commits.is_empty() {
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        cyphr::Principal::implicit(genesis_key)?
-    } else if is_implicit_genesis {
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let store = parse_store(&cli.store, &cli.keystore)?;
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     let active: Vec<_> = principal.active_keys().collect();
 

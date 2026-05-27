@@ -1,9 +1,8 @@
 //! Identity initialization command.
 
 use cyphr::{Principal, StateDigest};
-use cyphr_storage::export_commits;
 
-use super::common::{generate_key, load_key_from_keystore, parse_store};
+use super::common::{generate_key, load_key_from_keystore, parse_store, save_principal_to_engine};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat};
 
@@ -74,14 +73,9 @@ pub fn run(
         }
     };
 
-    // Store the identity (only if PR is set — L3+ explicit genesis)
-    let store = parse_store(&cli.store)?;
-    if let Some(pr_ref) = principal.pg() {
-        let commits = export_commits(&principal)?;
-        for commit in &commits {
-            store.append_commit(pr_ref, commit)?;
-        }
-    }
+    // Store the identity
+    let store = parse_store(&cli.store, &cli.keystore)?;
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     // Output result
     match cli.output {

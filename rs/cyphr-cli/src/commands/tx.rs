@@ -1,10 +1,10 @@
 //! ParsedCoz commands.
 
 use cyphr::StateDigest;
-use cyphr_storage::{Genesis, load_principal_from_commits};
 
 use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
+    load_key_from_keystore, parse_principal_genesis, parse_store,
+    load_principal_from_engine, get_commits_from_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat, TxCommands};
@@ -73,12 +73,11 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Verify coz chain integrity for an identity.
-fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
+pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
+    let store = parse_store(&cli.store, &cli.keystore)?;
 
     // Load commits from store
-    let commits = store.get_commits(&pr).unwrap_or_default();
+    let commits = get_commits_from_engine(&store, identity).unwrap_or_default();
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
@@ -126,18 +125,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let principal = if is_implicit_genesis {
-        // Implicit genesis with commits: use keystore key as genesis
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Verify PR matches
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -203,27 +191,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
 /// Load identity from storage or keystore.
 fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphr::Principal> {
-    let store = parse_store(&cli.store)?;
+    let store = parse_store(&cli.store, &cli.keystore)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Check if identity is in keystore (implicit genesis indicator)
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    if commits.is_empty() {
-        // Genesis state - reconstruct from keystore
-        let key = load_key_from_keystore(&keystore, identity)?;
-        Ok(cyphr::Principal::implicit(key)?)
-    } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with cozies
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        Ok(load_principal_from_commits(genesis, &commits)?)
-    } else {
-        // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        Ok(load_principal_from_commits(genesis, &commits)?)
-    }
+    load_principal_from_engine(&store, &keystore, identity)
 }

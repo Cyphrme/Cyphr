@@ -8,7 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphr::Key;
-use cyphr_storage::{CommitEntry, FileStore, Genesis};
+use cyphr_storage::{CommitEntry, Genesis};
+use cyphr_storage::blob::FjallBlobStore;
+use cyphr_storage::index::MemoryIndexer;
+use cyphr_storage::engine::StorageEngine;
+
+pub type CliStorageEngine = StorageEngine<FjallBlobStore, MemoryIndexer>;
 
 use crate::Error;
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
@@ -130,15 +135,250 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
     })
 }
 
-/// Parse the --store argument into a FileStore.
-pub fn parse_store(store_uri: &str) -> crate::Result<FileStore> {
+/// Parse the --store argument into a CliStorageEngine.
+pub fn parse_store(store_uri: &str, keystore_path: &std::path::Path) -> crate::Result<CliStorageEngine> {
     if let Some(path) = store_uri.strip_prefix("file:") {
-        Ok(FileStore::new(path))
+        let blob_store = FjallBlobStore::open(std::path::Path::new(path))
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let indexer = MemoryIndexer::new();
+        let engine = StorageEngine::new(blob_store, indexer);
+
+        // Open keystore and extract keys
+        let keystore = JsonKeyStore::open(keystore_path)?;
+        let thumbprints = keystore.list();
+        let mut keys = Vec::new();
+        for tmb in &thumbprints {
+            if let Ok(key) = load_key_from_keystore(&keystore, tmb) {
+                keys.push(key);
+            }
+        }
+        
+        // Reindex on startup synchronously
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async {
+            engine.reindex(&keys).await
+        }).map_err(|e| crate::Error::Storage(e.to_string()))?;
+        
+        Ok(engine)
     } else {
         Err(Error::InvalidArgument(format!(
             "unsupported store URI: {store_uri} (expected file:<path>)"
         )))
     }
+}
+
+/// Get the principal ID string for a PrincipalGenesis
+pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
+    use cyphr::StateDigest;
+    let mh = pr.as_multihash();
+    let alg = mh.algorithms().next()
+        .ok_or_else(|| crate::Error::Storage("empty PR algorithms".into()))?;
+    let bytes = mh.get(alg)
+        .ok_or_else(|| crate::Error::Storage("missing PR variant".into()))?;
+    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+}
+
+/// Get the principal ID string from a Principal
+pub fn get_principal_id_from_principal(principal: &cyphr::Principal) -> crate::Result<String> {
+    use cyphr::StateDigest;
+    let mh = if let Some(pg) = principal.pg() {
+        pg.as_multihash()
+    } else {
+        principal.pr().as_multihash()
+    };
+    let alg = mh.algorithms().next()
+        .ok_or_else(|| crate::Error::Storage("empty PR/PS algorithms".into()))?;
+    let bytes = mh.get(alg)
+        .ok_or_else(|| crate::Error::Storage("missing PR/PS variant".into()))?;
+    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+}
+
+/// Load a principal from the storage engine.
+pub fn load_principal_from_engine(
+    engine: &CliStorageEngine,
+    keystore: &JsonKeyStore,
+    identity: &str,
+) -> crate::Result<cyphr::Principal> {
+    let pr = parse_principal_genesis(identity)?;
+    let principal_id = get_principal_id(&pr)?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    
+    rt.block_on(async {
+        let tip = engine.get_tip(&principal_id).await
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        
+        let is_implicit_genesis = keystore.get(identity).is_ok();
+        
+        if tip.is_none() {
+            // Genesis state - reconstruct from keystore
+            let key = load_key_from_keystore(keystore, identity)?;
+            Ok(cyphr::Principal::implicit(key)?)
+        } else {
+            let genesis = if is_implicit_genesis {
+                let genesis_key = load_key_from_keystore(keystore, identity)?;
+                cyphr_storage::Genesis::Implicit(genesis_key)
+            } else {
+                engine.resolve_genesis(&principal_id, &[]).await
+                    .map_err(|e| crate::Error::Storage(e.to_string()))?
+            };
+            
+            engine.load_principal(&principal_id, genesis).await
+                .map_err(|e| crate::Error::Storage(e.to_string()))
+        }
+    })
+}
+
+/// Save a principal's new commits to the storage engine.
+pub fn save_principal_to_engine(
+    engine: &CliStorageEngine,
+    keystore: &JsonKeyStore,
+    principal: &cyphr::Principal,
+) -> crate::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    
+    rt.block_on(async {
+        let principal_id = get_principal_id_from_principal(principal)?;
+        
+        let tip = engine.get_tip(&principal_id).await
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        
+        let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
+        
+        let commits = cyphr_storage::export_commits(principal)
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        
+        for (i, commit) in commits.iter().enumerate().skip(stored_count) {
+            let mut raw_blobs = Vec::new();
+            let mut key_iter = commit.keys.iter();
+            for coz in &commit.cozies {
+                let mut coz_mut = coz.clone();
+                let typ = coz_mut
+                    .get("pay")
+                    .and_then(|p| p.get("typ"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+
+                if typ.contains("/key/create") || typ.contains("/key/replace") {
+                    if let Some(key_entry) = key_iter.next() {
+                        if let Some(obj) = coz_mut.as_object_mut() {
+                            obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
+                        }
+                    }
+                } else if i == 0 && typ.contains("/commit/create") {
+                    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+                    let identity_fallback = principal_id.split(':').last().unwrap().to_string();
+                    let identity = principal.genesis_keys().first().unwrap_or(&identity_fallback);
+                    if let Ok(key) = load_key_from_keystore(keystore, identity) {
+                        let key_entry = cyphr_storage::KeyEntry {
+                            alg: key.alg.clone(),
+                            pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
+                            tmb: key.tmb.to_b64(),
+                            tag: key.tag.clone(),
+                            now: Some(key.first_seen),
+                        };
+                        if let Some(obj) = coz_mut.as_object_mut() {
+                            obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
+                        }
+                    }
+                }
+
+                let bytes = serde_json::to_vec(&coz_mut)
+                    .map_err(|e| crate::Error::Json(e))?;
+                raw_blobs.push(bytes);
+            }
+            let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
+            
+            let genesis = if i == 0 {
+                let identity_fallback = principal_id.split(':').last().unwrap().to_string();
+                let identity = principal.genesis_keys().first().unwrap_or(&identity_fallback);
+                if let Ok(key) = load_key_from_keystore(keystore, identity) {
+                    Some(cyphr_storage::Genesis::Implicit(key))
+                } else {
+                    let parsed_commit = cyphr_storage::CommitEntry {
+                        cozies: commit.cozies.clone(),
+                        keys: commit.keys.clone(),
+                        commit_id: commit.commit_id.clone(),
+                        auth_root: commit.auth_root.clone(),
+                        sr: commit.sr.clone(),
+                        pr: commit.pr.clone(),
+                    };
+                    let extracted = extract_genesis_from_commits(&[parsed_commit], Some(keystore))?;
+                    Some(extracted)
+                }
+            } else {
+                None
+            };
+            
+            engine.submit_commit(&principal_id, genesis, &raw_refs).await
+                .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        }
+        
+        Ok(())
+    })
+}
+
+/// Retrieve all commits for an identity from the storage engine.
+pub fn get_commits_from_engine(
+    engine: &CliStorageEngine,
+    identity: &str,
+) -> crate::Result<Vec<CommitEntry>> {
+    let pr = parse_principal_genesis(identity)?;
+    let principal_id = get_principal_id(&pr)?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    
+    rt.block_on(async {
+        use cyphr_storage::index::Indexer;
+        use cyphr_storage::blob::BlobStore;
+
+        let chain = engine.indexer().get_commit_chain(&principal_id, None, None).await
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        
+        let mut commit_entries = Vec::with_capacity(chain.len());
+        for commit_ref in &chain {
+            let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
+            let mut keys = Vec::new();
+            
+            for hash in &commit_ref.blob_hashes {
+                let data = engine.blob_store().get(hash).await
+                    .map_err(|e| crate::Error::Storage(e.to_string()))?
+                    .ok_or_else(|| crate::Error::Storage(format!("blob {hash} not found")))?;
+                
+                let json_str = String::from_utf8(data)
+                    .map_err(|e| crate::Error::Storage(format!("blob is not UTF-8: {e}")))?;
+                let value: serde_json::Value = serde_json::from_str(&json_str)
+                    .map_err(|e| crate::Error::Json(e))?;
+                
+                if let Some(key_obj) = value.get("key") {
+                    if let Ok(ke) = serde_json::from_value::<cyphr_storage::KeyEntry>(key_obj.clone()) {
+                        keys.push(ke);
+                    }
+                }
+                
+                cozies.push(value);
+            }
+            
+            commit_entries.push(cyphr_storage::CommitEntry::new(
+                cozies,
+                keys,
+                commit_ref.commit_id.clone(),
+                String::new(),
+                String::new(),
+                commit_ref.pr.clone(),
+            ));
+        }
+        
+        Ok(commit_entries)
+    })
 }
 
 /// Parse a base64url principal root string into a PrincipalGenesis.

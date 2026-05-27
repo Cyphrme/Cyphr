@@ -1,40 +1,16 @@
 //! Identity inspection command.
 
 use cyphr::StateDigest;
-use cyphr_storage::load_principal_from_commits;
 
-use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
-};
+use super::common::{load_principal_from_engine, parse_store};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
+    let store = parse_store(&cli.store, &cli.keystore)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    // Try to load commits from store
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Check if identity is in keystore (implicit genesis indicator)
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let principal = if commits.is_empty() {
-        // No commits - try to reconstruct from keystore (genesis state)
-        let key = load_key_from_keystore(&keystore, identity)?;
-        cyphr::Principal::implicit(key)?
-    } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with cozies
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = cyphr_storage::Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     match cli.output {
         OutputFormat::Json => {
