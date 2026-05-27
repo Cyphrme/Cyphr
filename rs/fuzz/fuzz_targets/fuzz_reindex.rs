@@ -1,10 +1,8 @@
 #![no_main]
 
-use cyphr_storage::{
-    blob::{BlobStore, MemoryBlobStore},
-    engine::StorageEngine,
-    index::MemoryIndexer,
-};
+use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
+use cyphr_storage::engine::StorageEngine;
+use cyphr_storage::index::MemoryIndexer;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -37,14 +35,15 @@ fuzz_target!(|data: &[u8]| {
         let engine = StorageEngine::new(blob_store, indexer);
 
         for chunk in chunks {
-            if let Ok(mut handle) = engine.blob_store().open_write().await {
-                if tokio::io::AsyncWriteExt::write_all(&mut handle, chunk)
+            let write_chunk = || async {
+                let mut handle = engine.blob_store().open_write().await.ok()?;
+                tokio::io::AsyncWriteExt::write_all(&mut handle, chunk)
                     .await
-                    .is_ok()
-                {
-                    let _ = engine.blob_store().close(handle).await;
-                }
-            }
+                    .ok()?;
+                engine.blob_store().close(handle).await.ok()?;
+                Some(())
+            };
+            let _ = write_chunk().await;
         }
 
         // Run reindex recovery - should not panic
