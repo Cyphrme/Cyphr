@@ -330,12 +330,19 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
     Ok(())
 }
 
-/// Replay commit bundles onto a principal (commit-based format).
-///
-/// Each commit bundle contains multiple cozies that form an atomic unit.
-/// Uses `CommitScope` to properly group cozies into commits.
-/// Key material is read from the commit-level `keys[]` array, not from
-/// per-cz embedded fields.
+pub(crate) fn canonicalize_value(val: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = val {
+        map.sort_keys();
+        for (_, v) in map.iter_mut() {
+            canonicalize_value(v);
+        }
+    } else if let serde_json::Value::Array(arr) = val {
+        for v in arr {
+            canonicalize_value(v);
+        }
+    }
+}
+
 pub(crate) fn replay_commits(
     principal: &mut Principal,
     commits: &[CommitEntry],
@@ -351,72 +358,195 @@ pub(crate) fn replay_commits(
         if commit.cozies.is_empty() {
             return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
         }
-        // Collect actions to replay after the commit scope is finalized.
-        // Actions don't participate in the commit lifecycle but may appear
-        // in the same bundle.
-        let mut deferred_actions: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
 
-        // Create a commit scope for this bundle's cozies
-        let mut scope = principal.begin_commit();
-        let mut applied_tx_count = 0;
+        // 1. Find the first transaction cozy index
+        let mut first_tx_idx = None;
+        for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
+            let pay = tx_value.get("pay").ok_or(LoadError::MissingTimestamp {
+                index: commit_idx * 1000 + tx_idx,
+            })?;
+            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+            if is_transaction_typ(typ) {
+                first_tx_idx = Some(tx_idx);
+                break;
+            }
+        }
 
-        // Iterator over commit-level keys — consumed by key-introducing cozies
         let mut key_iter = commit.keys.iter();
 
-        for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
-            let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
+        if let Some(idx) = first_tx_idx {
+            // 2. Process pre-actions (before the first transaction)
+            for tx_idx in 0..idx {
+                let tx_value = &commit.cozies[tx_idx];
+                let index = commit_idx * 1000 + tx_idx;
 
-            let pay = tx_value
-                .get("pay")
-                .ok_or(LoadError::MissingTimestamp { index })?;
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
 
-            let sig_b64 = tx_value
-                .get("sig")
-                .and_then(|s| s.as_str())
-                .ok_or(LoadError::MissingSig { index })?;
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
 
-            let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
-                LoadError::InvalidSignature {
-                    index,
-                    message: "invalid base64 signature".into(),
-                }
-            })?;
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
 
-            // Serialize pay for verification (bit-perfect for stored data)
-            let pay_json =
-                serde_json::to_vec(pay).map_err(|e| LoadError::Json { index, source: e })?;
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
 
-            // Determine if this is a coz or action by typ prefix
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+                let czd = compute_czd(&pay_json, &sig)?;
 
-            if is_transaction_typ(typ) {
-                // ParsedCoz: consume next key from commit-level keys if this
-                // is a key-introducing type (key/create, key/replace)
-                let new_key = if is_key_introducing_typ(typ) {
-                    key_iter.next().map(key_entry_to_key).transpose()?
-                } else {
-                    None
-                };
-
-                // Compute czd via the payload's hash algorithm
-                let alg = pay
-                    .get("alg")
-                    .and_then(|a| a.as_str())
-                    .ok_or(LoadError::UnsupportedAlgorithm)?;
-                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
-                    .ok_or(LoadError::UnsupportedAlgorithm)?;
-                let czd =
-                    coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-                // Verify and apply within the scope
-                scope
-                    .verify_and_apply(&pay_json, &sig, czd, new_key)
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
                     .map_err(|e| match e {
                         cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
                             index,
                             message: "signature verification failed".into(),
                         },
-                        cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
+                        other => LoadError::Protocol(other),
+                    })?;
+            }
+
+            // 3. Open commit scope and process transactions and deferred actions
+            let mut deferred_actions = Vec::new();
+            let mut scope = principal.begin_commit();
+            let mut applied_tx_count = 0;
+
+            for tx_idx in idx..commit.cozies.len() {
+                let tx_value = &commit.cozies[tx_idx];
+                let index = commit_idx * 1000 + tx_idx;
+
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
+
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
+
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
+
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
+
+                let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+
+                if is_transaction_typ(typ) {
+                    let new_key = if is_key_introducing_typ(typ) {
+                        key_iter.next().map(key_entry_to_key).transpose()?
+                    } else {
+                        None
+                    };
+
+                    let alg = pay
+                        .get("alg")
+                        .and_then(|a| a.as_str())
+                        .ok_or(LoadError::UnsupportedAlgorithm)?;
+                    let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+                        .ok_or(LoadError::UnsupportedAlgorithm)?;
+                    let czd =
+                        coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
+
+                    scope
+                        .verify_and_apply(&pay_json, &sig, czd, new_key)
+                        .map_err(|e| match e {
+                            cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                                index,
+                                message: "signature verification failed".into(),
+                            },
+                            cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
+                            cyphr::Error::UnknownKey => LoadError::UnknownSigner {
+                                index,
+                                tmb: pay
+                                    .get("tmb")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("?")
+                                    .into(),
+                            },
+                            other => LoadError::Protocol(other),
+                        })?;
+                    applied_tx_count += 1;
+                } else {
+                    let tmb = pay
+                        .get("tmb")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    deferred_actions.push((index, pay_json, sig, tmb));
+                }
+            }
+
+            if applied_tx_count > 0 {
+                scope.finalize().map_err(LoadError::Protocol)?;
+            } else {
+                drop(scope);
+            }
+
+            // 4. Replay deferred actions on the principal
+            for (index, pay_json, sig, tmb) in deferred_actions {
+                let czd = compute_czd(&pay_json, &sig)?;
+
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
+                    .map_err(|e| match e {
+                        cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
+                        cyphr::Error::UnknownKey => LoadError::UnknownSigner { index, tmb },
+                        other => LoadError::Protocol(other),
+                    })?;
+            }
+        } else {
+            // Action-only bundle
+            for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
+                let index = commit_idx * 1000 + tx_idx;
+
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
+
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
+
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
+
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
+
+                let czd = compute_czd(&pay_json, &sig)?;
+
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
+                    .map_err(|e| match e {
+                        cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
                         cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                             index,
                             tmb: pay
@@ -427,38 +557,7 @@ pub(crate) fn replay_commits(
                         },
                         other => LoadError::Protocol(other),
                     })?;
-                applied_tx_count += 1;
-            } else {
-                // Action: defer until after scope is finalized
-                deferred_actions.push((index, pay_json, sig));
             }
-        }
-
-        if applied_tx_count > 0 {
-            // Finalize the commit scope
-            scope.finalize().map_err(LoadError::Protocol)?;
-        } else {
-            // Drop scope without finalize — no cozies were applied
-            drop(scope);
-        }
-
-        // Replay deferred actions on the principal (outside the scope)
-        for (index, pay_json, sig) in deferred_actions {
-            let czd = compute_czd(&pay_json, &sig)?;
-
-            principal
-                .verify_and_record_action(&pay_json, &sig, czd)
-                .map_err(|e| match e {
-                    cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                        index,
-                        message: "signature verification failed".into(),
-                    },
-                    cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                        index,
-                        tmb: "?".into(),
-                    },
-                    other => LoadError::Protocol(other),
-                })?;
         }
     }
 

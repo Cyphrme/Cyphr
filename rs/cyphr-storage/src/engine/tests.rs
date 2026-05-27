@@ -781,7 +781,7 @@ async fn test_reindex_recovery_with_crashed_commit() {
     let crashed_coz_json = serde_json::json!({
         "pay": {
             "typ": "cyphr.me/cyphr/key/add",
-            "now": 99999999,
+            "now": 1800000000,
             "pre": "some-pre-hash",
             "tmb": genesis_key["tmb"].as_str().unwrap(),
             "alg": genesis_key["alg"].as_str().unwrap(),

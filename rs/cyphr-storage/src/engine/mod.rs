@@ -400,14 +400,38 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         let active_algs = principal.active_algs().to_vec();
 
-        // 4. Open a commit scope and process each blob.
-        let mut scope = principal.begin_commit();
+        let mut first_tx_idx = None;
+        for (i, blob_bytes) in raw_blobs.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_slice(blob_bytes)
+                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
+            let pay = value
+                .get("pay")
+                .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'pay'")))?;
+            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+            if is_transaction_typ(typ) {
+                first_tx_idx = Some(i);
+                break;
+            }
+        }
+
+        struct ReindexCoz {
+            pay_json: Vec<u8>,
+            sig: Vec<u8>,
+            czd: coz::Czd,
+            typ: String,
+            value: serde_json::Value,
+            alg_str: String,
+        }
+
         let mut transaction_types = Vec::new();
         let mut last_timestamp: i64 = 0;
         let mut pending_czds = Vec::new();
         let mut extracted_keys = Vec::new();
 
-        for (i, blob_bytes) in raw_blobs.iter().enumerate() {
+        let parse_coz = |_hash_alg: cyphr::state::HashAlg,
+                         blob_bytes: &[u8],
+                         i: usize|
+         -> Result<ReindexCoz, EngineError> {
             let value: serde_json::Value = serde_json::from_slice(blob_bytes)
                 .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
 
@@ -422,95 +446,180 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let sig = Base64UrlUnpadded::decode_vec(sig_b64)
                 .map_err(|_| EngineError::MalformedBlob(format!("blob {i}: invalid sig base64")))?;
 
-            let pay_json = serde_json::to_vec(pay)
+            let mut pay_val = pay.clone();
+            crate::import::canonicalize_value(&mut pay_val);
+            let pay_json = serde_json::to_vec(&pay_val)
                 .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: pay serialize: {e}")))?;
 
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+            let typ = pay
+                .get("typ")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
 
-            if let Some(now) = pay.get("now").and_then(|n| n.as_i64()) {
-                last_timestamp = now;
-            }
-
-            // Compute czd for all cozies (both transactions and actions)
-            let alg = match scope.principal_hash_alg() {
-                cyphr::state::HashAlg::Sha256 => "ES256",
-                cyphr::state::HashAlg::Sha384 => "ES384",
-                cyphr::state::HashAlg::Sha512 => "ES512",
-            };
-            let cad = coz::canonical_hash_for_alg(&pay_json, alg, None).ok_or_else(|| {
+            let alg_str = pay
+                .get("alg")
+                .and_then(|a| a.as_str())
+                .ok_or_else(|| {
+                    EngineError::MalformedBlob(format!("blob {i}: missing 'alg' in pay"))
+                })?
+                .to_string();
+            let cad = coz::canonical_hash_for_alg(&pay_json, &alg_str, None).ok_or_else(|| {
                 EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
             })?;
-            let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or_else(|| {
+            let czd = coz::czd_for_alg(&cad, &sig, &alg_str).ok_or_else(|| {
                 EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
             })?;
 
-            pending_czds.push((czd.clone(), alg.to_string()));
-            transaction_types.push(typ.to_string());
-
-            if is_transaction_typ(typ) {
-                // Extract key material for key-introducing transactions.
-                let new_key = if is_key_introducing_typ(typ) {
-                    value.get("key").and_then(|k| {
-                        let ke = key_value_to_entry(k)?;
-                        extracted_keys.push(crate::PublicKeyInfo {
-                            thumbprint: ke.tmb.clone(),
-                            algorithm: ke.alg.clone(),
-                            public_key: ke.pub_key.clone(),
-                        });
-                        crate::import::key_entry_to_key(&ke).ok()
-                    })
-                } else {
-                    None
-                };
-
-                // Verify signature and apply state mutation.
-                scope.verify_and_apply(&pay_json, &sig, czd, new_key)?;
-            }
-        }
-
-        // 5. Finalize the commit scope.
-        let commit = scope.finalize()?;
-
-        // Now scope is gone. We can access principal safely.
-        let mut transaction_ids = Vec::new();
-        for (czd, alg_str) in pending_czds {
-            let mut czd_variants = Vec::new();
-            let source_alg = match cyphr::state::hash_alg_from_str(&alg_str) {
-                Ok(a) => a,
-                Err(_) => cyphr::state::HashAlg::Sha256,
-            };
-            let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
-            for &active_alg in &active_algs {
-                let converted = tagged.convert_to(active_alg);
-                czd_variants.push(format!(
-                    "{active_alg}:{}",
-                    Base64UrlUnpadded::encode_string(&converted)
-                ));
-            }
-            transaction_ids.push(czd_variants);
-        }
-
-        // 6. Extract state digests from the finalized Commit.
-        let commit_ids = format_multihash_all(&commit.tr().0)?;
-        let ar = format_multihash_all(commit.auth_root().as_multihash())?;
-        let sr = format_multihash_all(commit.sr().as_multihash())?;
-        let pr = format_multihash_all(commit.pr().as_multihash())?;
-
-        // 7. Persist via the storage layer.
-        let meta = IngestMeta {
-            principal_id: principal_id.to_string(),
-            commit_ids,
-            sequence: next_seq,
-            prs: pr,
-            srs: sr,
-            ars: ar,
-            transaction_types,
-            transaction_ids,
-            timestamp: last_timestamp,
-            keys: extracted_keys,
+            Ok(ReindexCoz {
+                pay_json,
+                sig,
+                czd,
+                typ,
+                value,
+                alg_str,
+            })
         };
 
-        self.ingest_commit(raw_blobs, meta).await
+        let digest_info = if let Some(idx) = first_tx_idx {
+            // 4.1 Process pre-actions (before the first transaction).
+            for (i, blob_bytes) in raw_blobs.iter().enumerate().take(idx) {
+                let parsed = parse_coz(principal.hash_alg(), blob_bytes, i)?;
+                pending_czds.push((parsed.czd.clone(), parsed.alg_str));
+                transaction_types.push(parsed.typ);
+
+                if let Some(now) = serde_json::from_slice::<serde_json::Value>(&parsed.pay_json)
+                    .ok()
+                    .and_then(|v| v.get("now").and_then(|n| n.as_i64()))
+                {
+                    last_timestamp = now;
+                }
+
+                principal.verify_and_record_action(&parsed.pay_json, &parsed.sig, parsed.czd)?;
+            }
+
+            // 4.2 Open commit scope and process transactions and deferred actions.
+            let (commit_ids, ar, sr, pr, deferred) = {
+                let mut scope = principal.begin_commit();
+                let mut deferred = Vec::new();
+
+                for (i, blob_bytes) in raw_blobs.iter().enumerate().skip(idx) {
+                    let parsed = parse_coz(scope.principal_hash_alg(), blob_bytes, i)?;
+                    pending_czds.push((parsed.czd.clone(), parsed.alg_str));
+                    transaction_types.push(parsed.typ.clone());
+
+                    if let Some(now) = serde_json::from_slice::<serde_json::Value>(&parsed.pay_json)
+                        .ok()
+                        .and_then(|v| v.get("now").and_then(|n| n.as_i64()))
+                    {
+                        last_timestamp = now;
+                    }
+
+                    if is_transaction_typ(&parsed.typ) {
+                        let new_key = if is_key_introducing_typ(&parsed.typ) {
+                            parsed.value.get("key").and_then(|k| {
+                                let ke = key_value_to_entry(k)?;
+                                extracted_keys.push(crate::PublicKeyInfo {
+                                    thumbprint: ke.tmb.clone(),
+                                    algorithm: ke.alg.clone(),
+                                    public_key: ke.pub_key.clone(),
+                                });
+                                crate::import::key_entry_to_key(&ke).ok()
+                            })
+                        } else {
+                            None
+                        };
+                        scope.verify_and_apply(
+                            &parsed.pay_json,
+                            &parsed.sig,
+                            parsed.czd,
+                            new_key,
+                        )?;
+                    } else {
+                        deferred.push((parsed.pay_json, parsed.sig, parsed.czd));
+                    }
+                }
+
+                let commit = scope.finalize()?;
+                let commit_ids = format_multihash_all(&commit.tr().0)?;
+                let ar = format_multihash_all(commit.auth_root().as_multihash())?;
+                let sr = format_multihash_all(commit.sr().as_multihash())?;
+                let pr = format_multihash_all(commit.pr().as_multihash())?;
+                (commit_ids, ar, sr, pr, deferred)
+            };
+
+            // 4.3 Process post-actions (after scope is finalized and dropped).
+            for (pay_json, sig, czd) in deferred {
+                principal.verify_and_record_action(&pay_json, &sig, czd)?;
+            }
+
+            Some((commit_ids, ar, sr, pr))
+        } else {
+            // Action-only bundle.
+            for (i, blob_bytes) in raw_blobs.iter().enumerate() {
+                let parsed = parse_coz(principal.hash_alg(), blob_bytes, i)?;
+                pending_czds.push((parsed.czd.clone(), parsed.alg_str));
+                transaction_types.push(parsed.typ);
+
+                if let Some(now) = serde_json::from_slice::<serde_json::Value>(&parsed.pay_json)
+                    .ok()
+                    .and_then(|v| v.get("now").and_then(|n| n.as_i64()))
+                {
+                    last_timestamp = now;
+                }
+
+                principal.verify_and_record_action(&parsed.pay_json, &parsed.sig, parsed.czd)?;
+            }
+            None
+        };
+
+        if let Some((commit_ids, ar, sr, pr)) = digest_info {
+            let mut transaction_ids = Vec::new();
+            for (czd, alg_str) in pending_czds {
+                let mut czd_variants = Vec::new();
+                let source_alg = match cyphr::state::hash_alg_from_str(&alg_str) {
+                    Ok(a) => a,
+                    Err(_) => cyphr::state::HashAlg::Sha256,
+                };
+                let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                for &active_alg in &active_algs {
+                    let converted = tagged.convert_to(active_alg);
+                    czd_variants.push(format!(
+                        "{active_alg}:{}",
+                        Base64UrlUnpadded::encode_string(&converted)
+                    ));
+                }
+                transaction_ids.push(czd_variants);
+            }
+
+            // 7. Persist via the storage layer.
+            let meta = IngestMeta {
+                principal_id: principal_id.to_string(),
+                commit_ids,
+                sequence: next_seq,
+                prs: pr,
+                srs: sr,
+                ars: ar,
+                transaction_types,
+                transaction_ids,
+                timestamp: last_timestamp,
+                keys: extracted_keys,
+            };
+
+            self.ingest_commit(raw_blobs, meta).await
+        } else {
+            // Action-only bundle: just store blobs in blob store without indexing
+            let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
+            for blob in raw_blobs {
+                let mut handle = self.blob_store.open_write().await?;
+                tokio::io::AsyncWriteExt::write_all(&mut handle, blob)
+                    .await
+                    .map_err(BlobStoreError::Io)?;
+                let hash = self.blob_store.close(handle).await?;
+                blob_hashes.push(hash);
+            }
+            Ok(IngestResult { blob_hashes })
+        }
     }
 
     /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
@@ -628,6 +737,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             pre: Option<String>,
             tmb: String,
             now: i64,
+            alg: String,
             new_key: Option<cyphr::Key>,
             key_info: Option<crate::PublicKeyInfo>,
         }
@@ -686,6 +796,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 pre: Option<String>,
                 tmb: String,
                 now: i64,
+                alg: String,
             }
 
             let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
@@ -724,6 +835,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 pre: pay.pre,
                 tmb: pay.tmb,
                 now: pay.now,
+                alg: pay.alg,
                 new_key,
                 key_info,
             });
@@ -732,7 +844,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         tracing::debug!("total cozies parsed: {}", cozies.len());
 
         // Separate transactions and actions
-        let (mut tx_cozies, mut action_cozies): (Vec<_>, Vec<_>) =
+        let (mut tx_cozies, action_cozies): (Vec<_>, Vec<_>) =
             cozies.into_iter().partition(|c| is_transaction_typ(&c.typ));
 
         tracing::debug!(
@@ -855,311 +967,444 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             }
         }
 
+        // Recombine remaining transactions and actions into a single chronological pool.
+        let mut pool = tx_cozies;
+        pool.extend(action_cozies);
+
         // Sort pool by timestamp to facilitate sequential application.
-        // For cozies with the same timestamp, ensure commit/create finality markers
-        // sort after state-mutating transactions.
-        tx_cozies.sort_by(|a, b| match a.now.cmp(&b.now) {
+        // For cozies with the same timestamp, ensure actions come first, then mutation transactions, then finalizer commit/create cozies last.
+        pool.sort_by(|a, b| match a.now.cmp(&b.now) {
             std::cmp::Ordering::Equal => {
                 let a_is_commit = a.typ.contains("/commit/create");
                 let b_is_commit = b.typ.contains("/commit/create");
-                a_is_commit.cmp(&b_is_commit)
+                if a_is_commit != b_is_commit {
+                    a_is_commit.cmp(&b_is_commit)
+                } else {
+                    let a_is_tx = is_transaction_typ(&a.typ);
+                    let b_is_tx = is_transaction_typ(&b.typ);
+                    b_is_tx.cmp(&a_is_tx)
+                }
             },
             other => other,
         });
-        action_cozies.sort_by_key(|c| c.now);
-
-        for (i, c) in tx_cozies.iter().enumerate() {
-            eprintln!(
-                "sorted tx_cozy [{}]: typ={}, now={}, pre={:?}, hash={}",
-                i, c.typ, c.now, c.pre, c.hash
-            );
-        }
 
         for (mut principal, principal_id, mut sequence) in bootstrapped {
             loop {
                 let active_algs = principal.active_algs().to_vec();
-                eprintln!(
-                    "loop iteration: tx_cozies.len() = {}, principal PR = {:?}",
-                    tx_cozies.len(),
-                    principal.pr()
-                );
-                let mut scope = principal.begin_commit();
-                let mut applied_any = false;
                 let mut commit_blobs = Vec::new();
                 let mut commit_transaction_types = Vec::new();
                 let mut commit_pending_czds = Vec::new();
-                let mut commit_timestamp = 0;
-                let mut commit_keys = Vec::new();
+                let mut consumed_indices = std::collections::HashSet::new();
 
-                let mut remaining_txs = Vec::new();
-                let mut mutation_cozies = Vec::new();
-                let mut commit_cozies = Vec::new();
-
-                for coz in tx_cozies.clone() {
-                    if coz.typ.contains("/commit/create") {
-                        commit_cozies.push(coz);
-                    } else {
-                        mutation_cozies.push(coz);
-                    }
-                }
-
-                // 1. Eagerly apply as many mutation cozies as possible in this commit scope
-                loop {
-                    let mut applied_this_round = false;
-                    let mut unapplied = Vec::new();
-                    for coz in mutation_cozies {
-                        let alg = match scope.principal_hash_alg() {
-                            cyphr::state::HashAlg::Sha256 => "ES256",
-                            cyphr::state::HashAlg::Sha384 => "ES384",
-                            cyphr::state::HashAlg::Sha512 => "ES512",
-                        };
-                        let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
-                            Some(c) => c,
-                            None => {
-                                unapplied.push(coz);
-                                continue;
-                            },
-                        };
-                        let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
-                            Some(c) => c,
-                            None => {
-                                unapplied.push(coz);
-                                continue;
-                            },
-                        };
-
-                        match scope.verify_and_apply(
-                            &coz.pay_json,
-                            &coz.sig,
-                            czd.clone(),
-                            coz.new_key.clone(),
-                        ) {
-                            Ok(_) => {
-                                commit_blobs.push(coz.hash);
-                                commit_transaction_types.push(coz.typ.clone());
-                                commit_pending_czds.push((czd, alg.to_string()));
-                                if let Some(info) = &coz.key_info {
-                                    commit_keys.push(info.clone());
-                                }
-                                commit_timestamp = coz.now;
-                                applied_any = true;
-                                applied_this_round = true;
-                            },
-                            Err(_) => {
-                                unapplied.push(coz);
-                            },
-                        }
-                    }
-                    mutation_cozies = unapplied;
-                    if !applied_this_round {
+                let mut first_tx_idx = None;
+                for (idx, coz) in pool.iter().enumerate() {
+                    if is_transaction_typ(&coz.typ) {
+                        first_tx_idx = Some(idx);
                         break;
                     }
                 }
 
-                // 2. Find and apply the matching commit/create cozy
-                let mut matched_commit = None;
-                let mut unapplied_commits = Vec::new();
-                for coz in commit_cozies {
-                    let alg = match scope.principal_hash_alg() {
-                        cyphr::state::HashAlg::Sha256 => "ES256",
-                        cyphr::state::HashAlg::Sha384 => "ES384",
-                        cyphr::state::HashAlg::Sha512 => "ES512",
-                    };
-                    let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
-                        Some(c) => c,
-                        None => {
-                            unapplied_commits.push(coz);
-                            continue;
-                        },
-                    };
-                    let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
-                        Some(c) => c,
-                        None => {
-                            unapplied_commits.push(coz);
-                            continue;
-                        },
-                    };
+                if let Some(tx_start_idx) = first_tx_idx {
+                    // 1.1 Apply all pre-actions before the first transaction.
+                    for (idx, coz) in pool.iter().enumerate().take(tx_start_idx) {
+                        let tmb_bytes = match Base64UrlUnpadded::decode_vec(&coz.tmb) {
+                            Ok(b) => b,
+                            Err(_) => continue,
+                        };
+                        let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
 
-                    // Extract claimed arrow to check match
-                    let claimed_arrow = if let Ok(value) =
-                        serde_json::from_slice::<serde_json::Value>(&coz.pay_json)
-                    {
-                        if let Some(arrow_val) = value.get("arrow").and_then(|v| v.as_str()) {
-                            if let Ok(tagged) = arrow_val.parse::<cyphr::state::TaggedDigest>() {
-                                cyphr::multihash::MultihashDigest::from_single(
-                                    tagged.alg(),
-                                    tagged.as_bytes().to_vec(),
-                                )
-                                .ok()
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
+                        if principal.is_key_active(&signer_tmb) {
+                            let alg = &coz.alg;
+                            let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
+                                Some(c) => c,
+                                None => continue,
+                            };
+                            let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                                Some(c) => c,
+                                None => continue,
+                            };
 
-                    let matches = if let Some(arr) = &claimed_arrow {
-                        scope.matches_arrow(arr)
-                    } else {
-                        false
-                    };
-
-                    if matches && matched_commit.is_none() {
-                        // Apply this finalizer cozy!
-                        match scope.verify_and_apply(
-                            &coz.pay_json,
-                            &coz.sig,
-                            czd.clone(),
-                            coz.new_key.clone(),
-                        ) {
-                            Ok(_) => {
+                            let res = principal.verify_and_record_action(
+                                &coz.pay_json,
+                                &coz.sig,
+                                czd.clone(),
+                            );
+                            eprintln!(
+                                "reindex pre-action: typ={}, now={}, res={:?}",
+                                coz.typ, coz.now, res
+                            );
+                            if res.is_ok() {
                                 commit_blobs.push(coz.hash);
                                 commit_transaction_types.push(coz.typ.clone());
-                                commit_pending_czds.push((czd, alg.to_string()));
-                                if let Some(info) = &coz.key_info {
-                                    commit_keys.push(info.clone());
+
+                                let mut czd_variants = Vec::new();
+                                let source_alg = cyphr::state::hash_alg_from_str(&coz.alg)
+                                    .unwrap_or(cyphr::state::HashAlg::Sha256);
+                                let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                                for &active_alg in &active_algs {
+                                    let converted = tagged.convert_to(active_alg);
+                                    czd_variants.push(format!(
+                                        "{active_alg}:{}",
+                                        Base64UrlUnpadded::encode_string(&converted)
+                                    ));
                                 }
-                                commit_timestamp = coz.now;
-                                applied_any = true;
-                                matched_commit = Some(coz);
-                            },
-                            Err(e) => {
-                                eprintln!("failed to apply matched commit/create: {:?}", e);
-                                unapplied_commits.push(coz);
-                            },
+                                commit_pending_czds.push(czd_variants);
+                                consumed_indices.insert(idx);
+                            }
                         }
-                    } else {
-                        unapplied_commits.push(coz);
                     }
-                }
 
-                // Restore remaining_txs
-                remaining_txs.extend(mutation_cozies);
-                remaining_txs.extend(unapplied_commits);
+                    // 1.2 Gather mutation transactions and finalizers for the current commit.
+                    let target_time = pool[tx_start_idx].now;
 
-                // Update the pool
-                tx_cozies = remaining_txs;
+                    let mut mutations = Vec::new();
+                    for coz in pool.iter() {
+                        if coz.now == target_time
+                            && is_transaction_typ(&coz.typ)
+                            && !coz.typ.contains("/commit/create")
+                        {
+                            mutations.push(coz.clone());
+                        }
+                    }
 
-                if !applied_any || matched_commit.is_none() {
+                    let mut finalizers = Vec::new();
+                    for coz in pool.iter() {
+                        if coz.now == target_time && coz.typ.contains("/commit/create") {
+                            finalizers.push(coz.clone());
+                        }
+                    }
+
+                    let mut matched_combination = None;
+
+                    // Generate all permutations of the mutation cozies.
+                    fn permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+                        if items.is_empty() {
+                            return vec![vec![]];
+                        }
+                        let mut result = Vec::new();
+                        for (i, item) in items.iter().enumerate() {
+                            let mut rest = items.to_vec();
+                            rest.remove(i);
+                            for mut p in permutations(&rest) {
+                                p.insert(0, item.clone());
+                                result.push(p);
+                            }
+                        }
+                        result
+                    }
+
+                    let mutation_perms = permutations(&mutations);
+
+                    'outer: for finalizer_coz in &finalizers {
+                        let alg = &finalizer_coz.alg;
+                        let cad =
+                            match coz::canonical_hash_for_alg(&finalizer_coz.pay_json, alg, None) {
+                                Some(c) => c,
+                                None => continue,
+                            };
+                        let finalizer_czd = match coz::czd_for_alg(&cad, &finalizer_coz.sig, alg) {
+                            Some(c) => c,
+                            None => continue,
+                        };
+
+                        let claimed_arrow = if let Ok(value) =
+                            serde_json::from_slice::<serde_json::Value>(&finalizer_coz.pay_json)
+                        {
+                            value
+                                .get("arrow")
+                                .and_then(|v| v.as_str())
+                                .and_then(|arrow_val| {
+                                    arrow_val
+                                        .parse::<cyphr::state::TaggedDigest>()
+                                        .ok()
+                                        .and_then(|tagged| {
+                                            cyphr::multihash::MultihashDigest::from_single(
+                                                tagged.alg(),
+                                                tagged.as_bytes().to_vec(),
+                                            )
+                                            .ok()
+                                        })
+                                })
+                        } else {
+                            None
+                        };
+
+                        let claimed_arrow = match claimed_arrow {
+                            Some(arr) => arr,
+                            None => continue,
+                        };
+
+                        for perm in &mutation_perms {
+                            let mut test_principal = principal.clone();
+                            let mut scope = test_principal.begin_commit();
+                            let mut ok = true;
+                            let mut perm_keys = Vec::new();
+                            let mut perm_pending_czds = Vec::new();
+                            let mut perm_transaction_types = Vec::new();
+
+                            for coz in perm {
+                                let alg = &coz.alg;
+                                let cad =
+                                    match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
+                                        Some(c) => c,
+                                        None => {
+                                            ok = false;
+                                            break;
+                                        },
+                                    };
+                                let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                                    Some(c) => c,
+                                    None => {
+                                        ok = false;
+                                        break;
+                                    },
+                                };
+
+                                let new_key = if let Some(info) = &coz.key_info {
+                                    crate::import::key_entry_to_key(&crate::KeyEntry {
+                                        alg: info.algorithm.clone(),
+                                        pub_key: info.public_key.clone(),
+                                        tmb: info.thumbprint.clone(),
+                                        tag: None,
+                                        now: None,
+                                    })
+                                    .ok()
+                                } else {
+                                    None
+                                };
+
+                                if scope
+                                    .verify_and_apply(&coz.pay_json, &coz.sig, czd.clone(), new_key)
+                                    .is_ok()
+                                {
+                                    if let Some(info) = &coz.key_info {
+                                        perm_keys.push(info.clone());
+                                    }
+                                    perm_transaction_types.push(coz.typ.clone());
+
+                                    let mut czd_variants = Vec::new();
+                                    let source_alg = cyphr::state::hash_alg_from_str(&coz.alg)
+                                        .unwrap_or(cyphr::state::HashAlg::Sha256);
+                                    let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                                    for &active_alg in &active_algs {
+                                        let converted = tagged.convert_to(active_alg);
+                                        czd_variants.push(format!(
+                                            "{active_alg}:{}",
+                                            Base64UrlUnpadded::encode_string(&converted)
+                                        ));
+                                    }
+                                    perm_pending_czds.push(czd_variants);
+                                } else {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+
+                            if ok && scope.matches_arrow(&claimed_arrow) {
+                                // Finalize the commit using the finalizer cozy
+                                let res = scope.verify_and_apply(
+                                    &finalizer_coz.pay_json,
+                                    &finalizer_coz.sig,
+                                    finalizer_czd.clone(),
+                                    finalizer_coz.new_key.clone(),
+                                );
+                                if res.is_ok() {
+                                    // Add finalizer details
+                                    perm_transaction_types.push(finalizer_coz.typ.clone());
+                                    if let Some(info) = &finalizer_coz.key_info {
+                                        perm_keys.push(info.clone());
+                                    }
+                                    let mut czd_variants = Vec::new();
+                                    let finalizer_source_alg =
+                                        cyphr::state::hash_alg_from_str(&finalizer_coz.alg)
+                                            .unwrap_or(cyphr::state::HashAlg::Sha256);
+                                    let tagged = cyphr::state::TaggedCzd::new(
+                                        &finalizer_czd,
+                                        finalizer_source_alg,
+                                    );
+                                    for &active_alg in &active_algs {
+                                        let converted = tagged.convert_to(active_alg);
+                                        czd_variants.push(format!(
+                                            "{active_alg}:{}",
+                                            Base64UrlUnpadded::encode_string(&converted)
+                                        ));
+                                    }
+                                    perm_pending_czds.push(czd_variants);
+
+                                    let commit = match scope.finalize() {
+                                        Ok(c) => c,
+                                        Err(_) => continue,
+                                    };
+                                    let commit_ids = match format_multihash_all(&commit.tr().0) {
+                                        Ok(ids) => ids,
+                                        Err(_) => continue,
+                                    };
+                                    let ar = match format_multihash_all(
+                                        commit.auth_root().as_multihash(),
+                                    ) {
+                                        Ok(val) => val,
+                                        Err(_) => continue,
+                                    };
+                                    let sr = match format_multihash_all(commit.sr().as_multihash())
+                                    {
+                                        Ok(val) => val,
+                                        Err(_) => continue,
+                                    };
+                                    let pr = match format_multihash_all(commit.pr().as_multihash())
+                                    {
+                                        Ok(val) => val,
+                                        Err(_) => continue,
+                                    };
+
+                                    matched_combination = Some((
+                                        test_principal,
+                                        commit_ids,
+                                        ar,
+                                        sr,
+                                        pr,
+                                        perm.clone(),
+                                        finalizer_coz.clone(),
+                                        perm_keys,
+                                        perm_pending_czds,
+                                        perm_transaction_types,
+                                    ));
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((
+                        mut next_principal,
+                        commit_ids,
+                        ar,
+                        sr,
+                        pr,
+                        matched_perm,
+                        matched_finalizer,
+                        perm_keys,
+                        perm_pending_czds,
+                        perm_transaction_types,
+                    )) = matched_combination
+                    {
+                        // We successfully finalized this commit!
+                        // Let's gather all consumed cozies' hashes:
+                        let mut consumed_indices = std::collections::HashSet::new();
+                        // 1. Pre-actions are already consumed (index 0..tx_start_idx)
+                        for idx in 0..tx_start_idx {
+                            consumed_indices.insert(idx);
+                        }
+                        // 2. Matched mutations:
+                        for m_coz in &matched_perm {
+                            if let Some(idx) = pool.iter().position(|c| c.hash == m_coz.hash) {
+                                consumed_indices.insert(idx);
+                            }
+                        }
+                        // 3. Matched finalizer:
+                        if let Some(idx) =
+                            pool.iter().position(|c| c.hash == matched_finalizer.hash)
+                        {
+                            consumed_indices.insert(idx);
+                        }
+
+                        // Collect deferred actions
+                        let mut deferred_actions = Vec::new();
+                        for (idx, coz) in pool.iter().enumerate() {
+                            if coz.now <= target_time
+                                && !is_transaction_typ(&coz.typ)
+                                && !consumed_indices.contains(&idx)
+                            {
+                                let tmb_bytes = match Base64UrlUnpadded::decode_vec(&coz.tmb) {
+                                    Ok(b) => b,
+                                    Err(_) => continue,
+                                };
+                                let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+                                let alg = &coz.alg;
+                                let cad =
+                                    match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
+                                        Some(c) => c,
+                                        None => continue,
+                                    };
+                                let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                                    Some(c) => c,
+                                    None => continue,
+                                };
+                                deferred_actions.push((idx, coz.clone(), czd, signer_tmb));
+                            }
+                        }
+
+                        // Apply deferred actions to next_principal
+                        let mut commit_blobs = commit_blobs;
+                        for m_coz in &matched_perm {
+                            commit_blobs.push(m_coz.hash);
+                        }
+                        commit_blobs.push(matched_finalizer.hash);
+
+                        let mut final_pending_czds = commit_pending_czds;
+                        final_pending_czds.extend(perm_pending_czds);
+
+                        let mut final_transaction_types = commit_transaction_types;
+                        final_transaction_types.extend(perm_transaction_types);
+
+                        for (idx, coz, czd, signer_tmb) in deferred_actions {
+                            if next_principal.is_key_active(&signer_tmb)
+                                && next_principal
+                                    .verify_and_record_action(&coz.pay_json, &coz.sig, czd.clone())
+                                    .is_ok()
+                            {
+                                commit_blobs.push(coz.hash);
+                                final_transaction_types.push(coz.typ.clone());
+
+                                let mut czd_variants = Vec::new();
+                                let source_alg = cyphr::state::hash_alg_from_str(&coz.alg)
+                                    .unwrap_or(cyphr::state::HashAlg::Sha256);
+                                let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                                for &active_alg in &active_algs {
+                                    let converted = tagged.convert_to(active_alg);
+                                    czd_variants.push(format!(
+                                        "{active_alg}:{}",
+                                        Base64UrlUnpadded::encode_string(&converted)
+                                    ));
+                                }
+                                final_pending_czds.push(czd_variants);
+                                consumed_indices.insert(idx);
+                            }
+                        }
+
+                        // Index this commit
+                        let indexable = IndexableCommit {
+                            principal_id: principal_id.clone(),
+                            commit_ids,
+                            sequence,
+                            prs: pr,
+                            srs: sr,
+                            ars: ar,
+                            blob_hashes: commit_blobs,
+                            transaction_types: final_transaction_types,
+                            transaction_ids: final_pending_czds,
+                            timestamp: target_time,
+                            keys: perm_keys,
+                        };
+                        self.indexer.index_commit(&indexable).await?;
+                        sequence += 1;
+
+                        // Remove consumed items from pool
+                        let mut remaining = Vec::new();
+                        for (idx, coz) in pool.into_iter().enumerate() {
+                            if !consumed_indices.contains(&idx) {
+                                remaining.push(coz);
+                            }
+                        }
+                        pool = remaining;
+                        principal = next_principal;
+                    } else {
+                        // No combination matched!
+                        break;
+                    }
+                } else {
                     break;
                 }
-
-                // Finalize commit
-                let commit = scope.finalize()?;
-
-                // Extract state roots immediately (ends the borrow of principal by commit)
-                let commit_ids = format_multihash_all(&commit.tr().0)?;
-                let ar = format_multihash_all(commit.auth_root().as_multihash())?;
-                let sr = format_multihash_all(commit.sr().as_multihash())?;
-                let pr = format_multihash_all(commit.pr().as_multihash())?;
-
-                tracing::info!(
-                    "successfully finalized commit sequence={}, PR={:?}",
-                    sequence,
-                    pr
-                );
-
-                // Compute transaction ids
-                let mut commit_transaction_ids = Vec::new();
-                for (czd, alg_str) in commit_pending_czds {
-                    let mut czd_variants = Vec::new();
-                    let source_alg = match cyphr::state::hash_alg_from_str(&alg_str) {
-                        Ok(a) => a,
-                        Err(_) => cyphr::state::HashAlg::Sha256,
-                    };
-                    let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
-                    for &active_alg in &active_algs {
-                        let converted = tagged.convert_to(active_alg);
-                        czd_variants.push(format!(
-                            "{active_alg}:{}",
-                            Base64UrlUnpadded::encode_string(&converted)
-                        ));
-                    }
-                    commit_transaction_ids.push(czd_variants);
-                }
-
-                // Find any action cozies that match this commit
-                let mut remaining_actions = Vec::new();
-                for action in action_cozies {
-                    let tmb_bytes = match Base64UrlUnpadded::decode_vec(&action.tmb) {
-                        Ok(b) => b,
-                        Err(_) => {
-                            remaining_actions.push(action);
-                            continue;
-                        },
-                    };
-                    let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
-
-                    if principal.is_key_active(&signer_tmb) && action.now <= commit_timestamp {
-                        let alg = match principal.hash_alg() {
-                            cyphr::state::HashAlg::Sha256 => "ES256",
-                            cyphr::state::HashAlg::Sha384 => "ES384",
-                            cyphr::state::HashAlg::Sha512 => "ES512",
-                        };
-                        let cad = match coz::canonical_hash_for_alg(&action.pay_json, alg, None) {
-                            Some(c) => c,
-                            None => {
-                                remaining_actions.push(action);
-                                continue;
-                            },
-                        };
-                        let czd = match coz::czd_for_alg(&cad, &action.sig, alg) {
-                            Some(c) => c,
-                            None => {
-                                remaining_actions.push(action);
-                                continue;
-                            },
-                        };
-
-                        if principal
-                            .verify_and_record_action(&action.pay_json, &action.sig, czd.clone())
-                            .is_ok()
-                        {
-                            commit_blobs.push(action.hash);
-                            commit_transaction_types.push(action.typ.clone());
-
-                            let mut czd_variants = Vec::new();
-                            let source_alg = match cyphr::state::hash_alg_from_str(alg) {
-                                Ok(a) => a,
-                                Err(_) => cyphr::state::HashAlg::Sha256,
-                            };
-                            let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
-                            for &active_alg in &active_algs {
-                                let converted = tagged.convert_to(active_alg);
-                                czd_variants.push(format!(
-                                    "{active_alg}:{}",
-                                    Base64UrlUnpadded::encode_string(&converted)
-                                ));
-                            }
-                            commit_transaction_ids.push(czd_variants);
-                        } else {
-                            remaining_actions.push(action);
-                        }
-                    } else {
-                        remaining_actions.push(action);
-                    }
-                }
-                action_cozies = remaining_actions;
-
-                // Index this commit
-                let indexable = IndexableCommit {
-                    principal_id: principal_id.clone(),
-                    commit_ids,
-                    sequence,
-                    prs: pr,
-                    srs: sr,
-                    ars: ar,
-                    blob_hashes: commit_blobs,
-                    transaction_types: commit_transaction_types,
-                    transaction_ids: commit_transaction_ids,
-                    timestamp: commit_timestamp,
-                    keys: commit_keys,
-                };
-                self.indexer.index_commit(&indexable).await?;
-                sequence += 1;
             }
         }
 

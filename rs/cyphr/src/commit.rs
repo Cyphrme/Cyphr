@@ -465,7 +465,10 @@ impl<'a> CommitScope<'a> {
         };
 
         // 2. Compute TMR
-        let signer_hash_alg = self.principal.hash_alg();
+        let signer_hash_alg = claimed_arrow
+            .algorithms()
+            .next()
+            .unwrap_or_else(|| self.principal.hash_alg());
         let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
         let Some(tmr) = tmr else {
             return false;
@@ -490,7 +493,22 @@ impl<'a> CommitScope<'a> {
             return false;
         };
 
-        claimed_digest == computed_digest.as_slice()
+        let matches = claimed_digest == computed_digest.as_slice();
+        {
+            use coz::base64ct::Encoding;
+            eprintln!(
+                "matches_arrow check: alg={:?}\n  pre = {}\n  sr  = {}\n  tmr = {}\n  claimed  = {}\n  computed = {}\n  matches  = {}",
+                signer_hash_alg,
+                coz::base64ct::Base64UrlUnpadded::encode_string(pre_bytes),
+                coz::base64ct::Base64UrlUnpadded::encode_string(sr_bytes),
+                coz::base64ct::Base64UrlUnpadded::encode_string(tmr_bytes),
+                coz::base64ct::Base64UrlUnpadded::encode_string(claimed_digest),
+                coz::base64ct::Base64UrlUnpadded::encode_string(&computed_digest),
+                matches
+            );
+        }
+
+        matches
     }
 
     /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.
