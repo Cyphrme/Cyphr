@@ -365,31 +365,30 @@ cost scales linearly with action count, and since the index is rebuildable
 
 ## Verification
 
-| Constraint                      | Method      | Result     | Detail                                              |
-| :------------------------------ | :---------- | :--------- | :-------------------------------------------------- |
-| [two-tier-separation]           | agent-check | pass       | Enforced by distinct `BlobStore` and `Indexer` traits |
-| [blake3-isolation]              | agent-check | pass       | BlobStore explicitly hardcoded to BLAKE3 addressing |
-| [blob-immutability]             | agent-check | pass       | Blob write is idempotent and content-addressed     |
-| [index-secondary]               | agent-check | pass       | Indexer completely rebuildable by re-indexing blobs |
-| [index-idempotent]              | agent-check | pass       | Re-indexing an already-indexed commit is a no-op    |
-| [digest-index-completeness]     | agent-check | pass       | All active algorithm variants stored in digest index|
-| [principal-partitioning]        | agent-check | pass       | Storage is partitioned per-principal by PG          |
-| [digest-as-output]              | agent-check | pass       | BlobStore streams and returns Blake3Hash on close() |
-| [async-storage]                 | agent-check | pass       | Traits refactored to async RPITIT (+ Send) futures  |
-| [validate-first-write]          | agent-check | pass       | In-memory protocol verification precedes write path |
-| [ingest-ordering]               | agent-check | pass       | Blobs are persisted prior to indexing commit tip    |
-| [recovery-reindex]              | agent-check | pass       | Relational index fully rebuildable from raw blobs  |
-| [alg-set-storage-transition]    | agent-check | pass       | Index matches active algorithm set post-mutation    |
-| [no-orphaned-index]             | agent-check | pass       | Enforced by ingest phase order checks               |
-| [no-protocol-hash-in-blobstore] | agent-check | pass       | BLAKE3 hardcoded; no config exists to change        |
-| [no-partial-commit]             | agent-check | pass       | Fjall transactional writes execute in batch atomic  |
-| [no-stale-tip]                  | agent-check | pass       | `get_tip()` dynamically resolves to latest sequence |
-| [recovery-convergence]          | agent-check | pass       | Verified to terminate and converge in unit tests   |
-| [read-after-write]              | agent-check | pass       | Verified in E2E integration test suite             |
-| [monotonic-sequence]            | agent-check | pass       | Sequence counter monotonically checked on ingest    |
-| [commit-chain-integrity]        | agent-check | pass       | kontiguity validated on commit retrievals           |
-| [streaming-write]               | agent-check | pass       | Trait writes expose stream handle open/close API    |
-
+| Constraint                      | Method      | Result | Detail                                                |
+| :------------------------------ | :---------- | :----- | :---------------------------------------------------- |
+| [two-tier-separation]           | agent-check | pass   | Enforced by distinct `BlobStore` and `Indexer` traits |
+| [blake3-isolation]              | agent-check | pass   | BlobStore explicitly hardcoded to BLAKE3 addressing   |
+| [blob-immutability]             | agent-check | pass   | Blob write is idempotent and content-addressed        |
+| [index-secondary]               | agent-check | pass   | Indexer completely rebuildable by re-indexing blobs   |
+| [index-idempotent]              | agent-check | pass   | Re-indexing an already-indexed commit is a no-op      |
+| [digest-index-completeness]     | agent-check | pass   | All active algorithm variants stored in digest index  |
+| [principal-partitioning]        | agent-check | pass   | Storage is partitioned per-principal by PG            |
+| [digest-as-output]              | agent-check | pass   | BlobStore streams and returns Blake3Hash on close()   |
+| [async-storage]                 | agent-check | pass   | Traits refactored to async RPITIT (+ Send) futures    |
+| [validate-first-write]          | agent-check | pass   | In-memory protocol verification precedes write path   |
+| [ingest-ordering]               | agent-check | pass   | Blobs are persisted prior to indexing commit tip      |
+| [recovery-reindex]              | agent-check | pass   | Relational index fully rebuildable from raw blobs     |
+| [alg-set-storage-transition]    | agent-check | pass   | Index matches active algorithm set post-mutation      |
+| [no-orphaned-index]             | agent-check | pass   | Enforced by ingest phase order checks                 |
+| [no-protocol-hash-in-blobstore] | agent-check | pass   | BLAKE3 hardcoded; no config exists to change          |
+| [no-partial-commit]             | agent-check | pass   | Fjall transactional writes execute in batch atomic    |
+| [no-stale-tip]                  | agent-check | pass   | `get_tip()` dynamically resolves to latest sequence   |
+| [recovery-convergence]          | agent-check | pass   | Verified to terminate and converge in unit tests      |
+| [read-after-write]              | agent-check | pass   | Verified in E2E integration test suite                |
+| [monotonic-sequence]            | agent-check | pass   | Sequence counter monotonically checked on ingest      |
+| [commit-chain-integrity]        | agent-check | pass   | kontiguity validated on commit retrievals             |
+| [streaming-write]               | agent-check | pass   | Trait writes expose stream handle open/close API      |
 
 ## Implications
 
@@ -432,7 +431,7 @@ cost scales linearly with action count, and since the index is rebuildable
   `MemoryBlobStore`, `MemoryIndexer`) and the `StorageEngine` coordination
   layer. The refactor MUST use `impl Future<Output = ...> + Send` (RPITIT)
   to explicitly bound the returned future as `Send` — native `async fn in
-  trait` does not provide this bound by default, and it is required for
+trait` does not provide this bound by default, and it is required for
   multi-threaded executors.
 
 ### For Testing

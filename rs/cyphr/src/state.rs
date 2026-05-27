@@ -697,11 +697,9 @@ pub fn compute_dr(
             now: i64::MAX,
         });
     }
-    components.sort_by(|a, b| {
-        match a.now.cmp(&b.now) {
-            std::cmp::Ordering::Equal => a.bytes.cmp(b.bytes),
-            other => other,
-        }
+    components.sort_by(|a, b| match a.now.cmp(&b.now) {
+        std::cmp::Ordering::Equal => a.bytes.cmp(b.bytes),
+        other => other,
     });
 
     let mut variants = BTreeMap::new();
@@ -886,7 +884,10 @@ mod tests {
             tmb.clone(),
             1000,
             czd,
-            coz::CozJson { pay: serde_json::Value::Null, sig: vec![] }
+            coz::CozJson {
+                pay: serde_json::Value::Null,
+                sig: vec![],
+            },
         );
         let ds = compute_dr(&[&action], None, &[HashAlg::Sha256])
             .unwrap()
@@ -909,7 +910,10 @@ mod tests {
             Thumbprint::from_bytes(vec![1; 32]),
             1000,
             czd.clone(),
-            coz::CozJson { pay: serde_json::Value::Null, sig: vec![] }
+            coz::CozJson {
+                pay: serde_json::Value::Null,
+                sig: vec![],
+            },
         );
 
         // 1. DR promotion test

@@ -524,7 +524,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             // Existing principal — scan blobs of the first commit to find the genesis key
             // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key field).
             let mut fallback_data = None;
-            eprintln!("resolve_genesis: first commit has {} blobs", first_commit.blob_hashes.len());
+            eprintln!(
+                "resolve_genesis: first commit has {} blobs",
+                first_commit.blob_hashes.len()
+            );
             for (idx, hash) in first_commit.blob_hashes.iter().enumerate() {
                 let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!("blob {hash} not found in store"))
@@ -535,9 +538,15 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
                     let pay = value.get("pay");
-                    let typ = pay.and_then(|p| p.get("typ")).and_then(|t| t.as_str()).unwrap_or("");
+                    let typ = pay
+                        .and_then(|p| p.get("typ"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
                     let has_key = value.get("key").is_some();
-                    eprintln!("resolve_genesis: blob idx={}, typ={}, has_key={}", idx, typ, has_key);
+                    eprintln!(
+                        "resolve_genesis: blob idx={}, typ={}, has_key={}",
+                        idx, typ, has_key
+                    );
                     if typ.contains("/commit/create") {
                         if has_key {
                             eprintln!("resolve_genesis: found genesis key in commit/create!");
@@ -553,7 +562,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                     return Ok(genesis_val);
                 }
             }
-            Err(EngineError::NotFound("genesis key not found in first commit".into()))
+            Err(EngineError::NotFound(
+                "genesis key not found in first commit".into(),
+            ))
         } else {
             // New principal — extract genesis from the first submitted blob.
             Self::genesis_from_blob(raw_blobs[0])
@@ -631,17 +642,24 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let ext: CozExtractor = match serde_json::from_slice(&data) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("reindex: CozExtractor deserialize failed: {:?}, data = '{}'", e, String::from_utf8_lossy(&data));
+                    eprintln!(
+                        "reindex: CozExtractor deserialize failed: {:?}, data = '{}'",
+                        e,
+                        String::from_utf8_lossy(&data)
+                    );
                     continue;
-                }
+                },
             };
 
             let sig = match Base64UrlUnpadded::decode_vec(&ext.sig) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("reindex: base64 decode of sig '{}' failed: {:?}", ext.sig, e);
+                    eprintln!(
+                        "reindex: base64 decode of sig '{}' failed: {:?}",
+                        ext.sig, e
+                    );
                     continue;
-                }
+                },
             };
 
             let pay_json = ext.pay.get().as_bytes().to_vec();
@@ -657,9 +675,13 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("reindex: PayFields deserialize failed: {:?}, pay = '{}'", e, ext.pay.get());
+                    eprintln!(
+                        "reindex: PayFields deserialize failed: {:?}, pay = '{}'",
+                        e,
+                        ext.pay.get()
+                    );
                     continue;
-                }
+                },
             };
 
             let new_key = if let Some(k) = &ext.key {
@@ -808,11 +830,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         for (i, c) in tx_cozies.iter().enumerate() {
             eprintln!(
                 "sorted tx_cozy [{}]: typ={}, now={}, pre={:?}, hash={}",
-                i,
-                c.typ,
-                c.now,
-                c.pre,
-                c.hash
+                i, c.typ, c.now, c.pre, c.hash
             );
         }
 
@@ -858,14 +876,14 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                             None => {
                                 unapplied.push(coz);
                                 continue;
-                            }
+                            },
                         };
                         let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
                             Some(c) => c,
                             None => {
                                 unapplied.push(coz);
                                 continue;
-                            }
+                            },
                         };
 
                         match scope.verify_and_apply(
@@ -881,10 +899,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                                 commit_timestamp = coz.now;
                                 applied_any = true;
                                 applied_this_round = true;
-                            }
+                            },
                             Err(_) => {
                                 unapplied.push(coz);
-                            }
+                            },
                         }
                     }
                     mutation_cozies = unapplied;
@@ -907,21 +925,27 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                         None => {
                             unapplied_commits.push(coz);
                             continue;
-                        }
+                        },
                     };
                     let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
                         Some(c) => c,
                         None => {
                             unapplied_commits.push(coz);
                             continue;
-                        }
+                        },
                     };
 
                     // Extract claimed arrow to check match
-                    let claimed_arrow = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&coz.pay_json) {
+                    let claimed_arrow = if let Ok(value) =
+                        serde_json::from_slice::<serde_json::Value>(&coz.pay_json)
+                    {
                         if let Some(arrow_val) = value.get("arrow").and_then(|v| v.as_str()) {
                             if let Ok(tagged) = arrow_val.parse::<cyphr::state::TaggedDigest>() {
-                                cyphr::multihash::MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec()).ok()
+                                cyphr::multihash::MultihashDigest::from_single(
+                                    tagged.alg(),
+                                    tagged.as_bytes().to_vec(),
+                                )
+                                .ok()
                             } else {
                                 None
                             }
@@ -953,11 +977,11 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                                 commit_timestamp = coz.now;
                                 applied_any = true;
                                 matched_commit = Some(coz);
-                            }
+                            },
                             Err(e) => {
                                 eprintln!("failed to apply matched commit/create: {:?}", e);
                                 unapplied_commits.push(coz);
-                            }
+                            },
                         }
                     } else {
                         unapplied_commits.push(coz);

@@ -21,10 +21,10 @@ rust-version = "1.85"
 coz = { package = "coz-rs", version = "0.4.1" }
 
 # Storage
-blake3 = "1"
-fjall  = "2"
-eml = "0.10.0"
+blake3            = "1"
+eml               = "0.10.0"
 eml-storage-fjall = "0.10.0"
+fjall             = "2"
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
@@ -46,5 +46,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid               = { version = "1", features = ["v4"] }
 
 # Error handling
-thiserror = "2"
 futures   = "0.3"
+thiserror = "2"

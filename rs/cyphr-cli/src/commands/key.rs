@@ -3,8 +3,8 @@ use indexmap::IndexMap;
 use serde_json::Value;
 
 use super::common::{
-    current_timestamp, generate_key, load_key_from_keystore, parse_store,
-    load_principal_from_engine, save_principal_to_engine,
+    current_timestamp, generate_key, load_key_from_keystore, load_principal_from_engine,
+    parse_store, save_principal_to_engine,
 };
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, KeyCommands, OutputFormat};

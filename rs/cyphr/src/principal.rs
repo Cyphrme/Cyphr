@@ -463,7 +463,10 @@ impl Principal {
 
     /// Get the hash algorithm used by this principal.
     pub fn hash_alg(&self) -> HashAlg {
-        self.active_algs().first().copied().unwrap_or(HashAlg::Sha256)
+        self.active_algs()
+            .first()
+            .copied()
+            .unwrap_or(HashAlg::Sha256)
     }
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).

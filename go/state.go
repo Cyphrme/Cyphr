@@ -557,7 +557,6 @@ func ComputeDR(actions []*Action, nonce coz.B64, algs []HashAlg) (*DataRoot, err
 	return &dr, nil
 }
 
-
 func inferAlgFromLen(length int) HashAlg {
 	switch length {
 	case 32:

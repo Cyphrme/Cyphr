@@ -160,8 +160,6 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
     Ok(commit_entries)
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

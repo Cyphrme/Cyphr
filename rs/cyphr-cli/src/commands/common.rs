@@ -8,10 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphr::Key;
-use cyphr_storage::{CommitEntry, Genesis};
 use cyphr_storage::blob::FjallBlobStore;
-use cyphr_storage::index::MemoryIndexer;
 use cyphr_storage::engine::StorageEngine;
+use cyphr_storage::index::MemoryIndexer;
+use cyphr_storage::{CommitEntry, Genesis};
 
 pub type CliStorageEngine = StorageEngine<FjallBlobStore, MemoryIndexer>;
 
@@ -136,7 +136,10 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
 }
 
 /// Parse the --store argument into a CliStorageEngine.
-pub fn parse_store(store_uri: &str, keystore_path: &std::path::Path) -> crate::Result<CliStorageEngine> {
+pub fn parse_store(
+    store_uri: &str,
+    keystore_path: &std::path::Path,
+) -> crate::Result<CliStorageEngine> {
     if let Some(path) = store_uri.strip_prefix("file:") {
         let blob_store = FjallBlobStore::open(std::path::Path::new(path))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
@@ -152,15 +155,14 @@ pub fn parse_store(store_uri: &str, keystore_path: &std::path::Path) -> crate::R
                 keys.push(key);
             }
         }
-        
+
         // Reindex on startup synchronously
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(async {
-            engine.reindex(&keys).await
-        }).map_err(|e| crate::Error::Storage(e.to_string()))?;
-        
+        rt.block_on(async { engine.reindex(&keys).await })
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+
         Ok(engine)
     } else {
         Err(Error::InvalidArgument(format!(
@@ -173,9 +175,12 @@ pub fn parse_store(store_uri: &str, keystore_path: &std::path::Path) -> crate::R
 pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
     use cyphr::StateDigest;
     let mh = pr.as_multihash();
-    let alg = mh.algorithms().next()
+    let alg = mh
+        .algorithms()
+        .next()
         .ok_or_else(|| crate::Error::Storage("empty PR algorithms".into()))?;
-    let bytes = mh.get(alg)
+    let bytes = mh
+        .get(alg)
         .ok_or_else(|| crate::Error::Storage("missing PR variant".into()))?;
     Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
 }
@@ -188,9 +193,12 @@ pub fn get_principal_id_from_principal(principal: &cyphr::Principal) -> crate::R
     } else {
         principal.pr().as_multihash()
     };
-    let alg = mh.algorithms().next()
+    let alg = mh
+        .algorithms()
+        .next()
         .ok_or_else(|| crate::Error::Storage("empty PR/PS algorithms".into()))?;
-    let bytes = mh.get(alg)
+    let bytes = mh
+        .get(alg)
         .ok_or_else(|| crate::Error::Storage("missing PR/PS variant".into()))?;
     Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
 }
@@ -207,13 +215,15 @@ pub fn load_principal_from_engine(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    
+
     rt.block_on(async {
-        let tip = engine.get_tip(&principal_id).await
+        let tip = engine
+            .get_tip(&principal_id)
+            .await
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        
+
         let is_implicit_genesis = keystore.get(identity).is_ok();
-        
+
         if tip.is_none() {
             // Genesis state - reconstruct from keystore
             let key = load_key_from_keystore(keystore, identity)?;
@@ -223,11 +233,15 @@ pub fn load_principal_from_engine(
                 let genesis_key = load_key_from_keystore(keystore, identity)?;
                 cyphr_storage::Genesis::Implicit(genesis_key)
             } else {
-                engine.resolve_genesis(&principal_id, &[]).await
+                engine
+                    .resolve_genesis(&principal_id, &[])
+                    .await
                     .map_err(|e| crate::Error::Storage(e.to_string()))?
             };
-            
-            engine.load_principal(&principal_id, genesis).await
+
+            engine
+                .load_principal(&principal_id, genesis)
+                .await
                 .map_err(|e| crate::Error::Storage(e.to_string()))
         }
     })
@@ -242,18 +256,20 @@ pub fn save_principal_to_engine(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    
+
     rt.block_on(async {
         let principal_id = get_principal_id_from_principal(principal)?;
-        
-        let tip = engine.get_tip(&principal_id).await
+
+        let tip = engine
+            .get_tip(&principal_id)
+            .await
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        
+
         let stored_count = tip.map(|t| t.commit_count as usize).unwrap_or(0);
-        
+
         let commits = cyphr_storage::export_commits(principal)
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        
+
         for (i, commit) in commits.iter().enumerate().skip(stored_count) {
             let mut raw_blobs = Vec::new();
             let mut key_iter = commit.keys.iter();
@@ -274,7 +290,10 @@ pub fn save_principal_to_engine(
                 } else if i == 0 && typ.contains("/commit/create") {
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
                     let identity_fallback = principal_id.split(':').last().unwrap().to_string();
-                    let identity = principal.genesis_keys().first().unwrap_or(&identity_fallback);
+                    let identity = principal
+                        .genesis_keys()
+                        .first()
+                        .unwrap_or(&identity_fallback);
                     if let Ok(key) = load_key_from_keystore(keystore, identity) {
                         let key_entry = cyphr_storage::KeyEntry {
                             alg: key.alg.clone(),
@@ -289,15 +308,17 @@ pub fn save_principal_to_engine(
                     }
                 }
 
-                let bytes = serde_json::to_vec(&coz_mut)
-                    .map_err(|e| crate::Error::Json(e))?;
+                let bytes = serde_json::to_vec(&coz_mut).map_err(|e| crate::Error::Json(e))?;
                 raw_blobs.push(bytes);
             }
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
-            
+
             let genesis = if i == 0 {
                 let identity_fallback = principal_id.split(':').last().unwrap().to_string();
-                let identity = principal.genesis_keys().first().unwrap_or(&identity_fallback);
+                let identity = principal
+                    .genesis_keys()
+                    .first()
+                    .unwrap_or(&identity_fallback);
                 if let Ok(key) = load_key_from_keystore(keystore, identity) {
                     Some(cyphr_storage::Genesis::Implicit(key))
                 } else {
@@ -315,11 +336,13 @@ pub fn save_principal_to_engine(
             } else {
                 None
             };
-            
-            engine.submit_commit(&principal_id, genesis, &raw_refs).await
+
+            engine
+                .submit_commit(&principal_id, genesis, &raw_refs)
+                .await
                 .map_err(|e| crate::Error::Storage(e.to_string()))?;
         }
-        
+
         Ok(())
     })
 }
@@ -335,38 +358,46 @@ pub fn get_commits_from_engine(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    
-    rt.block_on(async {
-        use cyphr_storage::index::Indexer;
-        use cyphr_storage::blob::BlobStore;
 
-        let chain = engine.indexer().get_commit_chain(&principal_id, None, None).await
+    rt.block_on(async {
+        use cyphr_storage::blob::BlobStore;
+        use cyphr_storage::index::Indexer;
+
+        let chain = engine
+            .indexer()
+            .get_commit_chain(&principal_id, None, None)
+            .await
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        
+
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
             let mut cozies = Vec::with_capacity(commit_ref.blob_hashes.len());
             let mut keys = Vec::new();
-            
+
             for hash in &commit_ref.blob_hashes {
-                let data = engine.blob_store().get(hash).await
+                let data = engine
+                    .blob_store()
+                    .get(hash)
+                    .await
                     .map_err(|e| crate::Error::Storage(e.to_string()))?
                     .ok_or_else(|| crate::Error::Storage(format!("blob {hash} not found")))?;
-                
+
                 let json_str = String::from_utf8(data)
                     .map_err(|e| crate::Error::Storage(format!("blob is not UTF-8: {e}")))?;
-                let value: serde_json::Value = serde_json::from_str(&json_str)
-                    .map_err(|e| crate::Error::Json(e))?;
-                
+                let value: serde_json::Value =
+                    serde_json::from_str(&json_str).map_err(|e| crate::Error::Json(e))?;
+
                 if let Some(key_obj) = value.get("key") {
-                    if let Ok(ke) = serde_json::from_value::<cyphr_storage::KeyEntry>(key_obj.clone()) {
+                    if let Ok(ke) =
+                        serde_json::from_value::<cyphr_storage::KeyEntry>(key_obj.clone())
+                    {
                         keys.push(ke);
                     }
                 }
-                
+
                 cozies.push(value);
             }
-            
+
             commit_entries.push(cyphr_storage::CommitEntry::new(
                 cozies,
                 keys,
@@ -376,7 +407,7 @@ pub fn get_commits_from_engine(
                 commit_ref.pr.clone(),
             ));
         }
-        
+
         Ok(commit_entries)
     })
 }

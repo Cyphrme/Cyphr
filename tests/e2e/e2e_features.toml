@@ -809,7 +809,7 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -824,7 +824,7 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -839,7 +839,7 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -854,7 +854,7 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -869,7 +869,7 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -1196,153 +1196,153 @@ name      = "t1_f15_case1"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Tier 1 F-15 Case"
 now    = 1700000000
 signer = "golden"
-msg    = "Tier 1 F-15 Case"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f15_case2"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/comment/create"
+msg    = "Tier 1 F-15 Case"
 now    = 1700000000
 signer = "golden"
-msg    = "Tier 1 F-15 Case"
+typ    = "cyphr.me/comment/create"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f15_case3"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/post/create"
+msg    = "Tier 1 F-15 Case"
 now    = 1700000000
 signer = "golden"
-msg    = "Tier 1 F-15 Case"
+typ    = "cyphr.me/post/create"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f15_case4"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Tier 1 F-15 Case"
 now    = 1700000000
 signer = "golden"
-msg    = "Tier 1 F-15 Case"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f15_case5"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Tier 1 F-15 Case"
 now    = 1700000000
 signer = "golden"
-msg    = "Tier 1 F-15 Case"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f16_case1"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f16_case2"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f16_case3"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f16_case4"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t1_f16_case5"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
-level     = 4
+level = 4
 
 [[test]]
 name      = "t2_f01_case1"
 principal = []
 
 [test.expected]
-error     = "NoGenesisKeys"
+error = "NoGenesisKeys"
 
 [[test]]
 name      = "t2_f01_case2"
 principal = ["unsupported_key"]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f01_case3"
 principal = ["unsupported_key", "golden"]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f01_case4"
 principal = ["unsupported_key", "unsupported_key"]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f01_case5"
@@ -1352,7 +1352,7 @@ principal = []
 revoke_key = "golden"
 
 [test.expected]
-error     = "NoGenesisKeys"
+error = "NoGenesisKeys"
 
 [[test]]
 name      = "t2_f02_case1"
@@ -1366,7 +1366,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f02_case2"
@@ -1380,7 +1380,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f02_case3"
@@ -1394,7 +1394,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f02_case4"
@@ -1408,7 +1408,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f02_case5"
@@ -1422,7 +1422,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f03_case1"
@@ -1436,7 +1436,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[naked-revoke-error]"
+error = "[naked-revoke-error]"
 
 [[test]]
 name      = "t2_f03_case2"
@@ -1450,7 +1450,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[naked-revoke-error]"
+error = "[naked-revoke-error]"
 
 [[test]]
 name      = "t2_f03_case3"
@@ -1464,7 +1464,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[naked-revoke-error]"
+error = "[naked-revoke-error]"
 
 [[test]]
 name      = "t2_f03_case4"
@@ -1478,7 +1478,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[naked-revoke-error]"
+error = "[naked-revoke-error]"
 
 [[test]]
 name      = "t2_f03_case5"
@@ -1492,7 +1492,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[naked-revoke-error]"
+error = "[naked-revoke-error]"
 
 [[test]]
 name      = "t2_f04_case1"
@@ -1506,7 +1506,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f04_case2"
@@ -1520,7 +1520,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f04_case3"
@@ -1534,7 +1534,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f04_case4"
@@ -1548,7 +1548,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f04_case5"
@@ -1562,7 +1562,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f05_case1"
@@ -1583,7 +1583,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f05_case2"
@@ -1604,7 +1604,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f05_case3"
@@ -1625,7 +1625,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f05_case4"
@@ -1646,7 +1646,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f05_case5"
@@ -1667,7 +1667,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f06_case1"
@@ -1688,7 +1688,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f06_case2"
@@ -1709,7 +1709,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f06_case3"
@@ -1730,7 +1730,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f06_case4"
@@ -1751,7 +1751,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f06_case5"
@@ -1772,7 +1772,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f07_case1"
@@ -1793,7 +1793,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f07_case2"
@@ -1814,7 +1814,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f07_case3"
@@ -1835,7 +1835,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f07_case4"
@@ -1856,7 +1856,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f07_case5"
@@ -1877,7 +1877,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f08_case1"
@@ -1898,7 +1898,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[create-uniqueness]"
+error = "[create-uniqueness]"
 
 [[test]]
 name      = "t2_f08_case2"
@@ -1919,7 +1919,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[create-uniqueness]"
+error = "[create-uniqueness]"
 
 [[test]]
 name      = "t2_f08_case3"
@@ -1940,7 +1940,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[create-uniqueness]"
+error = "[create-uniqueness]"
 
 [[test]]
 name      = "t2_f08_case4"
@@ -1961,7 +1961,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[create-uniqueness]"
+error = "[create-uniqueness]"
 
 [[test]]
 name      = "t2_f08_case5"
@@ -1982,7 +1982,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[create-uniqueness]"
+error = "[create-uniqueness]"
 
 [[test]]
 name      = "t2_f09_case1"
@@ -1996,7 +1996,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f09_case2"
@@ -2010,7 +2010,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f09_case3"
@@ -2024,7 +2024,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f09_case4"
@@ -2038,7 +2038,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f09_case5"
@@ -2052,7 +2052,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f10_case1"
@@ -2066,7 +2066,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[no-revoke-non-self]"
+error = "[no-revoke-non-self]"
 
 [[test]]
 name      = "t2_f10_case2"
@@ -2080,7 +2080,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[no-revoke-non-self]"
+error = "[no-revoke-non-self]"
 
 [[test]]
 name      = "t2_f10_case3"
@@ -2094,7 +2094,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[no-revoke-non-self]"
+error = "[no-revoke-non-self]"
 
 [[test]]
 name      = "t2_f10_case4"
@@ -2108,7 +2108,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[no-revoke-non-self]"
+error = "[no-revoke-non-self]"
 
 [[test]]
 name      = "t2_f10_case5"
@@ -2122,7 +2122,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[no-revoke-non-self]"
+error = "[no-revoke-non-self]"
 
 [[test]]
 name      = "t2_f11_case1"
@@ -2139,7 +2139,7 @@ tx = [
 empty_commit = true
 
 [test.expected]
-error     = "[commit-one-or-more]"
+error = "[commit-one-or-more]"
 
 [[test]]
 name      = "t2_f11_case2"
@@ -2156,7 +2156,7 @@ tx = [
 empty_commit = true
 
 [test.expected]
-error     = "[commit-one-or-more]"
+error = "[commit-one-or-more]"
 
 [[test]]
 name      = "t2_f11_case3"
@@ -2173,7 +2173,7 @@ tx = [
 empty_commit = true
 
 [test.expected]
-error     = "[commit-one-or-more]"
+error = "[commit-one-or-more]"
 
 [[test]]
 name      = "t2_f11_case4"
@@ -2190,7 +2190,7 @@ tx = [
 empty_commit = true
 
 [test.expected]
-error     = "[commit-one-or-more]"
+error = "[commit-one-or-more]"
 
 [[test]]
 name      = "t2_f11_case5"
@@ -2207,7 +2207,7 @@ tx = [
 empty_commit = true
 
 [test.expected]
-error     = "[commit-one-or-more]"
+error = "[commit-one-or-more]"
 
 [[test]]
 name      = "t2_f12_case1"
@@ -2224,7 +2224,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error     = "[commit-pre-chain]"
+error = "[commit-pre-chain]"
 
 [[test]]
 name      = "t2_f12_case2"
@@ -2241,7 +2241,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error     = "[commit-pre-chain]"
+error = "[commit-pre-chain]"
 
 [[test]]
 name      = "t2_f12_case3"
@@ -2258,7 +2258,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error     = "[commit-pre-chain]"
+error = "[commit-pre-chain]"
 
 [[test]]
 name      = "t2_f12_case4"
@@ -2275,7 +2275,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error     = "[commit-pre-chain]"
+error = "[commit-pre-chain]"
 
 [[test]]
 name      = "t2_f12_case5"
@@ -2292,7 +2292,7 @@ tx = [
 pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 [test.expected]
-error     = "[commit-pre-chain]"
+error = "[commit-pre-chain]"
 
 [[test]]
 name      = "t2_f13_case1"
@@ -2313,7 +2313,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[verification-timestamp-order]"
+error = "[verification-timestamp-order]"
 
 [[test]]
 name      = "t2_f13_case2"
@@ -2334,7 +2334,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[verification-timestamp-order]"
+error = "[verification-timestamp-order]"
 
 [[test]]
 name      = "t2_f13_case3"
@@ -2355,7 +2355,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[verification-timestamp-order]"
+error = "[verification-timestamp-order]"
 
 [[test]]
 name      = "t2_f13_case4"
@@ -2376,7 +2376,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[verification-timestamp-order]"
+error = "[verification-timestamp-order]"
 
 [[test]]
 name      = "t2_f13_case5"
@@ -2397,7 +2397,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "[verification-timestamp-order]"
+error = "[verification-timestamp-order]"
 
 [[test]]
 name      = "t2_f14_case1"
@@ -2411,7 +2411,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f14_case2"
@@ -2425,7 +2425,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f14_case3"
@@ -2439,7 +2439,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f14_case4"
@@ -2453,7 +2453,7 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f14_case5"
@@ -2467,142 +2467,142 @@ tx = [
 ]
 
 [test.expected]
-error     = "UnsupportedAlgorithm"
+error = "UnsupportedAlgorithm"
 
 [[test]]
 name      = "t2_f15_case1"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.override]
 inject_pre = true
 
 [test.expected]
-error     = "[data-action-no-pre]"
+error = "[data-action-no-pre]"
 
 [[test]]
 name      = "t2_f15_case2"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.override]
 inject_pre = true
 
 [test.expected]
-error     = "[data-action-no-pre]"
+error = "[data-action-no-pre]"
 
 [[test]]
 name      = "t2_f15_case3"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.override]
 inject_pre = true
 
 [test.expected]
-error     = "[data-action-no-pre]"
+error = "[data-action-no-pre]"
 
 [[test]]
 name      = "t2_f15_case4"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.override]
 inject_pre = true
 
 [test.expected]
-error     = "[data-action-no-pre]"
+error = "[data-action-no-pre]"
 
 [[test]]
 name      = "t2_f15_case5"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.override]
 inject_pre = true
 
 [test.expected]
-error     = "[data-action-no-pre]"
+error = "[data-action-no-pre]"
 
 [[test]]
 name      = "t2_f16_case1"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f16_case2"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f16_case3"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f16_case4"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t2_f16_case5"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
-error     = "UnknownSigner"
+error = "UnknownSigner"
 
 [[test]]
 name      = "t3_case1"
@@ -2616,9 +2616,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000001
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 1
@@ -2657,9 +2657,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000001
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
@@ -2768,9 +2768,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000002
 signer = "bob"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 2
@@ -2781,9 +2781,9 @@ name      = "t3_case9"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
@@ -2836,9 +2836,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000002
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 1
@@ -2863,9 +2863,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000002
 signer = "diana_es384"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 3
@@ -2916,9 +2916,9 @@ name      = "t3_case15"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000000
 signer = "golden"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
@@ -2928,9 +2928,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000002
 signer = "alice"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 1
@@ -2973,7 +2973,7 @@ principal = ["alice"]
 tx = [
   [
     { now = 1700000000, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "alice", target = "carol", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -3014,16 +3014,16 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Log 1 after rotation 1"
 now    = 1700000001
 signer = "alice"
-msg    = "Log 1 after rotation 1"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Log 2 after rotation 1"
 now    = 1700000002
 signer = "alice"
-msg    = "Log 2 after rotation 1"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
@@ -3033,16 +3033,16 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Log 1 after rotation 2"
 now    = 1700000004
 signer = "bob"
-msg    = "Log 1 after rotation 2"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Log 2 after rotation 2"
 now    = 1700000005
 signer = "bob"
-msg    = "Log 2 after rotation 2"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 1
@@ -3056,7 +3056,7 @@ principal = ["alice"]
 tx = [
   [
     { now = 1700000000, signer = "alice", target = "diana_es384", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "alice", target = "eve_ed25519", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
@@ -3075,9 +3075,9 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
 now    = 1700000003
 signer = "eve_ed25519"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 2
@@ -3112,39 +3112,39 @@ principal = ["golden"]
 tx = [
   [
     { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" }
+    { now = 1700000000, signer = "golden", target = "bob", typ = "cyphr.me/cyphr/key/create" },
   ],
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Bulk doc 1"
 now    = 1700000001
 signer = "golden"
-msg    = "Bulk doc 1"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Bulk doc 2"
 now    = 1700000002
 signer = "alice"
-msg    = "Bulk doc 2"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Bulk doc 3"
 now    = 1700000003
 signer = "bob"
-msg    = "Bulk doc 3"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Bulk doc 4"
 now    = 1700000004
 signer = "golden"
-msg    = "Bulk doc 4"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Bulk doc 5"
 now    = 1700000005
 signer = "alice"
-msg    = "Bulk doc 5"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 3
@@ -3191,16 +3191,16 @@ name      = "t4_s07"
 principal = ["alice", "bob"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Action 1"
 now    = 1700000000
 signer = "alice"
-msg    = "Action 1"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Action 2"
 now    = 1700000001
 signer = "bob"
-msg    = "Action 2"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [
@@ -3210,16 +3210,16 @@ tx = [
 ]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Action 3"
 now    = 1700000003
 signer = "bob"
-msg    = "Action 3"
+typ    = "cyphr.me/action"
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Action 4"
 now    = 1700000004
 signer = "carol"
-msg    = "Action 4"
+typ    = "cyphr.me/action"
 
 [test.expected]
 key_count = 3
@@ -3230,10 +3230,10 @@ name      = "t4_s08"
 principal = ["golden"]
 
 [[test.action]]
-typ    = "cyphr.me/action"
+msg    = "Escalate to L4"
 now    = 1700000000
 signer = "golden"
-msg    = "Escalate to L4"
+typ    = "cyphr.me/action"
 
 [[test.commit]]
 tx = [

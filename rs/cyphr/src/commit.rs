@@ -72,9 +72,7 @@ impl Commit {
     }
     /// Iterates over all cozies in this commit bundle (mutations followed by the commit/create synthetic coz).
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
-        self.transactions
-            .iter()
-            .flat_map(|tx| tx.0.iter())
+        self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
@@ -144,9 +142,7 @@ impl PendingCommit {
     }
     /// Iterates over all current cozies within the pending commit.
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
-        self.transactions
-            .iter()
-            .flat_map(|tx| tx.0.iter())
+        self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
 
     /// Check if the pending commit is empty.
@@ -248,7 +244,10 @@ impl PendingCommit {
         }
 
         // Ensure that the last transaction actually is a commit transaction
-        let last_tx = self.transactions.last().ok_or(crate::error::Error::EmptyCommit)?;
+        let last_tx = self
+            .transactions
+            .last()
+            .ok_or(crate::error::Error::EmptyCommit)?;
         if !last_tx.is_commit() {
             return Err(crate::error::Error::MissingCommit);
         }
@@ -392,9 +391,7 @@ impl<'a> CommitScope<'a> {
         use crate::parsed_coz::verify_coz;
 
         let pay: coz::Pay =
-            serde_json::from_slice(pay_json).map_err(|_| {
-                crate::error::Error::MalformedPayload
-            })?;
+            serde_json::from_slice(pay_json).map_err(|_| crate::error::Error::MalformedPayload)?;
         let signer_tmb = pay
             .tmb
             .as_ref()
@@ -405,7 +402,11 @@ impl<'a> CommitScope<'a> {
         // mutated live state. Keys added during the commit are also accepted.
         let signer_key = {
             let active_keys: Vec<&String> = self.principal.auth.keys.keys().collect();
-            eprintln!("verify_and_apply: signer_tmb={}, active_keys={:?}", signer_tmb.to_b64(), active_keys);
+            eprintln!(
+                "verify_and_apply: signer_tmb={}, active_keys={:?}",
+                signer_tmb.to_b64(),
+                active_keys
+            );
             if self.principal.is_key_active(signer_tmb) {
                 self.principal
                     .get_key(signer_tmb)
@@ -457,11 +458,9 @@ impl<'a> CommitScope<'a> {
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| &k.tmb).collect();
-        let Ok((_kr, _ar, sr)) = derive_auth_state(
-            &thumbprints,
-            self.projected.dr.as_ref(),
-            &active_algs,
-        ) else {
+        let Ok((_kr, _ar, sr)) =
+            derive_auth_state(&thumbprints, self.projected.dr.as_ref(), &active_algs)
+        else {
             return false;
         };
 

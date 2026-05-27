@@ -670,8 +670,6 @@ fn e2e_checkpoint_load() {
     eprintln!("  ✓ checkpoint_with_suffix (covered by load_with_transactions)");
 }
 
-
-
 // ============================================================================
 // Edge Case Tests
 // ============================================================================
