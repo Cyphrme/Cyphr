@@ -103,8 +103,6 @@ pub struct PrincipalCore {
     pub(crate) auth: AuthLedger,
     /// Data ledger (Level 4+).
     pub(crate) data: DataLedger,
-    /// Active hash algorithms derived from current active keys (SPEC §14).
-    pub(crate) active_algs: Vec<HashAlg>,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from server time).
@@ -128,7 +126,6 @@ impl Default for PrincipalCore {
             dr: None,
             auth: AuthLedger::default(),
             data: DataLedger::default(),
-            active_algs: Vec::new(),
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys: Vec::new(),
@@ -183,8 +180,15 @@ impl std::ops::Deref for Principal {
     }
 }
 
-impl std::ops::DerefMut for Principal {
-    fn deref_mut(&mut self) -> &mut PrincipalCore {
+impl PrincipalCore {
+    pub(crate) fn active_algs(&self) -> Vec<HashAlg> {
+        let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
+        crate::state::derive_hash_algs(&key_refs)
+    }
+}
+
+impl Principal {
+    fn core_mut(&mut self) -> &mut PrincipalCore {
         match &mut self.0 {
             PrincipalKind::Nascent(core) => core,
             PrincipalKind::Established { core, .. } => core,
@@ -462,12 +466,12 @@ impl Principal {
 
     /// Get the hash algorithm used by this principal.
     pub fn hash_alg(&self) -> HashAlg {
-        self.active_algs.first().copied().unwrap_or(HashAlg::Sha256)
+        self.active_algs().first().copied().unwrap_or(HashAlg::Sha256)
     }
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).
-    pub fn active_algs(&self) -> &[HashAlg] {
-        &self.active_algs
+    pub fn active_algs(&self) -> Vec<HashAlg> {
+        self.deref().active_algs()
     }
 
     /// Get a key by thumbprint.
@@ -727,24 +731,27 @@ impl Principal {
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
 
+        let active_algs = self.active_algs();
+        let core = self.core_mut();
+
         // Update latest timestamp
-        if action.now > self.latest_timestamp {
-            self.latest_timestamp = action.now;
+        if action.now > core.latest_timestamp {
+            core.latest_timestamp = action.now;
         }
 
         // Record action
-        self.data.actions.push(action);
+        core.data.actions.push(action);
 
         // Recompute DS
-        let actions: Vec<&Action> = self.data.actions.iter().collect();
-        self.dr = compute_dr(&actions, None, &self.active_algs)?;
+        let actions: Vec<&Action> = core.data.actions.iter().collect();
+        core.dr = compute_dr(&actions, None, &active_algs)?;
 
         // Recompute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &self.active_algs)?;
-        self.sr = Some(sr.clone());
+        let sr = compute_sr(&core.ar, core.dr.as_ref(), None, &active_algs)?;
+        core.sr = Some(sr.clone());
 
         // Recompute PR = MR(SR, CR?, embedding?)
-        self.pr = compute_pr(&sr, self.cr.as_ref(), None, &self.active_algs)?;
+        core.pr = compute_pr(&sr, core.cr.as_ref(), None, &active_algs)?;
 
         Ok(&self.pr)
     }
@@ -1002,7 +1009,7 @@ impl Principal {
                 self.add_key(key, cz.now);
                 // Use shift_remove directly to bypass NoActiveKeys check
                 // (we just added a key, so this is safe)
-                self.auth.keys.shift_remove(&cz.signer.to_b64());
+                self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
             },
             CozKind::SelfRevoke { pre, rvk } => {
                 // Per protocol simplification, revoke requires pre like all other coz
@@ -1036,8 +1043,9 @@ impl Principal {
         self.update_last_used(&cz.signer, cz.now);
 
         // Update latest timestamp
-        if cz.now > self.latest_timestamp {
-            self.latest_timestamp = cz.now;
+        let core = self.core_mut();
+        if cz.now > core.latest_timestamp {
+            core.latest_timestamp = cz.now;
         }
 
         Ok(&self.ar)
@@ -1240,16 +1248,17 @@ impl Principal {
     fn add_key(&mut self, mut key: Key, first_seen: i64) {
         key.first_seen = first_seen;
         let tmb_b64 = key.tmb.to_b64();
-        self.auth.keys.insert(tmb_b64, key);
+        self.core_mut().auth.keys.insert(tmb_b64, key);
     }
 
     /// Remove a key from the active key set (delete, not revoke).
     fn remove_key(&mut self, tmb: &Thumbprint) -> Result<()> {
         let tmb_b64 = tmb.to_b64();
-        if self.auth.keys.shift_remove(&tmb_b64).is_none() {
+        let core = self.core_mut();
+        if core.auth.keys.shift_remove(&tmb_b64).is_none() {
             return Err(Error::UnknownKey);
         }
-        if self.auth.keys.is_empty() {
+        if core.auth.keys.is_empty() {
             return Err(Error::NoActiveKeys);
         }
         Ok(())
@@ -1265,19 +1274,20 @@ impl Principal {
         use crate::key::Revocation;
 
         let tmb_b64 = tmb.to_b64();
+        let core = self.core_mut();
 
         // Check if key exists
-        if !self.auth.keys.contains_key(&tmb_b64) {
+        if !core.auth.keys.contains_key(&tmb_b64) {
             return Err(Error::UnknownKey);
         }
 
         // Check BEFORE mutation: would this leave us with no keys?
-        if self.auth.keys.len() == 1 {
+        if core.auth.keys.len() == 1 {
             return Err(Error::NoActiveKeys);
         }
 
         // Safe to proceed - remove and revoke.
-        let mut key = self
+        let mut key = core
             .auth
             .keys
             .shift_remove(&tmb_b64)
@@ -1285,7 +1295,7 @@ impl Principal {
         key.revocation = Some(Revocation { rvk, by });
 
         // Move to revoked set for historical verification
-        self.auth.revoked.insert(tmb_b64, key);
+        core.auth.revoked.insert(tmb_b64, key);
 
         Ok(())
     }
@@ -1295,7 +1305,7 @@ impl Principal {
     /// Called after successful coz or action signing.
     fn update_last_used(&mut self, tmb: &Thumbprint, timestamp: i64) {
         let tmb_b64 = tmb.to_b64();
-        if let Some(key) = self.auth.keys.get_mut(&tmb_b64) {
+        if let Some(key) = self.core_mut().auth.keys.get_mut(&tmb_b64) {
             key.last_used = Some(timestamp);
         }
     }
