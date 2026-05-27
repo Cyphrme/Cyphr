@@ -1102,6 +1102,15 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                         result
                     }
 
+                    if mutations.len() > 8 {
+                        eprintln!(
+                            "reindex: too many mutations ({}) at same timestamp. skipping to \
+                             prevent complexity explosion",
+                            mutations.len()
+                        );
+                        break;
+                    }
+
                     let mutation_perms = permutations(&mutations);
 
                     'outer: for finalizer_coz in &finalizers {
