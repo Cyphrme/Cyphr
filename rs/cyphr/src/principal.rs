@@ -736,8 +736,8 @@ impl Principal {
         self.data.actions.push(action);
 
         // Recompute DS
-        let czds: Vec<&coz::Czd> = self.data.actions.iter().map(|a| &a.czd).collect();
-        self.dr = compute_dr(&czds, None, &self.active_algs)?;
+        let actions: Vec<&Action> = self.data.actions.iter().collect();
+        self.dr = compute_dr(&actions, None, &self.active_algs)?;
 
         // Recompute SR = MR(AR, DR?, embedding?)
         let sr = compute_sr(&self.ar, self.dr.as_ref(), None, &self.active_algs)?;

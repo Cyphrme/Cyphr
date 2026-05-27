@@ -647,28 +647,28 @@ fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
 /// - Single action, no nonce: DS = czd (implicit promotion)
 /// - Otherwise: DS = H(sort(czd₀, czd₁, nonce?, ...))
 pub fn compute_dr(
-    action_czds: &[&Czd],
+    actions: &[&crate::action::Action],
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<Option<DataRoot>> {
     use crate::multihash::MultihashDigest;
     use std::collections::BTreeMap;
 
-    if action_czds.is_empty() && nonce.is_none() {
+    if actions.is_empty() && nonce.is_none() {
         return Ok(None);
     }
 
     // Implicit promotion: single action, no nonce.
     // Convert the action's single-algorithm czd to all target algorithms.
-    if action_czds.len() == 1 && nonce.is_none() {
-        let digest_bytes = action_czds[0].as_bytes();
+    if actions.len() == 1 && nonce.is_none() {
+        let digest_bytes = actions[0].czd().as_bytes();
         let source_alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
             crate::error::Error::UnsupportedAlgorithm(format!(
                 "invalid digest length: {}",
                 digest_bytes.len()
             ))
         })?;
-        let tagged = TaggedCzd::new(action_czds[0], source_alg);
+        let tagged = TaggedCzd::new(actions[0].czd(), source_alg);
         let mut variants = BTreeMap::new();
         for &target_alg in algs {
             let converted = tagged.convert_to(target_alg);
@@ -678,14 +678,47 @@ pub fn compute_dr(
         return Ok(Some(DataRoot(mh)));
     }
 
-    let mut components: Vec<&[u8]> = action_czds.iter().map(|c| c.as_bytes()).collect();
-    if let Some(n) = nonce {
-        components.push(n);
+    // Sort components: actions by now then czd, non-actions by digest bytes
+    struct DrComponent<'a> {
+        bytes: &'a [u8],
+        now: i64,
     }
+
+    let mut components = Vec::new();
+    for a in actions {
+        components.push(DrComponent {
+            bytes: a.czd().as_bytes(),
+            now: a.now(),
+        });
+    }
+    if let Some(n) = nonce {
+        components.push(DrComponent {
+            bytes: n,
+            now: i64::MAX,
+        });
+    }
+    components.sort_by(|a, b| {
+        match a.now.cmp(&b.now) {
+            std::cmp::Ordering::Equal => a.bytes.cmp(b.bytes),
+            other => other,
+        }
+    });
 
     let mut variants = BTreeMap::new();
     for &alg in algs {
-        let bytes = hash_sorted_concat_bytes(alg, &components);
+        // Convert components to the target algorithm
+        let mut converted_components = Vec::new();
+        for comp in &components {
+            let source_alg = infer_alg_from_len(comp.bytes.len()).unwrap_or(HashAlg::Sha256);
+            if source_alg == alg {
+                converted_components.push(comp.bytes.to_vec());
+            } else {
+                converted_components.push(hash_bytes(alg, comp.bytes));
+            }
+        }
+
+        let refs: Vec<&[u8]> = converted_components.iter().map(|v| v.as_slice()).collect();
+        let bytes = hash_concat_bytes(alg, &refs);
         variants.insert(alg, digest_into_boxed_slice(bytes));
     }
 
@@ -848,7 +881,14 @@ mod tests {
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let czd = Czd::from_bytes(vec![10; 32]);
-        let ds = compute_dr(&[&czd], None, &[HashAlg::Sha256])
+        let action = crate::action::Action::new(
+            "cyphr.me/comment/create".to_string(),
+            tmb.clone(),
+            1000,
+            czd,
+            coz::CozJson { pay: serde_json::Value::Null, sig: vec![] }
+        );
+        let ds = compute_dr(&[&action], None, &[HashAlg::Sha256])
             .unwrap()
             .unwrap();
 
@@ -864,9 +904,16 @@ mod tests {
     fn cross_algorithm_promotion_dr_commit_id() {
         let czd = Czd::from_bytes(vec![10; 32]); // SHA-256 size
         let active_algs = [HashAlg::Sha256, HashAlg::Sha384];
+        let action = crate::action::Action::new(
+            "cyphr.me/comment/create".to_string(),
+            Thumbprint::from_bytes(vec![1; 32]),
+            1000,
+            czd.clone(),
+            coz::CozJson { pay: serde_json::Value::Null, sig: vec![] }
+        );
 
         // 1. DR promotion test
-        let dr = compute_dr(&[&czd], None, &active_algs).unwrap().unwrap();
+        let dr = compute_dr(&[&action], None, &active_algs).unwrap().unwrap();
         assert!(dr.0.contains(HashAlg::Sha256));
         assert!(dr.0.contains(HashAlg::Sha384));
 
