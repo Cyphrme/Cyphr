@@ -48,7 +48,7 @@ pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
     StateRoot, compute_ar, compute_commit_id, compute_dr, compute_kr, compute_pr, compute_sr,
 };
-pub use transaction::{CommitTransaction, Transaction};
+pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
 
 // EML proof types and standalone verifiers.

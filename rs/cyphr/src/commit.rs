@@ -23,8 +23,6 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 pub struct Commit {
     /// Transactions in this commit.
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
-    /// The terminal commit transaction.
-    pub(crate) commit_tx: crate::transaction::CommitTransaction,
     /// Transaction Root: Merkle root of coz czds.
     tr: crate::transaction_root::TransactionRoot,
     /// Auth State at the end of this commit.
@@ -40,21 +38,19 @@ impl Commit {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if `cozies` is empty.
+    /// Returns `EmptyCommit` if `transactions` is empty.
     pub(crate) fn new(
         transactions: Vec<crate::transaction::Transaction>,
-        commit_tx: crate::transaction::CommitTransaction,
         tr: crate::transaction_root::TransactionRoot,
         ar: AuthRoot,
         sr: StateRoot,
         pr: PrincipalRoot,
     ) -> crate::error::Result<Self> {
-        if transactions.is_empty() && commit_tx.0.is_empty() {
+        if transactions.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
         Ok(Self {
             transactions,
-            commit_tx,
             tr,
             ar,
             sr,
@@ -67,8 +63,8 @@ impl Commit {
         &self.transactions
     }
     /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
-    pub fn commit_tx(&self) -> &crate::transaction::CommitTransaction {
-        &self.commit_tx
+    pub fn commit_tx(&self) -> &crate::transaction::Transaction {
+        self.transactions.last().unwrap()
     }
     /// Returns a flat vector of all cozies (mutations + commit).
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
@@ -79,7 +75,6 @@ impl Commit {
         self.transactions
             .iter()
             .flat_map(|tx| tx.0.iter())
-            .chain(self.commit_tx.0.iter())
     }
 
     /// Get the Commit ID (Merkle root of this commit's czds).
@@ -123,7 +118,6 @@ impl Commit {
 #[derive(Debug, Clone, Default)]
 pub struct PendingCommit {
     pub(crate) transactions: Vec<crate::transaction::Transaction>,
-    pub(crate) commit_tx: Option<crate::transaction::CommitTransaction>,
 }
 
 impl PendingCommit {
@@ -137,26 +131,12 @@ impl PendingCommit {
         if tx.0.is_empty() {
             return;
         }
-
-        let is_commit = tx.0.iter().any(|cz| cz.arrow().is_some());
-
-        if is_commit {
-            match &mut self.commit_tx {
-                Some(ctx) => ctx.0.extend(tx.0),
-                None => self.commit_tx = Some(crate::transaction::CommitTransaction(tx.0)),
-            }
-        } else {
-            self.transactions.push(tx);
-        }
+        self.transactions.push(tx);
     }
 
     /// Get the current list of pending cozies.
     pub fn transactions(&self) -> &[crate::transaction::Transaction] {
         &self.transactions
-    }
-    /// Optionally returns the commit transaction if one has been pushed.
-    pub fn commit_tx(&self) -> Option<&crate::transaction::CommitTransaction> {
-        self.commit_tx.as_ref()
     }
     /// Returns a flat vector of all cozies (mutations + commit).
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
@@ -167,7 +147,6 @@ impl PendingCommit {
         self.transactions
             .iter()
             .flat_map(|tx| tx.0.iter())
-            .chain(self.commit_tx.iter().flat_map(|ctx| ctx.0.iter()))
     }
 
     /// Check if the pending commit is empty.
@@ -193,8 +172,19 @@ impl PendingCommit {
             return (None, None, None);
         }
 
+        let (mutations, commit_tx) = if let Some(last_tx) = self.transactions.last() {
+            if last_tx.is_commit() {
+                let len = self.transactions.len();
+                (&self.transactions[..len - 1], Some(last_tx))
+            } else {
+                (&self.transactions[..], None)
+            }
+        } else {
+            (&[][..], None)
+        };
+
         let mut tx_roots = Vec::new();
-        for tx in &self.transactions {
+        for tx in mutations {
             let tx_czds: Vec<TaggedCzd<'_>> =
                 tx.0.iter()
                     .map(|t| TaggedCzd::new(t.czd(), t.hash_alg()))
@@ -203,10 +193,15 @@ impl PendingCommit {
                 tx_roots.push(mh);
             }
         }
-        let tx_refs: Vec<&crate::multihash::MultihashDigest> = tx_roots.iter().collect();
-        let tmr = crate::transaction_root::compute_tmr(&tx_refs, algs);
 
-        if let Some(ctx) = &self.commit_tx {
+        let tmr = if tx_roots.is_empty() {
+            None
+        } else {
+            let tx_refs: Vec<&crate::multihash::MultihashDigest> = tx_roots.iter().collect();
+            crate::transaction_root::compute_tmr(&tx_refs, algs)
+        };
+
+        if let Some(ctx) = commit_tx {
             let ctx_czds: Vec<TaggedCzd<'_>> = ctx
                 .0
                 .iter()
@@ -217,6 +212,7 @@ impl PendingCommit {
                 return (tmr, Some(tcr), tr);
             }
         }
+
         (tmr, None, None)
     }
 
@@ -251,16 +247,17 @@ impl PendingCommit {
             return Err(crate::error::Error::EmptyCommit);
         }
 
-        let commit_tx = self
-            .commit_tx
-            .clone()
-            .ok_or(crate::error::Error::MalformedPayload)?; // Must have a commit tx to finalize
+        // Ensure that the last transaction actually is a commit transaction
+        let last_tx = self.transactions.last().ok_or(crate::error::Error::EmptyCommit)?;
+        if !last_tx.is_commit() {
+            return Err(crate::error::Error::MissingCommit);
+        }
 
         let tr = self
             .compute_tr(tx_algs)
             .ok_or(crate::error::Error::EmptyCommit)?;
 
-        Commit::new(self.transactions, commit_tx, tr, ar, sr, pr)
+        Commit::new(self.transactions, tr, ar, sr, pr)
     }
 
     /// Consume the pending commit and return the cozies.
@@ -636,11 +633,9 @@ mod tests {
     fn pending_commit_compute_tr_returns_merkle_root() {
         let mut pending = PendingCommit::new();
         let tx1 = make_test_tx(false, 0x01);
-        pending
-            .transactions
-            .push(crate::transaction::Transaction(vec![tx1.clone()]));
-        let ctx = crate::transaction::CommitTransaction(vec![tx1]);
-        pending.commit_tx = Some(ctx);
+        pending.push_tx(crate::transaction::Transaction(vec![tx1]));
+        let tx2 = make_test_tx(true, 0x02);
+        pending.push_tx(crate::transaction::Transaction(vec![tx2]));
 
         let tr = pending.compute_tr(&[coz::HashAlg::Sha256]);
         assert!(tr.is_some());
@@ -693,7 +688,7 @@ mod tests {
 
         let result = pending.finalize(auth_root, sr, ps, &[coz::HashAlg::Sha256]);
         assert!(
-            matches!(result, Err(crate::error::Error::MalformedPayload)),
+            matches!(result, Err(crate::error::Error::MissingCommit)),
             "finalize should fail without finalizer marker"
         );
     }
