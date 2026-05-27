@@ -718,3 +718,102 @@ async fn test_reindex_recovery() {
 
     assert_eq!(recovered_entity.blob_hash, original_entity.blob_hash);
 }
+
+#[tokio::test]
+async fn test_reindex_recovery_with_crashed_commit() {
+    use coz::base64ct::Encoding;
+
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let blob_store = MemoryBlobStore::new();
+    let indexer = MemoryIndexer::new();
+    let engine = StorageEngine::new(blob_store.clone(), indexer);
+
+    // Compute the actual principal_id from the genesis key
+    let key = golden_key_to_domain(&genesis_keys[0]);
+    let temp_principal = cyphr::Principal::implicit(key).unwrap();
+    let pr_bytes = temp_principal
+        .pr()
+        .as_multihash()
+        .get(cyphr::state::HashAlg::Sha256)
+        .unwrap();
+    let principal_id = format!(
+        "SHA-256:{}",
+        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
+    );
+
+    // Submit all commits.
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let genesis = make_genesis(genesis_keys);
+
+        engine
+            .submit_commit(&principal_id, Some(genesis), &blob_slices)
+            .await
+            .expect("submit_commit failed");
+    }
+
+    // Write a mock genesis cozy to the BlobStore
+    let genesis_key = &genesis_keys[0];
+    let genesis_coz_json = serde_json::json!({
+        "pay": {
+            "typ": "cyphr.me/cyphr/key/create",
+            "now": 1000000,
+            "pre": "",
+            "tmb": genesis_key["tmb"].as_str().unwrap(),
+            "alg": genesis_key["alg"].as_str().unwrap(),
+        },
+        "sig": "mock-sig",
+        "key": genesis_key
+    });
+
+    let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
+    let mut handle = blob_store.open_write().await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut handle, &genesis_coz_bytes)
+        .await
+        .unwrap();
+    let _ = blob_store.close(handle).await.unwrap();
+
+    // Now write a random transaction cozy simulating a crashed commit write (missing finalizer cozy)
+    let crashed_coz_json = serde_json::json!({
+        "pay": {
+            "typ": "cyphr.me/cyphr/key/add",
+            "now": 99999999,
+            "pre": "some-pre-hash",
+            "tmb": genesis_key["tmb"].as_str().unwrap(),
+            "alg": genesis_key["alg"].as_str().unwrap(),
+        },
+        "sig": "mock-sig-crashed",
+        "key": genesis_key
+    });
+    let crashed_coz_bytes = serde_json::to_vec(&crashed_coz_json).unwrap();
+    let mut handle2 = blob_store.open_write().await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut handle2, &crashed_coz_bytes)
+        .await
+        .unwrap();
+    let _ = blob_store.close(handle2).await.unwrap();
+
+    // Create a new engine sharing the same blob store but with a completely empty indexer.
+    let new_indexer = MemoryIndexer::new();
+    let recovery_engine = StorageEngine::new(blob_store, new_indexer);
+
+    // Reindex from the blobs. This must succeed, skipping the crashed/unfinalized cozy.
+    recovery_engine
+        .reindex(&[], false)
+        .await
+        .expect("reindex recovery with crashed commit failed");
+
+    // Verify recovery.
+    let recovered_tip = recovery_engine
+        .get_tip(&principal_id)
+        .await
+        .expect("get_tip failed")
+        .expect("recovered tip should exist");
+
+    // Tip commit count should match original_tip + 1 (for genesis_coz), completely ignoring the crashed cozy.
+    let original_tip = engine.get_tip(&principal_id).await.unwrap().unwrap();
+    assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
+}

@@ -1043,7 +1043,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 // Update the pool
                 tx_cozies = remaining_txs;
 
-                if !applied_any {
+                if !applied_any || matched_commit.is_none() {
                     break;
                 }
 
