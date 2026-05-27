@@ -73,6 +73,8 @@ pub struct IngestMeta {
     pub transaction_ids: Vec<Vec<String>>,
     /// Timestamp of the commit.
     pub timestamp: i64,
+    /// Public keys introduced in this commit.
+    pub keys: Vec<crate::PublicKeyInfo>,
 }
 
 /// Result from [`StorageEngine::ingest_commit`].
@@ -223,6 +225,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             transaction_types: metadata.transaction_types,
             transaction_ids: metadata.transaction_ids,
             timestamp: metadata.timestamp,
+            keys: metadata.keys,
         };
         self.indexer.index_commit(&indexable).await?;
 
@@ -402,6 +405,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         let mut transaction_types = Vec::new();
         let mut last_timestamp: i64 = 0;
         let mut pending_czds = Vec::new();
+        let mut extracted_keys = Vec::new();
 
         for (i, blob_bytes) in raw_blobs.iter().enumerate() {
             let value: serde_json::Value = serde_json::from_slice(blob_bytes)
@@ -448,6 +452,11 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 let new_key = if is_key_introducing_typ(typ) {
                     value.get("key").and_then(|k| {
                         let ke = key_value_to_entry(k)?;
+                        extracted_keys.push(crate::PublicKeyInfo {
+                            thumbprint: ke.tmb.clone(),
+                            algorithm: ke.alg.clone(),
+                            public_key: ke.pub_key.clone(),
+                        });
                         crate::import::key_entry_to_key(&ke).ok()
                     })
                 } else {
@@ -498,6 +507,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             transaction_types,
             transaction_ids,
             timestamp: last_timestamp,
+            keys: extracted_keys,
         };
 
         self.ingest_commit(raw_blobs, meta).await
@@ -601,9 +611,13 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// [recovery-convergence]. Traces the transaction/action chain from genesis
     /// and idempotently indexes everything.
     #[tracing::instrument(skip(self, keys))]
-    pub async fn reindex(&self, keys: &[cyphr::Key]) -> Result<(), EngineError> {
+    pub async fn reindex(&self, keys: &[cyphr::Key], total_check: bool) -> Result<(), EngineError> {
         use crate::import::is_transaction_typ;
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        if total_check {
+            self.indexer.clear().await?;
+        }
 
         #[derive(Clone)]
         struct ParsedCozInfo {
@@ -615,6 +629,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             tmb: String,
             now: i64,
             new_key: Option<cyphr::Key>,
+            key_info: Option<crate::PublicKeyInfo>,
         }
 
         let iter = self.blob_store.iter().await?;
@@ -623,6 +638,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         let mut cozies = Vec::new();
         for hash in hashes {
+            if !total_check && self.indexer.is_blob_indexed(&hash).await? {
+                continue;
+            }
+
             let data = match self.blob_store.get(&hash).await? {
                 Some(d) => d,
                 None => continue,
@@ -681,8 +700,14 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 },
             };
 
+            let mut key_info = None;
             let new_key = if let Some(k) = &ext.key {
                 if let Some(ke) = key_value_to_entry(k) {
+                    key_info = Some(crate::PublicKeyInfo {
+                        thumbprint: ke.tmb.clone(),
+                        algorithm: ke.alg.clone(),
+                        public_key: ke.pub_key.clone(),
+                    });
                     crate::import::key_entry_to_key(&ke).ok()
                 } else {
                     None
@@ -700,6 +725,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 tmb: pay.tmb,
                 now: pay.now,
                 new_key,
+                key_info,
             });
         }
 
@@ -716,6 +742,19 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         );
 
         let mut bootstrapped = Vec::new();
+
+        // 0. Bootstrap from existing principals in the indexer (if not doing a total check)
+        if !total_check {
+            let existing_principals = self.indexer.list_principals().await?;
+            for p_summary in existing_principals {
+                let genesis = self.resolve_genesis(&p_summary.principal_id, &[]).await?;
+                let principal = self
+                    .load_principal(&p_summary.principal_id, genesis)
+                    .await?;
+                let next_seq = p_summary.commit_count;
+                bootstrapped.push((principal, p_summary.principal_id, next_seq));
+            }
+        }
 
         // 1. Bootstrap from mock genesis cozies (pre is empty/missing and key is present)
         // Exclude finalizer commit/create cozies from being consumed as mock genesis cozies
@@ -749,6 +788,11 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
             let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
 
+            let mut genesis_keys = Vec::new();
+            if let Some(info) = &mock_coz.key_info {
+                genesis_keys.push(info.clone());
+            }
+
             let genesis_indexable = IndexableCommit {
                 principal_id: principal_id.clone(),
                 commit_ids: genesis_commit_ids,
@@ -760,6 +804,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 transaction_types: vec![mock_coz.typ.clone()],
                 transaction_ids: vec![vec![mock_coz.typ.clone()]],
                 timestamp: mock_coz.now,
+                keys: genesis_keys,
             };
             self.indexer.index_commit(&genesis_indexable).await?;
             sequence += 1;
@@ -844,6 +889,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 let mut commit_transaction_types = Vec::new();
                 let mut commit_pending_czds = Vec::new();
                 let mut commit_timestamp = 0;
+                let mut commit_keys = Vec::new();
 
                 let mut remaining_txs = Vec::new();
                 let mut mutation_cozies = Vec::new();
@@ -892,6 +938,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                                 commit_blobs.push(coz.hash);
                                 commit_transaction_types.push(coz.typ.clone());
                                 commit_pending_czds.push((czd, alg.to_string()));
+                                if let Some(info) = &coz.key_info {
+                                    commit_keys.push(info.clone());
+                                }
                                 commit_timestamp = coz.now;
                                 applied_any = true;
                                 applied_this_round = true;
@@ -970,6 +1019,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                                 commit_blobs.push(coz.hash);
                                 commit_transaction_types.push(coz.typ.clone());
                                 commit_pending_czds.push((czd, alg.to_string()));
+                                if let Some(info) = &coz.key_info {
+                                    commit_keys.push(info.clone());
+                                }
                                 commit_timestamp = coz.now;
                                 applied_any = true;
                                 matched_commit = Some(coz);
@@ -1104,6 +1156,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                     transaction_types: commit_transaction_types,
                     transaction_ids: commit_transaction_ids,
                     timestamp: commit_timestamp,
+                    keys: commit_keys,
                 };
                 self.indexer.index_commit(&indexable).await?;
                 sequence += 1;

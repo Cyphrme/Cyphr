@@ -19,6 +19,7 @@ fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IngestMeta {
         transaction_types: vec!["key/create".to_string()],
         transaction_ids: vec![vec![]],
         timestamp,
+        keys: Vec::new(),
     }
 }
 
@@ -321,6 +322,7 @@ async fn ingest_fixture(
                 .last()
                 .and_then(|c| c["pay"]["now"].as_i64())
                 .unwrap_or(0),
+            keys: Vec::new(),
         };
 
         engine
@@ -688,7 +690,10 @@ async fn test_reindex_recovery() {
     let recovery_engine = StorageEngine::new(blob_store, new_indexer);
 
     // Reindex from the blobs.
-    recovery_engine.reindex(&[]).await.expect("reindex failed");
+    recovery_engine
+        .reindex(&[], false)
+        .await
+        .expect("reindex failed");
 
     // Verify recovery.
     let recovered_tip = recovery_engine

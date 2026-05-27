@@ -22,7 +22,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// 32-byte BLAKE3 digest used as content address.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Blake3Hash([u8; 32]);
 
 impl Blake3Hash {
