@@ -391,7 +391,6 @@ pub fn verify_coz(
         return Err(Error::InvalidSignature);
     }
 
-    // Parse Pay from JSON bytes
     let pay: Pay = serde_json::from_slice(pay_json).map_err(|_| Error::MalformedPayload)?;
 
     // Create the raw CozJson for storage

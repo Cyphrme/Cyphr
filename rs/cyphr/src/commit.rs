@@ -391,9 +391,10 @@ impl<'a> CommitScope<'a> {
     ) -> crate::error::Result<()> {
         use crate::parsed_coz::verify_coz;
 
-        // Parse Pay to get signer thumbprint
         let pay: coz::Pay =
-            serde_json::from_slice(pay_json).map_err(|_| crate::error::Error::MalformedPayload)?;
+            serde_json::from_slice(pay_json).map_err(|_| {
+                crate::error::Error::MalformedPayload
+            })?;
         let signer_tmb = pay
             .tmb
             .as_ref()
@@ -402,19 +403,23 @@ impl<'a> CommitScope<'a> {
         // [pre-mutation-key-rule]: Check authorization against the snapshot
         // of keys that were active when this commit began, not the eagerly
         // mutated live state. Keys added during the commit are also accepted.
-        let signer_key = if self.principal.is_key_active(signer_tmb) {
-            self.principal
-                .get_key(signer_tmb)
-                .ok_or(crate::error::Error::UnknownKey)?
-        } else if self.projected.is_key_active(signer_tmb) {
-            // Key was added during this commit — accept it
-            self.projected
-                .get_key(signer_tmb)
-                .ok_or(crate::error::Error::UnknownKey)?
-        } else if self.principal.is_key_revoked(signer_tmb) {
-            return Err(crate::error::Error::KeyRevoked);
-        } else {
-            return Err(crate::error::Error::UnknownKey);
+        let signer_key = {
+            let active_keys: Vec<&String> = self.principal.auth.keys.keys().collect();
+            eprintln!("verify_and_apply: signer_tmb={}, active_keys={:?}", signer_tmb.to_b64(), active_keys);
+            if self.principal.is_key_active(signer_tmb) {
+                self.principal
+                    .get_key(signer_tmb)
+                    .ok_or(crate::error::Error::UnknownKey)?
+            } else if self.projected.is_key_active(signer_tmb) {
+                // Key was added during this commit — accept it
+                self.projected
+                    .get_key(signer_tmb)
+                    .ok_or(crate::error::Error::UnknownKey)?
+            } else if self.principal.is_key_revoked(signer_tmb) {
+                return Err(crate::error::Error::KeyRevoked);
+            } else {
+                return Err(crate::error::Error::UnknownKey);
+            }
         };
 
         // Verify signature and parse coz
@@ -437,6 +442,56 @@ impl<'a> CommitScope<'a> {
     /// Check if no cozies have been applied yet.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+
+    /// Check if a claimed arrow matches the expected arrow for this commit scope.
+    pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
+        use crate::state::{derive_auth_state, derive_hash_algs, hash_sorted_concat_bytes};
+
+        if self.is_empty() {
+            return false;
+        }
+
+        // 1. Recompute projected state roots
+        let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+        let thumbprints: Vec<&coz::Thumbprint> =
+            self.projected.auth.keys.values().map(|k| &k.tmb).collect();
+        let Ok((_kr, _ar, sr)) = derive_auth_state(
+            &thumbprints,
+            self.projected.dr.as_ref(),
+            &active_algs,
+        ) else {
+            return false;
+        };
+
+        // 2. Compute TMR
+        let signer_hash_alg = self.principal.hash_alg();
+        let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
+        let Some(tmr) = tmr else {
+            return false;
+        };
+
+        // 3. Compute Arrow = MR(pre, sr, tmr)
+        let pre = &self.principal.pr;
+        let Ok(pre_bytes) = pre.0.get_or_err(signer_hash_alg) else {
+            return false;
+        };
+        let Ok(sr_bytes) = sr.0.get_or_err(signer_hash_alg) else {
+            return false;
+        };
+        let Some(tmr_bytes) = tmr.0.get(signer_hash_alg) else {
+            return false;
+        };
+
+        let computed_digest =
+            hash_sorted_concat_bytes(signer_hash_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+
+        let Some(claimed_digest) = claimed_arrow.get(signer_hash_alg) else {
+            return false;
+        };
+
+        claimed_digest == computed_digest.as_slice()
     }
 
     /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.

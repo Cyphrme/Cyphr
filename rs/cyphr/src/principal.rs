@@ -474,6 +474,14 @@ impl Principal {
         }
     }
 
+    /// Get the genesis keys of this principal.
+    pub fn genesis_keys(&self) -> &[String] {
+        match &self.0 {
+            PrincipalKind::Nascent(core) => &core.genesis_keys,
+            PrincipalKind::Established { core, .. } => &core.genesis_keys,
+        }
+    }
+
     /// Get a key by thumbprint.
     pub fn get_key(&self, tmb: &Thumbprint) -> Option<&Key> {
         let key = tmb.to_b64();
