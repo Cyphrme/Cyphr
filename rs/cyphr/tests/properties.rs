@@ -1,11 +1,12 @@
 //! Property-based tests for the cyphr library.
 
+use std::collections::BTreeMap;
+
 use coz::Thumbprint;
 use cyphr::MultihashDigest;
 use cyphr::key::{Key, Revocation};
 use cyphr::state::{HashAlg, derive_hash_algs};
 use proptest::prelude::*;
-use std::collections::BTreeMap;
 
 // Generators for test inputs
 
@@ -53,7 +54,9 @@ fn key_strategy() -> impl Strategy<Value = Key> {
 
 proptest! {
     #[test]
-    fn test_derive_hash_algs_matches_active_keys(keys in prop::collection::vec(key_strategy(), 1..10)) {
+    fn test_derive_hash_algs_matches_active_keys(
+        keys in prop::collection::vec(key_strategy(), 1..10),
+    ) {
         // Collect references to keys
         let key_refs: Vec<&Key> = keys.iter().collect();
 
@@ -125,5 +128,43 @@ proptest! {
         } else {
             assert!(result.is_err());
         }
+    }
+
+    #[test]
+    fn test_tagged_digest_parsing_roundtrip(
+        alg in hash_alg_strategy(),
+        digest_bytes in prop::collection::vec(any::<u8>(), 1..100)
+    ) {
+        use cyphr::state::TaggedDigest;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use std::str::FromStr;
+
+        let expected_len = match alg {
+            HashAlg::Sha256 => 32,
+            HashAlg::Sha384 => 48,
+            HashAlg::Sha512 => 64,
+        };
+
+        let base64_str = Base64UrlUnpadded::encode_string(&digest_bytes);
+        let formatted = format!("{}:{}", alg, base64_str);
+
+        let parse_result = TaggedDigest::from_str(&formatted);
+
+        if digest_bytes.len() == expected_len {
+            let td = parse_result.expect("Valid digest should parse successfully");
+            assert_eq!(td.alg(), alg);
+            assert_eq!(td.as_bytes(), &digest_bytes[..]);
+            assert_eq!(td.to_string(), formatted);
+        } else {
+            assert!(parse_result.is_err());
+        }
+    }
+
+    #[test]
+    fn test_tagged_digest_invalid_parsing_does_not_panic(s in any::<String>()) {
+        use cyphr::state::TaggedDigest;
+        use std::str::FromStr;
+
+        let _ = TaggedDigest::from_str(&s);
     }
 }
