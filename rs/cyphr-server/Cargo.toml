@@ -36,6 +36,7 @@ uuid.workspace               = true
 coz            = { workspace = true }
 http-body-util = "0.1"
 serde_json     = { workspace = true }
+tempfile       = "3"
 test-fixtures  = { path = "../test-fixtures" }
 tokio          = { workspace = true }
 tower          = { version = "0.5", features = ["util"] }

@@ -10,11 +10,11 @@ use coz::Thumbprint;
 use cyphr::Key;
 use cyphr_storage::blob::FjallBlobStore;
 use cyphr_storage::engine::StorageEngine;
-use cyphr_storage::index::MemoryIndexer;
+use cyphr_storage::index::FjallIndexer;
 use cyphr_storage::{CommitEntry, Genesis};
 
 /// Type alias representing the concrete storage engine type used by the CLI.
-pub type CliStorageEngine = StorageEngine<FjallBlobStore, MemoryIndexer>;
+pub type CliStorageEngine = StorageEngine<FjallBlobStore, FjallIndexer>;
 
 use crate::Error;
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
@@ -136,15 +136,18 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
     })
 }
 
-/// Parse the --store argument into a CliStorageEngine.
-pub fn parse_store(
-    store_uri: &str,
-    keystore_path: &std::path::Path,
-) -> crate::Result<CliStorageEngine> {
+/// Parse the CLI options into a CliStorageEngine.
+pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
+    let store_uri = &cli.store;
+    let keystore_path = &cli.keystore;
+    let total_check = cli.total_check;
+
     if let Some(path) = store_uri.strip_prefix("file:") {
-        let blob_store = FjallBlobStore::open(std::path::Path::new(path))
+        let path = std::path::Path::new(path);
+        let blob_store = FjallBlobStore::open(&path.join("blobs"))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let indexer = MemoryIndexer::new();
+        let indexer = FjallIndexer::open(&path.join("index"))
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let engine = StorageEngine::new(blob_store, indexer);
 
         // Open keystore and extract keys
@@ -161,7 +164,7 @@ pub fn parse_store(
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(async { engine.reindex(&keys).await })
+        rt.block_on(async { engine.reindex(&keys, total_check).await })
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
 
         Ok(engine)
@@ -192,7 +195,16 @@ pub fn get_principal_id_from_principal(principal: &cyphr::Principal) -> crate::R
     let mh = if let Some(pg) = principal.pg() {
         pg.as_multihash()
     } else {
-        principal.pr().as_multihash()
+        let genesis_tmb = principal
+            .genesis_keys()
+            .first()
+            .ok_or_else(|| crate::Error::Storage("no genesis keys found".into()))?;
+        let bytes = Base64UrlUnpadded::decode_vec(genesis_tmb)?;
+        let alg = principal.hash_alg();
+        return Ok(format!(
+            "{alg}:{}",
+            Base64UrlUnpadded::encode_string(&bytes)
+        ));
     };
     let alg = mh
         .algorithms()

@@ -72,6 +72,10 @@ pub struct Cli {
     #[arg(long, default_value = "file:./cyphr-data")]
     pub store: String,
 
+    /// Force a total index rebuild on startup instead of incremental update
+    #[arg(long, default_value_t = false)]
+    pub total_check: bool,
+
     /// Path to private key storage
     #[arg(long, default_value = "./cyphr-keys.json")]
     pub keystore: PathBuf,

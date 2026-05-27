@@ -16,7 +16,7 @@ use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
 pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     // Get commits from storage
     let commits = get_commits_from_engine(&store, identity)?;
 
@@ -58,7 +58,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 /// Run the import command.
 pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
 
     // Read commits from JSONL file
     let file = File::open(input)?;

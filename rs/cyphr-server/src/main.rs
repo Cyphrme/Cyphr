@@ -29,8 +29,25 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        Command::RebuildIndex { .. } => {
-            tracing::warn!("rebuild-index not yet implemented");
+        Command::RebuildIndex { data_dir } => {
+            let mut resolved_config = config;
+            if let Some(dir) = data_dir {
+                resolved_config.data_dir = dir;
+            }
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            if let Err(e) = rt.block_on(async {
+                let state = cyphr_server::AppState::new(resolved_config)?;
+                tracing::info!(
+                    "Starting total index rebuild in {}",
+                    state.config.data_dir.display()
+                );
+                state.engine.reindex(&[], true).await?;
+                tracing::info!("Index rebuild completed successfully");
+                Ok::<(), Box<dyn std::error::Error>>(())
+            }) {
+                tracing::error!(error = %e, "rebuild-index failed");
+                return ExitCode::FAILURE;
+            }
         },
         Command::Export { .. } => {
             tracing::warn!("export not yet implemented");

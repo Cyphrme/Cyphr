@@ -74,7 +74,7 @@ pub fn run(
     };
 
     // Store the identity
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     save_principal_to_engine(&store, &keystore, &principal)?;
 
     // Output result

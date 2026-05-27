@@ -15,9 +15,9 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use cyphr_storage::blob::MemoryBlobStore;
+use cyphr_storage::blob::FjallBlobStore;
 use cyphr_storage::engine::StorageEngine;
-use cyphr_storage::index::MemoryIndexer;
+use cyphr_storage::index::FjallIndexer;
 
 // ========================================================================
 // Application state
@@ -29,22 +29,22 @@ use cyphr_storage::index::MemoryIndexer;
 ///
 /// ## Backend note
 ///
-/// Currently uses `MemoryBlobStore` + `MemoryIndexer` — state is lost
-/// on restart. Production backends (fjall + SQLite) will be wired
-/// once the SQLite indexer lands (Phase 2b).
+/// Uses persistent `FjallBlobStore` and `FjallIndexer`.
 pub struct AppState {
     /// Resolved server configuration.
     pub config: config::ServerConfig,
 
     /// Protocol-aware storage engine.
-    pub engine: StorageEngine<MemoryBlobStore, MemoryIndexer>,
+    pub engine: StorageEngine<FjallBlobStore, FjallIndexer>,
 }
 
 impl AppState {
     /// Construct application state from resolved configuration.
-    pub fn new(config: config::ServerConfig) -> Self {
-        let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
-        Self { config, engine }
+    pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        let blob_store = FjallBlobStore::open(&config.data_dir.join("blobs"))?;
+        let indexer = FjallIndexer::open(&config.data_dir.join("index"))?;
+        let engine = StorageEngine::new(blob_store, indexer);
+        Ok(Self { config, engine })
     }
 }
 
@@ -84,7 +84,11 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
 /// SIGTERM/SIGINT.
 pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = config.listen.clone();
-    let state = Arc::new(AppState::new(config));
+    let state = Arc::new(AppState::new(config)?);
+
+    // Run incremental reindexing on startup
+    state.engine.reindex(&[], false).await?;
+
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;

@@ -66,7 +66,7 @@ fn add(
     authority: &str,
 ) -> crate::Result<()> {
     let mut keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Get or generate the new key
@@ -167,7 +167,7 @@ fn revoke(
     authority: &str,
 ) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     let mut principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     // Get signer key for signing
@@ -302,7 +302,7 @@ fn list_keystore(cli: &Cli) -> crate::Result<()> {
 /// List keys for an identity.
 fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     let active: Vec<_> = principal.active_keys().collect();

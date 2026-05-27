@@ -73,7 +73,7 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 
 /// Verify coz chain integrity for an identity.
 pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
 
     // Load commits from store
     let commits = get_commits_from_engine(&store, identity).unwrap_or_default();
@@ -190,7 +190,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
 /// Load identity from storage or keystore.
 fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphr::Principal> {
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     load_principal_from_engine(&store, &keystore, identity)
 }

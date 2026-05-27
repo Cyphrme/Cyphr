@@ -8,7 +8,7 @@ use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store, &cli.keystore)?;
+    let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
