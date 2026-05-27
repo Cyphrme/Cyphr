@@ -6,6 +6,7 @@ members = [
   "cyphr-cli",
   "test-fixtures",
   "fixture-gen",
+  "fuzz",
 ]
 resolver = "2"
 
