@@ -263,7 +263,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys: vec![tmb_b64],
@@ -314,7 +313,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
@@ -397,7 +395,6 @@ impl Principal {
                 ..Default::default()
             },
             data: DataLedger::default(),
-            active_algs,
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
@@ -446,7 +443,7 @@ impl Principal {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         let first_alg = self
-            .active_algs
+            .active_algs()
             .first()
             .copied()
             .unwrap_or_else(|| self.hash_alg());
@@ -471,7 +468,10 @@ impl Principal {
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).
     pub fn active_algs(&self) -> Vec<HashAlg> {
-        self.deref().active_algs()
+        match &self.0 {
+            PrincipalKind::Nascent(core) => core.active_algs(),
+            PrincipalKind::Established { core, .. } => core.active_algs(),
+        }
     }
 
     /// Get a key by thumbprint.
@@ -498,7 +498,7 @@ impl Principal {
     /// This is primarily for test setup (e.g., pre-revoking keys).
     /// Use with caution - direct mutation bypasses state recomputation.
     pub fn active_keys_mut(&mut self) -> impl Iterator<Item = &mut Key> {
-        self.auth.keys.values_mut()
+        self.core_mut().auth.keys.values_mut()
     }
 
     /// Get number of active keys.
@@ -523,13 +523,14 @@ impl Principal {
         use crate::key::Revocation;
 
         let tmb_b64 = tmb.to_b64();
-        let mut key = self
+        let core = self.core_mut();
+        let mut key = core
             .auth
             .keys
             .shift_remove(&tmb_b64)
             .ok_or(Error::UnknownKey)?;
         key.revocation = Some(Revocation { rvk, by: None });
-        self.auth.revoked.insert(tmb_b64, key);
+        core.auth.revoked.insert(tmb_b64, key);
         Ok(())
     }
 
@@ -688,7 +689,7 @@ impl Principal {
     ///
     /// Recommended value: 300 (5 minutes).
     pub fn set_max_clock_skew(&mut self, seconds: i64) {
-        self.max_clock_skew = seconds;
+        self.core_mut().max_clock_skew = seconds;
     }
 
     // ========================================================================
@@ -1074,11 +1075,13 @@ impl Principal {
             }
         }
 
+        let core = self.core_mut();
+
         // Re-derive active algorithms from post-mutation key set.
         // Per [alg-set-evolution], state digests for this commit use the
         // algorithms supported by the post-mutation key set.
-        let key_refs: Vec<&Key> = self.auth.keys.values().collect();
-        self.active_algs = derive_hash_algs(&key_refs);
+        let key_refs: Vec<&Key> = core.auth.keys.values().collect();
+        let active_algs = derive_hash_algs(&key_refs);
 
         // Extract tx algorithm set from the commit coz (independent of state chain).
         // TX extraction reads only cozies/pending — no dependency on KR/AR/SR —
@@ -1090,20 +1093,20 @@ impl Principal {
                 vec![last_coz.hash_alg()]
             }
         } else {
-            vec![self.hash_alg()]
+            vec![active_algs.first().copied().unwrap_or(HashAlg::Sha256)]
         };
 
         // Compute TR from pending commit
         let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
-        self.tr = Some(tr.clone());
+        core.tr = Some(tr.clone());
 
         // KR → AR → SR (post-mutation key set, existing DR).
         // PR is computed below, after Arrow validation and CR assembly.
-        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        let (kr, ar, sr) = derive_auth_state(&thumbprints, self.dr.as_ref(), &self.active_algs)?;
-        self.kr = kr;
-        self.ar = ar;
-        self.sr = Some(sr.clone());
+        let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| &k.tmb).collect();
+        let (kr, ar, sr) = derive_auth_state(&thumbprints, core.dr.as_ref(), &active_algs)?;
+        core.kr = kr;
+        core.ar = ar;
+        core.sr = Some(sr.clone());
 
         // Validate arrow field matches independently computed Arrow.
         // Arrow = MR(pre, fwd_SR, TMR)
@@ -1113,11 +1116,11 @@ impl Principal {
             let (tmr, _tcr, _tr) = pending.compute_roots(&tx_algs);
             let tmr = tmr.ok_or(Error::EmptyCommit)?;
 
-            // pre is the PR *before* this commit. self.pr has not been updated
+            // pre is the PR *before* this commit. core.pr has not been updated
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let pre_bytes = self.pr.0.get_or_err(tx_alg)?;
+            let pre_bytes = core.pr.0.get_or_err(tx_alg)?;
             let sr_bytes = sr.0.get_or_err(tx_alg)?;
             let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
@@ -1131,12 +1134,12 @@ impl Principal {
         }
 
         // Ensure all active algorithms are registered in the unified EML Log.
-        let algs = self.active_algs.clone();
+        let algs = active_algs.clone();
         for &alg in &algs {
             let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-            if !self.commit_trees.has_algorithm(alg_id) {
+            if !core.commit_trees.has_algorithm(alg_id) {
                 let hasher = Box::new(crate::commit_root::MaltHasher::new(alg));
-                self.commit_trees
+                core.commit_trees
                     .add_algorithm(alg_id, hasher)
                     .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
             }
@@ -1150,24 +1153,24 @@ impl Principal {
         }
         let serialized =
             serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
-        self.commit_trees
+        core.commit_trees
             .append(&serialized)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
 
         // Assemble CR from the EML Log for all active algorithms.
-        let cr = crate::commit_root::commit_root_from_trees(&self.commit_trees, &algs)?;
-        self.cr = Some(cr.clone());
+        let cr = crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?;
+        core.cr = Some(cr.clone());
 
         // Compute PR = MR(SR, CR?, embedding?)
-        self.pr = compute_pr(&sr, Some(&cr), None, &self.active_algs)?;
+        core.pr = compute_pr(&sr, Some(&cr), None, &active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(self.ar.clone(), sr, self.pr.clone(), &tx_algs)?;
+        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tx_algs)?;
 
-        self.auth.commits.push(commit);
+        core.auth.commits.push(commit);
 
         // The borrow is safe: we just pushed, so last() is guaranteed Some.
-        self.auth.commits.last().ok_or(Error::EmptyCommit)
+        core.auth.commits.last().ok_or(Error::EmptyCommit)
     }
 
     /// Verify signature and apply a coz as an atomic commit.

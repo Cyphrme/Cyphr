@@ -943,10 +943,10 @@ fn e2e_multihash_round_trip() {
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
         // Recompute KS with all active algorithms
-        let recomputed_ks = compute_kr(&thumbprints.to_vec(), None, active_algs).unwrap();
+        let recomputed_ks = compute_kr(&thumbprints.to_vec(), None, &active_algs).unwrap();
 
         // Verify each algorithm variant matches
-        for &alg in active_algs {
+        for alg in active_algs.clone() {
             // KS coherence
             let principal_ks = principal.key_root().get(alg);
             let recomputed_ks_variant = recomputed_ks.get(alg);
@@ -995,9 +995,9 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
         // Recompute AS from KS
-        let recomputed_as = compute_ar(&recomputed_ks, None, None, active_algs).unwrap();
+        let recomputed_as = compute_ar(&recomputed_ks, None, None, &active_algs).unwrap();
 
-        for &alg in active_algs {
+        for alg in active_algs.clone() {
             assert_eq!(
                 principal.auth_root().get(alg),
                 recomputed_as.get(alg),
@@ -1009,13 +1009,13 @@ fn e2e_multihash_round_trip() {
 
         // Recompute SR from AR + DR?
         let recomputed_sr =
-            compute_sr(&recomputed_as, principal.data_root(), None, active_algs).unwrap();
+            compute_sr(&recomputed_as, principal.data_root(), None, &active_algs).unwrap();
 
         // Recompute PR from SR + CR?
         let cr = principal.cr();
-        let recomputed_ps = compute_pr(&recomputed_sr, cr, None, active_algs).unwrap();
+        let recomputed_ps = compute_pr(&recomputed_sr, cr, None, &active_algs).unwrap();
 
-        for &alg in active_algs {
+        for alg in active_algs {
             assert_eq!(
                 principal.pr().get(alg),
                 recomputed_ps.get(alg),

@@ -312,39 +312,23 @@ impl PendingCommit {
 pub struct CommitScope<'a> {
     principal: &'a mut crate::principal::Principal,
     pending: PendingCommit,
-    /// Snapshot of active keys at commit-start time for authorization.
-    ///
-    /// Per [pre-mutation-key-rule]: signatures within a commit are verified
-    /// against the key set that was active when the commit began, not the
-    /// eagerly-mutated live state. This ensures that a key replaced mid-commit
-    /// can still sign the terminal commit/create coz.
-    pre_commit_keys: std::collections::BTreeMap<String, crate::key::Key>,
+    projected: crate::principal::Principal,
 }
 
 impl<'a> CommitScope<'a> {
     /// Create a new commit scope for the given principal.
-    ///
-    /// Snapshots the active key set for [pre-mutation-key-rule] authorization.
-    /// This is called by [`Principal::begin_commit()`].
     pub(crate) fn new(principal: &'a mut crate::principal::Principal) -> Self {
-        let _hash_alg = principal.hash_alg();
-        // Snapshot active keys for pre-mutation authorization checks
-        let pre_commit_keys: std::collections::BTreeMap<String, crate::key::Key> = principal
-            .active_keys()
-            .map(|k| (k.tmb.to_b64(), k.clone()))
-            .collect();
+        let projected = principal.clone();
         Self {
             principal,
             pending: PendingCommit::new(),
-            pre_commit_keys,
+            projected,
         }
     }
 
     /// Apply a verified coz within this commit scope.
     ///
-    /// The coz mutates the principal's state eagerly (keys, timestamps,
-    /// etc.). The borrow checker ensures no external code can observe this
-    /// intermediate state.
+    /// The coz is applied to the projected principal state.
     ///
     /// The coz is accumulated in the pending commit for finalization.
     ///
@@ -356,7 +340,7 @@ impl<'a> CommitScope<'a> {
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply(&mut self, vtx: VerifiedCoz) -> crate::error::Result<()> {
-        self.principal.apply_verified_internal(vtx.clone())?;
+        self.projected.apply_verified_internal(vtx.clone())?;
         self.pending
             .push_tx(crate::transaction::Transaction(vec![vtx]));
         Ok(())
@@ -364,11 +348,12 @@ impl<'a> CommitScope<'a> {
 
     /// Apply a grouped transaction (multiple cozies) within this commit scope.
     ///
-    /// State mutations are applied sequentially, but the cozies are grouped in the Merkle tree.
+    /// State mutations are applied sequentially to the projected state,
+    /// but the cozies are grouped in the Merkle tree.
     pub fn apply_tx(&mut self, vts: Vec<VerifiedCoz>) -> crate::error::Result<()> {
         let mut tx = Vec::with_capacity(vts.len());
         for vt in vts {
-            self.principal.apply_verified_internal(vt.clone())?;
+            self.projected.apply_verified_internal(vt.clone())?;
             tx.push(vt);
         }
         self.pending.push_tx(crate::transaction::Transaction(tx));
@@ -377,13 +362,14 @@ impl<'a> CommitScope<'a> {
 
     /// Finalize the commit scope, producing an immutable `Commit`.
     ///
-    /// Consumes this scope and returns a reference to the newly created
-    /// `Commit` within the principal's auth ledger.
+    /// Consumes this scope, copies the projected state back to the principal,
+    /// and returns a reference to the newly created `Commit` in the auth ledger.
     ///
     /// # Errors
     ///
     /// Returns `EmptyCommit` if no cozies were applied.
     pub fn finalize(self) -> crate::error::Result<&'a Commit> {
+        *self.principal = self.projected;
         self.principal.finalize_commit(self.pending)
     }
 
@@ -419,12 +405,13 @@ impl<'a> CommitScope<'a> {
         // [pre-mutation-key-rule]: Check authorization against the snapshot
         // of keys that were active when this commit began, not the eagerly
         // mutated live state. Keys added during the commit are also accepted.
-        let tmb_str = signer_tmb.to_b64();
-        let signer_key = if let Some(key) = self.pre_commit_keys.get(&tmb_str) {
-            key
-        } else if self.principal.is_key_active(signer_tmb) {
-            // Key was added during this commit — accept it
+        let signer_key = if self.principal.is_key_active(signer_tmb) {
             self.principal
+                .get_key(signer_tmb)
+                .ok_or(crate::error::Error::UnknownKey)?
+        } else if self.projected.is_key_active(signer_tmb) {
+            // Key was added during this commit — accept it
+            self.projected
                 .get_key(signer_tmb)
                 .ok_or(crate::error::Error::UnknownKey)?
         } else if self.principal.is_key_revoked(signer_tmb) {
@@ -444,6 +431,7 @@ impl<'a> CommitScope<'a> {
     pub fn principal_hash_alg(&self) -> crate::state::HashAlg {
         self.principal.hash_alg()
     }
+
     /// Get the number of cozies applied so far.
     pub fn len(&self) -> usize {
         self.pending.len()
@@ -491,14 +479,14 @@ impl<'a> CommitScope<'a> {
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
         // 1. Recompute KR → AR → SR to get post-mutation SR for Arrow construction.
-        //    This does not mutate self.principal; it reads the current key set.
-        let key_refs: Vec<&crate::key::Key> = self.principal.auth.keys.values().collect();
+        //    This reads the projected state.
+        let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
-            self.principal.auth.keys.values().map(|k| &k.tmb).collect();
+            self.projected.auth.keys.values().map(|k| &k.tmb).collect();
         let (_kr, _ar, sr) = crate::state::derive_auth_state(
             &thumbprints,
-            self.principal.dr.as_ref(),
+            self.projected.dr.as_ref(),
             &active_algs,
         )?;
 
@@ -508,8 +496,7 @@ impl<'a> CommitScope<'a> {
 
         // 2. Compute Arrow = MR(pre, sr, tmr)
         // Arrow computation requires pre, sr, tmr slices
-        // Wait, pre is the principal root of the previous state!
-        // Where is pre? It's self.principal.pr!
+        // pre is the principal root of the previous state!
         let pre = &self.principal.pr;
 
         let pre_bytes = pre.0.get_or_err(signer_hash_alg)?;
