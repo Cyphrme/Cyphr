@@ -99,34 +99,46 @@ pub enum BlobStoreError {
 /// Content-addressed blob storage.
 ///
 /// Implementations store raw bytes keyed by their BLAKE3 digest.
-/// The trait is synchronous — async boundaries belong at the engine
-/// layer, not the storage layer.
-pub trait BlobStore {
-    /// Store raw bytes and return their BLAKE3 digest.
-    ///
-    /// Idempotent: storing identical content yields the same hash
-    /// and does not duplicate data.
-    fn put(&self, data: &[u8]) -> Result<Blake3Hash, BlobStoreError>;
+pub trait BlobStore: Send + Sync {
+    /// Writer type used for streaming writes.
+    type WriteHandle: tokio::io::AsyncWrite + Unpin + Send;
+
+    /// Open a write handle to stream a new blob into the store.
+    fn open_write(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send;
+
+    /// Close the write handle, finalize the blob, write it to the store, and return its BLAKE3 digest.
+    fn close(
+        &self,
+        handle: Self::WriteHandle,
+    ) -> impl std::future::Future<Output = Result<Blake3Hash, BlobStoreError>> + Send;
 
     /// Retrieve raw bytes by their BLAKE3 digest.
     ///
     /// Returns `None` if the hash is not present.
-    fn get(&self, hash: &Blake3Hash) -> Result<Option<Vec<u8>>, BlobStoreError>;
+    fn get(
+        &self,
+        hash: &Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<Option<Vec<u8>>, BlobStoreError>> + Send;
 
     /// Check whether a blob exists without retrieving it.
-    fn exists(&self, hash: &Blake3Hash) -> Result<bool, BlobStoreError>;
+    fn exists(
+        &self,
+        hash: &Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<bool, BlobStoreError>> + Send;
 
-    /// Iterate over all stored blobs.
+    /// Iterate over all stored blobs' digests.
     ///
-    /// Used for index recovery (Phase 2). The iterator yields
-    /// `Result` per item because backends may encounter I/O errors
-    /// mid-iteration.
+    /// Used for index recovery (Phase 2).
     fn iter(
         &self,
-    ) -> Result<
-        Box<dyn Iterator<Item = Result<(Blake3Hash, Vec<u8>), BlobStoreError>> + '_>,
-        BlobStoreError,
-    >;
+    ) -> impl std::future::Future<
+        Output = Result<
+            Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send>,
+            BlobStoreError,
+        >,
+    > + Send;
 }
 
 #[cfg(test)]

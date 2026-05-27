@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_exists_empty() {
         let (store, dir) = temp_store("exists_empty");
-        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1; 32]);
 
         assert!(!store.exists(&pr).unwrap());
 
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_append_and_get() {
         let (store, dir) = temp_store("append_and_get");
-        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1; 32]);
 
         let entry = Entry::from_json(
             r#"{"pay":{"now":1234567890,"typ":"test/action"},"sig":"test"}"#.to_string(),
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_get_entries_range() {
         let (store, dir) = temp_store("entries_range");
-        let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4]);
+        let pr = PrincipalGenesis::from_bytes(vec![1; 32]);
 
         // Add entries with different timestamps: 100, 200, 300, 400, 500
         for i in 1..=5 {

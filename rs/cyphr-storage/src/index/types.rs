@@ -16,20 +16,22 @@ use crate::blob::Blake3Hash;
 pub struct IndexableCommit {
     /// Principal genesis identifier (tagged digest string).
     pub principal_id: String,
-    /// Commit ID (tagged digest string).
-    pub commit_id: String,
+    /// Commit ID variants (tagged digest strings).
+    pub commit_ids: Vec<String>,
     /// Commit sequence number within this principal (0-indexed).
     pub sequence: u64,
-    /// Principal Root after this commit (tagged digest string).
-    pub pr: String,
-    /// State Root after this commit (tagged digest string).
-    pub sr: String,
-    /// Auth Root after this commit (tagged digest string).
-    pub ar: String,
+    /// Principal Root variants after this commit (tagged digest strings).
+    pub prs: Vec<String>,
+    /// State Root variants after this commit (tagged digest strings).
+    pub srs: Vec<String>,
+    /// Auth Root variants after this commit (tagged digest strings).
+    pub ars: Vec<String>,
     /// BLAKE3 hashes of individual coz blobs stored for this commit.
     pub blob_hashes: Vec<Blake3Hash>,
     /// Transaction type identifiers (e.g., "key/create", "key/revoke").
     pub transaction_types: Vec<String>,
+    /// Transaction ID variants (czd tagged digests) for each coz in this commit.
+    pub transaction_ids: Vec<Vec<String>>,
     /// Timestamp of the commit (from the commit transaction's `now` field).
     pub timestamp: i64,
 }

@@ -343,7 +343,11 @@ pub(crate) fn replay_commits(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        eprintln!("  [replay_commits] commit_idx={}, cozies_count={}", commit_idx, commit.cozies.len());
+        eprintln!(
+            "  [replay_commits] commit_idx={}, cozies_count={}",
+            commit_idx,
+            commit.cozies.len()
+        );
         if commit.cozies.is_empty() {
             return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
         }
@@ -529,8 +533,10 @@ pub(crate) fn compute_czd(
     sig: &[u8],
     principal: &Principal,
 ) -> Result<coz::Czd, LoadError> {
-    let pay: serde_json::Value = serde_json::from_slice(pay_json)
-        .map_err(|e| LoadError::Json { index: 0, source: e })?;
+    let pay: serde_json::Value = serde_json::from_slice(pay_json).map_err(|e| LoadError::Json {
+        index: 0,
+        source: e,
+    })?;
     let alg = pay
         .get("alg")
         .and_then(|a| a.as_str())
@@ -609,10 +615,9 @@ mod tests {
 
         let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]);
         let checkpoint = Checkpoint {
-            auth_root: AuthRoot(MultihashDigest::from_single(
-                HashAlg::Sha256,
-                vec![0xBB; 32],
-            )),
+            auth_root: AuthRoot(
+                MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap(),
+            ),
             keys: vec![],
             attestor: None,
         };

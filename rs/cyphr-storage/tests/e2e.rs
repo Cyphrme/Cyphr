@@ -6,9 +6,9 @@
 //! Unlike integration tests which use pre-generated golden files, e2e tests
 //! generate fixtures at runtime, testing the full generation pipeline.
 
+use cyphr::StateDigest;
 use std::fs;
 use std::path::PathBuf;
-use cyphr::StateDigest;
 
 use cyphr_storage::{
     CommitEntry, Entry, Genesis, LoadError, export_commits, load_principal_from_commits,
@@ -459,9 +459,14 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
             golden.expected.error.as_deref().map(resolve_constraint_tag),
             Some(expected_error),
             "{}: wrong error type during genesis generation. Got {:?}, expected {:?}",
-            test.name, golden.expected.error, expected_error
+            test.name,
+            golden.expected.error,
+            expected_error
         );
-        eprintln!("  ✓ {} (expected genesis error: {})", test.name, expected_error);
+        eprintln!(
+            "  ✓ {} (expected genesis error: {})",
+            test.name, expected_error
+        );
         return;
     }
 
@@ -548,7 +553,10 @@ fn e2e_dynamic_features_matrix() {
             happy_count += 1;
         }
     }
-    println!("Ran {} happy-path and {} error-path feature matrix tests.", happy_count, error_count);
+    println!(
+        "Ran {} happy-path and {} error-path feature matrix tests.",
+        happy_count, error_count
+    );
 }
 
 // ============================================================================
@@ -705,7 +713,7 @@ fn e2e_file_append_read() {
     use cyphr_storage::Store;
 
     let (store, dir) = temp_filestore("append_read");
-    let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4, 5]);
+    let pr = PrincipalGenesis::from_bytes(vec![1; 32]);
 
     // Create and append an entry
     let entries = make_test_entries_with_timestamps(&[1700000000]);
@@ -728,7 +736,7 @@ fn e2e_file_query_after() {
     use cyphr_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_after");
-    let pr = PrincipalGenesis::from_bytes(vec![2, 3, 4, 5, 6]);
+    let pr = PrincipalGenesis::from_bytes(vec![2; 32]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -760,7 +768,7 @@ fn e2e_file_query_before() {
     use cyphr_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_before");
-    let pr = PrincipalGenesis::from_bytes(vec![3, 4, 5, 6, 7]);
+    let pr = PrincipalGenesis::from_bytes(vec![3; 32]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -792,7 +800,7 @@ fn e2e_file_query_range() {
     use cyphr_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_range");
-    let pr = PrincipalGenesis::from_bytes(vec![4, 5, 6, 7, 8]);
+    let pr = PrincipalGenesis::from_bytes(vec![4; 32]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
@@ -824,7 +832,7 @@ fn e2e_file_query_limit() {
     use cyphr_storage::{QueryOpts, Store};
 
     let (store, dir) = temp_filestore("query_limit");
-    let pr = PrincipalGenesis::from_bytes(vec![5, 6, 7, 8, 9]);
+    let pr = PrincipalGenesis::from_bytes(vec![5; 32]);
 
     // Append entries: 100, 200, 300, 400, 500
     let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);

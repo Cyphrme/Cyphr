@@ -36,28 +36,26 @@ pub enum IndexerError {
     Consistency(String),
 }
 
-/// Relational index over Cyphr commit history.
-///
-/// Implementations track the relationships between principals,
-/// commits, transactions, and their digests. The index is synchronous —
-/// async wrapping (actor model) is handled at the engine layer.
-///
-/// The index is NOT the source of truth. It is always rebuildable
-/// from the BlobStore by scanning and re-parsing stored blobs.
-pub trait Indexer {
+pub trait Indexer: Send + Sync {
     /// Record a validated commit in the index.
     ///
-    /// The engine calls this after `BlobStore::put()` for each coz.
+    /// The engine calls this after storing coz blobs.
     /// The `IndexableCommit` carries pre-serialized digest strings —
     /// the indexer stores them verbatim without re-deriving state.
     ///
     /// Idempotent: re-indexing the same commit (by `commit_id`) is a no-op.
-    fn index_commit(&self, commit: &IndexableCommit) -> Result<(), IndexerError>;
+    fn index_commit(
+        &self,
+        commit: &IndexableCommit,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
 
     /// Retrieve the current tip state for a principal.
     ///
     /// Returns `None` if the principal is unknown (never indexed).
-    fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, IndexerError>;
+    fn get_tip(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send;
 
     /// Retrieve the commit chain between two sequence numbers.
     ///
@@ -69,17 +67,22 @@ pub trait Indexer {
         principal_id: &str,
         from: Option<u64>,
         to: Option<u64>,
-    ) -> Result<Vec<CommitRef>, IndexerError>;
+    ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send;
 
     /// Resolve a protocol-level tagged digest to a storage-level entity.
     ///
     /// Used for content-addressed lookup: given a `TaggedDigest`
     /// (e.g., `SHA-256:U5XUZ...`), find which blob contains it and
     /// what kind of entity it represents.
-    fn resolve_digest(&self, digest: &TaggedDigest) -> Result<Option<EntityRef>, IndexerError>;
+    fn resolve_digest(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send;
 
     /// List all known principals with summary metadata.
-    fn list_principals(&self) -> Result<Vec<PrincipalSummary>, IndexerError>;
+    fn list_principals(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<PrincipalSummary>, IndexerError>> + Send;
 }
 
 #[cfg(test)]

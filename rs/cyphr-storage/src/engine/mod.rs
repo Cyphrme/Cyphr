@@ -21,9 +21,9 @@ mod error;
 
 pub use error::EngineError;
 
-use cyphr::state::{TaggedDigest, StateDigest};
+use cyphr::state::{StateDigest, TaggedDigest};
 
-use crate::blob::{Blake3Hash, BlobStore};
+use crate::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use crate::index::{CommitRef, IndexableCommit, Indexer, TipState};
 
 /// A commit's metadata paired with its blob contents.
@@ -57,18 +57,20 @@ pub struct PatchResponse {
 pub struct IngestMeta {
     /// Principal genesis identifier (tagged digest string).
     pub principal_id: String,
-    /// Commit ID (tagged digest string).
-    pub commit_id: String,
+    /// Commit ID variants (tagged digest strings).
+    pub commit_ids: Vec<String>,
     /// Commit sequence number within this principal (0-indexed).
     pub sequence: u64,
-    /// Principal Root after this commit.
-    pub pr: String,
-    /// State Root after this commit.
-    pub sr: String,
-    /// Auth Root after this commit.
-    pub ar: String,
+    /// Principal Root variants after this commit.
+    pub prs: Vec<String>,
+    /// State Root variants after this commit.
+    pub srs: Vec<String>,
+    /// Auth Root variants after this commit.
+    pub ars: Vec<String>,
     /// Transaction type identifiers (e.g., "key/create").
     pub transaction_types: Vec<String>,
+    /// Transaction ID variants (czd tagged digests) for each coz in this commit.
+    pub transaction_ids: Vec<Vec<String>>,
     /// Timestamp of the commit.
     pub timestamp: i64,
 }
@@ -106,8 +108,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     ///
     /// Delegates directly to the indexer.
     #[tracing::instrument(skip(self))]
-    pub fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
-        Ok(self.indexer.get_tip(principal_id)?)
+    pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
+        Ok(self.indexer.get_tip(principal_id).await?)
     }
 
     /// Retrieve a patch: commit chain metadata joined with blob content.
@@ -116,19 +118,22 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// the blob store. This is the engine's primary coordination value —
     /// neither trait can serve this alone.
     #[tracing::instrument(skip(self))]
-    pub fn get_patch(
+    pub async fn get_patch(
         &self,
         principal_id: &str,
         from: Option<u64>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
-        let chain = self.indexer.get_commit_chain(principal_id, from, to)?;
+        let chain = self
+            .indexer
+            .get_commit_chain(principal_id, from, to)
+            .await?;
 
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
             let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
             for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash)?.ok_or_else(|| {
+                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
                         "blob {hash} referenced by commit {} not found in store",
                         commit_ref.commit_id
@@ -153,13 +158,13 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// Two-step: resolve digest → entity ref (index), then
     /// fetch blob content (blob store).
     #[tracing::instrument(skip(self))]
-    pub fn get_entity(&self, digest: &TaggedDigest) -> Result<Option<Vec<u8>>, EngineError> {
-        let entity = match self.indexer.resolve_digest(digest)? {
+    pub async fn get_entity(&self, digest: &TaggedDigest) -> Result<Option<Vec<u8>>, EngineError> {
+        let entity = match self.indexer.resolve_digest(digest).await? {
             Some(e) => e,
             None => return Ok(None),
         };
 
-        let data = self.blob_store.get(&entity.blob_hash)?;
+        let data = self.blob_store.get(&entity.blob_hash).await?;
         Ok(data)
     }
 
@@ -180,31 +185,36 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// signatures or state transitions. That responsibility belongs
     /// to the protocol validation layer (Phase 3b).
     #[tracing::instrument(skip(self, blobs), fields(principal_id = %metadata.principal_id, blob_count = blobs.len()))]
-    pub fn ingest_commit(
+    pub async fn ingest_commit(
         &self,
         blobs: &[&[u8]],
         metadata: IngestMeta,
     ) -> Result<IngestResult, EngineError> {
+        use tokio::io::AsyncWriteExt;
+
         // Store each blob.
         let mut blob_hashes = Vec::with_capacity(blobs.len());
         for blob in blobs {
-            let hash = self.blob_store.put(blob)?;
+            let mut handle = self.blob_store.open_write().await?;
+            handle.write_all(blob).await.map_err(BlobStoreError::Io)?;
+            let hash = self.blob_store.close(handle).await?;
             blob_hashes.push(hash);
         }
 
         // Build and submit index entry.
         let indexable = IndexableCommit {
             principal_id: metadata.principal_id,
-            commit_id: metadata.commit_id,
+            commit_ids: metadata.commit_ids,
             sequence: metadata.sequence,
-            pr: metadata.pr,
-            sr: metadata.sr,
-            ar: metadata.ar,
+            prs: metadata.prs,
+            srs: metadata.srs,
+            ars: metadata.ars,
             blob_hashes: blob_hashes.clone(),
             transaction_types: metadata.transaction_types,
+            transaction_ids: metadata.transaction_ids,
             timestamp: metadata.timestamp,
         };
-        self.indexer.index_commit(&indexable)?;
+        self.indexer.index_commit(&indexable).await?;
 
         Ok(IngestResult { blob_hashes })
     }
@@ -232,7 +242,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// - `EngineError::MalformedBlob` — stored blob is not valid JSON.
     /// - `EngineError::Load` — replay/validation failed.
     #[tracing::instrument(skip(self, genesis))]
-    pub fn load_principal(
+    pub async fn load_principal(
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
@@ -254,7 +264,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         };
 
         // 2. Get the full commit chain from the indexer.
-        let chain = self.indexer.get_commit_chain(principal_id, None, None)?;
+        let chain = self
+            .indexer
+            .get_commit_chain(principal_id, None, None)
+            .await?;
         if chain.is_empty() {
             return Ok(principal);
         }
@@ -266,7 +279,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let mut keys = Vec::new();
 
             for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash)?.ok_or_else(|| {
+                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
                         "blob {hash} referenced by commit {} missing",
                         commit_ref.commit_id
@@ -342,7 +355,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// etc.) causes the entire submit to fail with no side effects — blobs
     /// are only stored after successful validation.
     #[tracing::instrument(skip(self, genesis, raw_blobs), fields(blob_count = raw_blobs.len()))]
-    pub fn submit_commit(
+    pub async fn submit_commit(
         &self,
         principal_id: &str,
         genesis: Option<crate::Genesis>,
@@ -358,23 +371,27 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         // 1. Resolve genesis.
         let genesis = match genesis {
             Some(g) => g,
-            None => self.resolve_genesis(principal_id, raw_blobs)?,
+            None => self.resolve_genesis(principal_id, raw_blobs).await?,
         };
 
         // 2. Load (or construct) the principal from existing state.
-        let mut principal = self.load_principal(principal_id, genesis)?;
+        let mut principal = self.load_principal(principal_id, genesis).await?;
 
         // 3. Determine the next sequence number.
         let next_seq = self
             .indexer
-            .get_tip(principal_id)?
+            .get_tip(principal_id)
+            .await?
             .map(|tip| tip.commit_count)
             .unwrap_or(0);
+
+        let active_algs = principal.active_algs().to_vec();
 
         // 4. Open a commit scope and process each blob.
         let mut scope = principal.begin_commit();
         let mut transaction_types = Vec::new();
         let mut last_timestamp: i64 = 0;
+        let mut pending_czds = Vec::new();
 
         for (i, blob_bytes) in raw_blobs.iter().enumerate() {
             let value: serde_json::Value = serde_json::from_slice(blob_bytes)
@@ -400,9 +417,23 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 last_timestamp = now;
             }
 
-            if is_transaction_typ(typ) {
-                transaction_types.push(typ.to_string());
+            // Compute czd for all cozies (both transactions and actions)
+            let alg = match scope.principal_hash_alg() {
+                cyphr::state::HashAlg::Sha256 => "ES256",
+                cyphr::state::HashAlg::Sha384 => "ES384",
+                cyphr::state::HashAlg::Sha512 => "ES512",
+            };
+            let cad = coz::canonical_hash_for_alg(&pay_json, alg, None).ok_or_else(|| {
+                EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
+            })?;
+            let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or_else(|| {
+                EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
+            })?;
 
+            pending_czds.push((czd.clone(), alg.to_string()));
+            transaction_types.push(typ.to_string());
+
+            if is_transaction_typ(typ) {
                 // Extract key material for key-introducing transactions.
                 let new_key = if is_key_introducing_typ(typ) {
                     value.get("key").and_then(|k| {
@@ -413,48 +444,53 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                     None
                 };
 
-                // Compute czd.
-                let alg = match scope.principal_hash_alg() {
-                    cyphr::state::HashAlg::Sha256 => "ES256",
-                    cyphr::state::HashAlg::Sha384 => "ES384",
-                    cyphr::state::HashAlg::Sha512 => "ES512",
-                };
-                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None).ok_or_else(|| {
-                    EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
-                })?;
-                let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or_else(|| {
-                    EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
-                })?;
-
                 // Verify signature and apply state mutation.
                 scope.verify_and_apply(&pay_json, &sig, czd, new_key)?;
             }
-            // Actions within submit_commit are not yet supported.
-            // They would need scope.finalize() then principal.verify_and_record_action().
         }
 
         // 5. Finalize the commit scope.
         let commit = scope.finalize()?;
 
+        // Now scope is gone. We can access principal safely.
+        let mut transaction_ids = Vec::new();
+        for (czd, alg_str) in pending_czds {
+            let mut czd_variants = Vec::new();
+            let source_alg = match cyphr::state::hash_alg_from_str(&alg_str) {
+                Ok(a) => a,
+                Err(_) => cyphr::state::HashAlg::Sha256,
+            };
+            let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+            for &active_alg in &active_algs {
+                let converted = tagged.convert_to(active_alg);
+                czd_variants.push(format!(
+                    "{active_alg}:{}",
+                    Base64UrlUnpadded::encode_string(&converted)
+                ));
+            }
+            transaction_ids.push(czd_variants);
+        }
+
         // 6. Extract state digests from the finalized Commit.
-        let commit_id = format_multihash(&commit.tr().0)?;
-        let ar = format_multihash(commit.auth_root().as_multihash())?;
-        let sr = format_multihash(commit.sr().as_multihash())?;
-        let pr = format_multihash(commit.pr().as_multihash())?;
+        let commit_ids = format_multihash_all(&commit.tr().0)?;
+        let ar = format_multihash_all(commit.auth_root().as_multihash())?;
+        let sr = format_multihash_all(commit.sr().as_multihash())?;
+        let pr = format_multihash_all(commit.pr().as_multihash())?;
 
         // 7. Persist via the storage layer.
         let meta = IngestMeta {
             principal_id: principal_id.to_string(),
-            commit_id,
+            commit_ids,
             sequence: next_seq,
-            pr,
-            sr,
-            ar,
+            prs: pr,
+            srs: sr,
+            ars: ar,
             transaction_types,
+            transaction_ids,
             timestamp: last_timestamp,
         };
 
-        self.ingest_commit(raw_blobs, meta)
+        self.ingest_commit(raw_blobs, meta).await
     }
 
     /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
@@ -463,7 +499,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     ///   from the first stored commit's blobs.
     /// - If the principal is new, extracts key material from the first
     ///   submitted blob's `"key"` field.
-    fn resolve_genesis(
+    async fn resolve_genesis(
         &self,
         principal_id: &str,
         raw_blobs: &[&[u8]],
@@ -471,7 +507,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         // Check if the principal already exists.
         let chain = self
             .indexer
-            .get_commit_chain(principal_id, Some(0), Some(0))?;
+            .get_commit_chain(principal_id, Some(0), Some(0))
+            .await?;
 
         if let Some(first_commit) = chain.first() {
             // Existing principal — extract genesis from the first stored blob.
@@ -479,7 +516,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 .blob_hashes
                 .first()
                 .ok_or_else(|| EngineError::InvalidInput("first commit has no blobs".into()))?;
-            let data = self.blob_store.get(first_hash)?.ok_or_else(|| {
+            let data = self.blob_store.get(first_hash).await?.ok_or_else(|| {
                 EngineError::NotFound(format!("genesis blob {first_hash} not found in store"))
             })?;
             Self::genesis_from_blob(&data)
@@ -509,6 +546,389 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         Ok(crate::Genesis::Implicit(key))
     }
+
+    /// Reindex the relational database from all raw blobs in the BlobStore.
+    ///
+    /// Implements recovery verification/convergance [recovery-reindex] and
+    /// [recovery-convergence]. Traces the transaction/action chain from genesis
+    /// and idempotently indexes everything.
+    #[tracing::instrument(skip(self))]
+    pub async fn reindex(&self) -> Result<(), EngineError> {
+        use crate::import::is_transaction_typ;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        #[derive(Clone)]
+        struct ParsedCozInfo {
+            hash: Blake3Hash,
+            raw_bytes: Vec<u8>,
+            pay_json: Vec<u8>,
+            sig: Vec<u8>,
+            typ: String,
+            pre: Option<String>,
+            tmb: String,
+            now: i64,
+            new_key: Option<cyphr::Key>,
+        }
+
+        let iter = self.blob_store.iter().await?;
+        let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
+
+        let mut cozies = Vec::new();
+        for hash in hashes {
+            let data = match self.blob_store.get(&hash).await? {
+                Some(d) => d,
+                None => continue,
+            };
+
+            #[derive(serde::Deserialize)]
+            struct CozExtractor<'a> {
+                #[serde(borrow)]
+                pay: &'a serde_json::value::RawValue,
+                sig: String,
+                key: Option<serde_json::Value>,
+            }
+
+            let ext: CozExtractor = match serde_json::from_slice(&data) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let sig = match Base64UrlUnpadded::decode_vec(&ext.sig) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let pay_json = ext.pay.get().as_bytes().to_vec();
+
+            #[derive(serde::Deserialize)]
+            struct PayFields {
+                typ: String,
+                pre: Option<String>,
+                tmb: String,
+                now: i64,
+            }
+
+            let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let new_key = if let Some(k) = &ext.key {
+                if let Some(ke) = key_value_to_entry(k) {
+                    crate::import::key_entry_to_key(&ke).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            cozies.push(ParsedCozInfo {
+                hash,
+                raw_bytes: data,
+                pay_json,
+                sig,
+                typ: pay.typ,
+                pre: pay.pre,
+                tmb: pay.tmb,
+                now: pay.now,
+                new_key,
+            });
+        }
+
+        tracing::debug!("total cozies parsed: {}", cozies.len());
+
+        // Separate transactions and actions
+        let (mut tx_cozies, mut action_cozies): (Vec<_>, Vec<_>) =
+            cozies.into_iter().partition(|c| is_transaction_typ(&c.typ));
+
+        tracing::debug!(
+            "tx_cozies count: {}, action_cozies count: {}",
+            tx_cozies.len(),
+            action_cozies.len()
+        );
+
+        // Identify genesis cozies: new key and no pre (or empty pre)
+        let mut genesis_cozies: Vec<_> = tx_cozies
+            .iter()
+            .filter(|c| {
+                c.new_key.is_some() && (c.pre.is_none() || c.pre.as_ref().unwrap().is_empty())
+            })
+            .cloned()
+            .collect();
+        genesis_cozies.sort_by_key(|c| c.now);
+
+        tracing::debug!("genesis_cozies count: {}", genesis_cozies.len());
+
+        // Remove genesis cozies from tx_cozies
+        tx_cozies.retain(|c| !genesis_cozies.iter().any(|g| g.hash == c.hash));
+
+        // Sort pool by timestamp to facilitate sequential application.
+        // For cozies with the same timestamp, ensure commit/create finality markers
+        // sort after state-mutating transactions.
+        tx_cozies.sort_by(|a, b| match a.now.cmp(&b.now) {
+            std::cmp::Ordering::Equal => {
+                let a_is_commit = a.typ.contains("/commit/create");
+                let b_is_commit = b.typ.contains("/commit/create");
+                a_is_commit.cmp(&b_is_commit)
+            },
+            other => other,
+        });
+        action_cozies.sort_by_key(|c| c.now);
+
+        for (i, c) in tx_cozies.iter().enumerate() {
+            tracing::trace!(
+                "sorted tx_cozy [{}]: typ={}, now={}, pre={:?}, hash={}",
+                i,
+                c.typ,
+                c.now,
+                c.pre,
+                c.hash
+            );
+        }
+
+        for gen_coz in genesis_cozies {
+            let key = gen_coz.new_key.clone().unwrap();
+            let mut principal = cyphr::Principal::implicit(key)?;
+            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
+            let principal_id = pr_variants
+                .first()
+                .cloned()
+                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
+
+            // Track state for this principal reconstruction
+            let mut sequence: u64 = 0;
+
+            // Build the first commit (implicit genesis has sequence 0, which we index)
+            let genesis_commit_ids = format_multihash_all(principal.pr().as_multihash())?; // Simple mock commit id
+            let genesis_prs = format_multihash_all(principal.pr().as_multihash())?;
+            let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
+            let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
+
+            let genesis_indexable = IndexableCommit {
+                principal_id: principal_id.clone(),
+                commit_ids: genesis_commit_ids,
+                sequence,
+                prs: genesis_prs,
+                srs: genesis_srs,
+                ars: genesis_ars,
+                blob_hashes: vec![gen_coz.hash],
+                transaction_types: vec![gen_coz.typ.clone()],
+                transaction_ids: vec![vec![gen_coz.typ.clone()]], // Mock czd variants
+                timestamp: gen_coz.now,
+            };
+            self.indexer.index_commit(&genesis_indexable).await?;
+            sequence += 1;
+
+            // Now loop to apply subsequent commits
+            loop {
+                let active_algs = principal.active_algs().to_vec();
+                tracing::trace!(
+                    "loop iteration: tx_cozies.len() = {}, principal PR = {:?}",
+                    tx_cozies.len(),
+                    principal.pr()
+                );
+                let mut scope = principal.begin_commit();
+                let mut applied_any = false;
+                let mut commit_blobs = Vec::new();
+                let mut commit_transaction_types = Vec::new();
+                let mut commit_pending_czds = Vec::new();
+                let mut commit_timestamp = 0;
+
+                // Try to find cozies from the pool that can be applied to the scope
+                let mut remaining_txs = Vec::new();
+                let mut coz_iter = tx_cozies.into_iter();
+                while let Some(coz) = coz_iter.next() {
+                    if applied_any && coz.pre.is_some() {
+                        // In multi-coz commits, cozies after the first must have same pre
+                    }
+
+                    // Try to apply it
+                    let alg = match scope.principal_hash_alg() {
+                        cyphr::state::HashAlg::Sha256 => "ES256",
+                        cyphr::state::HashAlg::Sha384 => "ES384",
+                        cyphr::state::HashAlg::Sha512 => "ES512",
+                    };
+                    let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
+                        Some(c) => c,
+                        None => {
+                            tracing::warn!(
+                                "canonical_hash_for_alg failed for coz typ={}, hash={}",
+                                coz.typ,
+                                coz.hash
+                            );
+                            remaining_txs.push(coz);
+                            continue;
+                        },
+                    };
+                    let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                        Some(c) => c,
+                        None => {
+                            tracing::warn!(
+                                "czd_for_alg failed for coz typ={}, hash={}",
+                                coz.typ,
+                                coz.hash
+                            );
+                            remaining_txs.push(coz);
+                            continue;
+                        },
+                    };
+
+                    match scope.verify_and_apply(
+                        &coz.pay_json,
+                        &coz.sig,
+                        czd.clone(),
+                        coz.new_key.clone(),
+                    ) {
+                        Ok(_) => {
+                            commit_blobs.push(coz.hash);
+                            commit_transaction_types.push(coz.typ.clone());
+                            commit_pending_czds.push((czd, alg.to_string()));
+                            commit_timestamp = coz.now;
+                            applied_any = true;
+
+                            // If it's a commit/create finality marker, we must finalize the commit now.
+                            if coz.typ.contains("/commit/create") {
+                                remaining_txs.extend(coz_iter);
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to apply coz typ={}, pre={:?}: {:?}",
+                                coz.typ,
+                                coz.pre,
+                                e
+                            );
+                            remaining_txs.push(coz);
+                        },
+                    }
+                }
+
+                // Update the pool
+                tx_cozies = remaining_txs;
+
+                if !applied_any {
+                    break;
+                }
+
+                // Finalize commit
+                let commit = scope.finalize()?;
+
+                // Extract state roots immediately (ends the borrow of principal by commit)
+                let commit_ids = format_multihash_all(&commit.tr().0)?;
+                let ar = format_multihash_all(commit.auth_root().as_multihash())?;
+                let sr = format_multihash_all(commit.sr().as_multihash())?;
+                let pr = format_multihash_all(commit.pr().as_multihash())?;
+
+                tracing::info!(
+                    "successfully finalized commit sequence={}, PR={:?}",
+                    sequence,
+                    pr
+                );
+
+                // Compute transaction ids
+                let mut commit_transaction_ids = Vec::new();
+                for (czd, alg_str) in commit_pending_czds {
+                    let mut czd_variants = Vec::new();
+                    let source_alg = match cyphr::state::hash_alg_from_str(&alg_str) {
+                        Ok(a) => a,
+                        Err(_) => cyphr::state::HashAlg::Sha256,
+                    };
+                    let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                    for &active_alg in &active_algs {
+                        let converted = tagged.convert_to(active_alg);
+                        czd_variants.push(format!(
+                            "{active_alg}:{}",
+                            Base64UrlUnpadded::encode_string(&converted)
+                        ));
+                    }
+                    commit_transaction_ids.push(czd_variants);
+                }
+
+                // Find any action cozies that match this commit
+                let mut remaining_actions = Vec::new();
+                for action in action_cozies {
+                    let tmb_bytes = match Base64UrlUnpadded::decode_vec(&action.tmb) {
+                        Ok(b) => b,
+                        Err(_) => {
+                            remaining_actions.push(action);
+                            continue;
+                        },
+                    };
+                    let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+
+                    if principal.is_key_active(&signer_tmb) && action.now <= commit_timestamp {
+                        let alg = match principal.hash_alg() {
+                            cyphr::state::HashAlg::Sha256 => "ES256",
+                            cyphr::state::HashAlg::Sha384 => "ES384",
+                            cyphr::state::HashAlg::Sha512 => "ES512",
+                        };
+                        let cad = match coz::canonical_hash_for_alg(&action.pay_json, alg, None) {
+                            Some(c) => c,
+                            None => {
+                                remaining_actions.push(action);
+                                continue;
+                            },
+                        };
+                        let czd = match coz::czd_for_alg(&cad, &action.sig, alg) {
+                            Some(c) => c,
+                            None => {
+                                remaining_actions.push(action);
+                                continue;
+                            },
+                        };
+
+                        if principal
+                            .verify_and_record_action(&action.pay_json, &action.sig, czd.clone())
+                            .is_ok()
+                        {
+                            commit_blobs.push(action.hash);
+                            commit_transaction_types.push(action.typ.clone());
+
+                            let mut czd_variants = Vec::new();
+                            let source_alg = match cyphr::state::hash_alg_from_str(alg) {
+                                Ok(a) => a,
+                                Err(_) => cyphr::state::HashAlg::Sha256,
+                            };
+                            let tagged = cyphr::state::TaggedCzd::new(&czd, source_alg);
+                            for &active_alg in &active_algs {
+                                let converted = tagged.convert_to(active_alg);
+                                czd_variants.push(format!(
+                                    "{active_alg}:{}",
+                                    Base64UrlUnpadded::encode_string(&converted)
+                                ));
+                            }
+                            commit_transaction_ids.push(czd_variants);
+                        } else {
+                            remaining_actions.push(action);
+                        }
+                    } else {
+                        remaining_actions.push(action);
+                    }
+                }
+                action_cozies = remaining_actions;
+
+                // Index this commit
+                let indexable = IndexableCommit {
+                    principal_id: principal_id.clone(),
+                    commit_ids,
+                    sequence,
+                    prs: pr,
+                    srs: sr,
+                    ars: ar,
+                    blob_hashes: commit_blobs,
+                    transaction_types: commit_transaction_types,
+                    transaction_ids: commit_transaction_ids,
+                    timestamp: commit_timestamp,
+                };
+                self.indexer.index_commit(&indexable).await?;
+                sequence += 1;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.
@@ -533,22 +953,20 @@ fn key_value_to_entry(key_obj: &serde_json::Value) -> Option<crate::KeyEntry> {
     })
 }
 
-/// Format a [`MultihashDigest`] as a tagged digest string (`"alg:base64url"`).
-///
-/// Extracts the first algorithm variant and encodes its bytes. Used by
-/// [`StorageEngine::submit_commit`] to serialize state roots for the index.
-fn format_multihash(mh: &cyphr::multihash::MultihashDigest) -> Result<String, EngineError> {
+/// Format all variants of a [`MultihashDigest`] as tagged digest strings (`"alg:base64url"`).
+fn format_multihash_all(
+    mh: &cyphr::multihash::MultihashDigest,
+) -> Result<Vec<String>, EngineError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let alg = mh
-        .algorithms()
-        .next()
-        .ok_or_else(|| EngineError::InvalidInput("empty multihash".into()))?;
-    let bytes = mh
-        .first_variant()
-        .map_err(|e| EngineError::InvalidInput(format!("multihash extract: {e}")))?;
-
-    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+    let mut results = Vec::new();
+    for alg in mh.algorithms() {
+        let bytes = mh
+            .get(alg)
+            .ok_or_else(|| EngineError::InvalidInput(format!("missing variant for {alg:?}")))?;
+        results.push(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)));
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
