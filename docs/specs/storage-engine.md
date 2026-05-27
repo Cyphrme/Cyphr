@@ -387,34 +387,27 @@ cost scales linearly with action count, and since the index is rebuildable
 | [recovery-convergence]          | agent-check | pass   | Verified to terminate and converge in unit tests      |
 | [read-after-write]              | agent-check | pass   | Verified in E2E integration test suite                |
 | [monotonic-sequence]            | agent-check | pass   | Sequence counter monotonically checked on ingest      |
-| [commit-chain-integrity]        | agent-check | pass   | kontiguity validated on commit retrievals             |
+| [commit-chain-integrity]        | agent-check | pass   | contiguity validated on commit retrievals             |
 | [streaming-write]               | agent-check | pass   | Trait writes expose stream handle open/close API      |
 
 ## Implications
 
 ### For Implementation (`/core`)
 
-- **Three primary gaps**:
-  1. `[digest-index-completeness]`: `format_multihash()` in `engine/mod.rs`
-     extracts only the first algorithm variant. Must iterate all variants.
-  2. `[async-storage]`: `BlobStore` and `Indexer` traits are synchronous.
-     Must refactor to async RPITIT with `+ Send`.
-  3. `[streaming-write]`: `BlobStore::put(&[u8])` must be replaced with
-     `open_write() → AsyncWrite → close() → Blake3Hash`.
+All primary design gaps identified in the original specification have been fully resolved and implemented:
 
-- **Recovery mechanism**: `BlobStore::iter()` exists but no `reindex()` function
-  is implemented. This should be added to the `StorageEngine` to satisfy
-  [recovery-reindex] and [recovery-convergence]. The recovery walker SHOULD
-  use a **streaming order validator** — a lightweight state machine that
-  validates commit chain connectivity during traversal without materializing
-  the full chain in memory. The validator tracks seen predecessors and
-  detects gaps, forks, or dangling references incrementally as each blob is
-  parsed and re-indexed.
-
-- **[no-partial-commit] mechanism**: The constraint is backend-agnostic.
-  Fjall backends can use `Batch` for atomic multi-write. Filesystem backends
-  may use write-ahead logging or detect/complete partial writes on restart.
-  In-memory backends satisfy this trivially.
+- **Two-tier separation**: Structured via distinct `BlobStore` and `Indexer` traits. The protocol engine operates on in-memory structures without database backend dependencies.
+- **Async Storage API**: The `BlobStore` and `Indexer` traits are asynchronous, utilizing RPITIT (`impl Future<Output = ...> + Send`) to enforce thread-safety across executors.
+- **Streaming Write**: Replacement of direct `put()` with `open_write() -> AsyncWrite` and `close() -> Blake3Hash`, ensuring incremental BLAKE3 calculation inside the store.
+- **Incremental & Recovery Reindexing**: Implemented `reindex(keys, total_check)` on the `StorageEngine` to support both fast incremental startup synchronization and total index reconstruction via `clear()`.
+- **Fjall-backed Persistent Indexer**: `FjallIndexer` implements persistent indexing using five dedicated LSM-tree partitions within a shared `Keyspace`:
+  - `principals`: PG-derived principal ID (e.g., `SHA-256:genesis_tmb`) → `PrincipalSummary`
+  - `commits`: `principal_id + "/" + format!("{:016x}", sequence)` → `CommitRef`
+  - `tips`: principal ID → `TipState`
+  - `digest_index`: digest variant → `EntityRef`
+  - `public_keys`: thumbprint → `PublicKeyInfo`
+- **Stable Identifiers**: For nascent (Level 1/2) identities, the permanent `principal_id` matches the display format of their genesis key thumbprint (`{alg}:{genesis_tmb}`). For established (Level 3+) identities, it matches the immutable Principal Genesis (`PG`).
+- **Data Action & Public Key indexing**: Introduced `get_key(thumbprint)` to fetch public keys directly, satisfying relational queries without replaying history.
 
 - **EML integration**: The EML `Storage` trait handles its own internal state
   persistence (frontier stacks, node hashes, algorithm epochs). The Cyphr
