@@ -31,14 +31,21 @@ func ComputeTX(czds []TaggedCzd, algs []HashAlg) (*MultihashDigest, error) {
 		algs = []HashAlg{HashSha256}
 	}
 
-	// Implicit promotion: single czd
+	// Implicit promotion: single czd.
+	// Convert to all active target algorithms.
 	if len(czds) == 1 {
-		targetAlg := algs[0]
-		converted, err := czds[0].ConvertTo(targetAlg)
+		variants := make(map[HashAlg]coz.B64, len(algs))
+		for _, targetAlg := range algs {
+			converted, err := czds[0].ConvertTo(targetAlg)
+			if err != nil {
+				return nil, err
+			}
+			variants[targetAlg] = converted
+		}
+		mh, err := NewMultihashDigest(variants)
 		if err != nil {
 			return nil, err
 		}
-		mh := FromSingleDigest(targetAlg, converted)
 		return &mh, nil
 	}
 

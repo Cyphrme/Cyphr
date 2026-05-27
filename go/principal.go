@@ -512,12 +512,8 @@ func (p *Principal) RecordAction(action *Action) error {
 	// Record action
 	p.data.Actions = append(p.data.Actions, action)
 
-	// Recompute DS from all action czds
-	czds := make([]coz.B64, len(p.data.Actions))
-	for i, a := range p.data.Actions {
-		czds[i] = a.Czd
-	}
-	ds, err := ComputeDR(czds, nil, p.hashAlg)
+	// Recompute DS from actions
+	ds, err := ComputeDR(p.data.Actions, nil, p.activeAlgs)
 	if err != nil {
 		return err
 	}
