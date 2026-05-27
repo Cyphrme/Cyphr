@@ -24,8 +24,8 @@ tokio      = { workspace = true, features = ["io-util"] }
 tracing    = { workspace = true }
 
 [dev-dependencies]
+proptest      = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 tempfile      = "3"
 test-fixtures = { path = "../test-fixtures" }
-proptest      = { workspace = true }
