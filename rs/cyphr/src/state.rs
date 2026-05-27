@@ -513,14 +513,15 @@ pub fn compute_commit_id_tagged(
         return None;
     }
 
-    // Implicit promotion: single czd, no nonce
-    // For single czd, convert to first target algorithm if needed
+    // Implicit promotion: single czd, no nonce.
+    // Convert the single czd to all active target algorithms.
     if czds.len() == 1 && nonce.is_none() {
-        let target_alg = algs.first().copied().unwrap_or(HashAlg::Sha256);
-        let converted = czds[0].convert_to(target_alg);
-        return Some(CommitID(
-            MultihashDigest::from_single(target_alg, converted).ok()?,
-        ));
+        let mut variants = BTreeMap::new();
+        for &target_alg in algs {
+            let converted = czds[0].convert_to(target_alg);
+            variants.insert(target_alg, converted.into_boxed_slice());
+        }
+        return Some(CommitID(MultihashDigest::new(variants).ok()?));
     }
 
     // Compute hash for each target algorithm variant
@@ -657,16 +658,23 @@ pub fn compute_dr(
         return Ok(None);
     }
 
-    // Implicit promotion
+    // Implicit promotion: single action, no nonce.
+    // Convert the action's single-algorithm czd to all target algorithms.
     if action_czds.len() == 1 && nonce.is_none() {
         let digest_bytes = action_czds[0].as_bytes();
-        let alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
+        let source_alg = infer_alg_from_len(digest_bytes.len()).ok_or_else(|| {
             crate::error::Error::UnsupportedAlgorithm(format!(
                 "invalid digest length: {}",
                 digest_bytes.len()
             ))
         })?;
-        let mh = MultihashDigest::from_single(alg, digest_bytes.to_vec())?;
+        let tagged = TaggedCzd::new(action_czds[0], source_alg);
+        let mut variants = BTreeMap::new();
+        for &target_alg in algs {
+            let converted = tagged.convert_to(target_alg);
+            variants.insert(target_alg, converted.into_boxed_slice());
+        }
+        let mh = MultihashDigest::new(variants)?;
         return Ok(Some(DataRoot(mh)));
     }
 
@@ -850,6 +858,42 @@ mod tests {
         let cs_bytes = cs.get(HashAlg::Sha256).unwrap();
         assert_eq!(cs_bytes.len(), 32);
         assert_ne!(cs_bytes, auth_root.get(HashAlg::Sha256).unwrap());
+    }
+
+    #[test]
+    fn cross_algorithm_promotion_dr_commit_id() {
+        let czd = Czd::from_bytes(vec![10; 32]); // SHA-256 size
+        let active_algs = [HashAlg::Sha256, HashAlg::Sha384];
+
+        // 1. DR promotion test
+        let dr = compute_dr(&[&czd], None, &active_algs).unwrap().unwrap();
+        assert!(dr.0.contains(HashAlg::Sha256));
+        assert!(dr.0.contains(HashAlg::Sha384));
+
+        let dr_sha256 = dr.0.get(HashAlg::Sha256).unwrap();
+        let dr_sha384 = dr.0.get(HashAlg::Sha384).unwrap();
+
+        assert_eq!(dr_sha256, czd.as_bytes());
+        // For Sha384, it should be the converted (re-hashed) version
+        assert_eq!(
+            dr_sha384,
+            hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
+        );
+
+        // 2. CommitID promotion test
+        let tagged = TaggedCzd::new(&czd, HashAlg::Sha256);
+        let commit_id = compute_commit_id_tagged(&[tagged], None, &active_algs).unwrap();
+        assert!(commit_id.0.contains(HashAlg::Sha256));
+        assert!(commit_id.0.contains(HashAlg::Sha384));
+
+        let cid_sha256 = commit_id.0.get(HashAlg::Sha256).unwrap();
+        let cid_sha384 = commit_id.0.get(HashAlg::Sha384).unwrap();
+
+        assert_eq!(cid_sha256, czd.as_bytes());
+        assert_eq!(
+            cid_sha384,
+            hash_bytes(HashAlg::Sha384, czd.as_bytes()).as_slice()
+        );
     }
 
     #[test]
