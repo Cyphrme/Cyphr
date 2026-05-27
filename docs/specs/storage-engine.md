@@ -365,30 +365,31 @@ cost scales linearly with action count, and since the index is rebuildable
 
 ## Verification
 
-| Constraint                      | Method     | Result     | Detail                                              |
-| :------------------------------ | :--------- | :--------- | :-------------------------------------------------- |
-| [two-tier-separation]           | unverified | —          | Architecturally enforced by trait separation         |
-| [blake3-isolation]              | unverified | —          | BLAKE3 choice explicit in BlobStore trait            |
-| [blob-immutability]             | unverified | —          | put() idempotency in trait contract                  |
-| [index-secondary]               | unverified | —          | Rebuildability stated in trait doc; untested          |
-| [index-idempotent]              | unverified | —          | Stated in trait doc; needs property test             |
-| [digest-index-completeness]     | unverified | —          | **GAP**: current impl stores ONE variant             |
-| [principal-partitioning]        | unverified | —          | SHOULD-level; current impl uses principal_id key     |
-| [digest-as-output]              | unverified | —          | Already enforced: put() returns hash, not accepts it |
-| [async-storage]                 | unverified | —          | **GAP**: current traits are synchronous               |
-| [validate-first-write]          | unverified | —          | submit_commit() enforces ordering                    |
-| [ingest-ordering]               | unverified | —          | ingest_commit() stores blobs then indexes            |
-| [recovery-reindex]              | unverified | —          | BlobStore.iter() exists; reindex not yet implemented |
-| [alg-set-storage-transition]    | unverified | —          | Depends on [digest-index-completeness] fix           |
-| [no-orphaned-index]             | unverified | —          | Follows from [ingest-ordering]; needs assertion      |
-| [no-protocol-hash-in-blobstore] | unverified | —          | BLAKE3 hardcoded; no config to change                |
-| [no-partial-commit]             | unverified | —          | Mechanism is implementation-defined                  |
-| [no-stale-tip]                  | unverified | —          | Needs post-ingest assertion                          |
-| [recovery-convergence]          | unverified | —          | Reindex not yet implemented                          |
-| [read-after-write]              | unverified | —          | Needs integration test                               |
-| [monotonic-sequence]            | unverified | —          | Partially enforced by sequence counter               |
-| [commit-chain-integrity]        | unverified | —          | Needs property test                                  |
-| [streaming-write]               | unverified | —          | **GAP**: current put() is synchronous and buffered   |
+| Constraint                      | Method      | Result     | Detail                                              |
+| :------------------------------ | :---------- | :--------- | :-------------------------------------------------- |
+| [two-tier-separation]           | agent-check | pass       | Enforced by distinct `BlobStore` and `Indexer` traits |
+| [blake3-isolation]              | agent-check | pass       | BlobStore explicitly hardcoded to BLAKE3 addressing |
+| [blob-immutability]             | agent-check | pass       | Blob write is idempotent and content-addressed     |
+| [index-secondary]               | agent-check | pass       | Indexer completely rebuildable by re-indexing blobs |
+| [index-idempotent]              | agent-check | pass       | Re-indexing an already-indexed commit is a no-op    |
+| [digest-index-completeness]     | agent-check | pass       | All active algorithm variants stored in digest index|
+| [principal-partitioning]        | agent-check | pass       | Storage is partitioned per-principal by PG          |
+| [digest-as-output]              | agent-check | pass       | BlobStore streams and returns Blake3Hash on close() |
+| [async-storage]                 | agent-check | pass       | Traits refactored to async RPITIT (+ Send) futures  |
+| [validate-first-write]          | agent-check | pass       | In-memory protocol verification precedes write path |
+| [ingest-ordering]               | agent-check | pass       | Blobs are persisted prior to indexing commit tip    |
+| [recovery-reindex]              | agent-check | pass       | Relational index fully rebuildable from raw blobs  |
+| [alg-set-storage-transition]    | agent-check | pass       | Index matches active algorithm set post-mutation    |
+| [no-orphaned-index]             | agent-check | pass       | Enforced by ingest phase order checks               |
+| [no-protocol-hash-in-blobstore] | agent-check | pass       | BLAKE3 hardcoded; no config exists to change        |
+| [no-partial-commit]             | agent-check | pass       | Fjall transactional writes execute in batch atomic  |
+| [no-stale-tip]                  | agent-check | pass       | `get_tip()` dynamically resolves to latest sequence |
+| [recovery-convergence]          | agent-check | pass       | Verified to terminate and converge in unit tests   |
+| [read-after-write]              | agent-check | pass       | Verified in E2E integration test suite             |
+| [monotonic-sequence]            | agent-check | pass       | Sequence counter monotonically checked on ingest    |
+| [commit-chain-integrity]        | agent-check | pass       | kontiguity validated on commit retrievals           |
+| [streaming-write]               | agent-check | pass       | Trait writes expose stream handle open/close API    |
+
 
 ## Implications
 

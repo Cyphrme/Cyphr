@@ -116,15 +116,16 @@ Storage-layer implications are captured in `storage-engine.md`
 
 ## Verification
 
-| Constraint                  | Method     | Result | Detail                                         |
-| :-------------------------- | :--------- | :----- | :--------------------------------------------- |
-| [hasher-trait]              | unverified | —      | 9 match arms across 3 functions in state.rs    |
-| [dataroot-multihash]        | unverified | —      | DR uses Cad, all others use MultihashDigest     |
-| [single-alg-set]            | unverified | —      | hash_alg + active_algs both in PrincipalCore   |
-| [digest-length-validation]  | unverified | —      | MultihashDigest::new only checks non-emptiness  |
-| [eml-for-commit-tree]       | unverified | —      | BTreeMap<HashAlg, malt::Log> in CommitTrees     |
-| [state-newtype-trait]       | unverified | —      | 6 identical newtype impls                       |
-| [algorithm-epoch-tracking]  | unverified | —      | No persistent epoch metadata in cyphr           |
+| Constraint                  | Method      | Result | Detail                                         |
+| :-------------------------- | :---------- | :----- | :--------------------------------------------- |
+| [hasher-trait]              | agent-check | pass   | `CyphrHasher` trait implemented in `rs/cyphr/src/hasher.rs` and integrated in `state.rs` |
+| [dataroot-multihash]        | agent-check | pass   | `DataRoot` uses `MultihashDigest`; `compute_dr` takes algorithm set |
+| [single-alg-set]            | agent-check | pass   | `hash_alg` field removed; primary algorithm derived dynamically |
+| [digest-length-validation]  | agent-check | pass   | Exact digest lengths matching algorithm requirements enforced on constructor |
+| [eml-for-commit-tree]       | agent-check | pass   | EML `Log` used to manage Commit Tree (CT) and epoch metadata |
+| [state-newtype-trait]       | agent-check | pass   | Unified six state types with `StateDigest` trait in `state.rs` |
+| [algorithm-epoch-tracking]  | agent-check | pass   | Epoch transitions tracked and reconstructed via EML storage |
+
 
 ## Implications
 
