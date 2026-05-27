@@ -10,9 +10,7 @@ use cyphr::StateDigest;
 use std::fs;
 use std::path::PathBuf;
 
-use cyphr_storage::{
-    CommitEntry, Entry, Genesis, LoadError, export_commits, load_principal_from_commits,
-};
+use cyphr_storage::{CommitEntry, Genesis, LoadError, export_commits, load_principal_from_commits};
 
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 

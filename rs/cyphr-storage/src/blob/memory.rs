@@ -62,10 +62,8 @@ impl AsyncWrite for MemoryWriteHandle {
 impl BlobStore for MemoryBlobStore {
     type WriteHandle = MemoryWriteHandle;
 
-    fn open_write(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send {
-        async move { Ok(MemoryWriteHandle { buffer: Vec::new() }) }
+    async fn open_write(&self) -> Result<Self::WriteHandle, BlobStoreError> {
+        Ok(MemoryWriteHandle { buffer: Vec::new() })
     }
 
     fn close(

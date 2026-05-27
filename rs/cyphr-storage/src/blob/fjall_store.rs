@@ -68,10 +68,8 @@ impl AsyncWrite for FjallWriteHandle {
 impl BlobStore for FjallBlobStore {
     type WriteHandle = FjallWriteHandle;
 
-    fn open_write(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send {
-        async move { Ok(FjallWriteHandle { buffer: Vec::new() }) }
+    async fn open_write(&self) -> Result<Self::WriteHandle, BlobStoreError> {
+        Ok(FjallWriteHandle { buffer: Vec::new() })
     }
 
     fn close(

@@ -13,6 +13,7 @@ use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::MemoryIndexer;
 use cyphr_storage::{CommitEntry, Genesis};
 
+/// Type alias representing the concrete storage engine type used by the CLI.
 pub type CliStorageEngine = StorageEngine<FjallBlobStore, MemoryIndexer>;
 
 use crate::Error;
@@ -308,7 +309,7 @@ pub fn save_principal_to_engine(
                     }
                 }
 
-                let bytes = serde_json::to_vec(&coz_mut).map_err(|e| crate::Error::Json(e))?;
+                let bytes = serde_json::to_vec(&coz_mut).map_err(crate::Error::Json)?;
                 raw_blobs.push(bytes);
             }
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
@@ -385,7 +386,7 @@ pub fn get_commits_from_engine(
                 let json_str = String::from_utf8(data)
                     .map_err(|e| crate::Error::Storage(format!("blob is not UTF-8: {e}")))?;
                 let value: serde_json::Value =
-                    serde_json::from_str(&json_str).map_err(|e| crate::Error::Json(e))?;
+                    serde_json::from_str(&json_str).map_err(crate::Error::Json)?;
 
                 if let Some(key_obj) = value.get("key") {
                     if let Ok(ke) =

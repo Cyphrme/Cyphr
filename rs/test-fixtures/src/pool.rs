@@ -164,7 +164,6 @@ impl Pool {
         }
 
         // Validate each key's algorithm is supported
-        use std::str::FromStr;
         for key in &self.pool.key {
             if coz::Alg::from_str(&key.alg).is_none() {
                 errors.push(format!(

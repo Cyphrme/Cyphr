@@ -29,6 +29,8 @@ use crate::intent::{
 };
 use crate::pool::{Pool, PoolKey};
 
+type CozSignerInfo = (String, Vec<u8>, Vec<u8>, String, i64);
+
 /// A golden test case with real cryptographic values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Golden {
@@ -543,10 +545,6 @@ impl<'a> Generator<'a> {
             cz
         };
 
-        // Resolve signer for pay construction
-        let signer = self.resolve_key(&cz.signer)?;
-        let signer_tmb = signer.compute_tmb_b64()?;
-
         // Apply override.omit_pre if specified (for [transaction-pre-required] tests)
         let pre_pass = if test
             .override_
@@ -557,9 +555,6 @@ impl<'a> Generator<'a> {
         } else {
             Some(pre)
         };
-
-        // Build the pay Value (without commit field)
-        let pay_value = self.build_pay_value(cz, &signer.alg, &signer_tmb, pre_pass)?;
 
         let coz = if is_error_test {
             // Error tests: sign manually — CommitScope would reject invalid payloads
@@ -577,7 +572,7 @@ impl<'a> Generator<'a> {
             let mut scope = principal.begin_commit();
 
             // We need to keep track of the first signer to sign the final commit/create (Arrow) cozy
-            let mut first_coz_signer: Option<(String, Vec<u8>, Vec<u8>, String, i64)> = None;
+            let mut first_coz_signer: Option<CozSignerInfo> = None;
 
             for tx_group in &commit_intent.tx {
                 for tx_cz in tx_group {
@@ -720,10 +715,6 @@ impl<'a> Generator<'a> {
             // Capture pre before this commit (alg:digest format)
             let pre = Self::format_pr_tagged(principal)?;
 
-            // Resolve signer
-            let signer = self.resolve_key(&cz.signer)?;
-            let signer_tmb = signer.compute_tmb_b64()?;
-
             let coz = if is_last_commit && is_error_test {
                 // Error tests: sign last commit manually
                 let (coz, _sig_bytes, _czd) = self
@@ -738,7 +729,7 @@ impl<'a> Generator<'a> {
                 let mut scope = principal.begin_commit();
 
                 // We need to keep track of the first signer to sign the final commit/create (Arrow) cozy
-                let mut first_coz_signer: Option<(String, Vec<u8>, Vec<u8>, String, i64)> = None;
+                let mut first_coz_signer: Option<CozSignerInfo> = None;
 
                 for tx_group in &commit.tx {
                     for tx_cz in tx_group {
@@ -900,7 +891,7 @@ impl<'a> Generator<'a> {
             Action(&'a ActionIntent),
         }
 
-        impl<'a> TimelineEvent<'a> {
+        impl TimelineEvent<'_> {
             fn timestamp(&self) -> i64 {
                 match self {
                     TimelineEvent::Commit(c) => {
@@ -933,8 +924,7 @@ impl<'a> Generator<'a> {
                     // Open a CommitScope and apply all cozies in all transactions of the commit
                     let pre = Self::format_pr_tagged(principal)?;
                     let mut scope = principal.begin_commit();
-                    let mut first_coz_signer: Option<(String, Vec<u8>, Vec<u8>, String, i64)> =
-                        None;
+                    let mut first_coz_signer: Option<CozSignerInfo> = None;
 
                     for tx_group in &commit_intent.tx {
                         for tx_cz in tx_group {
@@ -1424,12 +1414,11 @@ impl<'a> Generator<'a> {
         test_name: &str,
         pre: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
-        // Resolve signer key
+        // Resolve signer
         let signer = self.resolve_key(&cz.signer)?;
-        let signer_tmb = signer.compute_tmb_b64()?;
 
         // Build pay JSON with derived fields (including pre)
-        let pay_json = self.build_pay_json(cz, &signer.alg, &signer_tmb, pre)?;
+        let pay_json = self.build_pay_json(cz, &signer.alg, &signer.compute_tmb_b64()?, pre)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
@@ -1588,93 +1577,11 @@ impl<'a> Generator<'a> {
         Ok((sig_b64, sig_bytes, czd_b64, czd, embedded_key))
     }
 
-    /// Extract a GoldenCoz from a VerifiedCoz (produced by CommitScope).
-    ///
-    /// Used after `finalize_with_commit()` to convert the Commit's coz
-    /// into the golden fixture format.
-    fn commit_vtx_to_golden_coz(
-        &self,
-        vtx: &cyphr::parsed_coz::VerifiedCoz,
-        cz: &TxIntent,
-    ) -> Result<GoldenCoz, Error> {
-        let raw = vtx.raw();
-        let sig_b64 = Base64UrlUnpadded::encode_string(&raw.sig);
-        let czd_b64 = Base64UrlUnpadded::encode_string(vtx.czd().as_bytes());
-
-        // Build embedded key for key/create operations
-        let embedded_key = if let Some(target_name) = &cz.target {
-            let target = self.resolve_key(target_name)?;
-            Some(GoldenKey {
-                alg: target.alg.clone(),
-                pub_key: target.pub_key.clone(),
-                tmb: target.compute_tmb_b64()?,
-            })
-        } else {
-            None
-        };
-
-        // Convert Value to Box<RawValue> for bit-perfect preservation in GoldenCoz
-        let pay_str = serde_json::to_string(&raw.pay).map_err(|e| Error::Generation {
-            name: cz.signer.clone(),
-            reason: format!("failed to serialize pay from commit: {}", e),
-        })?;
-        let pay_raw: Box<RawValue> =
-            RawValue::from_string(pay_str).map_err(|e| Error::Generation {
-                name: cz.signer.clone(),
-                reason: format!("failed to create RawValue: {}", e),
-            })?;
-
-        Ok(GoldenCoz {
-            pay: pay_raw,
-            sig: sig_b64,
-            czd: czd_b64,
-            key: embedded_key,
-        })
-    }
-
     /// Resolve a key reference to a pool key.
     fn resolve_key(&self, name: &str) -> Result<&PoolKey, Error> {
         self.pool.get(name).ok_or_else(|| Error::KeyRef {
             name: name.to_string(),
         })
-    }
-
-    /// Build expected assertions from principal state and intent overrides.
-    #[allow(clippy::too_many_arguments)]
-    fn apply_and_finalize(
-        &self,
-        principal: &mut cyphr::Principal,
-        pay_value: serde_json::Value,
-        signer_alg: &str,
-        prv_bytes: &[u8],
-        pub_bytes: &[u8],
-        signer_tmb: &str,
-        new_key: Option<cyphr::key::Key>,
-        now: i64,
-    ) -> Result<cyphr::Commit, Error> {
-        let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
-            name: "unknown".into(),
-            reason: e.to_string(),
-        })?;
-        let (sig_bytes, cad) = coz::sign_json(&pay_vec, signer_alg, prv_bytes, pub_bytes).unwrap();
-        let czd = coz::czd_for_alg(&cad, &sig_bytes, signer_alg).unwrap();
-        let mut scope = principal.begin_commit();
-        scope
-            .verify_and_apply(&pay_vec, &sig_bytes, czd, new_key)
-            .map_err(|e| Error::Generation {
-                name: "unknown".into(),
-                reason: e.to_string(),
-            })?;
-        let tmb = coz::Thumbprint::from_bytes(
-            coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb).unwrap(),
-        );
-        let commit_ref = scope
-            .finalize_with_arrow(signer_alg, prv_bytes, pub_bytes, &tmb, now, "cyphr.me")
-            .map_err(|e| Error::Generation {
-                name: "unknown".into(),
-                reason: e.to_string(),
-            })?;
-        Ok(commit_ref.clone())
     }
 
     fn build_expected_from_principal(

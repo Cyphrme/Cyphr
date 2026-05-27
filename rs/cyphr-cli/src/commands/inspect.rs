@@ -3,7 +3,7 @@
 use cyphr::StateDigest;
 
 use super::common::{load_principal_from_engine, parse_store};
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::JsonKeyStore;
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.

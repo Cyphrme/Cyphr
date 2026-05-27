@@ -265,15 +265,11 @@ impl Indexer for MemoryIndexer {
         }
     }
 
-    fn list_principals(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Vec<PrincipalSummary>, IndexerError>> + Send {
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.principals.values().cloned().collect())
-        }
+    async fn list_principals(&self) -> Result<Vec<PrincipalSummary>, IndexerError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        Ok(state.principals.values().cloned().collect())
     }
 }

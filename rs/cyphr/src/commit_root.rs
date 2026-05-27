@@ -181,6 +181,7 @@ impl CloneableLog {
     }
 }
 
+/// Type alias representing the EML commit trees.
 pub type CommitTrees = CloneableLog;
 
 /// Maps HashAlg to algorithm ID for EML.

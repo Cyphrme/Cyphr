@@ -4,8 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use coz::digest::Digest;
-use coz::sha2::{Sha256, Sha384, Sha512};
 use coz::{Cad, Czd, Thumbprint};
 
 use crate::multihash::MultihashDigest;
@@ -316,16 +314,6 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
 // ============================================================================
 // Core state computation algorithm (SPEC §7.1)
 // ============================================================================
-
-/// Compute `H(sort(components...))` per SPEC §7.1.
-///
-/// 1. Collect component digests
-/// 2. Sort lexicographically (byte comparison)
-/// 3. Concatenate sorted digests
-/// 4. Hash using specified algorithm
-fn hash_sorted_concat(alg: HashAlg, components: &[&[u8]]) -> Cad {
-    Cad::from_bytes(hash_sorted_concat_bytes(alg, components))
-}
 
 /// Compute `H(sort(components...))` returning raw bytes.
 ///

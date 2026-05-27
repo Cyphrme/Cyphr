@@ -282,7 +282,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             let new_key = extract_key_from_entry(&raw);
 
             // Compute czd for this entry
-            let czd = compute_czd(&pay_json, &sig, principal)?;
+            let czd = compute_czd(&pay_json, &sig)?;
 
             // Apply coz
             principal
@@ -305,7 +305,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                 })?;
         } else {
             // Action: compute czd and record
-            let czd = compute_czd(&pay_json, &sig, principal)?;
+            let czd = compute_czd(&pay_json, &sig)?;
 
             principal
                 .verify_and_record_action(&pay_json, &sig, czd)
@@ -444,7 +444,7 @@ pub(crate) fn replay_commits(
 
         // Replay deferred actions on the principal (outside the scope)
         for (index, pay_json, sig) in deferred_actions {
-            let czd = compute_czd(&pay_json, &sig, principal)?;
+            let czd = compute_czd(&pay_json, &sig)?;
 
             principal
                 .verify_and_record_action(&pay_json, &sig, czd)
@@ -528,11 +528,7 @@ pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 ///
 /// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
 /// consistent hash computation matching the signing path.
-pub(crate) fn compute_czd(
-    pay_json: &[u8],
-    sig: &[u8],
-    principal: &Principal,
-) -> Result<coz::Czd, LoadError> {
+pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadError> {
     let pay: serde_json::Value = serde_json::from_slice(pay_json).map_err(|e| LoadError::Json {
         index: 0,
         source: e,

@@ -3,10 +3,9 @@
 use cyphr::StateDigest;
 
 use super::common::{
-    get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
-    parse_principal_genesis, parse_store,
+    get_commits_from_engine, load_key_from_keystore, load_principal_from_engine, parse_store,
 };
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.

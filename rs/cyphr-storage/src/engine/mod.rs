@@ -547,11 +547,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                         "resolve_genesis: blob idx={}, typ={}, has_key={}",
                         idx, typ, has_key
                     );
-                    if typ.contains("/commit/create") {
-                        if has_key {
-                            eprintln!("resolve_genesis: found genesis key in commit/create!");
-                            return Self::genesis_from_blob(&data);
-                        }
+                    if typ.contains("/commit/create") && has_key {
+                        eprintln!("resolve_genesis: found genesis key in commit/create!");
+                        return Self::genesis_from_blob(&data);
                     }
                 }
             }
@@ -610,7 +608,6 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         #[derive(Clone)]
         struct ParsedCozInfo {
             hash: Blake3Hash,
-            raw_bytes: Vec<u8>,
             pay_json: Vec<u8>,
             sig: Vec<u8>,
             typ: String,
@@ -696,7 +693,6 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
             cozies.push(ParsedCozInfo {
                 hash,
-                raw_bytes: data,
                 pay_json,
                 sig,
                 typ: pay.typ,
@@ -725,11 +721,11 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         // Exclude finalizer commit/create cozies from being consumed as mock genesis cozies
         let mut mock_genesis_cozies = Vec::new();
         for c in &tx_cozies {
-            if !c.typ.contains("/commit/create") {
-                if c.pre.is_none() || c.pre.as_ref().unwrap().is_empty() {
-                    if let Some(key) = &c.new_key {
-                        mock_genesis_cozies.push((c.clone(), key.clone()));
-                    }
+            if !c.typ.contains("/commit/create")
+                && (c.pre.is_none() || c.pre.as_ref().unwrap().is_empty())
+            {
+                if let Some(key) = &c.new_key {
+                    mock_genesis_cozies.push((c.clone(), key.clone()));
                 }
             }
         }
@@ -792,10 +788,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         for c in &tx_cozies {
             if c.typ.contains("/commit/create") {
                 if let Some(key) = &c.new_key {
-                    if genesis_key_tmbs.contains(&key.tmb.to_b64()) {
-                        if !bootstrap_keys.iter().any(|k| k.tmb == key.tmb) {
-                            bootstrap_keys.push(key.clone());
-                        }
+                    if genesis_key_tmbs.contains(&key.tmb.to_b64())
+                        && !bootstrap_keys.iter().any(|k| k.tmb == key.tmb)
+                    {
+                        bootstrap_keys.push(key.clone());
                     }
                 }
             }
