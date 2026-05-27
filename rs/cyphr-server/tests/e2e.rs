@@ -110,8 +110,10 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 /// Build an `AppState` with a temporary database directory.
 fn test_state() -> Arc<AppState> {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let mut config = ServerConfig::default();
-    config.data_dir = temp_dir.path().to_path_buf();
+    let config = ServerConfig {
+        data_dir: temp_dir.path().to_path_buf(),
+        ..Default::default()
+    };
     std::mem::forget(temp_dir);
     Arc::new(AppState::new(config).expect("failed to open AppState"))
 }
