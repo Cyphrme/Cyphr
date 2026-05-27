@@ -7,19 +7,22 @@
 //!
 //! ## Design Principles
 //!
-//! - **Storage is dumb**: The storage layer only handles bytes. All semantic
-//!   operations (verification, state computation) are handled by `cyphr`.
+//! - **Storage is dumb**: The storage layer only handles bytes. All semantic operations
+//!   (verification, state computation) are handled by `cyphr`.
 //! - **Immutable history**: Entries are append-only; past entries are never modified.
-//! - **Order via `pre` chain**: Canonical order is derived from coz `pre`
-//!   field chaining, not storage order.
-//! - **Bit-perfect preservation**: Original JSON bytes are stored to ensure
-//!   correct `czd` computation.
+//! - **Order via `pre` chain**: Canonical order is derived from coz `pre` field chaining, not
+//!   storage order.
+//! - **Bit-perfect preservation**: Original JSON bytes are stored to ensure correct `czd`
+//!   computation.
 //!
 //! ## Included Backends
 //!
-//! - [`engine::StorageEngine`]: The unified storage engine that coordinates persistent blobs and indexers.
-//! - [`blob::fjall::FjallBlobStore`]: A persistent blob store backed by the Fjall LSM-tree storage engine.
-//! - [`index::memory::MemoryIndexer`]: An in-memory relational indexer that can be reconstructed via reindexing.
+//! - [`engine::StorageEngine`]: The unified storage engine that coordinates persistent blobs and
+//!   indexers.
+//! - [`blob::fjall::FjallBlobStore`]: A persistent blob store backed by the Fjall LSM-tree storage
+//!   engine.
+//! - [`index::memory::MemoryIndexer`]: An in-memory relational indexer that can be reconstructed
+//!   via reindexing.
 
 #![forbid(unsafe_code)]
 
@@ -35,7 +38,6 @@ pub use import::{
     load_principal_from_commits,
 };
 pub use index::{FjallIndexer, PublicKeyInfo};
-
 use serde_json::value::RawValue;
 
 /// Query options for filtered retrieval.

@@ -571,7 +571,8 @@ impl<'a> Generator<'a> {
 
             let mut scope = principal.begin_commit();
 
-            // We need to keep track of the first signer to sign the final commit/create (Arrow) cozy
+            // We need to keep track of the first signer to sign the final commit/create (Arrow)
+            // cozy
             let mut first_coz_signer: Option<CozSignerInfo> = None;
 
             for tx_group in &commit_intent.tx {
@@ -597,7 +598,8 @@ impl<'a> Generator<'a> {
                             }
                         })?;
 
-                    // Build pay value for this cozy. The pre-state is the principal's state before the commit began.
+                    // Build pay value for this cozy. The pre-state is the principal's state before
+                    // the commit began.
                     let pay_value =
                         self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
                     let pay_vec =
@@ -639,7 +641,8 @@ impl<'a> Generator<'a> {
                 }
             }
 
-            // Finalize the commit scope using the first signer's credentials (this generates the commit/create)
+            // Finalize the commit scope using the first signer's credentials (this generates the
+            // commit/create)
             let (alg, prv, pub_k, tmb_str, coz_now) =
                 first_coz_signer.ok_or_else(|| Error::InvalidIntent {
                     message: format!("test '{}': no cozies applied", test.name),
@@ -652,7 +655,8 @@ impl<'a> Generator<'a> {
                     reason: format!("failed to finalize commit: {}", e),
                 })?;
 
-            // Return a placeholder GoldenCoz since it's not used in happy path (commits are exported from principal directly)
+            // Return a placeholder GoldenCoz since it's not used in happy path (commits are
+            // exported from principal directly)
             GoldenCoz {
                 pay: RawValue::from_string("{}".to_string()).unwrap(),
                 sig: String::new(),
@@ -725,10 +729,12 @@ impl<'a> Generator<'a> {
                     })?;
                 coz
             } else {
-                // Happy path: open a CommitScope and apply all cozies in all transactions of the commit
+                // Happy path: open a CommitScope and apply all cozies in all transactions of the
+                // commit
                 let mut scope = principal.begin_commit();
 
-                // We need to keep track of the first signer to sign the final commit/create (Arrow) cozy
+                // We need to keep track of the first signer to sign the final commit/create (Arrow)
+                // cozy
                 let mut first_coz_signer: Option<CozSignerInfo> = None;
 
                 for tx_group in &commit.tx {
@@ -756,7 +762,8 @@ impl<'a> Generator<'a> {
                                 }
                             })?;
 
-                        // Build pay value for this cozy. The pre-state is the principal's state before the commit began.
+                        // Build pay value for this cozy. The pre-state is the principal's state
+                        // before the commit began.
                         let pay_value =
                             self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&pre))?;
                         let pay_vec =
@@ -812,7 +819,8 @@ impl<'a> Generator<'a> {
                         reason: format!("failed to finalize commit: {}", e),
                     })?;
 
-                // Return a placeholder GoldenCoz since it's not used in happy path (commits are exported from principal directly)
+                // Return a placeholder GoldenCoz since it's not used in happy path (commits are
+                // exported from principal directly)
                 GoldenCoz {
                     pay: RawValue::from_string("{}".to_string()).unwrap(),
                     sig: String::new(),

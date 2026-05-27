@@ -1,11 +1,9 @@
 //! In-memory [`BlobStore`] implementation for testing.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use super::{Blake3Hash, BlobStore, BlobStoreError};
-
-use std::sync::Arc;
 
 /// In-memory blob store backed by a `HashMap`.
 ///
@@ -33,6 +31,7 @@ impl Default for MemoryBlobStore {
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
 use tokio::io::AsyncWrite;
 
 /// Writer handle for in-memory blob storage.

@@ -8,7 +8,8 @@
 //! Actions use `[[test.action]]`.
 //! See `.sketches/2026-02-18-fixture-format-alignment.md` for design rationale.
 
-use std::{path::Path, str::FromStr};
+use std::path::Path;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -107,7 +108,8 @@ pub struct OverrideIntent {
     /// Omit the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
     #[serde(default)]
     pub omit_pre: Option<bool>,
-    /// Bypass the empty commit validation to force an empty commit generation (for [commit-one-or-more] tests).
+    /// Bypass the empty commit validation to force an empty commit generation (for
+    /// [commit-one-or-more] tests).
     #[serde(default)]
     pub empty_commit: Option<bool>,
 }

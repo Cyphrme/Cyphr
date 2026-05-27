@@ -16,12 +16,12 @@ mod fjall;
 mod memory;
 pub mod types;
 
+use cyphr::state::TaggedDigest;
 pub use fjall::FjallIndexer;
 pub use memory::MemoryIndexer;
 pub use types::*;
 
 use crate::blob::Blake3Hash;
-use cyphr::state::TaggedDigest;
 
 /// Errors from [`Indexer`] operations.
 #[derive(Debug, thiserror::Error)]

@@ -648,7 +648,8 @@ async fn test_reindex_recovery() {
             .expect("submit_commit failed");
     }
 
-    // Create and write a mock genesis cozy to the BlobStore so reindex() can bootstrap the principal.
+    // Create and write a mock genesis cozy to the BlobStore so reindex() can bootstrap the
+    // principal.
     let genesis_key = &genesis_keys[0];
     let genesis_coz_json = serde_json::json!({
         "pay": {
@@ -777,7 +778,8 @@ async fn test_reindex_recovery_with_crashed_commit() {
         .unwrap();
     let _ = blob_store.close(handle).await.unwrap();
 
-    // Now write a random transaction cozy simulating a crashed commit write (missing finalizer cozy)
+    // Now write a random transaction cozy simulating a crashed commit write (missing finalizer
+    // cozy)
     let crashed_coz_json = serde_json::json!({
         "pay": {
             "typ": "cyphr.me/cyphr/key/add",
@@ -813,7 +815,8 @@ async fn test_reindex_recovery_with_crashed_commit() {
         .expect("get_tip failed")
         .expect("recovered tip should exist");
 
-    // Tip commit count should match original_tip + 1 (for genesis_coz), completely ignoring the crashed cozy.
+    // Tip commit count should match original_tip + 1 (for genesis_coz), completely ignoring the
+    // crashed cozy.
     let original_tip = engine.get_tip(&principal_id).await.unwrap().unwrap();
     assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
 }

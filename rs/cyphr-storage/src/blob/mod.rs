@@ -15,11 +15,11 @@
 mod fjall_store;
 mod memory;
 
-pub use fjall_store::FjallBlobStore;
-pub use memory::MemoryBlobStore;
-
 use std::fmt;
 use std::str::FromStr;
+
+pub use fjall_store::FjallBlobStore;
+pub use memory::MemoryBlobStore;
 
 /// 32-byte BLAKE3 digest used as content address.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -108,7 +108,8 @@ pub trait BlobStore: Send + Sync {
         &self,
     ) -> impl std::future::Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send;
 
-    /// Close the write handle, finalize the blob, write it to the store, and return its BLAKE3 digest.
+    /// Close the write handle, finalize the blob, write it to the store, and return its BLAKE3
+    /// digest.
     fn close(
         &self,
         handle: Self::WriteHandle,

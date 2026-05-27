@@ -3,9 +3,10 @@
 //! These functions bridge the `cyphr` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use crate::{CommitEntry, Entry, KeyEntry};
 use cyphr::Principal;
 use cyphr::state::StateDigest;
+
+use crate::{CommitEntry, Entry, KeyEntry};
 
 /// Errors that can occur during export.
 #[derive(Debug, thiserror::Error)]
@@ -162,10 +163,11 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use coz::Thumbprint;
     use cyphr::Key;
     use serde_json::json;
+
+    use super::*;
 
     fn make_test_key(id: u8) -> Key {
         Key {

@@ -1,14 +1,14 @@
 //! Property-based tests for the cyphr-storage library.
 
+use std::path::PathBuf;
+
 use coz::base64ct::Encoding;
 use cyphr::StateDigest;
-use cyphr_storage::CommitEntry;
-use cyphr_storage::Genesis;
 use cyphr_storage::blob::{FjallBlobStore, MemoryBlobStore};
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::{FjallIndexer, MemoryIndexer};
+use cyphr_storage::{CommitEntry, Genesis};
 use proptest::prelude::*;
-use std::path::PathBuf;
 
 const POOL_KEYS: &[&str] = &[
     "golden",

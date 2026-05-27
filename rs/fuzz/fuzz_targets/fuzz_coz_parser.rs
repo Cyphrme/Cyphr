@@ -1,7 +1,8 @@
 #![no_main]
 
 use coz::{CozJson, Czd, Pay, Thumbprint};
-use cyphr::{Key, parsed_coz::verify_coz};
+use cyphr::Key;
+use cyphr::parsed_coz::verify_coz;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

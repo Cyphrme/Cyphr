@@ -1,5 +1,6 @@
-use serde_json::Value;
 use std::fs;
+
+use serde_json::Value;
 
 fn main() {
     let json_str =

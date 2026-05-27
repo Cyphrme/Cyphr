@@ -22,11 +22,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
-
 use cyphr_server::config::ServerConfig;
 use cyphr_server::{AppState, build_router};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
 
 // ========================================================================
 // Helpers

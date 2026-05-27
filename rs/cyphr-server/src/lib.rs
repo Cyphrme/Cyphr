@@ -4,8 +4,7 @@
 //! over HTTP.
 //!
 //! The server is structured as a library + binary crate:
-//! - Library (`lib.rs`) owns the application state, route wiring,
-//!   and the `serve()` entry point.
+//! - Library (`lib.rs`) owns the application state, route wiring, and the `serve()` entry point.
 //! - Binary (`main.rs`) handles CLI parsing and process lifecycle.
 
 pub mod config;

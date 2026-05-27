@@ -1,7 +1,7 @@
-use crate::multihash::MultihashDigest;
-use crate::state::hash_concat_bytes;
-use crate::state::{HashAlg, TaggedCzd};
 use std::collections::BTreeMap;
+
+use crate::multihash::MultihashDigest;
+use crate::state::{HashAlg, TaggedCzd, hash_concat_bytes};
 
 /// The Transaction Mutation Root (TMR)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]

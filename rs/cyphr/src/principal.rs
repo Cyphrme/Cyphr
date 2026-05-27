@@ -171,6 +171,7 @@ pub struct Principal(PrincipalKind);
 // resolve automatically — zero changes needed in existing methods.
 impl std::ops::Deref for Principal {
     type Target = PrincipalCore;
+
     fn deref(&self) -> &PrincipalCore {
         match &self.0 {
             PrincipalKind::Nascent(core) => core,
@@ -791,8 +792,9 @@ impl Principal {
         sig: &[u8],
         czd: coz::Czd,
     ) -> Result<&PrincipalRoot> {
-        use crate::action::Action;
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        use crate::action::Action;
 
         // Parse as Value and extract only what we need (avoids requiring all coz::Pay fields)
         let pay_value: serde_json::Value =
@@ -973,9 +975,9 @@ impl Principal {
         // Verify signer is an active key.
         // Exceptions:
         //   - SelfRevoke: handled specially (revoking oneself)
-        //   - CommitCreate: finality marker; authorization was already verified
-        //     against the pre-commit key snapshot in CommitScope::verify_and_apply.
-        //     The signer may have been replaced by a prior mutation in this commit.
+        //   - CommitCreate: finality marker; authorization was already verified against the
+        //     pre-commit key snapshot in CommitScope::verify_and_apply. The signer may have been
+        //     replaced by a prior mutation in this commit.
         let skip_active_check = matches!(
             &cz.kind,
             CozKind::SelfRevoke { .. } | CozKind::CommitCreate { .. }
@@ -1330,13 +1332,13 @@ impl Principal {
 
 #[cfg(test)]
 mod tests {
-    use crate::commit_root::MaltHasher;
-    use crate::state::StateDigest;
     use coz::Thumbprint;
     use eml::Hasher;
 
     use super::*;
+    use crate::commit_root::MaltHasher;
     use crate::key::Key;
+    use crate::state::StateDigest;
 
     fn make_test_key(id: u8) -> Key {
         Key {
@@ -1446,11 +1448,10 @@ mod tests {
         signer: &Thumbprint,
     ) -> crate::parsed_coz::ParsedCoz {
         use coz::Czd;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
         use crate::parsed_coz::{CozKind, ParsedCoz};
-
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         // Create dummy raw CozJson for test cozies
         let ps_bytes = pre

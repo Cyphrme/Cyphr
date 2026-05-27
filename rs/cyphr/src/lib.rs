@@ -39,6 +39,9 @@ pub mod transaction_root;
 pub use action::Action;
 pub use commit::{Commit, CommitScope, PendingCommit};
 pub use commit_root::{CommitRoot, CommitTrees, MaltHasher};
+// EML proof types and standalone verifiers.
+// Re-exported so consumers can verify proofs without depending on `eml` directly.
+pub use eml::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;
@@ -50,7 +53,3 @@ pub use state::{
 };
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
-
-// EML proof types and standalone verifiers.
-// Re-exported so consumers can verify proofs without depending on `eml` directly.
-pub use eml::{ConsistencyProof, InclusionProof, verify_consistency, verify_inclusion};

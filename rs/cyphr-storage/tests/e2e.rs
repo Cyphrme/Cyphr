@@ -6,12 +6,11 @@
 //! Unlike integration tests which use pre-generated golden files, e2e tests
 //! generate fixtures at runtime, testing the full generation pipeline.
 
-use cyphr::StateDigest;
 use std::fs;
 use std::path::PathBuf;
 
+use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, LoadError, export_commits, load_principal_from_commits};
-
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
 // ============================================================================

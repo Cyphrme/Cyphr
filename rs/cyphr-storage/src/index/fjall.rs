@@ -1,11 +1,13 @@
 //! Fjall-backed [`Indexer`] implementation.
 
+use std::path::Path;
+
+use cyphr::state::TaggedDigest;
+use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle};
+
 use super::types::*;
 use super::{Indexer, IndexerError};
 use crate::blob::Blake3Hash;
-use cyphr::state::TaggedDigest;
-use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle};
-use std::path::Path;
 
 /// Persistent indexer backed by fjall.
 pub struct FjallIndexer {

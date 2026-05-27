@@ -1,5 +1,7 @@
 use std::fs;
-use test_fixtures::{Pool, generate, intent::Intent};
+
+use test_fixtures::intent::Intent;
+use test_fixtures::{Pool, generate};
 
 fn main() {
     let pool_str = fs::read_to_string("../tests/keys/pool.toml").unwrap();

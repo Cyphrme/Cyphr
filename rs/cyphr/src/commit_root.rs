@@ -1,11 +1,12 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use eml;
 use futures;
 
 use crate::HashAlg;
 use crate::multihash::MultihashDigest;
 use crate::state::StateDigest;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 /// A single-algorithm hasher for the Cyphr EML implementation.
 #[derive(Clone, Debug)]

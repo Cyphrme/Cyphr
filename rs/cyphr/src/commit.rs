@@ -62,15 +62,19 @@ impl Commit {
     pub fn transactions(&self) -> &[crate::transaction::Transaction] {
         &self.transactions
     }
+
     /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
     pub fn commit_tx(&self) -> &crate::transaction::Transaction {
         self.transactions.last().unwrap()
     }
+
     /// Returns a flat vector of all cozies (mutations + commit).
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
         self.iter_all_cozies().cloned().collect()
     }
-    /// Iterates over all cozies in this commit bundle (mutations followed by the commit/create synthetic coz).
+
+    /// Iterates over all cozies in this commit bundle (mutations followed by the commit/create
+    /// synthetic coz).
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
         self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
@@ -136,10 +140,12 @@ impl PendingCommit {
     pub fn transactions(&self) -> &[crate::transaction::Transaction] {
         &self.transactions
     }
+
     /// Returns a flat vector of all cozies (mutations + commit).
     pub fn all_cozies(&self) -> Vec<VerifiedCoz> {
         self.iter_all_cozies().cloned().collect()
     }
+
     /// Iterates over all current cozies within the pending commit.
     pub fn iter_all_cozies(&self) -> impl Iterator<Item = &VerifiedCoz> {
         self.transactions.iter().flat_map(|tx| tx.0.iter())
@@ -469,7 +475,7 @@ impl<'a> CommitScope<'a> {
             .algorithms()
             .next()
             .unwrap_or_else(|| self.principal.hash_alg());
-        let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
+        let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);
         let Some(tmr) = tmr else {
             return false;
         };
@@ -497,7 +503,8 @@ impl<'a> CommitScope<'a> {
         {
             use coz::base64ct::Encoding;
             eprintln!(
-                "matches_arrow check: alg={:?}\n  pre = {}\n  sr  = {}\n  tmr = {}\n  claimed  = {}\n  computed = {}\n  matches  = {}",
+                "matches_arrow check: alg={:?}\n  pre = {}\n  sr  = {}\n  tmr = {}\n  claimed  = \
+                 {}\n  computed = {}\n  matches  = {}",
                 signer_hash_alg,
                 coz::base64ct::Base64UrlUnpadded::encode_string(pre_bytes),
                 coz::base64ct::Base64UrlUnpadded::encode_string(sr_bytes),
@@ -536,10 +543,11 @@ impl<'a> CommitScope<'a> {
         now: i64,
         authority: &str,
     ) -> crate::error::Result<&'a Commit> {
-        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
-        use crate::state::{hash_alg_from_str, hash_sorted_concat_bytes};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
+
+        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
+        use crate::state::{hash_alg_from_str, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -547,8 +555,8 @@ impl<'a> CommitScope<'a> {
 
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
-        // 1. Recompute KR → AR → SR to get post-mutation SR for Arrow construction.
-        //    This reads the projected state.
+        // 1. Recompute KR → AR → SR to get post-mutation SR for Arrow construction. This reads the
+        //    projected state.
         let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
@@ -560,7 +568,7 @@ impl<'a> CommitScope<'a> {
         )?;
 
         // For TMR we just use compute_roots early
-        let (tmr, _, _) = self.pending.compute_roots(&[signer_hash_alg]);
+        let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
         // 2. Compute Arrow = MR(pre, sr, tmr)
@@ -629,12 +637,13 @@ impl<'a> CommitScope<'a> {
 
 #[cfg(test)]
 mod tests {
+    use coz::{Czd, PayBuilder, Thumbprint};
+    use serde_json::json;
+
     use super::*;
     use crate::multihash::MultihashDigest;
     use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
     use crate::state::HashAlg;
-    use coz::{Czd, PayBuilder, Thumbprint};
-    use serde_json::json;
 
     // Valid alg:digest format for 32-byte SHA-256 digests
     const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";

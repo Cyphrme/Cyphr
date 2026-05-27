@@ -157,7 +157,13 @@ pub async fn patch(
 }
 
 /// `POST /push` — accept and validate a signed commit bundle.
-#[tracing::instrument(skip(state, request), fields(principal_id = %request.principal_id, blob_count = request.blobs.len()))]
+#[tracing::instrument(
+    skip(state, request),
+    fields(
+        principal_id = %request.principal_id,
+        blob_count = request.blobs.len()
+    )
+)]
 pub async fn push(
     State(state): State<Arc<AppState>>,
     Json(request): Json<PushRequest>,

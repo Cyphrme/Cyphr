@@ -19,9 +19,8 @@
 
 mod error;
 
-pub use error::EngineError;
-
 use cyphr::state::{StateDigest, TaggedDigest};
+pub use error::EngineError;
 
 use crate::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use crate::index::{CommitRef, IndexableCommit, Indexer, TipState};
@@ -196,7 +195,13 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// **Note:** This method does NOT validate protocol-level
     /// signatures or state transitions. That responsibility belongs
     /// to the protocol validation layer (Phase 3b).
-    #[tracing::instrument(skip(self, blobs), fields(principal_id = %metadata.principal_id, blob_count = blobs.len()))]
+    #[tracing::instrument(
+        skip(self, blobs),
+        fields(
+            principal_id = %metadata.principal_id,
+            blob_count = blobs.len()
+        )
+    )]
     pub async fn ingest_commit(
         &self,
         blobs: &[&[u8]],
@@ -348,8 +353,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// 1. Resolve genesis (from argument, storage, or submitted blobs)
     /// 2. Load existing principal from storage (or construct from genesis)
     /// 3. Open a `CommitScope`
-    /// 4. For each raw coz blob: parse `{pay, sig}`, extract key material,
-    ///    compute `czd`, call `scope.verify_and_apply()`
+    /// 4. For each raw coz blob: parse `{pay, sig}`, extract key material, compute `czd`, call
+    ///    `scope.verify_and_apply()`
     /// 5. Finalize the scope → immutable `Commit`
     /// 6. Extract state digests from the finalized `Commit`
     /// 7. Store blobs + index via `ingest_commit`
@@ -357,9 +362,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// # Arguments
     ///
     /// * `principal_id` — Tagged-digest identifier for this principal.
-    /// * `genesis` — How this principal was originally created, or `None`
-    ///   to auto-detect from storage (existing principal) or from the
-    ///   submitted blobs (new principal).
+    /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
+    ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
     ///
     /// # Errors
@@ -374,8 +378,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         genesis: Option<crate::Genesis>,
         raw_blobs: &[&[u8]],
     ) -> Result<IngestResult, EngineError> {
-        use crate::import::{is_key_introducing_typ, is_transaction_typ};
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        use crate::import::{is_key_introducing_typ, is_transaction_typ};
 
         if raw_blobs.is_empty() {
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
@@ -624,10 +629,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
     /// Resolve genesis for a principal, auto-detecting from stored or submitted data.
     ///
-    /// - If the principal already exists in storage, extracts key material
-    ///   from the first stored commit's blobs.
-    /// - If the principal is new, extracts key material from the first
-    ///   submitted blob's `"key"` field.
+    /// - If the principal already exists in storage, extracts key material from the first stored
+    ///   commit's blobs.
+    /// - If the principal is new, extracts key material from the first submitted blob's `"key"`
+    ///   field.
     pub async fn resolve_genesis(
         &self,
         principal_id: &str,
@@ -641,7 +646,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         if let Some(first_commit) = chain.first() {
             // Existing principal — scan blobs of the first commit to find the genesis key
-            // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key field).
+            // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key
+            // field).
             let mut fallback_data = None;
             eprintln!(
                 "resolve_genesis: first commit has {} blobs",
@@ -721,8 +727,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// and idempotently indexes everything.
     #[tracing::instrument(skip(self, keys))]
     pub async fn reindex(&self, keys: &[cyphr::Key], total_check: bool) -> Result<(), EngineError> {
-        use crate::import::is_transaction_typ;
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        use crate::import::is_transaction_typ;
 
         if total_check {
             self.indexer.clear().await?;
@@ -925,7 +932,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         }
 
         // 2. Bootstrap from keys in keys slice (from keystore) and keys in commit/create cozies
-        // Only bootstrap keys that are identified as genesis keys (present as signer or new_key in a cozy with empty/missing pre).
+        // Only bootstrap keys that are identified as genesis keys (present as signer or new_key in
+        // a cozy with empty/missing pre).
         let mut genesis_key_tmbs = std::collections::HashSet::new();
         for c in &tx_cozies {
             if c.pre.is_none() || c.pre.as_ref().unwrap().is_empty() {
@@ -972,7 +980,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         pool.extend(action_cozies);
 
         // Sort pool by timestamp to facilitate sequential application.
-        // For cozies with the same timestamp, ensure actions come first, then mutation transactions, then finalizer commit/create cozies last.
+        // For cozies with the same timestamp, ensure actions come first, then mutation
+        // transactions, then finalizer commit/create cozies last.
         pool.sort_by(|a, b| match a.now.cmp(&b.now) {
             std::cmp::Ordering::Equal => {
                 let a_is_commit = a.typ.contains("/commit/create");

@@ -7,10 +7,11 @@
 //! Supports both legacy flat format (one cz per line) and commit-based format
 //! (one commit bundle per line).
 
-use crate::{CommitEntry, Entry, KeyEntry};
 use coz::Thumbprint;
 use cyphr::state::{AuthRoot, PrincipalGenesis};
 use cyphr::{Key, Principal};
+
+use crate::{CommitEntry, Entry, KeyEntry};
 
 // ============================================================================
 // Types

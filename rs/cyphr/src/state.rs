@@ -371,8 +371,9 @@ pub fn compute_kr(
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<KeyRoot> {
-    use crate::multihash::MultihashDigest;
     use std::collections::BTreeMap;
+
+    use crate::multihash::MultihashDigest;
 
     if algs.is_empty() {
         return Err(crate::error::Error::NoActiveKeys);
@@ -639,8 +640,9 @@ pub fn compute_dr(
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<Option<DataRoot>> {
-    use crate::multihash::MultihashDigest;
     use std::collections::BTreeMap;
+
+    use crate::multihash::MultihashDigest;
 
     if actions.is_empty() && nonce.is_none() {
         return Ok(None);
@@ -974,8 +976,8 @@ mod tests {
     /// When computing a Merkle root with mixed-size digests, smaller digests
     /// are fed directly into larger hash functions. This test verifies:
     ///
-    /// 1. Mixed-size thumbprints (32B ES256, 48B ES384, 64B Ed25519) can be
-    ///    combined in a single KS computation
+    /// 1. Mixed-size thumbprints (32B ES256, 48B ES384, 64B Ed25519) can be combined in a single KS
+    ///    computation
     /// 2. Each algorithm variant processes all thumbprints correctly
     /// 3. The resulting multihash contains variants for all active algorithms
     #[test]
