@@ -17,6 +17,7 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
         transaction_types: vec!["key/create".to_string()],
         transaction_ids: vec![vec!["SHA-256:tx-czd".to_string()]],
         timestamp,
+        keys: Vec::new(),
     }
 }
 
@@ -230,4 +231,79 @@ async fn principal_summary_tracks_creation_time() {
         .expect("alice");
     assert_eq!(alice.created, 1000, "created should be genesis timestamp");
     assert_eq!(alice.last_updated, 5000, "last_updated should be latest");
+}
+
+#[tokio::test]
+async fn test_new_indexer_methods_memory() {
+    let indexer = MemoryIndexer::new();
+    run_new_indexer_methods_tests(&indexer).await;
+}
+
+#[tokio::test]
+async fn test_new_indexer_methods_fjall() {
+    let dir = tempfile::tempdir().unwrap();
+    let indexer = FjallIndexer::open(dir.path()).unwrap();
+    run_new_indexer_methods_tests(&indexer).await;
+}
+
+async fn run_new_indexer_methods_tests<I: Indexer>(indexer: &I) {
+    let key_info = PublicKeyInfo {
+        thumbprint: "tmb123".to_string(),
+        algorithm: "ED25519".to_string(),
+        public_key: "pubkey123".to_string(),
+    };
+
+    let mut commit = make_commit("alice", 0, 1000);
+    commit.keys.push(key_info.clone());
+
+    let blob_hash = commit.blob_hashes[0];
+
+    // Initially, blob is not indexed, key is not found
+    assert!(!indexer.is_blob_indexed(&blob_hash).await.unwrap());
+    assert!(indexer.get_key("tmb123").await.unwrap().is_none());
+
+    // Index the commit
+    indexer.index_commit(&commit).await.unwrap();
+
+    // Now, blob is indexed, key is found
+    assert!(indexer.is_blob_indexed(&blob_hash).await.unwrap());
+    let retrieved = indexer.get_key("tmb123").await.unwrap().unwrap();
+    assert_eq!(retrieved, key_info);
+
+    // Let's test get_commit_chain
+    for seq in 0..5 {
+        indexer
+            .index_commit(&make_commit("bob", seq, 1000 + seq as i64))
+            .await
+            .unwrap();
+    }
+
+    let chain = indexer.get_commit_chain("bob", None, None).await.unwrap();
+    assert_eq!(chain.len(), 5);
+    for (i, c) in chain.iter().enumerate() {
+        assert_eq!(c.sequence, i as u64);
+    }
+
+    let range_chain = indexer
+        .get_commit_chain("bob", Some(1), Some(3))
+        .await
+        .unwrap();
+    assert_eq!(range_chain.len(), 3);
+    assert_eq!(range_chain[0].sequence, 1);
+    assert_eq!(range_chain[2].sequence, 3);
+
+    // Clear the indexer
+    indexer.clear().await.unwrap();
+
+    // After clear, blob is not indexed, key is not found, tip is None, chain is empty
+    assert!(!indexer.is_blob_indexed(&blob_hash).await.unwrap());
+    assert!(indexer.get_key("tmb123").await.unwrap().is_none());
+    assert!(indexer.get_tip("alice").await.unwrap().is_none());
+    assert!(
+        indexer
+            .get_commit_chain("bob", None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

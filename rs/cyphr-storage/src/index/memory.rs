@@ -7,6 +7,7 @@ use cyphr::state::TaggedDigest;
 
 use super::types::*;
 use super::{Indexer, IndexerError};
+use crate::blob::Blake3Hash;
 
 /// Internal state for the memory indexer.
 #[derive(Debug, Default)]
@@ -19,6 +20,8 @@ struct MemoryState {
     tips: HashMap<String, TipState>,
     /// Digest → entity reference lookup.
     digest_index: HashMap<String, EntityRef>,
+    /// Public keys keyed by thumbprint.
+    public_keys: HashMap<String, PublicKeyInfo>,
 }
 
 /// In-memory indexer backed by `HashMap`.
@@ -202,6 +205,12 @@ impl Indexer for MemoryIndexer {
                     },
                 );
             }
+            // Index public keys.
+            for key in &commit.keys {
+                state
+                    .public_keys
+                    .insert(key.thumbprint.clone(), key.clone());
+            }
 
             Ok(())
         }
@@ -271,5 +280,46 @@ impl Indexer for MemoryIndexer {
             .read()
             .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
         Ok(state.principals.values().cloned().collect())
+    }
+
+    async fn clear(&self) -> Result<(), IndexerError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        state.principals.clear();
+        state.commits.clear();
+        state.tips.clear();
+        state.digest_index.clear();
+        state.public_keys.clear();
+        Ok(())
+    }
+
+    fn is_blob_indexed(
+        &self,
+        hash: &Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let key = hash.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.digest_index.contains_key(&key))
+        }
+    }
+
+    fn get_key(
+        &self,
+        thumbprint: &str,
+    ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send {
+        let thumbprint = thumbprint.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.public_keys.get(&thumbprint).cloned())
+        }
     }
 }

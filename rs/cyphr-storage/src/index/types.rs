@@ -34,13 +34,26 @@ pub struct IndexableCommit {
     pub transaction_ids: Vec<Vec<String>>,
     /// Timestamp of the commit (from the commit transaction's `now` field).
     pub timestamp: i64,
+    /// Public keys extracted from key-introducing transactions.
+    pub keys: Vec<PublicKeyInfo>,
+}
+
+/// Public key metadata.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PublicKeyInfo {
+    /// Public key thumbprint.
+    pub thumbprint: String,
+    /// Cryptographic algorithm (e.g., "ED25519").
+    pub algorithm: String,
+    /// Base64url-encoded public key.
+    pub public_key: String,
 }
 
 /// Current tip state for a principal.
 ///
 /// Returned by [`super::Indexer::get_tip`]. Represents the latest
 /// known state without replaying the full commit history.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TipState {
     /// Principal genesis identifier.
     pub principal_id: String,
@@ -63,7 +76,7 @@ pub struct TipState {
 /// Returned by [`super::Indexer::get_commit_chain`]. Contains
 /// enough metadata to locate and order commits without fetching
 /// full blob content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CommitRef {
     /// Commit ID (tagged digest string).
     pub commit_id: String,
@@ -79,7 +92,7 @@ pub struct CommitRef {
 ///
 /// Returned by [`super::Indexer::resolve_digest`]. Maps a
 /// protocol-level tagged digest to a storage-level blob hash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct EntityRef {
     /// The tagged digest string that was resolved.
     pub digest: String,
@@ -90,7 +103,7 @@ pub struct EntityRef {
 }
 
 /// Classification of indexed entities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum EntityType {
     /// A finalized commit bundle.
     Commit,
@@ -104,7 +117,7 @@ pub enum EntityType {
 ///
 /// Returned by [`super::Indexer::list_principals`]. Lightweight
 /// overview without full state details.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PrincipalSummary {
     /// Principal genesis identifier.
     pub principal_id: String,

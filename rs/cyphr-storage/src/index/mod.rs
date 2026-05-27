@@ -12,12 +12,15 @@
 //! - [`MemoryIndexer`] — `HashMap`-backed (testing)
 //! - `SqliteIndexer` — SQLite-backed (production, Phase 2b)
 
+mod fjall;
 mod memory;
 pub mod types;
 
+pub use fjall::FjallIndexer;
 pub use memory::MemoryIndexer;
 pub use types::*;
 
+use crate::blob::Blake3Hash;
 use cyphr::state::TaggedDigest;
 
 /// Errors from [`Indexer`] operations.
@@ -83,6 +86,21 @@ pub trait Indexer: Send + Sync {
     fn list_principals(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<PrincipalSummary>, IndexerError>> + Send;
+
+    /// Clear the index, removing all indexed records.
+    fn clear(&self) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send;
+
+    /// Verify if a specific raw blob hash has already been indexed.
+    fn is_blob_indexed(
+        &self,
+        hash: &Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
+
+    /// Retrieve public key metadata by thumbprint.
+    fn get_key(
+        &self,
+        thumbprint: &str,
+    ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send;
 }
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ pub use import::{
     Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal,
     load_principal_from_commits,
 };
+pub use index::{FjallIndexer, PublicKeyInfo};
 
 use serde_json::value::RawValue;
 
