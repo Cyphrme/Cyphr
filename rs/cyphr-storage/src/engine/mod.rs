@@ -100,6 +100,16 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         }
     }
 
+    /// Get a reference to the underlying blob store.
+    pub fn blob_store(&self) -> &B {
+        &self.blob_store
+    }
+
+    /// Get a reference to the underlying indexer.
+    pub fn indexer(&self) -> &I {
+        &self.indexer
+    }
+
     // ========================================================================
     // Read path
     // ========================================================================
@@ -499,7 +509,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     ///   from the first stored commit's blobs.
     /// - If the principal is new, extracts key material from the first
     ///   submitted blob's `"key"` field.
-    async fn resolve_genesis(
+    pub async fn resolve_genesis(
         &self,
         principal_id: &str,
         raw_blobs: &[&[u8]],
@@ -511,19 +521,48 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             .await?;
 
         if let Some(first_commit) = chain.first() {
-            // Existing principal — extract genesis from the first stored blob.
-            let first_hash = first_commit
-                .blob_hashes
-                .first()
-                .ok_or_else(|| EngineError::InvalidInput("first commit has no blobs".into()))?;
-            let data = self.blob_store.get(first_hash).await?.ok_or_else(|| {
-                EngineError::NotFound(format!("genesis blob {first_hash} not found in store"))
-            })?;
-            Self::genesis_from_blob(&data)
+            // Existing principal — scan blobs of the first commit to find the genesis key
+            // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key field).
+            let mut fallback_data = None;
+            eprintln!("resolve_genesis: first commit has {} blobs", first_commit.blob_hashes.len());
+            for (idx, hash) in first_commit.blob_hashes.iter().enumerate() {
+                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!("blob {hash} not found in store"))
+                })?;
+                if idx == 0 {
+                    fallback_data = Some(data.clone());
+                }
+
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
+                    let pay = value.get("pay");
+                    let typ = pay.and_then(|p| p.get("typ")).and_then(|t| t.as_str()).unwrap_or("");
+                    let has_key = value.get("key").is_some();
+                    eprintln!("resolve_genesis: blob idx={}, typ={}, has_key={}", idx, typ, has_key);
+                    if typ.contains("/commit/create") {
+                        if has_key {
+                            eprintln!("resolve_genesis: found genesis key in commit/create!");
+                            return Self::genesis_from_blob(&data);
+                        }
+                    }
+                }
+            }
+
+            if let Some(data) = fallback_data {
+                eprintln!("resolve_genesis: fallback to first blob");
+                if let Ok(genesis_val) = self.genesis_val_from_blob(&data) {
+                    return Ok(genesis_val);
+                }
+            }
+            Err(EngineError::NotFound("genesis key not found in first commit".into()))
         } else {
             // New principal — extract genesis from the first submitted blob.
             Self::genesis_from_blob(raw_blobs[0])
         }
+    }
+
+    /// Extract an implicit genesis key from a raw coz blob's "key" field.
+    fn genesis_val_from_blob(&self, blob: &[u8]) -> Result<crate::Genesis, EngineError> {
+        Self::genesis_from_blob(blob)
     }
 
     /// Extract an implicit genesis key from a raw coz blob's `"key"` field.
@@ -552,8 +591,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
     /// Implements recovery verification/convergance [recovery-reindex] and
     /// [recovery-convergence]. Traces the transaction/action chain from genesis
     /// and idempotently indexes everything.
-    #[tracing::instrument(skip(self))]
-    pub async fn reindex(&self) -> Result<(), EngineError> {
+    #[tracing::instrument(skip(self, keys))]
+    pub async fn reindex(&self, keys: &[cyphr::Key]) -> Result<(), EngineError> {
         use crate::import::is_transaction_typ;
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -572,6 +611,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
+        eprintln!("reindex: found {} blobs in store", hashes.len());
 
         let mut cozies = Vec::new();
         for hash in hashes {
@@ -590,12 +630,18 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
             let ext: CozExtractor = match serde_json::from_slice(&data) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("reindex: CozExtractor deserialize failed: {:?}, data = '{}'", e, String::from_utf8_lossy(&data));
+                    continue;
+                }
             };
 
             let sig = match Base64UrlUnpadded::decode_vec(&ext.sig) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("reindex: base64 decode of sig '{}' failed: {:?}", ext.sig, e);
+                    continue;
+                }
             };
 
             let pay_json = ext.pay.get().as_bytes().to_vec();
@@ -610,7 +656,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
             let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
                 Ok(p) => p,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("reindex: PayFields deserialize failed: {:?}, pay = '{}'", e, ext.pay.get());
+                    continue;
+                }
             };
 
             let new_key = if let Some(k) = &ext.key {
@@ -648,20 +697,100 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             action_cozies.len()
         );
 
-        // Identify genesis cozies: new key and no pre (or empty pre)
-        let mut genesis_cozies: Vec<_> = tx_cozies
-            .iter()
-            .filter(|c| {
-                c.new_key.is_some() && (c.pre.is_none() || c.pre.as_ref().unwrap().is_empty())
-            })
-            .cloned()
-            .collect();
-        genesis_cozies.sort_by_key(|c| c.now);
+        let mut bootstrapped = Vec::new();
 
-        tracing::debug!("genesis_cozies count: {}", genesis_cozies.len());
+        // 1. Bootstrap from mock genesis cozies (pre is empty/missing and key is present)
+        // Exclude finalizer commit/create cozies from being consumed as mock genesis cozies
+        let mut mock_genesis_cozies = Vec::new();
+        for c in &tx_cozies {
+            if !c.typ.contains("/commit/create") {
+                if c.pre.is_none() || c.pre.as_ref().unwrap().is_empty() {
+                    if let Some(key) = &c.new_key {
+                        mock_genesis_cozies.push((c.clone(), key.clone()));
+                    }
+                }
+            }
+        }
 
-        // Remove genesis cozies from tx_cozies
-        tx_cozies.retain(|c| !genesis_cozies.iter().any(|g| g.hash == c.hash));
+        // Remove mock genesis cozies from tx_cozies
+        tx_cozies.retain(|c| !mock_genesis_cozies.iter().any(|(m, _)| m.hash == c.hash));
+
+        for (mock_coz, key) in mock_genesis_cozies {
+            let principal = cyphr::Principal::implicit(key)?;
+            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
+            let principal_id = pr_variants
+                .first()
+                .cloned()
+                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
+
+            let mut sequence: u64 = 0;
+
+            // Index the mock genesis cozy as sequence 0
+            let genesis_commit_ids = format_multihash_all(principal.pr().as_multihash())?;
+            let genesis_prs = format_multihash_all(principal.pr().as_multihash())?;
+            let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
+            let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
+
+            let genesis_indexable = IndexableCommit {
+                principal_id: principal_id.clone(),
+                commit_ids: genesis_commit_ids,
+                sequence,
+                prs: genesis_prs,
+                srs: genesis_srs,
+                ars: genesis_ars,
+                blob_hashes: vec![mock_coz.hash],
+                transaction_types: vec![mock_coz.typ.clone()],
+                transaction_ids: vec![vec![mock_coz.typ.clone()]],
+                timestamp: mock_coz.now,
+            };
+            self.indexer.index_commit(&genesis_indexable).await?;
+            sequence += 1;
+
+            bootstrapped.push((principal, principal_id, sequence));
+        }
+
+        // 2. Bootstrap from keys in keys slice (from keystore) and keys in commit/create cozies
+        // Only bootstrap keys that are identified as genesis keys (present as signer or new_key in a cozy with empty/missing pre).
+        let mut genesis_key_tmbs = std::collections::HashSet::new();
+        for c in &tx_cozies {
+            if c.pre.is_none() || c.pre.as_ref().unwrap().is_empty() {
+                genesis_key_tmbs.insert(c.tmb.clone());
+                if let Some(key) = &c.new_key {
+                    genesis_key_tmbs.insert(key.tmb.to_b64());
+                }
+            }
+        }
+
+        let mut bootstrap_keys = Vec::new();
+        for key in keys {
+            if genesis_key_tmbs.contains(&key.tmb.to_b64()) {
+                bootstrap_keys.push(key.clone());
+            }
+        }
+        for c in &tx_cozies {
+            if c.typ.contains("/commit/create") {
+                if let Some(key) = &c.new_key {
+                    if genesis_key_tmbs.contains(&key.tmb.to_b64()) {
+                        if !bootstrap_keys.iter().any(|k| k.tmb == key.tmb) {
+                            bootstrap_keys.push(key.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for key in bootstrap_keys {
+            let principal = cyphr::Principal::implicit(key.clone())?;
+            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
+            let principal_id = pr_variants
+                .first()
+                .cloned()
+                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
+
+            if !bootstrapped.iter().any(|(_, pid, _)| pid == &principal_id) {
+                bootstrapped.push((principal, principal_id, 0));
+            }
+        }
 
         // Sort pool by timestamp to facilitate sequential application.
         // For cozies with the same timestamp, ensure commit/create finality markers
@@ -677,7 +806,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         action_cozies.sort_by_key(|c| c.now);
 
         for (i, c) in tx_cozies.iter().enumerate() {
-            tracing::trace!(
+            eprintln!(
                 "sorted tx_cozy [{}]: typ={}, now={}, pre={:?}, hash={}",
                 i,
                 c.typ,
@@ -687,43 +816,10 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             );
         }
 
-        for gen_coz in genesis_cozies {
-            let key = gen_coz.new_key.clone().unwrap();
-            let mut principal = cyphr::Principal::implicit(key)?;
-            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
-            let principal_id = pr_variants
-                .first()
-                .cloned()
-                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
-
-            // Track state for this principal reconstruction
-            let mut sequence: u64 = 0;
-
-            // Build the first commit (implicit genesis has sequence 0, which we index)
-            let genesis_commit_ids = format_multihash_all(principal.pr().as_multihash())?; // Simple mock commit id
-            let genesis_prs = format_multihash_all(principal.pr().as_multihash())?;
-            let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
-            let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
-
-            let genesis_indexable = IndexableCommit {
-                principal_id: principal_id.clone(),
-                commit_ids: genesis_commit_ids,
-                sequence,
-                prs: genesis_prs,
-                srs: genesis_srs,
-                ars: genesis_ars,
-                blob_hashes: vec![gen_coz.hash],
-                transaction_types: vec![gen_coz.typ.clone()],
-                transaction_ids: vec![vec![gen_coz.typ.clone()]], // Mock czd variants
-                timestamp: gen_coz.now,
-            };
-            self.indexer.index_commit(&genesis_indexable).await?;
-            sequence += 1;
-
-            // Now loop to apply subsequent commits
+        for (mut principal, principal_id, mut sequence) in bootstrapped {
             loop {
                 let active_algs = principal.active_algs().to_vec();
-                tracing::trace!(
+                eprintln!(
                     "loop iteration: tx_cozies.len() = {}, principal PR = {:?}",
                     tx_cozies.len(),
                     principal.pr()
@@ -735,15 +831,72 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 let mut commit_pending_czds = Vec::new();
                 let mut commit_timestamp = 0;
 
-                // Try to find cozies from the pool that can be applied to the scope
                 let mut remaining_txs = Vec::new();
-                let mut coz_iter = tx_cozies.into_iter();
-                while let Some(coz) = coz_iter.next() {
-                    if applied_any && coz.pre.is_some() {
-                        // In multi-coz commits, cozies after the first must have same pre
-                    }
+                let mut mutation_cozies = Vec::new();
+                let mut commit_cozies = Vec::new();
 
-                    // Try to apply it
+                for coz in tx_cozies.clone() {
+                    if coz.typ.contains("/commit/create") {
+                        commit_cozies.push(coz);
+                    } else {
+                        mutation_cozies.push(coz);
+                    }
+                }
+
+                // 1. Eagerly apply as many mutation cozies as possible in this commit scope
+                loop {
+                    let mut applied_this_round = false;
+                    let mut unapplied = Vec::new();
+                    for coz in mutation_cozies {
+                        let alg = match scope.principal_hash_alg() {
+                            cyphr::state::HashAlg::Sha256 => "ES256",
+                            cyphr::state::HashAlg::Sha384 => "ES384",
+                            cyphr::state::HashAlg::Sha512 => "ES512",
+                        };
+                        let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
+                            Some(c) => c,
+                            None => {
+                                unapplied.push(coz);
+                                continue;
+                            }
+                        };
+                        let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                            Some(c) => c,
+                            None => {
+                                unapplied.push(coz);
+                                continue;
+                            }
+                        };
+
+                        match scope.verify_and_apply(
+                            &coz.pay_json,
+                            &coz.sig,
+                            czd.clone(),
+                            coz.new_key.clone(),
+                        ) {
+                            Ok(_) => {
+                                commit_blobs.push(coz.hash);
+                                commit_transaction_types.push(coz.typ.clone());
+                                commit_pending_czds.push((czd, alg.to_string()));
+                                commit_timestamp = coz.now;
+                                applied_any = true;
+                                applied_this_round = true;
+                            }
+                            Err(_) => {
+                                unapplied.push(coz);
+                            }
+                        }
+                    }
+                    mutation_cozies = unapplied;
+                    if !applied_this_round {
+                        break;
+                    }
+                }
+
+                // 2. Find and apply the matching commit/create cozy
+                let mut matched_commit = None;
+                let mut unapplied_commits = Vec::new();
+                for coz in commit_cozies {
                     let alg = match scope.principal_hash_alg() {
                         cyphr::state::HashAlg::Sha256 => "ES256",
                         cyphr::state::HashAlg::Sha384 => "ES384",
@@ -752,58 +905,68 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                     let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
                         Some(c) => c,
                         None => {
-                            tracing::warn!(
-                                "canonical_hash_for_alg failed for coz typ={}, hash={}",
-                                coz.typ,
-                                coz.hash
-                            );
-                            remaining_txs.push(coz);
+                            unapplied_commits.push(coz);
                             continue;
-                        },
+                        }
                     };
                     let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
                         Some(c) => c,
                         None => {
-                            tracing::warn!(
-                                "czd_for_alg failed for coz typ={}, hash={}",
-                                coz.typ,
-                                coz.hash
-                            );
-                            remaining_txs.push(coz);
+                            unapplied_commits.push(coz);
                             continue;
-                        },
+                        }
                     };
 
-                    match scope.verify_and_apply(
-                        &coz.pay_json,
-                        &coz.sig,
-                        czd.clone(),
-                        coz.new_key.clone(),
-                    ) {
-                        Ok(_) => {
-                            commit_blobs.push(coz.hash);
-                            commit_transaction_types.push(coz.typ.clone());
-                            commit_pending_czds.push((czd, alg.to_string()));
-                            commit_timestamp = coz.now;
-                            applied_any = true;
-
-                            // If it's a commit/create finality marker, we must finalize the commit now.
-                            if coz.typ.contains("/commit/create") {
-                                remaining_txs.extend(coz_iter);
-                                break;
+                    // Extract claimed arrow to check match
+                    let claimed_arrow = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&coz.pay_json) {
+                        if let Some(arrow_val) = value.get("arrow").and_then(|v| v.as_str()) {
+                            if let Ok(tagged) = arrow_val.parse::<cyphr::state::TaggedDigest>() {
+                                cyphr::multihash::MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec()).ok()
+                            } else {
+                                None
                             }
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to apply coz typ={}, pre={:?}: {:?}",
-                                coz.typ,
-                                coz.pre,
-                                e
-                            );
-                            remaining_txs.push(coz);
-                        },
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let matches = if let Some(arr) = &claimed_arrow {
+                        scope.matches_arrow(arr)
+                    } else {
+                        false
+                    };
+
+                    if matches && matched_commit.is_none() {
+                        // Apply this finalizer cozy!
+                        match scope.verify_and_apply(
+                            &coz.pay_json,
+                            &coz.sig,
+                            czd.clone(),
+                            coz.new_key.clone(),
+                        ) {
+                            Ok(_) => {
+                                commit_blobs.push(coz.hash);
+                                commit_transaction_types.push(coz.typ.clone());
+                                commit_pending_czds.push((czd, alg.to_string()));
+                                commit_timestamp = coz.now;
+                                applied_any = true;
+                                matched_commit = Some(coz);
+                            }
+                            Err(e) => {
+                                eprintln!("failed to apply matched commit/create: {:?}", e);
+                                unapplied_commits.push(coz);
+                            }
+                        }
+                    } else {
+                        unapplied_commits.push(coz);
                     }
                 }
+
+                // Restore remaining_txs
+                remaining_txs.extend(mutation_cozies);
+                remaining_txs.extend(unapplied_commits);
 
                 // Update the pool
                 tx_cozies = remaining_txs;

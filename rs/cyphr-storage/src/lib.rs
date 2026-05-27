@@ -2,9 +2,8 @@
 //!
 //! Storage backends for the Cyphr identity protocol.
 //!
-//! This crate provides a backend-agnostic storage API for persisting
-//! Cyphr principals, cozies, and actions. The core `Store` trait
-//! defines the minimal interface that any storage backend must implement.
+//! This crate provides a storage API for persisting Cyphr principals, cozies, and actions
+//! using a modern asynchronous storage engine design.
 //!
 //! ## Design Principles
 //!
@@ -13,57 +12,30 @@
 //! - **Immutable history**: Entries are append-only; past entries are never modified.
 //! - **Order via `pre` chain**: Canonical order is derived from coz `pre`
 //!   field chaining, not storage order.
-//! - **Bit-perfect preservation**: Entries store original JSON bytes to ensure
-//!   correct `czd` computation. See `Entry` for details.
+//! - **Bit-perfect preservation**: Original JSON bytes are stored to ensure
+//!   correct `czd` computation.
 //!
 //! ## Included Backends
 //!
-//! - [`FileStore`]: File-based storage using JSONL format (one file per principal).
+//! - [`engine::StorageEngine`]: The unified storage engine that coordinates persistent blobs and indexers.
+//! - [`blob::fjall::FjallBlobStore`]: A persistent blob store backed by the Fjall LSM-tree storage engine.
+//! - [`index::memory::MemoryIndexer`]: An in-memory relational indexer that can be reconstructed via reindexing.
 
 #![forbid(unsafe_code)]
 
 pub mod blob;
 pub mod engine;
 mod export;
-mod file;
 mod import;
 pub mod index;
 
-pub use export::{ExportError, PersistError, export_commits, export_entries, persist_entries};
-pub use file::{FileStore, FileStoreError};
+pub use export::{ExportError, export_commits, export_entries};
 pub use import::{
     Checkpoint, Genesis, LoadError, load_from_checkpoint, load_principal,
     load_principal_from_commits,
 };
 
-use cyphr::state::PrincipalGenesis;
 use serde_json::value::RawValue;
-
-/// Storage backend trait.
-///
-/// Implementations provide persistence for signed Cyphr entries
-/// (cozies and actions). The trait is intentionally minimal:
-/// storage backends need only handle append and retrieval operations.
-pub trait Store {
-    /// The error type for this store implementation.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Append a signed entry to the log.
-    fn append_entry(&self, pr: &PrincipalGenesis, entry: &Entry) -> Result<(), Self::Error>;
-
-    /// Retrieve all entries for a principal.
-    fn get_entries(&self, pr: &PrincipalGenesis) -> Result<Vec<Entry>, Self::Error>;
-
-    /// Retrieve entries with filtering (supports coz patches).
-    fn get_entries_range(
-        &self,
-        pr: &PrincipalGenesis,
-        opts: &QueryOpts,
-    ) -> Result<Vec<Entry>, Self::Error>;
-
-    /// Check if principal exists in storage.
-    fn exists(&self, pr: &PrincipalGenesis) -> Result<bool, Self::Error>;
-}
 
 /// Query options for filtered retrieval.
 #[derive(Default, Debug, Clone)]

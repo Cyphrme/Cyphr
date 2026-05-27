@@ -688,7 +688,7 @@ async fn test_reindex_recovery() {
     let recovery_engine = StorageEngine::new(blob_store, new_indexer);
 
     // Reindex from the blobs.
-    recovery_engine.reindex().await.expect("reindex failed");
+    recovery_engine.reindex(&[]).await.expect("reindex failed");
 
     // Verify recovery.
     let recovered_tip = recovery_engine

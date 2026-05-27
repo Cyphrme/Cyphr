@@ -3,7 +3,7 @@
 //! These functions bridge the `cyphr` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use crate::{CommitEntry, Entry, KeyEntry, Store};
+use crate::{CommitEntry, Entry, KeyEntry};
 use cyphr::Principal;
 use cyphr::state::StateDigest;
 
@@ -160,41 +160,7 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
     Ok(commit_entries)
 }
 
-/// Export entries and persist them to storage.
-///
-/// This is a convenience function that combines export and storage.
-///
-/// # Errors
-///
-/// Returns `NoPrincipalGenesis` if the principal has no PR (Level 1/2).
-pub fn persist_entries<S: Store>(
-    store: &S,
-    principal: &Principal,
-) -> Result<usize, PersistError<S::Error>> {
-    let entries = export_entries(principal).map_err(PersistError::Export)?;
-    let pg = principal.pg().ok_or(PersistError::NoPrincipalGenesis)?;
-    let count = entries.len();
-    for entry in entries {
-        store
-            .append_entry(pg, &entry)
-            .map_err(PersistError::Store)?;
-    }
-    Ok(count)
-}
 
-/// Errors from persist_entries (combines export and store errors).
-#[derive(Debug, thiserror::Error)]
-pub enum PersistError<E: std::error::Error> {
-    /// Export failed.
-    #[error("export: {0}")]
-    Export(#[from] ExportError),
-    /// Store operation failed.
-    #[error("store: {0}")]
-    Store(E),
-    /// Principal has no PrincipalGenesis (Level 1/2 cannot be persisted).
-    #[error("persist_entries requires a Level 3+ principal with PrincipalGenesis")]
-    NoPrincipalGenesis,
-}
 
 #[cfg(test)]
 mod tests {
