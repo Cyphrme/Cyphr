@@ -1,15 +1,25 @@
 #![no_main]
 
+use std::sync::OnceLock;
+
 use cyphr_storage::blob::{BlobStore, MemoryBlobStore};
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::MemoryIndexer;
 use libfuzzer_sys::fuzz_target;
 
+static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static tokio::runtime::Runtime {
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build runtime")
+    })
+}
+
 fuzz_target!(|data: &[u8]| {
-    let rt = match tokio::runtime::Builder::new_current_thread().build() {
-        Ok(rt) => rt,
-        Err(_) => return,
-    };
+    let rt = get_runtime();
 
     let mut chunks = Vec::new();
     let mut rest = data;
