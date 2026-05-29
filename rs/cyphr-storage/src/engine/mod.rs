@@ -740,6 +740,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             hash: Blake3Hash,
             pay_json: Vec<u8>,
             sig: Vec<u8>,
+            czd: coz::Czd,
             typ: String,
             pre: Option<String>,
             tmb: String,
@@ -834,10 +835,18 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 None
             };
 
+            let cad = coz::canonical_hash_for_alg(&pay_json, &pay.alg, None).ok_or_else(|| {
+                EngineError::MalformedBlob(format!("blob {hash}: czd computation failed"))
+            })?;
+            let czd = coz::czd_for_alg(&cad, &sig, &pay.alg).ok_or_else(|| {
+                EngineError::MalformedBlob(format!("blob {hash}: czd computation failed"))
+            })?;
+
             cozies.push(ParsedCozInfo {
                 hash,
                 pay_json,
                 sig,
+                czd,
                 typ: pay.typ,
                 pre: pay.pre,
                 tmb: pay.tmb,
@@ -982,6 +991,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         // Sort pool by timestamp to facilitate sequential application.
         // For cozies with the same timestamp, ensure actions come first, then mutation
         // transactions, then finalizer commit/create cozies last.
+        // If they are in the same category, use lexical byte order of their czd as the tie-breaker.
         pool.sort_by(|a, b| match a.now.cmp(&b.now) {
             std::cmp::Ordering::Equal => {
                 let a_is_commit = a.typ.contains("/commit/create");
@@ -991,7 +1001,11 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 } else {
                     let a_is_tx = is_transaction_typ(&a.typ);
                     let b_is_tx = is_transaction_typ(&b.typ);
-                    b_is_tx.cmp(&a_is_tx)
+                    if a_is_tx != b_is_tx {
+                        b_is_tx.cmp(&a_is_tx)
+                    } else {
+                        a.czd.as_bytes().cmp(b.czd.as_bytes())
+                    }
                 }
             },
             other => other,
