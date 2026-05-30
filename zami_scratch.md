@@ -37,3 +37,13 @@ primary components: **authentication**, **commit**, and **data**.
 
 In this model, trusted centralized user identity
 services should be actively deprecated. 
+
+
+
+Commits are ordered and new commits are appended sequentially from the left,
+maintaining a dense prefix with no gaps, following the growth pattern used in
+RFC 9162.
+
+
+ When CT exists (level 3+), PR is the MR of PT
+including the last commit (commit id), so that PR = MR(SR, CR).
