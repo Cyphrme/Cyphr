@@ -124,15 +124,27 @@ Model" for the full table.
 
 ```
 -- Engine-Level Types (bridge between protocol and storage)
-TYPE IngestMeta  = {
+
+TYPE IndexableCoz = {
+    blob_hash:    Blake3Hash,
+    czd:          String,      -- Tagged protocol digest (primary czd variant)
+    typ:          String,      -- Action type (e.g., "cyphr.me/cyphr/key/create")
+    tmb:          String,      -- Signer thumbprint
+    alg:          String,      -- Algorithm
+    now:          i64,         -- Timestamp (Unix seconds)
+    payload:      Option<String> -- Raw JSON pay object
+}
+
+TYPE IndexableCommit = {
     principal_id:      String,
-    commit_ids:        [String],     -- MHMR variants
+    commit_ids:        [String],        -- MHMR variants
     sequence:          u64,
-    prs:               [String],     -- MHMR variants
-    srs:               [String],     -- MHMR variants
-    ars:               [String],     -- MHMR variants
-    transaction_types: [String],
-    transaction_ids:   [[String]],   -- Per-coz: czd MHMR variants
+    pre:               Option<String>,  -- Prior PR (None for genesis)
+    prs:               [String],        -- MHMR variants
+    srs:               [String],        -- MHMR variants
+    ars:               [String],        -- MHMR variants
+    blob_hashes:       [Blake3Hash],    -- Per-coz BLAKE3 hashes
+    cozies:            [IndexableCoz],  -- Per-coz metadata
     timestamp:         i64,
     keys:              [PublicKeyInfo]
 }
@@ -290,7 +302,7 @@ commit.
 │ Storage Engine (coordination — this document)        │
 │                                                      │
 │  format_multihash() → TaggedDigest for ALL variants  │
-│  IngestMeta carries state digests                    │
+│  IndexableCommit carries state digests               │
 │  PatchResponse assembles index + blob content        │
 └──────┬──────────────┬──────────────┬─────────────────┘
        │              │              │
@@ -352,7 +364,7 @@ in their respective sub-specifications. They are NOT duplicated here.
 
 **BlobStore implementation** (see [`blob-store-fjall.md`](blob-store-fjall.md)):
 [fjall-single-keyspace], [fjall-partition-isolation], [no-partial-commit],
-[fjall-write-buffering], [fjall-compaction], [fjall-iter-consistency].
+[fjall-put-mapping], [fjall-compaction], [fjall-iter-consistency].
 
 **Indexer implementation** (see [`indexer-sqlite.md`](indexer-sqlite.md)):
 [sqlite-write-transaction], schema design, async actor model, migration

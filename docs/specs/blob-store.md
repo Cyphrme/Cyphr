@@ -69,7 +69,7 @@ as the BlobStore content-addressing algorithm.
 BlobStore is append-only at the blob level. Storing identical content
 MUST yield the same BLAKE3 hash and MUST NOT duplicate data (idempotent
 put).
-`VERIFIED: rs/cyphr-storage/src/blob/fjall_store.rs — content-addressed put`
+`VERIFIED: rs/cyphr-blob-fjall/src/lib.rs — content-addressed put`
 
 ### Write Interface
 
@@ -85,14 +85,14 @@ addressable store design) and EML's `store_leaf(index, &[u8])` pattern.
 A streaming write interface (open/write/close) was evaluated and rejected:
 it splits one conceptual operation into two fallible steps with a handle
 state in between, adding ceremony with no benefit for small payloads.
-`VERIFIED: unverified (implementation uses streaming; to be refactored)`
+`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — put(&[u8]) API`
 
 **[max-blob-size]**: The BlobStore SHOULD enforce a configurable maximum
 blob size. Since blobs are protocol messages (not DT payload data), they
 are bounded by Coz envelope size. A witness SHOULD reject blobs exceeding
 the configured limit to mitigate denial-of-service attacks. The default
 limit is implementation-defined.
-`VERIFIED: unverified (not yet implemented)`
+`VERIFIED: rs/cyphr-blob-fjall/src/lib.rs — with_max_blob_size() builder (opt-in)`
 
 **[digest-as-output]**: The BlobStore's `put` operation MUST compute and
 return the content digest as output, not accept it as input. The store
@@ -100,7 +100,7 @@ computes the BLAKE3 hash internally and returns it on completion. This
 prevents hash-mismatch defects at the API boundary — the store owns the
 hash function. (Irmin pattern; contrast IPFS Blockstore where the CID is
 caller-supplied, requiring a paranoia flag `HashOnRead` to compensate.)
-`VERIFIED: unverified (implementation uses streaming; to be refactored)`
+`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — put() returns Blake3Hash`
 
 ### Read Interface
 
@@ -193,5 +193,5 @@ detect and report this.
 
 | Backend           | Crate           | Status     | Notes                                            |
 | :---------------- | :-------------- | :--------- | :----------------------------------------------- |
-| Fjall (LSM-tree)  | `cyphr-storage` | Production | See [`blob-store-fjall.md`](blob-store-fjall.md) |
+| Fjall (LSM-tree)  | `cyphr-blob-fjall` | Production | See [`blob-store-fjall.md`](blob-store-fjall.md) |
 | In-memory HashMap | `cyphr-storage` | Testing    | `MemoryBlobStore`                                |

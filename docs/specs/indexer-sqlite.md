@@ -382,26 +382,26 @@ migrations sequentially.
 
 ## Verification
 
-| Constraint (from indexer.md) | Status  | Notes                                                     |
-| :--------------------------- | :------ | :-------------------------------------------------------- |
-| [index-secondary]            | planned | Rebuildable via `reindex()` from BlobStore                |
-| [index-idempotent]           | planned | `INSERT OR IGNORE` for commits/digests                    |
-| [digest-index-completeness]  | planned | Engine provides all MHMR variants; SQLite stores verbatim |
-| [no-stale-tip]               | planned | `INSERT OR REPLACE` in atomic transaction                 |
-| [no-orphaned-index]          | planned | Engine stores blobs before indexing                       |
-| [recovery-reindex]           | planned | `clear()` + full re-index from BlobStore                  |
-| [monotonic-sequence]         | planned | `PRIMARY KEY (principal_id, sequence)` enforces           |
-| [commit-chain-integrity]     | planned | `ORDER BY sequence` ensures contiguity                    |
-| [async-index]                | planned | Actor model bridges sync SQLite to async trait            |
-| [send-sync-index]            | planned | Actor handle (`mpsc::Sender`) is `Send + Sync`            |
+| Constraint (from indexer.md) | Status | Notes                                                     |
+| :--------------------------- | :----- | :-------------------------------------------------------- |
+| [index-secondary]            | pass   | Rebuildable via `reindex()` from BlobStore                |
+| [index-idempotent]           | pass   | `INSERT OR IGNORE` for commits/digests                    |
+| [digest-index-completeness]  | pass   | Engine provides all MHMR variants; SQLite stores verbatim |
+| [no-stale-tip]               | pass   | `INSERT OR REPLACE` in atomic transaction                 |
+| [no-orphaned-index]          | pass   | Engine stores blobs before indexing                       |
+| [recovery-reindex]           | pass   | `clear()` + full re-index from BlobStore                  |
+| [monotonic-sequence]         | pass   | `PRIMARY KEY (principal_id, sequence)` enforces           |
+| [commit-chain-integrity]     | pass   | `ORDER BY sequence` ensures contiguity                    |
+| [async-index]                | pass   | Actor model bridges sync SQLite to async trait            |
+| [send-sync-index]            | pass   | Actor handle (`mpsc::Sender`) is `Send + Sync`            |
 
 ## Implementation Status
 
-| Component                     | Status                    |
-| :---------------------------- | :------------------------ |
-| Schema design                 | Specified (this document) |
-| `SqliteIndexer` struct        | Not yet implemented       |
-| Actor model (async bridge)    | Not yet implemented       |
-| Migration from `FjallIndexer` | Not started               |
-| Schema versioning             | Not yet implemented       |
-| Integration tests             | Not started               |
+| Component                     | Status                              |
+| :---------------------------- | :---------------------------------- |
+| Schema design                 | Specified (this document)           |
+| `SqliteIndexer` struct        | Implemented                         |
+| Actor model (async bridge)    | Implemented (tokio::sync::mpsc)     |
+| Migration from `FjallIndexer` | Complete (FjallIndexer removed)     |
+| Schema versioning             | Implemented (schema_version table)  |
+| Integration tests             | Implemented (unit + proptest)       |

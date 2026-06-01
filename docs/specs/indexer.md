@@ -124,7 +124,7 @@ content.
 **[index-idempotent]**: `index_commit()` MUST be idempotent. Re-indexing a
 commit that is already indexed (identified by `commit_id`) MUST be a no-op
 and MUST NOT produce an error.
-`VERIFIED: rs/cyphr-storage/src/index/fjall.rs — FjallIndexer dedup`
+`VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — INSERT OR IGNORE; rs/cyphr-storage/src/index/memory.rs — dedup check`
 
 ### Digest Resolution
 
@@ -169,7 +169,7 @@ The implementation schema achieves this by indexing universal Coz metadata
 **[no-stale-tip]**: The TipState returned by `get_tip()` MUST reflect the
 most recently indexed commit for that principal. A TipState that lags behind
 the indexed commit chain is a consistency violation.
-`VERIFIED: rs/cyphr-storage/src/index/fjall.rs — tip updated atomically`
+`VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — INSERT OR REPLACE in transaction`
 
 ### Async
 
@@ -210,6 +210,9 @@ pub trait Indexer: Send + Sync {
 
     fn clear(&self)
         -> impl Future<Output = Result<(), IndexerError>> + Send;
+
+    fn is_blob_indexed(&self, hash: &Blake3Hash)
+        -> impl Future<Output = Result<bool, IndexerError>> + Send;
 
     fn get_key(&self, thumbprint: &str)
         -> impl Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send;
@@ -256,7 +259,7 @@ a commit with sequence `n` already exists for that principal (unless
 idempotent re-indexing of the same commit).
 
 - **Type**: Safety
-  `VERIFIED: rs/cyphr-storage/src/index/fjall.rs — sequence checks`
+  `VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — PRIMARY KEY (principal_id, sequence)`
 
 **[commit-chain-integrity]**: The commit chain returned by
 `get_commit_chain()` MUST be contiguous — no gaps in the sequence. If
@@ -287,6 +290,6 @@ No index can shortcut this.
 
 | Backend           | Crate           | Status                    | Notes                                            |
 | :---------------- | :-------------- | :------------------------ | :----------------------------------------------- |
-| SQLite (B-tree)   | `cyphr-storage` | Planned (production)      | See [`indexer-sqlite.md`](indexer-sqlite.md)     |
-| Fjall (LSM-tree)  | `cyphr-storage` | Existing (to be replaced) | `FjallIndexer` — 5 partitions, manual key layout |
+| SQLite (B-tree)   | `cyphr-index-sqlite` | Implemented (production)  | See [`indexer-sqlite.md`](indexer-sqlite.md)     |
+| Fjall (LSM-tree)  | `cyphr-storage`      | Removed                   | Replaced by SQLite (2026-06-01)                  |
 | In-memory HashMap | `cyphr-storage` | Testing                   | `MemoryIndexer`                                  |
