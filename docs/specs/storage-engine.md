@@ -1,10 +1,19 @@
 # SPEC: Storage Engine
 
 <!--
-  SPEC document produced by /spec Create mode.
+  SPEC document — coordination layer between protocol engine and persistent
+  backends. Updated 2026-06-01 to reflect four-document split and research
+  conclusions from .sketches/2026-05-28-storage-object-model.md.
+
+  This document governs the StorageEngine coordination layer. Backend-specific
+  contracts are defined in their respective specs:
+  - blob-store.md      — abstract BlobStore API
+  - blob-store-fjall.md — Fjall BlobStore implementation
+  - indexer.md          — abstract Indexer API
+  - indexer-sqlite.md   — SQLite Indexer implementation
+
   Source: SPEC.md §16, rs/cyphr-storage/, eml-storage-fjall.
-  Authority: SPEC.md (Zamicol and nrdxp) — this document constrains
-  implementation of the storage engine layer.
+  Authority: SPEC.md (Zamicol and nrdxp)
 
   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
@@ -18,8 +27,23 @@
 
 **Problem Domain:** Cyphr storage engine — the coordination layer between the
 protocol engine (Principal, CommitScope, state computation) and persistent
-backends. Governs content-addressed blob storage, relational indexing, digest
-resolution, write path ordering, and recovery semantics.
+backends. Governs write path ordering, read path assembly, recovery
+orchestration, and the boundary between protocol-level types and
+storage-level representations.
+
+**Architectural Role:** The storage engine does NOT own storage or indexing
+logic. It orchestrates a `BlobStore` and an `Indexer` to serve assembled
+responses. The engine is the layer that the HTTP server programs against.
+
+**Specification Split (2026-06-01):**
+
+| Document | Concern |
+|:---------|:--------|
+| **This document** | Engine coordination: write/read paths, recovery, type boundary |
+| [`blob-store.md`](blob-store.md) | Abstract BlobStore API (backend-agnostic) |
+| [`blob-store-fjall.md`](blob-store-fjall.md) | Fjall BlobStore implementation |
+| [`indexer.md`](indexer.md) | Abstract Indexer API (backend-agnostic) |
+| [`indexer-sqlite.md`](indexer-sqlite.md) | SQLite Indexer implementation |
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
@@ -35,105 +59,83 @@ DataRoot fix, EML-for-CT migration).
 **Criticality Tier:** High — storage failures directly compromise principal
 state integrity, cryptographic history, and recovery capability.
 
+## Architecture
+
+### Two-Layer Model
+
+**[two-tier-separation]**: Storage MUST be organized as two independent
+layers: a content-addressed BlobStore (Layer 0) and a relational Indexer
+(Layer 1). The protocol engine MUST NOT have any awareness of storage
+backends — it operates exclusively on in-memory types. Storage layers load
+data, hand it to the protocol engine for validation, and persist validated
+output.
+`VERIFIED: StorageEngine<B, I> generic over backend types`
+
+The two layers are:
+
+| Layer | Responsibility | Backend | Spec |
+|:------|:--------------|:--------|:-----|
+| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing) | [`blob-store.md`](blob-store.md) |
+| **Layer 1: Query Index** | Relational index: tips, chains, digests, keys | SQLite (production, planned), Fjall (current), HashMap (testing) | [`indexer.md`](indexer.md) |
+
+**[separate-durability]**: Content store and index are **separate databases**
+with independent durability. The content store is the durable source of
+truth; the index is a derived, rebuildable projection. If the index is lost,
+it is reconstructed from the content store via re-indexing. Cross-store
+atomicity is not a correctness requirement — the engine's recovery semantics
+handle partial failures.
+`VERIFIED: unverified (pending SQLite migration)`
+
+### Trust Model
+
+The index is a conventional database providing *performance* (fast lookups).
+Trustless verification uses *chain replay* — the `pre`-linked MALT chain
+has no gaps, so fetching the patch and filtering locally is trustless by
+construction. The index does not provide authenticated query results or
+completeness proofs. See [`indexer.md`](indexer.md) § "Trustless Verification
+Model" for the full table.
+
+## Type Declarations
+
+```
+-- Engine-Level Types (bridge between protocol and storage)
+TYPE IngestMeta  = {
+    principal_id:      String,
+    commit_ids:        [String],     -- MHMR variants
+    sequence:          u64,
+    prs:               [String],     -- MHMR variants
+    srs:               [String],     -- MHMR variants
+    ars:               [String],     -- MHMR variants
+    transaction_types: [String],
+    transaction_ids:   [[String]],   -- Per-coz: czd MHMR variants
+    timestamp:         i64,
+    keys:              [PublicKeyInfo]
+}
+
+TYPE IngestResult = { blob_hashes: [Blake3Hash] }
+
+TYPE PatchEntry = {
+    commit: CommitRef,     -- From index
+    blobs:  [Blob]         -- From content store
+}
+
+TYPE PatchResponse = {
+    principal_id: String,
+    entries:      [PatchEntry]
+}
+```
+
 ## Constraints
 
-### Type Declarations
+### Write Path
 
-```
-TYPE Blake3Hash     = Opaque[32]                         -- Content-addressing digest
-TYPE ProtocolDigest = Opaque[N]                          -- SHA-256/384/512 output (N = 32/48/64)
-TYPE HashAlg        = SHA256 | SHA384 | SHA512           -- Protocol hash algorithms
-TYPE TaggedDigest   = (HashAlg, ProtocolDigest)          -- "alg:base64url" pair
-TYPE MultihashId    = Map<HashAlg, ProtocolDigest>       -- One variant per active algorithm
-
--- Storage Layer Types
-TYPE Blob           = Opaque[*]                          -- Raw coz wire-format bytes
-TYPE BlobStore      = Blake3Hash → Maybe<Blob>           -- Content-addressed store
-TYPE DigestEntry    = { blob_hash: Blake3Hash, entity_type: EntityType }
-TYPE DigestIndex    = TaggedDigest → Maybe<DigestEntry>  -- Multi-algorithm lookup
-TYPE CommitRef      = { commit_id: String, sequence: u64, blob_hashes: [Blake3Hash], pr: String, ... }
-TYPE TipState       = { commit_count: u64, pr: String, ar: String }
-
-TYPE EntityType     = COMMIT | KEY | ACTION              -- What the blob represents
-
--- Storage Duality (from principal-state-model §4)
-TYPE AuthStorage    = Seq(CommitRef)                     -- Append-only, monotonic
-TYPE DataStorage    = Bag(Blake3Hash)                    -- Mutable, deletable
-```
-
-### Invariants
-
-**[two-tier-separation]**: Storage MUST be organized as two independent layers:
-a content-addressed BlobStore (Layer 0) and a relational Indexer (Layer 1). The
-protocol engine MUST NOT have any awareness of storage backends — it operates
-exclusively on in-memory types. Storage layers load data, hand it to the
-protocol engine for validation, and persist validated output.
-`VERIFIED: unverified`
-
-**[blake3-isolation]**: The BlobStore MUST use BLAKE3 for content-addressing.
-BLAKE3 hashes MUST NOT be conflated with protocol hash algorithms (SHA-256,
-SHA-384, SHA-512). Storage hashes identify raw bytes for persistence; protocol
-digests identify semantic objects for verification. An implementation MUST NOT
-use a protocol hash algorithm as the BlobStore content-addressing algorithm.
-`VERIFIED: unverified`
-
-**[blob-immutability]**: Once stored, a blob MUST NOT be modified. The BlobStore
-is append-only at the blob level. `put(data)` MUST be idempotent — storing
-identical content MUST yield the same BLAKE3 hash and MUST NOT duplicate data.
-`VERIFIED: unverified`
-
-**[index-secondary]**: The Indexer MUST be a secondary projection of the
-BlobStore — always rebuildable by scanning blobs and re-parsing. The Indexer
-MUST NOT be the source of truth for any data that can be derived from blob
-content.
-`VERIFIED: unverified`
-
-**[index-idempotent]**: `index_commit()` MUST be idempotent. Re-indexing a
-commit that is already indexed (identified by `commit_id`) MUST be a no-op and
-MUST NOT produce an error.
-`VERIFIED: unverified`
-
-**[digest-index-completeness]**: When indexing a commit, the Indexer MUST
-store digest mappings for ALL MHMR variants of each state identifier (PR, SR,
-AR, KR, CR, TR). The Indexer MUST NOT store only a single algorithm variant.
-Each variant MUST resolve to the same underlying entity. This enables O(1)
-lookup by any algorithm variant, supporting the multihash nature of the
-protocol (per `state-tree.md` [mhmr-equivalence]).
-`VERIFIED: unverified`
-
-**[principal-partitioning]**: Storage SHOULD be partitioned by Principal Genesis
-(PG). Each principal's data (blobs, index entries) SHOULD be self-contained
-within its partition. Cross-principal queries SHOULD NOT require scanning
-another principal's partition.
-`VERIFIED: unverified`
-
-**[digest-as-output]**: The BlobStore's write operation MUST compute and return
-the content digest as output, not accept it as input. The caller streams bytes
-via the write handle; the store computes the BLAKE3 hash incrementally and
-returns it on finalization. This prevents hash-mismatch defects at the API
-boundary and ensures the stored digest is always consistent with the stored
-content.
-`VERIFIED: unverified`
-
-**[async-storage]**: The `BlobStore` and `Indexer` traits MUST expose an
-asynchronous API. Storage backends may operate over network partitions, remote
-filesystems, or distributed databases where blocking the calling task is
-unacceptable. The EML `Storage` trait already uses this pattern (RPITIT async
-via `impl Future<Output = ...> + Send`). Native `async fn in trait` is stable
-but does not bound the returned future as `Send` by default, which is required
-for multi-threaded executors. The explicit RPITIT form provides the necessary
-`Send` guarantee. The Cyphr storage traits MUST follow the same approach for
-consistency and to avoid blocking the protocol engine's task executor. The
-current synchronous trait signatures are a known gap requiring refactor.
-`VERIFIED: unverified`
-
-### Transitions
-
-**[validate-first-write]**: The write path MUST enforce the following ordering:
+**[validate-first-write]**: The write path MUST enforce the following
+ordering:
 
 1. **Parse**: Deserialize all raw coz blobs.
-2. **Validate**: Verify all cryptographic signatures, state chain consistency,
-   and Merkle root computation in-memory via the protocol engine (CommitScope).
+2. **Validate**: Verify all cryptographic signatures, state chain
+   consistency, and Merkle root computation in-memory via the protocol
+   engine (CommitScope).
 3. **Finalize**: Obtain the immutable Commit with computed state digests.
 4. **Persist**: Store blobs and index metadata.
 
@@ -141,186 +143,114 @@ current synchronous trait signatures are a known gap requiring refactor.
 - **POST**: Either all blobs are persisted and indexed (success), or no
   side effects occur (failure during validation). Persistence MUST NOT
   precede validation.
-  `VERIFIED: unverified`
+  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — submit_commit()`
 
-**[ingest-ordering]**: Within the persist phase, blobs MUST be stored in the
-BlobStore before the commit is indexed. This ensures that any indexed commit
-has its blob data available. If blob storage succeeds but indexing fails, the
-system is in a recoverable state (blobs exist but are not indexed; re-indexing
-will discover them).
+**[ingest-ordering]**: Within the persist phase, the engine MUST follow
+this sequence:
+
+1. **Store blobs**: Write all coz blobs to the BlobStore. Each write
+   returns a `Blake3Hash`.
+2. **Extract index metadata**: Parse each coz blob to extract universal
+   Coz metadata (`typ`, `tmb`, `alg`, `now`, `czd`) and the raw `pay`
+   JSON object. These become `IndexableCoz` entries. Public key bytes
+   are extracted from the unsigned `keys` auxiliary field of the commit
+   wire format (not from chain state — see `indexer.md` `PublicKeyInfo`).
+3. **Index the commit**: Pass the assembled `IndexableCommit` (including
+   `IndexableCoz` entries, state roots, MHMR digest variants, and key
+   metadata) to the Indexer.
+
+This ordering ensures that any indexed commit has its blob data available.
+If blob storage succeeds but indexing fails, the system is in a
+recoverable state (blobs exist but are not indexed; re-indexing will
+discover them).
 
 - **PRE**: Validation has succeeded; commit is finalized.
-- **POST**: All blobs exist in the BlobStore. Index entry exists for the commit.
-  `VERIFIED: unverified`
+- **POST**: All blobs exist in the BlobStore. Index entry exists for the
+  commit.
+  `VERIFIED: rs/cyphr-storage/src/engine/mod.rs — ingest_commit()`
 
-**[recovery-reindex]**: After any failure during the persist phase, the system
-MUST be recoverable by re-indexing. Re-indexing scans the BlobStore, parses
-each blob, and reconstructs the Indexer state. This process MUST produce an
-index identical to one built from a clean sequential ingest of the same
-commits.
+### Read Path
 
-- **PRE**: BlobStore contains some or all committed blobs. Indexer state is
-  potentially incomplete or corrupt.
-- **POST**: Indexer state is consistent with BlobStore contents.
-  `VERIFIED: unverified`
+**[read-path-coordination]**: The engine's read path joins index and
+content store. For `get_patch()`:
 
-**[alg-set-storage-transition]**: When the active algorithm set changes at a
-commit boundary (key added or removed), the MHMR variants stored in the digest
-index for that commit MUST reflect the **post-mutation** algorithm set. The
-Indexer MUST NOT store variants for deactivated algorithms on new commits, and
-MUST begin storing variants for newly activated algorithms.
+1. Query index for commit chain metadata (`CommitRef` list)
+2. For each commit, fetch blob content from BlobStore by BLAKE3 hash
+3. Assemble `PatchResponse` with metadata + content
 
-- **PRE**: Commit includes key/create or key/revoke that changes the algorithm
-  set.
-- **POST**: Digest index entries for this commit's state identifiers cover
-  exactly the post-mutation algorithm set.
-  `VERIFIED: unverified`
+For `get_entity()`:
 
-### Forbidden States
+1. Resolve tagged digest to `EntityRef` via index
+2. Fetch blob content from BlobStore by `entity_ref.blob_hash`
 
-**[no-orphaned-index]**: A commit MUST NOT appear in the Indexer without all of
-its referenced blobs present in the BlobStore. An indexed commit with missing
-blobs is a consistency violation.
-`VERIFIED: unverified`
+Neither the BlobStore nor the Indexer can serve these responses alone.
+The engine's coordination is the value.
+`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — get_patch(), get_entity()`
 
-**[no-protocol-hash-in-blobstore]**: The BlobStore MUST NOT use SHA-256,
-SHA-384, or SHA-512 as its content-addressing algorithm. This prevents
-collision-domain confusion between storage identity and protocol identity.
-`VERIFIED: unverified`
+### Recovery
 
-**[no-partial-commit]**: After a successful ingest, all blobs for a commit MUST
-be present in the BlobStore. An implementation MUST NOT leave a commit's blob
-set in a permanently incomplete state. The mechanism for ensuring this is
-implementation-defined — backends MAY use batch writes (e.g., Fjall `Batch`),
-write-ahead logging, or idempotent recovery (detecting and completing or
-discarding partial writes on restart). When the BlobStore and EML backend
-share a physical keyspace (see § Commit Tree), a single batch write MAY span
-both layers for cross-layer atomicity.
-`VERIFIED: unverified`
+**[recovery-reindex]**: After any failure during the persist phase, the
+system MUST be recoverable by re-indexing. Re-indexing scans the BlobStore,
+parses each blob, and reconstructs the Indexer state. This process MUST
+produce an index identical to one built from a clean sequential ingest of
+the same commits.
+`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex()`
 
-**[no-stale-tip]**: The TipState returned by `get_tip()` MUST reflect the most
-recently indexed commit for that principal. A TipState that lags behind the
-indexed commit chain is a consistency violation.
-`VERIFIED: unverified`
+**[recovery-convergence]**: Re-indexing from the BlobStore MUST converge to
+a consistent state in finite time.
+`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — reindex() terminates`
 
-### Behavioral Properties
+### Hash Boundary
 
-**[recovery-convergence]**: Re-indexing from the BlobStore MUST converge to a
-consistent state in finite time. Given a finite set of blobs, the recovery
-process MUST terminate and MUST produce a complete, correct index.
+**[hash-boundary]**: The engine is the bridge between protocol hashes
+(SHA-256/384/512, MHMR variants) and storage hashes (BLAKE3). The engine:
 
-- **Type**: Liveness
-  `VERIFIED: unverified`
+1. Receives finalized protocol state (PR, SR, AR with MHMR variants)
+2. Formats all variants as tagged digest strings
+3. Passes tagged strings to the Indexer for storage
+4. Passes raw blob bytes to the BlobStore for content-addressed storage
 
-**[read-after-write]**: After `ingest_commit()` returns successfully, any
-subsequent `get_tip()`, `get_patch()`, or `resolve_digest()` call for the
-same principal MUST reflect the ingested commit's state. The system MUST NOT
-exhibit stale reads after a successful write.
-
-- **Type**: Safety
-  `VERIFIED: unverified`
-
-**[monotonic-sequence]**: Commit sequence numbers within a principal MUST be
-monotonically increasing. A commit with sequence `n` MUST NOT be indexed if
-a commit with sequence `n` already exists for that principal (unless
-idempotent re-indexing of the same commit).
-
-- **Type**: Safety
-  `VERIFIED: unverified`
-
-**[commit-chain-integrity]**: The commit chain returned by `get_commit_chain()`
-MUST be contiguous — no gaps in the sequence. If commits 0..n are indexed,
-`get_commit_chain(principal, 0, n)` MUST return exactly n+1 entries in
-monotonic order.
-
-- **Type**: Safety
-  `VERIFIED: unverified`
-
-**[streaming-write]**: The BlobStore MUST use a streaming write as its sole
-write primitive. The write path is: `open_write()` returns an `AsyncWrite`
-handle, the caller streams bytes into it, and `close()` finalizes the write
-and returns the computed `Blake3Hash`. There is no `put(&[u8])` method on the
-trait — the streaming interface is the only write path. This is a day-one
-requirement because Data Tree (DT) payloads are arbitrarily large (encrypted
-files, media). Auth Tree blobs (small Coz messages) use the same path without
-meaningful overhead, since BLAKE3 hashes incrementally and I/O dominates any
-per-write machinery cost. A single write primitive eliminates dual code paths
-and keeps the trait surface minimal.
-
-- **Type**: Safety
-  `VERIFIED: unverified`
+The engine MUST format ALL active algorithm variants for each state
+identifier, per [`indexer.md`](indexer.md) [digest-index-completeness].
+`VERIFIED: rs/cyphr-storage/src/engine/mod.rs — format_multihash_all()`
 
 ## Hash Coordination Model
 
-This section is informative and summarizes the design rationale for hash
-handling across tree types. The normative constraints are in the sections above.
+This section summarizes hash handling across tree types. Normative
+constraints are defined in the referenced specs.
 
 ### Sorted Trees (KT, AT, ST, PT, DT, RT)
 
-These trees are **recomputed from current members at each commit**. They are
-not incremental append-only structures. Hash coordination for sorted trees is
-straightforward:
-
-1. The protocol engine determines the active algorithm set from the
-   post-mutation Key Tree (per `state-tree.md` [alg-set-evolution]).
-2. The protocol engine computes MHMR variants for all active algorithms
-   (per `state-tree.md` [mhmr-computation]).
-3. The storage engine stores ALL variants in the digest index
-   (per [digest-index-completeness]).
-
-The TSML/EML algorithm-transition machinery (O(log N) cost, frontier stacks,
-null constants) does NOT apply to sorted trees. It is not needed because the
-entire root is recomputed from scratch — there is no incremental frontier to
-maintain.
+Recomputed from current members at each commit. The protocol engine
+determines the active algorithm set post-mutation, computes MHMR variants
+for all active algorithms, and the engine stores ALL variants in the
+digest index per [digest-index-completeness].
 
 ### Commit Tree (CT)
 
-The Commit Tree uses the MALT/EML data structure (per SPEC.md §4.4, §12.2.2).
-Algorithm transitions in the CT are handled by the TSML model:
+Uses the MALT/EML data structure (SPEC.md §4.4, §12.2.2). Algorithm
+transitions are handled by the TSML model: null constants for
+pre-activation, frozen values for deactivated algorithms, incremental
+frontier stacks.
 
-- Algorithms activate/deactivate at **commit boundaries**
-- Pre-activation positions use null constants: `N₀(a) = H_a(0x02)`
-- Deactivated algorithms freeze at their removal point
-- The EML root (CR) is maintained incrementally via frontier stacks
+**EML Internal State Persistence:** The EML's internal state (frontier
+stacks, sealed node hashes, algorithm epoch metadata) is persisted through
+the EML `Storage` trait — not in the Cyphr BlobStore. The Cyphr storage
+engine treats the EML as an opaque subsystem that produces CR variants
+on demand.
 
-The CR's MHMR variants MUST be included in the digest index alongside other
-state identifiers.
-
-**EML Internal State Persistence:** The EML's internal state (frontier stacks,
-sealed node hashes, algorithm epoch metadata) is persisted through the EML
-`Storage` trait — not in the Cyphr BlobStore. The EML backend (e.g.,
-`eml-storage-fjall`) stores nodes via `store_node()`, algorithm metadata via
-`store_algorithm_meta()`, and reconstructs frontier stacks from persisted
-data on cold start via `Log::from_storage()`. This is the EML's own concern;
-the Cyphr storage engine treats the EML as an opaque subsystem that produces
-CR variants on demand.
-
-**Shared Keyspace Cooperation:** When using Fjall as the production backend,
-the BlobStore and EML backend SHOULD share a single physical `Keyspace`
-(which is `Arc`-backed and cheaply cloneable). Each writes to separate logical
-partitions — the BlobStore to `"blobs"`, the EML to `"eml_leaves"`,
-`"eml_nodes"`, and `"eml_meta"`. Sharing a keyspace means a single WAL,
-shared memory budget, and shared background flushing — and critically,
-a single Fjall `Batch` can atomically write across both the BlobStore and
-EML partitions, enabling cross-layer commit atomicity (see [no-partial-commit]).
-This is the design established by the `eml-storage-fjall` crate.
+**Shared Keyspace Cooperation:** When using Fjall as the BlobStore backend,
+the BlobStore and EML backend SHOULD share a single `Keyspace`
+(see [`blob-store-fjall.md`](blob-store-fjall.md) [fjall-single-keyspace]).
 
 ### Data Action Indexing
 
 Data actions (Level 4+) are individually signed Coz messages stored as
 individual blobs. The digest index SHOULD include per-action entries mapping
-each action's `czd` (as a `TaggedDigest`) to its blob, in addition to the
-aggregate DR at each commit. This enables O(1) action retrieval by digest —
-actions are the atomic unit of data in Cyphr, individually signed and
-individually verifiable.
+each action's `czd` to its blob, in addition to the aggregate DR at each
+commit.
 
-DR remains useful as a snapshot consistency check at the commit level, but
-individual action lookup is the primary access pattern for services resolving
-data actions (e.g., "fetch the comment with this czd"). The per-action index
-cost scales linearly with action count, and since the index is rebuildable
-(per [index-secondary]), this cost affects only write-time overhead.
-
-### Storage-Protocol Hash Boundary
+## Storage-Protocol Hash Boundary
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -332,100 +262,76 @@ cost scales linearly with action count, and since the index is rebuildable
 └─────────────┬────────────────────────────────────────┘
               │ validate-first boundary
 ┌─────────────▼────────────────────────────────────────┐
-│ Storage Engine (coordination)                        │
+│ Storage Engine (coordination — this document)        │
 │                                                      │
 │  format_multihash() → TaggedDigest for ALL variants  │
 │  IngestMeta carries state digests                    │
+│  PatchResponse assembles index + blob content        │
 └──────┬──────────────┬──────────────┬─────────────────┘
        │              │              │
 ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼──────────────────┐
 │ BlobStore   │ │ EML        │ │ Indexer (Layer 1)      │
 │ (Layer 0)   │ │ (CT/MALT)  │ │                        │
-│             │ │            │ │ TaggedDigest→DigestEntry│
+│             │ │            │ │ TaggedDigest→EntityRef  │
 │ BLAKE3→raw  │ │ Frontier   │ │ CommitRef, TipState     │
 │ Immutable   │ │ stacks,    │ │ Rebuildable secondary   │
 │ CAS, truth  │ │ node hash  │ │                        │
-└──────┬──────┘ └─────┬──────┘ └────────────────────────┘
-       │              │
-       └──────┬───────┘
-              │ (shared physical Keyspace — Fjall)
-  ┌───────────▼──────────────────────────────────┐
-  │  "blobs" │ "eml_leaves" │ "eml_nodes" │ ...  │
-  │          Fjall partitions (single WAL)        │
-  └──────────────────────────────────────────────┘
+└─────────────┘ └────────────┘ └────────────────────────┘
+       │                              │
+       │ (Fjall)                      │ (SQLite — separate DB)
+       ▼                              ▼
+   blob-store-fjall.md           indexer-sqlite.md
 ```
 
-## Formal Specification
+## Behavioral Properties
 
-<!-- Tier 2+ formalization is structured for but not populated in this pass.
-     The constraint set above is structured to support direct translation to
-     Alloy (signatures/facts/predicates) or TLA+ (state predicates/actions).
-     The validate-first write path is a natural candidate for TLA+ temporal
-     specification. A subsequent pass may add formal notation here. -->
+**[read-after-write]**: After `ingest_commit()` returns successfully, any
+subsequent `get_tip()`, `get_patch()`, or `resolve_digest()` call for the
+same principal MUST reflect the ingested commit's state.
+
+- **Type**: Safety
+  `VERIFIED: integration tests`
 
 ## Verification
 
-| Constraint                      | Method      | Result | Detail                                                |
-| :------------------------------ | :---------- | :----- | :---------------------------------------------------- |
-| [two-tier-separation]           | agent-check | pass   | Enforced by distinct `BlobStore` and `Indexer` traits |
-| [blake3-isolation]              | agent-check | pass   | BlobStore explicitly hardcoded to BLAKE3 addressing   |
-| [blob-immutability]             | agent-check | pass   | Blob write is idempotent and content-addressed        |
-| [index-secondary]               | agent-check | pass   | Indexer completely rebuildable by re-indexing blobs   |
-| [index-idempotent]              | agent-check | pass   | Re-indexing an already-indexed commit is a no-op      |
-| [digest-index-completeness]     | agent-check | pass   | All active algorithm variants stored in digest index  |
-| [principal-partitioning]        | agent-check | pass   | Storage is partitioned per-principal by PG            |
-| [digest-as-output]              | agent-check | pass   | BlobStore streams and returns Blake3Hash on close()   |
-| [async-storage]                 | agent-check | pass   | Traits refactored to async RPITIT (+ Send) futures    |
-| [validate-first-write]          | agent-check | pass   | In-memory protocol verification precedes write path   |
-| [ingest-ordering]               | agent-check | pass   | Blobs are persisted prior to indexing commit tip      |
-| [recovery-reindex]              | agent-check | pass   | Relational index fully rebuildable from raw blobs     |
-| [alg-set-storage-transition]    | agent-check | pass   | Index matches active algorithm set post-mutation      |
-| [no-orphaned-index]             | agent-check | pass   | Enforced by ingest phase order checks                 |
-| [no-protocol-hash-in-blobstore] | agent-check | pass   | BLAKE3 hardcoded; no config exists to change          |
-| [no-partial-commit]             | agent-check | pass   | Fjall transactional writes execute in batch atomic    |
-| [no-stale-tip]                  | agent-check | pass   | `get_tip()` dynamically resolves to latest sequence   |
-| [recovery-convergence]          | agent-check | pass   | Verified to terminate and converge in unit tests      |
-| [read-after-write]              | agent-check | pass   | Verified in E2E integration test suite                |
-| [monotonic-sequence]            | agent-check | pass   | Sequence counter monotonically checked on ingest      |
-| [commit-chain-integrity]        | agent-check | pass   | contiguity validated on commit retrievals             |
-| [streaming-write]               | agent-check | pass   | Trait writes expose stream handle open/close API      |
+| Constraint | Method | Result | Detail |
+|:-----------|:-------|:-------|:-------|
+| [two-tier-separation] | agent-check | pass | `StorageEngine<B, I>` generic over distinct traits |
+| [separate-durability] | agent-check | pending | Pending SQLite migration (currently shared Fjall) |
+| [validate-first-write] | agent-check | pass | submit_commit(): verify → finalize → persist |
+| [ingest-ordering] | agent-check | pass | Blobs stored before index_commit() |
+| [read-path-coordination] | agent-check | pass | get_patch() joins index + blobs |
+| [recovery-reindex] | agent-check | pass | reindex() scans BlobStore, rebuilds index |
+| [recovery-convergence] | agent-check | pass | reindex() terminates in finite time |
+| [hash-boundary] | agent-check | pass | format_multihash_all() for all active variants |
+| [read-after-write] | agent-check | pass | Verified in integration tests |
 
 ## Implications
 
-### For Implementation (`/core`)
+### Constraints delegated to sub-specs
 
-All primary design gaps identified in the original specification have been fully resolved and implemented:
+The following constraints from the original monolithic spec are now defined
+in their respective sub-specifications. They are NOT duplicated here.
 
-- **Two-tier separation**: Structured via distinct `BlobStore` and `Indexer` traits. The protocol engine operates on in-memory structures without database backend dependencies.
-- **Async Storage API**: The `BlobStore` and `Indexer` traits are asynchronous, utilizing RPITIT (`impl Future<Output = ...> + Send`) to enforce thread-safety across executors.
-- **Streaming Write**: Replacement of direct `put()` with `open_write() -> AsyncWrite` and `close() -> Blake3Hash`, ensuring incremental BLAKE3 calculation inside the store.
-- **Incremental & Recovery Reindexing**: Implemented `reindex(keys, total_check)` on the `StorageEngine` to support both fast incremental startup synchronization and total index reconstruction via `clear()`.
-- **Fjall-backed Persistent Indexer**: `FjallIndexer` implements persistent indexing using five dedicated LSM-tree partitions within a shared `Keyspace`:
-  - `principals`: PG-derived principal ID (e.g., `SHA-256:genesis_tmb`) → `PrincipalSummary`
-  - `commits`: `principal_id + "/" + format!("{:016x}", sequence)` → `CommitRef`
-  - `tips`: principal ID → `TipState`
-  - `digest_index`: digest variant → `EntityRef`
-  - `public_keys`: thumbprint → `PublicKeyInfo`
-- **Stable Identifiers**: For nascent (Level 1/2) identities, the permanent `principal_id` matches the display format of their genesis key thumbprint (`{alg}:{genesis_tmb}`). For established (Level 3+) identities, it matches the immutable Principal Genesis (`PG`).
-- **Data Action & Public Key indexing**: Introduced `get_key(thumbprint)` to fetch public keys directly, satisfying relational queries without replaying history.
+**BlobStore constraints** (see [`blob-store.md`](blob-store.md)):
+[blake3-content-address], [blake3-isolation], [blob-immutability],
+[streaming-write], [digest-as-output], [max-blob-size], [get-by-hash],
+[existence-check], [blob-iteration], [async-storage], [send-sync],
+[no-protocol-hash-in-blobstore].
 
-- **EML integration**: The EML `Storage` trait handles its own internal state
-  persistence (frontier stacks, node hashes, algorithm epochs). The Cyphr
-  storage engine's responsibility is limited to: (a) feeding leaf data into
-  the EML on each commit, and (b) extracting CR MHMR variants from the EML
-  for inclusion in the digest index.
+**Indexer constraints** (see [`indexer.md`](indexer.md)):
+[index-secondary], [index-idempotent], [digest-index-completeness],
+[alg-set-storage-transition], [per-action-indexing],
+[no-stale-tip], [async-index], [send-sync-index],
+[no-orphaned-index], [monotonic-sequence], [commit-chain-integrity].
 
-- **Data action indexing**: The digest index SHOULD include per-action `czd`
-  entries for O(1) action retrieval, in addition to the aggregate DR.
+**BlobStore implementation** (see [`blob-store-fjall.md`](blob-store-fjall.md)):
+[fjall-single-keyspace], [fjall-partition-isolation], [no-partial-commit],
+[fjall-write-buffering], [fjall-compaction], [fjall-iter-consistency].
 
-- **Async refactor**: The `BlobStore` and `Indexer` traits MUST be refactored
-  from synchronous to asynchronous, matching the EML `Storage` trait's RPITIT
-  pattern. This affects all implementations (`FjallBlobStore`,
-  `MemoryBlobStore`, `MemoryIndexer`) and the `StorageEngine` coordination
-  layer. The refactor MUST use `impl Future<Output = ...> + Send` (RPITIT)
-  to explicitly bound the returned future as `Send` — native `async fn in
-trait` does not provide this bound by default, and it is required for
-  multi-threaded executors.
+**Indexer implementation** (see [`indexer-sqlite.md`](indexer-sqlite.md)):
+[sqlite-write-transaction], schema design, async actor model, migration
+strategy.
 
 ### For Testing
 
@@ -436,8 +342,7 @@ trait` does not provide this bound by default, and it is required for
 - **Multi-algorithm**: Test with mixed key sets (ES256 + ES384) and verify
   ALL MHMR variants appear in the digest index.
 - **Digest-as-output**: Verify that no write-path code pre-computes a
-  BLAKE3 hash and passes it to the BlobStore — the store always computes
-  its own.
+  BLAKE3 hash and passes it to the BlobStore.
 
 ### For Model
 
@@ -451,14 +356,49 @@ trait` does not provide this bound by default, and it is required for
 1. **Transactional ingest** — **RESOLVED: implementation-defined.** The
    [no-partial-commit] constraint expresses the goal (no permanently
    incomplete blob sets). The mechanism (batch writes, journaling, or
-   idempotent recovery) is a backend concern. See the updated constraint.
+   idempotent recovery) is a backend concern.
 
 2. **EML persistence path** — **RESOLVED: EML `Storage` trait.** The EML
-   already persists its internal state (frontier stacks, sealed node hashes,
-   algorithm epoch metadata) through its own `Storage` trait. The Cyphr
-   storage engine treats the EML as an opaque subsystem. See § Commit Tree.
+   already persists its internal state through its own `Storage` trait. The
+   Cyphr storage engine treats the EML as an opaque subsystem.
 
 3. **DR digest index** — **RESOLVED: per-action indexing.** The digest index
-   SHOULD include per-action `czd` entries. Actions are the atomic unit of
-   data, individually signed and individually addressable. DR remains as a
-   commit-level snapshot consistency check. See § Data Action Indexing.
+   SHOULD include per-action `czd` entries. DR remains as a commit-level
+   snapshot consistency check.
+
+4. **Authenticated index** — **RESOLVED: rejected (2026-06-01).** Four
+   authenticated index structures (JMT, sorted index tables, MSTs,
+   distributed primitives) were evaluated and rejected. Chain replay
+   provides trustless completeness for per-principal queries. See the
+   [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
+   for the full rationale.
+
+5. **Index backend** — **RESOLVED: SQLite (2026-06-01).** SQLite replaces
+   Fjall for the index layer. B-trees match the read-heavy workload; schema
+   flexibility is critical for a pre-alpha protocol. See
+   [`indexer-sqlite.md`](indexer-sqlite.md).
+
+6. **Separate durability** — **RESOLVED: yes (2026-06-01).** Content store
+   and index are separate databases. Cross-store atomicity is not a
+   correctness requirement — recovery re-indexing handles partial failures.
+
+7. **Recovery ordering** — **RESOLVED: deterministic (2026-06-01).** The
+   commit wire format (`txs`, `txs_order`, `pre`) carries explicit ordering
+   metadata (SPEC.md §4.6). Re-indexing follows `pre`-linked chain order
+   and reads transaction/coz order directly from the commit structure.
+   No permutation search or brute-force ordering is required or acceptable.
+   The earlier implementation's permutation scan was an artifact of a flat
+   blob model that did not preserve commit structure — that model is
+   superseded by the current architecture which stores commits as
+   self-describing bundles with explicit ordering.
+
+8. **Blob scope** — **RESOLVED: protocol messages only (2026-06-01).** The
+   BlobStore stores protocol messages (commits, transactions, actions) —
+   NOT Data Tree payload data. DT actions reference external data by
+   hash/URI; the actual data lives outside the protocol's blob service.
+   See [`blob-store.md`](blob-store.md) § "Scope boundary".
+
+9. **Witness storage** — **RESOLVED: no special treatment (2026-06-01).** A
+   witness is itself a principal (SPEC.md §2.2.15). Its commits traverse
+   the same protocol and storage path as any other principal's commits.
+   No separate partition or special storage treatment is warranted.
