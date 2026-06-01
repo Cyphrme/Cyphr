@@ -1,17 +1,10 @@
 use super::*;
 
-async fn store_put<S: BlobStore>(store: &S, data: &[u8]) -> Result<Blake3Hash, BlobStoreError> {
-    use tokio::io::AsyncWriteExt;
-    let mut handle = store.open_write().await?;
-    handle.write_all(data).await.map_err(BlobStoreError::Io)?;
-    store.close(handle).await
-}
-
-/// Run a test suite against any BlobStore implementation.
+/// Run a test suite against the MemoryBlobStore implementation.
 async fn test_blob_store<S: BlobStore>(store: &S) {
     // put + get round-trip
     let data = b"hello cyphr protocol";
-    let hash = store_put(store, data).await.expect("put failed");
+    let hash = store.put(data).await.expect("put failed");
     let retrieved = store
         .get(&hash)
         .await
@@ -35,14 +28,12 @@ async fn test_blob_store<S: BlobStore>(store: &S) {
     );
 
     // put is idempotent: same content → same hash, no error
-    let hash2 = store_put(store, data).await.expect("idempotent put failed");
+    let hash2 = store.put(data).await.expect("idempotent put failed");
     assert_eq!(hash, hash2, "idempotent put should return same hash");
 
     // iter returns all stored entries
     let data2 = b"second blob";
-    let hash3 = store_put(store, data2.as_slice())
-        .await
-        .expect("put failed");
+    let hash3 = store.put(data2).await.expect("put failed");
 
     let iter = store.iter().await.expect("iter failed");
     let all: Vec<Blake3Hash> = iter
@@ -71,10 +62,14 @@ async fn memory_blob_store() {
 }
 
 #[tokio::test]
-async fn fjall_blob_store() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let store = FjallBlobStore::open(dir.path()).expect("failed to open fjall store");
-    test_blob_store(&store).await;
+async fn memory_blob_store_limits() {
+    let store = MemoryBlobStore::new().with_max_blob_size(10);
+    assert!(store.put(b"short").await.is_ok());
+    let err = store.put(b"this is way too long").await.unwrap_err();
+    assert!(matches!(
+        err,
+        BlobStoreError::BlobTooLarge { size: 20, max: 10 }
+    ));
 }
 
 // -- Blake3Hash unit tests --
@@ -104,46 +99,25 @@ fn blake3_hash_parse_invalid_hex() {
 
 // -- Integration: raw coz-like payloads through BlobStore --
 
-/// Simulates storing protocol-shaped JSON payloads (representative of
-/// signed coz messages) and verifying content-addressed retrieval.
 #[tokio::test]
 async fn integration_coz_bytes_roundtrip() {
-    // Representative coz-like JSON payloads (not real signatures, but
-    // structurally representative of what the server will store).
     let payloads: &[&[u8]] = &[
         br#"{"alg":"ES256","tag":"dBucR...","pay":{"typ":"key/create"},"sig":"MEU..."}"#,
         br#"{"alg":"ES256","tag":"xKzWq...","pay":{"typ":"key/revoke","id":"dBucR..."},"sig":"MEY..."}"#,
         br#"{"alg":"Ed25519","tag":"aBcDe...","pay":{"typ":"cyphr/action","act":"set","path":"/profile/name","val":"Alice"},"sig":"abc123..."}"#,
     ];
 
-    // Test both backends
     let mem = MemoryBlobStore::new();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let fjall = FjallBlobStore::open(dir.path()).expect("fjall open");
 
     for payload in payloads {
         let expected_hash = Blake3Hash::from_bytes(*blake3::hash(payload).as_bytes());
 
-        // Memory backend
-        let mh = store_put(&mem, payload).await.expect("mem put");
+        let mh = mem.put(payload).await.expect("mem put");
         assert_eq!(mh, expected_hash);
         let got = mem.get(&mh).await.expect("mem get").expect("mem missing");
         assert_eq!(&got, *payload, "mem round-trip mismatch");
-
-        // Fjall backend
-        let fh = store_put(&fjall, payload).await.expect("fjall put");
-        assert_eq!(fh, expected_hash);
-        let got = fjall
-            .get(&fh)
-            .await
-            .expect("fjall get")
-            .expect("fjall missing");
-        assert_eq!(&got, *payload, "fjall round-trip mismatch");
     }
 
-    // Verify both stores have all entries
     let mem_count = mem.iter().await.expect("mem iter").count();
-    let fjall_count = fjall.iter().await.expect("fjall iter").count();
     assert_eq!(mem_count, payloads.len());
-    assert_eq!(fjall_count, payloads.len());
 }

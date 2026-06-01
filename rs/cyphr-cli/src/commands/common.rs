@@ -8,13 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphr::Key;
-use cyphr_storage::blob::FjallBlobStore;
+use cyphr_blob_fjall::FjallBlobStore;
+use cyphr_index_sqlite::SqliteIndexer;
 use cyphr_storage::engine::StorageEngine;
-use cyphr_storage::index::FjallIndexer;
 use cyphr_storage::{CommitEntry, Genesis};
 
 /// Type alias representing the concrete storage engine type used by the CLI.
-pub type CliStorageEngine = StorageEngine<FjallBlobStore, FjallIndexer>;
+pub type CliStorageEngine = StorageEngine<FjallBlobStore, SqliteIndexer>;
 
 use crate::Error;
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
@@ -146,7 +146,7 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
         let path = std::path::Path::new(path);
         let blob_store = FjallBlobStore::open(&path.join("blobs"))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let indexer = FjallIndexer::open(&path.join("index"))
+        let indexer = SqliteIndexer::open(&path.join("index.db"))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let engine = StorageEngine::new(blob_store, indexer);
 

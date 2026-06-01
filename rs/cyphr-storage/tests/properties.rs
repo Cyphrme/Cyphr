@@ -4,9 +4,11 @@ use std::path::PathBuf;
 
 use coz::base64ct::Encoding;
 use cyphr::StateDigest;
-use cyphr_storage::blob::{FjallBlobStore, MemoryBlobStore};
+use cyphr_blob_fjall::FjallBlobStore;
+use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::StorageEngine;
-use cyphr_storage::index::{FjallIndexer, MemoryIndexer};
+use cyphr_storage::index::MemoryIndexer;
 use cyphr_storage::{CommitEntry, Genesis};
 use proptest::prelude::*;
 
@@ -319,11 +321,7 @@ fn run_engine_recovery_test<B, I>(
         });
 
         let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-        let mut handle = engine.blob_store().open_write().await.unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut handle, &genesis_coz_bytes)
-            .await
-            .unwrap();
-        let _ = engine.blob_store().close(handle).await.unwrap();
+        let _ = engine.blob_store().put(&genesis_coz_bytes).await.unwrap();
 
         // Ingest commits sequentially
         for commit in &merged_commits {
@@ -464,13 +462,13 @@ proptest! {
     }
 
     #[test]
-    fn test_fjall_engine_reindex_recovery((genesis_key_idx, steps) in test_case_strategy()) {
+    fn test_persistent_engine_reindex_recovery((genesis_key_idx, steps) in test_case_strategy()) {
         let pool = load_pool();
         let intent = build_intent(genesis_key_idx, steps);
         let temp_dir_blob = tempfile::tempdir().unwrap();
         let temp_dir_index = tempfile::tempdir().unwrap();
         let blob_store = FjallBlobStore::open(temp_dir_blob.path()).unwrap();
-        let indexer = FjallIndexer::open(temp_dir_index.path()).unwrap();
+        let indexer = SqliteIndexer::open(&temp_dir_index.path().join("index.db")).unwrap();
         let engine = StorageEngine::new(blob_store, indexer);
         run_engine_recovery_test(&pool, intent, engine);
     }

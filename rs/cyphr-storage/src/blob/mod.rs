@@ -12,13 +12,11 @@
 //! - [`FjallBlobStore`] — LSM-tree backend (production)
 //! - [`MemoryBlobStore`] — `HashMap`-backed (testing)
 
-mod fjall_store;
 mod memory;
 
 use std::fmt;
 use std::str::FromStr;
 
-pub use fjall_store::FjallBlobStore;
 pub use memory::MemoryBlobStore;
 
 /// 32-byte BLAKE3 digest used as content address.
@@ -94,25 +92,23 @@ pub enum BlobStoreError {
         expected: Blake3Hash,
         actual: Blake3Hash,
     },
+
+    /// Blob size exceeds maximum allowed size.
+    #[error("blob too large: size {size} exceeds maximum allowed size {max}")]
+    BlobTooLarge { size: usize, max: usize },
 }
 
 /// Content-addressed blob storage.
 ///
 /// Implementations store raw bytes keyed by their BLAKE3 digest.
 pub trait BlobStore: Send + Sync {
-    /// Writer type used for streaming writes.
-    type WriteHandle: tokio::io::AsyncWrite + Unpin + Send;
-
-    /// Open a write handle to stream a new blob into the store.
-    fn open_write(
+    /// Store a blob in the content store and return its BLAKE3 digest.
+    ///
+    /// The store computes the BLAKE3 hash internally and returns it.
+    /// Deduplication is automatic (idempotent write).
+    fn put(
         &self,
-    ) -> impl std::future::Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send;
-
-    /// Close the write handle, finalize the blob, write it to the store, and return its BLAKE3
-    /// digest.
-    fn close(
-        &self,
-        handle: Self::WriteHandle,
+        data: &[u8],
     ) -> impl std::future::Future<Output = Result<Blake3Hash, BlobStoreError>> + Send;
 
     /// Retrieve raw bytes by their BLAKE3 digest.
@@ -131,7 +127,7 @@ pub trait BlobStore: Send + Sync {
 
     /// Iterate over all stored blobs' digests.
     ///
-    /// Used for index recovery (Phase 2).
+    /// Used for index recovery.
     fn iter(
         &self,
     ) -> impl std::future::Future<

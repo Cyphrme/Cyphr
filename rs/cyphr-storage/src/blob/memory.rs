@@ -12,6 +12,7 @@ use super::{Blake3Hash, BlobStore, BlobStoreError};
 #[derive(Clone)]
 pub struct MemoryBlobStore {
     blobs: Arc<RwLock<HashMap<Blake3Hash, Vec<u8>>>>,
+    max_blob_size: Option<usize>,
 }
 
 impl MemoryBlobStore {
@@ -19,7 +20,14 @@ impl MemoryBlobStore {
     pub fn new() -> Self {
         Self {
             blobs: Arc::new(RwLock::new(HashMap::new())),
+            max_blob_size: None,
         }
+    }
+
+    /// Create an empty in-memory store with a maximum blob size limit.
+    pub fn with_max_blob_size(mut self, max: usize) -> Self {
+        self.max_blob_size = Some(max);
+        self
     }
 }
 
@@ -29,57 +37,29 @@ impl Default for MemoryBlobStore {
     }
 }
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
-use tokio::io::AsyncWrite;
-
-/// Writer handle for in-memory blob storage.
-pub struct MemoryWriteHandle {
-    buffer: Vec<u8>,
-}
-
-impl AsyncWrite for MemoryWriteHandle {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        self.buffer.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
 impl BlobStore for MemoryBlobStore {
-    type WriteHandle = MemoryWriteHandle;
-
-    async fn open_write(&self) -> Result<Self::WriteHandle, BlobStoreError> {
-        Ok(MemoryWriteHandle { buffer: Vec::new() })
-    }
-
-    fn close(
+    fn put(
         &self,
-        handle: Self::WriteHandle,
+        data: &[u8],
     ) -> impl std::future::Future<Output = Result<Blake3Hash, BlobStoreError>> + Send {
-        let data = handle.buffer;
-        let hash = Blake3Hash::from_bytes(*blake3::hash(&data).as_bytes());
-        let res = self
-            .blobs
-            .write()
-            .map(|mut guard| {
-                guard.entry(hash).or_insert(data);
-            })
-            .map_err(|e| BlobStoreError::Backend(format!("lock poisoned: {e}")));
+        let max_blob_size = self.max_blob_size;
+        let data = data.to_vec();
         async move {
-            res?;
+            if let Some(max) = max_blob_size {
+                if data.len() > max {
+                    return Err(BlobStoreError::BlobTooLarge {
+                        size: data.len(),
+                        max,
+                    });
+                }
+            }
+            let hash = Blake3Hash::from_bytes(*blake3::hash(&data).as_bytes());
+            self.blobs
+                .write()
+                .map(|mut guard| {
+                    guard.entry(hash).or_insert(data);
+                })
+                .map_err(|e| BlobStoreError::Backend(format!("lock poisoned: {e}")))?;
             Ok(hash)
         }
     }

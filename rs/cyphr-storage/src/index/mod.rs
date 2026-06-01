@@ -12,12 +12,10 @@
 //! - [`MemoryIndexer`] — `HashMap`-backed (testing)
 //! - `SqliteIndexer` — SQLite-backed (production, Phase 2b)
 
-mod fjall;
 mod memory;
 pub mod types;
 
 use cyphr::state::TaggedDigest;
-pub use fjall::FjallIndexer;
 pub use memory::MemoryIndexer;
 pub use types::*;
 

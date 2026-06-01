@@ -14,9 +14,9 @@ pub mod routes;
 
 use std::sync::Arc;
 
-use cyphr_storage::blob::FjallBlobStore;
+use cyphr_blob_fjall::FjallBlobStore;
+use cyphr_index_sqlite::SqliteIndexer;
 use cyphr_storage::engine::StorageEngine;
-use cyphr_storage::index::FjallIndexer;
 
 // ========================================================================
 // Application state
@@ -28,20 +28,20 @@ use cyphr_storage::index::FjallIndexer;
 ///
 /// ## Backend note
 ///
-/// Uses persistent `FjallBlobStore` and `FjallIndexer`.
+/// Uses persistent `FjallBlobStore` and `SqliteIndexer`.
 pub struct AppState {
     /// Resolved server configuration.
     pub config: config::ServerConfig,
 
     /// Protocol-aware storage engine.
-    pub engine: StorageEngine<FjallBlobStore, FjallIndexer>,
+    pub engine: StorageEngine<FjallBlobStore, SqliteIndexer>,
 }
 
 impl AppState {
     /// Construct application state from resolved configuration.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let blob_store = FjallBlobStore::open(&config.data_dir.join("blobs"))?;
-        let indexer = FjallIndexer::open(&config.data_dir.join("index"))?;
+        let indexer = SqliteIndexer::open(&config.data_dir.join("index.db"))?;
         let engine = StorageEngine::new(blob_store, indexer);
         Ok(Self { config, engine })
     }

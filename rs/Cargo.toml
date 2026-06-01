@@ -2,6 +2,8 @@
 members = [
   "cyphr",
   "cyphr-storage",
+  "cyphr-blob-fjall",
+  "cyphr-index-sqlite",
   "cyphr-server",
   "cyphr-cli",
   "test-fixtures",
@@ -22,10 +24,13 @@ rust-version = "1.85"
 coz = { package = "coz-rs", version = "0.4.1" }
 
 # Storage
-blake3            = "1"
-eml               = "0.10.0"
-eml-storage-fjall = "0.10.0"
-fjall             = "2"
+blake3             = "1"
+cyphr-blob-fjall   = { path = "cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-sqlite = { path = "cyphr-index-sqlite", version = "0.1.0" }
+eml                = "0.10.0"
+eml-storage-fjall  = "0.10.0"
+fjall              = "2"
+rusqlite           = { version = "0.32", features = ["bundled", "limits"] }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }

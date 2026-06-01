@@ -1,0 +1,16 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "cyphr-blob-fjall"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+blake3        = { workspace = true }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0" }
+fjall         = { workspace = true }
+tokio         = { workspace = true, features = ["rt", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"

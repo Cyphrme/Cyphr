@@ -16,7 +16,6 @@ version                = "0.1.0"
 blake3     = { workspace = true }
 coz        = { workspace = true }
 cyphr      = { path = "../cyphr", version = "0.1.0" }
-fjall      = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror  = { workspace = true }
@@ -24,8 +23,10 @@ tokio      = { workspace = true, features = ["io-util"] }
 tracing    = { workspace = true }
 
 [dev-dependencies]
-proptest      = { workspace = true }
-serde         = { workspace = true }
-serde_json    = { workspace = true }
-tempfile      = "3"
-test-fixtures = { path = "../test-fixtures" }
+cyphr-blob-fjall   = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-sqlite = { path = "../cyphr-index-sqlite", version = "0.1.0" }
+proptest           = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+tempfile           = "3"
+test-fixtures      = { path = "../test-fixtures" }

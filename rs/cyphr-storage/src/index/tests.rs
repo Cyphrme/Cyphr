@@ -10,12 +10,20 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
+        pre: None,
         prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
         srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
         ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
         blob_hashes: vec![blob_hash],
-        transaction_types: vec!["key/create".to_string()],
-        transaction_ids: vec![vec!["SHA-256:tx-czd".to_string()]],
+        cozies: vec![IndexableCoz {
+            blob_hash,
+            czd: format!("SHA-256:czd-{principal_id}-{seq}"),
+            typ: "key/create".to_string(),
+            tmb: "thumbprint".to_string(),
+            alg: "ED25519".to_string(),
+            now: timestamp,
+            payload: None,
+        }],
         timestamp,
         keys: Vec::new(),
     }
@@ -236,13 +244,6 @@ async fn principal_summary_tracks_creation_time() {
 #[tokio::test]
 async fn test_new_indexer_methods_memory() {
     let indexer = MemoryIndexer::new();
-    run_new_indexer_methods_tests(&indexer).await;
-}
-
-#[tokio::test]
-async fn test_new_indexer_methods_fjall() {
-    let dir = tempfile::tempdir().unwrap();
-    let indexer = FjallIndexer::open(dir.path()).unwrap();
     run_new_indexer_methods_tests(&indexer).await;
 }
 

@@ -46,6 +46,7 @@ impl Default for MemoryIndexer {
         Self::new()
     }
 }
+
 impl Indexer for MemoryIndexer {
     fn index_commit(
         &self,
@@ -77,8 +78,11 @@ impl Indexer for MemoryIndexer {
             let commit_ref = CommitRef {
                 commit_id: primary_cid.clone(),
                 sequence: commit.sequence,
-                blob_hashes: commit.blob_hashes.clone(),
+                pre: commit.pre.clone(),
                 pr: primary_pr.clone(),
+                sr: primary_sr.clone(),
+                ar: primary_ar.clone(),
+                blob_hashes: commit.blob_hashes.clone(),
             };
 
             // Append to commit chain.
@@ -124,38 +128,33 @@ impl Indexer for MemoryIndexer {
                 },
             );
 
-            // Index each blob hash as a transaction entity reference.
-            for (i, blob_hash) in commit.blob_hashes.iter().enumerate() {
-                let tx_type = commit.transaction_types.get(i).cloned().unwrap_or_default();
+            // Index each coz blob.
+            for coz in &commit.cozies {
+                let entity_type =
+                    if coz.typ.starts_with("cyphr/action") || coz.typ.contains("/action") {
+                        EntityType::Action
+                    } else {
+                        EntityType::Transaction
+                    };
 
-                let entity_type = if tx_type.starts_with("cyphr/action") {
-                    EntityType::Action
-                } else {
-                    EntityType::Transaction
-                };
-
-                let digest_key = blob_hash.to_string();
+                let digest_key = coz.blob_hash.to_string();
                 state.digest_index.insert(
                     digest_key.clone(),
                     EntityRef {
                         digest: digest_key,
-                        blob_hash: *blob_hash,
+                        blob_hash: coz.blob_hash,
                         entity_type,
                     },
                 );
 
-                if let Some(variants) = commit.transaction_ids.get(i) {
-                    for variant in variants {
-                        state.digest_index.insert(
-                            variant.clone(),
-                            EntityRef {
-                                digest: variant.clone(),
-                                blob_hash: *blob_hash,
-                                entity_type,
-                            },
-                        );
-                    }
-                }
+                state.digest_index.insert(
+                    coz.czd.clone(),
+                    EntityRef {
+                        digest: coz.czd.clone(),
+                        blob_hash: coz.blob_hash,
+                        entity_type,
+                    },
+                );
             }
 
             // Map all commit ID variants
@@ -205,6 +204,7 @@ impl Indexer for MemoryIndexer {
                     },
                 );
             }
+
             // Index public keys.
             for key in &commit.keys {
                 state

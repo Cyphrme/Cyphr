@@ -45,15 +45,7 @@ fuzz_target!(|data: &[u8]| {
         let engine = StorageEngine::new(blob_store, indexer);
 
         for chunk in chunks {
-            let write_chunk = || async {
-                let mut handle = engine.blob_store().open_write().await.ok()?;
-                tokio::io::AsyncWriteExt::write_all(&mut handle, chunk)
-                    .await
-                    .ok()?;
-                engine.blob_store().close(handle).await.ok()?;
-                Some(())
-            };
-            let _ = write_chunk().await;
+            let _ = engine.blob_store().put(chunk).await;
         }
 
         // Run reindex recovery - should not panic

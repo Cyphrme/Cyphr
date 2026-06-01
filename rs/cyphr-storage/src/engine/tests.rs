@@ -8,16 +8,30 @@ fn test_engine() -> StorageEngine<MemoryBlobStore, MemoryIndexer> {
 }
 
 /// Build test metadata for a commit.
-fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IngestMeta {
-    IngestMeta {
+fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
+    let dummy_hash = crate::blob::Blake3Hash::from_bytes([0; 32]);
+    IndexableCommit {
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
+        pre: if seq == 0 {
+            None
+        } else {
+            Some(format!("SHA-256:pr-{principal_id}-{}", seq - 1))
+        },
         prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
         srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
         ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
-        transaction_types: vec!["key/create".to_string()],
-        transaction_ids: vec![vec![]],
+        blob_hashes: vec![dummy_hash],
+        cozies: vec![IndexableCoz {
+            blob_hash: dummy_hash,
+            czd: format!("SHA-256:czd-{principal_id}-{seq}"),
+            typ: "key/create".to_string(),
+            tmb: "thumbprint".to_string(),
+            alg: "ED25519".to_string(),
+            now: timestamp,
+            payload: None,
+        }],
         timestamp,
         keys: Vec::new(),
     }
@@ -270,23 +284,29 @@ async fn ingest_fixture(
     principal_id: &str,
     commits: &[serde_json::Value],
 ) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
     for (seq, commit) in commits.iter().enumerate() {
-        let cozies = commit["txs"].as_array().expect("txs array");
-        let keys = commit["keys"].as_array();
+        let cozies_json = commit["txs"].as_array().expect("txs array");
+        let keys_json = commit["keys"].as_array();
         let mut key_idx = 0;
 
         let mut blobs: Vec<Vec<u8>> = Vec::new();
+        let mut cozies = Vec::new();
+        let mut extracted_keys = Vec::new();
 
-        for coz_value in cozies {
+        for coz_value in cozies_json {
             let mut coz = coz_value.clone();
 
             // If this is a key-introducing transaction, embed the key
             // material from the commit-level keys[] into the blob.
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+            let typ = coz["pay"]["typ"].as_str().unwrap_or("").to_string();
+            let is_key_introducing = typ.contains("/key/create")
+                || typ.contains("/key/replace")
+                || typ.contains("/key/add");
 
             if is_key_introducing {
-                if let Some(ks) = keys {
+                if let Some(ks) = keys_json {
                     if key_idx < ks.len() {
                         coz.as_object_mut()
                             .unwrap()
@@ -296,12 +316,70 @@ async fn ingest_fixture(
                 }
             }
 
-            blobs.push(serde_json::to_vec(&coz).unwrap());
+            let blob_bytes = serde_json::to_vec(&coz).unwrap();
+            blobs.push(blob_bytes.clone());
+
+            // Parse for IndexableCoz and PublicKeyInfo
+            let pay = coz.get("pay").unwrap();
+            let sig_b64 = coz.get("sig").unwrap().as_str().unwrap();
+            let sig = Base64UrlUnpadded::decode_vec(sig_b64).unwrap();
+
+            let mut pay_val = pay.clone();
+            crate::import::canonicalize_value(&mut pay_val);
+            let pay_json = serde_json::to_vec(&pay_val).unwrap();
+            let alg = pay.get("alg").unwrap().as_str().unwrap().to_string();
+
+            let cad = coz::canonical_hash_for_alg(&pay_json, &alg, None).unwrap();
+            let czd_bytes = coz::czd_for_alg(&cad, &sig, &alg).unwrap();
+
+            let source_alg =
+                cyphr::state::hash_alg_from_str(&alg).unwrap_or(cyphr::state::HashAlg::Sha256);
+            let tagged = cyphr::state::TaggedCzd::new(&czd_bytes, source_alg);
+            let converted = tagged.convert_to(source_alg);
+            let czd = format!(
+                "{source_alg}:{}",
+                Base64UrlUnpadded::encode_string(&converted)
+            );
+
+            let tmb = pay
+                .get("tmb")
+                .unwrap_or(&serde_json::Value::Null)
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let now = pay.get("now").unwrap().as_i64().unwrap();
+            let payload = Some(serde_json::to_string(&pay_val).unwrap());
+
+            cozies.push(IndexableCoz {
+                blob_hash: crate::blob::Blake3Hash::from_bytes([0; 32]),
+                czd,
+                typ: typ.clone(),
+                tmb,
+                alg,
+                now,
+                payload,
+            });
+
+            if is_key_introducing {
+                if let Some(k) = coz.get("key") {
+                    extracted_keys.push(crate::index::PublicKeyInfo {
+                        thumbprint: k.get("tmb").unwrap().as_str().unwrap().to_string(),
+                        algorithm: k.get("alg").unwrap().as_str().unwrap().to_string(),
+                        public_key: k.get("pub").unwrap().as_str().unwrap().to_string(),
+                    });
+                }
+            }
         }
 
         let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
 
-        let meta = IngestMeta {
+        let pre = if seq == 0 {
+            None
+        } else {
+            Some(commits[seq - 1]["pr"].as_str().unwrap_or("").to_string())
+        };
+
+        let meta = IndexableCommit {
             principal_id: principal_id.to_string(),
             commit_ids: vec![
                 commit["commit_id"]
@@ -310,19 +388,17 @@ async fn ingest_fixture(
                     .to_string(),
             ],
             sequence: seq as u64,
+            pre,
             prs: vec![commit["pr"].as_str().unwrap_or("").to_string()],
             srs: vec![commit["sr"].as_str().unwrap_or("").to_string()],
             ars: vec![commit["ar"].as_str().unwrap_or("").to_string()],
-            transaction_types: cozies
-                .iter()
-                .filter_map(|c| c["pay"]["typ"].as_str().map(String::from))
-                .collect(),
-            transaction_ids: vec![vec![]; cozies.len()],
-            timestamp: cozies
+            blob_hashes: Vec::new(),
+            cozies,
+            timestamp: cozies_json
                 .last()
                 .and_then(|c| c["pay"]["now"].as_i64())
                 .unwrap_or(0),
-            keys: Vec::new(),
+            keys: extracted_keys,
         };
 
         engine
@@ -664,11 +740,7 @@ async fn test_reindex_recovery() {
     });
 
     let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let mut handle = blob_store.open_write().await.unwrap();
-    tokio::io::AsyncWriteExt::write_all(&mut handle, &genesis_coz_bytes)
-        .await
-        .unwrap();
-    let _genesis_blob_hash = blob_store.close(handle).await.unwrap();
+    let _genesis_blob_hash = blob_store.put(&genesis_coz_bytes).await.unwrap();
 
     // Get original tip state.
     let original_tip = engine
@@ -772,11 +844,7 @@ async fn test_reindex_recovery_with_crashed_commit() {
     });
 
     let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let mut handle = blob_store.open_write().await.unwrap();
-    tokio::io::AsyncWriteExt::write_all(&mut handle, &genesis_coz_bytes)
-        .await
-        .unwrap();
-    let _ = blob_store.close(handle).await.unwrap();
+    let _ = blob_store.put(&genesis_coz_bytes).await.unwrap();
 
     // Now write a random transaction cozy simulating a crashed commit write (missing finalizer
     // cozy)
@@ -792,11 +860,7 @@ async fn test_reindex_recovery_with_crashed_commit() {
         "key": genesis_key
     });
     let crashed_coz_bytes = serde_json::to_vec(&crashed_coz_json).unwrap();
-    let mut handle2 = blob_store.open_write().await.unwrap();
-    tokio::io::AsyncWriteExt::write_all(&mut handle2, &crashed_coz_bytes)
-        .await
-        .unwrap();
-    let _ = blob_store.close(handle2).await.unwrap();
+    let _ = blob_store.put(&crashed_coz_bytes).await.unwrap();
 
     // Create a new engine sharing the same blob store but with a completely empty indexer.
     let new_indexer = MemoryIndexer::new();

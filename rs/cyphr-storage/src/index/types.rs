@@ -7,6 +7,25 @@
 
 use crate::blob::Blake3Hash;
 
+/// Per-Coz metadata for the canonical event log.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IndexableCoz {
+    /// BLAKE3 hash of the coz blob.
+    pub blob_hash: Blake3Hash,
+    /// Tagged protocol digest (primary czd variant).
+    pub czd: String,
+    /// Action type (e.g., "cyphr.me/cyphr/key/create").
+    pub typ: String,
+    /// Signer thumbprint.
+    pub tmb: String,
+    /// Algorithm.
+    pub alg: String,
+    /// Timestamp (Unix seconds).
+    pub now: i64,
+    /// Raw JSON pay object (for unstructured data queries).
+    pub payload: Option<String>,
+}
+
 /// Input to [`super::Indexer::index_commit`].
 ///
 /// Constructed by the engine from a validated `cyphr::Commit`.
@@ -20,6 +39,8 @@ pub struct IndexableCommit {
     pub commit_ids: Vec<String>,
     /// Commit sequence number within this principal (0-indexed).
     pub sequence: u64,
+    /// Prior PR variants (tagged digest strings, None for genesis).
+    pub pre: Option<String>,
     /// Principal Root variants after this commit (tagged digest strings).
     pub prs: Vec<String>,
     /// State Root variants after this commit (tagged digest strings).
@@ -28,10 +49,8 @@ pub struct IndexableCommit {
     pub ars: Vec<String>,
     /// BLAKE3 hashes of individual coz blobs stored for this commit.
     pub blob_hashes: Vec<Blake3Hash>,
-    /// Transaction type identifiers (e.g., "key/create", "key/revoke").
-    pub transaction_types: Vec<String>,
-    /// Transaction ID variants (czd tagged digests) for each coz in this commit.
-    pub transaction_ids: Vec<Vec<String>>,
+    /// Per-coz metadata for the event log.
+    pub cozies: Vec<IndexableCoz>,
     /// Timestamp of the commit (from the commit transaction's `now` field).
     pub timestamp: i64,
     /// Public keys extracted from key-introducing transactions.
@@ -82,10 +101,16 @@ pub struct CommitRef {
     pub commit_id: String,
     /// Commit sequence number (0-indexed).
     pub sequence: u64,
-    /// BLAKE3 hashes of blobs belonging to this commit.
-    pub blob_hashes: Vec<Blake3Hash>,
+    /// Prior PR (chain link, None for genesis).
+    pub pre: Option<String>,
     /// Principal Root after this commit.
     pub pr: String,
+    /// State Root after this commit.
+    pub sr: String,
+    /// Auth Root after this commit.
+    pub ar: String,
+    /// BLAKE3 hashes of blobs belonging to this commit.
+    pub blob_hashes: Vec<Blake3Hash>,
 }
 
 /// Reference to an entity resolved by digest.
