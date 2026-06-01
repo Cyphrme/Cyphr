@@ -5,6 +5,7 @@
   Source: .sketches/2026-05-28-storage-object-model.md (ACCEPTED decision),
           docs/plans/cyphr-server.md (SQLite selection rationale),
           storage-engine.md (original constraints)
+  Crate:  rs/cyphr-index-sqlite/ (see storage-engine.md [crate-isolation])
   Authority: SPEC.md (Zamicol and nrdxp)
 
   This document specifies the planned SQLite implementation of the abstract
@@ -230,6 +231,20 @@ tied to commit sequence rather than wall-clock time. This supports
 deterministic replay — key active periods are defined by chain position,
 not timestamps.
 
+
+## Dependencies
+
+**[rusqlite-dependency]**: The `SqliteIndexer` MUST use `rusqlite` (with
+the `bundled` feature) as its SQLite binding. Alternatives were evaluated:
+
+| Crate | Verdict | Rationale |
+|:------|:--------|:----------|
+| **rusqlite** | **Selected** | Synchronous API matches the actor pattern. Direct SQL matches our specified DDL. Ecosystem standard for embedded SQLite in Rust (used by nostr-rs-relay, iroh). |
+| sqlx | Rejected | Async-native, but wraps async-over-sync-over-async for SQLite (no benefit with the actor model). Compile-time query checking cannot verify SQLite-specific features (`WITHOUT ROWID`, `json_extract`). |
+| diesel | Rejected | Full ORM adds indirection over a schema we've already specified down to exact DDL. Macro-heavy, opinionated. |
+
+The actor model (see below) naturally bridges `rusqlite`'s synchronous
+API to the async `Indexer` trait.
 
 ## Async Model
 

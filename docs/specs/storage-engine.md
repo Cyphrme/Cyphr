@@ -86,6 +86,31 @@ atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
 `VERIFIED: unverified (pending SQLite migration)`
 
+**[crate-isolation]**: Implementation backends MUST be isolated in their
+own crates, separate from the trait definitions. The trait crate defines
+the abstract API; implementation crates depend on the trait crate and
+bring in backend-specific dependencies. This keeps the generic layer
+free of backend dependencies and makes it simple to add or swap
+implementations.
+
+```
+rs/
+├── cyphr-storage/          # Trait crate
+│   ├── blob.rs             # BlobStore trait, Blake3Hash, errors
+│   ├── index.rs            # Indexer trait, types, errors
+│   ├── engine.rs           # StorageEngine<B, I> coordination
+│   ├── blob/memory.rs      # MemoryBlobStore (testing)
+│   └── index/memory.rs     # MemoryIndexer (testing)
+│
+├── cyphr-blob-fjall/       # BlobStore impl → depends on: cyphr-storage, fjall
+│
+└── cyphr-index-sqlite/     # Indexer impl → depends on: cyphr-storage, rusqlite, tokio
+```
+
+In-memory implementations (`MemoryBlobStore`, `MemoryIndexer`) remain
+in the trait crate because they carry no external dependencies and are
+needed for testing the trait contracts themselves.
+
 ### Trust Model
 
 The index is a conventional database providing *performance* (fast lookups).

@@ -129,6 +129,13 @@ filesystems, or distributed databases where blocking the calling task
 is unacceptable. The trait MUST use RPITIT
 (`impl Future<Output = ...> + Send`) to bound returned futures as `Send`
 for multi-threaded executors.
+
+> **Note:** RPITIT (`-> impl Future<...> + Send`) is the *desugared form*
+> of `async fn`. Rust's `async fn` in traits (stable since 1.75) does not
+> automatically add a `Send` bound to the returned future, which would
+> prevent use from multi-threaded executors. The explicit `impl Future +
+> Send` form is used instead to enforce this bound at the trait level.
+
 `VERIFIED: rs/cyphr-storage/src/blob/mod.rs — all methods use RPITIT`
 
 **[runtime-agnostic]**: The `BlobStore` trait MUST NOT depend on any

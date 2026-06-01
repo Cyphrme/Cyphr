@@ -175,7 +175,8 @@ the indexed commit chain is a consistency violation.
 
 **[async-index]**: The `Indexer` trait MUST expose an asynchronous API using
 RPITIT (`impl Future<Output = ...> + Send`). See `blob-store.md`
-[async-storage] for the rationale.
+[async-storage] for the rationale and the RPITIT note explaining why
+`impl Future + Send` is used instead of `async fn`.
 `VERIFIED: rs/cyphr-storage/src/index/mod.rs — all methods use RPITIT`
 
 **[runtime-agnostic-index]**: The `Indexer` trait MUST NOT depend on any
