@@ -24,6 +24,7 @@ pure-Rust LSM-tree key-value store.
 
 **Why Fjall:** The content store workload is simple key-value get/put by
 BLAKE3 hash. Fjall is:
+
 - Pure Rust (no C FFI, no build dependencies)
 - Crash-safe (WAL-backed)
 - Suitable for write-heavy append-only workloads (LSM-tree)
@@ -54,12 +55,12 @@ same protocol and storage path as any other principal's commits. No separate
 partition is warranted — artificially segregating the witness's data would
 undermine the protocol's natural treatment of witnesses as principals.
 
-
 ### Keyspace Configuration
 
 **[fjall-single-keyspace]**: The BlobStore SHOULD share a Fjall `Keyspace`
 with the EML backend (`eml-storage-fjall`) when both are in use. Sharing
 a keyspace means:
+
 - Single WAL — one crash-recovery journal
 - Single `Batch` can span both BlobStore and EML partitions
 - Shared background flush/compaction threads
@@ -107,6 +108,7 @@ concern.
 **[fjall-compaction]**: Fjall's LSM-tree compaction is transparent to the
 BlobStore. The implementation MUST NOT require manual compaction management.
 Fjall's background compaction SHOULD be configured for the blob workload:
+
 - Large L0 threshold (blobs are write-once, read-many)
 - Leveled compaction (default) — reduces read amplification for point lookups
 
@@ -119,33 +121,33 @@ time of creation.
 
 ## Error Mapping
 
-| Fjall error | BlobStoreError variant |
-|:------------|:----------------------|
-| `fjall::Error` (I/O, corruption) | `Backend(error.to_string())` |
+| Fjall error                        | BlobStoreError variant              |
+| :--------------------------------- | :---------------------------------- |
+| `fjall::Error` (I/O, corruption)   | `Backend(error.to_string())`        |
 | Hash mismatch on verification read | `HashMismatch { expected, actual }` |
-| I/O error during write buffering | `Io(error)` |
+| I/O error during write buffering   | `Io(error)`                         |
 
 ## Configuration
 
-| Parameter | Default | Notes |
-|:----------|:--------|:------|
-| Partition name | `"blobs"` | Fixed — not user-configurable |
-| Block size | Fjall default (4 KB) | Suitable for typical coz blobs (1-5 KB) |
-| Compression | Fjall default (LZ4) | Reduces disk usage; coz JSON compresses well |
-| WAL | Enabled (Fjall default) | Required for crash safety |
+| Parameter      | Default                 | Notes                                        |
+| :------------- | :---------------------- | :------------------------------------------- |
+| Partition name | `"blobs"`               | Fixed — not user-configurable                |
+| Block size     | Fjall default (4 KB)    | Suitable for typical coz blobs (1-5 KB)      |
+| Compression    | Fjall default (LZ4)     | Reduces disk usage; coz JSON compresses well |
+| WAL            | Enabled (Fjall default) | Required for crash safety                    |
 
 ## Verification
 
-| Constraint (from blob-store.md) | Status | Notes |
-|:-------------------------------|:-------|:------|
-| [blake3-content-address] | pass | BLAKE3 computed in `put()`, used as insert key |
-| [blake3-isolation] | pass | No protocol hashes used in BlobStore |
-| [blob-immutability] | pass | Content-addressed — same content = same key = idempotent |
-| [put-write] | pass | `put(bytes)` hashes and inserts atomically |
-| [digest-as-output] | pass | `put()` returns computed Blake3Hash |
-| [get-by-hash] | pass | partition.get(hash) |
-| [existence-check] | pass | partition.contains_key(hash) |
-| [blob-iteration] | pass | partition.iter() over all keys |
-| [async-storage] | pass | Async wrapper over synchronous Fjall API |
-| [runtime-agnostic] | pass | No runtime types in trait; impl uses spawn_blocking |
-| [send-sync] | pass | Fjall Keyspace is Arc-backed, Partition is Send+Sync |
+| Constraint (from blob-store.md) | Status | Notes                                                    |
+| :------------------------------ | :----- | :------------------------------------------------------- |
+| [blake3-content-address]        | pass   | BLAKE3 computed in `put()`, used as insert key           |
+| [blake3-isolation]              | pass   | No protocol hashes used in BlobStore                     |
+| [blob-immutability]             | pass   | Content-addressed — same content = same key = idempotent |
+| [put-write]                     | pass   | `put(bytes)` hashes and inserts atomically               |
+| [digest-as-output]              | pass   | `put()` returns computed Blake3Hash                      |
+| [get-by-hash]                   | pass   | partition.get(hash)                                      |
+| [existence-check]               | pass   | partition.contains_key(hash)                             |
+| [blob-iteration]                | pass   | partition.iter() over all keys                           |
+| [async-storage]                 | pass   | Async wrapper over synchronous Fjall API                 |
+| [runtime-agnostic]              | pass   | No runtime types in trait; impl uses spawn_blocking      |
+| [send-sync]                     | pass   | Fjall Keyspace is Arc-backed, Partition is Send+Sync     |

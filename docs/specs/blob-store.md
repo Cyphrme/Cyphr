@@ -130,11 +130,11 @@ is unacceptable. The trait MUST use RPITIT
 (`impl Future<Output = ...> + Send`) to bound returned futures as `Send`
 for multi-threaded executors.
 
-> **Note:** RPITIT (`-> impl Future<...> + Send`) is the *desugared form*
+> **Note:** RPITIT (`-> impl Future<...> + Send`) is the _desugared form_
 > of `async fn`. Rust's `async fn` in traits (stable since 1.75) does not
 > automatically add a `Send` bound to the returned future, which would
 > prevent use from multi-threaded executors. The explicit `impl Future +
-> Send` form is used instead to enforce this bound at the trait level.
+Send` form is used instead to enforce this bound at the trait level.
 
 `VERIFIED: rs/cyphr-storage/src/blob/mod.rs — all methods use RPITIT`
 
@@ -191,7 +191,7 @@ detect and report this.
 
 ## Implementations
 
-| Backend | Crate | Status | Notes |
-|:--------|:------|:-------|:------|
-| Fjall (LSM-tree) | `cyphr-storage` | Production | See [`blob-store-fjall.md`](blob-store-fjall.md) |
-| In-memory HashMap | `cyphr-storage` | Testing | `MemoryBlobStore` |
+| Backend           | Crate           | Status     | Notes                                            |
+| :---------------- | :-------------- | :--------- | :----------------------------------------------- |
+| Fjall (LSM-tree)  | `cyphr-storage` | Production | See [`blob-store-fjall.md`](blob-store-fjall.md) |
+| In-memory HashMap | `cyphr-storage` | Testing    | `MemoryBlobStore`                                |

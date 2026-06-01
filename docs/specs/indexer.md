@@ -30,7 +30,7 @@ MUST NOT be the source of truth for any data derivable from blob content.
 authenticated query results or completeness proofs. Trustless verification
 of query results relies on chain replay — the `pre`-linked MALT chain has
 no gaps, so fetching the patch and filtering locally is trustless by
-construction. The index provides *performance*; the chain provides *trust*.
+construction. The index provides _performance_; the chain provides _trust_.
 
 See the [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
 § "Decision: ACCEPTED — Conventional Index with Chain Replay Verification"
@@ -271,12 +271,12 @@ exactly n+1 entries in monotonic order.
 The index does NOT provide authenticated query results. Trustless
 verification uses chain replay:
 
-| Query | Verification mechanism |
-|:------|:----------------------|
-| Tip for principal X | `GET /tip` → chain replay from trust anchor, or cross-witness gossip (§13.7) |
-| All actions for X | Fetch patch via `GET /patch`. Chain is `pre`-linked — no gaps. Filter locally. |
-| All key/revoke for X | Chain replay + filter. No action omissible without breaking `pre` chain. |
-| Does principal X exist? | Index lookup (fast). Not security-critical — presence is observable. |
+| Query                   | Verification mechanism                                                         |
+| :---------------------- | :----------------------------------------------------------------------------- |
+| Tip for principal X     | `GET /tip` → chain replay from trust anchor, or cross-witness gossip (§13.7)   |
+| All actions for X       | Fetch patch via `GET /patch`. Chain is `pre`-linked — no gaps. Filter locally. |
+| All key/revoke for X    | Chain replay + filter. No action omissible without breaking `pre` chain.       |
+| Does principal X exist? | Index lookup (fast). Not security-critical — presence is observable.           |
 
 For the critical case — detecting omitted key revocations — chain replay
 is the ONLY sound mechanism. Authorization semantics (key membership,
@@ -285,8 +285,8 @@ No index can shortcut this.
 
 ## Implementations
 
-| Backend | Crate | Status | Notes |
-|:--------|:------|:-------|:------|
-| SQLite (B-tree) | `cyphr-storage` | Planned (production) | See [`indexer-sqlite.md`](indexer-sqlite.md) |
-| Fjall (LSM-tree) | `cyphr-storage` | Existing (to be replaced) | `FjallIndexer` — 5 partitions, manual key layout |
-| In-memory HashMap | `cyphr-storage` | Testing | `MemoryIndexer` |
+| Backend           | Crate           | Status                    | Notes                                            |
+| :---------------- | :-------------- | :------------------------ | :----------------------------------------------- |
+| SQLite (B-tree)   | `cyphr-storage` | Planned (production)      | See [`indexer-sqlite.md`](indexer-sqlite.md)     |
+| Fjall (LSM-tree)  | `cyphr-storage` | Existing (to be replaced) | `FjallIndexer` — 5 partitions, manual key layout |
+| In-memory HashMap | `cyphr-storage` | Testing                   | `MemoryIndexer`                                  |

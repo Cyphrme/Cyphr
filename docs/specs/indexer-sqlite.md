@@ -231,17 +231,16 @@ tied to commit sequence rather than wall-clock time. This supports
 deterministic replay — key active periods are defined by chain position,
 not timestamps.
 
-
 ## Dependencies
 
 **[rusqlite-dependency]**: The `SqliteIndexer` MUST use `rusqlite` (with
 the `bundled` feature) as its SQLite binding. Alternatives were evaluated:
 
-| Crate | Verdict | Rationale |
-|:------|:--------|:----------|
-| **rusqlite** | **Selected** | Synchronous API matches the actor pattern. Direct SQL matches our specified DDL. Ecosystem standard for embedded SQLite in Rust (used by nostr-rs-relay, iroh). |
-| sqlx | Rejected | Async-native, but wraps async-over-sync-over-async for SQLite (no benefit with the actor model). Compile-time query checking cannot verify SQLite-specific features (`WITHOUT ROWID`, `json_extract`). |
-| diesel | Rejected | Full ORM adds indirection over a schema we've already specified down to exact DDL. Macro-heavy, opinionated. |
+| Crate        | Verdict      | Rationale                                                                                                                                                                                              |
+| :----------- | :----------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **rusqlite** | **Selected** | Synchronous API matches the actor pattern. Direct SQL matches our specified DDL. Ecosystem standard for embedded SQLite in Rust (used by nostr-rs-relay, iroh).                                        |
+| sqlx         | Rejected     | Async-native, but wraps async-over-sync-over-async for SQLite (no benefit with the actor model). Compile-time query checking cannot verify SQLite-specific features (`WITHOUT ROWID`, `json_extract`). |
+| diesel       | Rejected     | Full ORM adds indirection over a schema we've already specified down to exact DDL. Macro-heavy, opinionated.                                                                                           |
 
 The actor model (see below) naturally bridges `rusqlite`'s synchronous
 API to the async `Indexer` trait.
@@ -275,6 +274,7 @@ Wrap each synchronous SQLite call in `tokio::task::spawn_blocking()`. Simpler
 but risks exhausting the blocking thread pool under load.
 
 The actor model is preferred because it:
+
 - Serializes writes naturally (single connection, no locking)
 - Avoids thread pool exhaustion
 - Allows connection-level pragmas to persist across calls
@@ -331,15 +331,15 @@ always wins per [no-stale-tip].
 
 ## Method Mapping
 
-| Indexer method | SQLite query |
-|:--------------|:-------------|
-| `index_commit()` | Transaction: INSERT across 6 tables (cozies, commits, digests, public_keys, tips, principals) |
-| `get_tip()` | `SELECT * FROM tips WHERE principal_id = ?` |
-| `get_commit_chain()` | `SELECT * FROM commits WHERE principal_id = ? AND sequence BETWEEN ? AND ? ORDER BY sequence` |
-| `resolve_digest()` | `SELECT * FROM digests WHERE digest = ?` |
-| `list_principals()` | `SELECT * FROM principals` |
-| `clear()` | `DELETE FROM cozies; DELETE FROM commits; DELETE FROM digests; DELETE FROM public_keys; DELETE FROM tips; DELETE FROM principals;` |
-| `get_key()` | `SELECT * FROM public_keys WHERE thumbprint = ?` |
+| Indexer method       | SQLite query                                                                                                                       |
+| :------------------- | :--------------------------------------------------------------------------------------------------------------------------------- |
+| `index_commit()`     | Transaction: INSERT across 6 tables (cozies, commits, digests, public_keys, tips, principals)                                      |
+| `get_tip()`          | `SELECT * FROM tips WHERE principal_id = ?`                                                                                        |
+| `get_commit_chain()` | `SELECT * FROM commits WHERE principal_id = ? AND sequence BETWEEN ? AND ? ORDER BY sequence`                                      |
+| `resolve_digest()`   | `SELECT * FROM digests WHERE digest = ?`                                                                                           |
+| `list_principals()`  | `SELECT * FROM principals`                                                                                                         |
+| `clear()`            | `DELETE FROM cozies; DELETE FROM commits; DELETE FROM digests; DELETE FROM public_keys; DELETE FROM tips; DELETE FROM principals;` |
+| `get_key()`          | `SELECT * FROM public_keys WHERE thumbprint = ?`                                                                                   |
 
 ## Migration Strategy
 
@@ -373,35 +373,35 @@ migrations sequentially.
 
 ## Error Mapping
 
-| SQLite error | IndexerError variant |
-|:-------------|:--------------------|
-| `rusqlite::Error::QueryReturnedNoRows` | `NotFound(context)` |
-| `rusqlite::Error` (other) | `Backend(error.to_string())` |
-| Constraint violation on duplicate commit | No-op (idempotent) |
-| `UNIQUE` violation on digest | No-op (idempotent) |
+| SQLite error                             | IndexerError variant         |
+| :--------------------------------------- | :--------------------------- |
+| `rusqlite::Error::QueryReturnedNoRows`   | `NotFound(context)`          |
+| `rusqlite::Error` (other)                | `Backend(error.to_string())` |
+| Constraint violation on duplicate commit | No-op (idempotent)           |
+| `UNIQUE` violation on digest             | No-op (idempotent)           |
 
 ## Verification
 
-| Constraint (from indexer.md) | Status | Notes |
-|:-----------------------------|:-------|:------|
-| [index-secondary] | planned | Rebuildable via `reindex()` from BlobStore |
-| [index-idempotent] | planned | `INSERT OR IGNORE` for commits/digests |
-| [digest-index-completeness] | planned | Engine provides all MHMR variants; SQLite stores verbatim |
-| [no-stale-tip] | planned | `INSERT OR REPLACE` in atomic transaction |
-| [no-orphaned-index] | planned | Engine stores blobs before indexing |
-| [recovery-reindex] | planned | `clear()` + full re-index from BlobStore |
-| [monotonic-sequence] | planned | `PRIMARY KEY (principal_id, sequence)` enforces |
-| [commit-chain-integrity] | planned | `ORDER BY sequence` ensures contiguity |
-| [async-index] | planned | Actor model bridges sync SQLite to async trait |
-| [send-sync-index] | planned | Actor handle (`mpsc::Sender`) is `Send + Sync` |
+| Constraint (from indexer.md) | Status  | Notes                                                     |
+| :--------------------------- | :------ | :-------------------------------------------------------- |
+| [index-secondary]            | planned | Rebuildable via `reindex()` from BlobStore                |
+| [index-idempotent]           | planned | `INSERT OR IGNORE` for commits/digests                    |
+| [digest-index-completeness]  | planned | Engine provides all MHMR variants; SQLite stores verbatim |
+| [no-stale-tip]               | planned | `INSERT OR REPLACE` in atomic transaction                 |
+| [no-orphaned-index]          | planned | Engine stores blobs before indexing                       |
+| [recovery-reindex]           | planned | `clear()` + full re-index from BlobStore                  |
+| [monotonic-sequence]         | planned | `PRIMARY KEY (principal_id, sequence)` enforces           |
+| [commit-chain-integrity]     | planned | `ORDER BY sequence` ensures contiguity                    |
+| [async-index]                | planned | Actor model bridges sync SQLite to async trait            |
+| [send-sync-index]            | planned | Actor handle (`mpsc::Sender`) is `Send + Sync`            |
 
 ## Implementation Status
 
-| Component | Status |
-|:----------|:-------|
-| Schema design | Specified (this document) |
-| `SqliteIndexer` struct | Not yet implemented |
-| Actor model (async bridge) | Not yet implemented |
-| Migration from `FjallIndexer` | Not started |
-| Schema versioning | Not yet implemented |
-| Integration tests | Not started |
+| Component                     | Status                    |
+| :---------------------------- | :------------------------ |
+| Schema design                 | Specified (this document) |
+| `SqliteIndexer` struct        | Not yet implemented       |
+| Actor model (async bridge)    | Not yet implemented       |
+| Migration from `FjallIndexer` | Not started               |
+| Schema versioning             | Not yet implemented       |
+| Integration tests             | Not started               |

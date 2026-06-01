@@ -37,13 +37,13 @@ responses. The engine is the layer that the HTTP server programs against.
 
 **Specification Split (2026-06-01):**
 
-| Document | Concern |
-|:---------|:--------|
-| **This document** | Engine coordination: write/read paths, recovery, type boundary |
-| [`blob-store.md`](blob-store.md) | Abstract BlobStore API (backend-agnostic) |
-| [`blob-store-fjall.md`](blob-store-fjall.md) | Fjall BlobStore implementation |
-| [`indexer.md`](indexer.md) | Abstract Indexer API (backend-agnostic) |
-| [`indexer-sqlite.md`](indexer-sqlite.md) | SQLite Indexer implementation |
+| Document                                     | Concern                                                        |
+| :------------------------------------------- | :------------------------------------------------------------- |
+| **This document**                            | Engine coordination: write/read paths, recovery, type boundary |
+| [`blob-store.md`](blob-store.md)             | Abstract BlobStore API (backend-agnostic)                      |
+| [`blob-store-fjall.md`](blob-store-fjall.md) | Fjall BlobStore implementation                                 |
+| [`indexer.md`](indexer.md)                   | Abstract Indexer API (backend-agnostic)                        |
+| [`indexer-sqlite.md`](indexer-sqlite.md)     | SQLite Indexer implementation                                  |
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
@@ -73,10 +73,10 @@ output.
 
 The two layers are:
 
-| Layer | Responsibility | Backend | Spec |
-|:------|:--------------|:--------|:-----|
-| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing) | [`blob-store.md`](blob-store.md) |
-| **Layer 1: Query Index** | Relational index: tips, chains, digests, keys | SQLite (production, planned), Fjall (current), HashMap (testing) | [`indexer.md`](indexer.md) |
+| Layer                      | Responsibility                                         | Backend                                                          | Spec                             |
+| :------------------------- | :----------------------------------------------------- | :--------------------------------------------------------------- | :------------------------------- |
+| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)                            | [`blob-store.md`](blob-store.md) |
+| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production, planned), Fjall (current), HashMap (testing) | [`indexer.md`](indexer.md)       |
 
 **[separate-durability]**: Content store and index are **separate databases**
 with independent durability. The content store is the durable source of
@@ -113,8 +113,8 @@ needed for testing the trait contracts themselves.
 
 ### Trust Model
 
-The index is a conventional database providing *performance* (fast lookups).
-Trustless verification uses *chain replay* — the `pre`-linked MALT chain
+The index is a conventional database providing _performance_ (fast lookups).
+Trustless verification uses _chain replay_ — the `pre`-linked MALT chain
 has no gaps, so fetching the patch and filtering locally is trustless by
 construction. The index does not provide authenticated query results or
 completeness proofs. See [`indexer.md`](indexer.md) § "Trustless Verification
@@ -319,17 +319,17 @@ same principal MUST reflect the ingested commit's state.
 
 ## Verification
 
-| Constraint | Method | Result | Detail |
-|:-----------|:-------|:-------|:-------|
-| [two-tier-separation] | agent-check | pass | `StorageEngine<B, I>` generic over distinct traits |
-| [separate-durability] | agent-check | pending | Pending SQLite migration (currently shared Fjall) |
-| [validate-first-write] | agent-check | pass | submit_commit(): verify → finalize → persist |
-| [ingest-ordering] | agent-check | pass | Blobs stored before index_commit() |
-| [read-path-coordination] | agent-check | pass | get_patch() joins index + blobs |
-| [recovery-reindex] | agent-check | pass | reindex() scans BlobStore, rebuilds index |
-| [recovery-convergence] | agent-check | pass | reindex() terminates in finite time |
-| [hash-boundary] | agent-check | pass | format_multihash_all() for all active variants |
-| [read-after-write] | agent-check | pass | Verified in integration tests |
+| Constraint               | Method      | Result  | Detail                                             |
+| :----------------------- | :---------- | :------ | :------------------------------------------------- |
+| [two-tier-separation]    | agent-check | pass    | `StorageEngine<B, I>` generic over distinct traits |
+| [separate-durability]    | agent-check | pending | Pending SQLite migration (currently shared Fjall)  |
+| [validate-first-write]   | agent-check | pass    | submit_commit(): verify → finalize → persist       |
+| [ingest-ordering]        | agent-check | pass    | Blobs stored before index_commit()                 |
+| [read-path-coordination] | agent-check | pass    | get_patch() joins index + blobs                    |
+| [recovery-reindex]       | agent-check | pass    | reindex() scans BlobStore, rebuilds index          |
+| [recovery-convergence]   | agent-check | pass    | reindex() terminates in finite time                |
+| [hash-boundary]          | agent-check | pass    | format_multihash_all() for all active variants     |
+| [read-after-write]       | agent-check | pass    | Verified in integration tests                      |
 
 ## Implications
 
