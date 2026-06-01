@@ -89,17 +89,18 @@ This is acceptable because blob writes are idempotent — a crash between
 blob N and blob N+1 leaves blob N stored and blob N+1 missing, which
 re-ingest will detect and repair.
 
-### Streaming Write Mapping
+### Write Mapping
 
-**[fjall-write-buffering]**: The `WriteHandle` implementation for Fjall
-MUST buffer streamed bytes in memory, compute the BLAKE3 hash
-incrementally, and issue a single `partition.insert(hash, bytes)` on
-`close()`. Fjall does not support streaming writes to a key — the entire
-value must be available at insert time.
+**[fjall-put-mapping]**: The `put` implementation for Fjall computes the
+BLAKE3 hash of the provided bytes and issues a single
+`partition.insert(hash, bytes)`. Fjall's insert is synchronous; the async
+wrapper uses `spawn_blocking` (or equivalent) to avoid blocking the
+executor.
 
-For large Data Tree payloads, the implementation SHOULD enforce a maximum
-blob size and reject writes exceeding it. The current implementation does
-not enforce a limit — this is tracked as a future concern.
+For protocol message payloads, the implementation SHOULD enforce a
+maximum blob size and reject writes exceeding it. The current
+implementation does not enforce a limit — this is tracked as a future
+concern.
 
 ### Compaction
 
@@ -137,13 +138,14 @@ time of creation.
 
 | Constraint (from blob-store.md) | Status | Notes |
 |:-------------------------------|:-------|:------|
-| [blake3-content-address] | pass | BLAKE3 computed in `close()`, used as insert key |
+| [blake3-content-address] | pass | BLAKE3 computed in `put()`, used as insert key |
 | [blake3-isolation] | pass | No protocol hashes used in BlobStore |
 | [blob-immutability] | pass | Content-addressed — same content = same key = idempotent |
-| [streaming-write] | pass | WriteHandle buffers, close() inserts atomically |
-| [digest-as-output] | pass | close() returns computed Blake3Hash |
+| [put-write] | pass | `put(bytes)` hashes and inserts atomically |
+| [digest-as-output] | pass | `put()` returns computed Blake3Hash |
 | [get-by-hash] | pass | partition.get(hash) |
 | [existence-check] | pass | partition.contains_key(hash) |
 | [blob-iteration] | pass | partition.iter() over all keys |
 | [async-storage] | pass | Async wrapper over synchronous Fjall API |
+| [runtime-agnostic] | pass | No runtime types in trait; impl uses spawn_blocking |
 | [send-sync] | pass | Fjall Keyspace is Arc-backed, Partition is Send+Sync |

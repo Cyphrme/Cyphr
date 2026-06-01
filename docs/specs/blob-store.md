@@ -45,7 +45,6 @@ whose data loss is irrecoverable from local state alone.
 TYPE Blake3Hash      = Opaque[32]           -- 32-byte BLAKE3 digest
 TYPE Blob            = Opaque[*]            -- Raw coz wire-format bytes
 TYPE BlobStore       = Blake3Hash → Maybe<Blob>
-TYPE WriteHandle     = AsyncWrite + Unpin + Send
 ```
 
 ## Constraints
@@ -74,21 +73,19 @@ put).
 
 ### Write Interface
 
-**[streaming-write]**: The BlobStore MUST use a streaming write as its
-sole write primitive. The write path is:
+**[put-write]**: The BlobStore MUST expose `put(&[u8])` as its sole write
+primitive. The caller provides the complete blob bytes; the store computes
+the BLAKE3 hash and returns it.
 
-1. `open_write()` → returns a `WriteHandle` (implements `AsyncWrite`)
-2. Caller streams bytes into the handle
-3. `close(handle)` → finalizes the write and returns the computed `Blake3Hash`
-
-There is no `put(&[u8])` method on the trait. The streaming interface is
-the only write path.
-
-**Rationale:** A single write primitive eliminates dual code paths. All
-protocol blobs (commits, transactions, actions) are small Coz JSON
-envelopes, but the streaming interface generalizes cleanly and computes
-BLAKE3 incrementally.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — open_write/close API`
+**Rationale:** Protocol blobs are small Coz JSON envelopes (typically
+1-5 KB), bounded by [max-blob-size]. A single `put` call is the simplest
+correct API — one method, one failure point, no handle lifecycle. This
+aligns with Irmin's `add(value) → key` pattern (the purest content-
+addressable store design) and EML's `store_leaf(index, &[u8])` pattern.
+A streaming write interface (open/write/close) was evaluated and rejected:
+it splits one conceptual operation into two fallible steps with a handle
+state in between, adding ceremony with no benefit for small payloads.
+`VERIFIED: unverified (implementation uses streaming; to be refactored)`
 
 **[max-blob-size]**: The BlobStore SHOULD enforce a configurable maximum
 blob size. Since blobs are protocol messages (not DT payload data), they
@@ -97,12 +94,13 @@ the configured limit to mitigate denial-of-service attacks. The default
 limit is implementation-defined.
 `VERIFIED: unverified (not yet implemented)`
 
-**[digest-as-output]**: The BlobStore's write operation MUST compute and
-return the content digest as output, not accept it as input. The caller
-streams bytes via the write handle; the store computes the BLAKE3 hash
-incrementally and returns it on finalization. This prevents hash-mismatch
-defects at the API boundary.
-`VERIFIED: rs/cyphr-storage/src/blob/mod.rs — close() returns Blake3Hash`
+**[digest-as-output]**: The BlobStore's `put` operation MUST compute and
+return the content digest as output, not accept it as input. The store
+computes the BLAKE3 hash internally and returns it on completion. This
+prevents hash-mismatch defects at the API boundary — the store owns the
+hash function. (Irmin pattern; contrast IPFS Blockstore where the CID is
+caller-supplied, requiring a paranoia flag `HashOnRead` to compensate.)
+`VERIFIED: unverified (implementation uses streaming; to be refactored)`
 
 ### Read Interface
 
@@ -133,6 +131,14 @@ is unacceptable. The trait MUST use RPITIT
 for multi-threaded executors.
 `VERIFIED: rs/cyphr-storage/src/blob/mod.rs — all methods use RPITIT`
 
+**[runtime-agnostic]**: The `BlobStore` trait MUST NOT depend on any
+specific async runtime (tokio, smol, async-std, etc.) in its signature.
+All methods use bare `impl Future + Send` via RPITIT, which is executor-
+agnostic. Runtime-specific types (e.g., `tokio::sync::mpsc`,
+`tokio::task::spawn_blocking`) belong in implementation crates, not in
+the trait definition. This permits alternative runtimes for constrained
+environments without modifying the trait.
+
 ### Thread Safety
 
 **[send-sync]**: The `BlobStore` trait MUST require `Send + Sync`. The
@@ -143,15 +149,14 @@ store is shared across concurrent request handlers in the server.
 
 ```rust
 pub trait BlobStore: Send + Sync {
-    type WriteHandle: tokio::io::AsyncWrite + Unpin + Send;
-
-    fn open_write(&self) -> impl Future<Output = Result<Self::WriteHandle, BlobStoreError>> + Send;
-    fn close(&self, handle: Self::WriteHandle) -> impl Future<Output = Result<Blake3Hash, BlobStoreError>> + Send;
+    fn put(&self, data: &[u8]) -> impl Future<Output = Result<Blake3Hash, BlobStoreError>> + Send;
     fn get(&self, hash: &Blake3Hash) -> impl Future<Output = Result<Option<Vec<u8>>, BlobStoreError>> + Send;
     fn exists(&self, hash: &Blake3Hash) -> impl Future<Output = Result<bool, BlobStoreError>> + Send;
     fn iter(&self) -> impl Future<Output = Result<Box<dyn Iterator<Item = Result<Blake3Hash, BlobStoreError>> + Send>, BlobStoreError>> + Send;
 }
 ```
+
+No associated types. No runtime-specific imports. Four methods.
 
 ## Forbidden States
 
@@ -167,7 +172,7 @@ the same `Blake3Hash` both times. The second write MUST NOT duplicate
 storage. This is a safety property — content addressing guarantees it
 by construction.
 
-**[read-after-write]**: After `close(handle)` returns `Ok(hash)`, a
+**[read-after-write]**: After `put(data)` returns `Ok(hash)`, a
 subsequent `get(hash)` MUST return `Some(data)` containing the bytes
 that were written. The system MUST NOT exhibit stale reads after a
 successful write.

@@ -178,6 +178,11 @@ RPITIT (`impl Future<Output = ...> + Send`). See `blob-store.md`
 [async-storage] for the rationale.
 `VERIFIED: rs/cyphr-storage/src/index/mod.rs — all methods use RPITIT`
 
+**[runtime-agnostic-index]**: The `Indexer` trait MUST NOT depend on any
+specific async runtime in its signature. See `blob-store.md`
+[runtime-agnostic]. Runtime-specific types (e.g., `tokio::sync::mpsc`
+for the SQLite actor model) belong in implementation crates.
+
 ### Thread Safety
 
 **[send-sync-index]**: The `Indexer` trait MUST require `Send + Sync`.

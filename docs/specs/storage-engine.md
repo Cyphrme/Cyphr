@@ -315,14 +315,14 @@ in their respective sub-specifications. They are NOT duplicated here.
 
 **BlobStore constraints** (see [`blob-store.md`](blob-store.md)):
 [blake3-content-address], [blake3-isolation], [blob-immutability],
-[streaming-write], [digest-as-output], [max-blob-size], [get-by-hash],
-[existence-check], [blob-iteration], [async-storage], [send-sync],
-[no-protocol-hash-in-blobstore].
+[put-write], [digest-as-output], [max-blob-size], [get-by-hash],
+[existence-check], [blob-iteration], [async-storage], [runtime-agnostic],
+[send-sync], [no-protocol-hash-in-blobstore].
 
 **Indexer constraints** (see [`indexer.md`](indexer.md)):
 [index-secondary], [index-idempotent], [digest-index-completeness],
 [alg-set-storage-transition], [per-action-indexing],
-[no-stale-tip], [async-index], [send-sync-index],
+[no-stale-tip], [async-index], [runtime-agnostic-index], [send-sync-index],
 [no-orphaned-index], [monotonic-sequence], [commit-chain-integrity].
 
 **BlobStore implementation** (see [`blob-store-fjall.md`](blob-store-fjall.md)):

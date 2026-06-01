@@ -112,7 +112,7 @@ parallel structures. The key insights:
 
 These constraints apply to the protocol-core `cyphr` crate (`rs/cyphr/`).
 Storage-layer implications are captured in `storage-engine.md`
-([digest-index-completeness], [async-storage], [streaming-write]).
+([digest-index-completeness], [async-storage], [put-write]).
 
 ## Verification
 
