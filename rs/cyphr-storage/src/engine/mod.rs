@@ -670,7 +670,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key
             // field).
             let mut fallback_data = None;
-            eprintln!(
+            tracing::debug!(
                 "resolve_genesis: first commit has {} blobs",
                 first_commit.blob_hashes.len()
             );
@@ -689,19 +689,19 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
                     let has_key = value.get("key").is_some();
-                    eprintln!(
+                    tracing::debug!(
                         "resolve_genesis: blob idx={}, typ={}, has_key={}",
                         idx, typ, has_key
                     );
                     if typ.contains("/commit/create") && has_key {
-                        eprintln!("resolve_genesis: found genesis key in commit/create!");
+                        tracing::debug!("resolve_genesis: found genesis key in commit/create!");
                         return Self::genesis_from_blob(&data);
                     }
                 }
             }
 
             if let Some(data) = fallback_data {
-                eprintln!("resolve_genesis: fallback to first blob");
+                tracing::debug!("resolve_genesis: fallback to first blob");
                 if let Ok(genesis_val) = self.genesis_val_from_blob(&data) {
                     return Ok(genesis_val);
                 }
@@ -758,7 +758,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
-        eprintln!("reindex: found {} blobs in store", hashes.len());
+        tracing::debug!("reindex: found {} blobs in store", hashes.len());
 
         let mut cozies = Vec::new();
         for hash in hashes {
@@ -782,7 +782,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let ext: CozExtractor = match serde_json::from_slice(&data) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!(
+                    tracing::warn!(
                         "reindex: CozExtractor deserialize failed: {:?}, data = '{}'",
                         e,
                         String::from_utf8_lossy(&data)
@@ -794,7 +794,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let sig = match Base64UrlUnpadded::decode_vec(&ext.sig) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!(
+                    tracing::warn!(
                         "reindex: base64 decode of sig '{}' failed: {:?}",
                         ext.sig, e
                     );
@@ -816,7 +816,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!(
+                    tracing::warn!(
                         "reindex: PayFields deserialize failed: {:?}, pay = '{}'",
                         e,
                         ext.pay.get()
@@ -1057,7 +1057,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                                 &coz.sig,
                                 czd.clone(),
                             );
-                            eprintln!(
+                            tracing::debug!(
                                 "reindex pre-action: typ={}, now={}, res={:?}",
                                 coz.typ, coz.now, res
                             );
@@ -1109,7 +1109,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                     }
 
                     if mutations.len() > 8 {
-                        eprintln!(
+                        tracing::warn!(
                             "reindex: too many mutations ({}) at same timestamp. skipping to \
                              prevent complexity explosion",
                             mutations.len()

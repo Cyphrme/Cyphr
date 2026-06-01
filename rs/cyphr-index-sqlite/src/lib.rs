@@ -156,6 +156,8 @@ impl SqliteIndexer {
             CREATE INDEX IF NOT EXISTS idx_digests_blob     ON digests(blob_hash);
 
             CREATE INDEX IF NOT EXISTS idx_keys_principal   ON public_keys(principal_id);
+
+            INSERT OR IGNORE INTO schema_version (version) VALUES (1);
         ",
         )
         .map_err(|e| IndexerError::Backend(format!("failed to initialize schema: {e}")))?;
@@ -240,7 +242,7 @@ fn db_index_commit(
         .to_string();
 
     let mut run = |conn: &mut rusqlite::Connection| -> Result<(), rusqlite::Error> {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // 1. Insert cozies
         for coz in &commit.cozies {
