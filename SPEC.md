@@ -168,19 +168,8 @@ A **Merkle tree** (MT) is a binary hash tree where each leaf is a hash of data
 and each non-leaf node is the hash of its two children, culminating in a single
 **Merkle root** (MR). 
 
-#### 2.2.10 MALT
-
-A **MALT** (Merkle Append only Log Tree), defined by RFC 9162, is a canonically
-organized Merkle tree where new nodes are appended sequentially with dense left
-filling.  Importantly MALT enables succinct inclusion and consistency proofs,
-which increases client performance, properties not guaranteed by less structured
-Merkle trees.  A MALT root is termed a **MALTR**. CT is organized as a MALT in
-order to take advantage of these properties. Note that as defined by RFC 9162
-MALT also includes a hash prefix for internal nodes and leaves and so nodes are
-not ever equal to a regular Merkle tree. See section [Commit](#4-commit).
-Although MALT is used in this document, alternatively a Epoch Merkle Log (EML)
-may be used.  MALTs are also sometimes colloquially termed "certificate
-transparency (CT) trees".
+#### 2.2.10 MALT and EML
+MALT and EML are specific types of Merkle trees. See section [Commit](#4-commit)
 
 #### 2.2.11 Commit
 
@@ -458,6 +447,15 @@ For example, a commit may have three transactions: one transaction for
 `key/create`, signed by one key and consisting of one coz, and a
 `commit/create`, finalizing the commit.
 
+### MALT and EML
+A **MALT** (Merkle Append only Log Tree) as defined by RFC 9162 is a type of
+Merkle tree.  A MALT is is an ordered, append only, unbalanced, binary, dense
+left filled, Merkle tree.  A more advanced form of MALT is an Epoch Merkle Log
+(**EML**), which supports multiple hashes over distinct time frames (epochs).
+Since Cyphr trees are n-ary, a variant **NEML** is used.
+
+
+
 ### 4.1 Transaction
 
 A transaction consists of one or more signed cozies that results in a mutation
@@ -711,7 +709,7 @@ result in non-consensus.
 #### 4.9 Tombstones 
 
 When ST is organized as a MALT or any other immutable datastructure, it is
-append-only. Existing nodes cannot be physically removed or altered. 
+append-only. Existing nodes cannot be physically removed or altered.
 
 A **tombstone** is a marker value used to represent a deleted, logically
 removed, or otherwise mutated element without physically removing it from the
@@ -2216,17 +2214,22 @@ protocol/document/repo.
 
 ## 13 State Synchronization and Gossip // TODO
 `tip`, `patch`, and `push`
-### Trust Anchor Only Thin Client Update Algorithm
-Thin client update/sync:
-State update from PR:
-1. Inclusion proof that the server's view of AT is in the local clients's TA (PR)
+### Trust Anchor Algorithm
+Thin client update/sync: State update from PR:
+1. Inclusion proof that the server's view of AT is in the local clients's TA
+   (PR)
 2. Server gives relevant AT components (`tmb`s and keys) for commit update.
- - So if a commit is signed by two keys, those two keys need to be sent to the thin client.
+ - So if a commit is signed by two keys, those two keys need to be sent to the
+   thin client.
 3. If commit is valid
 4. Update TA
 5. Delete ephemeral components.
-6. If progressing multiple commits, steps 1-5 need to be done for each commit.  A server may send multiple commit updates at a time to a thin client to progress the client rapidly.
+6. If progressing multiple commits, steps 1-5 need to be done for each commit.
+   A server may send multiple commit updates at a time to a thin client to
+   progress the client rapidly.
 
+
+Only Thin Client Update
 
 Alternatively, a thin client may use a trusted oracle and state jump. However,
 note that the distinction between a fetch and a jump is that a jump is trusted.
@@ -3714,11 +3717,14 @@ an alternative interaction model:
   - hash bypass
   - Degenerate case (Less preferred by related: Degenerate Identity)
   - Singleton Bypass
+  - Singleton promotion
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
 - I think we can remove pinning
 
 DDOS and not providing Meta // TODO
+
+TODO define bounded sizes (e.g. a node cannot be larger than 1 MB for clients, helps protect)
 
 
 
