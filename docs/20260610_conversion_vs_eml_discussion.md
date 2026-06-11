@@ -240,7 +240,8 @@ H₁(MR₀ || MR₁) == BR₁
 
 Therefore, BR₀ ≘ BR₁
 
-To prove bindings BR₀, BR₁, BR₂ are consistent when given BR₀, BR₁, BR₂, MR₀, MR₁, MR₂:
+To prove bindings BR₀, BR₁, BR₂ are consistent when given BR₀, BR₁, BR₂, MR₀,
+MR₁, MR₂:
 
 ```
 H₀(MR₀ || MR₁ || MR₂) == BR₀ 
@@ -254,7 +255,7 @@ Concatenation order isn't relevant to the proof; the only consequential aspect
 is that the digest of a particular hash appears in the proof.  Although the
 digests in the concatenation step may appear in any order, we recommend using a
 single order for all bindings. This allows for a single serialization step
-followed by a 0(N) hashing step.
+followed by a O(N) hashing step.
 
 With only a single alg, for inclusion and consistency only MR₀ is required along
 with appropriate nodes.
