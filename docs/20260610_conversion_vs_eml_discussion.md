@@ -47,8 +47,8 @@ while from the commit boundary below must be n-ary.  This is an application
 detail; as long as the tree is n-ary it is not an implication detail.(Since
 n-ary is hypernym of binary, an n-ary tree is inclusive of binary MT's.) 
 
-- **Multi-Alg** - Multi-alg must be supported. Nodes may be
-referenced by one to many algs, but not necessarily by a given alg.
+- **Multi-Alg** - Multi-alg must be supported. Nodes may be referenced by one to
+many algs, but not necessarily by a given alg.
 
 - **Mixing must be via hashing algorithm** Need some sort of mixing for 1.
 security and 2. relating nodes from multi-hash
@@ -68,10 +68,10 @@ hash algorithm trees.
 because its a resource, should be updated to root.
 
 - **No prefixes** In all cases, we need no prefixes (what RFC 9162 calls
-  "prefixes". Universal CCIDs are vastly more important, prefixes don't
-  actually solve the architectural problems they claim to solve.  They simply
-  act as an identifier between inner nodes and leaves, an anti-pattern for out
-  use and also directly contradicts the utility of singleton promotion.
+  "prefixes". Universal CCIDs are vastly more important, prefixes don't actually
+  solve the architectural problems they claim to solve.  They simply act as an
+  identifier between inner nodes and leaves, an anti-pattern for out use and
+  also directly contradicts the utility of singleton promotion.
 
 - Interplay between resource and data node hashing algorithm.  Coz is signed
   only by one alg.  Resources may be referenced by many algs.  If Coz itself
@@ -83,13 +83,15 @@ because its a resource, should be updated to root.
 
 ## Zami thought: **Multi-hash Conversion, N-ary, Merkle Tree**
 - **Proofs**: Inclusion and consistency. (No such thing as projection proof.
-  Conversion just needs support of each hashing algorithm.)
+  Conversion just needs support of each hashing algorithm.  This is the "binding
+  proof", at individual nodes)
 - **Assumes only hashing algorithms** good, there's only a single class of
   cryptography for this data structure.
 - **Arrow gets pre-mixed** Arrow gets a pre-mixed PR which is in one to many
   algs, one to many may be signed.
 - **Ordered**: Nodes have an order as specified by principal.
-- **Directionality** - Input of the ordered nodes matters.  H(X,O) is not equal to H(O,X)
+- **Directionality** - Input of the ordered nodes matters.  H(X,O) is not equal
+  to H(O,X)
 - **Left dense filled**: Leaves are added from left to right with no gaps.
 - **Unbalanced**: The tree is not guaranteed to be symmetrical. Minimally, a
 node may have a single child, which causes the whole of the tree to lack perfect
@@ -141,9 +143,10 @@ symmetry.
 ## Nrdxp thought: **Binary EML**
 - **Proofs**: Inclusion and consistency.  Cross-algorithm projection proofs are
   implemented via STH (bad)
-- **Assumes digital signing algorithms** bad, we don't want to introduce a new class of
-  cryptography for this data structure.
-- **Arrow** handles relating digests to one another where `pre` = H(MR0_H0, MR0_H1, etc...)
+- **Assumes digital signing algorithms** bad, we don't want to introduce a new
+  class of cryptography for this data structure.
+- **Arrow** handles relating digests to one another where `pre` = H(MR0_H0,
+  MR0_H1, etc...)
 - **Ordered**
 - **Directionality**
 - **Left dense filled**
@@ -182,8 +185,8 @@ side for append, every "filled out" "subtree" is of the same size.
   tree.
 - **Node equivalency** through activation map.
 - **Leaf one-hash** Each node may have multiple hashes, they may be given
-  multiple hashes after the fact.  Leafs appear to always be of one type.
-  (Leafs need multi-hash support I think)
+  multiple hashes after the fact.  Leafs appear to always be of one type. (Leafs
+  need multi-hash support I think)
 - **No digest equivalency proof**.  Equivalency Proofs are only done in
   signatures, never digests. (Concern, we have to introduce new crypto for
   equivalency)
@@ -199,12 +202,12 @@ side for append, every "filled out" "subtree" is of the same size.
 
 
 ## Synthesis: **N-ary EML (NEML)**
-
 - **One logical Principal Tree**
 - **Proofs**: Inclusion, consistency, and a new category, **cross-algorithm
-  projection proofs**, aka "projection proof" using a binding root. No digital
-  signing algorithms are used in the primitive.
-- **Binding Root (BR)** New step to EML, is binding performed via a combined root.
+  binding proofs**, aka "binding proof" using a binding root. No digital signing
+  algorithms are used in the primitive.
+- **Binding Root (BR)** New step to EML, is binding performed via a combined
+  root.  Binding is provided through serial concat. 
 
   ```
   BR₀ = H₀(MR₀,MR₁)
@@ -224,14 +227,25 @@ side for append, every "filled out" "subtree" is of the same size.
   tree head (STH, signing security which is bad)) which is excluded from NEML
   now.
 
-**BR consistency Proof**: 
-To prove that BR₀ is consistent with (≘) BR₁, MR₀ and
+**BR consistency Proof**: To prove that BR₀ is consistent with (≘) BR₁, MR₀ and
 MR₁ also have to be given. Without MR₀ and MR₁, BR₀ consistency to BR₁ cannot be
 proven.  Clients must have support for both hashing algorithms.
 
 To prove bindings BR₀, BR₁ are consistent when given BR₀, BR₁, MR₀, MR₁:
 
-H₀(MR₀ || MR₁) == BR₀ H₁(MR₁ || MR₀) == BR₁
+```
+H₀(MR₀ || MR₁) == BR₀ 
+H₁(MR₀ || MR₁) == BR₁
+```
+
+Therefore, BR₀ ≘ BR₁
+
+To prove bindings BR₀, BR₁, BR₂ are consistent when given BR₀, BR₁, BR₂, MR₀, MR₁, MR₂:
+
+```
+H₀(MR₀ || MR₁ || MR₂) == BR₀ 
+H₁(MR₁ || MR₀) == BR₁
+```
 
 Therefore, BR₀ ≘ BR₁
 
@@ -241,15 +255,14 @@ with appropriate nodes.
 If multiple algorithms are used, the MR and BR for each algorithm is required
 followed by a binding proof.
 
-- **Can't prove binding without Cyphr**
-Critically, binding roots must be trusted.  Cyphr provides BR trust. There's no
-possible proofs outside of proving given binding roots and given MR's
-inclusion/consistency and BR consistency.
+- **Can't prove binding without Cyphr** Critically, binding roots must be
+trusted.  Cyphr provides BR trust. There's no possible proofs outside of proving
+given binding roots and given MR's inclusion/consistency and BR consistency.
 
 For example, there doesn't exist a cross-algorithm binding proof that can show
 that node A₀ in hash tree H₀ correlates to node A₁ in hash tree H₁.  Without
 Cyphr, an attacker can provide an naive prover with arbitrary BRs.  The attacker
-can spoof a dishonest BR for a dishonest MT.  
+can spoof a dishonest BR for a dishonest MT.
 
 NEML can't prove cross consistency without hashing the concrete object, however,
 and critically, **hashing concrete/preimage values is prohibited for the proving
@@ -258,6 +271,10 @@ prohibited for this primitive.  After the fact a client may verify that a
 resource correlates to a specific preimage, but that is outside of the scope for
 MT.
 
+- **Tradeoff: More Proofs Required, but no security mixing** Compared to a
+  conversion tree, I expect more nodes are required to prove
+  consistency/inclusion/binding (bad).  However, we gain the advantage that
+  there's no cryptographic digest security mixing.
 - **Algorithm Dropping** - If an algorithm is dropped, calculation stops at that
   point. (fantastic)  However, it might be too hard to pull this off with a BR.
 - **Ordered** (Nodes are ordered as given by principal)
@@ -284,12 +301,11 @@ MT.
 - **No rank** (Good)
 - **No Prefix; pure digest** (Cosmically good)
 - **Opacity** - Supported. There is no node that's not allowed to be opaque.
-- **All metadata is derivable
-- **NO Activation Map** No signed tree heads, only arrow.  Activation map is
-  extra for any eml, it's not fundamental to EML.  I don't think STH should be
-  in EML anyway; provide mixing through serial concat.  External to EML that may
-  be signed. If pre is doing a serialized concat, Cyphr's way of doing this
-  should be canonical for EML.
+- **No signed tree heads (no STH's)** Signing is outside the scope of NEML,
+  although it can provide external guidance.
+- **No source of truth Activation Map**  Activation map is derived from the
+  Merkle tree which is the root truth and contains all derivable information.
+  The activation map is not fundamental to EML, it's metadata. 
 - **Global per-tree digest labeling** - All digests are of the same alg per
   tree.  Trees are then related to another.
 - **Retroactive Hashing Algorithm Addition**- If a resource, represented by a
@@ -297,5 +313,7 @@ MT.
   operating in log(n) time)
 - **hashing concrete/pre-image values is prohibited** The system works
   exclusively with digests.
+- **All metadata is derivable from the MT**  Not height is encoded into the
+  digest itself; it's proven, not a tracked external property.
 - **Frontier Stack and Activation Map are derived** They are data structures
   fully derivable from the MT which is the root source of truth.
