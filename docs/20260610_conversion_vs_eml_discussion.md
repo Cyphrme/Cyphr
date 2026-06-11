@@ -1,4 +1,7 @@
 ## Intro, MALT and EML:
+#### 2.2.10 MALT and EML
+MALT and EML are specific types of Merkle trees. See section [Commit](#4-commit)
+
 Importantly MALT enables succinct inclusion and consistency proofs, which
 increases client performance.  A MALT root is termed a **MALTR**. The commit
 tree (CT) up to the commit boundary is organized as a MALT in order to take
@@ -15,12 +18,12 @@ termed "certificate transparency (CT) trees".
 converted that that boundary to another supported hashing alg through a step
 called "conversion". 
 
-**EML**: Instead of conversion, it uses projection.  Nodes are allowed to be null.
+**EML**: Instead of conversion, it uses projection.  Null nodes are allowed on a
+per hash basis, but a node must be populated in one of the projections.
 
 Arrow with NEML Mixing: 
 -  Minimally, pre is all digest roots referred to in that commit.  Ideally, NEML
    provides that since NEML itself needs that function.
-
 
 CT's MALT uses coz actions as leaves, including the commit cozies. 
 
@@ -50,13 +53,13 @@ referenced by one to many algs, but not necessarily by a given alg.
 - **Mixing must be via hashing algorithm** Need some sort of mixing for 1.
 security and 2. relating nodes from multi-hash
 
-- Thinking about **Conversion**. Conversion is inputing one digest from one
+- Thinking about **Conversion**. Conversion is inputting one digest from one
 algorithm into another. Conversion provides important properties: state mixing,
 and the ability to drop an algorithm.   In the conversion tree, when an alg is
 dropped, it becomes converted at the last present node into other digest
 algorithms.  All hash algorithms have complete trees, but subtrees may not be in
 the root algorithm if it wasn't present Conversion translating between different
-hash algorithm trees. 
+hash algorithm trees.
 
 - **N-ary has "singleton promotion"** - This isn't as relevant in binary trees,
   it becomes much more useful in n-ary trees. 
@@ -79,8 +82,11 @@ because its a resource, should be updated to root.
 
 
 ## Zami thought: **Multi-hash Conversion, N-ary, Merkle Tree**
-- **One Logical Tree Per Principal** No separate trees per digest
-- **Arrow gets pre-mixed** Arrow gets a pre0mixed PR which is in one to many
+- **Proofs**: Inclusion and consistency. (No such thing as projection proof.
+  Conversion just needs support of each hashing algorithm.)
+- **Assumes only hashing algorithms** good, there's only a single class of
+  cryptography for this data structure.
+- **Arrow gets pre-mixed** Arrow gets a pre-mixed PR which is in one to many
   algs, one to many may be signed.
 - **Ordered**: Nodes have an order as specified by principal.
 - **Directionality** - Input of the ordered nodes matters.  H(X,O) is not equal to H(O,X)
@@ -104,7 +110,8 @@ symmetry.
 - **Arbitrary height** Past the commit boundary, a subtree may be shallow or
   deep as needed.
 - **Conversion**:  Multi-alg supported, Mixing through conversion at the time of
-  an alg drop.
+  an alg drop.  However, cryptographic digest security may be mixed.  The only
+  way to avoid mixing security is to use a single hashing algorithm.
 - **Tree Mixing**: There's only one tree. Cryptographic state mixing is handled
   by conversion. Since there is one tree, nodes always exist, although they may
   only be address by a subset of digests.
@@ -132,8 +139,11 @@ symmetry.
 
 
 ## Nrdxp thought: **Binary EML**
-- **One Logical Tree, One Tree Per Hash**
-- **Arrow** handles relating digests to one another where `pre` = H(
+- **Proofs**: Inclusion and consistency.  Cross-algorithm projection proofs are
+  implemented via STH (bad)
+- **Assumes digital signing algorithms** bad, we don't want to introduce a new class of
+  cryptography for this data structure.
+- **Arrow** handles relating digests to one another where `pre` = H(MR0_H0, MR0_H1, etc...)
 - **Ordered**
 - **Directionality**
 - **Left dense filled**
@@ -172,8 +182,8 @@ side for append, every "filled out" "subtree" is of the same size.
   tree.
 - **Node equivalency** through activation map.
 - **Leaf one-hash** Each node may have multiple hashes, they may be given
-  multiple hashes after the fact.  Leafs appear to always be of one type. (Leafs
-  need multi-hash support I think)
+  multiple hashes after the fact.  Leafs appear to always be of one type.
+  (Leafs need multi-hash support I think)
 - **No digest equivalency proof**.  Equivalency Proofs are only done in
   signatures, never digests. (Concern, we have to introduce new crypto for
   equivalency)
@@ -189,23 +199,67 @@ side for append, every "filled out" "subtree" is of the same size.
 
 
 ## Synthesis: **N-ary EML (NEML)**
+
 - **One logical Principal Tree**
-- **Binding Root** New step to EML, mixing and "cross relation"/ "binding" is
-  done via a combined root.  Each hashing algorithm has its own Binding root,
-  and the security of one algorithm is still not mixed with others.  For
-  example, with two hashing algorithms X and Y
+- **Proofs**: Inclusion, consistency, and a new category, **cross-algorithm
+  projection proofs**, aka "projection proof" using a binding root. No digital
+  signing algorithms are used in the primitive.
+- **Binding Root (BR)** New step to EML, is binding performed via a combined root.
 
-    CR_X = H_X(MR_X, MR_Y)
-    CR_Y = H_Y(MR_X, MR_Y)
+  ```
+  BR₀ = H₀(MR₀,MR₁)
+  BR₁ = H₁(MR₁, MR₀)
+  ```
 
-  However, it provides the "projection" proof (binding) from one hashing tree to
-  another, with hashing algorithm security (instead of signing security which is
-  bad). The order of the digests are in the order of appearance or as a tie
-  breaker as given. .  Arrow then uses the combined root as input for `pre`.
-  Eliminating a different class of crypto (digital signatures) is also very
-  good, instead of a signed tree head (STH) which is excluded from NEML now.  If
-  an algorithm is dropped, calculation stops at that step.
-  
+  Each hashing algorithm has its own Binding root as well as a normal MR. The
+  binding proof uses only digests.  The key cryptographic advantage of the NEML
+  is that the security of one algorithm is never mixed with others, even within
+  the BR; despite hashing another algorithm's digest, the security of the
+  external digest isn't relevant with the hash's own tree. Each algorithm hash
+  security is dependent only upon itself.
+
+  The from one hashing tree to another assumes hashing algorithm security .
+  Arrow then uses the BR as input for `pre`. This new design eliminates a class
+  of cryptography (digital signatures) is also very good, instead of a signed
+  tree head (STH, signing security which is bad)) which is excluded from NEML
+  now.
+
+**BR consistency Proof**: 
+To prove that BR₀ is consistent with (≘) BR₁, MR₀ and
+MR₁ also have to be given. Without MR₀ and MR₁, BR₀ consistency to BR₁ cannot be
+proven.  Clients must have support for both hashing algorithms.
+
+To prove bindings BR₀, BR₁ are consistent when given BR₀, BR₁, MR₀, MR₁:
+
+H₀(MR₀ || MR₁) == BR₀ H₁(MR₁ || MR₀) == BR₁
+
+Therefore, BR₀ ≘ BR₁
+
+With only a single alg, for inclusion and consistency only MR₀ is required along
+with appropriate nodes.
+
+If multiple algorithms are used, the MR and BR for each algorithm is required
+followed by a binding proof.
+
+- **Can't prove binding without Cyphr**
+Critically, binding roots must be trusted.  Cyphr provides BR trust. There's no
+possible proofs outside of proving given binding roots and given MR's
+inclusion/consistency and BR consistency.
+
+For example, there doesn't exist a cross-algorithm binding proof that can show
+that node A₀ in hash tree H₀ correlates to node A₁ in hash tree H₁.  Without
+Cyphr, an attacker can provide an naive prover with arbitrary BRs.  The attacker
+can spoof a dishonest BR for a dishonest MT.  
+
+NEML can't prove cross consistency without hashing the concrete object, however,
+and critically, **hashing concrete/preimage values is prohibited for the proving
+system**.  Only digests are provided and preimage verification is strictly
+prohibited for this primitive.  After the fact a client may verify that a
+resource correlates to a specific preimage, but that is outside of the scope for
+MT.
+
+- **Algorithm Dropping** - If an algorithm is dropped, calculation stops at that
+  point. (fantastic)  However, it might be too hard to pull this off with a BR.
 - **Ordered** (Nodes are ordered as given by principal)
 - **Directionality**
 - **Left dense filled** No gaps in the tree (except for interior null
@@ -238,13 +292,10 @@ side for append, every "filled out" "subtree" is of the same size.
   should be canonical for EML.
 - **Global per-tree digest labeling** - All digests are of the same alg per
   tree.  Trees are then related to another.
-
 - **Retroactive Hashing Algorithm Addition**- If a resource, represented by a
   node, adds an algorithm, then a new root is calculated (Should be performant,
   operating in log(n) time)
+- **hashing concrete/pre-image values is prohibited** The system works
+  exclusively with digests.
 - **Frontier Stack and Activation Map are derived** They are data structures
   fully derivable from the MT which is the root source of truth.
-
-
-
-

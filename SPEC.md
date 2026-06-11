@@ -102,7 +102,7 @@ forward state tree (ST).
 | **Key Root**          | KR  | Merkle root of keys `MR(tmb₁, tmb₂, ...)`      |
 | **Rule Root**         | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`   |
 | **Data Root**         | DR  | Merkle root of user data actions               |
-| **Commit Root**       | CR  | MALTR of transactions `MALTR(TR₀, TR₁?, ...)`  |
+| **Commit Root**       | CR  | MR of transactions `MR(TR₀, TR₁?, ...)`  |
 | **Tip**               | -   | The latest PR (digest identifier)              |
 | **Trust Anchor**      | TA  | Last known valid state for a principal         |
 | **Action**            | -   | A signed coz identified by `typ`, basis of AAA |
@@ -164,12 +164,16 @@ content, and/or ensure uniqueness. See section [Nonce](#102-nonce).
 
 #### 2.2.9 Merkle Tree
 
-A **Merkle tree** (MT) is a binary hash tree where each leaf is a hash of data
-and each non-leaf node is the hash of its two children, culminating in a single
-**Merkle root** (MR). 
+A **Merkle tree** (MT) is a hash tree where each leaf is a hash and each
+non-leaf node is the hash of its children, culminating in a single **Merkle
+root** (MR). More specifically, Cyphr uses a specific n-ary, arbitrarily
+structured Merkle tree (**NMT**). See section [Commit](#4-commit)
 
-#### 2.2.10 MALT and EML
-MALT and EML are specific types of Merkle trees. See section [Commit](#4-commit)
+#### 2.2.10 NEML
+A N-ary Epoch Merkle Log (NEML) is a type of Merkle tree that supports many
+hashing algorithms without mixing the digests.  It is multi-hash, n-ary,
+unbalanced (non-symmetrical), left filled, and append only.  See section
+[Commit](#4-commit)
 
 #### 2.2.11 Commit
 
@@ -2061,7 +2065,7 @@ security judgments are out-of-scope.
 
 In summary:
 
-- PR, AR, KR and nodes in the Merkle trees are referenced by multihash
+- PR, SR, AR, KR and nodes in the Merkle trees are referenced by multihash
   identifiers, with one variant per hash algorithm.
 - Digests are computed for all hashing algorithms referenced in KT (keys,
   embeddings).
@@ -2125,7 +2129,7 @@ computed under some hash algorithm):
   active key natively supports it.
 
 ### 12.2.2 MALT and MultiHash
-MALT is implemented as a EML.  See Appendix.
+Multihash MALT is implemented as a NEML.  See Appendix.
 
 ### 12.3 Conversion
 
@@ -2151,7 +2155,7 @@ identifier for that hashing algorithm.
                       |
           ┌───────────┼───────────┐
           │                       │
-          │               SHA-384(Node B)
+          │               SHA-384(Node B) <- Conversion step
           │                       │
    ┌─────────────┐         ┌─────────────┐
    │   Node A    │         │   Node B    │
@@ -2240,7 +2244,7 @@ Unlike existing gossip protocols where there is no authority on a particular
 piece of data, Principals are the authority over their own state.
 
 // TODO
-**Proover** 
+**Prover** 
 **Verifier**
 
 **Client levels**
