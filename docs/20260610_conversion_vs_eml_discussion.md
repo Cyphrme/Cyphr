@@ -114,21 +114,24 @@ symmetry.
 - **Conversion**:  Multi-alg supported, Mixing through conversion at the time of
   an alg drop.  However, cryptographic digest security may be mixed.  The only
   way to avoid mixing security is to use a single hashing algorithm.
-- **Tree Mixing**: There's only one tree. Cryptographic state mixing is handled
-  by conversion. Since there is one tree, nodes always exist, although they may
-  only be address by a subset of digests.
-- **State Mixing**: Same mechanism as Tree mixing
+- **Tree Mixing**: There's only one tree. Cryptographic state mixing (binding)
+  is handled by conversion. Since there is one tree, nodes always exist,
+  although they may only be address by a subset of digests.
+- **State Mixing (binding)**: Same mechanism as Tree mixing, conversion.
 - **One tree**: The single Principal tree is inclusive of all algs
 - **Node hash n-ary addressing** - A node may be addressed by many algorithms
-- **Rank** Principals can specify rank, where algs are selected on conversion
-  when dropped.
+- **No Rank** Originally I feared principals can specify rank, where algs are
+  selected on conversion when dropped.  Then I figured out this isn't needed;
+  simply convert to each supported alg.  Rank was dropped form the spec about
+  two months ago.
 - **No Prefix; pure digest**  Cryptographic content identifiers is a killer
   feature.  (The RFC 9162's architectural justification is nonsense, other there
   may be merit for other reasons.  However, for our use it is an anti-pattern.)
 - **Opacity** - A node doesn't know necessarily know the number of its children
   unless disclosed. A node may be a leaf or an inner node, it's unknown until
   proven.  Embeddings may be subtrees or concrete items, this is supported.
-- **No Activation/Signed tree head** Only arrow is signed.
+- **No Activation/Signed tree head** Only arrow is signed, this is external to
+  tree primitive.
 - **Individual nodes hash alg labeling** - Hash alg needs to be known.
 - **Node equivalency** through single tree.
 - **Node Multi-hash, Leaf Multi-hash** Each node may have multiple hashes, they
@@ -290,8 +293,15 @@ MT.
 - **Left dense filled** No gaps in the tree (except for interior null
   boundaries)
 - **Unbalanced** (The tree does not require symmetry)
-- **Append Only**: The datastructure is only forward mutable.  Past nodes are
+- **CT Append Only**: The datastructure is only forward mutable.  Past nodes are
    immutable.  For ST, if we are using NEML, we need a mutable mode however.
+   Also remember, when a resource is added in a tree that currently had it
+   listed as null, that could cause a retroactive update, this should be
+   supported. 
+- **Mutable Mode** Support a mutation/not-append only mode for PT, ST, DT, AT,
+  RT.  If we're using one datastructure for the whole of the principal, we need
+  to specify that CT is append only and that other nodes are not necessarily
+  required to be. 
 - **Promotion**
   - Singleton promotion
   - n-ary null promotion - A tree may have a null boundary
@@ -299,11 +309,13 @@ MT.
 - **CT up is binary** from transaction root up is binary, from TR down is n-ary.
 - **Arbitrary structure**  (Nodes are constructed as desired)
 - **Arbitrary height** (Nodes may have one to infinite depth of children)
-- **No conversion**; Mixing through Combined Root
+- **No conversion**; Binding through Combined Root
    - **Handled Mixing** through Combined Root
 - **No tree Mixing** Each algorithm keeps its own independent hash tree. (Good)
-- **Many Trees** - Each algorithm has it's tree, one hash tree is projected onto
-  another algorithm's hash tree.
+- **No state mixing** Since there isn't conversion, there is no state mixing.
+  The BR's have to be trusted from Cyphr. 
+- **Many Hash Trees (Many "projections"); one logical tree** - Each algorithm
+  has it's tree, one hash tree is projected onto another algorithm's hash tree.
 - **Multi-Alg/Single-Alg Node addressing** Multiple references are supported.
   Each node must have at least one reference in a supported tree.
 - **No rank** (Good)
