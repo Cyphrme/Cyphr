@@ -169,24 +169,38 @@ non-leaf node is the hash of its children, culminating in a single **Merkle
 root** (MR). More specifically, Cyphr uses a specific n-ary, arbitrarily
 structured Merkle tree (**NMT**). See section [Commit](#4-commit)
 
-#### 2.2.10 NEML
-A N-ary Epoch Merkle Log (NEML) is a type of Merkle tree that supports many
-hashing algorithms without mixing the digests.  It is multi-hash, n-ary,
-unbalanced (non-symmetrical), left filled, and append only.  See section
-[Commit](#4-commit)
+#### 2.2.10 Singleton Promotion
 
-#### 2.2.11 Commit
+**Singleton promotion** is the elevation of a Merkle tree node digest to a
+parent slot without additional hashing when a tree component has only one node
+value.
+
+**Collapse** When children are of equal value, the parent assumes the value of
+the children without re-hashing.
+
+Promotion an collapse are recursive; items deep in a tree can be promoted to the
+root level. For example, when a principal has only a single key, the key's `tmb`
+is promoted to KR without additional hashing.
+
+For NEML, a node may be null, and if children are null their null value is
+collapsed and promoted to the parent.  This results in the **null boundary**,
+there non-null values are rooted with nulls.
+"log" vs "tree" TODO Merkle Logs are append only, trees are  Spine is the linear path to the proof.
+
+#### 2.2.10 NEML
+A N-ary Epoch Merkle Log (NEML) is a multihash, n-ary, append only, unbalanced
+(non-symmetrical), left filled Merkle tree.  It is multi-hash, n-ary, and append
+only.  See section [Commit](#4-commit).
+
+
+See section [Commit](#4-commit).
+
+
+
+#### 2.2.12 Commit
 
 A **commit** is a finalized bundle of transaction cozies that mutate PT and
 result in a new PR. See section [Commit](#4-commit).
-
-#### 2.2.12 Implicit Promotion
-
-**Implicitly promoted** is the elevation of a node digest to a parent slot
-without additional hashing when a tree component has only one node. Promotion is
-recursive; items deep in a tree can be promoted to the root level. For example,
-when a principal has only a single key, the key's `tmb` is promoted to KR
-without additional hashing.
 
 #### 2.2.13 Embedding
 
@@ -237,11 +251,12 @@ Cyphr requires specific Coz semantics. All cozies must have the fields:
    [Fork](#1152-fork).
 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
 
-Authorization is determined by which state components exist.  Authorization has three conditions:
+Authorization is determined by which state components exist.  Authorization has
+three conditions:
 
 1. **Antecedent Authorization Gate**: Every authentication component required to
-   apply an action (keys, rules) must already be active before the
-   transaction is applied.
+   apply an action (keys, rules) must already be active before the transaction
+   is applied.
 2. **Capability gate**: The principal must have the components required for an
    operation. For example, principal genesis is required for commits, data
    actions require DT commit inclusion. The Rule Tree (RT) may define additional
@@ -249,7 +264,6 @@ Authorization is determined by which state components exist.  Authorization has 
 3. **Lifecycle gate**: The principal's current lifecycle state must permit the
    operation. For example, a frozen principal rejects mutations; a deleted
    principal rejects everything. (See section [Lifecycle](#11-lifecycle).)
-
 
 #### 2.3.3 AT/DT Duality
 
@@ -340,10 +354,11 @@ Canonical Root Algorithm:
 
 1. **Collect** component digests (including embedding/nonce if present). Empty
    components are omitted.
-2. **Sort** lexicographically (byte comparison) unless otherwise defined. If
-   sort order is defined, lexical byte order is the tie breaker. For MALT node
-  order is strictly defined.
-3. **Implicitly Promote** without hashing if only one digest component exists.
+2. **Sort** lexicographically (byte comparison) unless sort order is otherwise
+   defined, in which case lexical byte order is the tie breaker.
+3. **Promote** without hashing if only one digest component exists, including
+   null promotion.  Collapse if all children are of equal value, the parent's
+   value is collapsed to also be equal without hashing.
 4. **Merkle Root** Calculate the Merkle root by hashing. 
 ```
 Root = MR(d₀, d₁?, ...)
@@ -417,11 +432,11 @@ section [Commit](#4-commit).
 
 #### 3.7.6 Commit Root
 
-Commit Root (CR) is the MALT root (MALTR) of the commit tree (CT). Each
+Commit Root (CR) is the EML root (EMLR) of the commit tree (CT). Each
 node in the CT is a transaction root (TR).
 
 ```
-  CR = MALTR(TR₀, TR₁?, ...)
+  CR = EMLR(TR₀, TR₁?, ...)
 ```
 
 #### 3.7.7 Data Root
@@ -451,12 +466,15 @@ For example, a commit may have three transactions: one transaction for
 `key/create`, signed by one key and consisting of one coz, and a
 `commit/create`, finalizing the commit.
 
-### MALT and EML
-A **MALT** (Merkle Append only Log Tree) as defined by RFC 9162 is a type of
-Merkle tree.  A MALT is is an ordered, append only, unbalanced, binary, dense
-left filled, Merkle tree.  A more advanced form of MALT is an Epoch Merkle Log
-(**EML**), which supports multiple hashes over distinct time frames (epochs).
-Since Cyphr trees are n-ary, a variant **NEML** is used.
+### Merkle Trees:  Multihash, N-ary
+A **MAL** (Merkle Append only Log, RFC 9162) is is an ordered, append only
+(forward mutable), dense left filled, and unbalanced Merkle tree.  A more
+advanced form of MAL is the Epoch Merkle Log (**EML**), which supports multiple
+hashes over distinct time frames (epochs), n-arity, promotion, and collapse.
+
+Implementations should not that Cyphr has append only components (CT) as well as
+components that may run in mutable mode (ST, AT, RT, DT).  An implementation's
+Merkle tree primitive must be able to support arity.
 
 
 
@@ -533,9 +551,9 @@ proof of error (see section [Proof of Error](#152-proof-of-error)).
 
 ### 4.4 Commit Tree
 
-The **Commit Tree (CT)** consists of all principal commits organized as a MALT.
-Commit Root (CR) is the MALTR of all commits. Clients obtain inclusion and
-consistency proofs for specific commits.
+The **Commit Tree (CT)** consists of all principal commits. Commit Root (CR) is
+the append only MR of all commits. Clients obtain inclusion and consistency
+proofs for specific commits.
 
 ### 4.5 Trust Anchor
 
@@ -609,8 +627,8 @@ Transaction:
   transaction.
 
 State meta:
-- `pre_CT`: <b64ut> MALT(TR₀, TR₁?, ...)
-- `pre_CR`: <b64ut> MALTR(TR₀, TR₁?, ...)
+- `pre_CT`: <b64ut> MT(TR₀, TR₁?, ...) the tree before the commit.
+- `pre_CR`: <b64ut> MR(TR₀, TR₁?, ...) the root before the commit.
 - `pre_SR`: <b64ut> The state tree root before commit.
 - `pre_AR`: <b64ut> The key tree root before commit.
 - `pre_KR`: <b64ut> The auth tree root before commit.
@@ -695,14 +713,13 @@ transaction is signed, which updates the value of DR in the PR tree:
 
 #### 4.8.3 DT Organization
 
-As a Merkle Tree, DT provides broad flexibility. Nodes may represent Merkle
-DAGs, Map/Trie-Based Structures (e.g., Sorted Merkle Maps, Merkle Patricia
-Tries, Verkle Trees), Sparse Merkle Trees, History/Versioned Merkle Trees, or
-hybrid/pluggable approaches. Principal may construct DT in MALT mode as an
-append only, verifiable data structure. Clients may maintain subtrees per
-application or per account, and handle deletion via tombstones or direct
-removal. DT organization for specific applications is beyond the scope of this
-document.
+As a Merkle Tree, DT provides broad flexibility. Principal may construct DT in
+append only mode. Nodes may represent Merkle DAGs, Map/Trie-Based Structures
+(e.g., Sorted Merkle Maps, Merkle Patricia Tries, Verkle Trees), Sparse Merkle
+Trees, History/Versioned Merkle Trees, or hybrid/pluggable approaches. Clients
+may maintain subtrees per application or per account, and handle deletion via
+tombstones or direct removal. DT organization for specific applications is
+beyond the scope of this document.
 
 While not strictly defined by this protocol, applications (authorities) may
 impose additional structure and rules on DT.  Principals are free to comply or
@@ -712,18 +729,16 @@ result in non-consensus.
 
 #### 4.9 Tombstones 
 
-When ST is organized as a MALT or any other immutable datastructure, it is
-append-only. Existing nodes cannot be physically removed or altered.
-
-A **tombstone** is a marker value used to represent a deleted, logically
-removed, or otherwise mutated element without physically removing it from the
-underlying immutable structure. Tombstoning is semantic, not syntactic.
-Mutations are applied through a normal coz using a standard typ (e.g. `*/delete`
-or `*/update`) that points to the prior action or resource via the `id` field.
-Clients maintain an internal index that follows tombstone pointer chains to
-resolve the latest valid state for a given item. This provides performant
-lookups while preserving the full immutable history for verification and
-auditability. Clients may prune superseded content as desired.
+When ST is organized as an append-only datastructure, existing nodes cannot be
+physically removed or altered. A **tombstone** is a marker value used to
+represent a deleted, logically removed, or otherwise mutated element without
+physically removing it from the underlying immutable structure. Tombstoning is
+semantic, not syntactic. Mutations are applied through a normal coz using a
+standard typ (e.g. `*/delete` or `*/update`) that points to the prior action or
+resource via the `id` field. Clients maintain an internal index that follows
+tombstone pointer chains to resolve the latest valid state for a given item.
+This provides performant lookups while preserving the full immutable history for
+verification and auditability. Clients may prune superseded content as desired.
 
 ---
 
@@ -738,7 +753,7 @@ implicitly, while Levels 3 and above use an explicit genesis commit.
 
 - Multikey is not supported. The principal exists with a single key.
 - No commit or PG exists.
-- `PR` == `tmb` of the single key (via implicit promotion, `tmb` == KR == AR ==
+- `PR` == `tmb` of the single key (via singleton promotion, `tmb` == KR == AR ==
   PR).
 
 **Genesis Commit (Levels 3+)**
@@ -2127,9 +2142,6 @@ computed under some hash algorithm):
 - **Nonce injection**: A nonce carrying a desired hash algorithm can be inserted
   as a child into KT to force computation of that algorithm variant even if no
   active key natively supports it.
-
-### 12.2.2 MALT and MultiHash
-Multihash MALT is implemented as a NEML.  See Appendix.
 
 ### 12.3 Conversion
 
@@ -3584,9 +3596,9 @@ should warn and appropriately and remove support for deprecated algorithms.
 ### Appendix 4: External Tools and Projects
 
  - O(logN) Hash Transitions: Algorithm-Independent Verification in Append-Only
-Logs (EML): https://eml-paper.netlify.app
+   Logs (EML): https://eml-paper.netlify.app
    - Related: Certificate Transparency V2 9162
-   -  History Tree (Precursor to certificate transparency/MALT, from "Efficient
+   -  History Tree (Precursor to certificate transparency/MAL, from "Efficient
    Data Structures for Tamper-Evident Logging", Crosby, Wallach)
    https://static.usenix.org/event/sec09/tech/full_papers/crosby.pdf
  - Fjall - Nosql key-value storage engine https://github.com/fjall-rs/fjall
@@ -3608,10 +3620,21 @@ as long as genesis does not result in the same PG. Any set of keys that has not
 been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
-#### MALT as a modern transparency log
+#### RFC 9162 Merkle Append only Log (MAL) and N-ary Epoch Merkle Log (NEML)
+
+A **MAL** (Merkle Append only Log) as defined by RFC 9162 is an ordered, append
+only (forward mutable), dense left filled, and unbalanced Merkle tree.  A
+advanced form is the N-ary Epoch Merkle Log (**NEML**), which supports multiple
+hashes over distinct time frames (epochs) and supports promotion and collapse.
+"Certificate Transparency Tree" is avoided as the datastructure is more
+generalized than certificate transparency.
 
 Implementations may choose to expose the commit tree (CT) via tiled static
 storage for efficiency.
+
+Although the specific MT datastructure may enforce various properties,
+properties as specified by this document should be enfored by the Cyphr client.
+(That itself may be enforced by the MT primitive or at the client level. 
 
 #### Digest Labeling
 
@@ -3725,12 +3748,11 @@ an alternative interaction model:
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
 - I think we can remove pinning
+- Historical Mode - past hashing algos that are no longer supported, the trust
+  of the payloads should not depend upon the hashes themselves. This property should likely be generic anyway, so 
+- DDOS and not providing Meta
+- Define bounded sizes (e.g. a node cannot be larger than 1 MB for clients,
+  helps protect)
+- high precision time `now`
 
-DDOS and not providing Meta // TODO
 
-TODO define bounded sizes (e.g. a node cannot be larger than 1 MB for clients, helps protect)
-
-
-
-TIM TODO:
-1. Malt with 1. no prefix mod and implicit promotion mode.

@@ -204,17 +204,28 @@ side for append, every "filled out" "subtree" is of the same size.
 
 
 
-## Synthesis: **N-ary EML (NEML)**
-- **One logical Principal Tree**
+## Synthesis:  **EML (NEML, but EML is now inclusive of N-ary so it's just EML)**
+- Zami summary for neophytes: Four critical key features: 
+  - One logical tree, multihash projection (one virtual tree for each hash)
+  - Singleton promotion/collapse (including null)
+  - Supports append only mode. (With a mutable mode for non-CT components)
+    - The append only mode uses Merkle Mountain Ranges: ephemeral hashes are not used in proofs.
+- **One logical Principal Tree** Many "projections"/"virtual trees"/"physical trees".
 - **Proofs**: Inclusion, consistency, and a new category, **cross-algorithm
   binding proofs**, aka "binding proof" using a binding root. No digital signing
   algorithms are used in the primitive.
 - **Binding Root (BR)** New step to EML, is binding performed via a combined
-  root.  Binding is provided through serial concat. 
+  root.  Binding is provided through serial concat.
 
   ```
   BR₀ = H₀(MR₀,MR₁)
   BR₁ = H₁(MR₁, MR₀)
+  ```
+
+  When there is only one hashing algorithm in use, the MR is promoted to BR
+
+  ```
+  BR₀ = MR₀
   ```
 
   Each hashing algorithm has its own Binding root as well as a normal MR. The
@@ -230,9 +241,18 @@ side for append, every "filled out" "subtree" is of the same size.
   tree head (STH, signing security which is bad)) which is excluded from NEML
   now.
 
+  With one hash, there is one virtual tree and the tree must be full and there
+  is no null leafs.
+
 **BR consistency Proof**: To prove that BR₀ is consistent with (≘) BR₁, MR₀ and
 MR₁ also have to be given. Without MR₀ and MR₁, BR₀ consistency to BR₁ cannot be
 proven.  Clients must have support for both hashing algorithms.
+
+ When there is only one hashing algorithm in use, the MR is promoted to BR
+
+```
+BR₀ = MR₀
+```
 
 To prove bindings BR₀, BR₁ are consistent when given BR₀, BR₁, MR₀, MR₁:
 
@@ -267,8 +287,9 @@ If multiple algorithms are used, the MR and BR for each algorithm is required
 followed by a binding proof.
 
 - **Can't prove binding without Cyphr** Critically, binding roots must be
-trusted.  Cyphr provides BR trust. There's no possible proofs outside of proving
-given binding roots and given MR's inclusion/consistency and BR consistency.
+trusted.  Cyphr provides BR trust. There can be no possible NEML proofs outside
+of proving given binding roots are derived from given MR's (BR consistency
+proof), and inclusion/consistency.
 
 For example, there doesn't exist a cross-algorithm binding proof that can show
 that node A₀ in hash tree H₀ correlates to node A₁ in hash tree H₁.  Without
@@ -288,6 +309,9 @@ MT.
   there's no cryptographic digest security mixing.
 - **Algorithm Dropping** - If an algorithm is dropped, calculation stops at that
   point. (fantastic)  However, it might be too hard to pull this off with a BR.
+  However, I don't think it's a problem if the digest continues to appear in BR
+  calculations; it could be either way, the digest is dropped or continues to
+  appear.  The costs appear negligible.
 - **Ordered** (Nodes are ordered as given by principal)
 - **Directionality**
 - **Left dense filled** No gaps in the tree (except for interior null
@@ -297,7 +321,8 @@ MT.
    immutable.  For ST, if we are using NEML, we need a mutable mode however.
    Also remember, when a resource is added in a tree that currently had it
    listed as null, that could cause a retroactive update, this should be
-   supported. 
+   supported. However, since CT is cozies, this isn't a problem for CT, only the
+   rest of PT.
 - **Mutable Mode** Support a mutation/not-append only mode for PT, ST, DT, AT,
   RT.  If we're using one datastructure for the whole of the principal, we need
   to specify that CT is append only and that other nodes are not necessarily
@@ -337,3 +362,13 @@ MT.
   digest itself; it's proven, not a tracked external property.
 - **Frontier Stack and Activation Map are derived** They are data structures
   fully derivable from the MT which is the root source of truth.
+- **Projections/Virtual Trees must be the same size** Trees of difference sizes
+  are in error. The logical tree should carry size meta data.
+
+
+Concerns:
+1. Multi Alg Addressing: make sure that one node is addressable by multiple
+   algorithms.
+2. Missing Node: How do we test if a node is missing from all virtual trees?
+3. Do we need better structure?  Yes, we can relate one projection to another,
+   sequence should be enough.
