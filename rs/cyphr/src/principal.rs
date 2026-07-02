@@ -4,12 +4,14 @@
 use std::collections::BTreeMap;
 
 use coz::Thumbprint;
+use eml::Hasher as _;
 use indexmap::IndexMap;
 
 use crate::action::Action;
 use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::multihash::MultihashDigest;
 use crate::parsed_coz::VerifiedCoz;
 use crate::principal_tree::PrincipalTree;
 use crate::semantic_tree::{KeyTree, StateTree, derive_state_roots};
@@ -679,6 +681,87 @@ impl Principal {
         self.commit_trees
             .consistency_proof(alg_id, old_size)
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
+    }
+
+    /// Verify that transaction `tr`, claimed at commit `index`, is really
+    /// included under this principal's *current* Principal Root (PR), for
+    /// hash algorithm `alg` — by chaining two independent, already-existing
+    /// inclusion proofs. No new composite proof type is introduced:
+    ///
+    /// 1. **Hop 1** — `tr` included in the Commit Root (CR): the commit
+    ///    log's own inclusion proof ([`Self::inclusion_proof`], verified
+    ///    with [`crate::verify_inclusion`]).
+    /// 2. **Hop 2** — CR, as PT cell 1's payload, included in PR: the
+    ///    Principal Tree's own inclusion proof
+    ///    ([`PrincipalTree::cr_inclusion_proof`], verified with
+    ///    [`eml::LeafProof::verify`]).
+    ///
+    /// The hops are bridged explicitly: hop 2's proven leaf value must equal
+    /// hop 1's proven CR root. Without that check the two hops would each
+    /// verify independently true facts about two *unrelated* trees; the
+    /// bridge is what makes them jointly prove `tr` sits under the current
+    /// PR specifically.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT/PT
+    ///   registration, or has no committed CR yet (a genesis principal has
+    ///   nothing to chain through PT cell 1 — there is no valid `index` to
+    ///   call this with).
+    /// - Propagates [`Error`] for an out-of-bounds commit `index`.
+    pub fn verify_transaction_inclusion(
+        &self,
+        alg: HashAlg,
+        index: u64,
+        tr: &MultihashDigest,
+    ) -> Result<bool> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        let hasher = crate::commit_root::MaltHasher::new(alg);
+
+        // Hop 1: tr included in CR.
+        let hop1_proof = self.inclusion_proof(alg, index)?;
+        let tree_size = self
+            .commit_trees
+            .tree_size(alg_id)
+            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+        let cr = self
+            .cr
+            .as_ref()
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let cr_bytes = cr
+            .as_multihash()
+            .get(alg)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+
+        let mut mapped = BTreeMap::new();
+        for (&a, digest) in tr.variants() {
+            mapped.insert(crate::commit_root::hash_alg_to_u64(a), digest.clone());
+        }
+        let serialized = serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)?;
+        let leaf_hash = hasher.leaf(&serialized);
+
+        let hop1_ok =
+            crate::verify_inclusion(&hasher, &leaf_hash, index, tree_size, &hop1_proof, cr_bytes);
+
+        // Hop 2: CR (PT cell 1) included in PR.
+        let hop2_proof = self
+            .pt
+            .cr_inclusion_proof(alg_id)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let pr_bytes = self
+            .pr
+            .0
+            .get(alg)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let hop2_skeleton =
+            eml::rebalanced_skeleton(hop2_proof.tree_size, hop2_proof.arity, hop2_proof.index)
+                .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let hop2_ok = hop2_proof.verify(&hasher, &hop2_skeleton, pr_bytes);
+
+        // Bridge: hop 2's proven leaf is exactly hop 1's proven CR root.
+        let bridge_ok = hop2_proof.leaf_hash == cr_bytes;
+
+        Ok(hop1_ok && hop2_ok && bridge_ok)
     }
 
     /// Begin a new commit scope.
@@ -1963,6 +2046,146 @@ mod tests {
                 crate::verify_inclusion(&hasher, &leaf_hash, i, size, &proof, &root),
                 "inclusion proof failed for index {i}"
             );
+        }
+    }
+
+    // ========================================================================
+    // Two-step transaction inclusion verification (composite hop 1 + hop 2)
+    // ========================================================================
+
+    /// Helper: build a multi-algorithm principal (ES256/SHA-256 +
+    /// Ed25519/SHA-512) with N commits via key/create transactions —
+    /// mirrors `build_principal_with_commits` but drives two active hash
+    /// algorithms from genesis, so per-algorithm coverage is observable (a
+    /// single-algorithm principal cannot distinguish `root(alg_id)` from
+    /// `combined_root()`, per `multi_alg_genesis_pg_equals_sr_for_every_algorithm`).
+    fn build_multi_alg_principal_with_commits(n_commits: usize) -> (Principal, Vec<Key>) {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let mut keys = vec![make_test_key(0x01), make_test_key_ed25519(0x02)];
+        let mut principal = Principal::explicit(keys.clone()).unwrap();
+        let signer = keys[0].tmb.clone();
+
+        for i in 0..n_commits {
+            let new_key = make_test_key((i + 3) as u8);
+            let pre = principal.pr().clone();
+
+            let cz = ParsedCoz {
+                kind: CozKind::KeyCreate {
+                    pre,
+                    id: new_key.tmb.clone(),
+                },
+                signer: signer.clone(),
+                now: (1000 + (i as i64 + 1) * 1000),
+                czd: Czd::from_bytes(vec![0xC0 + i as u8; 32]),
+                hash_alg: HashAlg::Sha256,
+                arrow: None,
+                raw: dummy_coz_json(),
+            };
+
+            principal
+                .apply_transaction_test(cz, Some(new_key.clone()))
+                .unwrap();
+            keys.push(new_key);
+        }
+
+        (principal, keys)
+    }
+
+    /// c2/a2 — the composite two-step verification accepts every real
+    /// committed transaction, under every active hash algorithm, for a
+    /// multi-algorithm principal — proving the transaction is really
+    /// included under the *current* Principal Root, not just under some CR.
+    #[test]
+    fn two_step_verification_accepts_every_commit_every_algorithm() {
+        let (principal, _keys) = build_multi_alg_principal_with_commits(4);
+
+        for alg in [HashAlg::Sha256, HashAlg::Sha512] {
+            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+            let size = principal.commit_trees().tree_size(alg_id).unwrap();
+            for i in 0..size {
+                let tr = principal.commits().nth(i as usize).unwrap().tr().0.clone();
+                assert!(
+                    principal.verify_transaction_inclusion(alg, i, &tr).unwrap(),
+                    "composite verification failed for alg {alg:?} index {i}"
+                );
+            }
+        }
+    }
+
+    /// c3/a3 — a genuine transaction claimed at the wrong index must be
+    /// rejected (not silently accepted, not panic).
+    #[test]
+    fn two_step_verification_rejects_wrong_index() {
+        let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+        let alg = HashAlg::Sha256;
+
+        // tr0 genuinely sits at index 0, not 1.
+        let tr0 = principal.commits().next().unwrap().tr().0.clone();
+        let ok = principal.verify_transaction_inclusion(alg, 1, &tr0).unwrap();
+        assert!(!ok, "wrong index must not verify");
+    }
+
+    /// c3/a3 — a forged transaction (wrong claimed leaf value) must be
+    /// rejected at the claimed index.
+    #[test]
+    fn two_step_verification_rejects_forged_transaction() {
+        let (principal, _keys) = build_multi_alg_principal_with_commits(3);
+        let alg = HashAlg::Sha256;
+
+        let forged = MultihashDigest::from_single(alg, vec![0xEE; 32]).unwrap();
+        let ok = principal
+            .verify_transaction_inclusion(alg, 0, &forged)
+            .unwrap();
+        assert!(!ok, "forged transaction must not verify");
+    }
+
+    /// c3 attempted the mandatory "wrong skeleton function for a hop"
+    /// negative test — but empirically, `mountain_skeleton` and
+    /// `rebalanced_skeleton` are byte-identical for every `(arity, size,
+    /// index)` this sweeps, at every arity from 2 through 8, not just the
+    /// arity-2 this crate actually uses for both CT and PT. This is not a
+    /// coincidence: `cml::mountain::bag_peaks`'s doc comment
+    /// (`../eml/cml/src/mountain.rs:15-17`) states outright that "`bag_peaks`
+    /// is byte-identical to that [`fold_frontier`] fold at every arity" —
+    /// the same fold `cmt::shape::build`/`rebalanced_skeleton` use. Both
+    /// skeleton generators are built from the same shared
+    /// `frontier_for_size` and `fold_frontier` primitives
+    /// (`../eml/cml/src/mountain.rs:51`, `../eml/cmt/src/shape.rs:20`), so
+    /// their output cannot diverge.
+    ///
+    /// PLAN.md's mandatory negative test — "deliberately compute hop 1's
+    /// skeleton with rebalanced_skeleton instead of mountain_skeleton...
+    /// and confirm verification fails" — therefore cannot be constructed:
+    /// there is no "wrong" skeleton to substitute, so no false-accept is
+    /// possible via this specific substitution, at any arity. This is an
+    /// architecture-level finding (a premise refuted by the current `eml`
+    /// library, post-MMR-migration), not a gap this node's code introduces
+    /// or can route around — flagged in the node report for the lead
+    /// maintainer/architect seat to judge, per the "constraint cannot
+    /// actually be satisfied as specified" reserved-predicate class.
+    ///
+    /// This test still records the actual (surprising, load-bearing)
+    /// invariant as a regression guard: if a future `eml` change ever makes
+    /// these two functions diverge, this test starts failing and the
+    /// composite's topology-pinning assumption needs re-examination.
+    #[test]
+    fn mountain_and_rebalanced_skeletons_are_identical_at_every_arity() {
+        for k in [2u64, 3, 4, 5, 8] {
+            for size in [2u64, 3, 4, 7, 11, 13, 15, 20, 31, 100] {
+                for idx in 0..size {
+                    assert_eq!(
+                        eml::mountain_skeleton(k, size, idx),
+                        eml::rebalanced_skeleton(size, k, idx),
+                        "k={k} size={size} idx={idx}: mountain_skeleton and \
+                         rebalanced_skeleton diverged — if this fires, the \
+                         wrong-topology negative test PLAN.md mandates is \
+                         constructible again and should be added"
+                    );
+                }
+            }
         }
     }
 
