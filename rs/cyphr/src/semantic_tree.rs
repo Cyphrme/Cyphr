@@ -639,3 +639,90 @@ mod oracle_tests {
         );
     }
 }
+
+/// c-liveness-payload-inertness: a stale/foreign algorithm's entry inside a
+/// cell's JSON payload map must be provably inert — each algorithm's
+/// identity-extract [`MaltHasher`] only ever reads its own map entry, never
+/// the map's full bytes, so injecting a foreign algorithm's variant into a
+/// live cell must not change any live algorithm's root, at any node type.
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use crate::state::StateDigest;
+
+    /// An arbitrary alg_id no `HashAlg` variant maps to — simulates an
+    /// unregistered/foreign algorithm's leftover payload entry.
+    const FOREIGN_ALG_ID: u64 = 999;
+
+    fn payload_with_foreign(native_alg: HashAlg, bytes: &[u8]) -> Vec<u8> {
+        let mut mapped: BTreeMap<u64, Box<[u8]>> = BTreeMap::new();
+        mapped.insert(hash_alg_to_u64(native_alg), bytes.to_vec().into_boxed_slice());
+        mapped.insert(FOREIGN_ALG_ID, vec![0xFF; 32].into_boxed_slice());
+        serde_json::to_vec(&mapped).unwrap()
+    }
+
+    #[test]
+    fn kt_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
+        let t = Thumbprint::from_bytes(vec![0xAA; 32]);
+        let algs = [HashAlg::Sha256];
+        let root_before = KeyTree::build(&[&t], &algs).unwrap();
+
+        // Manually build the same tree, but with a foreign algorithm's
+        // variant spliced into the live cell's payload map.
+        let mut inner = new_tree(COLLECTION_ARITY);
+        register_algs(&mut inner, &algs).unwrap();
+        let payload = payload_with_foreign(HashAlg::Sha256, t.as_bytes());
+        inner.set(0, payload, Vec::new()).unwrap();
+        let tampered = KeyTree { inner };
+        let root_after = tampered.root(&algs).unwrap();
+
+        assert_eq!(
+            root_before.get(HashAlg::Sha256),
+            root_after.get(HashAlg::Sha256),
+            "a foreign algorithm's payload entry must not affect a live algorithm's root"
+        );
+    }
+
+    #[test]
+    fn ar_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
+        let t = Thumbprint::from_bytes(vec![0xAA; 32]);
+        let algs = [HashAlg::Sha256];
+        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let root_before = AuthTree::build(&kr, &algs).unwrap();
+
+        let mut inner = new_tree(ROLE_ARITY);
+        register_algs(&mut inner, &algs).unwrap();
+        let payload = payload_with_foreign(HashAlg::Sha256, kr.get(HashAlg::Sha256).unwrap());
+        inner.set(PRIMARY_CELL, payload, Vec::new()).unwrap();
+        let tampered = AuthTree { inner };
+        let root_after = tampered.root(&algs).unwrap();
+
+        assert_eq!(
+            root_before.get(HashAlg::Sha256),
+            root_after.get(HashAlg::Sha256),
+            "a foreign algorithm's payload entry must not affect a live algorithm's root"
+        );
+    }
+
+    #[test]
+    fn sr_node_payload_inertness_foreign_algorithm_entry_does_not_affect_live_root() {
+        let t = Thumbprint::from_bytes(vec![0xAA; 32]);
+        let algs = [HashAlg::Sha256];
+        let kr = KeyTree::build(&[&t], &algs).unwrap();
+        let ar = AuthTree::build(&kr, &algs).unwrap();
+        let root_before = StateTree::build(&ar, None, &algs).unwrap();
+
+        let mut inner = new_tree(ROLE_ARITY);
+        register_algs(&mut inner, &algs).unwrap();
+        let payload = payload_with_foreign(HashAlg::Sha256, ar.get(HashAlg::Sha256).unwrap());
+        inner.set(PRIMARY_CELL, payload, Vec::new()).unwrap();
+        let tampered = StateTree { inner };
+        let root_after = tampered.root(&algs).unwrap();
+
+        assert_eq!(
+            root_before.get(HashAlg::Sha256),
+            root_after.get(HashAlg::Sha256),
+            "a foreign algorithm's payload entry must not affect a live algorithm's root"
+        );
+    }
+}
