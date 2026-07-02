@@ -2303,4 +2303,80 @@ mod tests {
             "PR must still have a SHA-256 variant for the surviving ES256 key"
         );
     }
+
+    /// c-liveness-shrinkage-rebuild — extends
+    /// `revoked_key_algorithm_drops_from_pr_variants`'s metamorphic pattern
+    /// to every new tree level, not just PR: KT, AR-node, and SR-node are
+    /// rebuilt fresh from the post-revocation key set on every mutation, so
+    /// a dropped algorithm cannot survive in KR/AR/SR either.
+    #[test]
+    fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let key_es256 = make_test_key(0x11);
+        let key_ed25519 = make_test_key_ed25519(0x22);
+
+        let mut principal =
+            Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(principal.key_root().get(HashAlg::Sha512).is_some());
+        assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
+        assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
+
+        let pre = principal.pr().clone();
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            signer: key_ed25519.tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0x44; 64]),
+            hash_alg: HashAlg::Sha512,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+        principal.apply_transaction_test(cz, None).unwrap();
+
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
+        assert!(
+            principal.key_root().get(HashAlg::Sha512).is_none(),
+            "KR must not retain a stale SHA-512 variant — KT must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(
+            principal.auth_root().get(HashAlg::Sha512).is_none(),
+            "AR must not retain a stale SHA-512 variant — AR-node must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(
+            principal.sr().unwrap().get(HashAlg::Sha512).is_none(),
+            "SR must not retain a stale SHA-512 variant — SR-node must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(principal.key_root().get(HashAlg::Sha256).is_some());
+        assert!(principal.auth_root().get(HashAlg::Sha256).is_some());
+        assert!(principal.sr().unwrap().get(HashAlg::Sha256).is_some());
+    }
+
+    /// c2/a2 — the recursive singleton-promotion property, extended through
+    /// the FULL new chain (`genesis_pr_equals_sr_verbatim` already proves it
+    /// at PT's root alone): for a single-key, no-data-action, no-commit
+    /// principal, `tmb == KR == AR == SR == PR`, byte-for-byte, for every
+    /// registered algorithm. Every hop is the same native 1-cell promotion
+    /// mechanism, composed recursively — no special-case machinery.
+    #[test]
+    fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
+        let key = make_test_key_ed25519(0xCC);
+        let tmb_bytes = key.tmb.as_bytes().to_vec();
+        let principal = Principal::implicit(key).unwrap();
+
+        let alg = principal.hash_alg();
+        assert_eq!(principal.active_algs(), vec![alg]);
+
+        assert_eq!(principal.key_root().get(alg).unwrap(), tmb_bytes.as_slice());
+        assert_eq!(principal.auth_root().get(alg).unwrap(), tmb_bytes.as_slice());
+        assert_eq!(
+            principal.sr().unwrap().get(alg).unwrap(),
+            tmb_bytes.as_slice()
+        );
+        assert_eq!(principal.pr().get(alg).unwrap(), tmb_bytes.as_slice());
+    }
 }
