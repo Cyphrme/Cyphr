@@ -824,7 +824,7 @@ fn e2e_multihash_round_trip() {
 
         // Recompute PR from SR + CR?
         let cr = principal.cr();
-        let recomputed_ps = compute_pr(&recomputed_sr, cr, None, &active_algs).unwrap();
+        let recomputed_ps = compute_pr(&recomputed_sr, cr, &active_algs).unwrap();
 
         for alg in active_algs {
             assert_eq!(
