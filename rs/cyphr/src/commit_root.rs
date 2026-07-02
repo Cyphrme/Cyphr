@@ -8,6 +8,16 @@ use crate::HashAlg;
 use crate::multihash::MultihashDigest;
 use crate::state::StateDigest;
 
+/// The concrete EML log type backing [`CloneableLog`]: the core-split
+/// combinator driver over an in-memory store.
+type Log = eml::NaryMerkleLog<eml::MemoryStorage>;
+
+/// The storage-parameterised EML error, concretized over [`eml::MemoryStorage`].
+type LogError = eml::Error<eml::storage::MemoryStorageError>;
+
+/// The storage-parameterised EML result, concretized over [`eml::MemoryStorage`].
+type LogResult<T> = eml::Result<T, eml::storage::MemoryStorageError>;
+
 /// A single-algorithm hasher for the Cyphr EML implementation.
 #[derive(Clone, Debug)]
 pub struct MaltHasher {
@@ -39,11 +49,12 @@ impl eml::Hasher for MaltHasher {
         crate::state::hash_bytes(self.alg, &prefix_data).to_vec()
     }
 
-    fn node(&self, left: &[u8], right: &[u8]) -> Vec<u8> {
-        let mut d = Vec::with_capacity(1 + left.len() + right.len());
+    fn node(&self, children: &[&[u8]]) -> Vec<u8> {
+        let mut d = Vec::with_capacity(1 + children.iter().map(|c| c.len()).sum::<usize>());
         d.push(0x01);
-        d.extend_from_slice(left);
-        d.extend_from_slice(right);
+        for child in children {
+            d.extend_from_slice(child);
+        }
         crate::state::hash_bytes(self.alg, &d).to_vec()
     }
 
@@ -58,6 +69,58 @@ impl eml::Hasher for MaltHasher {
     fn hash(&self, data: &[u8]) -> Vec<u8> {
         crate::state::hash_bytes(self.alg, data).to_vec()
     }
+
+    fn clone_box(&self) -> Box<dyn eml::Hasher> {
+        Box::new(self.clone())
+    }
+}
+
+/// Verify an inclusion proof for the leaf at `index` in a tree of size
+/// `tree_size`.
+///
+/// `index` and `tree_size` are trusted parameters (see [`eml::verify_inclusion`]'s
+/// trust contract): they must come from an authenticated source, never the proof.
+#[must_use]
+pub fn verify_inclusion(
+    hasher: &dyn eml::Hasher,
+    leaf_hash: &[u8],
+    index: u64,
+    tree_size: u64,
+    proof: &eml::InclusionProof,
+    root: &[u8],
+) -> bool {
+    let Some(skeleton) = eml::mountain_skeleton(eml::LOG_ARITY, tree_size, index) else {
+        return false;
+    };
+    eml::verify_inclusion(hasher, leaf_hash, &skeleton, &proof.path, root)
+}
+
+/// Verify a consistency proof between `old_size` and `new_size`.
+///
+/// `old_size`, `new_size`, `old_root`, and `new_root` are trusted parameters
+/// (see [`eml::verify_consistency`]'s trust contract): they must come from an
+/// authenticated source, never the proof.
+#[must_use]
+pub fn verify_consistency(
+    hasher: &dyn eml::Hasher,
+    old_size: u64,
+    new_size: u64,
+    proof: &eml::ConsistencyProof,
+    old_root: &[u8],
+    new_root: &[u8],
+) -> bool {
+    eml::verify_consistency(
+        hasher,
+        old_size,
+        new_size,
+        eml::LOG_ARITY,
+        &proof.boundary_hash,
+        &proof.peak_path,
+        &proof.new_peaks,
+        proof.split_index,
+        old_root,
+        new_root,
+    )
 }
 
 /// The Commit Root represents the finalized state of the verifiable log.
@@ -77,9 +140,14 @@ impl StateDigest for CommitRoot {
     }
 }
 
-/// A cloneable wrapper around `eml::Log` to preserve `Clone` bounds on `Principal`.
+/// A cloneable wrapper around [`Log`] to preserve `Clone` bounds on `Principal`.
+///
+/// The inner mutex is only ever contended by the synchronous `block_on` bridge
+/// below, on a single logical caller; a poisoned lock therefore means a prior
+/// call already panicked mid-mutation, an unrecoverable state, so lock
+/// acquisition here panics too rather than plumbing a synthetic storage error.
 #[derive(Debug)]
-pub struct CloneableLog(pub Arc<Mutex<eml::Log<eml::MemoryStorage>>>);
+pub struct CloneableLog(pub Arc<Mutex<Log>>);
 
 impl Clone for CloneableLog {
     fn clone(&self) -> Self {
@@ -88,97 +156,85 @@ impl Clone for CloneableLog {
 }
 
 impl CloneableLog {
-    /// Create a new cloneable log.
+    /// Create a new cloneable log with no algorithms registered.
     pub fn new(storage: eml::MemoryStorage) -> Self {
-        Self(Arc::new(Mutex::new(eml::Log::new(storage))))
+        let log = futures::executor::block_on(eml::from_storage(storage, Vec::new()))
+            .expect("fresh empty log construction cannot fail");
+        Self(Arc::new(Mutex::new(log)))
     }
 
     /// Check if the algorithm is registered.
     pub fn has_algorithm(&self, alg_id: u64) -> bool {
         self.0
             .lock()
-            .map(|guard| guard.algorithm_ids().any(|id| id == alg_id))
-            .unwrap_or(false)
+            .expect("commit tree mutex poisoned")
+            .frontier_for(alg_id)
+            .is_some()
     }
 
     /// Add a new hasher algorithm.
-    pub fn add_algorithm(&self, alg_id: u64, hasher: Box<dyn eml::Hasher>) -> eml::Result<()> {
-        let mut log = self.0.lock().map_err(|e| {
-            eml::Error::Storage(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mutex poisoned: {e}"),
-            )))
-        })?;
+    pub fn add_algorithm(&self, alg_id: u64, hasher: Box<dyn eml::Hasher>) -> LogResult<()> {
+        let mut log = self.0.lock().expect("commit tree mutex poisoned");
         futures::executor::block_on(log.add_algorithm(alg_id, hasher))
     }
 
     /// Append a leaf payload.
-    pub fn append(&self, data: &[u8]) -> eml::Result<u64> {
-        let mut log = self.0.lock().map_err(|e| {
-            eml::Error::Storage(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mutex poisoned: {e}"),
-            )))
-        })?;
-        futures::executor::block_on(log.append(data))
+    pub fn append(&self, data: &[u8]) -> LogResult<()> {
+        let mut log = self.0.lock().expect("commit tree mutex poisoned");
+        futures::executor::block_on(log.append_leaf(data))
     }
 
     /// Get root hash for the algorithm.
-    pub fn root(&self, alg_id: u64) -> eml::Result<Vec<u8>> {
+    pub fn root(&self, alg_id: u64) -> LogResult<Vec<u8>> {
         self.0
             .lock()
-            .map_err(|e| {
-                eml::Error::Storage(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("mutex poisoned: {e}"),
-                )))
-            })?
-            .root(alg_id)
+            .expect("commit tree mutex poisoned")
+            .root_for(alg_id)
     }
 
-    /// Generate an inclusion proof.
-    pub fn inclusion_proof(&self, alg_id: u64, index: u64) -> eml::Result<eml::InclusionProof> {
-        let log = self.0.lock().map_err(|e| {
-            eml::Error::Storage(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mutex poisoned: {e}"),
-            )))
-        })?;
-        futures::executor::block_on(log.inclusion_proof(alg_id, index))
+    /// Generate an inclusion proof for the leaf at `index`, against the
+    /// log's current tree size.
+    pub fn inclusion_proof(&self, alg_id: u64, index: u64) -> LogResult<eml::InclusionProof> {
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        let tree_size = log.size();
+        futures::executor::block_on(log.inclusion_proof_for(alg_id, index, tree_size))?
+            .ok_or(LogError::IndexOutOfBounds { index, tree_size })
     }
 
-    /// Generate a consistency proof.
+    /// Generate a consistency proof from `old_size` to the log's current
+    /// tree size.
     pub fn consistency_proof(
         &self,
         alg_id: u64,
         old_size: u64,
-    ) -> eml::Result<eml::ConsistencyProof> {
-        let log = self.0.lock().map_err(|e| {
-            eml::Error::Storage(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mutex poisoned: {e}"),
-            )))
-        })?;
-        futures::executor::block_on(log.consistency_proof(alg_id, old_size))
+    ) -> LogResult<eml::ConsistencyProof> {
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        let new_size = log.size();
+        futures::executor::block_on(log.consistency_proof_for(alg_id, old_size, new_size))?.ok_or(
+            LogError::IndexOutOfBounds {
+                index: old_size,
+                tree_size: new_size,
+            },
+        )
     }
 
     /// Get the tree size for the algorithm.
-    pub fn tree_size(&self, alg_id: u64) -> eml::Result<u64> {
-        let log = self.0.lock().map_err(|e| {
-            eml::Error::Storage(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("mutex poisoned: {e}"),
-            )))
-        })?;
-        futures::executor::block_on(log.tree_size(alg_id))
+    ///
+    /// Node addressing is by global append position (not a per-algorithm
+    /// local offset), so an active algorithm's tree size is always the log's
+    /// current global size.
+    pub fn tree_size(&self, alg_id: u64) -> LogResult<u64> {
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        if log.frontier_for(alg_id).is_none() {
+            return Err(LogError::UnknownAlgorithm(alg_id));
+        }
+        Ok(log.size())
     }
 
     /// Check if the log has no algorithms registered.
     pub fn is_empty(&self) -> bool {
-        self.0
-            .lock()
-            .map(|guard| guard.algorithm_ids().next().is_none())
-            .unwrap_or(true)
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        log.committed_epochs_at(log.count()).is_empty()
     }
 }
 
