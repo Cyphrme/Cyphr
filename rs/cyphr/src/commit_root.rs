@@ -32,26 +32,31 @@ impl MaltHasher {
 }
 
 impl eml::Hasher for MaltHasher {
+    /// Extract this hasher's own algorithm variant and return it **raw,
+    /// unhashed** — no domain-separation prefix. A cell payload is already a
+    /// serialized `BTreeMap<alg_id, digest>` of pre-computed per-algorithm
+    /// digests (SR/CR variants, or a commit's TR variants); re-hashing would
+    /// be redundant and would break genesis singleton promotion (PR would
+    /// become `H(SR)` instead of `SR`).
+    ///
+    /// A missing own-algorithm variant returns `empty()` rather than
+    /// borrowing another algorithm's bytes — falling back across algorithms
+    /// would mix one algorithm's digest into another's tree, violating
+    /// per-algorithm isolation.
     fn leaf(&self, data: &[u8]) -> Vec<u8> {
         let variants: BTreeMap<u64, Box<[u8]>> = match serde_json::from_slice(data) {
             Ok(v) => v,
             Err(_) => return self.empty(),
         };
         let alg_id = hash_alg_to_u64(self.alg);
-        let bytes = match variants.get(&alg_id).or_else(|| variants.values().next()) {
-            Some(b) => b,
-            None => return self.empty(),
-        };
-
-        let mut prefix_data = Vec::with_capacity(1 + bytes.len());
-        prefix_data.push(0x00);
-        prefix_data.extend_from_slice(bytes);
-        crate::state::hash_bytes(self.alg, &prefix_data).to_vec()
+        match variants.get(&alg_id) {
+            Some(bytes) => bytes.to_vec(),
+            None => self.empty(),
+        }
     }
 
     fn node(&self, children: &[&[u8]]) -> Vec<u8> {
-        let mut d = Vec::with_capacity(1 + children.iter().map(|c| c.len()).sum::<usize>());
-        d.push(0x01);
+        let mut d = Vec::with_capacity(children.iter().map(|c| c.len()).sum::<usize>());
         for child in children {
             d.extend_from_slice(child);
         }
@@ -60,10 +65,6 @@ impl eml::Hasher for MaltHasher {
 
     fn empty(&self) -> Vec<u8> {
         crate::state::hash_bytes(self.alg, b"").to_vec()
-    }
-
-    fn null(&self) -> Vec<u8> {
-        crate::state::hash_bytes(self.alg, &[0x02]).to_vec()
     }
 
     fn hash(&self, data: &[u8]) -> Vec<u8> {
