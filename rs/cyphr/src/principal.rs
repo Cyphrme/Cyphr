@@ -12,9 +12,10 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::principal_tree::PrincipalTree;
+use crate::semantic_tree::{KeyTree, StateTree, derive_state_roots};
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
-    compute_kr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
+    derive_hash_algs, hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -276,8 +277,8 @@ impl Principal {
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
-        // KR → AR → SR (no DR at genesis)
-        let (kr, ar, sr) = derive_auth_state(&[&key.tmb], None, &active_algs)?;
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&[&key.tmb], None, &active_algs)?;
         // PR = SR (no CR at genesis): the tree's native singleton promotion.
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &active_algs)?;
@@ -327,8 +328,8 @@ impl Principal {
         // Collect thumbprints for KR computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
-        // KR → AR → SR (no DR at genesis)
-        let (kr, ar, sr) = derive_auth_state(&thumbprints, None, &active_algs)?;
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
         // PR = SR (no CR at genesis): the tree's native singleton promotion.
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &active_algs)?;
@@ -397,7 +398,7 @@ impl Principal {
 
         // Compute KR from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let kr = compute_kr(&thumbprints, None, &active_algs)?;
+        let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
         // Restore MALT state if provided, otherwise start fresh.
         let (commit_trees, cr) = match trees {
@@ -411,9 +412,10 @@ impl Principal {
             ),
         };
 
-        // SR and PR: derive_auth_state is not used here because `ar` is provided
-        // by the checkpoint, not derived from `kr`. We enter the chain at SR directly.
-        let sr = compute_sr(&ar, None, None, &active_algs)?;
+        // SR and PR: derive_state_roots is not used here because `ar` is
+        // provided by the checkpoint, not derived from `kr`. We enter the
+        // chain at SR-node directly.
+        let sr = StateTree::build(&ar, None, &active_algs)?;
         // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
         // checkpoint's SR and (if restored) CR.
         let mut pt = PrincipalTree::new();
@@ -806,8 +808,9 @@ impl Principal {
         let actions: Vec<&Action> = core.data.actions.iter().collect();
         core.dr = compute_dr(&actions, None, &active_algs)?;
 
-        // Recompute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&core.ar, core.dr.as_ref(), None, &active_algs)?;
+        // Recompute SR-node: cell 0 = AR (unchanged), cell 1 = DR (may have
+        // just appeared/changed above).
+        let sr = StateTree::build(&core.ar, core.dr.as_ref(), &active_algs)?;
 
         // Write SR into the Principal Tree (cell 1/CR is untouched) and
         // recompute PR from the tree.
@@ -947,7 +950,7 @@ impl Principal {
         use crate::commit::PendingCommit;
         use crate::multihash::MultihashDigest;
         use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
-        use crate::state::{derive_auth_state, derive_hash_algs};
+        use crate::state::derive_hash_algs;
 
         // Apply mutation eagerly (same as apply_verified_internal)
         let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
@@ -958,11 +961,12 @@ impl Principal {
         let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
         pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
-        // KR → AR → SR from post-mutation key set (local, does not mutate self)
+        // KT → AR-node → SR-node from post-mutation key set (local, does not
+        // mutate self)
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        let (_kr, _ar, sr) = derive_auth_state(&thumbprints, self.dr.as_ref(), &active_algs)?;
+        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, self.dr.as_ref(), &active_algs)?;
 
         let tx_alg = cz.hash_alg;
 
@@ -1160,10 +1164,10 @@ impl Principal {
         let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
-        // KR → AR → SR (post-mutation key set, existing DR).
+        // KT → AR-node → SR-node (post-mutation key set, existing DR).
         // PR is computed below, after Arrow validation and CR assembly.
         let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| &k.tmb).collect();
-        let (kr, ar, sr) = derive_auth_state(&thumbprints, core.dr.as_ref(), &active_algs)?;
+        let (kr, ar, sr) = derive_state_roots(&thumbprints, core.dr.as_ref(), &active_algs)?;
         core.kr = kr;
         core.ar = ar;
         // core.sr/core.pt are NOT written yet — the arrow validation below

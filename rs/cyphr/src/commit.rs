@@ -453,7 +453,8 @@ impl<'a> CommitScope<'a> {
 
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
-        use crate::state::{derive_auth_state, derive_hash_algs, hash_sorted_concat_bytes};
+        use crate::semantic_tree::derive_state_roots;
+        use crate::state::{derive_hash_algs, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return false;
@@ -465,7 +466,7 @@ impl<'a> CommitScope<'a> {
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| &k.tmb).collect();
         let Ok((_kr, _ar, sr)) =
-            derive_auth_state(&thumbprints, self.projected.dr.as_ref(), &active_algs)
+            derive_state_roots(&thumbprints, self.projected.dr.as_ref(), &active_algs)
         else {
             return false;
         };
@@ -555,13 +556,13 @@ impl<'a> CommitScope<'a> {
 
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
-        // 1. Recompute KR → AR → SR to get post-mutation SR for Arrow construction. This reads the
-        //    projected state.
+        // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for
+        //    Arrow construction. This reads the projected state.
         let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| &k.tmb).collect();
-        let (_kr, _ar, sr) = crate::state::derive_auth_state(
+        let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots(
             &thumbprints,
             self.projected.dr.as_ref(),
             &active_algs,
