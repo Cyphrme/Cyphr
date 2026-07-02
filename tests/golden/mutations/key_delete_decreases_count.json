@@ -1,6 +1,9 @@
 {
   "name": "key_delete_decreases_count",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -38,19 +41,11 @@
           "sig": "ol-DVNqUmMfaP30z9sgXg-s9VmFP6W1VV2lHtb_Qm_NTjVhP3BoAj0mHLGRbMFJZRJem2HDHb92RiFNwFQAkUw"
         }
       ],
-      "keys": [
-        {
-          "alg": "ES256",
-          "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ",
-          "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
-          "tag": "User Key A (ES256)",
-          "now": 0
-        }
-      ],
+      "keys": [],
       "commit_id": "SHA-256:gSfXKjjm8wj9vgU1Uo5x-j41HByeTd2IWghXN2EihsY",
       "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "pr": "SHA-256:l8NIzIwX2mscEyXsUqi0a6WEUiAPzTBQQ5m1kDoeV1w"
+      "pr": "SHA-256:FJHHPWNXYb66RiOAQfRGF55bEB2WPnwDnBbDslkrsCs"
     }
   ],
   "digests": [
@@ -62,7 +57,7 @@
     "level": 3,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:l8NIzIwX2mscEyXsUqi0a6WEUiAPzTBQQ5m1kDoeV1w",
+    "pr": "SHA-256:FJHHPWNXYb66RiOAQfRGF55bEB2WPnwDnBbDslkrsCs",
     "tr": "SHA-256:gSfXKjjm8wj9vgU1Uo5x-j41HByeTd2IWghXN2EihsY",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": ""

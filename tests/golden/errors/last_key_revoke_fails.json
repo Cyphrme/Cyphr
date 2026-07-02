@@ -1,6 +1,8 @@
 {
   "name": "last_key_revoke_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -30,7 +32,9 @@
       "pr": ""
     }
   ],
-  "digests": ["dfgcPRtTrNe3295XcA-XLz2dajZ8u6FrOHbvhBGJSsY"],
+  "digests": [
+    "dfgcPRtTrNe3295XcA-XLz2dajZ8u6FrOHbvhBGJSsY"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

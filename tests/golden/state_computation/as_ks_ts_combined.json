@@ -1,6 +1,8 @@
 {
   "name": "as_ks_ts_combined",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -45,7 +47,7 @@
       "commit_id": "SHA-256:b_0EyLM_ItapEACmq09Rh7eWbjRj90-7BLbIOs2zrEw",
       "ar": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
       "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-      "pr": "SHA-256:IQrWNaYekf9s2LDv2ToExdW3vOljuz5iqzTdg9AD_K0"
+      "pr": "SHA-256:83uP0Uk9IDlq9Cky4MB8qYl4bwY0ECoBZKdQtWzd-do"
     }
   ],
   "digests": [
@@ -57,7 +59,7 @@
     "level": 3,
     "kr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "ar": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "pr": "SHA-256:IQrWNaYekf9s2LDv2ToExdW3vOljuz5iqzTdg9AD_K0",
+    "pr": "SHA-256:83uP0Uk9IDlq9Cky4MB8qYl4bwY0ECoBZKdQtWzd-do",
     "tr": "SHA-256:b_0EyLM_ItapEACmq09Rh7eWbjRj90-7BLbIOs2zrEw",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": ""

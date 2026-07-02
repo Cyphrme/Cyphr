@@ -1,6 +1,9 @@
 {
   "name": "add_third_key_to_dual_key_account",
-  "principal": ["alice", "bob"],
+  "principal": [
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -50,7 +53,7 @@
       "commit_id": "SHA-256:aV043C01Os83EJ_h_zJEK9Jt8-lGAW-wfk3z9_ikKvs",
       "ar": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
       "sr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-      "pr": "SHA-256:Uj-jpBSplR9Dn_3QaBvok0kMCWbwsxCr_QOk0IL46gc"
+      "pr": "SHA-256:4xmER0H-H2LDnxfUdQv-fqqTOMP8gMyW_MDVwL8obvQ"
     }
   ],
   "digests": [
@@ -62,7 +65,7 @@
     "level": 3,
     "kr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
     "ar": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "pr": "SHA-256:Uj-jpBSplR9Dn_3QaBvok0kMCWbwsxCr_QOk0IL46gc",
+    "pr": "SHA-256:4xmER0H-H2LDnxfUdQv-fqqTOMP8gMyW_MDVwL8obvQ",
     "tr": "SHA-256:aV043C01Os83EJ_h_zJEK9Jt8-lGAW-wfk3z9_ikKvs",
     "sr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
     "pg": ""

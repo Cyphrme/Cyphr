@@ -1,6 +1,8 @@
 {
   "name": "level_upgrades_to_4",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw"
     }
   ],
-  "digests": ["MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"],
+  "digests": [
+    "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,

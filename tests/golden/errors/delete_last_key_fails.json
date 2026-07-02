@@ -1,6 +1,8 @@
 {
   "name": "delete_last_key_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -36,7 +38,9 @@
       "pr": ""
     }
   ],
-  "digests": ["er2oetJTPGGVUGh1Lzwfs0I-GVshdh1IBWaIsgqwnKc"],
+  "digests": [
+    "er2oetJTPGGVUGh1Lzwfs0I-GVshdh1IBWaIsgqwnKc"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

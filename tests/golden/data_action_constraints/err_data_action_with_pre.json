@@ -1,6 +1,8 @@
 {
   "name": "err_data_action_with_pre",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": ""
     }
   ],
-  "digests": ["lEntjuTHUW7G8hTSAdsRtsel_dIgLf9PjkquJBQnjZQ"],
+  "digests": [
+    "lEntjuTHUW7G8hTSAdsRtsel_dIgLf9PjkquJBQnjZQ"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

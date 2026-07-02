@@ -1,6 +1,8 @@
 {
   "name": "duplicate_key_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -36,7 +38,9 @@
       "pr": ""
     }
   ],
-  "digests": ["a4cycuF4IjBJsrIXlTgSuArYp02KYooSt7pCRmew9II"],
+  "digests": [
+    "a4cycuF4IjBJsrIXlTgSuArYp02KYooSt7pCRmew9II"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

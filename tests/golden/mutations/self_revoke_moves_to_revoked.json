@@ -1,6 +1,9 @@
 {
   "name": "self_revoke_moves_to_revoked",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -42,7 +45,7 @@
       "commit_id": "SHA-256:9ZmyUZqmgGc_ISH0U7LHHa2SmhSX_urjXsyTB2J2tPs",
       "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "pr": "SHA-256:7C4eh9wKwJZHMGd8hM-tyVEQL3iJuer4WWUMSCJCwss"
+      "pr": "SHA-256:bmf6Xyk5zded6FfTz1vLTb5uU8DA9gFCHlrMX64NCwA"
     }
   ],
   "digests": [
@@ -54,7 +57,7 @@
     "level": 3,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:7C4eh9wKwJZHMGd8hM-tyVEQL3iJuer4WWUMSCJCwss",
+    "pr": "SHA-256:bmf6Xyk5zded6FfTz1vLTb5uU8DA9gFCHlrMX64NCwA",
     "tr": "SHA-256:9ZmyUZqmgGc_ISH0U7LHHa2SmhSX_urjXsyTB2J2tPs",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": ""

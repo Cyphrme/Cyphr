@@ -1,6 +1,9 @@
 {
   "name": "replace_one_of_two_keys",
-  "principal": ["alice", "bob"],
+  "principal": [
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -50,7 +53,7 @@
       "commit_id": "SHA-256:jlpk1FRFs4MDs424-LB_SZpb0zxzht_17nKrhPZuh2Q",
       "ar": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
       "sr": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
-      "pr": "SHA-256:qaXHKCIifdpbBwTXx6S_V6XgaT2OhLvbqMMnTEdK81o"
+      "pr": "SHA-256:Il2QlpiAhDmlR1Cyle-iUGSV2jnnZD4ONenaLmrOiCo"
     }
   ],
   "digests": [
@@ -62,7 +65,7 @@
     "level": 3,
     "kr": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
     "ar": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
-    "pr": "SHA-256:qaXHKCIifdpbBwTXx6S_V6XgaT2OhLvbqMMnTEdK81o",
+    "pr": "SHA-256:Il2QlpiAhDmlR1Cyle-iUGSV2jnnZD4ONenaLmrOiCo",
     "tr": "SHA-256:jlpk1FRFs4MDs424-LB_SZpb0zxzht_17nKrhPZuh2Q",
     "sr": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
     "pg": ""
