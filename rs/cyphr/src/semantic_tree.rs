@@ -396,3 +396,246 @@ mod tests {
         ));
     }
 }
+
+/// Differential oracle tests: cross-check the tree types here against the
+/// demoted flat-hash formulas in [`crate::state`] (c-oracle-kr,
+/// c-oracle-ar-sr). Each test asserts the *precise* predicted relationship
+/// (unconditional equality, or an exactly-characterized divergence) rather
+/// than a blanket equality or inequality.
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+    use crate::state::{
+        StateDigest, compute_ar, compute_kr, compute_sr, derive_auth_state, hash_bytes,
+        hash_concat_bytes, infer_alg_from_len,
+    };
+
+    fn tmb(bytes: &[u8]) -> Thumbprint {
+        Thumbprint::from_bytes(bytes.to_vec())
+    }
+
+    fn key(alg: HashAlg, tag: u8) -> Thumbprint {
+        let len = match alg {
+            HashAlg::Sha256 => 32,
+            HashAlg::Sha384 => 48,
+            HashAlg::Sha512 => 64,
+        };
+        tmb(&vec![tag; len])
+    }
+
+    // -- c-oracle-kr --------------------------------------------------------
+
+    #[test]
+    fn oracle_kr_single_algorithm_keyset_matches_exactly() {
+        let a = key(HashAlg::Sha256, 0x11);
+        let b = key(HashAlg::Sha256, 0x22);
+        let c = key(HashAlg::Sha256, 0x33);
+        let algs = [HashAlg::Sha256];
+
+        let old = compute_kr(&[&a, &b, &c], None, &algs).unwrap();
+        let new = KeyTree::build(&[&a, &b, &c], &algs).unwrap();
+
+        assert_eq!(old.get(HashAlg::Sha256), new.get(HashAlg::Sha256));
+    }
+
+    #[test]
+    fn oracle_kr_single_key_promotion_matches_exactly() {
+        let a = key(HashAlg::Sha256, 0xAA);
+        let algs = [HashAlg::Sha256];
+
+        let old = compute_kr(&[&a], None, &algs).unwrap();
+        let new = KeyTree::build(&[&a], &algs).unwrap();
+
+        assert_eq!(old.get(HashAlg::Sha256), new.get(HashAlg::Sha256));
+        assert_eq!(new.get(HashAlg::Sha256).unwrap(), a.as_bytes());
+    }
+
+    /// c-oracle-kr's predicted, authorized divergence: for a mixed-algorithm
+    /// keyset, KT converts each non-native thumbprint to the target
+    /// algorithm's canonical digest before folding; `compute_kr` does not.
+    /// The two roots must therefore differ, AND the new root must equal an
+    /// independently-computed conversion fold — proving the divergence is
+    /// exactly this predicted conversion, not an unrelated bug.
+    #[test]
+    fn oracle_kr_mixed_algorithm_keyset_diverges_via_conversion() {
+        let es256 = key(HashAlg::Sha256, 0x11); // 32B, native Sha256
+        let ed25519 = key(HashAlg::Sha512, 0x22); // 64B, native Sha512
+        let algs = [HashAlg::Sha256, HashAlg::Sha512];
+
+        // compute_kr concatenates raw bytes regardless of size — this
+        // itself would panic if fed through the tree's generic fold, which
+        // is exactly why KT cannot reuse it unconditionally. Compute it
+        // manually here (compute_kr's own documented behavior) rather than
+        // calling it, to avoid masking the point under test.
+        let mut sorted: Vec<&[u8]> = vec![es256.as_bytes(), ed25519.as_bytes()];
+        sorted.sort();
+
+        let new = KeyTree::build(&[&es256, &ed25519], &algs).unwrap();
+
+        for &alg in &algs {
+            // Old (undocumented-unsafe) raw concat, replicated by hand.
+            let mut concat = Vec::new();
+            for c in &sorted {
+                concat.extend_from_slice(c);
+            }
+            let old_bytes = hash_bytes(alg, &concat);
+
+            // Independently-computed conversion fold: each thumbprint
+            // converted to `alg`'s canonical digest (native passthrough or
+            // hash_bytes re-hash), in the same lexical (RAW-byte) order KT
+            // itself sorts by — must equal KT's root.
+            let converted: Vec<Vec<u8>> = sorted
+                .iter()
+                .map(|raw| {
+                    let native = infer_alg_from_len(raw.len()).unwrap();
+                    if native == alg {
+                        raw.to_vec()
+                    } else {
+                        hash_bytes(alg, raw)
+                    }
+                })
+                .collect();
+            let refs: Vec<&[u8]> = converted.iter().map(|v| v.as_slice()).collect();
+            let expected_new = hash_concat_bytes(alg, &refs);
+
+            let new_bytes = new.get(alg).unwrap();
+            assert_eq!(
+                new_bytes, expected_new,
+                "KT root for {alg:?} must equal the independently-computed \
+                 conversion fold"
+            );
+            assert_ne!(
+                new_bytes, old_bytes,
+                "KT root for {alg:?} must diverge from compute_kr's raw \
+                 concat for a mixed-algorithm keyset"
+            );
+        }
+    }
+
+    // -- c-oracle-ar-sr -------------------------------------------------
+
+    #[test]
+    fn oracle_ar_matches_exactly_rt_always_absent() {
+        let a = key(HashAlg::Sha256, 0x11);
+        let b = key(HashAlg::Sha256, 0x22);
+        let algs = [HashAlg::Sha256];
+
+        let kr = KeyTree::build(&[&a, &b], &algs).unwrap();
+        let old = compute_ar(&kr, None, None, &algs).unwrap();
+        let new = AuthTree::build(&kr, &algs).unwrap();
+
+        assert_eq!(old.get(HashAlg::Sha256), new.get(HashAlg::Sha256));
+    }
+
+    #[test]
+    fn oracle_sr_matches_exactly_when_dr_absent() {
+        let a = key(HashAlg::Sha256, 0x11);
+        let algs = [HashAlg::Sha256];
+
+        let kr = KeyTree::build(&[&a], &algs).unwrap();
+        let ar = AuthTree::build(&kr, &algs).unwrap();
+        let old = compute_sr(&ar, None, None, &algs).unwrap();
+        let new = StateTree::build(&ar, None, &algs).unwrap();
+
+        assert_eq!(old.get(HashAlg::Sha256), new.get(HashAlg::Sha256));
+    }
+
+    /// c-oracle-ar-sr's predicted, authorized divergence: when DR is
+    /// present and its bytes lexically precede AR's, `compute_sr`'s lexical
+    /// sort puts DR first (`H(DR ∥ AR)`) while `StateTree`'s fixed cell
+    /// order puts AR first (`H(AR ∥ DR)`) — the two must differ, and the
+    /// new root must equal the independently-computed positional fold.
+    #[test]
+    fn oracle_sr_diverges_exactly_by_positional_reorder_when_dr_precedes_ar() {
+        use crate::state::DataRoot;
+
+        let a = key(HashAlg::Sha256, 0x11);
+        let algs = [HashAlg::Sha256];
+        let kr = KeyTree::build(&[&a], &algs).unwrap();
+        let ar = AuthTree::build(&kr, &algs).unwrap();
+        let ar_bytes = ar.get(HashAlg::Sha256).unwrap().to_vec();
+
+        // Construct a DR whose bytes lexically precede AR's bytes.
+        let mut dr_bytes = ar_bytes.clone();
+        dr_bytes[0] = 0x00;
+        assert!(dr_bytes < ar_bytes, "test fixture must have DR <lex AR");
+        let dr = DataRoot(
+            crate::multihash::MultihashDigest::from_single(HashAlg::Sha256, dr_bytes.clone())
+                .unwrap(),
+        );
+
+        let old = compute_sr(&ar, Some(&dr), None, &algs).unwrap();
+        let new = StateTree::build(&ar, Some(&dr), &algs).unwrap();
+
+        let old_bytes = old.get(HashAlg::Sha256).unwrap();
+        let new_bytes = new.get(HashAlg::Sha256).unwrap();
+        assert_ne!(
+            old_bytes, new_bytes,
+            "old (lexical H(DR||AR)) and new (positional H(AR||DR)) must diverge"
+        );
+
+        let expected_new = hash_concat_bytes(HashAlg::Sha256, &[&ar_bytes, &dr_bytes]);
+        assert_eq!(
+            new_bytes, expected_new,
+            "new root must equal the independently-computed positional fold H(AR||DR)"
+        );
+
+        let expected_old = {
+            let mut sorted = [ar_bytes.as_slice(), dr_bytes.as_slice()];
+            sorted.sort();
+            crate::state::hash_sorted_concat_bytes(HashAlg::Sha256, &sorted)
+        };
+        assert_eq!(
+            old_bytes, expected_old,
+            "old root must equal the independently-computed lexical fold H(sort(AR,DR))"
+        );
+    }
+
+    #[test]
+    fn oracle_sr_matches_exactly_when_ar_precedes_dr_lexically() {
+        use crate::state::DataRoot;
+
+        let a = key(HashAlg::Sha256, 0x11);
+        let algs = [HashAlg::Sha256];
+        let kr = KeyTree::build(&[&a], &algs).unwrap();
+        let ar = AuthTree::build(&kr, &algs).unwrap();
+        let ar_bytes = ar.get(HashAlg::Sha256).unwrap().to_vec();
+
+        // Construct a DR whose bytes lexically FOLLOW AR's bytes, so
+        // lexical order and positional order coincide.
+        let mut dr_bytes = ar_bytes.clone();
+        dr_bytes[0] = 0xFF;
+        assert!(dr_bytes > ar_bytes, "test fixture must have DR >lex AR");
+        let dr = DataRoot(
+            crate::multihash::MultihashDigest::from_single(HashAlg::Sha256, dr_bytes).unwrap(),
+        );
+
+        let old = compute_sr(&ar, Some(&dr), None, &algs).unwrap();
+        let new = StateTree::build(&ar, Some(&dr), &algs).unwrap();
+
+        assert_eq!(old.get(HashAlg::Sha256), new.get(HashAlg::Sha256));
+    }
+
+    #[test]
+    fn oracle_derive_state_roots_matches_derive_auth_state_single_algorithm() {
+        let a = key(HashAlg::Sha256, 0x11);
+        let b = key(HashAlg::Sha256, 0x22);
+        let algs = [HashAlg::Sha256];
+
+        let (old_kr, old_ar, old_sr) = derive_auth_state(&[&a, &b], None, &algs).unwrap();
+        let (new_kr, new_ar, new_sr) = derive_state_roots(&[&a, &b], None, &algs).unwrap();
+
+        assert_eq!(
+            old_kr.get(HashAlg::Sha256),
+            new_kr.get(HashAlg::Sha256)
+        );
+        assert_eq!(
+            old_ar.get(HashAlg::Sha256),
+            new_ar.get(HashAlg::Sha256)
+        );
+        assert_eq!(
+            old_sr.get(HashAlg::Sha256),
+            new_sr.get(HashAlg::Sha256)
+        );
+    }
+}

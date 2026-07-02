@@ -363,6 +363,19 @@ pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 /// The `algs` slice specifies which hash algorithms to include in the multihash.
 /// For single-algorithm keysets, pass a single-element slice.
 ///
+/// This is an independent oracle over the same formula
+/// [`crate::semantic_tree::KeyTree`] (a `polydigest::EpochTree`, k=256, one
+/// leaf per active key thumbprint, lexically sorted) computes structurally,
+/// so the two independently-written implementations can be cross-checked
+/// against each other. The two agree byte-for-byte for single-hash-algorithm
+/// keysets; for mixed-hash-algorithm keysets `KeyTree` additionally converts
+/// each non-native thumbprint to its target algorithm's canonical digest
+/// (the same `infer_alg_from_len`/`hash_bytes` mechanism [`compute_dr`] uses
+/// for czd content) before folding, which this function does not do — see
+/// `semantic_tree`'s `oracle_kr_*` differential tests for the exact,
+/// predicted divergence. `Principal`'s actual KR is produced by the tree
+/// itself, never by this function.
+///
 /// # Errors
 ///
 /// Returns `NoActiveKeys` if `algs` is empty.
@@ -542,6 +555,15 @@ pub fn compute_commit_id_tagged(
 ///
 /// `embedding` is reserved for future use; pass `None`.
 ///
+/// This is an independent oracle over the same formula
+/// [`crate::semantic_tree::AuthTree`] (a `polydigest::EpochTree`, k=2, cell
+/// 0 = KT's root, cell 1 = RT's root) computes structurally, so the two
+/// independently-written implementations can be cross-checked against each
+/// other. RT is never implemented today, so `AuthTree`'s cell 1 is always
+/// absent and it always promotes from KT alone — the two agree
+/// byte-for-byte unconditionally. `Principal`'s actual AR is produced by
+/// the tree itself, never by this function.
+///
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if the KeyRoot contains no variants.
@@ -587,6 +609,19 @@ pub fn compute_ar(
 /// - Otherwise: SR = H(sort(AR, DR?, embedding?)) for each algorithm
 ///
 /// `embedding` is reserved for future use; pass `None`.
+///
+/// This is an independent oracle over the same formula
+/// [`crate::semantic_tree::StateTree`] (a `polydigest::EpochTree`, k=2, cell
+/// 0 = AR-node's root, cell 1 = DR) computes structurally, so the two
+/// independently-written implementations can be cross-checked against each
+/// other. They agree byte-for-byte whenever `ds` is absent (promotion, the
+/// common case). When `ds` is present, this function sorts `AR`/`DR`
+/// lexically before concatenating, while `StateTree` concatenates them
+/// positionally (`AR ∥ DR`, its fixed cell order) — the two diverge exactly
+/// when `DR`'s bytes lexically precede `AR`'s; see `semantic_tree`'s
+/// `oracle_ar_sr_*` differential tests for the predicted-divergence proof.
+/// `Principal`'s actual SR is produced by the tree itself, never by this
+/// function.
 ///
 /// # Errors
 ///
@@ -768,18 +803,16 @@ pub fn compute_pr(
 // Composite derivation helpers
 // ============================================================================
 
-/// Compute KR → AR → SR from a set of thumbprints and an optional DataRoot.
+/// Compute KR → AR → SR from a set of thumbprints and an optional DataRoot,
+/// chaining the three oracle functions above.
 ///
-/// This is the common derivation chain shared by genesis constructors
-/// (`implicit`, `explicit`) and the commit path (`apply_commit`,
-/// `finalize_with_arrow`, `apply_transaction_test`).
-///
-/// PR is intentionally excluded: its `cr` input differs per call site:
-/// - Genesis: `None` (SR promotes to PR implicitly)
-/// - Commit path: `Some(&cr)` from MALTs, computed after Arrow validation
-///
-/// `from_checkpoint` is excluded: `ar` is checkpoint-provided, not derived
-/// from `kr`, so it enters the chain at a different point.
+/// An oracle-of-oracles: the differential-test counterpart of
+/// [`crate::semantic_tree::derive_state_roots`], which is what every
+/// production call site actually uses. No production code calls this
+/// function anymore — it exists purely so oracle tests can get the full
+/// KR/AR/SR chain from the old formulas in one call, mirroring
+/// `derive_state_roots`'s exact signature.
+#[cfg(test)]
 pub(crate) fn derive_auth_state(
     thumbprints: &[&Thumbprint],
     dr: Option<&DataRoot>,
