@@ -11,9 +11,10 @@ use crate::commit::{Commit, CommitScope, PendingCommit};
 use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
+use crate::principal_tree::PrincipalTree;
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
-    compute_kr, compute_pr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
+    compute_kr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -90,9 +91,16 @@ pub struct PrincipalCore {
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
     /// Per-algorithm MALT trees for computing Commit Root (CR).
     pub(crate) commit_trees: crate::commit_root::CommitTrees,
-    /// Current Commit Root (CR).
+    /// Principal Tree (PT): the `EpochTree` backing PR. Cell 0 = SR, cell 1 =
+    /// CR. The source of truth for PR; `sr`/`cr` below are a cache mirroring
+    /// its cell contents (kept in lockstep by [`PrincipalCore::write_pt_sr`]
+    /// and [`PrincipalCore::write_pt_sr_cr`]) so existing accessors
+    /// (`Principal::sr()`/`cr()`) don't need to deserialize a cell payload on
+    /// every call.
+    pub(crate) pt: PrincipalTree,
+    /// Current Commit Root (CR). Mirrors `pt`'s cell 1.
     pub(crate) cr: Option<crate::commit_root::CommitRoot>,
-    /// Current State Root: SR = MR(AR, DR?, embedding?).
+    /// Current State Root: SR = MR(AR, DR?, embedding?). Mirrors `pt`'s cell 0.
     pub(crate) sr: Option<StateRoot>,
     /// Current Auth State.
     pub(crate) ar: AuthRoot,
@@ -119,6 +127,7 @@ impl Default for PrincipalCore {
             kr: KeyRoot::default(),
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
+            pt: PrincipalTree::new(),
             cr: None,
             sr: None,
             ar: AuthRoot::default(),
@@ -185,6 +194,32 @@ impl PrincipalCore {
         let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
         crate::state::derive_hash_algs(&key_refs)
     }
+
+    /// Write a new State Root into the Principal Tree's cell 0, leaving
+    /// cell 1 (Commit Root) untouched, and return the recomputed Principal
+    /// Root. Used outside commit finalization (e.g. `record_action`), where
+    /// only SR changes.
+    fn write_pt_sr(&mut self, sr: &StateRoot, algs: &[HashAlg]) -> Result<PrincipalRoot> {
+        self.pt.set_sr(sr, algs)?;
+        self.sr = Some(sr.clone());
+        self.pt.pr(algs)
+    }
+
+    /// Write a new State Root into cell 0 and Commit Root into cell 1, and
+    /// return the recomputed Principal Root. Used at commit finalization,
+    /// where both SR and CR change together.
+    fn write_pt_sr_cr(
+        &mut self,
+        sr: &StateRoot,
+        cr: &crate::commit_root::CommitRoot,
+        algs: &[HashAlg],
+    ) -> Result<PrincipalRoot> {
+        self.pt.set_sr(sr, algs)?;
+        self.pt.set_cr(cr, algs)?;
+        self.sr = Some(sr.clone());
+        self.cr = Some(cr.clone());
+        self.pt.pr(algs)
+    }
 }
 
 impl Principal {
@@ -243,8 +278,10 @@ impl Principal {
 
         // KR → AR → SR (no DR at genesis)
         let (kr, ar, sr) = derive_auth_state(&[&key.tmb], None, &active_algs)?;
-        // PR = SR (no CR at genesis, promotes)
-        let pr = compute_pr(&sr, None, None, &active_algs)?;
+        // PR = SR (no CR at genesis): the tree's native singleton promotion.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        let pr = pt.pr(&active_algs)?;
 
         let mut keys = IndexMap::new();
         keys.insert(tmb_b64.clone(), key);
@@ -254,6 +291,7 @@ impl Principal {
             kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
+            pt,
             cr: None,
             sr: Some(sr),
             ar,
@@ -291,8 +329,10 @@ impl Principal {
         let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
         // KR → AR → SR (no DR at genesis)
         let (kr, ar, sr) = derive_auth_state(&thumbprints, None, &active_algs)?;
-        // PR = SR (no CR at genesis, promotes)
-        let pr = compute_pr(&sr, None, None, &active_algs)?;
+        // PR = SR (no CR at genesis): the tree's native singleton promotion.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        let pr = pt.pr(&active_algs)?;
 
         let mut key_map = IndexMap::new();
         for k in keys {
@@ -304,6 +344,7 @@ impl Principal {
             kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
+            pt,
             cr: None,
             sr: Some(sr),
             ar,
@@ -373,8 +414,14 @@ impl Principal {
         // SR and PR: derive_auth_state is not used here because `ar` is provided
         // by the checkpoint, not derived from `kr`. We enter the chain at SR directly.
         let sr = compute_sr(&ar, None, None, &active_algs)?;
-        // PR = MR(SR, CR?, embedding?)
-        let pr = compute_pr(&sr, cr.as_ref(), None, &active_algs)?;
+        // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
+        // checkpoint's SR and (if restored) CR.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        if let Some(ref cr_val) = cr {
+            pt.set_cr(cr_val, &active_algs)?;
+        }
+        let pr = pt.pr(&active_algs)?;
 
         let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb.to_b64()).collect();
         let mut key_map = IndexMap::new();
@@ -386,6 +433,7 @@ impl Principal {
             kr,
             tr: None,
             commit_trees,
+            pt,
             cr,
             sr: Some(sr),
             ar,
@@ -760,10 +808,10 @@ impl Principal {
 
         // Recompute SR = MR(AR, DR?, embedding?)
         let sr = compute_sr(&core.ar, core.dr.as_ref(), None, &active_algs)?;
-        core.sr = Some(sr.clone());
 
-        // Recompute PR = MR(SR, CR?, embedding?)
-        core.pr = compute_pr(&sr, core.cr.as_ref(), None, &active_algs)?;
+        // Write SR into the Principal Tree (cell 1/CR is untouched) and
+        // recompute PR from the tree.
+        core.pr = core.write_pt_sr(&sr, &active_algs)?;
 
         Ok(&self.pr)
     }
@@ -1118,7 +1166,10 @@ impl Principal {
         let (kr, ar, sr) = derive_auth_state(&thumbprints, core.dr.as_ref(), &active_algs)?;
         core.kr = kr;
         core.ar = ar;
-        core.sr = Some(sr.clone());
+        // core.sr/core.pt are NOT written yet — the arrow validation below
+        // uses the local `sr`, and core.pr must still hold the pre-commit
+        // value (see the comment there). Both are written together with CR
+        // at the end of this function, via write_pt_sr_cr.
 
         // Validate arrow field matches independently computed Arrow.
         // Arrow = MR(pre, fwd_SR, TMR)
@@ -1171,10 +1222,10 @@ impl Principal {
 
         // Assemble CR from the EML Log for all active algorithms.
         let cr = crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?;
-        core.cr = Some(cr.clone());
 
-        // Compute PR = MR(SR, CR?, embedding?)
-        core.pr = compute_pr(&sr, Some(&cr), None, &active_algs)?;
+        // Write SR into cell 0 and CR into cell 1 of the Principal Tree, and
+        // recompute PR from the tree (EpochTree::root(alg_id) per algorithm).
+        core.pr = core.write_pt_sr_cr(&sr, &cr, &active_algs)?;
 
         // Finalize the pending commit with computed states
         let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tx_algs)?;
