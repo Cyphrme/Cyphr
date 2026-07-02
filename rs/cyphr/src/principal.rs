@@ -2129,4 +2129,114 @@ mod tests {
             "PR must differ when CR is present vs absent"
         );
     }
+
+    // ========================================================================
+    // Principal Tree (PT) genesis invariance and isolation tests
+    // ========================================================================
+
+    /// A key using a different algorithm/thumbprint length than `make_test_key`
+    /// (which is always ES256/SHA-256), so a two-key principal registers two
+    /// distinct hash algorithms from genesis.
+    fn make_test_key_ed25519(id: u8) -> Key {
+        Key {
+            alg: "Ed25519".to_string(),
+            tmb: Thumbprint::from_bytes(vec![id; 64]), // SHA-512 digest length
+            pub_key: vec![id; 32],
+            first_seen: 1000,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        }
+    }
+
+    /// c2/a2 — the correctness pivot of this node: for a principal with 2+
+    /// registered hash algorithms, `pg()` (frozen at `principal/create`,
+    /// while the Commit Tree/cell-1 is still empty) must equal `sr()`
+    /// byte-for-byte for EVERY registered algorithm, not just one.
+    ///
+    /// A single-algorithm principal cannot distinguish `EpochTree::root(alg_id)`
+    /// (correct) from `combined_root()` (folds every other algorithm's root
+    /// in, wrong) — both coincide when only one algorithm is registered. This
+    /// test's ES256 (SHA-256) + Ed25519 (SHA-512) key set is what makes the
+    /// distinction observable.
+    #[test]
+    fn multi_alg_genesis_pg_equals_sr_for_every_algorithm() {
+        use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
+
+        let key_es256 = make_test_key(0x11);
+        let key_ed25519 = make_test_key_ed25519(0x22);
+
+        let mut principal =
+            Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+        assert!(principal.pg().is_none(), "PR should be None before principal/create");
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+
+        let pre = principal.pr().clone();
+        let id = principal.auth_root().clone();
+        let cz = ParsedCoz {
+            kind: CozKind::PrincipalCreate { pre, id },
+            signer: key_es256.tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0x33; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+        let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
+        principal.apply_verified_internal(vtx).unwrap();
+
+        let pg = principal.pg().expect("principal/create must establish PG");
+        let sr = principal.sr().expect("SR must exist after genesis");
+        for alg in [HashAlg::Sha256, HashAlg::Sha512] {
+            assert_eq!(
+                pg.get(alg),
+                sr.get(alg),
+                "PG must equal SR byte-for-byte for algorithm {alg:?} at genesis \
+                 (cell 1/CR still empty) — a mismatch here means root(alg_id) and \
+                 combined_root() diverged, i.e. combined_root leaked in"
+            );
+        }
+    }
+
+    /// c6/a6 — an abandoned `CommitScope` (dropped without `finalize()`) must
+    /// not leak any state into the live principal: not the key set (already
+    /// covered structurally by the borrow checker + explicit copy-back), and
+    /// not PR/SR/PT, which is the new hazard this node introduces (SR now
+    /// lives inside a PT cell that would be shared state if `PrincipalTree`
+    /// were `Arc`-wrapped like `CommitTrees`/`CloneableLog`).
+    #[test]
+    fn abandoned_commit_scope_does_not_leak_state() {
+        let key1 = make_test_key(0x11);
+        let mut principal = Principal::implicit(key1.clone()).unwrap();
+
+        let pr_before = principal.pr().clone();
+        let sr_before = principal.sr().cloned();
+        let key_count_before = principal.active_key_count();
+
+        {
+            let mut scope = principal.begin_commit();
+            let pre = pr_before.clone();
+            let key2 = make_test_key(0x22);
+            let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+            let vtx = crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz, Some(key2));
+            scope.apply(vtx).unwrap();
+            // Deliberately dropped here without calling finalize().
+        }
+
+        assert_eq!(
+            principal.pr(),
+            &pr_before,
+            "abandoned scope must not mutate the live PR"
+        );
+        assert_eq!(
+            principal.sr().cloned(),
+            sr_before,
+            "abandoned scope must not mutate the live SR"
+        );
+        assert_eq!(
+            principal.active_key_count(),
+            key_count_before,
+            "abandoned scope must not mutate the live key set"
+        );
+    }
 }
