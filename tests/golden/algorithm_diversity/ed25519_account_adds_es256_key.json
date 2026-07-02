@@ -1,6 +1,8 @@
 {
   "name": "ed25519_account_adds_es256_key",
-  "principal": ["eve_ed25519"],
+  "principal": [
+    "eve_ed25519"
+  ],
   "genesis_keys": [
     {
       "alg": "Ed25519",
@@ -45,7 +47,7 @@
       "commit_id": "SHA-512:OcAnOvsAGilSOEUq1d1sCXIhaWArCJH_mBvzQcgEwFDMSUQJruUEiFNlIdN49dRA5G5TYm1CE-FXqhxkHKCwrA",
       "ar": "SHA-256:lnXAUeEGoFat2dQ1ZQWvDCOVTX_eUewewjShczS4fJ8",
       "sr": "SHA-256:lnXAUeEGoFat2dQ1ZQWvDCOVTX_eUewewjShczS4fJ8",
-      "pr": "SHA-256:CFcKCHAJOi94uzpNM6v8ePxw7cVpY5x5VBiZ4EYP5FE"
+      "pr": "SHA-256:dfFxuvkAd6zsDTCvzO24B7CQYA7M8Rs9TqpKJLn6syU"
     }
   ],
   "digests": [
@@ -57,7 +59,7 @@
     "level": 3,
     "kr": "SHA-256:lnXAUeEGoFat2dQ1ZQWvDCOVTX_eUewewjShczS4fJ8",
     "ar": "SHA-256:lnXAUeEGoFat2dQ1ZQWvDCOVTX_eUewewjShczS4fJ8",
-    "pr": "SHA-256:CFcKCHAJOi94uzpNM6v8ePxw7cVpY5x5VBiZ4EYP5FE",
+    "pr": "SHA-256:dfFxuvkAd6zsDTCvzO24B7CQYA7M8Rs9TqpKJLn6syU",
     "sr": "SHA-256:lnXAUeEGoFat2dQ1ZQWvDCOVTX_eUewewjShczS4fJ8",
     "pg": "",
     "multihash_kr": {
@@ -69,8 +71,8 @@
       "SHA-512": "NF8jOA3fbSDGWaFVBAHfZ2O8T9ltLoSbqsGksjSY8XPf0Pl0ecGzG1LQVoOClkidA9KsnrP0v2OsiEOXRC6cAg"
     },
     "multihash_pr": {
-      "SHA-256": "CFcKCHAJOi94uzpNM6v8ePxw7cVpY5x5VBiZ4EYP5FE",
-      "SHA-512": "loOCylKlkRRG_zrZhp_bzYGHu5TYuA-sDbPs36SybuF4HYzEk1YkWGbCrYeuD65qB17-4mKxDD0gtxw0TXfOIg"
+      "SHA-256": "dfFxuvkAd6zsDTCvzO24B7CQYA7M8Rs9TqpKJLn6syU",
+      "SHA-512": "QP3IEXtDndhGoZYMS5oIeBqkSi0RDERPW7RMuEoJBu6hG_6aXnXjVvvetbMIdYaZt-Dv21FYyOJdUA7ktMJI1g"
     }
   }
 }

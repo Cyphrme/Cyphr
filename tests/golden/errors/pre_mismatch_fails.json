@@ -1,6 +1,8 @@
 {
   "name": "pre_mismatch_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -36,7 +38,9 @@
       "pr": ""
     }
   ],
-  "digests": ["9SqAbOLHVg2fT1aFyt4XRCRyi3AVx9mn_77blBDfgVs"],
+  "digests": [
+    "9SqAbOLHVg2fT1aFyt4XRCRyi3AVx9mn_77blBDfgVs"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

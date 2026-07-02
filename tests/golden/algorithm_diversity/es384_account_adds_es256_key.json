@@ -1,6 +1,8 @@
 {
   "name": "es384_account_adds_es256_key",
-  "principal": ["diana_es384"],
+  "principal": [
+    "diana_es384"
+  ],
   "genesis_keys": [
     {
       "alg": "ES384",
@@ -45,7 +47,7 @@
       "commit_id": "SHA-384:KHd3m662qFBtbeod1D8yjQ9ZX5qUlaJOLp0B2EVMy6mRCZZSdLnQnlRpDKCbsT3M",
       "ar": "SHA-256:lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
       "sr": "SHA-256:lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
-      "pr": "SHA-256:0K8O04LeHqk5NN_mTVwle8IEch6SD7OKUqwqvLWUItU"
+      "pr": "SHA-256:Z5yme5tfaO3NgkIcswh3pJWdMXUsek9IbgVQnJUcs-w"
     }
   ],
   "digests": [
@@ -57,7 +59,7 @@
     "level": 3,
     "kr": "SHA-256:lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
     "ar": "SHA-256:lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
-    "pr": "SHA-256:0K8O04LeHqk5NN_mTVwle8IEch6SD7OKUqwqvLWUItU",
+    "pr": "SHA-256:Z5yme5tfaO3NgkIcswh3pJWdMXUsek9IbgVQnJUcs-w",
     "sr": "SHA-256:lybxSki5qTFRnEOfjoIyGDE9cYHXSL3pQkkhwLe3ayM",
     "pg": "",
     "multihash_kr": {
@@ -69,8 +71,8 @@
       "SHA-384": "RO5xWP49mn9DUxQmF0Wd2bFsDvCLILlwXmSmmAOwKFsWFkorbMgQzn0rZceaZcO6"
     },
     "multihash_pr": {
-      "SHA-256": "0K8O04LeHqk5NN_mTVwle8IEch6SD7OKUqwqvLWUItU",
-      "SHA-384": "xrSqUOu-MeZEVxOMZ3bAD2nllNyW8GIxVFj4V-Py7nLSXIRWchflELiO-6kmUijz"
+      "SHA-256": "Z5yme5tfaO3NgkIcswh3pJWdMXUsek9IbgVQnJUcs-w",
+      "SHA-384": "5KO3ppCYzN8eE7-TbMBzE3nW9Bq4W-SMzXDWkg2JWW1X86Di5Vrn9ugzsbZ5-62K"
     }
   }
 }

@@ -1,6 +1,9 @@
 {
   "name": "revoke_non_self_fails",
-  "principal": ["alice", "bob"],
+  "principal": [
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -42,7 +45,9 @@
       "pr": ""
     }
   ],
-  "digests": ["eYAVu803rqNwvDJ3vh8ZH82zmTbPxst_ONCg_vdTplU"],
+  "digests": [
+    "eYAVu803rqNwvDJ3vh8ZH82zmTbPxst_ONCg_vdTplU"
+  ],
   "expected": {
     "key_count": 2,
     "level": 3,

@@ -112,7 +112,7 @@ impl StateDigest for DataRoot {
 
 /// Principal Root (PR) — SPEC §3.7.1
 ///
-/// Current top-level state: `PR = MR(SR, CR?, embedding?)`.
+/// Current top-level state: `PR = MR(SR, CR?)`.
 /// When no CR exists (Levels 1-3), PR = SR (implicit promotion).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PrincipalRoot(pub MultihashDigest);
@@ -720,13 +720,17 @@ fn digest_into_boxed_slice(v: Vec<u8>) -> Box<[u8]> {
 
 /// Compute Principal Root — SPEC §3.7.1.
 ///
-/// `PR = MR(SR, CR?, embedding?)` — top-level state.
-/// If CR is None (Levels 1-3) and no embedding, PR = SR (implicit promotion).
+/// `PR = MR(SR, CR?)` — top-level state.
+/// If CR is None (Levels 1-3), PR = SR (implicit promotion).
 ///
-/// The `cr` parameter is temporarily `Option<&CommitID>` until CR replaces
-/// CommitID in Phase 5.
-///
-/// `embedding` is reserved for future use; pass `None`.
+/// This is an independent oracle over the same formula the real
+/// `PrincipalTree` (a `polydigest::EpochTree`, k=2, cell 0 = SR, cell 1 = CR)
+/// computes structurally: positional (never lexically sorted) concatenation,
+/// matching the tree's fixed cell order, so the two independently-written
+/// implementations can be cross-checked against each other (see
+/// `cyphr-storage/tests/e2e.rs`'s multihash-coherence recomputation).
+/// `Principal`'s actual PR is produced by the tree itself
+/// (`EpochTree::root(alg_id)`), never by this function.
 ///
 /// # Errors
 ///
@@ -734,29 +738,20 @@ fn digest_into_boxed_slice(v: Vec<u8>) -> Box<[u8]> {
 pub fn compute_pr(
     state_root: &StateRoot,
     cr: Option<&crate::commit_root::CommitRoot>,
-    embedding: Option<&[u8]>,
     algs: &[HashAlg],
 ) -> crate::error::Result<PrincipalRoot> {
-    // Implicit promotion: only SR, no CR, no embedding
-    if cr.is_none() && embedding.is_none() {
+    // Implicit promotion: only SR, no CR
+    let Some(cr) = cr else {
         return Ok(PrincipalRoot(state_root.0.clone()));
-    }
+    };
 
-    // Compute hash for each algorithm variant
+    // Compute hash for each algorithm variant: H(SR || CR), array order (no
+    // sort) — matches the tree's fixed cell order (SR at cell 0, CR at cell 1).
     let mut variants = BTreeMap::new();
     for &alg in algs {
         let sr_bytes = state_root.0.get_or_err(alg)?;
-
-        // Collect non-nil components
-        let mut components: Vec<&[u8]> = vec![sr_bytes];
-        if let Some(cr_digest) = cr {
-            components.push(cr_digest.0.get_or_err(alg)?);
-        }
-        if let Some(e) = embedding {
-            components.push(e);
-        }
-
-        let digest = hash_sorted_concat_bytes(alg, &components);
+        let cr_bytes = cr.0.get_or_err(alg)?;
+        let digest = hash_concat_bytes(alg, &[sr_bytes, cr_bytes]);
         variants.insert(alg, digest.into_boxed_slice());
     }
 
@@ -944,7 +939,7 @@ mod tests {
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
 
         assert_eq!(
             ps.get(HashAlg::Sha256).unwrap(),
@@ -959,7 +954,7 @@ mod tests {
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, None, &[HashAlg::Sha256]).unwrap();
+        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
         let pr = PrincipalGenesis::from_initial(&ps);
 
         // All should be identical to tmb

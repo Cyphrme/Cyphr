@@ -28,6 +28,8 @@ pub mod key;
 pub mod multihash;
 pub mod parsed_coz;
 pub mod principal;
+/// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
+pub mod principal_tree;
 pub mod state;
 // ...
 /// Transaction structure definitions.

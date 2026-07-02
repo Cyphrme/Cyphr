@@ -1,6 +1,8 @@
 {
   "name": "err_transaction_missing_pre",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -35,7 +37,9 @@
       "pr": ""
     }
   ],
-  "digests": ["IFjv9pgEc6m6UxZc2dfWorDXQmhvTuV-RWcbsSnFrGs"],
+  "digests": [
+    "IFjv9pgEc6m6UxZc2dfWorDXQmhvTuV-RWcbsSnFrGs"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,

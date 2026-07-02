@@ -1,6 +1,10 @@
 {
   "name": "delete_from_triple_key_leaves_two",
-  "principal": ["alice", "bob", "carol"],
+  "principal": [
+    "alice",
+    "bob",
+    "carol"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -43,19 +47,11 @@
           "sig": "hCnkIWAKahl3QqUBWmuTEhFoiOYsJiMIbgUXULhhFpsu_0MPztcK_gxrXPyDMnUkrCQs3dW9H74F3G-eOJPwPg"
         }
       ],
-      "keys": [
-        {
-          "alg": "ES256",
-          "pub": "3DSPxiY1uTcZ6jGRbJRgQb5OwutNBAJGsSGf48k2RFw65T1tDuf3kh_hon5IXI5mUhuu-T5yDrdDWkDA2PfU8A",
-          "tmb": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
-          "tag": "Bob (ES256)",
-          "now": 0
-        }
-      ],
+      "keys": [],
       "commit_id": "SHA-256:TVPzSdbBQ-F2frgASjAOzID0NxDhbEsBtDa505yYDrM",
       "ar": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
       "sr": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
-      "pr": "SHA-256:tq9J6yarcFTuY0QXCWdg9V1HHQxVXt8EI5BRkdJzbTg"
+      "pr": "SHA-256:OQZ5lJhYko1oHT6voySu4vg7EY7QhOSrsllihA5CiHg"
     }
   ],
   "digests": [
@@ -67,7 +63,7 @@
     "level": 3,
     "kr": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
     "ar": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
-    "pr": "SHA-256:tq9J6yarcFTuY0QXCWdg9V1HHQxVXt8EI5BRkdJzbTg",
+    "pr": "SHA-256:OQZ5lJhYko1oHT6voySu4vg7EY7QhOSrsllihA5CiHg",
     "tr": "SHA-256:TVPzSdbBQ-F2frgASjAOzID0NxDhbEsBtDa505yYDrM",
     "sr": "SHA-256:R47nLNTT9m9kcJrUXINbtHyQm1NDpXOHMfsmteMgMRo",
     "pg": ""

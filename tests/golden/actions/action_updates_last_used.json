@@ -1,6 +1,8 @@
 {
   "name": "action_updates_last_used",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw"
     }
   ],
-  "digests": ["MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"],
+  "digests": [
+    "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,

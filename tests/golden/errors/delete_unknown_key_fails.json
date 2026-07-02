@@ -1,6 +1,8 @@
 {
   "name": "delete_unknown_key_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -36,7 +38,9 @@
       "pr": ""
     }
   ],
-  "digests": ["RtBoRVdt9n4o80GZRxVIBJksi0kJPSYkvD3KWHRDA94"],
+  "digests": [
+    "RtBoRVdt9n4o80GZRxVIBJksi0kJPSYkvD3KWHRDA94"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
