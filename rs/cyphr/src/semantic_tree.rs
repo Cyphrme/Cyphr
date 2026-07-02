@@ -12,7 +12,22 @@
 //! actually uses come from the tree types here:
 //!
 //! - [`KeyTree`] — a k=256 collection node, one leaf per active key
-//!   thumbprint, lexically sorted. Its root is KR.
+//!   thumbprint, lexically sorted. Its root is KR. A thumbprint's raw byte
+//!   length is native to *its own signing key's* algorithm (an ES256 tmb is
+//!   32 bytes, an Ed25519 tmb is 64), so a mixed-algorithm keyset's
+//!   thumbprints do not share a width. `EpochTree`'s generic node fold
+//!   requires same-width siblings (an unprefixed concatenation is only
+//!   unambiguously parseable when children share a width — see
+//!   `spine::nary_mr`'s contract), so each non-native thumbprint is
+//!   converted to its canonical digest under the target algorithm before
+//!   folding, via the same `infer_alg_from_len`/`hash_bytes` mechanism
+//!   [`crate::state::compute_dr`] already uses for czd content
+//!   (REMEDIATION.md §4: "Leaf-level cross-alg conversion... keeps the
+//!   existing convert_to/infer_alg_from_len semantics"). This is a real,
+//!   authorized divergence from `compute_kr`'s raw-concat-regardless-of-size
+//!   behavior for mixed-algorithm keysets — single-algorithm keysets are
+//!   unaffected (every thumbprint is already native, so conversion is a
+//!   no-op).
 //! - [`AuthTree`] — a k=2 role-slot node: cell 0 = KT's root, cell 1 = RT's
 //!   root (Rule Tree — Level 5, not yet implemented, permanently absent).
 //!   Its root is AR. Because cell 1 never gets set, AR always promotes from
@@ -83,20 +98,29 @@ fn register_algs(inner: &mut eml::EpochTree, algs: &[HashAlg]) -> Result<()> {
     Ok(())
 }
 
-/// Serialize a raw digest into the shared cell-payload idiom, duplicating
-/// the SAME bytes under every algorithm key rather than computing a distinct
-/// per-algorithm value.
+/// Serialize a raw thumbprint digest into the shared cell-payload idiom,
+/// converting it to each target algorithm's canonical digest first.
 ///
-/// This matches `compute_kr`'s existing behavior (SPEC §14.2's *promotion*
-/// case, not its conversion case): thumbprints are concatenated as raw bytes
-/// regardless of size and hashed with whichever target algorithm is active —
-/// there is no cross-algorithm re-hash of key thumbprints the way
-/// `compute_dr` re-hashes czds. Each algorithm's identity-extract
-/// [`MaltHasher`] then pulls out its own (identical) entry at leaf time.
-fn serialize_raw(bytes: &[u8], algs: &[HashAlg]) -> Result<Vec<u8>> {
+/// `bytes`'s own algorithm is inferred from its length
+/// ([`crate::state::infer_alg_from_len`]); a target algorithm matching that
+/// native algorithm gets the raw bytes unchanged, any other target gets
+/// `hash_bytes(target, bytes)` — the exact mechanism
+/// [`crate::state::TaggedCzd::convert_to`] already uses for czd content in
+/// `compute_dr`. This keeps every algorithm's leaf entry at that
+/// algorithm's own native width, which `EpochTree`'s generic node fold
+/// requires of its siblings.
+fn serialize_converted(bytes: &[u8], algs: &[HashAlg]) -> Result<Vec<u8>> {
+    let native = crate::state::infer_alg_from_len(bytes.len()).ok_or_else(|| {
+        Error::UnsupportedAlgorithm(format!("invalid digest length: {}", bytes.len()))
+    })?;
     let mut mapped = BTreeMap::new();
     for &alg in algs {
-        mapped.insert(hash_alg_to_u64(alg), bytes.to_vec().into_boxed_slice());
+        let converted = if alg == native {
+            bytes.to_vec()
+        } else {
+            crate::state::hash_bytes(alg, bytes)
+        };
+        mapped.insert(hash_alg_to_u64(alg), converted.into_boxed_slice());
     }
     serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)
 }
@@ -171,7 +195,7 @@ impl KeyTree {
         let mut kt = Self::new();
         register_algs(&mut kt.inner, algs)?;
         for (index, tmb) in sorted.iter().enumerate() {
-            let payload = serialize_raw(tmb, algs)?;
+            let payload = serialize_converted(tmb, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
                 .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
@@ -346,6 +370,18 @@ mod tests {
             KeyTree::build(&[&t], &[]),
             Err(Error::NoActiveKeys)
         ));
+    }
+
+    #[test]
+    fn kt_mixed_algorithm_keyset_converts_instead_of_panicking() {
+        // A 32-byte (SHA-256-native) and a 64-byte (SHA-512-native)
+        // thumbprint together used to panic `nary_mr`'s same-width
+        // contract; conversion must make both target folds width-uniform.
+        let a = tmb(&[0x11; 32]);
+        let b = tmb(&[0x22; 64]);
+        let kr = KeyTree::build(&[&a, &b], &[HashAlg::Sha256, HashAlg::Sha512]).unwrap();
+        assert!(kr.0.get(HashAlg::Sha256).unwrap().len() == 32);
+        assert!(kr.0.get(HashAlg::Sha512).unwrap().len() == 64);
     }
 
     #[test]

@@ -621,7 +621,13 @@ pub fn compute_sr(
     Ok(StateRoot(MultihashDigest::new(variants)?))
 }
 
-fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
+/// Infer the hash algorithm that produced a raw digest from its byte length.
+///
+/// `pub(crate)`: also used by [`crate::semantic_tree::KeyTree`] to convert
+/// non-native thumbprints to their canonical digest under a target
+/// algorithm, the same cross-algorithm conversion mechanism this module
+/// already applies to czd content in [`compute_dr`].
+pub(crate) fn infer_alg_from_len(len: usize) -> Option<HashAlg> {
     match len {
         32 => Some(HashAlg::Sha256),
         48 => Some(HashAlg::Sha384),
