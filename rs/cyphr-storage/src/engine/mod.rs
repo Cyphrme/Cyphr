@@ -22,7 +22,7 @@ mod error;
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
 
-use crate::blob::{Blake3Hash, BlobStore, BlobStoreError};
+use crate::blob::{Blake3Hash, BlobStore};
 use crate::index::{CommitRef, IndexableCommit, IndexableCoz, Indexer, TipState};
 
 /// A commit's metadata paired with its blob contents.
@@ -1019,7 +1019,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
 
         for (mut principal, principal_id, mut sequence) in bootstrapped {
             loop {
-                let active_algs = principal.active_algs().to_vec();
+                let _active_algs = principal.active_algs().to_vec();
                 let mut commit_blobs = Vec::new();
                 let mut commit_cozies = Vec::new();
                 let mut consumed_indices = std::collections::HashSet::new();

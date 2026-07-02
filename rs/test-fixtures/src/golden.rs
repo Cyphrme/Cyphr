@@ -614,9 +614,8 @@ impl<'a> Generator<'a> {
 
                     let new_key = if (tx_cz.typ.ends_with("key/create")
                         || tx_cz.typ.ends_with("key/replace"))
-                        && tx_cz.target.is_some()
+                        && let Some(target_name) = tx_cz.target.as_ref()
                     {
-                        let target_name = tx_cz.target.as_ref().unwrap();
                         Some(self.pool_key_to_cyphr_key(target_name)?)
                     } else {
                         None
@@ -778,9 +777,8 @@ impl<'a> Generator<'a> {
 
                         let new_key = if (tx_cz.typ.ends_with("key/create")
                             || tx_cz.typ.ends_with("key/replace"))
-                            && tx_cz.target.is_some()
+                            && let Some(target_name) = tx_cz.target.as_ref()
                         {
-                            let target_name = tx_cz.target.as_ref().unwrap();
                             Some(self.pool_key_to_cyphr_key(target_name)?)
                         } else {
                             None
@@ -973,9 +971,8 @@ impl<'a> Generator<'a> {
 
                             let new_key = if (tx_cz.typ.ends_with("key/create")
                                 || tx_cz.typ.ends_with("key/replace"))
-                                && tx_cz.target.is_some()
+                                && let Some(target_name) = tx_cz.target.as_ref()
                             {
-                                let target_name = tx_cz.target.as_ref().unwrap();
                                 Some(self.pool_key_to_cyphr_key(target_name)?)
                             } else {
                                 None
