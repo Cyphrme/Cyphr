@@ -454,7 +454,7 @@ impl<'a> CommitScope<'a> {
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
         use crate::semantic_tree::derive_state_roots;
-        use crate::state::{derive_hash_algs, hash_sorted_concat_bytes};
+        use crate::state::{compute_dr, derive_hash_algs, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return false;
@@ -465,8 +465,16 @@ impl<'a> CommitScope<'a> {
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| &k.tmb).collect();
-        let Ok((_kr, _ar, sr)) =
-            derive_state_roots(&thumbprints, self.projected.dr.as_ref(), &active_algs)
+
+        // Refresh DR to the current active_algs rather than trusting the
+        // cached value, which may predate a key of a new algorithm (see
+        // finalize_commit's identical refresh for the full rationale).
+        let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
+        let Ok(dr) = compute_dr(&action_refs, None, &active_algs) else {
+            return false;
+        };
+
+        let Ok((_kr, _ar, sr)) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)
         else {
             return false;
         };
@@ -548,7 +556,7 @@ impl<'a> CommitScope<'a> {
         use serde_json::json;
 
         use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
-        use crate::state::{hash_alg_from_str, hash_sorted_concat_bytes};
+        use crate::state::{compute_dr, hash_alg_from_str, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -562,9 +570,16 @@ impl<'a> CommitScope<'a> {
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
             self.projected.auth.keys.values().map(|k| &k.tmb).collect();
+
+        // Refresh DR to the current active_algs rather than trusting the
+        // cached value, which may predate a key of a new algorithm (see
+        // finalize_commit's identical refresh for the full rationale).
+        let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
+        let dr = compute_dr(&action_refs, None, &active_algs)?;
+
         let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots(
             &thumbprints,
-            self.projected.dr.as_ref(),
+            dr.as_ref(),
             &active_algs,
         )?;
 

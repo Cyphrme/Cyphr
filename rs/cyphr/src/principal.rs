@@ -962,11 +962,15 @@ impl Principal {
         pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
         // KT → AR-node → SR-node from post-mutation key set (local, does not
-        // mutate self)
+        // mutate self). DR is refreshed to the current active_algs rather
+        // than trusting the cached value, which may predate a key of a new
+        // algorithm (see finalize_commit's identical refresh).
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, self.dr.as_ref(), &active_algs)?;
+        let action_refs: Vec<&Action> = self.data.actions.iter().collect();
+        let dr = compute_dr(&action_refs, None, &active_algs)?;
+        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
 
         let tx_alg = cz.hash_alg;
 
@@ -1164,7 +1168,19 @@ impl Principal {
         let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
-        // KT → AR-node → SR-node (post-mutation key set, existing DR).
+        // Refresh DR's algorithm coverage to the post-mutation active_algs
+        // before folding it into SR-node. DR was cached by record_action
+        // under whatever active_algs were live at the time; a key of a NEW
+        // algorithm added since then would otherwise leave DR missing that
+        // algorithm's variant, and StateTree::build's cell payload would
+        // silently borrow the wrong-width first-available variant via
+        // MultihashDigest::get_or_err — exactly the width mismatch the
+        // tree's fold correctly refuses to fold (unlike the old flat
+        // formula, which had no width invariant to catch it).
+        let actions: Vec<&Action> = core.data.actions.iter().collect();
+        core.dr = compute_dr(&actions, None, &active_algs)?;
+
+        // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
         let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| &k.tmb).collect();
         let (kr, ar, sr) = derive_state_roots(&thumbprints, core.dr.as_ref(), &active_algs)?;
@@ -2354,6 +2370,65 @@ mod tests {
         assert!(principal.key_root().get(HashAlg::Sha256).is_some());
         assert!(principal.auth_root().get(HashAlg::Sha256).is_some());
         assert!(principal.sr().unwrap().get(HashAlg::Sha256).is_some());
+    }
+
+    /// Reproduces a proptest-discovered defect: a `DataRoot` cached from
+    /// `record_action` under a narrower `active_algs` set must not be
+    /// reused unrefreshed once a later key of a NEW algorithm expands
+    /// `active_algs` — the stale DR is missing a variant for the new
+    /// algorithm, and `MultihashDigest::get_or_err`'s "first available
+    /// variant" fallback silently substitutes a wrong-width value, which
+    /// the tree's width-uniform fold contract correctly rejects.
+    #[test]
+    fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
+        use coz::Czd;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use serde_json::json;
+
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0x11);
+        let mut principal = Principal::implicit(key.clone()).unwrap();
+
+        let action = make_test_action(&key.tmb);
+        principal.record_action(action).unwrap();
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
+
+        // A key/create tx timestamped after the action (make_test_action
+        // uses now=3000; make_key_add_tx's fixed now=2000 would fail
+        // timestamp ordering, so this is constructed inline instead).
+        let pre = principal.pr().clone();
+        let key2 = make_test_key_ed25519(0x22);
+        let ps_bytes = pre.get(HashAlg::Sha256).unwrap();
+        let raw = coz::CozJson {
+            pay: json!({
+                "typ": "cyphr.me/key/create",
+                "alg": "Ed25519",
+                "now": 4000,
+                "tmb": key.tmb.to_b64(),
+                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
+                "id": key2.tmb.to_b64()
+            }),
+            sig: vec![0; 64],
+        };
+        let cz = crate::parsed_coz::ParsedCoz {
+            kind: CozKind::KeyCreate {
+                pre: pre.clone(),
+                id: key2.tmb.clone(),
+            },
+            signer: key.tmb.clone(),
+            now: 4000,
+            czd: Czd::from_bytes(vec![0xAB; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: None,
+            raw,
+        };
+        principal
+            .apply_transaction_test(cz, Some(key2.clone()))
+            .unwrap();
+
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
     }
 
     /// c2/a2 — the recursive singleton-promotion property, extended through
