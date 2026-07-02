@@ -90,6 +90,14 @@ pub enum Error {
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
 
+    /// A collection node (e.g. KT) was asked to hold more items than its
+    /// 256-child collection-node arity boundary allows.
+    ///
+    /// A known, tracked gap deferred to P10-testing-hardening — not
+    /// resolved by silently extending arity or any other ad hoc handling.
+    #[error("collection node exceeds 256-item arity boundary: {0} items")]
+    CollectionArityExceeded(usize),
+
     // === Commit lifecycle errors ===
     /// Attempted to finalize an empty commit (no cozies).
     #[error("empty commit")]
