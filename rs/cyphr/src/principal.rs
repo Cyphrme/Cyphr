@@ -2239,4 +2239,64 @@ mod tests {
             "abandoned scope must not mutate the live key set"
         );
     }
+
+    /// c7/a7 — PR's variant set must track the *current* `active_algs`, not
+    /// the Principal Tree's cumulative registered-algorithm set.
+    ///
+    /// `PrincipalTree::ensure_algorithm` only ever adds algorithms to the
+    /// underlying `EpochTree` — there is no de-registration API. If PR were
+    /// assembled from the tree's registered algorithms instead of being
+    /// re-derived from `active_algs` on every mutation (see
+    /// `finalize_commit`'s `[alg-set-evolution]` comment), revoking a
+    /// principal's only SHA-512 key would leave a stale SHA-512 entry in PR
+    /// forever, since the tree itself never forgets it was once registered.
+    #[test]
+    fn revoked_key_algorithm_drops_from_pr_variants() {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let key_es256 = make_test_key(0x11);
+        let key_ed25519 = make_test_key_ed25519(0x22);
+
+        let mut principal =
+            Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(
+            principal.pr().get(HashAlg::Sha512).is_some(),
+            "PR must have a SHA-512 variant while the Ed25519 key is active"
+        );
+
+        // Ed25519 key self-revokes; ES256 remains, so this is not a
+        // last-active-key revoke (which would be rejected).
+        let pre = principal.pr().clone();
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            signer: key_ed25519.tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0x44; 64]),
+            hash_alg: HashAlg::Sha512,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+        principal.apply_transaction_test(cz, None).unwrap();
+
+        assert!(
+            !principal.is_key_active(&key_ed25519.tmb),
+            "Ed25519 key must be revoked"
+        );
+        assert_eq!(
+            principal.active_algs(),
+            vec![HashAlg::Sha256],
+            "SHA-512 must drop out of active_algs once its only key is revoked"
+        );
+        assert!(
+            principal.pr().get(HashAlg::Sha512).is_none(),
+            "PR must not retain a stale SHA-512 variant after its only key is \
+             revoked — this only holds if PR is assembled from live active_algs \
+             rather than the tree's cumulative registered-algorithm set"
+        );
+        assert!(
+            principal.pr().get(HashAlg::Sha256).is_some(),
+            "PR must still have a SHA-256 variant for the surviving ES256 key"
+        );
+    }
 }
