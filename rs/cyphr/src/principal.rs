@@ -1889,7 +1889,7 @@ mod tests {
             let serialized = serde_json::to_vec(&mapped_variants).unwrap();
             let leaf_hash = hasher.leaf(&serialized);
             assert!(
-                crate::verify_inclusion(&hasher, &leaf_hash, &proof, &root),
+                crate::verify_inclusion(&hasher, &leaf_hash, i, size, &proof, &root),
                 "inclusion proof failed for index {i}"
             );
         }
@@ -1905,7 +1905,9 @@ mod tests {
         let hasher = MaltHasher::new(alg);
 
         // Build a reference EML log to capture intermediate roots.
-        let mut ref_log = eml::Log::new(eml::MemoryStorage::new());
+        let mut ref_log =
+            futures::executor::block_on(eml::from_storage(eml::MemoryStorage::new(), Vec::new()))
+                .unwrap();
         futures::executor::block_on(ref_log.add_algorithm(alg_id, Box::new(MaltHasher::new(alg))))
             .unwrap();
         let mut roots = Vec::new();
@@ -1916,8 +1918,8 @@ mod tests {
                 mapped_variants.insert(a_id, val.clone());
             }
             let tr_bytes = serde_json::to_vec(&mapped_variants).unwrap();
-            futures::executor::block_on(ref_log.append(&tr_bytes)).unwrap();
-            roots.push(ref_log.root(alg_id).unwrap());
+            futures::executor::block_on(ref_log.append_leaf(&tr_bytes)).unwrap();
+            roots.push(ref_log.root_for(alg_id).unwrap());
         }
 
         // Verify consistency from each prior size to current.
@@ -1926,7 +1928,7 @@ mod tests {
             let proof = principal.consistency_proof(alg, old_size).unwrap();
             let old_root = &roots[(old_size - 1) as usize];
             assert!(
-                crate::verify_consistency(&hasher, &proof, old_root, &new_root),
+                crate::verify_consistency(&hasher, old_size, size, &proof, old_root, &new_root),
                 "consistency proof failed for old_size {old_size}"
             );
         }
@@ -2000,6 +2002,7 @@ mod tests {
         let proof = restored.inclusion_proof(alg, 0).unwrap();
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
         let root = restored.commit_trees().root(alg_id).unwrap();
+        let size = restored.commit_trees().tree_size(alg_id).unwrap();
         let hasher = MaltHasher::new(alg);
         let commit_tr = principal.commits().next().unwrap().tr();
         let mut mapped_variants = BTreeMap::new();
@@ -2010,7 +2013,7 @@ mod tests {
         let serialized = serde_json::to_vec(&mapped_variants).unwrap();
         let leaf_hash = hasher.leaf(&serialized);
         assert!(
-            crate::verify_inclusion(&hasher, &leaf_hash, &proof, &root),
+            crate::verify_inclusion(&hasher, &leaf_hash, 0, size, &proof, &root),
             "inclusion proof must verify on checkpoint-restored principal"
         );
     }
