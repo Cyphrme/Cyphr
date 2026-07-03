@@ -156,6 +156,12 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
     }
 
+    // NOTE: none of the persisted fixtures under tests/golden/ currently
+    // carry a `cr` value (see GoldenExpected::cr's doc comment), so this
+    // branch is dormant against the on-disk corpus today — it does not
+    // mean the corpus already covers CR. See
+    // test_fixtures::golden::tests::test_generate_single_commit for the
+    // round-trip check that does exercise this equality.
     if let Some(ref cr) = expected.cr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format

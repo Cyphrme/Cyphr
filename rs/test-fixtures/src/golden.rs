@@ -113,6 +113,14 @@ pub struct GoldenExpected {
     pub pr: Option<String>,
     /// Expected Commit Root digest (first variant), present once the
     /// principal has at least one checkpointed commit.
+    ///
+    /// None of the persisted fixtures under `tests/golden/` carry a `cr`
+    /// value yet (the generator populates it, but the on-disk corpus
+    /// predates this field) — so `verify_expected`'s `cr` equality
+    /// branch is exercised today only by `golden::tests`'
+    /// `test_generate_single_commit` round trip, not by the corpus.
+    /// Backfilling the corpus is legitimate follow-up work, not done
+    /// here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cr: Option<String>,
     /// Expected commit ID digest.
@@ -1833,6 +1841,34 @@ level = 3
         assert!(
             golden.expected.cr.is_some(),
             "cr should be computed once a commit has been finalized"
+        );
+
+        // Round trip: independently reconstruct a principal from the same
+        // intent/pool data and confirm its own recomputed cr matches
+        // golden.expected.cr byte-for-byte. This proves the cr equality
+        // is genuinely exercised (not just present) even though the
+        // persisted fixture corpus under tests/golden/ carries no cr
+        // values yet — see GoldenExpected::cr's doc comment.
+        let generator = Generator::new(&pool);
+        let mut principal2 = generator
+            .create_principal(&intent.test[0].principal, &intent.test[0].name)
+            .expect("failed to reconstruct principal");
+        generator
+            .generate_single_commit(&intent.test[0], &mut principal2)
+            .expect("failed to regenerate golden");
+        let first_alg2 = principal2
+            .active_algs()
+            .first()
+            .copied()
+            .expect("principal must have at least one active algorithm");
+        let recomputed_cr = principal2.cr().and_then(|cr_val| {
+            cr_val
+                .get(first_alg2)
+                .map(|d| format!("{}:{}", first_alg2, Base64UrlUnpadded::encode_string(d)))
+        });
+        assert_eq!(
+            recomputed_cr, golden.expected.cr,
+            "independently recomputed cr must match golden.expected.cr"
         );
     }
 
