@@ -14,7 +14,12 @@ use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::{CommitEntry, Genesis};
 
 /// Type alias representing the concrete storage engine type used by the CLI.
-pub type CliStorageEngine = StorageEngine<FjallBlobStore, SqliteIndexer>;
+pub type CliStorageEngine =
+    StorageEngine<FjallBlobStore, SqliteIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
+
+/// Type alias for a `Principal` backed by the CLI's durable Commit Tree
+/// storage — what [`load_principal_from_engine`] always returns.
+pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
 use crate::Error;
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
@@ -144,11 +149,18 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
 
     if let Some(path) = store_uri.strip_prefix("file:") {
         let path = std::path::Path::new(path);
-        let blob_store = FjallBlobStore::open(&path.join("blobs"))
+        let db = fjall::Database::builder(path.join("blobs"))
+            .open()
+            .map_err(|e| crate::Error::Storage(e.to_string()))?;
+        let blob_store = FjallBlobStore::from_database(db.clone())
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let indexer = SqliteIndexer::open(&path.join("index.db"))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let engine = StorageEngine::new(blob_store, indexer);
+        let engine =
+            StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
+                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
+                    .map_err(|e| e.to_string())
+            });
 
         // Open keystore and extract keys
         let keystore = JsonKeyStore::open(keystore_path)?;
@@ -190,7 +202,9 @@ pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
 }
 
 /// Get the principal ID string from a Principal
-pub fn get_principal_id_from_principal(principal: &cyphr::Principal) -> crate::Result<String> {
+pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
+    principal: &cyphr::Principal<S>,
+) -> crate::Result<String> {
     use cyphr::StateDigest;
     let mh = if let Some(pg) = principal.pg() {
         pg.as_multihash()
@@ -221,7 +235,7 @@ pub fn load_principal_from_engine(
     engine: &CliStorageEngine,
     keystore: &JsonKeyStore,
     identity: &str,
-) -> crate::Result<cyphr::Principal> {
+) -> crate::Result<CliPrincipal> {
     let pr = parse_principal_genesis(identity)?;
     let principal_id = get_principal_id(&pr)?;
 
@@ -237,34 +251,42 @@ pub fn load_principal_from_engine(
 
         let is_implicit_genesis = keystore.get(identity).is_ok();
 
-        if tip.is_none() {
-            // Genesis state - reconstruct from keystore
+        let genesis = if tip.is_none() {
+            // Genesis state - reconstruct from keystore. load_principal
+            // handles an empty commit chain correctly, returning a fresh
+            // principal backed by this engine's durable storage.
             let key = load_key_from_keystore(keystore, identity)?;
-            Ok(cyphr::Principal::implicit(key)?)
+            cyphr_storage::Genesis::Implicit(key)
+        } else if is_implicit_genesis {
+            let genesis_key = load_key_from_keystore(keystore, identity)?;
+            cyphr_storage::Genesis::Implicit(genesis_key)
         } else {
-            let genesis = if is_implicit_genesis {
-                let genesis_key = load_key_from_keystore(keystore, identity)?;
-                cyphr_storage::Genesis::Implicit(genesis_key)
-            } else {
-                engine
-                    .resolve_genesis(&principal_id, &[])
-                    .await
-                    .map_err(|e| crate::Error::Storage(e.to_string()))?
-            };
-
             engine
-                .load_principal(&principal_id, genesis)
+                .resolve_genesis(&principal_id, &[])
                 .await
-                .map_err(|e| crate::Error::Storage(e.to_string()))
-        }
+                .map_err(|e| crate::Error::Storage(e.to_string()))?
+        };
+
+        engine
+            .load_principal(&principal_id, genesis)
+            .await
+            .map_err(|e| crate::Error::Storage(e.to_string()))
     })
 }
 
 /// Save a principal's new commits to the storage engine.
-pub fn save_principal_to_engine(
+///
+/// Generic over `principal`'s own Commit Tree backend `S`: callers pass
+/// both a freshly-constructed, not-yet-persisted `Principal` (backed by
+/// [`cyphr::eml::MemoryStorage`], e.g. from `init`/`import`) and a
+/// [`CliPrincipal`] loaded via [`load_principal_from_engine`] and then
+/// mutated (e.g. from `key add`/`key revoke`). Either way, only `engine`'s
+/// own durable storage is written to — `principal`'s backend is read-only
+/// here, via `cyphr_storage::export_commits`.
+pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
     engine: &CliStorageEngine,
     keystore: &JsonKeyStore,
-    principal: &cyphr::Principal,
+    principal: &cyphr::Principal<S>,
 ) -> crate::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

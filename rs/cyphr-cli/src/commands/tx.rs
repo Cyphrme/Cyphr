@@ -3,7 +3,8 @@
 use cyphr::StateDigest;
 
 use super::common::{
-    get_commits_from_engine, load_key_from_keystore, load_principal_from_engine, parse_store,
+    CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
+    parse_store,
 };
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
@@ -189,7 +190,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Load identity from storage or keystore.
-fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphr::Principal> {
+fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
     let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     load_principal_from_engine(&store, &keystore, identity)

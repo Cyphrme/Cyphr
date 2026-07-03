@@ -28,39 +28,33 @@ use cyphr_storage::engine::StorageEngine;
 ///
 /// ## Backend note
 ///
-/// Uses persistent `FjallBlobStore` and `SqliteIndexer`. The Commit Tree
-/// deliberately stays on the in-memory default ([`cyphr::eml::MemoryStorage`])
-/// rather than `StorageEngine::with_storage_factory` plus a disk-backed
-/// `storage_fjall::FjallStorage` sharing this state's `Database`: doing so
-/// makes `AppState::new` build correctly, but `StorageEngine::load_principal`
-/// reconstructs a principal by full replay from genesis on every call, which
-/// is only correct against a Commit Tree that starts genuinely empty each
-/// time. A durable Commit Tree that already carries state from a prior call
-/// at the same physical location produces the wrong intermediate Commit
-/// Root partway through replay and breaks on the next multi-commit
-/// principal (confirmed by wiring it here experimentally and watching this
-/// crate's own `patch_with_range` end-to-end test fail with exactly that
-/// error — `StorageEngine::load_principal` now detects the unsafe case and
-/// returns a dedicated `EngineError::Storage` rather than a confusing
-/// signature-shaped failure). Switching this `AppState` to durable
-/// commit-tree storage needs that replay/reconstruction gap closed first —
-/// either a historical/checkpoint-root query on `eml::Storage`, or
-/// `StorageEngine` caching an already-loaded live principal across calls
-/// instead of replaying from genesis every time.
+/// The blob store, index, and each principal's Commit Tree are all
+/// durable: the blob store and Commit Trees share one physical `Database`
+/// (`FjallBlobStore::from_database` plus
+/// `cyphr_blob_fjall::open_eml_storage_scoped`, per
+/// `docs/specs/blob-store-fjall.md`'s `[fjall-single-keyspace]` mandate),
+/// with each principal's Commit Tree keyed to its own scoped keyspace by
+/// `principal_id` so multiple principals safely share the one database.
 pub struct AppState {
     /// Resolved server configuration.
     pub config: config::ServerConfig,
 
     /// Protocol-aware storage engine.
-    pub engine: StorageEngine<FjallBlobStore, SqliteIndexer>,
+    pub engine:
+        StorageEngine<FjallBlobStore, SqliteIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>,
 }
 
 impl AppState {
     /// Construct application state from resolved configuration.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let blob_store = FjallBlobStore::open(&config.data_dir.join("blobs"))?;
+        let db = fjall::Database::builder(config.data_dir.join("blobs")).open()?;
+        let blob_store = FjallBlobStore::from_database(db.clone())?;
         let indexer = SqliteIndexer::open(&config.data_dir.join("index.db"))?;
-        let engine = StorageEngine::new(blob_store, indexer);
+        let engine =
+            StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
+                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
+                    .map_err(|e| e.to_string())
+            });
         Ok(Self { config, engine })
     }
 }

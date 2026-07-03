@@ -2,7 +2,7 @@
 
 use cyphr::StateDigest;
 
-use super::common::{load_principal_from_engine, parse_store};
+use super::common::{CliPrincipal, load_principal_from_engine, parse_store};
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, OutputFormat};
 
@@ -68,7 +68,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 // ============================================================================
 
 /// Format KeyRoot for display.
-fn format_ks(principal: &cyphr::Principal) -> String {
+fn format_ks(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let ks = principal.key_root();
@@ -80,7 +80,7 @@ fn format_ks(principal: &cyphr::Principal) -> String {
 }
 
 /// Format AuthRoot for display.
-fn format_as(principal: &cyphr::Principal) -> String {
+fn format_as(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let auth_root = principal.auth_root();
@@ -93,7 +93,7 @@ fn format_as(principal: &cyphr::Principal) -> String {
 }
 
 /// Format PrincipalRoot for display.
-fn format_ps(principal: &cyphr::Principal) -> String {
+fn format_ps(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let ps = principal.pr();
@@ -105,7 +105,7 @@ fn format_ps(principal: &cyphr::Principal) -> String {
 }
 
 /// Format PrincipalGenesis for display.
-fn format_pr(principal: &cyphr::Principal) -> String {
+fn format_pr(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let hash_alg = principal.hash_alg();
