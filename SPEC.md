@@ -1707,12 +1707,18 @@ embedding of A.
 
 ### 10.1 Nonce, Embedding, and Opaque Node Pathing
 
-Cyphr permits nonces, embeddings, or otherwise opaque nodes anywhere in the
-Principal Tree. At the PT (EMT) level specifically, cell 0 and cell 1 are
-reserved positionally for SR and CR (§3.7.1); PT embeddings occupy cells ≥ 2.
-Embeddings are indistinguishable from other digest values unless
-revealed by the client. One or more nonces may be included at any level of the
-state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
+Cyphr permits nonces, embeddings, or otherwise opaque nodes at multiple
+points in the state hierarchy, though the underlying mechanism differs by
+level. At the PT root specifically, cell 0 and cell 1 are reserved
+positionally for SR and CR (§3.7.1); cells ≥ 2 are reserved for future PT
+embeddings — today this is design intent, not an implemented capability,
+since the PT root's cell arity is fixed at exactly two. AT and ST (§3.7.5,
+§3.7.2) are likewise fixed two-cell trees, with no cells ≥ 2 capability at
+their levels, implemented or planned. KT (§3.7.3), by contrast, is a
+variable-width collection, where a nonce or embedding is simply added as
+another member/leaf — the one level with implemented room for this today.
+Embeddings are indistinguishable from other digest values unless revealed by
+the client. To delete an embedding or nonce, a `*/nonce/delete` is signed.
 
 Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
 state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
@@ -1793,7 +1799,10 @@ Typical uses for principal embedding are identity encapsulation, external
 recovery authorities, social recovery, organizational delegation, and disaster
 recovery. (See section Recovery.)
 
-An example of embedding multiple external principal's KR's into KR:
+An example of embedding multiple external principal's KR's into KR. This
+specific capability — embedding an external principal's KR directly as an
+additional KT member — is design intent, not yet implemented: KT accepts
+key thumbprints only today.
 
 ```text
 Principal Tree (PT0)
