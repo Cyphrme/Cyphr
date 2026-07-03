@@ -114,7 +114,9 @@ pub struct GoldenExpected {
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
     pub tr: Option<String>,
-    /// Expected state root digest: MR(AR, DR?).
+    /// Expected State Root digest: root of the principal's StateTree
+    /// (SPEC §3.7.2); promotes from AR when no Data Root is present,
+    /// otherwise the tree root over AR and DR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sr: Option<String>,
     /// Expected data root digest (Level 4).

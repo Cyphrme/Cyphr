@@ -219,7 +219,9 @@ pub struct CommitEntry {
     /// Auth Root after this commit.
     #[serde(rename = "ar")]
     pub auth_root: String,
-    /// State Root: MR(AR, DR?).
+    /// State Root: root of the principal's StateTree (SPEC §3.7.2);
+    /// promotes from AR when no Data Root is present, otherwise the
+    /// tree root over AR and DR.
     #[serde(alias = "cs")]
     pub sr: String,
     /// Principal Root after this commit.
