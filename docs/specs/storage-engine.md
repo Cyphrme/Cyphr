@@ -47,8 +47,9 @@ responses. The engine is the layer that the HTTP server programs against.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
-duality), [`temporally-sparse-merkle-log.md`](../models/temporally-sparse-merkle-log.md)
-(TSML/EML model for commit tree).
+duality). The TSML/EML formal model previously referenced here moved
+upstream to the `eml` repository, which now carries the current
+architectural description and proofs.
 
 **Cross-references:**
 [`state-tree.md`](state-tree.md) (MHMR computation, sort order, promotion),
