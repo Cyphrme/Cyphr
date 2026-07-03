@@ -101,15 +101,27 @@ impl PrincipalTree {
     /// under `alg_id` — the hop-2 witness of the two-step transaction
     /// inclusion verification (see
     /// [`Principal::verify_transaction_inclusion`](crate::principal::Principal::verify_transaction_inclusion)):
-    /// "CR is included in PR." Deliberately scoped to `CR_CELL` only, not a
-    /// general "prove any cell" facility — cell 0 (SR) has no analogous
-    /// external consumer today.
+    /// "CR is included in PR."
     ///
     /// Returns `None` if `alg_id` is unregistered or cell 1 has not yet been
     /// set (no commits exist yet — a genesis principal has no CR to prove).
     #[must_use]
     pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
         self.inner.leaf_proof(alg_id, CR_CELL)
+    }
+
+    /// Generate a self-contained inclusion proof for the State Root, cell 0,
+    /// under `alg_id` — the final hop of the key-membership chain (see
+    /// [`Principal::verify_key_inclusion`](crate::principal::Principal::verify_key_inclusion)):
+    /// "SR is included in PR." The cell-0 sibling of
+    /// [`Self::cr_inclusion_proof`]; together the two cover every cell PT
+    /// has, still not a general "prove any cell" facility beyond those two.
+    ///
+    /// Returns `None` if `alg_id` is unregistered or cell 0 has not yet been
+    /// set (no SR exists yet).
+    #[must_use]
+    pub fn sr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, SR_CELL)
     }
 
     /// Assemble the Principal Root from the tree's current per-algorithm
