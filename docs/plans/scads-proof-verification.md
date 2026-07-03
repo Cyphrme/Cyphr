@@ -1,5 +1,28 @@
 # PLAN: SCADS Proof Verification
 
+> **STATUS: SUPERSEDED — not a live implementation plan.**
+>
+> This plan's goal — O(log n) proof-based verification, replacing full-chain
+> replay on the write path — has already been reached, but via a different,
+> already-landed mechanism than the one described below. The plan is built
+> around a `malt` crate (`BTreeMap<HashAlg, malt::Log>`, `malt::verify_inclusion`,
+> `malt::verify_consistency`) that does not exist anywhere in this workspace —
+> zero hits for `malt` in `rs/Cargo.toml` and no `malt` directory under `rs/`.
+> It was superseded by the EML crate's `Log`/`Hasher` formalization (see
+> `docs/specs/multihash-simplification.md`).
+>
+> The proof-verification capability this plan set out to build now exists as
+> `Principal::verify_transaction_inclusion` (2-hop: transaction included in
+> the Commit Root, Commit Root included in the Principal Root) and
+> `Principal::verify_key_inclusion` (4-hop: key included in the Key Root,
+> chained through Auth Root and State Root to the Principal Root), both in
+> `rs/cyphr/src/principal.rs`, built on EML's inclusion-proof primitives
+> rather than `malt`'s.
+>
+> Everything below this banner describes the original `malt`-based design and
+> is left unmodified as a historical record of the approach that was
+> considered — it is not current, and does not reflect what actually landed.
+
 <!--
   Produced from /plan COMMIT phase.
   Source sketch: .sketches/2026-05-07-malt-proof-verification.md
