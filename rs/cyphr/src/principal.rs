@@ -14,7 +14,7 @@ use crate::key::Key;
 use crate::multihash::MultihashDigest;
 use crate::parsed_coz::VerifiedCoz;
 use crate::principal_tree::PrincipalTree;
-use crate::semantic_tree::{KeyTree, StateTree, derive_state_roots};
+use crate::semantic_tree::{AuthTree, KeyTree, StateTree, derive_state_roots};
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
     derive_hash_algs, hash_alg_from_str,
@@ -231,6 +231,69 @@ impl Principal {
             PrincipalKind::Nascent(core) => core,
             PrincipalKind::Established { core, .. } => core,
         }
+    }
+}
+
+// ============================================================================
+// NodePath: chained multi-hop inclusion proofs
+// ============================================================================
+
+/// One hop of a chained inclusion proof: a self-contained leaf proof for a
+/// specific level's cell, verified against that level's own root.
+#[derive(Debug, Clone)]
+pub struct NodePathHop {
+    /// The leaf proof for this hop.
+    pub proof: eml::LeafProof,
+}
+
+/// A self-contained, top-down chain of inclusion hops — the generalization
+/// of [`Principal::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain
+/// (REMEDIATION.md §8: "a sequence of hops... verified top-down from a
+/// trusted PR"). [`Principal::key_inclusion_proof`] produces the concrete
+/// 4-hop instance chaining a key's thumbprint through KT -> AR-node ->
+/// SR-node -> PT.
+#[derive(Debug, Clone)]
+pub struct NodePath {
+    /// Hops in leaf-to-root order.
+    pub hops: Vec<NodePathHop>,
+}
+
+impl NodePath {
+    /// Verify every hop against its own level's authenticated root
+    /// (`roots`, ordered leaf-to-root, one entry per hop), and every
+    /// consecutive bridge — hop `i`'s proven leaf value must equal hop
+    /// `i - 1`'s authenticated root — mirroring
+    /// [`Principal::verify_transaction_inclusion`]'s single bridge check,
+    /// scaled to an arbitrary-length chain.
+    ///
+    /// A promoted (single-cell) level's hop is not special-cased: its
+    /// `LeafProof` carries an empty skeleton (a 1-cell tree's root is its
+    /// sole leaf verbatim — see [`crate::principal_tree`]'s module docs),
+    /// so `verify` reduces to a direct byte-equality check against `roots`
+    /// through the same code path every other hop uses.
+    #[must_use]
+    pub fn verify(&self, hasher: &dyn eml::Hasher, roots: &[&[u8]]) -> bool {
+        if self.hops.len() != roots.len() || self.hops.is_empty() {
+            return false;
+        }
+        for (hop, &root) in self.hops.iter().zip(roots.iter()) {
+            let Some(skeleton) = eml::rebalanced_skeleton(
+                hop.proof.tree_size,
+                hop.proof.arity,
+                hop.proof.index,
+            ) else {
+                return false;
+            };
+            if !hop.proof.verify(hasher, &skeleton, root) {
+                return false;
+            }
+        }
+        for i in 1..self.hops.len() {
+            if self.hops[i].proof.leaf_hash != roots[i - 1] {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -762,6 +825,99 @@ impl Principal {
         let bridge_ok = hop2_proof.leaf_hash == cr_bytes;
 
         Ok(hop1_ok && hop2_ok && bridge_ok)
+    }
+
+    /// Prove that the currently active key with thumbprint `tmb` is
+    /// included under this principal's *current* Principal Root (PR), for
+    /// hash algorithm `alg` — a 4-hop generalization of
+    /// [`Self::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain over
+    /// the full identity hierarchy: thumbprint -> KT -> AR-node -> SR-node
+    /// -> PT.
+    ///
+    /// Rebuilds KT/AR-node/SR-node fresh from the principal's current key
+    /// set and Data Root — none of the three keep long-lived state on
+    /// `Principal` (see [`crate::semantic_tree`]'s module docs); `PT` is the
+    /// one node type that does, so its hop reuses `self.pt` directly.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedAlgorithm`] if `alg` is not currently active, or
+    /// `tmb` does not name a currently active key.
+    pub fn key_inclusion_proof(&self, alg: HashAlg, tmb: &Thumbprint) -> Result<NodePath> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        let active_algs = self.active_algs();
+        if !active_algs.contains(&alg) {
+            return Err(Error::UnsupportedAlgorithm(alg.to_string()));
+        }
+
+        // Lexical-sort position, matching KeyTree::build_tree's own sort.
+        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        let mut sorted: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
+        sorted.sort();
+        let index = sorted
+            .iter()
+            .position(|&b| b == tmb.as_bytes())
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))? as u64;
+
+        let kt = KeyTree::build_tree(&thumbprints, &active_algs)?;
+        let kr = kt.root(&active_algs)?;
+        let ar_node = AuthTree::build_tree(&kr, &active_algs)?;
+        let ar = ar_node.root(&active_algs)?;
+        let sr_node = StateTree::build_tree(&ar, self.dr.as_ref(), &active_algs)?;
+
+        let hop1 = kt
+            .thumbprint_inclusion_proof(alg_id, index)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let hop2 = ar_node
+            .kr_inclusion_proof(alg_id)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let hop3 = sr_node
+            .ar_inclusion_proof(alg_id)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+        let hop4 = self
+            .pt
+            .sr_inclusion_proof(alg_id)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
+
+        Ok(NodePath {
+            hops: vec![
+                NodePathHop { proof: hop1 },
+                NodePathHop { proof: hop2 },
+                NodePathHop { proof: hop3 },
+                NodePathHop { proof: hop4 },
+            ],
+        })
+    }
+
+    /// Generate and verify, in one call, that the currently active key with
+    /// thumbprint `tmb` is included under this principal's current PR — see
+    /// [`Self::key_inclusion_proof`] for the chain this checks.
+    ///
+    /// Verifies each hop against `self.kr`/`self.ar`/`self.sr`/`self.pr` —
+    /// the principal's independently-maintained root cache (kept in
+    /// lockstep with every mutation) — rather than re-deriving the roots
+    /// from the same freshly-rebuilt trees the proof itself was generated
+    /// from; a staleness bug in either path would then show up as a
+    /// verification failure instead of silently self-confirming.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::key_inclusion_proof`].
+    pub fn verify_key_inclusion(&self, alg: HashAlg, tmb: &Thumbprint) -> Result<bool> {
+        let path = self.key_inclusion_proof(alg, tmb)?;
+
+        let kr_bytes = self.kr.0.get_or_err(alg)?;
+        let ar_bytes = self.ar.0.get_or_err(alg)?;
+        let sr_bytes = self
+            .sr
+            .as_ref()
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?
+            .0
+            .get_or_err(alg)?;
+        let pr_bytes = self.pr.0.get_or_err(alg)?;
+
+        let hasher = crate::commit_root::MaltHasher::new(alg);
+        Ok(path.verify(&hasher, &[kr_bytes, ar_bytes, sr_bytes, pr_bytes]))
     }
 
     /// Begin a new commit scope.
@@ -2187,6 +2343,91 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ========================================================================
+    // Key-membership inclusion verification (chained 4-hop NodePath)
+    // ========================================================================
+
+    /// c3/a3 — the chained 4-hop key-membership proof accepts every active
+    /// key, under every active hash algorithm, for a multi-algorithm
+    /// principal — proving each key's thumbprint is really included under
+    /// the *current* Principal Root via KT -> AR-node -> SR-node -> PT.
+    #[test]
+    fn key_inclusion_accepts_every_active_key_every_algorithm() {
+        let (principal, keys) = build_multi_alg_principal_with_commits(4);
+
+        for alg in [HashAlg::Sha256, HashAlg::Sha512] {
+            for key in &keys {
+                assert!(
+                    principal.verify_key_inclusion(alg, &key.tmb).unwrap(),
+                    "key inclusion failed for alg {alg:?} tmb {:?}",
+                    key.tmb
+                );
+            }
+        }
+    }
+
+    /// c3/a3 — a claimed thumbprint that does not name any currently active
+    /// key cannot even produce a proof (there is no lexical-sort position to
+    /// chain from), so generation itself must reject it.
+    #[test]
+    fn key_inclusion_rejects_thumbprint_of_inactive_key() {
+        let (principal, _keys) = build_multi_alg_principal_with_commits(2);
+        let alg = HashAlg::Sha256;
+
+        let never_active = Thumbprint::from_bytes(vec![0xEE; 32]);
+        let result = principal.key_inclusion_proof(alg, &never_active);
+        assert!(result.is_err(), "an inactive thumbprint must not produce a proof");
+    }
+
+    /// c3/a3 — a genuine proof for a real key, with hop 1's proven leaf
+    /// value tampered (as if a different thumbprint were being claimed at
+    /// that same lexical position), must be rejected by verification even
+    /// though every other hop and bridge in the chain is untouched and
+    /// genuinely valid.
+    #[test]
+    fn key_inclusion_rejects_forged_leaf_at_real_position() {
+        let (principal, keys) = build_multi_alg_principal_with_commits(2);
+        let alg = HashAlg::Sha256;
+        let genuine_tmb = keys[0].tmb.clone();
+
+        let mut path = principal.key_inclusion_proof(alg, &genuine_tmb).unwrap();
+        path.hops[0].proof.leaf_hash = vec![0xEE; 32];
+
+        let hasher = MaltHasher::new(alg);
+        let kr_bytes = principal.key_root().get(alg).unwrap();
+        let ar_bytes = principal.auth_root().get(alg).unwrap();
+        let sr_bytes = principal.sr().unwrap().get(alg).unwrap();
+        let pr_bytes = principal.pr().get(alg).unwrap();
+
+        assert!(
+            !path.verify(&hasher, &[kr_bytes, ar_bytes, sr_bytes, pr_bytes]),
+            "a forged hop-1 leaf value must not verify"
+        );
+    }
+
+    /// c3/a3 — the promotion/genesis case: a single-key implicit-genesis
+    /// principal, where KT, AR-node, SR-node, and PT are all simultaneously
+    /// 1-cell promotions (KR == tmb, AR == KR, SR == AR, PR == SR, all
+    /// verbatim). The chained proof must still verify correctly through
+    /// every "skip" hop — REMEDIATION.md §8's promotion-hop rule — without
+    /// any special-case code, since [`NodePath::verify`] treats a
+    /// zero-sibling skeleton identically to any other.
+    #[test]
+    fn key_inclusion_verifies_through_genesis_promotion_chain() {
+        let key = make_test_key(0xAA);
+        let tmb = key.tmb.clone();
+        let principal = Principal::implicit(key).unwrap();
+        let alg = principal.hash_alg();
+
+        // Every intermediate level is a verbatim promotion at genesis.
+        assert_eq!(principal.key_root().get(alg), Some(tmb.as_bytes()));
+        assert_eq!(principal.auth_root().get(alg), Some(tmb.as_bytes()));
+        assert_eq!(principal.sr().unwrap().get(alg), Some(tmb.as_bytes()));
+        assert_eq!(principal.pr().get(alg), Some(tmb.as_bytes()));
+
+        assert!(principal.verify_key_inclusion(alg, &tmb).unwrap());
     }
 
     #[test]
