@@ -414,6 +414,7 @@ fn run_engine_recovery_test<B, I>(
             .expect("tip should still exist");
         assert_eq!(tip_after_dup.commit_count, original_tip.commit_count);
         assert_eq!(tip_after_dup.pr, original_tip.pr);
+        assert_eq!(tip_after_dup.cr, original_tip.cr);
 
         // Reindex recovery test with total_check = true
         engine.reindex(&[], true).await.expect("reindex failed");
@@ -429,6 +430,15 @@ fn run_engine_recovery_test<B, I>(
         assert_eq!(recovered_tip.pr, original_tip.pr);
         assert_eq!(recovered_tip.sr, original_tip.sr);
         assert_eq!(recovered_tip.ar, original_tip.ar);
+        // CR equality is checked explicitly, not just inferred from PR: PR
+        // folds CR in, but a reindex bug that recomputed a wrong CR while
+        // still landing on the same PR (e.g. by chance collision in a
+        // malformed fold) would slip past a PR-only check.
+        assert!(
+            !original_tip.cr.is_empty(),
+            "fixture with real commits should produce a non-empty CR"
+        );
+        assert_eq!(recovered_tip.cr, original_tip.cr);
 
         let recovered_principals = engine.indexer().list_principals().await.unwrap();
         assert_eq!(recovered_principals.len(), 1);

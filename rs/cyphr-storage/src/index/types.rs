@@ -47,6 +47,11 @@ pub struct IndexableCommit {
     pub srs: Vec<String>,
     /// Auth Root variants after this commit (tagged digest strings).
     pub ars: Vec<String>,
+    /// Commit Root variants after this commit (tagged digest strings).
+    ///
+    /// Empty for commits that predate any CR (there is none at genesis —
+    /// PR = SR until the first commit populates the EML log).
+    pub crs: Vec<String>,
     /// BLAKE3 hashes of individual coz blobs stored for this commit.
     pub blob_hashes: Vec<Blake3Hash>,
     /// Per-coz metadata for the event log.
@@ -82,6 +87,9 @@ pub struct TipState {
     pub sr: String,
     /// Current Auth Root.
     pub ar: String,
+    /// Current Commit Root (empty string if no commit has populated the EML
+    /// log yet).
+    pub cr: String,
     /// Most recent Commit ID.
     pub commit_id: String,
     /// Total number of commits for this principal.
@@ -109,6 +117,8 @@ pub struct CommitRef {
     pub sr: String,
     /// Auth Root after this commit.
     pub ar: String,
+    /// Commit Root after this commit (empty string if none yet).
+    pub cr: String,
     /// BLAKE3 hashes of blobs belonging to this commit.
     pub blob_hashes: Vec<Blake3Hash>,
 }

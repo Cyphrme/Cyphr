@@ -22,6 +22,7 @@ fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
         prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
         srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
         ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
+        crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
         blob_hashes: vec![dummy_hash],
         cozies: vec![IndexableCoz {
             blob_hash: dummy_hash,
@@ -392,6 +393,9 @@ async fn ingest_fixture(
             prs: vec![commit["pr"].as_str().unwrap_or("").to_string()],
             srs: vec![commit["sr"].as_str().unwrap_or("").to_string()],
             ars: vec![commit["ar"].as_str().unwrap_or("").to_string()],
+            // Golden fixtures predate CR tracking; ingest_fixture is a raw
+            // index-population helper, not a source of truth for CR.
+            crs: Vec::new(),
             blob_hashes: Vec::new(),
             cozies,
             timestamp: cozies_json

@@ -564,7 +564,15 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 principal.verify_and_record_action(&parsed.pay_json, &parsed.sig, parsed.czd)?;
             }
 
-            Some((commit_ids, ar, sr, pr))
+            // Read after the commit scope's borrow has ended: finalize()
+            // already updated principal's CR (the EML log gained a leaf).
+            let cr = principal
+                .cr()
+                .map(|c| format_multihash_all(c.as_multihash()))
+                .transpose()?
+                .unwrap_or_default();
+
+            Some((commit_ids, ar, sr, pr, cr))
         } else {
             // Action-only bundle.
             for (i, blob_bytes) in raw_blobs.iter().enumerate() {
@@ -584,7 +592,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             None
         };
 
-        if let Some((commit_ids, ar, sr, pr)) = digest_info {
+        if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
             let commit_pre = if next_seq == 0 {
                 None
             } else {
@@ -630,6 +638,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 prs: pr,
                 srs: sr,
                 ars: ar,
+                crs: cr,
                 blob_hashes: Vec::new(), // filled in by ingest_commit
                 cozies,
                 timestamp: last_timestamp,
@@ -935,6 +944,9 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                 prs: genesis_prs,
                 srs: genesis_srs,
                 ars: genesis_ars,
+                // No CR at genesis: PR = SR until the first real commit
+                // populates the EML log (REMEDIATION.md section 6).
+                crs: Vec::new(),
                 blob_hashes: vec![mock_coz.hash],
                 cozies: vec![map_coz_info(&mock_coz, &principal.active_algs())],
                 timestamp: mock_coz.now,
@@ -1355,6 +1367,12 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                             .map(|coz| map_coz_info(coz, &next_principal.active_algs()))
                             .collect();
 
+                        let cr = next_principal
+                            .cr()
+                            .map(|c| format_multihash_all(c.as_multihash()))
+                            .transpose()?
+                            .unwrap_or_default();
+
                         // Index this commit
                         let indexable = IndexableCommit {
                             principal_id: principal_id.clone(),
@@ -1364,6 +1382,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
                             prs: pr,
                             srs: sr,
                             ars: ar,
+                            crs: cr,
                             blob_hashes: commit_blobs,
                             cozies,
                             timestamp: target_time,

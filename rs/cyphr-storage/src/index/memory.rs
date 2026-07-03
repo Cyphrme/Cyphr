@@ -73,6 +73,7 @@ impl Indexer for MemoryIndexer {
             let primary_pr = commit.prs.first().cloned().unwrap_or_default();
             let primary_sr = commit.srs.first().cloned().unwrap_or_default();
             let primary_ar = commit.ars.first().cloned().unwrap_or_default();
+            let primary_cr = commit.crs.first().cloned().unwrap_or_default();
 
             // Build CommitRef.
             let commit_ref = CommitRef {
@@ -82,6 +83,7 @@ impl Indexer for MemoryIndexer {
                 pr: primary_pr.clone(),
                 sr: primary_sr.clone(),
                 ar: primary_ar.clone(),
+                cr: primary_cr.clone(),
                 blob_hashes: commit.blob_hashes.clone(),
             };
 
@@ -122,6 +124,7 @@ impl Indexer for MemoryIndexer {
                     pr: primary_pr,
                     sr: primary_sr,
                     ar: primary_ar,
+                    cr: primary_cr,
                     commit_id: primary_cid,
                     commit_count,
                     last_updated: commit.timestamp,
@@ -199,6 +202,18 @@ impl Indexer for MemoryIndexer {
                     ar.clone(),
                     EntityRef {
                         digest: ar.clone(),
+                        blob_hash: commit.blob_hashes[0],
+                        entity_type: EntityType::Commit,
+                    },
+                );
+            }
+
+            // Map all CR variants
+            for cr in &commit.crs {
+                state.digest_index.insert(
+                    cr.clone(),
+                    EntityRef {
+                        digest: cr.clone(),
                         blob_hash: commit.blob_hashes[0],
                         entity_type: EntityType::Commit,
                     },
