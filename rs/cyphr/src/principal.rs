@@ -2451,6 +2451,78 @@ mod tests {
         assert!(principal.verify_key_inclusion(alg, &tmb).unwrap());
     }
 
+    /// c3/a3 — the bridge loop itself, isolated from the hop-verify loop.
+    ///
+    /// Splices hop 0 from principal A's genuine key-inclusion chain with
+    /// hops 1..3 from principal B's genuine (unrelated) chain. Every
+    /// spliced hop is independently checked below to verify `true` against
+    /// its own matched root — proving the hop-verify loop alone would
+    /// accept this `NodePath` and cannot be what rejects it. Only the
+    /// bridge loop — hop `i`'s proven leaf value must equal hop `i-1`'s
+    /// root — can catch that hop 1's proven leaf (B's KR) does not match
+    /// hop 0's root (A's KR, a different key's tmb since A and B never
+    /// shared a genesis key). `key_inclusion_rejects_forged_leaf_at_real_position`
+    /// (above) instead fails in the hop-verify loop before the bridge loop
+    /// ever runs, so it does not cover this.
+    #[test]
+    fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
+        let key_a = make_test_key(0xAA);
+        let tmb_a = key_a.tmb.clone();
+        let principal_a = Principal::implicit(key_a).unwrap();
+
+        let key_b = make_test_key(0xBB);
+        let tmb_b = key_b.tmb.clone();
+        let principal_b = Principal::implicit(key_b).unwrap();
+
+        let alg = principal_a.hash_alg();
+        assert_eq!(alg, principal_b.hash_alg());
+
+        let path_a = principal_a.key_inclusion_proof(alg, &tmb_a).unwrap();
+        let path_b = principal_b.key_inclusion_proof(alg, &tmb_b).unwrap();
+
+        let kr_a = principal_a.key_root().get(alg).unwrap();
+        let ar_b = principal_b.auth_root().get(alg).unwrap();
+        let sr_b = principal_b.sr().unwrap().get(alg).unwrap();
+        let pr_b = principal_b.pr().get(alg).unwrap();
+        assert_ne!(
+            kr_a,
+            principal_b.key_root().get(alg).unwrap(),
+            "test fixture requires A and B to have genuinely different KRs"
+        );
+
+        let spliced = NodePath {
+            hops: vec![
+                path_a.hops[0].clone(),
+                path_b.hops[1].clone(),
+                path_b.hops[2].clone(),
+                path_b.hops[3].clone(),
+            ],
+        };
+
+        let hasher = MaltHasher::new(alg);
+        let roots: [&[u8]; 4] = [kr_a, ar_b, sr_b, pr_b];
+
+        // The hop-verify loop alone accepts every spliced hop: each proof
+        // is genuine and matched against its own originating root here.
+        for (hop, &root) in spliced.hops.iter().zip(roots.iter()) {
+            let skeleton =
+                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
+                    .unwrap();
+            assert!(
+                hop.proof.verify(&hasher, &skeleton, root),
+                "each spliced hop must verify in isolation against its own root"
+            );
+        }
+
+        // Only the bridge loop can reject the chain as a whole: hop 1's
+        // proven leaf (B's KR) does not equal hop 0's root (A's KR).
+        assert!(
+            !spliced.verify(&hasher, &roots),
+            "spliced hops that individually verify must still be rejected \
+             by the bridge linkage check"
+        );
+    }
+
     #[test]
     fn consistency_proof_verifies() {
         let (principal, _keys) = build_principal_with_commits(5);
