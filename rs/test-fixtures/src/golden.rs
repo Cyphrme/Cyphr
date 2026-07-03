@@ -111,6 +111,10 @@ pub struct GoldenExpected {
     /// Expected principal root digest (first variant).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
+    /// Expected Commit Root digest (first variant), present once the
+    /// principal has at least one checkpointed commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cr: Option<String>,
     /// Expected commit ID digest.
     #[serde(alias = "ts", default, skip_serializing_if = "Option::is_none")]
     pub tr: Option<String>,
@@ -1630,6 +1634,11 @@ impl<'a> Generator<'a> {
                 .get(first_alg)
                 .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
         });
+        let cr = principal.cr().and_then(|cr_val| {
+            cr_val
+                .get(first_alg)
+                .map(|d| format!("{}:{}", first_alg, Base64UrlUnpadded::encode_string(d)))
+        });
         let dr = principal
             .data_root()
             .and_then(|d| d.0.get(first_alg).map(Base64UrlUnpadded::encode_string));
@@ -1684,6 +1693,7 @@ impl<'a> Generator<'a> {
                 kr: e.kr.clone().or(Some(kr)),
                 auth_root: e.auth_root.clone().or(Some(auth_root)),
                 pr: e.pr.clone().or(Some(pr_val)),
+                cr: cr.clone(),
                 tr: e.tr.clone().or(tr),
                 sr: e.sr.clone().or(sr),
                 dr: dr.clone(),
@@ -1699,6 +1709,7 @@ impl<'a> Generator<'a> {
                 kr: Some(kr),
                 auth_root: Some(auth_root),
                 pr: Some(pr_val),
+                cr: cr.clone(),
                 tr,
                 sr,
                 dr,
@@ -1818,6 +1829,11 @@ level = 3
         assert!(golden.expected.auth_root.is_some(), "as should be computed");
         assert!(golden.expected.pr.is_some(), "pr should be computed");
         assert!(golden.expected.pg.is_some(), "pg should be computed");
+        assert!(golden.expected.sr.is_some(), "sr should be computed");
+        assert!(
+            golden.expected.cr.is_some(),
+            "cr should be computed once a commit has been finalized"
+        );
     }
 
     #[test]
