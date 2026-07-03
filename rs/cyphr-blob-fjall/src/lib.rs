@@ -62,10 +62,30 @@ impl FjallBlobStore {
 /// Open an EML log storage backend sharing `db` with a [`FjallBlobStore`]
 /// built from the same database — one WAL, atomic cross-keyspace batches,
 /// instead of two uncoordinated fjall databases.
+///
+/// Opens fixed keyspace names, so two logical logs (e.g. two Cyphr
+/// principals) sharing one physical `db` would collide on EML's
+/// positional leaf/node keys. For more than one principal per database,
+/// use [`open_eml_storage_scoped`] instead.
 pub fn open_eml_storage(
     db: Database,
 ) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
     storage_fjall::FjallStorage::with_database(db)
+}
+
+/// Open an EML log storage backend scoped to `prefix`, sharing `db` with a
+/// [`FjallBlobStore`] built from the same database.
+///
+/// Distinct prefixes give each logical log (e.g. each Cyphr principal) its
+/// own isolated keyspace triplet within the same physical `db`, safe for
+/// more than one principal to share — see
+/// [`storage_fjall::FjallStorage::with_database_scoped`] for the collision
+/// this avoids and the prefix charset it requires.
+pub fn open_eml_storage_scoped(
+    db: Database,
+    prefix: &str,
+) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
+    storage_fjall::FjallStorage::with_database_scoped(db, prefix)
 }
 
 impl BlobStore for FjallBlobStore {
@@ -316,5 +336,37 @@ mod tests {
             log.storage().get_leaf(0).await.unwrap(),
             b"eml-partition-marker-0"
         );
+    }
+
+    /// Two principals' EML logs, opened via [`open_eml_storage_scoped`] with
+    /// distinct prefixes on the same physical database, must not observe
+    /// each other's leaves — the multitenancy counterpart to
+    /// `blob_and_eml_partitions_are_isolated` above.
+    #[tokio::test]
+    async fn scoped_eml_opens_on_one_database_do_not_collide() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::builder(dir.path()).open().expect("open db");
+
+        let storage_a =
+            open_eml_storage_scoped(db.clone(), "principal-a").expect("scoped storage a");
+        let storage_b =
+            open_eml_storage_scoped(db.clone(), "principal-b").expect("scoped storage b");
+
+        let mut log_a = eml::new(storage_a, Box::new(Blake3Hasher))
+            .await
+            .expect("new log a");
+        let mut log_b = eml::new(storage_b, Box::new(Blake3Hasher))
+            .await
+            .expect("new log b");
+
+        log_a.append_leaf(b"a-leaf-0").await.unwrap();
+        log_b.append_leaf(b"b-leaf-0").await.unwrap();
+        log_b.append_leaf(b"b-leaf-1").await.unwrap();
+
+        assert_eq!(log_a.size(), 1, "tenant a's log must see only its own leaf");
+        assert_eq!(log_b.size(), 2, "tenant b's log must see only its own leaves");
+        assert_eq!(log_a.storage().get_leaf(0).await.unwrap(), b"a-leaf-0");
+        assert_eq!(log_b.storage().get_leaf(0).await.unwrap(), b"b-leaf-0");
+        assert_eq!(log_b.storage().get_leaf(1).await.unwrap(), b"b-leaf-1");
     }
 }
