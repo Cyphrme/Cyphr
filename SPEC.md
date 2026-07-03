@@ -48,11 +48,14 @@ In Cyphr, a **principal** is a user identity.
 
 The **principal tree** (PT) is the hierarchical representation of a principal’s
 complete state and contains three primary components: **authentication**,
-**commit history**, and **arbitrary user data**. 
+**commit history**, and **arbitrary user data**. The PT is an Epoch Merkle Tree
+(EMT, [§2.2.12](#2212-emt)): a mutable, positionally addressed tree whose cell
+0 is the State Root (SR) and cell 1 is the Commit Root (CR). See [Principal
+Root and Principal Genesis](#371-principal-root-and-principal-genesis).
 
-The **principal root** (PR) is the Merkle root over the PT and is calculated at
-each commit. The first PR is the **principal genesis** (PG) which is an
-immutable principal identifier.
+The **principal root** (PR) is the root of the PT (its EMT root) and is
+calculated at each commit. The first PR is the **principal genesis** (PG)
+which is an immutable principal identifier.
 
 
 ```text
@@ -71,6 +74,12 @@ Principal Tree (PT)
 └── Commit Tree (CT) ──────────────── [State Mutations]
 ```
 
+ST and AT are themselves small, fixed-two-cell trees with the same
+positional structure as PT, not a different mechanism: ST's cell 0 is AT's
+root, cell 1 is DR; AT's cell 0 is KR, cell 1 is RR. KT (and RT, DT once
+built) are the hierarchy's dynamic-width trees, each keeping its own
+already-defined member order instead of a fixed cell assignment. See
+[§3.7](#37-root-calculation) for the full rule.
 
 The **commit chain**, tracks the principal root over time. Each commit mutates
 the principal tree (PT) and references the prior principal root (PR) and the
@@ -96,13 +105,13 @@ forward state tree (ST).
 | **Principal**         | P   | An identity in Cyphr, replaces "account"       |
 | **Commit**            | C   | Finalized atomic bundle of transactions        |
 | **Principal Genesis** | PG  | The initial, permanent principal identifier    |
-| **Principal Root**    | PR  | Top-level digest. `MR(SR, CR?, ...)`           |
-| **State Root**        | SR  | Principal non-commit state. `MR(AR, DR, ...)`  |
-| **Auth Root**         | AR  | Authentication state `MR(KR, RR, ...)`         |
+| **Principal Root**    | PR  | Root of the PT (an EMT). `EMT(SR, CR)`, cell 0 = SR, cell 1 = CR |
+| **State Root**        | SR  | Root of ST. `MR(AR, DR)`, cell 0 = AR, cell 1 = DR |
+| **Auth Root**         | AR  | Root of AT. `MR(KR, RR)`, cell 0 = KR, cell 1 = RR |
 | **Key Root**          | KR  | Merkle root of keys `MR(tmb₁, tmb₂, ...)`      |
 | **Rule Root**         | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`   |
 | **Data Root**         | DR  | Merkle root of user data actions               |
-| **Commit Root**       | CR  | MR of transactions `MR(TR₀, TR₁?, ...)`  |
+| **Commit Root**       | CR  | EML root of transactions. `EMLR(TR₀, TR₁?, ...)` |
 | **Tip**               | -   | The latest PR (digest identifier)              |
 | **Trust Anchor**      | TA  | Last known valid state for a principal         |
 | **Action**            | -   | A signed coz identified by `typ`, basis of AAA |
@@ -155,7 +164,7 @@ addressable by digest. In a Merkle tree, a node is either a leaf node where it
 is the hash of a concrete value (e.g. a `tmb`), or an internal node which is the
 hash of its two child nodes. The root of a tree is itself a node.  Nodes may be
 embedded (a digest referencing external content) or opaque (see sections on
-[Embedding](#10-embedding) and [Reveal](#2.2.10-reveal)).
+[Embedding](#10-embedding) and [Reveal](#2215-reveal)).
 
 #### 2.2.8 Nonce
 
@@ -182,41 +191,46 @@ Promotion an collapse are recursive; items deep in a tree can be promoted to the
 root level. For example, when a principal has only a single key, the key's `tmb`
 is promoted to KR without additional hashing.
 
-For NEML, a node may be null, and if children are null their null value is
-collapsed and promoted to the parent.  This results in the **null boundary**,
-there non-null values are rooted with nulls.
+For EML and EMT, a node may be null, and if children are null their null value
+is collapsed and promoted to the parent.  This results in the **null
+boundary**, there non-null values are rooted with nulls.
 "log" vs "tree" TODO Merkle Logs are append only, trees are  Spine is the linear path to the proof.
 
-#### 2.2.10 NEML
-A N-ary Epoch Merkle Log (NEML) is a multihash, n-ary, append only, unbalanced
-(non-symmetrical), left filled Merkle tree.  It is multi-hash, n-ary, and append
-only.  See section [Commit](#4-commit).
+#### 2.2.11 EML
 
+An **Epoch Merkle Log (EML)** is a multihash, n-ary, append only, unbalanced
+(non-symmetrical), left filled Merkle tree, supporting multiple hashes over
+distinct time frames (epochs). EML is the **append-only** peer of EMT. The
+Commit Tree (CT) is an EML.  See section [Commit](#4-commit).
 
-See section [Commit](#4-commit).
+#### 2.2.12 EMT
 
+An **Epoch Merkle Tree (EMT)** is the **mutable** epoch peer of EML: a
+multihash, positionally addressed Merkle tree whose cells are set/get rather
+than only appended, supporting the same multihash, promotion, and collapse
+mechanics as EML. The Principal Tree (PT) is an EMT; see [Principal Root and
+Principal Genesis](#371-principal-root-and-principal-genesis).
 
-
-#### 2.2.12 Commit
+#### 2.2.13 Commit
 
 A **commit** is a finalized bundle of transaction cozies that mutate PT and
 result in a new PR. See section [Commit](#4-commit).
 
-#### 2.2.13 Embedding
+#### 2.2.14 Embedding
 
 An **embedded node** is a digest with external reference. Its value may be a
 `tmb`, PR, SR, KR, AR, nonce, or other Cyphr node type. An **embedded
 principal** is a full Cyphr identity embedded into another principal. See
 section [Embedding](#10-embedding).
 
-#### 2.2.14 Reveal
+#### 2.2.15 Reveal
 
 **Reveal** is the process by which obfuscated structures, i.e. opaque nodes, are
 made transparent. Public keys must be revealed for verification; embeddings,
 nonces, and other data structures may also need revealing during commits or
 other signing operations.
 
-#### 2.2.15 Witnesses
+#### 2.2.16 Witnesses
 
 A **witness** is a client that keeps a copy of an external principal's state and
 communicates state through gossip.
@@ -225,11 +239,11 @@ An **oracle** is a witness with some degree of delegated trust by external
 clients. For example, a client may delegate some processing to an oracle for
 state jumping, where the oracle is trusted for transitory commits.
 
-#### 2.2.16 Unrecoverable Principal
+#### 2.2.17 Unrecoverable Principal
 
 An **unrecoverable principal** is a principal with no keys capable of meaningfully
 mutating AT and no viable recovery path within the protocol. See section
-[Unrecoverable](#Unrecoverable).
+[Unrecoverable](#113-unrecoverable).
 
 ### 2.3 Core Protocol Constraints
 
@@ -269,7 +283,7 @@ three conditions:
 
 Auth Tree (AT) and Data Tree (DT) have fundamentally different structural
 properties. AT has protocol defined rules while DT is a general-purpose data
-action ledger. See section [Data Tree](#472-data-tree).
+action ledger. See section [Data Tree](#482-data-tree).
 
 | Property     | Auth Tree (AT)                  | Data Tree (DT)              |
 | :----------- | :------------------------------ | :-------------------------- |
@@ -316,10 +330,13 @@ authorization input.
 ### 3.3 Level 3: Commit (Multi-Key)
 
 - Introduces the Commit Tree (CT) and Principal Genesis (PG).
-- PR = MR(SR, CR), and CR = MR(C₀?, C₁?, ...)
-- On genesis, because CR is empty, the initial SR is implicitly promoted to PR,
-  which is equal to PG, PR = MR(SR). For all subsequent commits, CR exists and
-  is included in calculations.
+- The PT is an EMT ([§2.2.12](#2212-emt)): cell 0 = SR, cell 1 = CR. PR is the
+  EMT root over those cells; PR_alg = H(SR_alg ∥ CR_alg) (§3.7.1, §12.2.1).
+- On genesis the CT (and therefore cell 1) is empty, so the PT has a single
+  populated cell. By Singleton Promotion ([§2.2.10](#2210-singleton-promotion)),
+  the size-1 EMT root equals cell 0 without hashing: PR = SR, which is equal
+  to PG. For all subsequent commits, CR exists, occupies cell 1, and
+  PR = H(SR ∥ CR).
 - Multiple concurrent keys with equal authority
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
@@ -354,8 +371,15 @@ Canonical Root Algorithm:
 
 1. **Collect** component digests (including embedding/nonce if present). Empty
    components are omitted.
-2. **Sort** lexicographically (byte comparison) unless sort order is otherwise
-   defined, in which case lexical byte order is the tie breaker.
+2. **Order** children per the level's own rule. PT, AT, and ST are fixed
+   two-cell trees whose shape never varies; for these three, cell position
+   is the order and cells are never re-sorted (see §3.7.1, §3.7.2, §3.7.5 for
+   each level's cell assignment). Every other tree in this document (KT
+   today; RT and DT are the remaining named trees, RT not yet implemented
+   and DT still a flat formula) has a variable number of children and keeps
+   its own already-defined order: lexical byte order for KT, chronological
+   (`now` then `czd`) order for DR. Lexical byte order is the tie breaker
+   wherever this document does not otherwise define an order.
 3. **Promote** without hashing if only one digest component exists, including
    null promotion.  Collapse if all children are of equal value, the parent's
    value is collapsed to also be equal without hashing.
@@ -366,24 +390,44 @@ Root = MR(d₀, d₁?, ...)
 
 #### 3.7.1 Principal Root and Principal Genesis
 
-The **Principal Root (PR)** is the current top-level digest of a principal.
+The **Principal Tree (PT)** is an Epoch Merkle Tree (EMT, [§2.2.12](#2212-emt)):
+a mutable, positionally addressed tree. Cell 0 is SR and cell 1 is CR, in that
+fixed positional order; cells ≥ 2, when present, hold PT embeddings (see
+[Embedding §10.1](#101-nonce-embedding-and-opaque-node-pathing)). Positional
+role order (§3.7 step 2) applies here because PT is a fixed two-cell tree.
+AT and ST are the same kind of fixed two-cell tree and use the identical
+positional rule at their own levels ([§3.7.5](#375-auth-root),
+[§3.7.2](#372-state-root)). KT, by contrast, is a variable-width tree and
+keeps its own lexical order ([§3.7.3](#373-key-root)).
+
+The **Principal Root (PR)** is the current top-level digest of a principal,
+the root of the PT.
 
 For levels 3+, the **Principal Genesis (PG)** is the first PR computed at creation
 and remains immutable. Subsequent principal mutations, for example by adding a
 second key, updates only the current PR.
 
 ```
-  PR = MR(SR, CR?, embedding?, ...)
+  PR = EMT(SR, CR, ...)         -- cell 0 = SR, cell 1 = CR; cells ≥ 2 are embeddings
+  PR_alg = H(SR_alg ∥ CR_alg)   -- when only cells 0-1 are populated (no embeddings)
   PG = Genesis Root (Level 3+), equal to the first PR.
 ```
 
 #### 3.7.2 State Root
 
-**State Root (SR)** is calculated as:
+**State Root (SR)** is the root of the State Tree (ST), a fixed two-cell
+tree: cell 0 is AR, cell 1 is DR when present. Cell position is the order,
+not lexical sort (§3.7 step 2). When DR is absent, SR promotes from AR alone
+(Singleton Promotion, [§2.2.10](#2210-singleton-promotion)):
 
 ```
-  SR = MR(AR, DR?, embedding?, ...)
+  SR     = MR(AR, DR)              -- when DR is present, cell 0 = AR, cell 1 = DR
+  SR_alg = H(AR_alg ∥ DR_alg)      -- per-algorithm formula when DR is present
+  SR     = AR                       -- when DR is absent (Singleton Promotion)
 ```
+
+ST's cell arity is fixed at two today; unlike PT, ST has no implemented or
+planned capacity for embedding cells beyond its two role cells.
 
 #### 3.7.3 Key Root
 
@@ -393,7 +437,22 @@ second key, updates only the current PR.
   KR = MR(tmb₀, tmb₁?, embedding?, ...)
 ```
 
-#### 3.7.3 Rule Root
+KT (the tree KR is the root of) is a variable-width, dense collection of one
+leaf per active key thumbprint, lexically sorted by raw digest bytes (§3.7
+step 2). A thumbprint's raw byte length is native to its own signing key's
+algorithm (e.g. an ES256 thumbprint is 32 bytes, an Ed25519 thumbprint is 64
+bytes), so a keyset spanning multiple key algorithms does not have
+same-width siblings by default. Folding same-width-only children (§12.2.1)
+requires each non-native thumbprint to be converted to the target hash
+algorithm's canonical digest first — the same conversion mechanism §12.3
+defines for other nodes — before it participates in KR's fold for that
+algorithm. A single-algorithm keyset is unaffected: every thumbprint is
+already native, so conversion is a no-op.
+
+KT's collection arity is bounded at 256 members; behavior beyond that
+boundary is untested and not yet a settled part of this specification.
+
+#### 3.7.4 Rule Root
 
 **Rule Root (RR)** is calculated as:
 
@@ -401,15 +460,24 @@ second key, updates only the current PR.
   RR = MR(rule₀, rule₁?, ...)
 ```
 
-#### 3.7.4 Auth Root
+#### 3.7.5 Auth Root
 
-**Auth Root (AR)** combines authentication-related trees:
+**Auth Root (AR)** is the root of the Auth Tree (AT), a fixed two-cell tree:
+cell 0 is KR, cell 1 is RR when present. RR (Rule Root, Level 5+) is not yet
+implemented, so this cell is permanently unset today. Cell position is the
+order, not lexical sort (§3.7 step 2). When RR is absent, AR promotes from KR
+alone (Singleton Promotion, [§2.2.10](#2210-singleton-promotion)):
 
 ```
-  AR = MR(KR, RR?, embedding?, ...)
+  AR     = MR(KR, RR)              -- when RR is present, cell 0 = KR, cell 1 = RR
+  AR_alg = H(KR_alg ∥ RR_alg)      -- per-algorithm formula when RR is present
+  AR     = KR                       -- when RR is absent (Singleton Promotion)
 ```
 
-### 3.7.5 Transaction Root
+AT's cell arity is fixed at two today; unlike PT, AT has no implemented or
+planned capacity for embedding cells beyond its two role cells.
+
+#### 3.7.6 Transaction Root
 
 A transaction identifier (TX) is the MR of all its contained `czd`'s in order
 as given by the principal. Transaction Root (TR) is the MR of all transactions
@@ -430,7 +498,7 @@ section [Commit](#4-commit).
   TCR = TX꜀
 ```
 
-#### 3.7.6 Commit Root
+#### 3.7.7 Commit Root
 
 Commit Root (CR) is the EML root (EMLR) of the commit tree (CT). Each
 node in the CT is a transaction root (TR).
@@ -439,7 +507,7 @@ node in the CT is a transaction root (TR).
   CR = EMLR(TR₀, TR₁?, ...)
 ```
 
-#### 3.7.7 Data Root
+#### 3.7.8 Data Root
 
 Data Root (DR) (Level 4+) is the digest of all data actions `czd`s. DR is
 sorted by `now` and secondarily `czd`.
@@ -447,6 +515,12 @@ sorted by `now` and secondarily `czd`.
 ```
 DR = MR(czd₀, czd₁?, embedding?, ...)
 ```
+
+DR is not currently backed by a real Data Tree (DT) instance the way KR, AR,
+and SR are backed by real tree instances (KT, AT, ST) — it remains a flat,
+directly-computed value, embedded into ST as an opaque leaf at cell 1
+(§3.7.2). This means there is no per-action inclusion proof for individual
+data actions today, unlike the key-membership proof in §13.2.
 
 
 ---
@@ -552,8 +626,9 @@ proof of error (see section [Proof of Error](#152-proof-of-error)).
 ### 4.4 Commit Tree
 
 The **Commit Tree (CT)** consists of all principal commits. Commit Root (CR) is
-the append only MR of all commits. Clients obtain inclusion and consistency
-proofs for specific commits.
+the EML root (EMLR, [§3.7.7](#377-commit-root)) of all commits: the append
+only Merkle root over the CT's transaction roots (TR). Clients obtain
+inclusion and consistency proofs for specific commits.
 
 ### 4.5 Trust Anchor
 
@@ -768,7 +843,8 @@ bootstrap model, gracefully upgrading from levels 1 and 2 to level 3.
 4. The commit is finalized with the standard `commit/create`. As a component of
    `arrow`, `pre` references the genesis key and `fwd` is equal to the future
    `SR`.
-5. After commit, the Principal immediately has a new PR, where PR = MR(SR, CR)
+5. After commit, the Principal immediately has a new PR: the PT's EMT root
+   over cell 0 = SR and cell 1 = CR, PR = H(SR ∥ CR)
 
 A principal may reuse authentication components with an nonce embedding for a
 unique PG.
@@ -1632,7 +1708,9 @@ embedding of A.
 ### 10.1 Nonce, Embedding, and Opaque Node Pathing
 
 Cyphr permits nonces, embeddings, or otherwise opaque nodes anywhere in the
-Principal Tree. Embeddings are indistinguishable from other digest values unless
+Principal Tree. At the PT (EMT) level specifically, cell 0 and cell 1 are
+reserved positionally for SR and CR (§3.7.1); PT embeddings occupy cells ≥ 2.
+Embeddings are indistinguishable from other digest values unless
 revealed by the client. One or more nonces may be included at any level of the
 state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
 
@@ -1827,7 +1905,10 @@ enforceable due to opaqueness.
 
 For PG and PR exclusively, embedded references trigger tip retrieval at the time
 of authentication. Pinned identifiers, SR, AR, KR, and RR, are static states
-that prohibit automatic updates, ensuring immutable authorization rules.
+that prohibit automatic updates, ensuring immutable authorization rules. SR and
+CR (PT cells 0 and 1, [§3.7.1](#371-principal-root-and-principal-genesis)) are
+not themselves embeddings and are unaffected by this section; pinning applies
+to embedded references, which at the PT level occupy cells ≥ 2 ([§10.1](#101-nonce-embedding-and-opaque-node-pathing)).
 
 ---
 
@@ -2069,7 +2150,8 @@ Example principal fork, consisting of two transactions:
 A **multihash identifier** is a set of digests that addresses content. Multihash
 identifiers are calculated on a per commit basis for each hash algorithm
 referenced by the principal in KT at the time of commit.  MultiHash Merkle Root
-(MHMR) and Epoch Merkle Logs (EML) are used in this document.
+(MHMR), Epoch Merkle Logs (EML), and Epoch Merkle Trees (EMT) are used in this
+document.
 
 Cyphr supports pluggable cryptographic algorithms; no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
@@ -2113,7 +2195,14 @@ in KT, its MHMR variant is no longer generated for new commits.
 Given an ordered list of child digests (each child is a binary digest value
 computed under some hash algorithm):
 
-1. **Sort** the child digests in lexical byte order unless order is otherwise given.
+1. **Order** the child digests per the node's rule (§3.7 step 2). PT, AT, and
+   ST are fixed two-cell trees and use positional role order, never lexical
+   sort: PT's cell 0 = SR, cell 1 = CR ([§3.7.1](#371-principal-root-and-principal-genesis));
+   AT's cell 0 = KR, cell 1 = RR ([§3.7.5](#375-auth-root)); ST's cell 0 = AR,
+   cell 1 = DR ([§3.7.2](#372-state-root)). KT and DR are variable-width and
+   keep their own already-defined order (lexical byte order for KT, `now`
+   then `czd` for DR); lexical byte order remains the tie breaker wherever
+   this document does not otherwise define an order.
 2. **Implicit promotion**:  
    If there is exactly one child digest, the MHMR_H for any target H is simply
    the bytes of that child digest (no hashing occurs). Promotion is recursive.
@@ -2359,7 +2448,10 @@ Thin clients are assumed to have a PR, which acts as their trust anchor for a
 particular principal. 
 
 0. Request inclusion proof that AT and previous CR is in PR.  The content of CT
-   and DT isn't required, but CR and DR is required for the proof.
+   and DT isn't required, but CR and DR is required for the proof. This is a
+   two-step, two-hop verification with no composite proof type: (a) TR-leaf
+   inclusion in CT (EML) against CR, and (b) CR-leaf inclusion in PT (EMT)
+   against PR; each hop is verified independently against its own root.
 1. Advancement relevant authentication components must be given to the thin
    client.  For example, any keys that signed 
 
@@ -3620,12 +3712,14 @@ as long as genesis does not result in the same PG. Any set of keys that has not
 been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
-#### RFC 9162 Merkle Append only Log (MAL) and N-ary Epoch Merkle Log (NEML)
+#### RFC 9162 Merkle Append only Log (MAL) and Epoch Merkle Log (EML)
 
 A **MAL** (Merkle Append only Log) as defined by RFC 9162 is an ordered, append
-only (forward mutable), dense left filled, and unbalanced Merkle tree.  A
-advanced form is the N-ary Epoch Merkle Log (**NEML**), which supports multiple
-hashes over distinct time frames (epochs) and supports promotion and collapse.
+only (forward mutable), dense left filled, and unbalanced Merkle tree.  A more
+advanced, n-ary form is the Epoch Merkle Log (**EML**, [§2.2.11](#2211-eml)),
+which supports multiple hashes over distinct time frames (epochs) and supports
+promotion and collapse. (EML was previously referred to as NEML; the name was
+shortened since n-arity is inherent to EML, not a separate qualifier.)
 "Certificate Transparency Tree" is avoided as the datastructure is more
 generalized than certificate transparency.
 
