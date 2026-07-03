@@ -114,7 +114,7 @@ needed for testing the trait contracts themselves.
 ### Trust Model
 
 The index is a conventional database providing _performance_ (fast lookups).
-Trustless verification uses _chain replay_ — the `pre`-linked MALT chain
+Trustless verification uses _chain replay_ — the `pre`-linked EML chain
 has no gaps, so fetching the patch and filtering locally is trustless by
 construction. The index does not provide authenticated query results or
 completeness proofs. See [`indexer.md`](indexer.md) § "Trustless Verification
@@ -265,7 +265,7 @@ digest index per [digest-index-completeness].
 
 ### Commit Tree (CT)
 
-Uses the MALT/EML data structure (SPEC.md §4.4, §12.2.2). Algorithm
+Uses the EML data structure (SPEC.md §4.4, §12.2.2). Algorithm
 transitions are handled by the TSML model: null constants for
 pre-activation, frozen values for deactivated algorithms, incremental
 frontier stacks.
@@ -308,7 +308,7 @@ commit.
        │              │              │
 ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼──────────────────┐
 │ BlobStore   │ │ EML        │ │ Indexer (Layer 1)      │
-│ (Layer 0)   │ │ (CT/MALT)  │ │                        │
+│ (Layer 0)   │ │ (CT)       │ │                        │
 │             │ │            │ │ TaggedDigest→EntityRef  │
 │ BLAKE3→raw  │ │ Frontier   │ │ CommitRef, TipState     │
 │ Immutable   │ │ stacks,    │ │ Rebuildable secondary   │
@@ -406,9 +406,7 @@ strategy.
 4. **Authenticated index** — **RESOLVED: rejected (2026-06-01).** Four
    authenticated index structures (JMT, sorted index tables, MSTs,
    distributed primitives) were evaluated and rejected. Chain replay
-   provides trustless completeness for per-principal queries. See the
-   [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
-   for the full rationale.
+   provides trustless completeness for per-principal queries.
 
 5. **Index backend** — **RESOLVED: SQLite (2026-06-01).** SQLite replaces
    Fjall for the index layer. B-trees match the read-heavy workload; schema

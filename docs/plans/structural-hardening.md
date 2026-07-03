@@ -133,7 +133,7 @@ backwards-compatibility concern applies (pre-alpha, per AGENTS.md).
          `state.go`, covering the KR→AR→SR chain. Replaced all three Go sites: `Implicit`,
          `Explicit`, and commit `RecordAction` (tx extraction hoisted above state chain — it had
          no dependency on KR/AR/SR). PR computed inline per site (CR input differs: nil at genesis,
-         MALT-derived at commit). `go test ./...` green, `gofmt -l` clean.
+         EML-derived at commit). `go test ./...` green, `gofmt -l` clean.
    - [x] **Rust F3:** Extracted `derive_auth_state(thumbprints, dr, algs) → Result<(KR, AR, SR)>`
          in `state.rs`. Replaced all five Rust sites: `implicit`, `explicit`, `apply_commit`,
          `finalize_with_arrow` (commit.rs), `apply_transaction_test`. Stale `ks`/`auth_root`
