@@ -73,10 +73,10 @@ output.
 
 The two layers are:
 
-| Layer                      | Responsibility                                         | Backend                                                          | Spec                             |
-| :------------------------- | :----------------------------------------------------- | :--------------------------------------------------------------- | :------------------------------- |
-| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)                            | [`blob-store.md`](blob-store.md) |
-| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production, planned), Fjall (current), HashMap (testing) | [`indexer.md`](indexer.md)       |
+| Layer                      | Responsibility                                         | Backend                                | Spec                             |
+| :------------------------- | :----------------------------------------------------- | :------------------------------------- | :------------------------------- |
+| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)  | [`blob-store.md`](blob-store.md) |
+| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production), HashMap (testing) | [`indexer.md`](indexer.md)       |
 
 **[separate-durability]**: Content store and index are **separate databases**
 with independent durability. The content store is the durable source of
@@ -84,7 +84,7 @@ truth; the index is a derived, rebuildable projection. If the index is lost,
 it is reconstructed from the content store via re-indexing. Cross-store
 atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
-`VERIFIED: unverified (pending SQLite migration)`
+`VERIFIED: SQLite migration complete; FjallIndexer removed (cyphr-index-sqlite)`
 
 **[crate-isolation]**: Implementation backends MUST be isolated in their
 own crates, separate from the trait definitions. The trait crate defines
@@ -331,17 +331,17 @@ same principal MUST reflect the ingested commit's state.
 
 ## Verification
 
-| Constraint               | Method      | Result  | Detail                                             |
-| :----------------------- | :---------- | :------ | :------------------------------------------------- |
-| [two-tier-separation]    | agent-check | pass    | `StorageEngine<B, I>` generic over distinct traits |
-| [separate-durability]    | agent-check | pending | Pending SQLite migration (currently shared Fjall)  |
-| [validate-first-write]   | agent-check | pass    | submit_commit(): verify → finalize → persist       |
-| [ingest-ordering]        | agent-check | pass    | Blobs stored before index_commit()                 |
-| [read-path-coordination] | agent-check | pass    | get_patch() joins index + blobs                    |
-| [recovery-reindex]       | agent-check | pass    | reindex() scans BlobStore, rebuilds index          |
-| [recovery-convergence]   | agent-check | pass    | reindex() terminates in finite time                |
-| [hash-boundary]          | agent-check | pass    | format_multihash_all() for all active variants     |
-| [read-after-write]       | agent-check | pass    | Verified in integration tests                      |
+| Constraint               | Method      | Result | Detail                                             |
+| :----------------------- | :---------- | :----- | :------------------------------------------------- |
+| [two-tier-separation]    | agent-check | pass   | `StorageEngine<B, I>` generic over distinct traits |
+| [separate-durability]    | agent-check | pass   | SQLite migration complete; FjallIndexer removed    |
+| [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist       |
+| [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                 |
+| [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                    |
+| [recovery-reindex]       | agent-check | pass   | reindex() scans BlobStore, rebuilds index          |
+| [recovery-convergence]   | agent-check | pass   | reindex() terminates in finite time                |
+| [hash-boundary]          | agent-check | pass   | format_multihash_all() for all active variants     |
+| [read-after-write]       | agent-check | pass   | Verified in integration tests                      |
 
 ## Implications
 
