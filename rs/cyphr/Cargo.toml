@@ -36,4 +36,6 @@ test-utils = []
 proptest      = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
+storage-fjall = { workspace = true }
+tempfile      = "3"
 test-fixtures = { path = "../test-fixtures" }

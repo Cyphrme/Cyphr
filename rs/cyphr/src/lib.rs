@@ -48,6 +48,11 @@ pub use commit_root::{CommitRoot, CommitTrees, MaltHasher, verify_consistency, v
 // EML proof types.
 // Re-exported so consumers can verify proofs without depending on `eml` directly.
 pub use eml::{ConsistencyProof, InclusionProof};
+// The full `eml` crate, re-exported so a durable-storage caller (e.g.
+// `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
+// `eml::MemoryStorage` — the bound and default for `Principal`'s storage
+// type parameter — without taking its own direct dependency on `eml`.
+pub use eml;
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;
