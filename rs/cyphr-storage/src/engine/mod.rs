@@ -102,6 +102,11 @@ pub struct IngestResult {
     pub blob_hashes: Vec<Blake3Hash>,
 }
 
+/// Produces a fresh, independent `S` instance for a `Principal`'s Commit
+/// Tree, given that principal's `principal_id` as a scoping identifier — see
+/// [`StorageEngine`]'s `storage_factory` field docs.
+type StorageFactory<S> = Box<dyn Fn(&str) -> Result<S, String> + Send + Sync>;
+
 /// Coordinated storage engine joining blob and index layers.
 ///
 /// Generic over backend implementations. Use `MemoryBlobStore` +
@@ -122,7 +127,12 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// methods take `&mut self` on an owned instance, so two principals can
     /// never validly share one. Fallible (`Result<S, String>`, not a bare
     /// `S`) because opening a real disk-backed backend can fail.
-    storage_factory: Box<dyn Fn() -> Result<S, String> + Send + Sync>,
+    ///
+    /// Takes the principal's `principal_id` as a per-principal scoping
+    /// identifier, so a factory backed by a durable, physically-shared
+    /// database can give each principal an isolated keyspace instead of
+    /// colliding on positional Commit Tree keys.
+    storage_factory: StorageFactory<S>,
 }
 
 impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -137,21 +147,22 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
         Self {
             blob_store,
             indexer,
-            storage_factory: Box::new(|| Ok(cyphr::eml::MemoryStorage::new())),
+            storage_factory: Box::new(|_principal_id: &str| Ok(cyphr::eml::MemoryStorage::new())),
         }
     }
 }
 
 impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Create a new engine wrapping the given backends, with `storage_factory`
-    /// producing each [`cyphr::Principal`]'s Commit Tree storage backend.
+    /// producing each [`cyphr::Principal`]'s Commit Tree storage backend from
+    /// its `principal_id`.
     ///
     /// See [`Self`]'s `storage_factory` field docs for why this is a
     /// factory rather than a single shared `S` instance.
     pub fn with_storage_factory(
         blob_store: B,
         indexer: I,
-        storage_factory: impl Fn() -> Result<S, String> + Send + Sync + 'static,
+        storage_factory: impl Fn(&str) -> Result<S, String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             blob_store,
@@ -318,7 +329,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         // by a fresh storage instance from this engine's factory.
         let mut principal = match genesis {
             crate::Genesis::Implicit(key) => {
-                let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+                let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
                 cyphr::Principal::implicit_with_storage(key, storage)?
             },
             crate::Genesis::Explicit(keys) => {
@@ -327,7 +338,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                         "genesis requires at least one key".into(),
                     ));
                 }
-                let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+                let storage = (self.storage_factory)(principal_id).map_err(EngineError::Storage)?;
                 cyphr::Principal::explicit_with_storage(keys, storage)?
             },
         };
@@ -964,13 +975,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         tx_cozies.retain(|c| !mock_genesis_cozies.iter().any(|(m, _)| m.hash == c.hash));
 
         for (mock_coz, key) in mock_genesis_cozies {
-            let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+            let principal_id = implicit_genesis_principal_id(&key)?;
+            let storage = (self.storage_factory)(&principal_id).map_err(EngineError::Storage)?;
             let principal = cyphr::Principal::implicit_with_storage(key, storage)?;
-            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
-            let principal_id = pr_variants
-                .first()
-                .cloned()
-                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
 
             let mut sequence: u64 = 0;
 
@@ -1039,17 +1046,13 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         }
 
         for key in bootstrap_keys {
-            let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
-            let principal = cyphr::Principal::implicit_with_storage(key.clone(), storage)?;
-            let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
-            let principal_id = pr_variants
-                .first()
-                .cloned()
-                .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
-
-            if !bootstrapped.iter().any(|(_, pid, _)| pid == &principal_id) {
-                bootstrapped.push((principal, principal_id, 0));
+            let principal_id = implicit_genesis_principal_id(&key)?;
+            if bootstrapped.iter().any(|(_, pid, _)| pid == &principal_id) {
+                continue;
             }
+            let storage = (self.storage_factory)(&principal_id).map_err(EngineError::Storage)?;
+            let principal = cyphr::Principal::implicit_with_storage(key.clone(), storage)?;
+            bootstrapped.push((principal, principal_id, 0));
         }
 
         // Recombine remaining transactions and actions into a single chronological pool.
@@ -1502,6 +1505,30 @@ fn format_multihash_all(
         results.push(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)));
     }
     Ok(results)
+}
+
+/// Compute the `principal_id` a single genesis key resolves to, without
+/// needing durable storage — `reindex`'s bootstrap loops must call
+/// `storage_factory` with this identifier, but the identifier is only
+/// knowable *after* constructing a `Principal`, and `storage_factory` is
+/// what constructs one.
+///
+/// Breaks that cycle by building a throwaway `Principal` against the
+/// always-available [`cyphr::eml::MemoryStorage`] purely to read off its
+/// `pr()`. This is safe — not an approximation — because a genesis PR is a
+/// pure function of the genesis key(s) and active algorithms alone: no CR
+/// exists yet (`PR = SR`, per SPEC §3.7.1's implicit promotion), and SR/AR/KR
+/// are all derived from key thumbprints, never from the storage backend. The
+/// throwaway principal and the one `storage_factory` goes on to build from
+/// the *same* key are therefore guaranteed to compute byte-identical PRs,
+/// which is what keeps this identifier consistent with the one
+/// `load_principal`/`submit_commit` compute for the same principal later.
+fn implicit_genesis_principal_id(key: &cyphr::Key) -> Result<String, EngineError> {
+    let throwaway = cyphr::Principal::implicit(key.clone())?;
+    format_multihash_all(throwaway.pr().as_multihash())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))
 }
 
 #[cfg(test)]

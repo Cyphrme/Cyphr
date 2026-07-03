@@ -311,7 +311,7 @@ fn principal_replay_survives_disk_drop_and_reload() {
             let db = fjall::Database::builder(&db_path).open().expect("open db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
-            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move || {
+            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |_principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
             });
 
@@ -355,7 +355,7 @@ fn principal_replay_survives_disk_drop_and_reload() {
                 .expect("reopen db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
             let indexer = SqliteIndexer::open(&index_path).expect("reopen indexer");
-            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move || {
+            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |_principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
             });
 
