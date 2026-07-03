@@ -154,7 +154,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .map_err(|e| Error::Storage(format!("PS empty: {e}")))?;
 
     // Parse stored ps which may be in "alg:digest" format
-    let stored_ps_digest = last_commit.pr.split(':').last().unwrap_or(&last_commit.pr);
+    let stored_ps_digest = last_commit.pr.split(':').next_back().unwrap_or(&last_commit.pr);
 
     if computed_ps != stored_ps_digest {
         return Err(Error::Storage(format!(

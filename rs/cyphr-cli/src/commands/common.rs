@@ -302,7 +302,8 @@ pub fn save_principal_to_engine(
                     }
                 } else if i == 0 && typ.contains("/commit/create") {
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    let identity_fallback = principal_id.split(':').last().unwrap().to_string();
+                    let identity_fallback =
+                        principal_id.split(':').next_back().unwrap().to_string();
                     let identity = principal
                         .genesis_keys()
                         .first()
@@ -327,7 +328,7 @@ pub fn save_principal_to_engine(
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
             let genesis = if i == 0 {
-                let identity_fallback = principal_id.split(':').last().unwrap().to_string();
+                let identity_fallback = principal_id.split(':').next_back().unwrap().to_string();
                 let identity = principal
                     .genesis_keys()
                     .first()
