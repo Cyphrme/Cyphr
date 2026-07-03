@@ -388,6 +388,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::Json { .. } => "JsonError",
         LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
+        LoadError::CheckpointCrMismatch => "CheckpointCrMismatch",
     }
 }
 
@@ -649,10 +650,11 @@ fn e2e_checkpoint_load() {
         auth_root: initial_as,
         keys: vec![key],
         attestor: None,
+        cr: None,
     };
 
     // Load from checkpoint with no additional entries (no PR for L1)
-    let loaded = load_from_checkpoint(None, checkpoint, &[]).expect("load failed");
+    let loaded = load_from_checkpoint(None, checkpoint, None, &[]).expect("load failed");
 
     // Verify PR is still None for L1
     assert!(

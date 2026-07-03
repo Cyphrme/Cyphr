@@ -3,8 +3,8 @@
 use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
-    CommitRef, EntityRef, EntityType, IndexableCommit, IndexableCoz, Indexer, IndexerError,
-    PrincipalSummary, PublicKeyInfo, TipState,
+    CommitRef, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError, PrincipalSummary,
+    PublicKeyInfo, TipState,
 };
 
 /// Production-grade indexer backed by SQLite.
@@ -105,6 +105,7 @@ impl SqliteIndexer {
                 pr            TEXT NOT NULL,
                 sr            TEXT NOT NULL,
                 ar            TEXT NOT NULL,
+                cr            TEXT NOT NULL DEFAULT '',
                 blob_hashes   TEXT NOT NULL,
                 created_at    INTEGER NOT NULL,
                 PRIMARY KEY (principal_id, sequence)
@@ -130,6 +131,7 @@ impl SqliteIndexer {
                 pr            TEXT NOT NULL,
                 sr            TEXT NOT NULL,
                 ar            TEXT NOT NULL,
+                cr            TEXT NOT NULL DEFAULT '',
                 commit_czd    TEXT NOT NULL,
                 commit_count  INTEGER NOT NULL,
                 last_updated  INTEGER NOT NULL
@@ -241,7 +243,7 @@ fn db_index_commit(
         .ok_or_else(|| IndexerError::Consistency("commit has no blob hashes".into()))?
         .to_string();
 
-    let mut run = |conn: &mut rusqlite::Connection| -> Result<(), rusqlite::Error> {
+    let run = |conn: &mut rusqlite::Connection| -> Result<(), rusqlite::Error> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // 1. Insert cozies
@@ -282,12 +284,13 @@ fn db_index_commit(
         let primary_pr = commit.prs.first().cloned().unwrap_or_default();
         let primary_sr = commit.srs.first().cloned().unwrap_or_default();
         let primary_ar = commit.ars.first().cloned().unwrap_or_default();
+        let primary_cr = commit.crs.first().cloned().unwrap_or_default();
         let blob_hashes_json = serde_json::to_string(&commit.blob_hashes).unwrap_or_default();
 
         tx.execute(
             "INSERT OR IGNORE INTO commits (principal_id, sequence, commit_czd, pre, pr, sr, ar, \
-             blob_hashes, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             cr, blob_hashes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 commit.principal_id,
                 commit.sequence,
@@ -296,6 +299,7 @@ fn db_index_commit(
                 primary_pr,
                 primary_sr,
                 primary_ar,
+                primary_cr,
                 blob_hashes_json,
                 commit.timestamp,
             ],
@@ -331,6 +335,14 @@ fn db_index_commit(
                 "INSERT OR IGNORE INTO digests (digest, blob_hash, entity_type) VALUES (?1, ?2, \
                  'commit')",
                 rusqlite::params![ar, first_blob_hash],
+            )?;
+        }
+
+        for cr in &commit.crs {
+            tx.execute(
+                "INSERT OR IGNORE INTO digests (digest, blob_hash, entity_type) VALUES (?1, ?2, \
+                 'commit')",
+                rusqlite::params![cr, first_blob_hash],
             )?;
         }
 
@@ -381,14 +393,15 @@ fn db_index_commit(
         )?;
 
         tx.execute(
-            "INSERT OR REPLACE INTO tips (principal_id, pr, sr, ar, commit_czd, commit_count, \
-             last_updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO tips (principal_id, pr, sr, ar, cr, commit_czd, \
+             commit_count, last_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 commit.principal_id,
                 primary_pr,
                 primary_sr,
                 primary_ar,
+                primary_cr,
                 primary_cid,
                 commit_count,
                 commit.timestamp,
@@ -418,9 +431,9 @@ fn db_get_tip(
     conn: &rusqlite::Connection,
     principal_id: &str,
 ) -> Result<Option<TipState>, IndexerError> {
-    let mut run = || -> Result<Option<TipState>, rusqlite::Error> {
+    let run = || -> Result<Option<TipState>, rusqlite::Error> {
         let mut stmt = conn.prepare(
-            "SELECT pr, sr, ar, commit_czd, commit_count, last_updated FROM tips WHERE \
+            "SELECT pr, sr, ar, cr, commit_czd, commit_count, last_updated FROM tips WHERE \
              principal_id = ?1",
         )?;
 
@@ -431,9 +444,10 @@ fn db_get_tip(
                 pr: row.get(0)?,
                 sr: row.get(1)?,
                 ar: row.get(2)?,
-                commit_id: row.get(3)?,
-                commit_count: row.get(4)?,
-                last_updated: row.get(5)?,
+                cr: row.get(3)?,
+                commit_id: row.get(4)?,
+                commit_count: row.get(5)?,
+                last_updated: row.get(6)?,
             }))
         } else {
             Ok(None)
@@ -454,7 +468,7 @@ fn db_get_commit_chain(
 
         let mut stmt = conn
             .prepare(
-                "SELECT commit_czd, sequence, pre, pr, sr, ar, blob_hashes
+                "SELECT commit_czd, sequence, pre, pr, sr, ar, cr, blob_hashes
              FROM commits
              WHERE principal_id = ?1 AND sequence >= ?2 AND sequence <= ?3
              ORDER BY sequence",
@@ -469,15 +483,16 @@ fn db_get_commit_chain(
                 let pr: String = row.get(3)?;
                 let sr: String = row.get(4)?;
                 let ar: String = row.get(5)?;
-                let blob_hashes_str: String = row.get(6)?;
+                let cr: String = row.get(6)?;
+                let blob_hashes_str: String = row.get(7)?;
 
-                Ok((commit_czd, sequence, pre, pr, sr, ar, blob_hashes_str))
+                Ok((commit_czd, sequence, pre, pr, sr, ar, cr, blob_hashes_str))
             })
             .map_err(map_sqlite_err)?;
 
         let mut chain = Vec::new();
         for row_res in rows {
-            let (commit_czd, sequence, pre, pr, sr, ar, blob_hashes_str) =
+            let (commit_czd, sequence, pre, pr, sr, ar, cr, blob_hashes_str) =
                 row_res.map_err(map_sqlite_err)?;
             let blob_hashes: Vec<Blake3Hash> = serde_json::from_str(&blob_hashes_str)
                 .map_err(|e| IndexerError::Backend(e.to_string()))?;
@@ -489,6 +504,7 @@ fn db_get_commit_chain(
                 pr,
                 sr,
                 ar,
+                cr,
                 blob_hashes,
             });
         }
@@ -752,6 +768,8 @@ impl Indexer for SqliteIndexer {
 
 #[cfg(test)]
 mod tests {
+    use cyphr_storage::index::IndexableCoz;
+
     use super::*;
 
     fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
@@ -766,6 +784,7 @@ mod tests {
             prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
             srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
             ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
+            crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
             blob_hashes: vec![blob_hash],
             cozies: vec![IndexableCoz {
                 blob_hash,
@@ -797,6 +816,7 @@ mod tests {
         assert_eq!(tip.pr, "SHA-256:pr-alice-0");
         assert_eq!(tip.sr, "SHA-256:sr-alice-0");
         assert_eq!(tip.ar, "SHA-256:ar-alice-0");
+        assert_eq!(tip.cr, "SHA-256:cr-alice-0");
         assert_eq!(tip.commit_id, "SHA-256:commit-alice-0");
         assert_eq!(tip.commit_count, 1);
         assert_eq!(tip.last_updated, 1000);

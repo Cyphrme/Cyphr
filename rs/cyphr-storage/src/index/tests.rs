@@ -14,6 +14,7 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
         prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
         srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
         ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
+        crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
         blob_hashes: vec![blob_hash],
         cozies: vec![IndexableCoz {
             blob_hash,

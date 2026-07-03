@@ -45,14 +45,8 @@ async fn test_blob_store<S: BlobStore>(store: &S) {
         "iter should return at least 2 entries, got {}",
         all.len()
     );
-    assert!(
-        all.iter().any(|h| *h == hash),
-        "iter should contain first blob",
-    );
-    assert!(
-        all.iter().any(|h| *h == hash3),
-        "iter should contain second blob",
-    );
+    assert!(all.contains(&hash), "iter should contain first blob");
+    assert!(all.contains(&hash3), "iter should contain second blob");
 }
 
 #[tokio::test]

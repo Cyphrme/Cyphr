@@ -9,7 +9,7 @@
 
 use coz::Thumbprint;
 use cyphr::state::{AuthRoot, PrincipalGenesis};
-use cyphr::{Key, Principal};
+use cyphr::{CommitRoot, CommitTrees, Key, Principal};
 
 use crate::{CommitEntry, Entry, KeyEntry};
 
@@ -56,6 +56,14 @@ pub struct Checkpoint {
     ///
     /// Not currently verified; included for forward compatibility.
     pub attestor: Option<Thumbprint>,
+    /// The trusted Commit Root at checkpoint, if the checkpoint carries MALT
+    /// proof-generation state (a value, like `auth_root`, not a tree).
+    ///
+    /// When `Some`, the caller must also pass the matching [`CommitTrees`] to
+    /// [`load_from_checkpoint`] — this field alone cannot reconstruct the
+    /// tree, it only lets the restored principal's CR be checked against the
+    /// value the checkpoint's issuer attested to.
+    pub cr: Option<CommitRoot>,
 }
 
 /// Errors that can occur during import.
@@ -96,6 +104,11 @@ pub enum LoadError {
         #[source]
         source: serde_json::Error,
     },
+
+    /// The provided `trees` produced a CR that does not match the trusted
+    /// checkpoint's `cr` field.
+    #[error("checkpoint CR mismatch: trees produced a different CR than the trusted checkpoint")]
+    CheckpointCrMismatch,
 
     /// Unsupported cryptographic algorithm.
     #[error("unsupported algorithm")]
@@ -174,6 +187,11 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///
 /// * `expected_pr` - The expected Principal Root (for security validation)
 /// * `checkpoint` - Trusted state to start from
+/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint
+///   carries MALT proof-generation state. `None` yields a principal with no
+///   CR, matching pre-checkpoint-CR behavior. When `Some` and
+///   `checkpoint.cr` is also `Some`, the CR computed from `trees` is
+///   verified against `checkpoint.cr` before it's trusted.
 /// * `entries` - Entries after the checkpoint to replay
 ///
 /// # Example
@@ -183,23 +201,33 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///     auth_root: trusted_as,
 ///     keys: current_keys,
 ///     attestor: Some(service_tmb),
+///     cr: trusted_cr,
 /// };
 /// let entries = store.get_entries_range(&pr, &QueryOpts { after: Some(cp_time), .. })?;
-/// let principal = load_from_checkpoint(pr, checkpoint, &entries)?;
+/// let principal = load_from_checkpoint(pr, checkpoint, trusted_trees, &entries)?;
 /// ```
 pub fn load_from_checkpoint(
     expected_pr: Option<PrincipalGenesis>,
     checkpoint: Checkpoint,
+    trees: Option<CommitTrees>,
     entries: &[Entry],
 ) -> Result<Principal, LoadError> {
     if checkpoint.keys.is_empty() {
         return Err(LoadError::NoGenesisKeys);
     }
 
+    let expected_cr = checkpoint.cr.clone();
+
     // Construct principal at checkpoint state
     // We use the first key to determine hash algorithm, then add remaining keys
     let mut principal =
-        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys, None)?;
+        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys, trees)?;
+
+    if let Some(expected) = expected_cr {
+        if principal.cr() != Some(&expected) {
+            return Err(LoadError::CheckpointCrMismatch);
+        }
+    }
 
     // Replay entries from checkpoint
     replay_entries(&mut principal, entries)?;
@@ -351,11 +379,6 @@ pub(crate) fn replay_commits(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        eprintln!(
-            "  [replay_commits] commit_idx={}, cozies_count={}",
-            commit_idx,
-            commit.cozies.len()
-        );
         if commit.cozies.is_empty() {
             return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
         }
@@ -716,9 +739,10 @@ mod tests {
             ),
             keys: vec![],
             attestor: None,
+            cr: None,
         };
 
-        let result = load_from_checkpoint(Some(pr), checkpoint, &[]);
+        let result = load_from_checkpoint(Some(pr), checkpoint, None, &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 }

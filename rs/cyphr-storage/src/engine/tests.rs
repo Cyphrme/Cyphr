@@ -22,6 +22,7 @@ fn make_meta(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
         prs: vec![format!("SHA-256:pr-{principal_id}-{seq}")],
         srs: vec![format!("SHA-256:sr-{principal_id}-{seq}")],
         ars: vec![format!("SHA-256:ar-{principal_id}-{seq}")],
+        crs: vec![format!("SHA-256:cr-{principal_id}-{seq}")],
         blob_hashes: vec![dummy_hash],
         cozies: vec![IndexableCoz {
             blob_hash: dummy_hash,
@@ -392,6 +393,9 @@ async fn ingest_fixture(
             prs: vec![commit["pr"].as_str().unwrap_or("").to_string()],
             srs: vec![commit["sr"].as_str().unwrap_or("").to_string()],
             ars: vec![commit["ar"].as_str().unwrap_or("").to_string()],
+            // Golden fixtures predate CR tracking; ingest_fixture is a raw
+            // index-population helper, not a source of truth for CR.
+            crs: Vec::new(),
             blob_hashes: Vec::new(),
             cozies,
             timestamp: cozies_json
@@ -883,4 +887,109 @@ async fn test_reindex_recovery_with_crashed_commit() {
     // crashed cozy.
     let original_tip = engine.get_tip(&principal_id).await.unwrap().unwrap();
     assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
+}
+
+/// A principal's CR must survive a checkpoint save/restore cycle
+/// byte-identically once the caller threads real `CommitTrees` through.
+#[tokio::test]
+async fn checkpoint_round_trip_preserves_cr() {
+    use crate::import::{Checkpoint, load_from_checkpoint};
+
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let engine = test_engine();
+    let principal_id = "checkpoint-cr-test";
+
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let genesis = make_genesis(genesis_keys);
+        engine
+            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .await
+            .expect("submit_commit failed");
+    }
+
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .await
+        .expect("load after submit failed");
+
+    let original_cr = principal.cr().cloned();
+    assert!(
+        original_cr.is_some(),
+        "fixture with real commits should produce a CR"
+    );
+
+    let trees = principal.commit_trees().clone();
+    let keys: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
+
+    let checkpoint = Checkpoint {
+        auth_root: principal.auth_root().clone(),
+        keys,
+        attestor: None,
+        cr: original_cr.clone(),
+    };
+
+    let restored = load_from_checkpoint(principal.pg().cloned(), checkpoint, Some(trees), &[])
+        .expect("load_from_checkpoint failed");
+
+    assert_eq!(
+        restored.cr().cloned(),
+        original_cr,
+        "checkpoint round-trip must preserve CR byte-identically"
+    );
+}
+
+/// `load_from_checkpoint` without trees must keep today's backward-
+/// compatible behavior: no CR, empty commit_trees.
+#[tokio::test]
+async fn checkpoint_without_trees_still_has_no_cr() {
+    use crate::import::{Checkpoint, load_from_checkpoint};
+
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let engine = test_engine();
+    let principal_id = "checkpoint-no-trees-test";
+
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        let genesis = make_genesis(genesis_keys);
+        engine
+            .submit_commit(principal_id, Some(genesis), &blob_slices)
+            .await
+            .expect("submit_commit failed");
+    }
+
+    let genesis = make_genesis(genesis_keys);
+    let principal = engine
+        .load_principal(principal_id, genesis)
+        .await
+        .expect("load after submit failed");
+
+    let keys: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
+    let checkpoint = Checkpoint {
+        auth_root: principal.auth_root().clone(),
+        keys,
+        attestor: None,
+        cr: None,
+    };
+
+    let restored = load_from_checkpoint(principal.pg().cloned(), checkpoint, None, &[])
+        .expect("load_from_checkpoint failed");
+
+    assert!(
+        restored.cr().is_none(),
+        "load_from_checkpoint without trees must have no CR"
+    );
+    assert!(
+        restored.commit_trees().is_empty(),
+        "load_from_checkpoint without trees must have empty commit_trees"
+    );
 }
