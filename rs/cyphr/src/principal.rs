@@ -73,7 +73,8 @@ pub enum Level {
 // Principal — Enum-based type safety for PR (Approach C)
 // ============================================================================
 
-/// Shared internal state for all Principal variants.
+/// Shared internal state for all Principal variants, generic over the
+/// storage backend `S` backing [`Self::commit_trees`].
 ///
 /// Every field *except* PR lives here. PR is structurally absent for Nascent
 /// principals and structurally present for Established ones — invalid states
@@ -81,11 +82,19 @@ pub enum Level {
 ///
 /// # Visibility
 ///
-/// `pub` to satisfy `Deref<Target = PrincipalCore>` on `Principal`.
+/// `pub` to satisfy `Deref<Target = PrincipalCore<S>>` on `Principal<S>`.
 /// All fields are `pub(crate)` — external code cannot access them.
+///
+/// # Manual `Debug`/`Clone`
+///
+/// Implemented by hand below rather than derived: `#[derive(...)]` would add
+/// an `S: Debug`/`S: Clone` bound that isn't actually needed (both traits
+/// pass straight through to [`crate::commit_root::CommitTrees`], which
+/// already implements them unconditionally for any `S: eml::Storage`), and
+/// `storage_fjall::FjallStorage` deliberately implements neither — a derived
+/// bound would make `PrincipalCore<FjallStorage>` uninstantiable.
 #[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct PrincipalCore {
+pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// Current Principal State.
     pub(crate) pr: PrincipalRoot,
     /// Current Key State.
@@ -93,7 +102,7 @@ pub struct PrincipalCore {
     /// Current Commit ID (Merkle root of last commit's cozies).
     pub(crate) tr: Option<crate::transaction_root::TransactionRoot>,
     /// Per-algorithm MALT trees for computing Commit Root (CR).
-    pub(crate) commit_trees: crate::commit_root::CommitTrees,
+    pub(crate) commit_trees: crate::commit_root::CommitTrees<S>,
     /// Principal Tree (PT): the `EpochTree` backing PR. Cell 0 = SR, cell 1 =
     /// CR. The source of truth for PR; `sr`/`cr` below are a cache mirroring
     /// its cell contents (kept in lockstep by [`PrincipalCore::write_pt_sr`]
@@ -121,26 +130,45 @@ pub struct PrincipalCore {
     pub(crate) genesis_keys: Vec<String>,
 }
 
-impl Default for PrincipalCore {
-    /// Placeholder default — only used for `std::mem::take()` during
-    /// the Nascent → Established transition. Never observable externally.
-    fn default() -> Self {
+impl<S: eml::Storage> Clone for PrincipalCore<S> {
+    fn clone(&self) -> Self {
         Self {
-            pr: PrincipalRoot::default(),
-            kr: KeyRoot::default(),
-            tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-            pt: PrincipalTree::new(),
-            cr: None,
-            sr: None,
-            ar: AuthRoot::default(),
-            dr: None,
-            auth: AuthLedger::default(),
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys: Vec::new(),
+            pr: self.pr.clone(),
+            kr: self.kr.clone(),
+            tr: self.tr.clone(),
+            commit_trees: self.commit_trees.clone(),
+            pt: self.pt.clone(),
+            cr: self.cr.clone(),
+            sr: self.sr.clone(),
+            ar: self.ar.clone(),
+            dr: self.dr.clone(),
+            auth: self.auth.clone(),
+            data: self.data.clone(),
+            latest_timestamp: self.latest_timestamp,
+            max_clock_skew: self.max_clock_skew,
+            genesis_keys: self.genesis_keys.clone(),
         }
+    }
+}
+
+impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrincipalCore")
+            .field("pr", &self.pr)
+            .field("kr", &self.kr)
+            .field("tr", &self.tr)
+            .field("commit_trees", &self.commit_trees)
+            .field("pt", &self.pt)
+            .field("cr", &self.cr)
+            .field("sr", &self.sr)
+            .field("ar", &self.ar)
+            .field("dr", &self.dr)
+            .field("auth", &self.auth)
+            .field("data", &self.data)
+            .field("latest_timestamp", &self.latest_timestamp)
+            .field("max_clock_skew", &self.max_clock_skew)
+            .field("genesis_keys", &self.genesis_keys)
+            .finish()
     }
 }
 
@@ -148,24 +176,46 @@ impl Default for PrincipalCore {
 ///
 /// - **Nascent**: L1/L2 — no PR exists. Cannot fabricate one.
 /// - **Established**: L3+ — PR is frozen from initial PS. Cannot remove it.
-#[derive(Debug, Clone)]
-enum PrincipalKind {
+enum PrincipalKind<S: eml::Storage = eml::MemoryStorage> {
     /// Pre-genesis-finalization: no PR field at all.
-    Nascent(PrincipalCore),
+    Nascent(PrincipalCore<S>),
     /// Post-principal/create: PR is structurally required.
     Established {
-        core: PrincipalCore,
+        core: PrincipalCore<S>,
         pr: PrincipalGenesis,
     },
 }
 
-impl Default for PrincipalKind {
-    fn default() -> Self {
-        Self::Nascent(PrincipalCore::default())
+impl<S: eml::Storage> Clone for PrincipalKind<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Nascent(core) => Self::Nascent(core.clone()),
+            Self::Established { core, pr } => Self::Established {
+                core: core.clone(),
+                pr: pr.clone(),
+            },
+        }
     }
 }
 
-/// A Cyphr Principal (self-sovereign identity).
+impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nascent(core) => f.debug_tuple("Nascent").field(core).finish(),
+            Self::Established { core, pr } => f
+                .debug_struct("Established")
+                .field("core", core)
+                .field("pr", pr)
+                .finish(),
+        }
+    }
+}
+
+/// A Cyphr Principal (self-sovereign identity), generic over the storage
+/// backend `S` backing its Commit Tree (defaults to
+/// [`eml::MemoryStorage`], so every pre-existing use of the bare
+/// `Principal` type continues to mean exactly what it meant before this
+/// type became generic).
 ///
 /// # Type Safety
 ///
@@ -173,26 +223,60 @@ impl Default for PrincipalKind {
 /// - **Nascent** (L1/L2): PR does not exist — cannot be forged.
 /// - **Established** (L3+): PR is frozen — cannot be removed.
 ///
-/// All shared state is accessed via `Deref<Target = PrincipalCore>`, so
+/// All shared state is accessed via `Deref<Target = PrincipalCore<S>>`, so
 /// `self.pr`, `self.kr`, etc. work transparently in all code paths.
-#[derive(Debug, Clone)]
-pub struct Principal(PrincipalKind);
+///
+/// # `Option`-wrapped inner kind
+///
+/// The inner [`PrincipalKind<S>`] is wrapped in `Option` solely so
+/// [`Self::establish_pg`] can `.take()` it by value without requiring
+/// `S: Default` (which `storage_fjall::FjallStorage` cannot reasonably
+/// implement — see that method's doc comment). The `Option` is `None` only
+/// for the instant inside `establish_pg` between the `.take()` and the
+/// following assignment; every other method observes it as always `Some`.
+pub struct Principal<S: eml::Storage = eml::MemoryStorage>(Option<PrincipalKind<S>>);
+
+impl<S: eml::Storage> Clone for Principal<S> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<S: eml::Storage> std::fmt::Debug for Principal<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Principal").field(&self.0).finish()
+    }
+}
+
+impl<S: eml::Storage> Principal<S> {
+    /// Borrow the inner kind.
+    ///
+    /// Panics only if called while a `establish_pg` call is itself
+    /// mid-flight on the same value, which cannot happen — `establish_pg`
+    /// takes `&mut self` and never calls back out to any other `Principal`
+    /// method before restoring `self.0` to `Some`.
+    fn kind(&self) -> &PrincipalKind<S> {
+        self.0
+            .as_ref()
+            .expect("Principal's inner kind is only None transiently inside establish_pg")
+    }
+}
 
 // Deref delegates field access to PrincipalCore transparently.
 // This means `self.pr`, `self.kr`, `self.ar`, etc. all
 // resolve automatically — zero changes needed in existing methods.
-impl std::ops::Deref for Principal {
-    type Target = PrincipalCore;
+impl<S: eml::Storage> std::ops::Deref for Principal<S> {
+    type Target = PrincipalCore<S>;
 
-    fn deref(&self) -> &PrincipalCore {
-        match &self.0 {
+    fn deref(&self) -> &PrincipalCore<S> {
+        match self.kind() {
             PrincipalKind::Nascent(core) => core,
             PrincipalKind::Established { core, .. } => core,
         }
     }
 }
 
-impl PrincipalCore {
+impl<S: eml::Storage> PrincipalCore<S> {
     pub(crate) fn active_algs(&self) -> Vec<HashAlg> {
         let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
         crate::state::derive_hash_algs(&key_refs)
@@ -225,9 +309,13 @@ impl PrincipalCore {
     }
 }
 
-impl Principal {
-    fn core_mut(&mut self) -> &mut PrincipalCore {
-        match &mut self.0 {
+impl<S: eml::Storage> Principal<S> {
+    fn core_mut(&mut self) -> &mut PrincipalCore<S> {
+        match self
+            .0
+            .as_mut()
+            .expect("Principal's inner kind is only None transiently inside establish_pg")
+        {
             PrincipalKind::Nascent(core) => core,
             PrincipalKind::Established { core, .. } => core,
         }
@@ -314,33 +402,18 @@ impl NodePath {
     }
 }
 
-impl Principal {
-    // ========================================================================
-    // Internal helpers
-    // ========================================================================
-
-    /// Transition from Nascent to Established by freezing PR.
-    ///
-    /// This is the only code path that can create an Established principal.
-    /// Called exclusively from the PrincipalCreate coz handler.
-    fn establish_pg(&mut self, pr: PrincipalGenesis) -> Result<()> {
-        let old = std::mem::take(&mut self.0);
-        match old {
-            PrincipalKind::Nascent(core) => {
-                self.0 = PrincipalKind::Established { core, pr };
-                Ok(())
-            },
-            est @ PrincipalKind::Established { .. } => {
-                self.0 = est; // restore
-                Err(Error::StateMismatch) // already established
-            },
-        }
-    }
-
-    // ========================================================================
-    // Genesis constructors
-    // ========================================================================
-
+// ============================================================================
+// Genesis constructors (default in-memory storage)
+// ============================================================================
+//
+// These are inherent methods on the concrete `Principal<eml::MemoryStorage>`
+// rather than on the generic `impl<S: eml::Storage> Principal<S>` block, so
+// every pre-existing call site that spells the bare `Principal` (which means
+// `Principal<eml::MemoryStorage>` via the type parameter's default) keeps
+// resolving to exactly these signatures with zero source changes. The
+// storage-parameterised siblings — `implicit_with_storage`,
+// `explicit_with_storage` — live on the generic impl block below.
+impl Principal<eml::MemoryStorage> {
     /// Create a principal with implicit genesis (single key).
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
@@ -353,41 +426,7 @@ impl Principal {
     ///
     /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
     pub fn implicit(key: Key) -> Result<Self> {
-        let hash_alg = hash_alg_from_str(&key.alg)?;
-        let tmb_b64 = key.tmb.to_b64();
-
-        // Derive active algorithms from genesis key
-        let active_algs = vec![hash_alg];
-
-        // KT → AR-node → SR-node (no DR at genesis)
-        let (kr, ar, sr) = derive_state_roots(&[&key.tmb], None, &active_algs)?;
-        // PR = SR (no CR at genesis): the tree's native singleton promotion.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        let pr = pt.pr(&active_algs)?;
-
-        let mut keys = IndexMap::new();
-        keys.insert(tmb_b64.clone(), key);
-
-        Ok(Self(PrincipalKind::Nascent(PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-            pt,
-            cr: None,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys: vec![tmb_b64],
-        })))
+        Self::implicit_with_storage(key, eml::MemoryStorage::new())
     }
 
     /// Create a principal with explicit genesis (multiple keys).
@@ -397,50 +436,7 @@ impl Principal {
     ///
     /// This is the Level 3+ genesis path.
     pub fn explicit(keys: Vec<Key>) -> Result<Self> {
-        if keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
-
-        let _ = hash_alg_from_str(&keys[0].alg)?;
-
-        // Derive active algorithms from all keys (SPEC §14)
-        let key_refs: Vec<&Key> = keys.iter().collect();
-        let active_algs = derive_hash_algs(&key_refs);
-
-        // Collect thumbprints for KR computation
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
-        // KT → AR-node → SR-node (no DR at genesis)
-        let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
-        // PR = SR (no CR at genesis): the tree's native singleton promotion.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        let pr = pt.pr(&active_algs)?;
-
-        let mut key_map = IndexMap::new();
-        for k in keys {
-            key_map.insert(k.tmb.to_b64(), k);
-        }
-
-        Ok(Self(PrincipalKind::Nascent(PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees: crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-            pt,
-            cr: None,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys: key_map,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys,
-        })))
+        Self::explicit_with_storage(keys, eml::MemoryStorage::new())
     }
 
     /// Create a principal from a trusted checkpoint.
@@ -533,8 +529,253 @@ impl Principal {
         };
 
         Ok(match pg {
-            Some(pg) => Self(PrincipalKind::Established { core, pr: pg }),
-            None => Self(PrincipalKind::Nascent(core)),
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            None => Self(Some(PrincipalKind::Nascent(core))),
+        })
+    }
+}
+
+impl<S: eml::Storage> Principal<S> {
+    // ========================================================================
+    // Internal helpers
+    // ========================================================================
+
+    /// Transition from Nascent to Established by freezing PR.
+    ///
+    /// This is the only code path that can create an Established principal.
+    /// Called exclusively from the PrincipalCreate coz handler.
+    ///
+    /// # Why `Option::take`, not `std::mem::take`
+    ///
+    /// The obvious implementation — `std::mem::take(&mut self.0)` swapping in
+    /// `PrincipalKind::default()` — requires `PrincipalKind<S>: Default`,
+    /// which (transitively, via a `PrincipalCore<S>: Default` impl) requires
+    /// `S: Default`. `eml::MemoryStorage` derives `Default` trivially, but
+    /// `storage_fjall::FjallStorage` cannot reasonably implement it —
+    /// construction always requires either a filesystem path or an
+    /// already-open `fjall::Database` handle, so there is no meaningful
+    /// "empty" instance to hand back on the swap-out. Wrapping `Principal`'s
+    /// inner kind in `Option` sidesteps this entirely: `Option::take` swaps
+    /// in `None`, which needs no bound on `S` at all.
+    fn establish_pg(&mut self, pr: PrincipalGenesis) -> Result<()> {
+        let old = self
+            .0
+            .take()
+            .expect("Principal's inner kind is only None transiently inside establish_pg");
+        match old {
+            PrincipalKind::Nascent(core) => {
+                self.0 = Some(PrincipalKind::Established { core, pr });
+                Ok(())
+            },
+            est @ PrincipalKind::Established { .. } => {
+                self.0 = Some(est); // restore
+                Err(Error::StateMismatch) // already established
+            },
+        }
+    }
+
+    // ========================================================================
+    // Genesis constructors (explicit storage)
+    // ========================================================================
+
+    /// Create a principal with implicit genesis (single key), backed by the
+    /// given storage instance.
+    ///
+    /// See [`Principal::implicit`] for the SPEC-level contract; this is the
+    /// same construction with the storage backend threaded through
+    /// explicitly instead of defaulting to [`eml::MemoryStorage`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
+    pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
+        let hash_alg = hash_alg_from_str(&key.alg)?;
+        let tmb_b64 = key.tmb.to_b64();
+
+        // Derive active algorithms from genesis key
+        let active_algs = vec![hash_alg];
+
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&[&key.tmb], None, &active_algs)?;
+        // PR = SR (no CR at genesis): the tree's native singleton promotion.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        let pr = pt.pr(&active_algs)?;
+
+        let mut keys = IndexMap::new();
+        keys.insert(tmb_b64.clone(), key);
+
+        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore {
+            pr,
+            kr,
+            tr: None,
+            commit_trees: crate::commit_root::CommitTrees::open(storage)
+                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?,
+            pt,
+            cr: None,
+            sr: Some(sr),
+            ar,
+            dr: None,
+            auth: AuthLedger {
+                keys,
+                ..Default::default()
+            },
+            data: DataLedger::default(),
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+            genesis_keys: vec![tmb_b64],
+        }))))
+    }
+
+    /// Create a principal with explicit genesis (multiple keys), backed by
+    /// the given storage instance.
+    ///
+    /// See [`Principal::explicit`] for the SPEC-level contract; this is the
+    /// same construction with the storage backend threaded through
+    /// explicitly instead of defaulting to [`eml::MemoryStorage`].
+    pub fn explicit_with_storage(keys: Vec<Key>, storage: S) -> Result<Self> {
+        if keys.is_empty() {
+            return Err(Error::NoActiveKeys);
+        }
+
+        let _ = hash_alg_from_str(&keys[0].alg)?;
+
+        // Derive active algorithms from all keys (SPEC §14)
+        let key_refs: Vec<&Key> = keys.iter().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+
+        // Collect thumbprints for KR computation
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
+        // PR = SR (no CR at genesis): the tree's native singleton promotion.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        let pr = pt.pr(&active_algs)?;
+
+        let mut key_map = IndexMap::new();
+        for k in keys {
+            key_map.insert(k.tmb.to_b64(), k);
+        }
+
+        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore {
+            pr,
+            kr,
+            tr: None,
+            commit_trees: crate::commit_root::CommitTrees::open(storage)
+                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?,
+            pt,
+            cr: None,
+            sr: Some(sr),
+            ar,
+            dr: None,
+            auth: AuthLedger {
+                keys: key_map,
+                ..Default::default()
+            },
+            data: DataLedger::default(),
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+            genesis_keys,
+        }))))
+    }
+
+    /// Create a principal from a trusted checkpoint, with its Commit Tree
+    /// state restored from `trees` — the storage-generic sibling of
+    /// [`Principal::from_checkpoint`].
+    ///
+    /// Unlike `from_checkpoint`, `trees` is not `Option`: a storage backend
+    /// with no `Default` (e.g. `storage_fjall::FjallStorage`) has no
+    /// meaningful "empty" instance to construct in a `None` branch, so the
+    /// caller must always supply an already-constructed `CommitTrees<S>`
+    /// (e.g. via [`crate::commit_root::CommitTrees::open`] against a
+    /// durable backend that may already carry prior state).
+    ///
+    /// # Security
+    ///
+    /// The caller must establish trust in the checkpoint before calling this.
+    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    ///
+    /// # Errors
+    ///
+    /// Returns `NoActiveKeys` if `keys` is empty.
+    /// Returns `UnsupportedAlgorithm` if key algorithm is unknown.
+    pub fn from_checkpoint_with_trees(
+        pg: Option<PrincipalGenesis>,
+        ar: AuthRoot,
+        keys: Vec<Key>,
+        trees: crate::commit_root::CommitTrees<S>,
+    ) -> Result<Self> {
+        if keys.is_empty() {
+            return Err(Error::NoActiveKeys);
+        }
+
+        let _ = hash_alg_from_str(&keys[0].alg)?;
+
+        // Derive active algorithms from checkpoint keys (SPEC §14)
+        let key_refs: Vec<&Key> = keys.iter().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+
+        // Compute KR from provided keys
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let kr = KeyTree::build(&thumbprints, &active_algs)?;
+
+        // A restored, non-empty log yields a CR; a genuinely empty one
+        // (e.g. a fresh backend with no prior commits) does not — mirrors
+        // `from_checkpoint`'s `Some`/`None` split, decided here by the
+        // tree's own emptiness rather than by an `Option` at the API
+        // boundary.
+        let cr = if trees.is_empty() {
+            None
+        } else {
+            Some(crate::commit_root::commit_root_from_trees(
+                &trees,
+                &active_algs,
+            )?)
+        };
+
+        // SR and PR: derive_state_roots is not used here because `ar` is
+        // provided by the checkpoint, not derived from `kr`. We enter the
+        // chain at SR-node directly.
+        let sr = StateTree::build(&ar, None, &active_algs)?;
+        // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
+        // checkpoint's SR and (if restored) CR.
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, &active_algs)?;
+        if let Some(ref cr_val) = cr {
+            pt.set_cr(cr_val, &active_algs)?;
+        }
+        let pr = pt.pr(&active_algs)?;
+
+        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb.to_b64()).collect();
+        let mut key_map = IndexMap::new();
+        for k in keys {
+            key_map.insert(k.tmb.to_b64(), k);
+        }
+        let core = PrincipalCore {
+            pr,
+            kr,
+            tr: None,
+            commit_trees: trees,
+            pt,
+            cr,
+            sr: Some(sr),
+            ar,
+            dr: None,
+            auth: AuthLedger {
+                keys: key_map,
+                ..Default::default()
+            },
+            data: DataLedger::default(),
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+            genesis_keys,
+        };
+
+        Ok(match pg {
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            None => Self(Some(PrincipalKind::Nascent(core))),
         })
     }
 
@@ -547,7 +788,7 @@ impl Principal {
     /// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
     /// For Established principals, this always returns `Some`.
     pub fn pg(&self) -> Option<&PrincipalGenesis> {
-        match &self.0 {
+        match self.kind() {
             PrincipalKind::Established { pr, .. } => Some(pr),
             PrincipalKind::Nascent(_) => None,
         }
@@ -603,7 +844,7 @@ impl Principal {
 
     /// Get the active hash algorithms derived from current active keys (SPEC §14).
     pub fn active_algs(&self) -> Vec<HashAlg> {
-        match &self.0 {
+        match self.kind() {
             PrincipalKind::Nascent(core) => core.active_algs(),
             PrincipalKind::Established { core, .. } => core.active_algs(),
         }
@@ -611,7 +852,7 @@ impl Principal {
 
     /// Get the genesis keys of this principal.
     pub fn genesis_keys(&self) -> &[String] {
-        match &self.0 {
+        match self.kind() {
             PrincipalKind::Nascent(core) => &core.genesis_keys,
             PrincipalKind::Established { core, .. } => &core.genesis_keys,
         }
@@ -700,8 +941,8 @@ impl Principal {
     /// Get a reference to the per-algorithm MALT trees.
     ///
     /// Used by checkpoint export to persist MALT state for later
-    /// restoration via [`from_checkpoint`](Self::from_checkpoint).
-    pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees {
+    /// restoration via `Principal::from_checkpoint`.
+    pub fn commit_trees(&self) -> &crate::commit_root::CommitTrees<S> {
         &self.commit_trees
     }
 
@@ -958,7 +1199,7 @@ impl Principal {
     /// scope.apply(vtx2)?;
     /// let commit = scope.finalize()?;
     /// ```
-    pub fn begin_commit(&mut self) -> CommitScope<'_> {
+    pub fn begin_commit(&mut self) -> CommitScope<'_, S> {
         CommitScope::new(self)
     }
 
@@ -3010,5 +3251,94 @@ mod tests {
             tmb_bytes.as_slice()
         );
         assert_eq!(principal.pr().get(alg).unwrap(), tmb_bytes.as_slice());
+    }
+
+    // ========================================================================
+    // c3/a3 — establish_pg works for any storage backend
+    // ========================================================================
+
+    /// Build an explicit-genesis `principal/create` coz for `key`, signed
+    /// against `pre`/`id` taken from the given principal — the minimal
+    /// mutation that drives `establish_pg`'s Nascent → Established
+    /// transition.
+    fn make_principal_create_tx<S: eml::Storage>(
+        principal: &Principal<S>,
+        key: &Key,
+        czd_byte: u8,
+    ) -> crate::parsed_coz::ParsedCoz {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        ParsedCoz {
+            kind: CozKind::PrincipalCreate {
+                pre: principal.pr().clone(),
+                id: principal.auth_root().clone(),
+            },
+            signer: key.tmb.clone(),
+            now: 2000,
+            czd: Czd::from_bytes(vec![czd_byte; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        }
+    }
+
+    /// c3/a3 — `establish_pg` (reached via a `principal/create` coz) must
+    /// work correctly for `Principal<storage_fjall::FjallStorage>` — a
+    /// storage backend with no `Default` impl — without requiring `S:
+    /// Default` and without a fake/panicking `Default` on `FjallStorage`.
+    /// PG must be set exactly once, and byte-identical to what the same
+    /// operations produce under `Principal<eml::MemoryStorage>`.
+    #[test]
+    fn establish_pg_works_for_disk_backed_storage() {
+        use crate::parsed_coz::VerifiedCoz;
+
+        let key = make_test_key(0x11);
+
+        // Disk-backed principal.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = storage_fjall::FjallStorage::open(dir.path()).expect("open fjall storage");
+        let mut disk_principal =
+            Principal::explicit_with_storage(vec![key.clone()], storage).unwrap();
+        assert!(
+            disk_principal.pg().is_none(),
+            "PG must be absent before principal/create"
+        );
+
+        let cz = make_principal_create_tx(&disk_principal, &key, 0x44);
+        let vtx = VerifiedCoz::from_transaction_unsafe(cz, None);
+        disk_principal.apply_verified_internal(vtx).unwrap();
+        let pg_disk = disk_principal
+            .pg()
+            .expect("establish_pg must set PG for a disk-backed Principal")
+            .clone();
+
+        // The equivalent in-memory principal, driven through the identical
+        // sequence of operations.
+        let mut mem_principal = Principal::explicit(vec![key.clone()]).unwrap();
+        let mem_cz = make_principal_create_tx(&mem_principal, &key, 0x44);
+        let mem_vtx = VerifiedCoz::from_transaction_unsafe(mem_cz, None);
+        mem_principal.apply_verified_internal(mem_vtx).unwrap();
+        let pg_mem = mem_principal
+            .pg()
+            .expect("establish_pg must set PG for an in-memory Principal")
+            .clone();
+
+        assert_eq!(
+            pg_disk.as_multihash(),
+            pg_mem.as_multihash(),
+            "PG must be byte-identical between a disk-backed and an in-memory storage backend"
+        );
+
+        // PG is set exactly once: a second principal/create must fail, not
+        // silently re-establish or panic.
+        let second_cz = make_principal_create_tx(&disk_principal, &key, 0x55);
+        let second_vtx = VerifiedCoz::from_transaction_unsafe(second_cz, None);
+        let result = disk_principal.apply_verified_internal(second_vtx);
+        assert!(
+            matches!(result, Err(Error::StateMismatch)),
+            "a second principal/create must fail — PG is already established"
+        );
     }
 }

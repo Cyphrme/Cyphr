@@ -33,4 +33,9 @@ pub enum EngineError {
     /// Raw blob bytes failed JSON parsing.
     #[error("malformed blob: {0}")]
     MalformedBlob(String),
+
+    /// The engine's commit-tree storage factory failed to produce a fresh
+    /// storage instance for a `Principal`.
+    #[error("storage: {0}")]
+    Storage(String),
 }

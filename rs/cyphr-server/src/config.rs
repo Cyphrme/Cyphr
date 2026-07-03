@@ -147,7 +147,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         figment = figment.merge(Toml::file(&cli.config));
     }
 
-    let mut config: ServerConfig = figment.extract().map_err(ConfigError::Figment)?;
+    let mut config: ServerConfig = figment
+        .extract()
+        .map_err(|e| ConfigError::Figment(Box::new(e)))?;
 
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::Serve(ref args) = cli.command {
@@ -173,5 +175,5 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
 pub enum ConfigError {
     /// Figment extraction failed (bad TOML, type mismatch, etc.).
     #[error("configuration: {0}")]
-    Figment(figment::Error),
+    Figment(Box<figment::Error>),
 }

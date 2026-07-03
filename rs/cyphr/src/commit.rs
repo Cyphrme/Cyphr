@@ -311,15 +311,15 @@ impl PendingCommit {
 /// let commit = principal.apply_transaction(vtx)?;
 /// ```
 #[must_use = "a CommitScope must be finalized via .finalize() to produce a Commit"]
-pub struct CommitScope<'a> {
-    principal: &'a mut crate::principal::Principal,
+pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
+    principal: &'a mut crate::principal::Principal<S>,
     pending: PendingCommit,
-    projected: crate::principal::Principal,
+    projected: crate::principal::Principal<S>,
 }
 
-impl<'a> CommitScope<'a> {
+impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
-    pub(crate) fn new(principal: &'a mut crate::principal::Principal) -> Self {
+    pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
         let projected = principal.clone();
         Self {
             principal,

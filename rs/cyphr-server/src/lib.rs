@@ -28,7 +28,25 @@ use cyphr_storage::engine::StorageEngine;
 ///
 /// ## Backend note
 ///
-/// Uses persistent `FjallBlobStore` and `SqliteIndexer`.
+/// Uses persistent `FjallBlobStore` and `SqliteIndexer`. The Commit Tree
+/// deliberately stays on the in-memory default ([`cyphr::eml::MemoryStorage`])
+/// rather than `StorageEngine::with_storage_factory` plus a disk-backed
+/// `storage_fjall::FjallStorage` sharing this state's `Database`: doing so
+/// makes `AppState::new` build correctly, but `StorageEngine::load_principal`
+/// reconstructs a principal by full replay from genesis on every call, which
+/// is only correct against a Commit Tree that starts genuinely empty each
+/// time. A durable Commit Tree that already carries state from a prior call
+/// at the same physical location produces the wrong intermediate Commit
+/// Root partway through replay and breaks on the next multi-commit
+/// principal (confirmed by wiring it here experimentally and watching this
+/// crate's own `patch_with_range` end-to-end test fail with exactly that
+/// error — `StorageEngine::load_principal` now detects the unsafe case and
+/// returns a dedicated `EngineError::Storage` rather than a confusing
+/// signature-shaped failure). Switching this `AppState` to durable
+/// commit-tree storage needs that replay/reconstruction gap closed first —
+/// either a historical/checkpoint-root query on `eml::Storage`, or
+/// `StorageEngine` caching an already-loaded live principal across calls
+/// instead of replaying from genesis every time.
 pub struct AppState {
     /// Resolved server configuration.
     pub config: config::ServerConfig,

@@ -106,17 +106,57 @@ pub struct IngestResult {
 ///
 /// Generic over backend implementations. Use `MemoryBlobStore` +
 /// `MemoryIndexer` for tests, production backends for deployment.
-pub struct StorageEngine<B, I> {
+///
+/// The third type parameter, `S`, is the storage backend for each
+/// [`cyphr::Principal`]'s Commit Tree; it defaults to
+/// [`cyphr::eml::MemoryStorage`] so every existing call site that spells the
+/// bare `StorageEngine<B, I>` (via [`Self::new`]) continues to mean exactly
+/// what it meant before this parameter existed. A durable backend is wired
+/// up via [`Self::with_storage_factory`] instead.
+pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorage> {
     blob_store: B,
     indexer: I,
+    /// Produces a fresh, independent `S` instance for each `Principal` this
+    /// engine constructs or reconstructs. Never a single `S` instance
+    /// shared/aliased across multiple live principals: `eml::Storage`'s
+    /// methods take `&mut self` on an owned instance, so two principals can
+    /// never validly share one. Fallible (`Result<S, String>`, not a bare
+    /// `S`) because opening a real disk-backed backend can fail.
+    storage_factory: Box<dyn Fn() -> Result<S, String> + Send + Sync>,
 }
 
-impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
-    /// Create a new engine wrapping the given backends.
+impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
+    /// Create a new engine wrapping the given backends, with each
+    /// [`cyphr::Principal`]'s Commit Tree backed by an in-memory
+    /// [`cyphr::eml::MemoryStorage`] instance (discarded when the principal
+    /// is dropped — full history is always replayed from the blob/index
+    /// layers on the next [`Self::load_principal`]).
+    ///
+    /// For a durable commit-tree backend, use [`Self::with_storage_factory`].
     pub fn new(blob_store: B, indexer: I) -> Self {
         Self {
             blob_store,
             indexer,
+            storage_factory: Box::new(|| Ok(cyphr::eml::MemoryStorage::new())),
+        }
+    }
+}
+
+impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
+    /// Create a new engine wrapping the given backends, with `storage_factory`
+    /// producing each [`cyphr::Principal`]'s Commit Tree storage backend.
+    ///
+    /// See [`Self`]'s `storage_factory` field docs for why this is a
+    /// factory rather than a single shared `S` instance.
+    pub fn with_storage_factory(
+        blob_store: B,
+        indexer: I,
+        storage_factory: impl Fn() -> Result<S, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            blob_store,
+            indexer,
+            storage_factory: Box::new(storage_factory),
         }
     }
 
@@ -270,20 +310,25 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         &self,
         principal_id: &str,
         genesis: crate::Genesis,
-    ) -> Result<cyphr::Principal, EngineError> {
+    ) -> Result<cyphr::Principal<S>, EngineError> {
         use crate::CommitEntry;
         use crate::import::replay_commits;
 
-        // 1. Construct the principal from genesis (no commits yet).
+        // 1. Construct the principal from genesis (no commits yet), backed
+        // by a fresh storage instance from this engine's factory.
         let mut principal = match genesis {
-            crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key)?,
+            crate::Genesis::Implicit(key) => {
+                let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+                cyphr::Principal::implicit_with_storage(key, storage)?
+            },
             crate::Genesis::Explicit(keys) => {
                 if keys.is_empty() {
                     return Err(EngineError::InvalidInput(
                         "genesis requires at least one key".into(),
                     ));
                 }
-                cyphr::Principal::explicit(keys)?
+                let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+                cyphr::Principal::explicit_with_storage(keys, storage)?
             },
         };
 
@@ -294,6 +339,31 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
             .await?;
         if chain.is_empty() {
             return Ok(principal);
+        }
+
+        // KNOWN LIMITATION: replaying more than one historical commit onto
+        // a Commit Tree that already carries prior state (i.e.
+        // `storage_factory` returned a durable backend pointed at a
+        // physical location this principal has already committed to
+        // before) is not yet correct. `eml`'s root query always reports
+        // the tree's *current, final* root, not "the root as of N
+        // leaves" — so a tree reconstructed up front from an
+        // already-fully-populated durable location produces the wrong,
+        // too-far-ahead CR at every intermediate replay step, which then
+        // fails the next replayed commit's `pre` check. Fail loudly and
+        // specifically here rather than let that surface as a confusing
+        // `BrokenChain`/signature-shaped error indistinguishable from a
+        // genuine protocol violation. Closing this needs either a
+        // historical/checkpoint-root query on `eml::Storage`, or this
+        // engine caching an already-loaded live principal across calls
+        // instead of replaying from genesis every time.
+        if chain.len() > 1 && principal.commit_trees().global_size() > 0 {
+            return Err(EngineError::Storage(format!(
+                "cannot replay {} historical commits onto a Commit Tree that already carries \
+                 prior state at this storage location — durable commit-tree storage does not \
+                 yet support being reloaded more than once per principal",
+                chain.len()
+            )));
         }
 
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
@@ -916,7 +986,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         tx_cozies.retain(|c| !mock_genesis_cozies.iter().any(|(m, _)| m.hash == c.hash));
 
         for (mock_coz, key) in mock_genesis_cozies {
-            let principal = cyphr::Principal::implicit(key)?;
+            let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+            let principal = cyphr::Principal::implicit_with_storage(key, storage)?;
             let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
             let principal_id = pr_variants
                 .first()
@@ -990,7 +1061,8 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I> {
         }
 
         for key in bootstrap_keys {
-            let principal = cyphr::Principal::implicit(key.clone())?;
+            let storage = (self.storage_factory)().map_err(EngineError::Storage)?;
+            let principal = cyphr::Principal::implicit_with_storage(key.clone(), storage)?;
             let pr_variants = format_multihash_all(principal.pr().as_multihash())?;
             let principal_id = pr_variants
                 .first()
