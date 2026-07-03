@@ -11,6 +11,12 @@ use std::path::Path;
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
+/// Re-exported so a caller wiring up a shared-database
+/// [`StorageEngine`](cyphr_storage::engine::StorageEngine) (via
+/// [`open_eml_storage`]) can name `storage_fjall::FjallStorage` without
+/// taking its own direct Cargo dependency on `storage-fjall`.
+pub use storage_fjall;
+
 /// Production blob store backed by fjall (LSM-tree).
 pub struct FjallBlobStore {
     db: Database,
