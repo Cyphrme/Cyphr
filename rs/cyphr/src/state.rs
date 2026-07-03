@@ -783,6 +783,7 @@ fn digest_into_boxed_slice(v: Vec<u8>) -> Box<[u8]> {
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if the StateRoot contains no variants.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn compute_pr(
     state_root: &StateRoot,
     cr: Option<&crate::commit_root::CommitRoot>,

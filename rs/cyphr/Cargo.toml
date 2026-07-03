@@ -22,6 +22,12 @@ serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
 
+[features]
+# Exposes test-oracle functions (e.g. compute_pr) that are otherwise
+# cfg(test)-only, so dependent crates' own tests can cross-check against
+# them. Never enabled in a production build.
+test-utils = []
+
 [dev-dependencies]
 proptest      = { workspace = true }
 serde         = { workspace = true }

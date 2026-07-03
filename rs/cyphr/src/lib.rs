@@ -55,7 +55,9 @@ pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, verify_coz};
 pub use principal::Principal;
 pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
-    StateRoot, compute_commit_id, compute_dr, compute_pr,
+    StateRoot, compute_commit_id, compute_dr,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use state::compute_pr;
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};
