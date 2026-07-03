@@ -93,8 +93,8 @@ pub enum Error {
     /// A collection node (e.g. KT) was asked to hold more items than its
     /// 256-child collection-node arity boundary allows.
     ///
-    /// A known, tracked gap deferred to P10-testing-hardening — not
-    /// resolved by silently extending arity or any other ad hoc handling.
+    /// A known, tracked gap deferred to future work — not resolved by
+    /// silently extending arity or any other ad hoc handling.
     #[error("collection node exceeds 256-item arity boundary: {0} items")]
     CollectionArityExceeded(usize),
 

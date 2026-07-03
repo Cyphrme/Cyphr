@@ -994,7 +994,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                 srs: genesis_srs,
                 ars: genesis_ars,
                 // No CR at genesis: PR = SR until the first real commit
-                // populates the EML log (REMEDIATION.md section 6).
+                // populates the EML log.
                 crs: Vec::new(),
                 blob_hashes: vec![mock_coz.hash],
                 cozies: vec![map_coz_info(&mock_coz, &principal.active_algs())],

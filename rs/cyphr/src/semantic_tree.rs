@@ -3,7 +3,7 @@
 //! Generalizes [`crate::principal_tree::PrincipalTree`]'s pattern (a small
 //! `polydigest::EpochTree` + identity-extract [`MaltHasher`] + per-algorithm
 //! JSON-map cell payloads) from "one instance at the root" to "one instance
-//! per semantic node" (`.scratch/eml-emt-integration/REMEDIATION.md`).
+//! per semantic node".
 //!
 //! Prior to this module, Key Root (KR), Auth Root (AR), and State Root (SR)
 //! were computed by hand-rolled flat-hash formulas (`compute_kr`/`compute_ar`/
@@ -21,10 +21,8 @@
 //!   `spine::nary_mr`'s contract), so each non-native thumbprint is
 //!   converted to its canonical digest under the target algorithm before
 //!   folding, via the same `infer_alg_from_len`/`hash_bytes` mechanism
-//!   [`crate::state::compute_dr`] already uses for czd content
-//!   (REMEDIATION.md §4: "Leaf-level cross-alg conversion... keeps the
-//!   existing convert_to/infer_alg_from_len semantics"). This is a real,
-//!   authorized divergence from `compute_kr`'s raw-concat-regardless-of-size
+//!   [`crate::state::compute_dr`] already uses for czd content. This is a
+//!   real, authorized divergence from `compute_kr`'s raw-concat-regardless-of-size
 //!   behavior for mixed-algorithm keysets — single-algorithm keysets are
 //!   unaffected (every thumbprint is already native, so conversion is a
 //!   no-op).
@@ -47,8 +45,8 @@
 //!
 //! None of these types keep long-lived mutable state across a `Principal`'s
 //! lifetime: each mutation rebuilds the affected node fresh from current
-//! state (REMEDIATION.md's recommended strategy — every level here is
-//! `O(children)` with trees this small) via the `build_*` associated
+//! state (every level here is `O(children)` with trees this small) via the
+//! `build_*` associated
 //! functions. This also makes algorithm shrinkage trivially correct: a fresh
 //! tree only ever registers the `algs` it is given, so a revoked algorithm's
 //! entry can never survive into a rebuilt tree (c-liveness-shrinkage-rebuild).
@@ -64,9 +62,9 @@ use crate::state::{AuthRoot, DataRoot, HashAlg, KeyRoot, StateRoot};
 
 /// Collection-node arity: dense, left-filled, one leaf per item. At size
 /// `<= 256` the tree folds as a single `H(child_0 ∥ … ∥ child_n)` — the same
-/// bytes the old flat formulas produced (REMEDIATION.md §2). Beyond 256
+/// bytes the old flat formulas produced. Beyond 256
 /// items the spine's canonical fold takes over; that boundary is explicitly
-/// out of this node's scope (reserved — see the worker IBC).
+/// out of this node's scope (reserved for future work).
 const COLLECTION_ARITY: u64 = 256;
 
 /// Role-slot arity: fixed two cells, position IS the semantics.
@@ -181,7 +179,7 @@ impl KeyTree {
     /// Returns `NoActiveKeys` if `algs` is empty. Returns
     /// `CollectionArityExceeded` if `thumbprints.len() > 256` — the
     /// collection-node arity boundary is out of this node's scope (reserved
-    /// in the worker IBC; deferred to P10-testing-hardening).
+    /// for future work).
     pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
         if algs.is_empty() {
             return Err(Error::NoActiveKeys);
