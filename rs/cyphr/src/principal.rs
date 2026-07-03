@@ -339,9 +339,9 @@ pub(crate) struct NodePathHop {
 
 /// A top-down chain of inclusion hops used internally by
 /// [`Principal::verify_key_inclusion`] — the generalization of
-/// [`Principal::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain
-/// (REMEDIATION.md §8: "a sequence of hops... verified top-down from a
-/// trusted PR"). [`Principal::key_inclusion_proof`] produces the concrete
+/// [`Principal::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain into a
+/// sequence of hops verified top-down from a trusted PR.
+/// [`Principal::key_inclusion_proof`] produces the concrete
 /// 4-hop instance chaining a key's thumbprint through KT -> AR-node ->
 /// SR-node -> PT.
 ///
@@ -2694,8 +2694,8 @@ mod tests {
     /// principal, where KT, AR-node, SR-node, and PT are all simultaneously
     /// 1-cell promotions (KR == tmb, AR == KR, SR == AR, PR == SR, all
     /// verbatim). The chained proof must still verify correctly through
-    /// every "skip" hop — REMEDIATION.md §8's promotion-hop rule — without
-    /// any special-case code, since [`NodePath::verify`] treats a
+    /// every "skip" hop without any special-case code, since
+    /// [`NodePath::verify`] treats a
     /// zero-sibling skeleton identically to any other.
     #[test]
     fn key_inclusion_verifies_through_genesis_promotion_chain() {

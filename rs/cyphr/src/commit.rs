@@ -407,12 +407,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // of keys that were active when this commit began, not the eagerly
         // mutated live state. Keys added during the commit are also accepted.
         let signer_key = {
-            let active_keys: Vec<&String> = self.principal.auth.keys.keys().collect();
-            eprintln!(
-                "verify_and_apply: signer_tmb={}, active_keys={:?}",
-                signer_tmb.to_b64(),
-                active_keys
-            );
             if self.principal.is_key_active(signer_tmb) {
                 self.principal
                     .get_key(signer_tmb)
@@ -508,23 +502,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             return false;
         };
 
-        let matches = claimed_digest == computed_digest.as_slice();
-        {
-            use coz::base64ct::Encoding;
-            eprintln!(
-                "matches_arrow check: alg={:?}\n  pre = {}\n  sr  = {}\n  tmr = {}\n  claimed  = \
-                 {}\n  computed = {}\n  matches  = {}",
-                signer_hash_alg,
-                coz::base64ct::Base64UrlUnpadded::encode_string(pre_bytes),
-                coz::base64ct::Base64UrlUnpadded::encode_string(sr_bytes),
-                coz::base64ct::Base64UrlUnpadded::encode_string(tmr_bytes),
-                coz::base64ct::Base64UrlUnpadded::encode_string(claimed_digest),
-                coz::base64ct::Base64UrlUnpadded::encode_string(&computed_digest),
-                matches
-            );
-        }
-
-        matches
+        claimed_digest == computed_digest.as_slice()
     }
 
     /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.
