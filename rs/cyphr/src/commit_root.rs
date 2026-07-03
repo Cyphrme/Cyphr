@@ -200,7 +200,8 @@ impl<S: eml::Storage> CloneableLog<S> {
             .map_err(LogError::<S>::Storage)?;
         let mut hashers: Vec<(u64, Box<dyn eml::Hasher>)> = Vec::with_capacity(metas.len());
         for (alg_id, _) in metas {
-            let alg = u64_to_hash_alg(alg_id).map_err(|_| LogError::<S>::UnknownAlgorithm(alg_id))?;
+            let alg =
+                u64_to_hash_alg(alg_id).map_err(|_| LogError::<S>::UnknownAlgorithm(alg_id))?;
             hashers.push((alg_id, Box::new(MaltHasher::new(alg))));
         }
         let log = futures::executor::block_on(eml::from_storage(storage, hashers))?;
@@ -234,6 +235,19 @@ impl<S: eml::Storage> CloneableLog<S> {
             .lock()
             .expect("commit tree mutex poisoned")
             .root_for(alg_id)
+    }
+
+    /// Get the algorithm's root hash as of a historical tree size — the
+    /// root the tree had immediately after its `size`-th leaf was
+    /// appended, not the tree's live/current root.
+    ///
+    /// Used by [`crate::principal::PrincipalCore::finalize_commit`] to
+    /// make replay idempotent: a leaf durably present from a prior
+    /// session must report the root as of its own position, not the
+    /// live root of a tree that may already carry leaves beyond it.
+    pub fn root_at(&self, alg_id: u64, size: u64) -> LogResult<Vec<u8>, S> {
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        futures::executor::block_on(log.root_for_at(alg_id, size))
     }
 
     /// Generate an inclusion proof for the leaf at `index`, against the
@@ -330,6 +344,29 @@ pub fn commit_root_from_trees<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root(alg_id)
+            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
+        variants.insert(alg, root.into_boxed_slice());
+    }
+    let md = MultihashDigest::new(variants)?;
+    Ok(CommitRoot(md))
+}
+
+/// Assemble a `CommitRoot` `MultihashDigest` from the EML Log as of a
+/// historical size — the idempotent-replay counterpart to
+/// [`commit_root_from_trees`], which always reads the tree's live/current
+/// root. Used when finalizing a commit whose leaf a prior durable session
+/// already appended, so the CR reflects the tree as it stood right after
+/// that leaf rather than any leaves appended since.
+pub fn commit_root_from_trees_at<S: eml::Storage>(
+    log: &CommitTrees<S>,
+    algs: &[HashAlg],
+    size: u64,
+) -> crate::error::Result<CommitRoot> {
+    let mut variants = BTreeMap::new();
+    for &alg in algs {
+        let alg_id = hash_alg_to_u64(alg);
+        let root = log
+            .root_at(alg_id, size)
             .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }

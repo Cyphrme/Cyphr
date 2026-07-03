@@ -341,31 +341,6 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             return Ok(principal);
         }
 
-        // KNOWN LIMITATION: replaying more than one historical commit onto
-        // a Commit Tree that already carries prior state (i.e.
-        // `storage_factory` returned a durable backend pointed at a
-        // physical location this principal has already committed to
-        // before) is not yet correct. `eml`'s root query always reports
-        // the tree's *current, final* root, not "the root as of N
-        // leaves" — so a tree reconstructed up front from an
-        // already-fully-populated durable location produces the wrong,
-        // too-far-ahead CR at every intermediate replay step, which then
-        // fails the next replayed commit's `pre` check. Fail loudly and
-        // specifically here rather than let that surface as a confusing
-        // `BrokenChain`/signature-shaped error indistinguishable from a
-        // genuine protocol violation. Closing this needs either a
-        // historical/checkpoint-root query on `eml::Storage`, or this
-        // engine caching an already-loaded live principal across calls
-        // instead of replaying from genesis every time.
-        if chain.len() > 1 && principal.commit_trees().global_size() > 0 {
-            return Err(EngineError::Storage(format!(
-                "cannot replay {} historical commits onto a Commit Tree that already carries \
-                 prior state at this storage location — durable commit-tree storage does not \
-                 yet support being reloaded more than once per principal",
-                chain.len()
-            )));
-        }
-
         // 3. For each CommitRef, fetch blobs and build a CommitEntry.
         let mut commit_entries = Vec::with_capacity(chain.len());
         for commit_ref in &chain {
@@ -770,7 +745,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     let has_key = value.get("key").is_some();
                     tracing::debug!(
                         "resolve_genesis: blob idx={}, typ={}, has_key={}",
-                        idx, typ, has_key
+                        idx,
+                        typ,
+                        has_key
                     );
                     if typ.contains("/commit/create") && has_key {
                         tracing::debug!("resolve_genesis: found genesis key in commit/create!");
@@ -875,7 +852,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                 Err(e) => {
                     tracing::warn!(
                         "reindex: base64 decode of sig '{}' failed: {:?}",
-                        ext.sig, e
+                        ext.sig,
+                        e
                     );
                     continue;
                 },
@@ -1143,7 +1121,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                             );
                             tracing::debug!(
                                 "reindex pre-action: typ={}, now={}, res={:?}",
-                                coz.typ, coz.now, res
+                                coz.typ,
+                                coz.now,
+                                res
                             );
                             if res.is_ok() {
                                 commit_blobs.push(coz.hash);

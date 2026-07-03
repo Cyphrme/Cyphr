@@ -159,9 +159,8 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
 
-    let (original_pr, original_cr, ar, keys_snapshot, pg, blob_hash) = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async {
+    let (original_pr, original_cr, ar, keys_snapshot, pg, blob_hash) =
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
             let db = fjall::Database::builder(&db_path).open().expect("open db");
 
             // c5: the blob store and the EML commit-tree storage genuinely
@@ -201,10 +200,11 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
 
     // Reopen from scratch at the same path — a fresh `Database`, not a
     // clone of the one above — to prove the state is genuinely durable.
-    let (restored_pr, restored_cr, blob_survived) = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async {
-            let db = fjall::Database::builder(&db_path).open().expect("reopen db");
+    let (restored_pr, restored_cr, blob_survived) =
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = fjall::Database::builder(&db_path)
+                .open()
+                .expect("reopen db");
             let blob_store =
                 cyphr_blob_fjall::FjallBlobStore::from_database(db.clone()).expect("blob store");
             let eml_storage =
@@ -213,10 +213,13 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
                 CommitTrees::open(eml_storage).expect("reconstruct commit tree from disk");
 
             let restored =
-                cyphr::Principal::from_checkpoint_with_trees(pg, ar, keys_snapshot, trees)
-                    .unwrap();
+                cyphr::Principal::from_checkpoint_with_trees(pg, ar, keys_snapshot, trees).unwrap();
 
-            let blob_survived = blob_store.get(&blob_hash).await.expect("blob get").is_some();
+            let blob_survived = blob_store
+                .get(&blob_hash)
+                .await
+                .expect("blob get")
+                .is_some();
             (restored.pr().clone(), restored.cr().cloned(), blob_survived)
         });
 
@@ -230,8 +233,155 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
     );
     assert!(
         blob_survived,
-        "the blob written beside the commit tree must also survive the reload, proving the \
-         blob and EML partitions truly share one database rather than each independently \
-         persisting to its own file"
+        "the blob written beside the commit tree must also survive the reload, proving the blob \
+         and EML partitions truly share one database rather than each independently persisting to \
+         its own file"
+    );
+}
+
+/// Build raw coz blobs from a golden fixture's commit, embedding key
+/// material — the same shape `StorageEngine::submit_commit` expects from a
+/// real client (mirrors `cyphr-server`'s e2e test helper of the same
+/// purpose).
+fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
+    let cozies = commit["txs"].as_array().expect("txs array");
+    let keys = commit["keys"].as_array();
+    let mut key_idx = 0;
+    let mut blobs = Vec::new();
+
+    for coz_value in cozies {
+        let mut coz = coz_value.clone();
+        let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+
+        if is_key_introducing {
+            if let Some(ks) = keys {
+                if key_idx < ks.len() {
+                    coz.as_object_mut()
+                        .unwrap()
+                        .insert("key".to_string(), ks[key_idx].clone());
+                    key_idx += 1;
+                }
+            }
+        }
+
+        blobs.push(serde_json::to_vec(&coz).unwrap());
+    }
+
+    blobs
+}
+
+/// c2/c3 (P6c) — `StorageEngine::load_principal`'s NORMAL replay path (not
+/// `CommitTrees::open` + `from_checkpoint_with_trees`, which the test above
+/// deliberately avoids) must correctly reconstruct a multi-commit principal
+/// from a durable Commit Tree that already carries every leaf from a prior
+/// session, without duplicating any of them.
+///
+/// Exercises the real production write path too: each `submit_commit` call
+/// itself calls `load_principal` internally (see
+/// `StorageEngine::submit_commit`'s step 2), so this test already replays
+/// against progressively-more-populated durable storage on its 2nd and 3rd
+/// commit, before the explicit drop-and-reload at the end replays all 3 at
+/// once from a truly fresh process-equivalent engine instance.
+#[test]
+fn principal_replay_survives_disk_drop_and_reload() {
+    use cyphr_blob_fjall::FjallBlobStore;
+    use cyphr_index_sqlite::SqliteIndexer;
+    use cyphr_storage::Genesis;
+    use cyphr_storage::engine::StorageEngine;
+
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    assert!(
+        commits.len() >= 3,
+        "fixture must have at least 3 commits to exercise this test (c2)"
+    );
+
+    let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
+    let genesis = Genesis::Explicit(keys);
+    let principal_id = "durable-replay-test";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("db");
+    let index_path = dir.path().join("index.db");
+
+    let (original_pr, original_cr, original_leaf_count) =
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = fjall::Database::builder(&db_path).open().expect("open db");
+            let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+            let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
+            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move || {
+                cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
+            });
+
+            for commit in commits {
+                let blobs = build_raw_blobs(commit);
+                let blob_refs: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+                engine
+                    .submit_commit(principal_id, Some(genesis.clone()), &blob_refs)
+                    .await
+                    .expect("submit_commit failed");
+            }
+
+            let principal = engine
+                .load_principal(principal_id, genesis.clone())
+                .await
+                .expect("load_principal failed");
+
+            (
+                principal.pr().clone(),
+                principal.cr().cloned(),
+                principal.commit_trees().global_size(),
+            )
+            // `engine`, `blob_store`, and `db` all drop here, releasing the
+            // on-disk database before it's reopened below.
+        });
+
+    assert!(original_cr.is_some(), "3 real commits must produce a CR");
+    assert_eq!(
+        original_leaf_count,
+        commits.len() as u64,
+        "the durable log must carry exactly one leaf per commit, not duplicated"
+    );
+
+    // Reopen from scratch — a fresh `Database`/`SqliteIndexer`/`StorageEngine`,
+    // not clones of the ones above — to prove reconstruction genuinely
+    // replays from durable storage rather than reusing live state.
+    let (restored_pr, restored_cr, restored_leaf_count) =
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = fjall::Database::builder(&db_path)
+                .open()
+                .expect("reopen db");
+            let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+            let indexer = SqliteIndexer::open(&index_path).expect("reopen indexer");
+            let engine = StorageEngine::with_storage_factory(blob_store, indexer, move || {
+                cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
+            });
+
+            let principal = engine
+                .load_principal(principal_id, genesis.clone())
+                .await
+                .expect("load_principal failed after disk drop-and-reload");
+
+            (
+                principal.pr().clone(),
+                principal.cr().cloned(),
+                principal.commit_trees().global_size(),
+            )
+        });
+
+    assert_eq!(
+        restored_pr, original_pr,
+        "PR must survive a disk drop-and-reload byte-for-byte through replay"
+    );
+    assert_eq!(
+        restored_cr, original_cr,
+        "CR must survive a disk drop-and-reload byte-for-byte through replay"
+    );
+    assert_eq!(
+        restored_leaf_count, original_leaf_count,
+        "replay must not duplicate leaves — the durable log's size after reconstruction must \
+         match the true commit count exactly"
     );
 }
