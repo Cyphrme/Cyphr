@@ -28,8 +28,9 @@ blake3             = "1"
 cyphr-blob-fjall   = { path = "cyphr-blob-fjall", version = "0.1.0" }
 cyphr-index-sqlite = { path = "cyphr-index-sqlite", version = "0.1.0" }
 eml                = { path = "/var/home/nrd/git/github.com/Cyphrme/eml/eml" }
-fjall              = "2"
+fjall              = "3"
 rusqlite           = { version = "0.32", features = ["bundled", "limits"] }
+storage-fjall      = { path = "/var/home/nrd/git/github.com/Cyphrme/eml/storage-fjall" }
 
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }

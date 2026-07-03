@@ -10,7 +10,9 @@ version                = "0.1.0"
 blake3        = { workspace = true }
 cyphr-storage = { path = "../cyphr-storage", version = "0.1.0" }
 fjall         = { workspace = true }
+storage-fjall = { workspace = true }
 tokio         = { workspace = true, features = ["rt", "rt-multi-thread"] }
 
 [dev-dependencies]
+eml      = { workspace = true }
 tempfile = "3"

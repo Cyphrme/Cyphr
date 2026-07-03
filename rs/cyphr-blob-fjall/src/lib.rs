@@ -1,33 +1,39 @@
 //! fjall-backed [`BlobStore`] implementation.
+//!
+//! Also provides [`open_eml_storage`], which opens an EML log storage
+//! backend against the *same* fjall [`Database`] a [`FjallBlobStore`]
+//! uses — one physical database (one WAL, atomic cross-keyspace
+//! batches) shared by the blob and EML keyspaces, per
+//! docs/specs/blob-store-fjall.md's `[fjall-single-keyspace]` mandate.
 
 use std::path::Path;
 
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
-use fjall::{Config, Keyspace, PartitionCreateOptions, PartitionHandle};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Production blob store backed by fjall (LSM-tree).
 pub struct FjallBlobStore {
-    keyspace: Keyspace,
-    blobs: PartitionHandle,
+    db: Database,
+    blobs: Keyspace,
     max_blob_size: Option<usize>,
 }
 
 impl FjallBlobStore {
-    /// Open or create a blob store at `path`.
+    /// Open or create a blob store at `path`, owning a dedicated database.
     pub fn open(path: &Path) -> Result<Self, BlobStoreError> {
-        let keyspace = Config::new(path)
+        let db = Database::builder(path)
             .open()
-            .map_err(|e| BlobStoreError::Backend(format!("fjall keyspace open: {e}")))?;
-        Self::from_keyspace(keyspace)
+            .map_err(|e| BlobStoreError::Backend(format!("fjall database open: {e}")))?;
+        Self::from_database(db)
     }
 
-    /// Create a blob store from an existing keyspace (supporting single keyspace cooperation).
-    pub fn from_keyspace(keyspace: Keyspace) -> Result<Self, BlobStoreError> {
-        let blobs = keyspace
-            .open_partition("blobs", PartitionCreateOptions::default())
-            .map_err(|e| BlobStoreError::Backend(format!("fjall partition open: {e}")))?;
+    /// Create a blob store from an existing database (supporting shared-database cooperation).
+    pub fn from_database(db: Database) -> Result<Self, BlobStoreError> {
+        let blobs = db
+            .keyspace("blobs", KeyspaceCreateOptions::default)
+            .map_err(|e| BlobStoreError::Backend(format!("fjall keyspace open: {e}")))?;
         Ok(Self {
-            keyspace,
+            db,
             blobs,
             max_blob_size: None,
         })
@@ -39,10 +45,21 @@ impl FjallBlobStore {
         self
     }
 
-    /// Get the underlying Keyspace reference.
-    pub fn keyspace(&self) -> &Keyspace {
-        &self.keyspace
+    /// Get the underlying [`Database`] reference, so a caller can open
+    /// further keyspaces (e.g. [`open_eml_storage`]) sharing this same
+    /// physical database.
+    pub fn database(&self) -> &Database {
+        &self.db
     }
+}
+
+/// Open an EML log storage backend sharing `db` with a [`FjallBlobStore`]
+/// built from the same database — one WAL, atomic cross-keyspace batches,
+/// instead of two uncoordinated fjall databases.
+pub fn open_eml_storage(
+    db: Database,
+) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
+    storage_fjall::FjallStorage::with_database(db)
 }
 
 impl BlobStore for FjallBlobStore {
@@ -122,9 +139,10 @@ impl BlobStore for FjallBlobStore {
             tokio::task::spawn_blocking(move || {
                 let iter = blobs.iter();
                 let mut hashes = Vec::new();
-                for result in iter {
-                    let (key, _) =
-                        result.map_err(|e| BlobStoreError::Backend(format!("fjall iter: {e}")))?;
+                for guard in iter {
+                    let key = guard
+                        .key()
+                        .map_err(|e| BlobStoreError::Backend(format!("fjall iter: {e}")))?;
                     let key_bytes: [u8; 32] = key.as_ref().try_into().map_err(|_| {
                         BlobStoreError::Backend(format!(
                             "fjall key length {}, expected 32",
@@ -145,6 +163,8 @@ impl BlobStore for FjallBlobStore {
 
 #[cfg(test)]
 mod tests {
+    use eml::Storage as _;
+
     use super::*;
 
     #[tokio::test]
@@ -165,5 +185,130 @@ mod tests {
         let limited = store.with_max_blob_size(10);
         let err = limited.put(b"too long payload").await.unwrap_err();
         assert!(matches!(err, BlobStoreError::BlobTooLarge { .. }));
+    }
+
+    /// Trivial fixed-width hasher for exercising generic EML log storage in
+    /// these tests — unrelated to cyphr's own MALT hashing, which lives in
+    /// the `cyphr` crate this storage-layer crate deliberately does not
+    /// depend on.
+    #[derive(Debug)]
+    struct Blake3Hasher;
+
+    impl eml::Hasher for Blake3Hasher {
+        fn leaf(&self, data: &[u8]) -> Vec<u8> {
+            blake3::hash(data).as_bytes().to_vec()
+        }
+
+        fn node(&self, children: &[&[u8]]) -> Vec<u8> {
+            let mut hasher = blake3::Hasher::new();
+            for child in children {
+                hasher.update(child);
+            }
+            hasher.finalize().as_bytes().to_vec()
+        }
+
+        fn empty(&self) -> Vec<u8> {
+            blake3::hash(b"").as_bytes().to_vec()
+        }
+
+        fn hash(&self, data: &[u8]) -> Vec<u8> {
+            blake3::hash(data).as_bytes().to_vec()
+        }
+
+        fn clone_box(&self) -> Box<dyn eml::Hasher> {
+            Box::new(Blake3Hasher)
+        }
+    }
+
+    /// The Commit Tree (EML log) must survive a disk write/reload cycle,
+    /// genuinely sharing one fjall database with the blob store rather than
+    /// opening a second, uncoordinated one.
+    #[tokio::test]
+    async fn eml_log_survives_disk_reload_sharing_blob_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let leaves: [&[u8]; 3] = [b"commit-0", b"commit-1", b"commit-2"];
+
+        let (original_root, original_size, blob_hash) = {
+            let db = Database::builder(dir.path()).open().expect("open db");
+            let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+            let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
+
+            let blob_hash = blob_store.put(b"a blob living beside the log").await.unwrap();
+
+            let mut log = eml::new(eml_storage, Box::new(Blake3Hasher))
+                .await
+                .expect("new log");
+            for leaf in leaves {
+                log.append_leaf(leaf).await.expect("append leaf");
+            }
+
+            (log.root_for(0).expect("root"), log.size(), blob_hash)
+            // `db`, `blob_store`, and `log` all drop here, releasing the
+            // on-disk database before it's reopened below.
+        };
+
+        // Reopen from scratch at the same path — a fresh `Database`, not a
+        // clone of the one above — to prove the state is genuinely durable.
+        let db = Database::builder(dir.path()).open().expect("reopen db");
+        let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
+
+        let reconstructed = eml::from_storage(eml_storage, vec![(0, Box::new(Blake3Hasher))])
+            .await
+            .expect("reconstruct log from disk");
+
+        assert_eq!(reconstructed.size(), original_size, "leaf count must survive reload");
+        assert_eq!(
+            reconstructed.root_for(0).expect("root"),
+            original_root,
+            "root must survive reload byte-for-byte"
+        );
+
+        // The blob written in the first session must also still be there,
+        // proving the blob and EML partitions truly share one database
+        // rather than each independently persisting to its own file.
+        let retrieved = blob_store.get(&blob_hash).await.unwrap();
+        assert!(retrieved.is_some(), "blob must survive reload in the shared database");
+    }
+
+    /// Writes to the blob partition and writes to the EML partitions must
+    /// never be observable through each other, even though both live in one
+    /// physical fjall database.
+    #[tokio::test]
+    async fn blob_and_eml_partitions_are_isolated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::builder(dir.path()).open().expect("open db");
+        let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+        let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
+
+        let blob_a = blob_store.put(b"blob-partition-marker-a").await.unwrap();
+        let blob_b = blob_store.put(b"blob-partition-marker-b").await.unwrap();
+
+        let mut log = eml::new(eml_storage, Box::new(Blake3Hasher))
+            .await
+            .expect("new log");
+        log.append_leaf(b"eml-partition-marker-0").await.unwrap();
+        log.append_leaf(b"eml-partition-marker-1").await.unwrap();
+        log.append_leaf(b"eml-partition-marker-2").await.unwrap();
+
+        // The blob partition sees exactly the blobs it was given — no EML
+        // leaves leaked in.
+        let blob_hashes: Vec<Blake3Hash> = blob_store
+            .iter()
+            .await
+            .expect("iter")
+            .collect::<Result<_, _>>()
+            .expect("iter items");
+        assert_eq!(blob_hashes.len(), 2);
+        assert!(blob_hashes.contains(&blob_a));
+        assert!(blob_hashes.contains(&blob_b));
+
+        // The EML partition sees exactly its own three leaves — unaffected
+        // by the two unrelated blob writes.
+        assert_eq!(log.size(), 3);
+        assert_eq!(
+            log.storage().get_leaf(0).await.unwrap(),
+            b"eml-partition-marker-0"
+        );
     }
 }
