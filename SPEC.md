@@ -1724,7 +1724,9 @@ Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
 state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
 `id` == nonce removes the nonce.
 
-Example pathing:
+Example pathing (the AT-rooted and KT-rooted paths below are design intent —
+today's fixed-two-cell AT has no free cell for a nonce; only the KT-rooted
+path has an implemented insertion point, at a KT member):
  - `cyphr/nonce/create` - Principal Root
  - `cyphr/AT/nonce/create`  - Nonce is inserted at the root of AT.
  - `cyphr/AT/KT/nonce/create` - Nonce is inserted at the root of KT.
