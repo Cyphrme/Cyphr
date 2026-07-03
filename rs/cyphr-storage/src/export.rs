@@ -3,8 +3,8 @@
 //! These functions bridge the `cyphr` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use cyphr::Principal;
 use cyphr::state::StateDigest;
+use cyphr::{Principal, eml};
 
 use crate::{CommitEntry, Entry, KeyEntry};
 
@@ -91,7 +91,9 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 ///     file.write_line(&commit.to_json()?)?;
 /// }
 /// ```
-pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportError> {
+pub fn export_commits<S: eml::Storage>(
+    principal: &Principal<S>,
+) -> Result<Vec<CommitEntry>, ExportError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let mut commit_entries = Vec::new();

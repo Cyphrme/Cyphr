@@ -382,11 +382,9 @@ impl NodePath {
             return false;
         }
         for (hop, &root) in self.hops.iter().zip(roots.iter()) {
-            let Some(skeleton) = eml::rebalanced_skeleton(
-                hop.proof.tree_size,
-                hop.proof.arity,
-                hop.proof.index,
-            ) else {
+            let Some(skeleton) =
+                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
+            else {
                 return false;
             };
             if !hop.proof.verify(hasher, &skeleton, root) {
@@ -1009,12 +1007,10 @@ impl<S: eml::Storage> Principal<S> {
     /// hash algorithm `alg` — by chaining two independent, already-existing
     /// inclusion proofs. No new composite proof type is introduced:
     ///
-    /// 1. **Hop 1** — `tr` included in the Commit Root (CR): the commit
-    ///    log's own inclusion proof ([`Self::inclusion_proof`], verified
-    ///    with [`crate::verify_inclusion`]).
-    /// 2. **Hop 2** — CR, as PT cell 1's payload, included in PR: the
-    ///    Principal Tree's own inclusion proof
-    ///    ([`PrincipalTree::cr_inclusion_proof`], verified with
+    /// 1. **Hop 1** — `tr` included in the Commit Root (CR): the commit log's own inclusion proof
+    ///    ([`Self::inclusion_proof`], verified with [`crate::verify_inclusion`]).
+    /// 2. **Hop 2** — CR, as PT cell 1's payload, included in PR: the Principal Tree's own
+    ///    inclusion proof ([`PrincipalTree::cr_inclusion_proof`], verified with
     ///    [`eml::LeafProof::verify`]).
     ///
     /// The hops are bridged explicitly: hop 2's proven leaf value must equal
@@ -1025,10 +1021,9 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// # Errors
     ///
-    /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT/PT
-    ///   registration, or has no committed CR yet (a genesis principal has
-    ///   nothing to chain through PT cell 1 — there is no valid `index` to
-    ///   call this with).
+    /// - [`Error::UnsupportedAlgorithm`] if `alg` has no MALT/PT registration, or has no committed
+    ///   CR yet (a genesis principal has nothing to chain through PT cell 1 — there is no valid
+    ///   `index` to call this with).
     /// - Propagates [`Error`] for an out-of-bounds commit `index`.
     pub fn verify_transaction_inclusion(
         &self,
@@ -1119,7 +1114,8 @@ impl<S: eml::Storage> Principal<S> {
         let index = sorted
             .iter()
             .position(|&b| b == tmb.as_bytes())
-            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))? as u64;
+            .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?
+            as u64;
 
         let kt = KeyTree::build_tree(&thumbprints, &active_algs)?;
         let kr = kt.root(&active_algs)?;
@@ -1729,20 +1725,41 @@ impl<S: eml::Storage> Principal<S> {
             }
         }
 
-        // Append current TR once to the unified EML Log.
-        let mut mapped_variants = BTreeMap::new();
-        for (&alg, val) in tr.0.variants() {
-            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-            mapped_variants.insert(alg_id, val.clone());
-        }
-        let serialized =
-            serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
-        core.commit_trees
-            .append(&serialized)
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+        // This commit's 0-based position in the append-only commit
+        // sequence. For a live/first-time commit this always equals the
+        // durable log's current leaf count (each call appends exactly one
+        // leaf in lockstep with `core.auth.commits`), so `already_durable`
+        // is always false on that path — replay is the only path where a
+        // durable log opened via `CommitTrees::open` can already carry
+        // this leaf from a prior session.
+        let leaf_index = core.auth.commits.len() as u64;
+        let already_durable = leaf_index < core.commit_trees.global_size();
 
-        // Assemble CR from the EML Log for all active algorithms.
-        let cr = crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?;
+        let cr = if already_durable {
+            // A prior durable session already appended this leaf —
+            // re-appending would duplicate it. Read the historical root as
+            // of this leaf's position instead.
+            crate::commit_root::commit_root_from_trees_at(
+                &core.commit_trees,
+                &algs,
+                leaf_index + 1,
+            )?
+        } else {
+            // Append current TR once to the unified EML Log.
+            let mut mapped_variants = BTreeMap::new();
+            for (&alg, val) in tr.0.variants() {
+                let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+                mapped_variants.insert(alg_id, val.clone());
+            }
+            let serialized =
+                serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
+            core.commit_trees
+                .append(&serialized)
+                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+
+            // Assemble CR from the EML Log for all active algorithms.
+            crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?
+        };
 
         // Write SR into cell 0 and CR into cell 1 of the Principal Tree, and
         // recompute PR from the tree (EpochTree::root(alg_id) per algorithm).
@@ -2542,7 +2559,9 @@ mod tests {
 
         // tr0 genuinely sits at index 0, not 1.
         let tr0 = principal.commits().next().unwrap().tr().0.clone();
-        let ok = principal.verify_transaction_inclusion(alg, 1, &tr0).unwrap();
+        let ok = principal
+            .verify_transaction_inclusion(alg, 1, &tr0)
+            .unwrap();
         assert!(!ok, "wrong index must not verify");
     }
 
@@ -2597,10 +2616,9 @@ mod tests {
                     assert_eq!(
                         eml::mountain_skeleton(k, size, idx),
                         eml::rebalanced_skeleton(size, k, idx),
-                        "k={k} size={size} idx={idx}: mountain_skeleton and \
-                         rebalanced_skeleton diverged — if this fires, the \
-                         wrong-topology negative test PLAN.md mandates is \
-                         constructible again and should be added"
+                        "k={k} size={size} idx={idx}: mountain_skeleton and rebalanced_skeleton \
+                         diverged — if this fires, the wrong-topology negative test PLAN.md \
+                         mandates is constructible again and should be added"
                     );
                 }
             }
@@ -2640,7 +2658,10 @@ mod tests {
 
         let never_active = Thumbprint::from_bytes(vec![0xEE; 32]);
         let result = principal.key_inclusion_proof(alg, &never_active);
-        assert!(result.is_err(), "an inactive thumbprint must not produce a proof");
+        assert!(
+            result.is_err(),
+            "an inactive thumbprint must not produce a proof"
+        );
     }
 
     /// c3/a3 — a genuine proof for a real key, with hop 1's proven leaf
@@ -2759,8 +2780,8 @@ mod tests {
         // proven leaf (B's KR) does not equal hop 0's root (A's KR).
         assert!(
             !spliced.verify(&hasher, &roots),
-            "spliced hops that individually verify must still be rejected \
-             by the bridge linkage check"
+            "spliced hops that individually verify must still be rejected by the bridge linkage \
+             check"
         );
     }
 
@@ -2986,8 +3007,14 @@ mod tests {
 
         let mut principal =
             Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-        assert!(principal.pg().is_none(), "PR should be None before principal/create");
-        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(
+            principal.pg().is_none(),
+            "PR should be None before principal/create"
+        );
+        assert_eq!(
+            principal.active_algs(),
+            vec![HashAlg::Sha256, HashAlg::Sha512]
+        );
 
         let pre = principal.pr().clone();
         let id = principal.auth_root().clone();
@@ -3009,9 +3036,9 @@ mod tests {
             assert_eq!(
                 pg.get(alg),
                 sr.get(alg),
-                "PG must equal SR byte-for-byte for algorithm {alg:?} at genesis \
-                 (cell 1/CR still empty) — a mismatch here means root(alg_id) and \
-                 combined_root() diverged, i.e. combined_root leaked in"
+                "PG must equal SR byte-for-byte for algorithm {alg:?} at genesis (cell 1/CR still \
+                 empty) — a mismatch here means root(alg_id) and combined_root() diverged, i.e. \
+                 combined_root leaked in"
             );
         }
     }
@@ -3077,7 +3104,10 @@ mod tests {
 
         let mut principal =
             Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert_eq!(
+            principal.active_algs(),
+            vec![HashAlg::Sha256, HashAlg::Sha512]
+        );
         assert!(
             principal.pr().get(HashAlg::Sha512).is_some(),
             "PR must have a SHA-512 variant while the Ed25519 key is active"
@@ -3108,9 +3138,9 @@ mod tests {
         );
         assert!(
             principal.pr().get(HashAlg::Sha512).is_none(),
-            "PR must not retain a stale SHA-512 variant after its only key is \
-             revoked — this only holds if PR is assembled from live active_algs \
-             rather than the tree's cumulative registered-algorithm set"
+            "PR must not retain a stale SHA-512 variant after its only key is revoked — this only \
+             holds if PR is assembled from live active_algs rather than the tree's cumulative \
+             registered-algorithm set"
         );
         assert!(
             principal.pr().get(HashAlg::Sha256).is_some(),
@@ -3132,7 +3162,10 @@ mod tests {
 
         let mut principal =
             Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
-        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert_eq!(
+            principal.active_algs(),
+            vec![HashAlg::Sha256, HashAlg::Sha512]
+        );
         assert!(principal.key_root().get(HashAlg::Sha512).is_some());
         assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
         assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
@@ -3152,18 +3185,18 @@ mod tests {
         assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
         assert!(
             principal.key_root().get(HashAlg::Sha512).is_none(),
-            "KR must not retain a stale SHA-512 variant — KT must be \
-             rebuilt with only live algorithms registered, not masked"
+            "KR must not retain a stale SHA-512 variant — KT must be rebuilt with only live \
+             algorithms registered, not masked"
         );
         assert!(
             principal.auth_root().get(HashAlg::Sha512).is_none(),
-            "AR must not retain a stale SHA-512 variant — AR-node must be \
-             rebuilt with only live algorithms registered, not masked"
+            "AR must not retain a stale SHA-512 variant — AR-node must be rebuilt with only live \
+             algorithms registered, not masked"
         );
         assert!(
             principal.sr().unwrap().get(HashAlg::Sha512).is_none(),
-            "SR must not retain a stale SHA-512 variant — SR-node must be \
-             rebuilt with only live algorithms registered, not masked"
+            "SR must not retain a stale SHA-512 variant — SR-node must be rebuilt with only live \
+             algorithms registered, not masked"
         );
         assert!(principal.key_root().get(HashAlg::Sha256).is_some());
         assert!(principal.auth_root().get(HashAlg::Sha256).is_some());
@@ -3225,7 +3258,10 @@ mod tests {
             .apply_transaction_test(cz, Some(key2.clone()))
             .unwrap();
 
-        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert_eq!(
+            principal.active_algs(),
+            vec![HashAlg::Sha256, HashAlg::Sha512]
+        );
         assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
     }
 
@@ -3245,7 +3281,10 @@ mod tests {
         assert_eq!(principal.active_algs(), vec![alg]);
 
         assert_eq!(principal.key_root().get(alg).unwrap(), tmb_bytes.as_slice());
-        assert_eq!(principal.auth_root().get(alg).unwrap(), tmb_bytes.as_slice());
+        assert_eq!(
+            principal.auth_root().get(alg).unwrap(),
+            tmb_bytes.as_slice()
+        );
         assert_eq!(
             principal.sr().unwrap().get(alg).unwrap(),
             tmb_bytes.as_slice()
