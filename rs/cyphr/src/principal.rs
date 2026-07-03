@@ -1735,10 +1735,34 @@ impl<S: eml::Storage> Principal<S> {
         let leaf_index = core.auth.commits.len() as u64;
         let already_durable = leaf_index < core.commit_trees.global_size();
 
+        // Serialize this commit's TR once — used both to append a fresh
+        // leaf and, on the already_durable path, as the value to
+        // byte-compare a pre-existing leaf against.
+        let mut mapped_variants = BTreeMap::new();
+        for (&alg, val) in tr.0.variants() {
+            let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+            mapped_variants.insert(alg_id, val.clone());
+        }
+        let serialized =
+            serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
+
         let cr = if already_durable {
-            // A prior durable session already appended this leaf —
-            // re-appending would duplicate it. Read the historical root as
-            // of this leaf's position instead.
+            // A prior durable session already appended a leaf at this
+            // position — re-appending would duplicate it. But a crash
+            // between a prior `finalize_commit`'s durable EML append and
+            // its index write can leave an ORPHAN leaf here instead of
+            // this commit's own TR: byte-compare before trusting it,
+            // rather than silently deriving CR from whatever leaf already
+            // occupies the position.
+            let stored = core
+                .commit_trees
+                .get_leaf(leaf_index)
+                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            if stored != serialized {
+                return Err(Error::DurableLeafMismatch(leaf_index));
+            }
+
+            // Read the historical root as of this leaf's position instead.
             crate::commit_root::commit_root_from_trees_at(
                 &core.commit_trees,
                 &algs,
@@ -1746,13 +1770,6 @@ impl<S: eml::Storage> Principal<S> {
             )?
         } else {
             // Append current TR once to the unified EML Log.
-            let mut mapped_variants = BTreeMap::new();
-            for (&alg, val) in tr.0.variants() {
-                let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-                mapped_variants.insert(alg_id, val.clone());
-            }
-            let serialized =
-                serde_json::to_vec(&mapped_variants).map_err(|_| Error::MalformedPayload)?;
             core.commit_trees
                 .append(&serialized)
                 .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;

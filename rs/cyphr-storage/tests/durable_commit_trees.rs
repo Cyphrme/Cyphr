@@ -100,11 +100,13 @@ fn canonicalize(val: &mut serde_json::Value) {
 /// Apply every coz in a golden fixture commit directly to a live
 /// `Principal<S>` via one `CommitScope`, mirroring the transaction half of
 /// `StorageEngine::submit_commit`'s own coz-parsing logic (this fixture's
-/// commits carry no pre-actions, only transactions).
+/// commits carry no pre-actions, only transactions). Returns `finalize()`'s
+/// result rather than panicking on it, so callers can assert on error paths
+/// (e.g. the orphan-leaf guard test below).
 fn apply_golden_commit<S: eml::Storage>(
     principal: &mut cyphr::Principal<S>,
     commit: &serde_json::Value,
-) {
+) -> cyphr::error::Result<()> {
     let cozies = commit["txs"].as_array().expect("txs array");
     let keys = commit["keys"].as_array();
     let mut key_idx = 0;
@@ -141,7 +143,81 @@ fn apply_golden_commit<S: eml::Storage>(
             .verify_and_apply(&pay_json, &sig, czd, new_key)
             .expect("verify_and_apply failed");
     }
-    scope.finalize().expect("finalize failed");
+    scope.finalize()?;
+    Ok(())
+}
+
+/// F31 / F-A regression (blocker from Fable's pre-merge review of PR #6):
+/// `finalize_commit`'s `already_durable` branch must not silently adopt an
+/// orphan leaf's TR as the new commit's CR. This reproduces the exact
+/// crash-window invariant end to end through `finalize_commit` — a foreign
+/// leaf occupies the position the next commit would take in the durable
+/// EML log, while `core.auth.commits` has NOT advanced past it (precisely
+/// what a crash between a prior `finalize_commit`'s durable EML append and
+/// its index write leaves behind) — without needing an actual process
+/// crash or reload to produce that state.
+#[test]
+fn finalize_commit_rejects_mismatched_orphan_leaf() {
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    assert!(
+        commits.len() >= 3,
+        "fixture must have at least 3 commits to exercise this test"
+    );
+
+    let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("db");
+
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = fjall::Database::builder(&db_path).open().expect("open db");
+        let eml_storage = cyphr_blob_fjall::open_eml_storage(db.clone()).expect("eml storage");
+
+        let mut principal =
+            cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
+
+        // Apply the first two commits live and normally — real leaves at
+        // durable positions 0 and 1.
+        apply_golden_commit(&mut principal, &commits[0]).expect("commit 0 finalize failed");
+        apply_golden_commit(&mut principal, &commits[1]).expect("commit 1 finalize failed");
+        assert_eq!(principal.commit_trees().global_size(), 2);
+        assert_eq!(principal.commits().count(), 2);
+
+        // Simulate the crash window: durably append a FOREIGN leaf
+        // (reusing commit 0's own already-stored payload — a genuinely
+        // different commit's TR) at the position the 3rd commit would
+        // occupy, without advancing `core.auth.commits` past it.
+        let orphan_leaf = principal
+            .commit_trees()
+            .get_leaf(0)
+            .expect("read leaf 0 for orphan simulation");
+        principal
+            .commit_trees()
+            .append(&orphan_leaf)
+            .expect("append orphan leaf");
+        assert_eq!(principal.commit_trees().global_size(), 3);
+        assert_eq!(
+            principal.commits().count(),
+            2,
+            "auth.commits must NOT have advanced past the orphan leaf"
+        );
+
+        // Submit the real 3rd commit through the normal API. leaf_index
+        // (2) is < global_size (3), so finalize_commit takes the
+        // already_durable branch — the guard must detect the leaf at
+        // index 2 is NOT this commit's own TR and hard-error, rather than
+        // silently deriving CR from the orphan.
+        let result = apply_golden_commit(&mut principal, &commits[2]);
+        match result {
+            Err(cyphr::Error::DurableLeafMismatch(idx)) => assert_eq!(idx, 2),
+            other => panic!(
+                "expected Err(Error::DurableLeafMismatch(2)) for the orphan-leaf crash \
+                 scenario, got {other:?}"
+            ),
+        }
+    });
 }
 
 #[test]
@@ -180,7 +256,7 @@ fn principal_commit_tree_survives_disk_drop_and_reload() {
                 cyphr::Principal::explicit_with_storage(keys.clone(), eml_storage).unwrap();
 
             for commit in commits {
-                apply_golden_commit(&mut principal, commit);
+                apply_golden_commit(&mut principal, commit).expect("finalize failed");
             }
 
             let pr = principal.pr().clone();

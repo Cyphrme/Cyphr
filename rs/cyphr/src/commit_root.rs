@@ -229,6 +229,18 @@ impl<S: eml::Storage> CloneableLog<S> {
         futures::executor::block_on(log.append_leaf(data))
     }
 
+    /// Read the raw leaf payload durably stored at `index`.
+    ///
+    /// Used by [`crate::principal::PrincipalCore::finalize_commit`] to
+    /// verify that a leaf already occupying this commit's position is
+    /// genuinely this commit's own TR, not an orphan left behind by a
+    /// crash between a prior `finalize_commit`'s durable EML append and
+    /// its index write.
+    pub fn get_leaf(&self, index: u64) -> LogResult<Vec<u8>, S> {
+        let log = self.0.lock().expect("commit tree mutex poisoned");
+        futures::executor::block_on(log.storage().get_leaf(index)).map_err(LogError::<S>::Storage)
+    }
+
     /// Get root hash for the algorithm.
     pub fn root(&self, alg_id: u64) -> LogResult<Vec<u8>, S> {
         self.0

@@ -128,6 +128,16 @@ pub enum Error {
     #[error("transitory state reference")]
     TransitoryStateReference,
 
+    /// The leaf durably stored at a commit's position does not match the
+    /// TR just computed for that commit.
+    ///
+    /// Signals a crash-window orphan leaf (a prior `finalize_commit` call
+    /// durably appended its leaf but crashed before the index recorded the
+    /// commit), not a genuine replay — the mismatched leaf's root must
+    /// never be silently adopted as this commit's CR.
+    #[error("durable leaf at index {0} does not match this commit's TR")]
+    DurableLeafMismatch(u64),
+
     // === Digest parsing errors ===
     /// Malformed tagged digest string (missing separator, invalid base64).
     #[error("malformed digest: {0}")]
