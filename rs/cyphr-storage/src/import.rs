@@ -372,8 +372,8 @@ pub(crate) fn canonicalize_value(val: &mut serde_json::Value) {
     }
 }
 
-pub(crate) fn replay_commits(
-    principal: &mut Principal,
+pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
+    principal: &mut Principal<S>,
     commits: &[CommitEntry],
 ) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};

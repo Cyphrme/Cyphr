@@ -26,6 +26,7 @@ tracing    = { workspace = true }
 cyphr              = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
 cyphr-blob-fjall   = { path = "../cyphr-blob-fjall", version = "0.1.0" }
 cyphr-index-sqlite = { path = "../cyphr-index-sqlite", version = "0.1.0" }
+fjall              = { workspace = true }
 proptest           = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

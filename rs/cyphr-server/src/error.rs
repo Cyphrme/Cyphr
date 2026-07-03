@@ -73,7 +73,7 @@ impl AppError {
     /// - `NotFound` → 404
     /// - `InvalidInput`, `MalformedBlob` → 400
     /// - `Protocol` → 422 Unprocessable Entity (valid JSON, invalid protocol)
-    /// - `BlobStore`, `Indexer`, `Load` → 500
+    /// - `BlobStore`, `Indexer`, `Load`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
 
@@ -86,7 +86,10 @@ impl AppError {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
             },
-            EngineError::BlobStore(_) | EngineError::Indexer(_) | EngineError::Load(_) => {
+            EngineError::BlobStore(_)
+            | EngineError::Indexer(_)
+            | EngineError::Load(_)
+            | EngineError::Storage(_) => {
                 tracing::error!(error = %err, "internal engine error");
                 Self::internal("internal storage error")
             },
