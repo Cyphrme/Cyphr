@@ -707,6 +707,163 @@ mod oracle_tests {
     }
 }
 
+/// Property-based (generative) counterparts to `oracle_tests` above: the
+/// same c-oracle-kr / c-oracle-ar-sr divergence conditions, checked against
+/// randomly generated keysets, digest bytes, and algorithm combinations
+/// instead of one hand-picked case each. Each property asserts the
+/// *relationship* the doc comments on `compute_kr`/`compute_ar`/`compute_sr`
+/// predict for the generated case (agreement or a specific characterized
+/// divergence), never a blanket equality or inequality.
+#[cfg(test)]
+mod oracle_properties {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::state::{DataRoot, StateDigest, compute_ar, compute_kr, compute_sr};
+
+    fn hash_alg_strategy() -> impl Strategy<Value = HashAlg> {
+        prop_oneof![
+            Just(HashAlg::Sha256),
+            Just(HashAlg::Sha384),
+            Just(HashAlg::Sha512),
+        ]
+    }
+
+    /// Native digest length for `alg` — the same three-way match `key()`
+    /// (in `oracle_tests`) hard-codes for its fixed cases.
+    fn native_len(alg: HashAlg) -> usize {
+        match alg {
+            HashAlg::Sha256 => 32,
+            HashAlg::Sha384 => 48,
+            HashAlg::Sha512 => 64,
+        }
+    }
+
+    /// A digest's worth of random bytes, tagged with the algorithm it is
+    /// native to (i.e. its length matches that algorithm's digest size).
+    fn alg_and_native_bytes_strategy() -> impl Strategy<Value = (HashAlg, Vec<u8>)> {
+        hash_alg_strategy()
+            .prop_flat_map(|alg| (Just(alg), prop::collection::vec(any::<u8>(), native_len(alg))))
+    }
+
+    /// A random thumbprint, tagged with the algorithm it is native to.
+    fn tagged_thumbprint_strategy() -> impl Strategy<Value = (HashAlg, Thumbprint)> {
+        alg_and_native_bytes_strategy().prop_map(|(alg, bytes)| (alg, Thumbprint::from_bytes(bytes)))
+    }
+
+    /// A pair of independently random byte strings, both sized to `alg`'s
+    /// native digest length (required by `MultihashDigest::from_single`) —
+    /// used to build an AR/DR pair whose relative lexical order is what the
+    /// SR positional-vs-lexical divergence property below turns on.
+    fn same_alg_byte_pair_strategy() -> impl Strategy<Value = (HashAlg, Vec<u8>, Vec<u8>)> {
+        hash_alg_strategy().prop_flat_map(|alg| {
+            let len = native_len(alg);
+            (
+                Just(alg),
+                prop::collection::vec(any::<u8>(), len),
+                prop::collection::vec(any::<u8>(), len),
+            )
+        })
+    }
+
+    proptest! {
+        /// c-oracle-kr, generalized: `compute_kr` and `KeyTree` agree for
+        /// `target_alg`'s variant exactly when every generated thumbprint is
+        /// already native to `target_alg` (a genuinely single-algorithm
+        /// keyset for that target — KT's per-thumbprint conversion is then a
+        /// no-op everywhere); they diverge whenever at least one thumbprint
+        /// is native to a different algorithm (KT converts it, `compute_kr`
+        /// does not).
+        #[test]
+        fn oracle_kr_agrees_iff_keyset_native_to_target_alg(
+            target_alg in hash_alg_strategy(),
+            tagged in prop::collection::vec(tagged_thumbprint_strategy(), 2..12),
+        ) {
+            let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
+            let all_native = tagged.iter().all(|(alg, _)| *alg == target_alg);
+
+            let old = compute_kr(&thumbprints, None, &[target_alg]).unwrap();
+            let new = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+
+            if all_native {
+                prop_assert_eq!(old.get(target_alg), new.get(target_alg));
+            } else {
+                prop_assert_ne!(old.get(target_alg), new.get(target_alg));
+            }
+        }
+
+        /// c-oracle-kr's single-key implicit-promotion branch: both
+        /// implementations promote a lone thumbprint verbatim, for any
+        /// random native content (not just the fixed `0xAA`-filled case in
+        /// `oracle_tests`).
+        #[test]
+        fn oracle_kr_single_key_promotion_agrees_for_any_native_key(
+            (alg, bytes) in alg_and_native_bytes_strategy(),
+        ) {
+            let t = Thumbprint::from_bytes(bytes);
+            let old = compute_kr(&[&t], None, &[alg]).unwrap();
+            let new = KeyTree::build(&[&t], &[alg]).unwrap();
+            prop_assert_eq!(old.get(alg), new.get(alg));
+        }
+
+        /// c-oracle-ar-sr (AR half): RT is permanently absent, so AR always
+        /// promotes from KT alone — `compute_ar` and `AuthTree` must agree
+        /// unconditionally, even when the upstream keyset is mixed-algorithm
+        /// (i.e. even when KR itself diverged going in).
+        #[test]
+        fn oracle_ar_always_agrees_regardless_of_upstream_kr(
+            target_alg in hash_alg_strategy(),
+            tagged in prop::collection::vec(tagged_thumbprint_strategy(), 1..12),
+        ) {
+            let thumbprints: Vec<&Thumbprint> = tagged.iter().map(|(_, t)| t).collect();
+            let kr = KeyTree::build(&thumbprints, &[target_alg]).unwrap();
+
+            let old = compute_ar(&kr, None, None, &[target_alg]).unwrap();
+            let new = AuthTree::build(&kr, &[target_alg]).unwrap();
+
+            prop_assert_eq!(old.get(target_alg), new.get(target_alg));
+        }
+
+        /// c-oracle-ar-sr (SR half), DR-absent branch: SR always promotes
+        /// from AR alone when DR is absent — `compute_sr` and `StateTree`
+        /// must agree unconditionally, for any random AR value/algorithm.
+        #[test]
+        fn oracle_sr_always_agrees_when_dr_absent(
+            (alg, ar_bytes) in alg_and_native_bytes_strategy(),
+        ) {
+            let ar = AuthRoot(MultihashDigest::from_single(alg, ar_bytes).unwrap());
+
+            let old = compute_sr(&ar, None, None, &[alg]).unwrap();
+            let new = StateTree::build(&ar, None, &[alg]).unwrap();
+
+            prop_assert_eq!(old.get(alg), new.get(alg));
+        }
+
+        /// c-oracle-ar-sr (SR half), DR-present branch: `compute_sr` sorts
+        /// AR/DR lexically before concatenating while `StateTree` always
+        /// concatenates positionally (AR, then DR) — the two agree exactly
+        /// when AR already sorts first (AR <= DR lexically, so sorting is a
+        /// no-op) and diverge exactly when DR would sort first (DR < AR, so
+        /// sorting reorders relative to the tree's fixed cell order).
+        #[test]
+        fn oracle_sr_agrees_iff_ar_precedes_dr_lexically(
+            (alg, ar_bytes, dr_bytes) in same_alg_byte_pair_strategy(),
+        ) {
+            let ar = AuthRoot(MultihashDigest::from_single(alg, ar_bytes.clone()).unwrap());
+            let dr = DataRoot(MultihashDigest::from_single(alg, dr_bytes.clone()).unwrap());
+
+            let old = compute_sr(&ar, Some(&dr), None, &[alg]).unwrap();
+            let new = StateTree::build(&ar, Some(&dr), &[alg]).unwrap();
+
+            if ar_bytes <= dr_bytes {
+                prop_assert_eq!(old.get(alg), new.get(alg));
+            } else {
+                prop_assert_ne!(old.get(alg), new.get(alg));
+            }
+        }
+    }
+}
+
 /// c-liveness-payload-inertness: a stale/foreign algorithm's entry inside a
 /// cell's JSON payload map must be provably inert — each algorithm's
 /// identity-extract [`MaltHasher`] only ever reads its own map entry, never
