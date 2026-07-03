@@ -4,7 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use coz::{Cad, Czd, Thumbprint};
+use coz::{Cad, Czd};
+// `Thumbprint` is only referenced by test-support-only oracle functions
+// (compute_kr, derive_auth_state) and unit tests below.
+#[cfg(test)]
+use coz::Thumbprint;
 
 use crate::multihash::MultihashDigest;
 
@@ -379,7 +383,8 @@ pub(crate) fn hash_bytes(alg: HashAlg, data: &[u8]) -> Vec<u8> {
 /// # Errors
 ///
 /// Returns `NoActiveKeys` if `algs` is empty.
-pub fn compute_kr(
+#[cfg(test)]
+pub(crate) fn compute_kr(
     thumbprints: &[&Thumbprint],
     nonce: Option<&[u8]>,
     algs: &[HashAlg],
@@ -567,7 +572,8 @@ pub fn compute_commit_id_tagged(
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if the KeyRoot contains no variants.
-pub fn compute_ar(
+#[cfg(test)]
+pub(crate) fn compute_ar(
     ks: &KeyRoot,
     // rs: Option<&RuleRoot>,  // Level 5, not yet implemented
     nonce: Option<&[u8]>,
@@ -626,7 +632,8 @@ pub fn compute_ar(
 /// # Errors
 ///
 /// Returns `EmptyMultihash` if AuthRoot contains no variants.
-pub fn compute_sr(
+#[cfg(test)]
+pub(crate) fn compute_sr(
     auth_root: &AuthRoot,
     ds: Option<&DataRoot>,
     embedding: Option<&[u8]>,
