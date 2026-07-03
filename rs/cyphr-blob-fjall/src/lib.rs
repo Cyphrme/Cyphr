@@ -80,12 +80,41 @@ pub fn open_eml_storage(
 /// own isolated keyspace triplet within the same physical `db`, safe for
 /// more than one principal to share — see
 /// [`storage_fjall::FjallStorage::with_database_scoped`] for the collision
-/// this avoids and the prefix charset it requires.
+/// this avoids.
+///
+/// `prefix` need not already satisfy `with_database_scoped`'s keyspace-name
+/// charset (alphanumeric, `_`, `-`, `.`, `#`, `$`): a Cyphr `principal_id`
+/// (e.g. `"SHA-256:U5XUZ..."`) always contains a `:` separator, which is
+/// outside it. Any character outside that charset is replaced with `_`
+/// before opening, so callers can pass a `principal_id` directly.
 pub fn open_eml_storage_scoped(
     db: Database,
     prefix: &str,
 ) -> Result<storage_fjall::FjallStorage, storage_fjall::FjallStorageError> {
-    storage_fjall::FjallStorage::with_database_scoped(db, prefix)
+    let sanitized = sanitize_fjall_prefix(prefix);
+    storage_fjall::FjallStorage::with_database_scoped(db, &sanitized)
+}
+
+/// Replace every character outside fjall's keyspace-name charset
+/// (alphanumeric, `_`, `-`, `.`, `#`, `$`) with `_`.
+///
+/// Not collision-free for arbitrary input (two different inputs could map
+/// to the same sanitized output), but is collision-free for this module's
+/// actual input shape: a Cyphr `principal_id` is always `"{alg}:{digest}"`
+/// where `alg` is alphanumeric/hyphen and `digest` is unpadded base64url
+/// (`A-Za-z0-9-_`) — both already within the allowed charset — joined by
+/// exactly one `:`, the sole character this replaces.
+fn sanitize_fjall_prefix(prefix: &str) -> String {
+    prefix
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#' | '$') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 impl BlobStore for FjallBlobStore {
@@ -368,5 +397,27 @@ mod tests {
         assert_eq!(log_a.storage().get_leaf(0).await.unwrap(), b"a-leaf-0");
         assert_eq!(log_b.storage().get_leaf(0).await.unwrap(), b"b-leaf-0");
         assert_eq!(log_b.storage().get_leaf(1).await.unwrap(), b"b-leaf-1");
+    }
+
+    /// A Cyphr `principal_id` (the intended real-world scoping identifier,
+    /// e.g. `"SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"`) always
+    /// contains a `:` separator, which is outside
+    /// `storage_fjall::FjallStorage::with_database_scoped`'s allowed
+    /// keyspace-name charset. `open_eml_storage_scoped` must still accept it
+    /// — the caller should not need to know or work around fjall's naming
+    /// constraints.
+    #[tokio::test]
+    async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::builder(dir.path()).open().expect("open db");
+
+        let principal_id = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+        let mut storage = open_eml_storage_scoped(db, principal_id)
+            .expect("scoped open must accept a principal_id-shaped prefix");
+
+        // Exercise it like a real Commit Tree would, proving the returned
+        // storage is genuinely usable, not just successfully constructed.
+        storage.store_leaf(0, b"leaf-0").await.unwrap();
+        assert_eq!(storage.get_leaf(0).await.unwrap(), b"leaf-0");
     }
 }
