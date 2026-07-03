@@ -49,7 +49,7 @@ TYPE MultihashId  = Map<HashAlg, Digest>             -- one variant per supporte
 TYPE PG = Digest    -- Principal Genesis (immutable, first PR)
 TYPE PR = Digest    -- Principal Root (top-level, evolves per commit)
 TYPE SR = Digest    -- State Root (intermediate: MR(AR, DR?))
-TYPE CR = Digest    -- Commit Root (MALTR of commit tree)
+TYPE CR = Digest    -- Commit Root (EMLR of commit tree)
 TYPE AR = Digest    -- Auth Root
 TYPE KR = Digest    -- Key Root
 TYPE RR = Digest    -- Rule Root (Level 5+)
@@ -78,11 +78,19 @@ encodings MUST be rejected.
 as b64ut, providing both addressing and integrity of the reference.
 `VERIFIED: agent-check`
 
-**[mr-sort-order]**: When computing a Merkle root for state tree nodes (KR, AR,
-SR, PR, DR), child digests MUST be sorted in lexical byte order (opaque byte
-comparison). **Exception:** Commit tree (CT) uses MALT ordering (append-only,
-array order). See `transactions.md` [commit-finality-arrow].
-`VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
+**[mr-sort-order]**: Cyphr's state digests split into two ordering classes.
+**Fixed two-cell nodes** — Principal Root (PR, root of PT), Auth Root (AR,
+root of AT), and State Root (SR, root of ST) — are each computed over a tree
+whose shape never varies (always exactly two cells) and MUST use fixed
+positional role order, never lexical sort: PT cell 0 = SR, cell 1 = CR; AT
+cell 0 = KR, cell 1 = RR; ST cell 0 = AR, cell 1 = DR. **Variable-width
+nodes** keep their own already-defined order instead: Key Root (KR, root of
+KT) MUST sort lexically (opaque byte comparison); Data Root (DR) MUST sort by
+`now` then `czd` (DR is a flat computed value, not yet backed by a real tree
+instance — see SPEC.md §3.7.8). Commit tree (CT) is an Epoch Merkle Log (EML)
+and uses append-only (array) order, not lexical sort. See `transactions.md`
+[commit-finality-arrow].
+`VERIFIED: agent-check, updated 2026-07-03 per two-class ordering correction`
 
 **[pg-immutable]**: The Principal Genesis (PG) MUST NOT change after genesis
 (Level 3+). PG is the first PR computed at genesis commit. No operation MAY
@@ -209,11 +217,12 @@ entirely, not represented as empty.)
 > (Level 4, Level 5) still need confirmation from Zami.
 
 **[no-circular-state]**: The state computation dependency graph MUST be acyclic.
-KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (MALTR of TRs),
-PR = MR(SR, CR). AR and SR MUST NOT depend on TR or CR. The `arrow` field in
-the commit transaction covers `MR(pre, fwd, TMR)` where `fwd` is SR, not PR,
-precisely because PR depends on CR which depends on TR which includes the commit.
-`VERIFIED: agent-check — rewritten 2026-03-09 per B-4, §4.2/§3.3`
+KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (EMLR of TRs),
+PR = EMT-root(SR, CR) [cell 0 = SR, cell 1 = CR]. AR and SR MUST NOT depend on
+TR or CR. The `arrow` field in the commit transaction covers `MR(pre, fwd,
+TMR)` where `fwd` is SR, not PR, precisely because PR depends on CR which
+depends on TR which includes the commit.
+`VERIFIED: agent-check, rewritten 2026-07-02 per EMT/EML realignment, B-4, §4.2/§3.3`
 
 **[no-non-canonical-b64ut]**: A b64ut string that uses padding characters (`=`),
 non-URL-safe characters (`+`, `/`), or non-canonical encoding MUST be rejected.
@@ -253,12 +262,15 @@ constrained by the invariants and transitions above.
 
 ```
 KR       = MR(tmb₀, tmb₁?, embedding?, nonce?, ...)
-AR       = MR(KR, RR?, embedding?, ...)                -- nil components excluded
-SR       = MR(AR, DR?, embedding?, ...)                 -- State Root (non-commit state)
-DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`
+AR       = MR(KR, RR)                                    -- Auth Root: AT's root, cell 0 = KR, cell 1 = RR (positional); RR absent at Level < 5 (Singleton Promotion: AR = KR)
+AR_alg   = H(KR_alg ∥ RR_alg)                            -- when RR is present (cells 0-1 both populated)
+SR       = MR(AR, DR)                                    -- State Root: ST's root, cell 0 = AR, cell 1 = DR (positional); DR absent at Level < 4 (Singleton Promotion: SR = AR)
+SR_alg   = H(AR_alg ∥ DR_alg)                            -- when DR is present (cells 0-1 both populated)
+DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`; flat computed value, not yet a real tree instance
 TR       = MR(TMR, TCR)                                 -- Transaction Root (commit ID)
-CR       = MALTR(TR₀, TR₁, ...)                         -- Commit Root (MALT of commit tree)
-PR       = MR(SR, CR, embedding?, ...)                   -- CR absent at Level 1-2
+CR       = EMLR(TR₀, TR₁, ...)                          -- Commit Root (EML root of commit tree)
+PR       = EMT(SR, CR, ...)                             -- Principal Root: PT's EMT root; cell 0 = SR, cell 1 = CR (positional; cells ≥ 2 are PT embeddings); CR absent at Level 1-2
+PR_alg   = H(SR_alg ∥ CR_alg)                            -- when only cells 0-1 are populated (no embeddings)
 PG       = first PR at genesis commit (Level 3+ only, immutable)
 ```
 
@@ -308,7 +320,7 @@ governance is delegated to Coz").
 | :-------------------------------- | :---------- | :----- | :------------------------------------------------------------- |
 | [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2                |
 | [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                                     |
-| [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision |
+| [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision; PT/AT/ST use positional order (SPEC.md §3.7 step 2, §3.7.1, §3.7.2, §3.7.5, §12.2.1); KT/DR keep their own order |
 | [pg-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                       |
 | [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                             |
 | [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                                     |

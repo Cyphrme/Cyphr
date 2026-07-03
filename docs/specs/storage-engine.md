@@ -73,10 +73,10 @@ output.
 
 The two layers are:
 
-| Layer                      | Responsibility                                         | Backend                                                          | Spec                             |
-| :------------------------- | :----------------------------------------------------- | :--------------------------------------------------------------- | :------------------------------- |
-| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)                            | [`blob-store.md`](blob-store.md) |
-| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production, planned), Fjall (current), HashMap (testing) | [`indexer.md`](indexer.md)       |
+| Layer                      | Responsibility                                         | Backend                                | Spec                             |
+| :------------------------- | :----------------------------------------------------- | :------------------------------------- | :------------------------------- |
+| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)  | [`blob-store.md`](blob-store.md) |
+| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production), HashMap (testing) | [`indexer.md`](indexer.md)       |
 
 **[separate-durability]**: Content store and index are **separate databases**
 with independent durability. The content store is the durable source of
@@ -84,7 +84,7 @@ truth; the index is a derived, rebuildable projection. If the index is lost,
 it is reconstructed from the content store via re-indexing. Cross-store
 atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
-`VERIFIED: unverified (pending SQLite migration)`
+`VERIFIED: SQLite migration complete; FjallIndexer removed (cyphr-index-sqlite)`
 
 **[crate-isolation]**: Implementation backends MUST be isolated in their
 own crates, separate from the trait definitions. The trait crate defines
@@ -114,7 +114,7 @@ needed for testing the trait contracts themselves.
 ### Trust Model
 
 The index is a conventional database providing _performance_ (fast lookups).
-Trustless verification uses _chain replay_ — the `pre`-linked MALT chain
+Trustless verification uses _chain replay_ — the `pre`-linked EML chain
 has no gaps, so fetching the patch and filtering locally is trustless by
 construction. The index does not provide authenticated query results or
 completeness proofs. See [`indexer.md`](indexer.md) § "Trustless Verification
@@ -265,7 +265,7 @@ digest index per [digest-index-completeness].
 
 ### Commit Tree (CT)
 
-Uses the MALT/EML data structure (SPEC.md §4.4, §12.2.2). Algorithm
+Uses the EML data structure (SPEC.md §4.4, §12.2.2). Algorithm
 transitions are handled by the TSML model: null constants for
 pre-activation, frozen values for deactivated algorithms, incremental
 frontier stacks.
@@ -308,7 +308,7 @@ commit.
        │              │              │
 ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼──────────────────┐
 │ BlobStore   │ │ EML        │ │ Indexer (Layer 1)      │
-│ (Layer 0)   │ │ (CT/MALT)  │ │                        │
+│ (Layer 0)   │ │ (CT)       │ │                        │
 │             │ │            │ │ TaggedDigest→EntityRef  │
 │ BLAKE3→raw  │ │ Frontier   │ │ CommitRef, TipState     │
 │ Immutable   │ │ stacks,    │ │ Rebuildable secondary   │
@@ -331,17 +331,17 @@ same principal MUST reflect the ingested commit's state.
 
 ## Verification
 
-| Constraint               | Method      | Result  | Detail                                             |
-| :----------------------- | :---------- | :------ | :------------------------------------------------- |
-| [two-tier-separation]    | agent-check | pass    | `StorageEngine<B, I>` generic over distinct traits |
-| [separate-durability]    | agent-check | pending | Pending SQLite migration (currently shared Fjall)  |
-| [validate-first-write]   | agent-check | pass    | submit_commit(): verify → finalize → persist       |
-| [ingest-ordering]        | agent-check | pass    | Blobs stored before index_commit()                 |
-| [read-path-coordination] | agent-check | pass    | get_patch() joins index + blobs                    |
-| [recovery-reindex]       | agent-check | pass    | reindex() scans BlobStore, rebuilds index          |
-| [recovery-convergence]   | agent-check | pass    | reindex() terminates in finite time                |
-| [hash-boundary]          | agent-check | pass    | format_multihash_all() for all active variants     |
-| [read-after-write]       | agent-check | pass    | Verified in integration tests                      |
+| Constraint               | Method      | Result | Detail                                             |
+| :----------------------- | :---------- | :----- | :------------------------------------------------- |
+| [two-tier-separation]    | agent-check | pass   | `StorageEngine<B, I>` generic over distinct traits |
+| [separate-durability]    | agent-check | pass   | SQLite migration complete; FjallIndexer removed    |
+| [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist       |
+| [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                 |
+| [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                    |
+| [recovery-reindex]       | agent-check | pass   | reindex() scans BlobStore, rebuilds index          |
+| [recovery-convergence]   | agent-check | pass   | reindex() terminates in finite time                |
+| [hash-boundary]          | agent-check | pass   | format_multihash_all() for all active variants     |
+| [read-after-write]       | agent-check | pass   | Verified in integration tests                      |
 
 ## Implications
 
@@ -406,9 +406,7 @@ strategy.
 4. **Authenticated index** — **RESOLVED: rejected (2026-06-01).** Four
    authenticated index structures (JMT, sorted index tables, MSTs,
    distributed primitives) were evaluated and rejected. Chain replay
-   provides trustless completeness for per-principal queries. See the
-   [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
-   for the full rationale.
+   provides trustless completeness for per-principal queries.
 
 5. **Index backend** — **RESOLVED: SQLite (2026-06-01).** SQLite replaces
    Fjall for the index layer. B-trees match the read-heavy workload; schema

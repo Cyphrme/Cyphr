@@ -28,14 +28,14 @@ MUST NOT be the source of truth for any data derivable from blob content.
 
 **Trust Model:** The index is a conventional database. It does not provide
 authenticated query results or completeness proofs. Trustless verification
-of query results relies on chain replay — the `pre`-linked MALT chain has
+of query results relies on chain replay — the `pre`-linked EML chain has
 no gaps, so fetching the patch and filtering locally is trustless by
 construction. The index provides _performance_; the chain provides _trust_.
 
-See the [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
-§ "Decision: ACCEPTED — Conventional Index with Chain Replay Verification"
-for the full rationale and the evaluated alternatives (sorted index tables,
-MSTs, distributed authenticated primitives — all rejected).
+The design rationale and the evaluated alternatives (sorted index tables,
+MSTs, distributed authenticated primitives — all rejected) are captured in
+the "Decision: ACCEPTED — Conventional Index with Chain Replay Verification"
+design record.
 
 **Cross-references:**
 [`storage-engine.md`](storage-engine.md) (engine coordination),

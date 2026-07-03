@@ -9,16 +9,16 @@
 
 Execute the initial public offering of the Cyphr Protocol. We will establish a
 clean v0.1.0 baseline by renaming the project from `Cyphrpass` to `Cyphr`,
-ensuring documentation is accurate, publishing `malt` as an independent
-primitive, deploying cohesive Docs and Blog sites via Sukr, and launching a
-changelog pipeline using `git-cliff` with AI editorial polish.
+ensuring documentation is accurate, deploying cohesive Docs and Blog sites via
+Sukr, and launching a changelog pipeline using `git-cliff` with AI editorial
+polish.
 
 ## Constraints
 
 - Docs (`docs.cyphr.me`) and Blog (`blog.cyphr.me`) must share a cohesive aesthetic despite separate subdomains.
 - `git-cliff` handles raw changelog parsing; AI is used strictly for editorial polish of the output — not raw commit ingestion.
 - Code documentation (in-code Rust/Go docs, `SPEC.md`, `docs/`) must not be overlooked; it requires a rigorous audit.
-- `malt` remains in the monorepo but must be published via standard registries as an independent utility.
+- ~~`malt` remains in the monorepo but must be published via standard registries as an independent utility.~~ N/A: `malt` was superseded by the EML crate (see `docs/specs/multihash-simplification.md`), which already lives in its own separate repository (`Cyphrme/eml`), not as a workspace member here — there is nothing left in this monorepo to publish independently.
 
 ## Decisions
 
@@ -26,7 +26,7 @@ changelog pipeline using `git-cliff` with AI editorial polish.
 | :----------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Project Renaming**     | Comprehensive Structural Rename | Cyphrpass nomenclature is deeply embedded. Surface renaming creates massive technical dissonance between public brand and developer API. We will fully transition to `cyphr`.                                                                                    |
 | **Intent Tag Domain**    | `cyphr.me/proto/`               | Segregates core protocol actions (e.g., `cyphr.me/proto/key/create`) from application-level actions (e.g., `cyphr.me/comment/create`) per the Section 7.2 `typ` grammar. Avoids the redundancy of `cyphr.me/cyphr/` and the genericness of `cyphr.me/protocol/`. |
-| **Package Independence** | Monorepo Workspace Publishing   | Keeps `malt` maintenance centralized while allowing it to be a standalone primitive via crates.io and Go module paths natively.                                                                                                                                  |
+| **Package Independence** | N/A — superseded                | `malt` was superseded by the EML crate, which already lives in its own separate repository (`Cyphrme/eml`) rather than this monorepo; there is no longer a `malt` workspace member to publish independently.                                                     |
 | **Narrative Hub**        | Decoupled Sukr Deployments      | Clean separation of narrative/philosophy (`blog.`) from formal documentation (`docs.`) while maintaining identical aesthetics via a shared theme.                                                                                                                |
 | **Changelog Gen**        | Git-Cliff + AI Editorial Polish | `git-cliff` parses conventional commits natively. An LLM is used strictly to polish the resulting output into a readable narrative — not to parse or summarize raw commits.                                                                                      |
 | **License**              | No changes at this time         | The BOOL license structure requires further discussion with Zami before any modifications.                                                                                                                                                                       |
@@ -34,13 +34,13 @@ changelog pipeline using `git-cliff` with AI editorial polish.
 
 ## Risks & Assumptions
 
-| Risk / Assumption             | Severity | Status      | Mitigation / Evidence                                                                                                                                                             |
-| :---------------------------- | :------- | :---------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Golden Fixture Corruption** | CRITICAL | Mitigated   | The rename changes `typ` strings, breaking signatures. Mitigation: update intent TOMLs, then run `fixture-gen` to regenerate golden fixtures natively. No manual fixture editing. |
-| **Malt Independence**         | —        | Validated   | Grepping across `rs/malt` and `go/malt` reveals zero dependencies on or references to `cyphrpass`, confirming full decoupling.                                                    |
-| **Aesthetic Drift**           | MEDIUM   | Mitigated   | Create a shared `theme/` directory in the monorepo that both `blog/` and `docs/` Sukr builds ingest or symlink.                                                                   |
-| **Rename Surface Area**       | HIGH     | Unvalidated | The rename involves core strings that parsers match against. Parser logic depending on exact string matches must be meticulously tested post-rename.                              |
-| **GitHub Repo Name**          | MEDIUM   | Resolved    | Confirmed: repo will be renamed. Go module path will be `github.com/cyphrme/cyphr`. GitHub provides automatic redirects from old URLs.                                            |
+| Risk / Assumption             | Severity | Status             | Mitigation / Evidence                                                                                                                                                             |
+| :---------------------------- | :------- | :----------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Golden Fixture Corruption** | CRITICAL | Mitigated          | The rename changes `typ` strings, breaking signatures. Mitigation: update intent TOMLs, then run `fixture-gen` to regenerate golden fixtures natively. No manual fixture editing. |
+| **Malt Independence**         | —        | N/A — malt removed | `malt` was superseded by the EML crate, which now lives in its own separate repository (`Cyphrme/eml`); `rs/malt` and `go/malt` no longer exist in this workspace.                |
+| **Aesthetic Drift**           | MEDIUM   | Mitigated          | Create a shared `theme/` directory in the monorepo that both `blog/` and `docs/` Sukr builds ingest or symlink.                                                                   |
+| **Rename Surface Area**       | HIGH     | Unvalidated        | The rename involves core strings that parsers match against. Parser logic depending on exact string matches must be meticulously tested post-rename.                              |
+| **GitHub Repo Name**          | MEDIUM   | Resolved           | Confirmed: repo will be renamed. Go module path will be `github.com/cyphrme/cyphr`. GitHub provides automatic redirects from old URLs.                                            |
 
 ## Open Questions
 
@@ -57,7 +57,9 @@ _(Resolved)_
 
 - Full sweeping rename of `cyphrpass` → `cyphr` across crates, modules, documentation, and GitHub repository.
 - Rename of intent tag domain: `cyphr.me/cyphrpass/` → `cyphr.me/proto/`.
-- Publishing `malt` to crates.io and Go module registries.
+- ~~Publishing `malt` to crates.io and Go module registries.~~ N/A — `malt`
+  was superseded by the EML crate, published separately from its own
+  repository (`Cyphrme/eml`), not from this monorepo.
 - Publishing `cyphr` crates and Go module.
 - Documentation audit of `docs/`, `SPEC.md`, and in-code comments.
 - CI pipeline for `git-cliff` changelog generation and CLI binary release.
@@ -99,14 +101,16 @@ _(Resolved)_
 
 4. **Phase 4: Release Pipeline & Malt Publishing** — Registry publishing and release automation. _(Depends on Phase 1)_
    - [x] Establish `cliff.toml` conventional commit parser config.
-   - [ ] Publish `malt` independently to crates.io and Go registries. _(manual)_
+   - [ ] ~~Publish `malt` independently to crates.io and Go registries.~~ N/A
+         — superseded by the EML crate, published from its own separate
+         repository (`Cyphrme/eml`), not from this monorepo. _(manual)_
    - [ ] Publish `cyphr` crates to crates.io. _(manual)_
    - [x] Deploy GitHub Action for cross-compiling CLI binaries and generating release changelogs (`release.yml`, scoped `rs/v*` and `go/v*` tags).
 
 ## Verification
 
 - [ ] `docs.cyphr.me` and `blog.cyphr.me` render with identical styling locally.
-- [ ] `cargo publish --dry-run` runs cleanly for `malt`, `cyphr`, `cyphr-storage`, and `cyphr-cli`.
+- [ ] `cargo publish --dry-run` runs cleanly for `cyphr`, `cyphr-storage`, and `cyphr-cli`.
 - [ ] The full `tests/golden/` suite passes in both Go and Rust implementations.
 - [ ] Zero references to `cyphrpass` remain in source code (excluding git history and this plan).
 

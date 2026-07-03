@@ -33,54 +33,49 @@ trait, epoch tracking, algorithm lifecycle).
 ### Invariants
 
 **[hasher-trait]**: All protocol hash operations MUST be abstracted behind a
-`Hasher` trait (analogous to EML's `eml::Hasher`). The current triple-dispatch
-match over `HashAlg::{Sha256, Sha384, Sha512}` in `hash_sorted_concat_bytes`,
-`hash_concat_bytes`, and `hash_bytes` (state.rs:355–437) MUST be replaced.
-Adding a new hash algorithm MUST require implementing a single trait, not
-modifying multiple match arms.
-`VERIFIED: unverified`
+`Hasher` trait (analogous to EML's `eml::Hasher`). Adding a new hash algorithm
+MUST require implementing a single trait, not modifying multiple match arms.
+`VERIFIED: CyphrHasher trait implemented in rs/cyphr/src/hasher.rs and integrated in state.rs`
 
 **[dataroot-multihash]**: `DataRoot` MUST use `MultihashDigest`, not
 single-algorithm `Cad`. `compute_dr()` MUST take `algs: &[HashAlg]` and
 produce per-algorithm variants, consistent with all other state nodes (KR, AR,
-SR, PR, CR, TR). The current asymmetry where DR is silently coerced into
-multihash computations in `compute_sr()` is a correctness risk.
-`VERIFIED: unverified`
+SR, PR, CR, TR).
+`VERIFIED: DataRoot uses MultihashDigest; compute_dr takes algorithm set`
 
 **[single-alg-set]**: `PrincipalCore` MUST NOT maintain both `hash_alg` and
 `active_algs` as independent fields. There MUST be a single source of truth
 for the active algorithm set. If a "primary" algorithm is needed, it MUST be
 derived deterministically from the ordered set (e.g., `active_algs[0]` via
 `BTreeSet` ordering), not stored separately.
-`VERIFIED: unverified`
+`VERIFIED: hash_alg field removed; primary algorithm derived dynamically`
 
 **[digest-length-validation]**: `MultihashDigest` construction MUST validate
 that each variant's byte length matches its declared algorithm (SHA-256 → 32,
 SHA-384 → 48, SHA-512 → 64). Invalid lengths MUST be rejected at construction
 time (parse, don't validate).
-`VERIFIED: unverified`
+`VERIFIED: exact digest lengths matching algorithm requirements enforced on constructor`
 
 **[eml-for-commit-tree]**: The Commit Tree (CT) MUST use an EML `Log` instance
-instead of hand-rolled per-algorithm MALT management. The current
-`BTreeMap<HashAlg, malt::Log>` in `CommitTrees` with manual replay logic in
-`finalize_commit()` (principal.rs:1109–1146) MUST be replaced. The EML already
-provides: algorithm epoch tracking, null constants for pre-activation, frontier
-stacks, O(log N) append, consistency/inclusion proofs, and formal correctness
-guarantees. This was always the intended migration path.
-`VERIFIED: unverified`
+instead of hand-rolled per-algorithm tree management. `CommitTrees` wraps a
+single `eml::Log` (via `CloneableLog`) rather than a `BTreeMap<HashAlg, _>` of
+independent per-algorithm trees. The EML provides: algorithm epoch tracking,
+null constants for pre-activation, frontier stacks, O(log N) append,
+consistency/inclusion proofs, and formal correctness guarantees.
+`VERIFIED: EML Log used to manage Commit Tree (CT) and epoch metadata`
 
 **[state-newtype-trait]**: The state newtypes (`KeyRoot`, `AuthRoot`,
 `StateRoot`, `PrincipalRoot`, `PrincipalGenesis`, `CommitID`) SHOULD be unified
 via a shared `StateDigest` trait (or derive macro) providing `as_multihash()`
 and `get()` accessors. The current ~100 lines of identical boilerplate across
 six types SHOULD be eliminated.
-`VERIFIED: unverified`
+`VERIFIED: unified six state types with StateDigest trait in state.rs`
 
 **[algorithm-epoch-tracking]**: Algorithm lifecycle (activation, deactivation,
 resumption) SHOULD be tracked as persistent epoch metadata, analogous to the
 EML's `AlgState` epoch vectors. This enables cold-start algorithm history
 recovery from storage without full commit chain replay.
-`VERIFIED: unverified`
+`VERIFIED: epoch transitions tracked and reconstructed via EML storage`
 
 ## Rationale
 
@@ -104,9 +99,10 @@ parallel structures. The key insights:
    re-derives the algorithm set from the key tree at every commit, losing
    history.
 
-4. **The MALT IS the EML** — `finalize_commit()`'s per-algorithm MALT
-   management (create, replay, append) is a manual reimplementation of what
-   EML does generically with proofs and formal guarantees.
+4. **The hand-rolled implementation already was an EML** —
+   `finalize_commit()`'s per-algorithm commit-tree management (create,
+   replay, append) was a manual reimplementation of what EML now does
+   generically with proofs and formal guarantees.
 
 ### Scope
 
@@ -151,8 +147,9 @@ Storage-layer implications are captured in `storage-engine.md`
 
 - **Hasher trait**: Property test that all `CyphrHasher` impls produce
   correct output sizes and are deterministic.
-- **EML migration**: Golden test that EML-derived CR matches MALT-derived CR
-  for existing test fixtures.
+- **EML migration**: Golden test confirming EML-derived CR values match the
+  pre-migration fixture corpus
+  (`test_fixtures::golden::tests::test_generate_single_commit`).
 - **DataRoot**: Multi-algorithm test with ES256 + ES384 keys verifying DR
   produces variants for both.
 

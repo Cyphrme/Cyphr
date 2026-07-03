@@ -69,7 +69,7 @@ The `Keyspace` is `Arc`-backed and cheaply cloneable. Creating a
 `FjallBlobStore` from an existing `Keyspace` MUST NOT open a new database.
 
 **[fjall-partition-isolation]**: The blob partition (`"blobs"`) and EML
-partitions (`"eml_leaves"`, `"eml_nodes"`, `"eml_meta"`) MUST use separate
+partitions (`"eml_leaves"`, `"eml_nodes"`, `"eml_metadata"`) MUST use separate
 logical partitions within the shared keyspace. Reads and writes to blobs
 MUST NOT interfere with EML internal state.
 
