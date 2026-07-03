@@ -2454,6 +2454,17 @@ particular principal.
    against PR; each hop is verified independently against its own root.
 1. Advancement relevant authentication components must be given to the thin
    client.  For example, any keys that signed 
+2. To additionally verify that a specific key is currently active, request a
+   key-membership inclusion proof: thumbprint → KT → AT → ST → PT (4 hops),
+   each hop verified independently against its own root, the same pattern as
+   step 0's 2-hop CR-in-PR check. This chain is verified against the
+   client's own already-trusted KR/AR/SR/PR — it is an internal
+   consistency/staleness check, confirming a claimed key is included under
+   roots the client already trusts, not a portable proof a third party could
+   verify unassisted from only a published PR and a thumbprint. A portable
+   proof format (one that also binds the target leaf itself, so an untrusted
+   verifier could check it standalone) would reuse this same 4-hop chain
+   structure but is separate, future design work.
 
 
 ### 13.1.3 MSS Recommended Usage
