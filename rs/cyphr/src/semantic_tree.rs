@@ -172,8 +172,9 @@ impl KeyTree {
     }
 
     /// Build KT fresh from `thumbprints`, sorted lexically (matching
-    /// `compute_kr`'s existing sort-then-concat order), and return its root
-    /// as [`KeyRoot`].
+    /// `compute_kr`'s existing sort-then-concat order), and return the tree
+    /// itself (rather than just its root), so a caller can also generate
+    /// inclusion proofs over it via [`Self::thumbprint_inclusion_proof`].
     ///
     /// # Errors
     ///
@@ -181,7 +182,7 @@ impl KeyTree {
     /// `CollectionArityExceeded` if `thumbprints.len() > 256` — the
     /// collection-node arity boundary is out of this node's scope (reserved
     /// in the worker IBC; deferred to P10-testing-hardening).
-    pub fn build(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<KeyRoot> {
+    pub fn build_tree(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<Self> {
         if algs.is_empty() {
             return Err(Error::NoActiveKeys);
         }
@@ -201,7 +202,32 @@ impl KeyTree {
                 .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
         }
 
-        kt.root(algs)
+        Ok(kt)
+    }
+
+    /// Build KT fresh from `thumbprints` and return its root as [`KeyRoot`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::build_tree`].
+    pub fn build(thumbprints: &[&Thumbprint], algs: &[HashAlg]) -> Result<KeyRoot> {
+        Self::build_tree(thumbprints, algs)?.root(algs)
+    }
+
+    /// Generate a self-contained inclusion proof for the thumbprint at
+    /// lexical-sort position `index`, under `alg_id` — the hop-1 witness of
+    /// the key-membership chain (see
+    /// [`crate::principal::Principal::verify_key_inclusion`]): "this
+    /// thumbprint is included in KR." Mirrors
+    /// [`crate::principal_tree::PrincipalTree::cr_inclusion_proof`]'s
+    /// pattern, but takes an explicit index since KT's cells are dynamic
+    /// (one per active key, not a fixed role constant).
+    ///
+    /// Returns `None` if `alg_id` is unregistered or `index` is out of
+    /// range.
+    #[must_use]
+    pub fn thumbprint_inclusion_proof(&self, alg_id: u64, index: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, index)
     }
 }
 
@@ -231,8 +257,10 @@ impl AuthTree {
         Ok(AuthRoot(assemble(&self.inner, algs)?))
     }
 
-    /// Build AR-node fresh from `kr` and return its root as [`AuthRoot`].
-    pub fn build(kr: &KeyRoot, algs: &[HashAlg]) -> Result<AuthRoot> {
+    /// Build AR-node fresh from `kr` and return the node itself (rather than
+    /// just its root), so a caller can also generate inclusion proofs over
+    /// it via [`Self::kr_inclusion_proof`].
+    pub fn build_tree(kr: &KeyRoot, algs: &[HashAlg]) -> Result<Self> {
         let mut node = Self::new();
         register_algs(&mut node.inner, algs)?;
         let payload = serialize_digest(&kr.0, algs)?;
@@ -240,7 +268,26 @@ impl AuthTree {
             .set(PRIMARY_CELL, payload, Vec::new())
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
 
-        node.root(algs)
+        Ok(node)
+    }
+
+    /// Build AR-node fresh from `kr` and return its root as [`AuthRoot`].
+    pub fn build(kr: &KeyRoot, algs: &[HashAlg]) -> Result<AuthRoot> {
+        Self::build_tree(kr, algs)?.root(algs)
+    }
+
+    /// Generate a self-contained inclusion proof for cell 0 (KR) under
+    /// `alg_id` — the hop-2 witness of the key-membership chain (see
+    /// [`crate::principal::Principal::verify_key_inclusion`]): "KR is
+    /// included in AR." Mirrors
+    /// [`crate::principal_tree::PrincipalTree::cr_inclusion_proof`]'s
+    /// pattern; deliberately scoped to `PRIMARY_CELL` only — cell 1 (RT) has
+    /// no analogous witness since RT is permanently absent.
+    ///
+    /// Returns `None` if `alg_id` is unregistered.
+    #[must_use]
+    pub fn kr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, PRIMARY_CELL)
     }
 }
 
@@ -271,9 +318,10 @@ impl StateTree {
         Ok(StateRoot(assemble(&self.inner, algs)?))
     }
 
-    /// Build SR-node fresh from `ar` and optional `dr`, and return its root
-    /// as [`StateRoot`].
-    pub fn build(ar: &AuthRoot, dr: Option<&DataRoot>, algs: &[HashAlg]) -> Result<StateRoot> {
+    /// Build SR-node fresh from `ar` and optional `dr`, and return the node
+    /// itself (rather than just its root), so a caller can also generate
+    /// inclusion proofs over it via [`Self::ar_inclusion_proof`].
+    pub fn build_tree(ar: &AuthRoot, dr: Option<&DataRoot>, algs: &[HashAlg]) -> Result<Self> {
         let mut node = Self::new();
         register_algs(&mut node.inner, algs)?;
         let ar_payload = serialize_digest(&ar.0, algs)?;
@@ -287,7 +335,28 @@ impl StateTree {
                 .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
         }
 
-        node.root(algs)
+        Ok(node)
+    }
+
+    /// Build SR-node fresh from `ar` and optional `dr`, and return its root
+    /// as [`StateRoot`].
+    pub fn build(ar: &AuthRoot, dr: Option<&DataRoot>, algs: &[HashAlg]) -> Result<StateRoot> {
+        Self::build_tree(ar, dr, algs)?.root(algs)
+    }
+
+    /// Generate a self-contained inclusion proof for cell 0 (AR) under
+    /// `alg_id` — the hop-3 witness of the key-membership chain (see
+    /// [`crate::principal::Principal::verify_key_inclusion`]): "AR is
+    /// included in SR." Mirrors
+    /// [`crate::principal_tree::PrincipalTree::cr_inclusion_proof`]'s
+    /// pattern; deliberately scoped to `PRIMARY_CELL` only — cell 1 (DR) has
+    /// no analogous witness in this chain (the key-membership proof does not
+    /// prove anything about DR).
+    ///
+    /// Returns `None` if `alg_id` is unregistered.
+    #[must_use]
+    pub fn ar_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, PRIMARY_CELL)
     }
 }
 

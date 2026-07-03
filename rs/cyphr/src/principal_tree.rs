@@ -97,6 +97,33 @@ impl PrincipalTree {
             .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
     }
 
+    /// Generate a self-contained inclusion proof for the Commit Root, cell 1,
+    /// under `alg_id` — the hop-2 witness of the two-step transaction
+    /// inclusion verification (see
+    /// [`Principal::verify_transaction_inclusion`](crate::principal::Principal::verify_transaction_inclusion)):
+    /// "CR is included in PR."
+    ///
+    /// Returns `None` if `alg_id` is unregistered or cell 1 has not yet been
+    /// set (no commits exist yet — a genesis principal has no CR to prove).
+    #[must_use]
+    pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, CR_CELL)
+    }
+
+    /// Generate a self-contained inclusion proof for the State Root, cell 0,
+    /// under `alg_id` — the final hop of the key-membership chain (see
+    /// [`Principal::verify_key_inclusion`](crate::principal::Principal::verify_key_inclusion)):
+    /// "SR is included in PR." The cell-0 sibling of
+    /// [`Self::cr_inclusion_proof`]; together the two cover every cell PT
+    /// has, still not a general "prove any cell" facility beyond those two.
+    ///
+    /// Returns `None` if `alg_id` is unregistered or cell 0 has not yet been
+    /// set (no SR exists yet).
+    #[must_use]
+    pub fn sr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+        self.inner.leaf_proof(alg_id, SR_CELL)
+    }
+
     /// Assemble the Principal Root from the tree's current per-algorithm
     /// member roots: `PR.variants[alg] = EpochTree::root(alg_id)`.
     ///
@@ -194,6 +221,32 @@ mod tests {
             genesis_pr.get(HashAlg::Sha256),
             post_commit_pr.get(HashAlg::Sha256)
         );
+    }
+
+    /// The CR-cell inclusion witness (hop 2's prerequisite) is absent at
+    /// genesis (cell 1 unset) and present, and verifiable, once CR is set.
+    #[test]
+    fn cr_inclusion_proof_absent_at_genesis_present_after_commit() {
+        let alg_id = hash_alg_to_u64(HashAlg::Sha256);
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr(&[0xAA; 32]), &[HashAlg::Sha256]).unwrap();
+        assert!(
+            pt.cr_inclusion_proof(alg_id).is_none(),
+            "cell 1 (CR) is unset at genesis"
+        );
+
+        pt.set_cr(&cr(&[0xBB; 32]), &[HashAlg::Sha256]).unwrap();
+        let proof = pt
+            .cr_inclusion_proof(alg_id)
+            .expect("cell 1 is set after set_cr");
+        assert_eq!(proof.index, CR_CELL);
+        assert_eq!(proof.tree_size, 2);
+        assert_eq!(proof.arity, ARITY);
+
+        let root = pt.pr(&[HashAlg::Sha256]).unwrap();
+        let hasher = MaltHasher::new(HashAlg::Sha256);
+        let sk = eml::rebalanced_skeleton(proof.tree_size, proof.arity, proof.index).unwrap();
+        assert!(proof.verify(&hasher, &sk, root.get(HashAlg::Sha256).unwrap()));
     }
 
     /// Proves the mechanism `CommitScope` isolation depends on: mutating a
