@@ -12,9 +12,10 @@ use crate::error::{Error, Result};
 use crate::key::Key;
 use crate::parsed_coz::VerifiedCoz;
 use crate::principal_tree::PrincipalTree;
+use crate::semantic_tree::{KeyTree, StateTree, derive_state_roots};
 use crate::state::{
     AuthRoot, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateRoot, compute_dr,
-    compute_kr, compute_sr, derive_auth_state, derive_hash_algs, hash_alg_from_str,
+    derive_hash_algs, hash_alg_from_str,
 };
 
 /// Get current unix timestamp in seconds.
@@ -276,8 +277,8 @@ impl Principal {
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
-        // KR → AR → SR (no DR at genesis)
-        let (kr, ar, sr) = derive_auth_state(&[&key.tmb], None, &active_algs)?;
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&[&key.tmb], None, &active_algs)?;
         // PR = SR (no CR at genesis): the tree's native singleton promotion.
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &active_algs)?;
@@ -327,8 +328,8 @@ impl Principal {
         // Collect thumbprints for KR computation
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
         let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
-        // KR → AR → SR (no DR at genesis)
-        let (kr, ar, sr) = derive_auth_state(&thumbprints, None, &active_algs)?;
+        // KT → AR-node → SR-node (no DR at genesis)
+        let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
         // PR = SR (no CR at genesis): the tree's native singleton promotion.
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &active_algs)?;
@@ -397,7 +398,7 @@ impl Principal {
 
         // Compute KR from provided keys
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
-        let kr = compute_kr(&thumbprints, None, &active_algs)?;
+        let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
         // Restore MALT state if provided, otherwise start fresh.
         let (commit_trees, cr) = match trees {
@@ -411,9 +412,10 @@ impl Principal {
             ),
         };
 
-        // SR and PR: derive_auth_state is not used here because `ar` is provided
-        // by the checkpoint, not derived from `kr`. We enter the chain at SR directly.
-        let sr = compute_sr(&ar, None, None, &active_algs)?;
+        // SR and PR: derive_state_roots is not used here because `ar` is
+        // provided by the checkpoint, not derived from `kr`. We enter the
+        // chain at SR-node directly.
+        let sr = StateTree::build(&ar, None, &active_algs)?;
         // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
         // checkpoint's SR and (if restored) CR.
         let mut pt = PrincipalTree::new();
@@ -806,8 +808,9 @@ impl Principal {
         let actions: Vec<&Action> = core.data.actions.iter().collect();
         core.dr = compute_dr(&actions, None, &active_algs)?;
 
-        // Recompute SR = MR(AR, DR?, embedding?)
-        let sr = compute_sr(&core.ar, core.dr.as_ref(), None, &active_algs)?;
+        // Recompute SR-node: cell 0 = AR (unchanged), cell 1 = DR (may have
+        // just appeared/changed above).
+        let sr = StateTree::build(&core.ar, core.dr.as_ref(), &active_algs)?;
 
         // Write SR into the Principal Tree (cell 1/CR is untouched) and
         // recompute PR from the tree.
@@ -947,7 +950,7 @@ impl Principal {
         use crate::commit::PendingCommit;
         use crate::multihash::MultihashDigest;
         use crate::parsed_coz::{CozKind, ParsedCoz, VerifiedCoz};
-        use crate::state::{derive_auth_state, derive_hash_algs};
+        use crate::state::derive_hash_algs;
 
         // Apply mutation eagerly (same as apply_verified_internal)
         let mutation_vtx = VerifiedCoz::from_transaction_unsafe(cz.clone(), new_key);
@@ -958,11 +961,16 @@ impl Principal {
         let mutation_vtx2 = VerifiedCoz::from_transaction_unsafe(cz.clone(), None);
         pending.push_tx(crate::transaction::Transaction(vec![mutation_vtx2]));
 
-        // KR → AR → SR from post-mutation key set (local, does not mutate self)
+        // KT → AR-node → SR-node from post-mutation key set (local, does not
+        // mutate self). DR is refreshed to the current active_algs rather
+        // than trusting the cached value, which may predate a key of a new
+        // algorithm (see finalize_commit's identical refresh).
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
-        let (_kr, _ar, sr) = derive_auth_state(&thumbprints, self.dr.as_ref(), &active_algs)?;
+        let action_refs: Vec<&Action> = self.data.actions.iter().collect();
+        let dr = compute_dr(&action_refs, None, &active_algs)?;
+        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
 
         let tx_alg = cz.hash_alg;
 
@@ -1160,10 +1168,22 @@ impl Principal {
         let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
-        // KR → AR → SR (post-mutation key set, existing DR).
+        // Refresh DR's algorithm coverage to the post-mutation active_algs
+        // before folding it into SR-node. DR was cached by record_action
+        // under whatever active_algs were live at the time; a key of a NEW
+        // algorithm added since then would otherwise leave DR missing that
+        // algorithm's variant, and StateTree::build's cell payload would
+        // silently borrow the wrong-width first-available variant via
+        // MultihashDigest::get_or_err — exactly the width mismatch the
+        // tree's fold correctly refuses to fold (unlike the old flat
+        // formula, which had no width invariant to catch it).
+        let actions: Vec<&Action> = core.data.actions.iter().collect();
+        core.dr = compute_dr(&actions, None, &active_algs)?;
+
+        // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
         let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| &k.tmb).collect();
-        let (kr, ar, sr) = derive_auth_state(&thumbprints, core.dr.as_ref(), &active_algs)?;
+        let (kr, ar, sr) = derive_state_roots(&thumbprints, core.dr.as_ref(), &active_algs)?;
         core.kr = kr;
         core.ar = ar;
         // core.sr/core.pt are NOT written yet — the arrow validation below
@@ -2298,5 +2318,140 @@ mod tests {
             principal.pr().get(HashAlg::Sha256).is_some(),
             "PR must still have a SHA-256 variant for the surviving ES256 key"
         );
+    }
+
+    /// c-liveness-shrinkage-rebuild — extends
+    /// `revoked_key_algorithm_drops_from_pr_variants`'s metamorphic pattern
+    /// to every new tree level, not just PR: KT, AR-node, and SR-node are
+    /// rebuilt fresh from the post-revocation key set on every mutation, so
+    /// a dropped algorithm cannot survive in KR/AR/SR either.
+    #[test]
+    fn revoked_key_algorithm_drops_from_kr_ar_sr_too() {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let key_es256 = make_test_key(0x11);
+        let key_ed25519 = make_test_key_ed25519(0x22);
+
+        let mut principal =
+            Principal::explicit(vec![key_es256.clone(), key_ed25519.clone()]).unwrap();
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(principal.key_root().get(HashAlg::Sha512).is_some());
+        assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
+        assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
+
+        let pre = principal.pr().clone();
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            signer: key_ed25519.tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0x44; 64]),
+            hash_alg: HashAlg::Sha512,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+        principal.apply_transaction_test(cz, None).unwrap();
+
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
+        assert!(
+            principal.key_root().get(HashAlg::Sha512).is_none(),
+            "KR must not retain a stale SHA-512 variant — KT must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(
+            principal.auth_root().get(HashAlg::Sha512).is_none(),
+            "AR must not retain a stale SHA-512 variant — AR-node must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(
+            principal.sr().unwrap().get(HashAlg::Sha512).is_none(),
+            "SR must not retain a stale SHA-512 variant — SR-node must be \
+             rebuilt with only live algorithms registered, not masked"
+        );
+        assert!(principal.key_root().get(HashAlg::Sha256).is_some());
+        assert!(principal.auth_root().get(HashAlg::Sha256).is_some());
+        assert!(principal.sr().unwrap().get(HashAlg::Sha256).is_some());
+    }
+
+    /// Reproduces a proptest-discovered defect: a `DataRoot` cached from
+    /// `record_action` under a narrower `active_algs` set must not be
+    /// reused unrefreshed once a later key of a NEW algorithm expands
+    /// `active_algs` — the stale DR is missing a variant for the new
+    /// algorithm, and `MultihashDigest::get_or_err`'s "first available
+    /// variant" fallback silently substitutes a wrong-width value, which
+    /// the tree's width-uniform fold contract correctly rejects.
+    #[test]
+    fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
+        use coz::Czd;
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        use serde_json::json;
+
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0x11);
+        let mut principal = Principal::implicit(key.clone()).unwrap();
+
+        let action = make_test_action(&key.tmb);
+        principal.record_action(action).unwrap();
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
+
+        // A key/create tx timestamped after the action (make_test_action
+        // uses now=3000; make_key_add_tx's fixed now=2000 would fail
+        // timestamp ordering, so this is constructed inline instead).
+        let pre = principal.pr().clone();
+        let key2 = make_test_key_ed25519(0x22);
+        let ps_bytes = pre.get(HashAlg::Sha256).unwrap();
+        let raw = coz::CozJson {
+            pay: json!({
+                "typ": "cyphr.me/key/create",
+                "alg": "Ed25519",
+                "now": 4000,
+                "tmb": key.tmb.to_b64(),
+                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
+                "id": key2.tmb.to_b64()
+            }),
+            sig: vec![0; 64],
+        };
+        let cz = crate::parsed_coz::ParsedCoz {
+            kind: CozKind::KeyCreate {
+                pre: pre.clone(),
+                id: key2.tmb.clone(),
+            },
+            signer: key.tmb.clone(),
+            now: 4000,
+            czd: Czd::from_bytes(vec![0xAB; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: None,
+            raw,
+        };
+        principal
+            .apply_transaction_test(cz, Some(key2.clone()))
+            .unwrap();
+
+        assert_eq!(principal.active_algs(), vec![HashAlg::Sha256, HashAlg::Sha512]);
+        assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
+    }
+
+    /// c2/a2 — the recursive singleton-promotion property, extended through
+    /// the FULL new chain (`genesis_pr_equals_sr_verbatim` already proves it
+    /// at PT's root alone): for a single-key, no-data-action, no-commit
+    /// principal, `tmb == KR == AR == SR == PR`, byte-for-byte, for every
+    /// registered algorithm. Every hop is the same native 1-cell promotion
+    /// mechanism, composed recursively — no special-case machinery.
+    #[test]
+    fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
+        let key = make_test_key_ed25519(0xCC);
+        let tmb_bytes = key.tmb.as_bytes().to_vec();
+        let principal = Principal::implicit(key).unwrap();
+
+        let alg = principal.hash_alg();
+        assert_eq!(principal.active_algs(), vec![alg]);
+
+        assert_eq!(principal.key_root().get(alg).unwrap(), tmb_bytes.as_slice());
+        assert_eq!(principal.auth_root().get(alg).unwrap(), tmb_bytes.as_slice());
+        assert_eq!(
+            principal.sr().unwrap().get(alg).unwrap(),
+            tmb_bytes.as_slice()
+        );
+        assert_eq!(principal.pr().get(alg).unwrap(), tmb_bytes.as_slice());
     }
 }

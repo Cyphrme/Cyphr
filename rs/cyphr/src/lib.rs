@@ -30,6 +30,10 @@ pub mod parsed_coz;
 pub mod principal;
 /// Principal Tree (PT) logic — the `EpochTree` backing the Principal Root.
 pub mod principal_tree;
+/// Semantic Tree nodes (KT, AR-node, SR-node) — generalizes `PrincipalTree`'s
+/// pattern from "one instance at the root" to "one instance per semantic
+/// node." See module docs for the full design.
+pub mod semantic_tree;
 pub mod state;
 // ...
 /// Transaction structure definitions.
@@ -51,7 +55,7 @@ pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, verify_coz};
 pub use principal::Principal;
 pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
-    StateRoot, compute_ar, compute_commit_id, compute_dr, compute_kr, compute_pr, compute_sr,
+    StateRoot, compute_commit_id, compute_dr, compute_pr,
 };
 pub use transaction::Transaction;
 pub use transaction_root::{TransactionCommitRoot, TransactionMutationRoot, TransactionRoot};

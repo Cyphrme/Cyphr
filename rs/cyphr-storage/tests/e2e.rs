@@ -696,7 +696,8 @@ fn e2e_dynamic_edge_cases() {
 /// state derivation across all supported algorithms.
 #[test]
 fn e2e_multihash_round_trip() {
-    use cyphr::state::{compute_ar, compute_kr, compute_pr, compute_sr};
+    use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
+    use cyphr::state::compute_pr;
 
     let pool = load_pool();
     let intent = load_e2e_intents("multihash_coherence.toml");
@@ -753,8 +754,10 @@ fn e2e_multihash_round_trip() {
         // Get thumbprints from current keyset
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
-        // Recompute KS with all active algorithms
-        let recomputed_ks = compute_kr(&thumbprints.to_vec(), None, &active_algs).unwrap();
+        // Recompute KR via the real KT (not the demoted compute_kr oracle,
+        // which only agrees with KT for single-algorithm keysets — see
+        // cyphr::state::compute_kr's doc comment).
+        let recomputed_ks = KeyTree::build(&thumbprints, &active_algs).unwrap();
 
         // Verify each algorithm variant matches
         for alg in active_algs.clone() {
@@ -805,8 +808,8 @@ fn e2e_multihash_round_trip() {
         }
 
         // --- Step 4: Full AS/CS/PS recomputation verification ---
-        // Recompute AS from KS
-        let recomputed_as = compute_ar(&recomputed_ks, None, None, &active_algs).unwrap();
+        // Recompute AS from KS via the real AR-node.
+        let recomputed_as = AuthTree::build(&recomputed_ks, &active_algs).unwrap();
 
         for alg in active_algs.clone() {
             assert_eq!(
@@ -818,9 +821,9 @@ fn e2e_multihash_round_trip() {
             );
         }
 
-        // Recompute SR from AR + DR?
+        // Recompute SR from AR + DR via the real SR-node.
         let recomputed_sr =
-            compute_sr(&recomputed_as, principal.data_root(), None, &active_algs).unwrap();
+            StateTree::build(&recomputed_as, principal.data_root(), &active_algs).unwrap();
 
         // Recompute PR from SR + CR?
         let cr = principal.cr();
