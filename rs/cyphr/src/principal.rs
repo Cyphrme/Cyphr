@@ -240,22 +240,39 @@ impl Principal {
 
 /// One hop of a chained inclusion proof: a self-contained leaf proof for a
 /// specific level's cell, verified against that level's own root.
+///
+/// Crate-internal only (see [`NodePath`]'s note on why this isn't a public
+/// portable proof type yet).
 #[derive(Debug, Clone)]
-pub struct NodePathHop {
+pub(crate) struct NodePathHop {
     /// The leaf proof for this hop.
-    pub proof: eml::LeafProof,
+    pub(crate) proof: eml::LeafProof,
 }
 
-/// A self-contained, top-down chain of inclusion hops — the generalization
-/// of [`Principal::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain
+/// A top-down chain of inclusion hops used internally by
+/// [`Principal::verify_key_inclusion`] — the generalization of
+/// [`Principal::verify_transaction_inclusion`]'s 2-hop CR-in-PR chain
 /// (REMEDIATION.md §8: "a sequence of hops... verified top-down from a
 /// trusted PR"). [`Principal::key_inclusion_proof`] produces the concrete
 /// 4-hop instance chaining a key's thumbprint through KT -> AR-node ->
 /// SR-node -> PT.
+///
+/// **Not a portable external proof type (crate-internal only).**
+/// [`Self::verify`] requires the caller to already supply every
+/// intermediate root (KR/AR/SR), and never binds the target leaf itself —
+/// it proves "some leaf at `hops[0]`'s position sits under `roots`", not
+/// "thumbprint T is included." In its one current use
+/// ([`Principal::verify_key_inclusion`]) that's the right shape: generation
+/// is keyed on the target thumbprint and the roots come from the
+/// principal's own trusted cache, so it functions correctly as an
+/// internal proof/cache cross-check. A genuinely portable proof — one a
+/// remote verifier holding only a published PR and a thumbprint could
+/// check unassisted — is separate design work for whichever future node
+/// needs cross-crate verification, not a widening of this type now.
 #[derive(Debug, Clone)]
-pub struct NodePath {
+pub(crate) struct NodePath {
     /// Hops in leaf-to-root order.
-    pub hops: Vec<NodePathHop>,
+    pub(crate) hops: Vec<NodePathHop>,
 }
 
 impl NodePath {
@@ -272,7 +289,7 @@ impl NodePath {
     /// so `verify` reduces to a direct byte-equality check against `roots`
     /// through the same code path every other hop uses.
     #[must_use]
-    pub fn verify(&self, hasher: &dyn eml::Hasher, roots: &[&[u8]]) -> bool {
+    pub(crate) fn verify(&self, hasher: &dyn eml::Hasher, roots: &[&[u8]]) -> bool {
         if self.hops.len() != roots.len() || self.hops.is_empty() {
             return false;
         }
@@ -839,11 +856,15 @@ impl Principal {
     /// `Principal` (see [`crate::semantic_tree`]'s module docs); `PT` is the
     /// one node type that does, so its hop reuses `self.pt` directly.
     ///
+    /// Crate-internal only (returns [`NodePath`], which is not a public
+    /// type — see its doc comment). [`Self::verify_key_inclusion`] is the
+    /// public entry point.
+    ///
     /// # Errors
     ///
     /// [`Error::UnsupportedAlgorithm`] if `alg` is not currently active, or
     /// `tmb` does not name a currently active key.
-    pub fn key_inclusion_proof(&self, alg: HashAlg, tmb: &Thumbprint) -> Result<NodePath> {
+    pub(crate) fn key_inclusion_proof(&self, alg: HashAlg, tmb: &Thumbprint) -> Result<NodePath> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
         let active_algs = self.active_algs();
         if !active_algs.contains(&alg) {
