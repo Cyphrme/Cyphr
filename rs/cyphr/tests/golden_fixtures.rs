@@ -156,6 +156,42 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
     }
 
+    // NOTE: none of the persisted fixtures under tests/golden/ currently
+    // carry a `cr` value (see GoldenExpected::cr's doc comment), so this
+    // branch is dormant against the on-disk corpus today — it does not
+    // mean the corpus already covers CR. See
+    // test_fixtures::golden::tests::test_generate_single_commit for the
+    // round-trip check that does exercise this equality.
+    if let Some(ref cr) = expected.cr {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        // Parse alg:digest format
+        let (alg, expected_digest) = parse_alg_digest(cr)
+            .unwrap_or_else(|| panic!("{}: invalid cr format (expected alg:digest)", test_name));
+        let hash_alg = parse_hash_alg(&alg)
+            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+        let actual_cr = principal
+            .cr()
+            .and_then(|cr_val| cr_val.get(hash_alg))
+            .map(Base64UrlUnpadded::encode_string)
+            .unwrap_or_default();
+        assert_eq!(actual_cr, expected_digest, "{}: cr mismatch", test_name);
+    }
+
+    if let Some(ref sr) = expected.sr {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        // Parse alg:digest format
+        let (alg, expected_digest) = parse_alg_digest(sr)
+            .unwrap_or_else(|| panic!("{}: invalid sr format (expected alg:digest)", test_name));
+        let hash_alg = parse_hash_alg(&alg)
+            .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
+        let actual_sr = principal
+            .sr()
+            .and_then(|sr_val| sr_val.get(hash_alg))
+            .map(Base64UrlUnpadded::encode_string)
+            .unwrap_or_default();
+        assert_eq!(actual_sr, expected_digest, "{}: sr mismatch", test_name);
+    }
+
     if let Some(ref pg) = expected.pg {
         // Skip empty PG or non-prefixed format (implicit genesis uses raw thumbprint)
         if !pg.is_empty() {
