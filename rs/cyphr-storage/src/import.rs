@@ -351,11 +351,6 @@ pub(crate) fn replay_commits(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        eprintln!(
-            "  [replay_commits] commit_idx={}, cozies_count={}",
-            commit_idx,
-            commit.cozies.len()
-        );
         if commit.cozies.is_empty() {
             return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
         }
