@@ -53,6 +53,16 @@ All active development happens here.
 
 ## Known traps (verified 2026-07-06; fix, don't inherit)
 
+- **Per-mutation `pre` is rejected-draft residue, slated for removal.**
+  The spec author ruled (PR #39 thread) that mutation transactions do NOT
+  carry `pre` — commit atomicity/chaining/order ride in the commit
+  transaction's `arrow` alone. The implementation currently requires
+  `pre` on every mutation (`verify_pre`, `rs/cyphr/src/principal.rs`),
+  all fixtures carry it, and `err_transaction_missing_pre` asserts its
+  absence is an error. Do not extend or "fix toward" this pattern; its
+  removal (code + fixtures + docs/specs/transactions.md) is scoped
+  campaign work.
+
 - **Crate READMEs lie.** All three (`cyphr`, `cyphr-storage`, `cyphr-cli`)
   document APIs/commands that do not exist. Trust `lib.rs` exports and
   tests, not READMEs, until the truth-restoration pass lands.

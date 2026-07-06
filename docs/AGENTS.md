@@ -89,6 +89,31 @@ SPEC.md change:
   when an existing digest already commits to the data. Redundant fields in
   signed pays are bloat, and AI-authored proposals systematically
   underweigh this.
+- **Authority order: SPEC.md prose outranks everything downstream.** The
+  derived specs (`docs/specs/*.md`) and the reference implementation can
+  and do encode stale draft designs; their constraint tags and MUST
+  language make them LOOK more normative than SPEC.md, and treating them
+  as protocol intent is the single failure mode that has repeatedly
+  produced wrong spec proposals. Canonical example (spec author, PR #39
+  thread, 2026-07-06): per-mutation `pre` in signed transaction pays is
+  a rejected old draft — commit atomicity, bundling, and order all ride
+  in the commit transaction's `arrow`, and only commit cozies need it —
+  yet the implementation requires `pre` on every mutation,
+  `transactions.md` mandates it ([transaction-pre-required],
+  [commit-pre-chain]), and a golden fixture asserts its absence errors.
+  When SPEC.md and downstream artifacts disagree, the default reading is
+  "downstream is stale," and the resolution is a question to the spec
+  author, never a spec amendment to match downstream.
+- **Two authorization contexts — never mix their rules.** *Intra-commit*:
+  transactions within a commit apply sequentially ("one-by-one using a
+  given order as dictated by the principal", SPEC §4); a key activated by
+  an earlier transaction may authorize a later one, a key revoked earlier
+  is barred (spec author, PR #39 thread). *Extra-commit*: external
+  authenticators see only commits — intra-commit transactions are
+  ephemeral to them, so external authorization is evaluated against
+  committed state. Rules stated for one context are not contradictions of
+  the other; `transactions.md`'s [pre-mutation-key-rule] conflated the
+  two and needs rewriting with the contexts distinguished.
 
 ## Invariants
 
