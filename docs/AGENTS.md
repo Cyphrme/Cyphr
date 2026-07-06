@@ -64,6 +64,32 @@ sites; Netlify builds on push.
   KV-not-SQL (root R3). When docs and forge issues conflict, the forge +
   root `AGENTS.md` win.
 
+## Protocol model — tenets for any spec-touching work
+
+Learned the hard way (a spec-amendment proposal was withdrawn after review
+by the spec's author; see closed PR #39). Internalize before proposing any
+SPEC.md change:
+
+- **The spec's domain ends at structures, digests, and the wire format.**
+  The wire format is the disclosure channel: it carries full information
+  (including transaction order, via the `txs` array) when a principal
+  chooses to authenticate to a party. Storage, indexing, and persistence
+  are implementation domain — never propose a spec change to solve an
+  implementation persistence problem.
+- **Digests are commitments.** Whoever needs to re-prove a pre-image
+  (order included) is responsible for retaining it. If the implementation
+  received data and discarded it, that is an implementation bug; the
+  protocol owes no second carrier for data a digest already commits to.
+- **Obfuscation-by-digest is an intentional privacy property.** That
+  reconstructing undisclosed information from digests is O(n!)-hard is the
+  design working, not a smell or a DoS vector — the spec directs clients
+  to error (`TRANSACTION_ORDER_UNKNOWN`) rather than search. Nobody is
+  obligated to brute-force; an implementation that does so volunteered.
+- **Succinctness is heavily weighted.** Do not propose new signed fields
+  when an existing digest already commits to the data. Redundant fields in
+  signed pays are bloat, and AI-authored proposals systematically
+  underweigh this.
+
 ## Invariants
 
 - **I1 — Truthful status or none.** A verification/status annotation that

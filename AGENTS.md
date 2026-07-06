@@ -96,11 +96,16 @@ is a working scaffold, not the finished authority.
 
 ## Unknowns
 
-- **U1 — Intra-commit ordering.** The wire format has no intra-commit
-  ordering primitive; recovery must currently guess (permutation search in
-  reindex). Resolution: nrd/Zami decision — wire-format field vs
-  arrow-chain-derived order. Grounding: `rs/cyphr-storage/src/engine/mod.rs`
-  (`permutations` in `reindex`).
+- **U1 — RESOLVED (2026-07-06): order retention is implementation work.**
+  The wire format already carries intra-commit order (`txs` array); the
+  storage engine discards it at ingest and brute-forces it back during
+  reindex — that is a storage bug, not a spec gap (spec author's ruling,
+  closed PR #39; tenets in `docs/AGENTS.md`). Fix: retain order at ingest,
+  verify against `arrow` on replay, error on absent order, delete the
+  permutation search (`rs/cyphr-storage/src/engine/mod.rs`). Two spec
+  clarifications pending from the spec author: the explicit sequential-
+  visibility authorization rule, and whether per-mutation `pre` in signed
+  pays stays or goes (fixture-regenerating either way).
 - **U2 — Live-principal concurrency.** `CloneableLog` is sound only under
   fresh-`Principal`-per-call; the server's shape (long-lived principals,
   concurrent requests) needs either external per-principal serialization
