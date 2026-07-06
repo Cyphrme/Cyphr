@@ -805,7 +805,8 @@ impl<S: eml::Storage> Principal<S> {
     /// Get the current Principal State as a tagged digest string (alg:digest format).
     ///
     /// Uses the lexicographically first algorithm from active_algs for deterministic output.
-    /// This is the canonical format for the `pre` field in cozies (SPEC §4.3).
+    /// This is the canonical tagged-digest format used e.g. for `principal/create`'s
+    /// `id` field (SPEC §4.3, §5.1).
     ///
     /// # Errors
     ///
@@ -1211,7 +1212,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
@@ -1421,7 +1421,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub(crate) fn apply_verified_internal(
@@ -1544,8 +1543,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         match &cz.kind {
-            CozKind::KeyCreate { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyCreate { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
@@ -1558,12 +1556,10 @@ impl<S: eml::Storage> Principal<S> {
                 }
                 self.add_key(key, cz.now);
             },
-            CozKind::KeyDelete { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyDelete { id } => {
                 self.remove_key(id)?;
             },
-            CozKind::KeyReplace { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyReplace { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
@@ -1577,20 +1573,16 @@ impl<S: eml::Storage> Principal<S> {
                 // (we just added a key, so this is safe)
                 self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
             },
-            CozKind::SelfRevoke { pre, rvk } => {
-                // Per protocol simplification, revoke requires pre like all other coz
-                self.verify_pre(pre)?;
+            CozKind::SelfRevoke { rvk } => {
                 self.revoke_key(&cz.signer, *rvk, None)?;
             },
-            CozKind::PrincipalCreate { pre, id } => {
+            CozKind::PrincipalCreate { id } => {
                 // Genesis finalization (SPEC §5.1)
                 // Verify signer is a genesis key
                 let signer_b64 = cz.signer.to_b64();
                 if !self.genesis_keys.contains(&signer_b64) {
                     return Err(Error::UnknownKey);
                 }
-                // Verify that `pre` matches the current PS (chain continuity)
-                self.verify_pre(pre)?;
                 // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
@@ -1812,7 +1804,6 @@ impl<S: eml::Storage> Principal<S> {
     /// - `InvalidSignature`: Signature doesn't verify
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
-    /// - `InvalidPrior`: `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no keys
     #[must_use = "coz application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
@@ -1846,21 +1837,6 @@ impl<S: eml::Storage> Principal<S> {
 
         // Apply as single-cz atomic commit
         self.apply_transaction(vtx)
-    }
-
-    /// Verify that `pre` matches the expected prior Principal State.
-    ///
-    /// Per SPEC §4, the `pre` field references the previous PS.
-    /// At genesis (no prior commits), PS is implicitly promoted from AS,
-    /// so `pre` is compared against the promoted auth_root.
-    fn verify_pre(&self, pre: &PrincipalRoot) -> Result<()> {
-        let alg = pre.0.algorithms().next().ok_or(Error::EmptyMultihash)?;
-        let current = self.pr.0.get_or_err(alg)?;
-        let expected = pre.0.get_or_err(alg)?;
-        if current != expected {
-            return Err(Error::InvalidPrior);
-        }
-        Ok(())
     }
 
     /// Add a key to the active key set.
@@ -2048,35 +2024,19 @@ mod tests {
     // ParsedCoz application tests
     // ========================================================================
 
-    fn make_key_add_tx(
-        pre: &PrincipalRoot,
-        new_key: &Key,
-        signer: &Thumbprint,
-    ) -> crate::parsed_coz::ParsedCoz {
+    fn make_key_add_tx(new_key: &Key, signer: &Thumbprint) -> crate::parsed_coz::ParsedCoz {
         use coz::Czd;
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
         use crate::parsed_coz::{CozKind, ParsedCoz};
 
         // Create dummy raw CozJson for test cozies
-        let ps_bytes = pre
-            .get(HashAlg::Sha256)
-            .or_else(|| {
-                pre.as_multihash()
-                    .variants()
-                    .values()
-                    .next()
-                    .map(AsRef::as_ref)
-            })
-            .expect("PrincipalRoot must have at least one variant");
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
                 "id": new_key.tmb.to_b64()
             }),
             sig: vec![0; 64],
@@ -2084,7 +2044,6 @@ mod tests {
 
         ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre: pre.clone(),
                 id: new_key.tmb.clone(),
             },
             signer: signer.clone(),
@@ -2101,9 +2060,8 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal
             .apply_transaction_test(cz, Some(key2.clone()))
@@ -2124,9 +2082,8 @@ mod tests {
             .get(principal.hash_alg())
             .unwrap()
             .to_vec();
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
         // apply_transaction_test auto-finalizes the commit
@@ -2141,23 +2098,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_key_add_pre_mismatch_fails() {
-        use crate::multihash::MultihashDigest;
-
-        let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone()).unwrap();
-
-        // Wrong pre value
-        let wrong_pre =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xFF; 32]).unwrap());
-        let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
-
-        let result = principal.apply_transaction_test(cz, Some(key2));
-        assert!(matches!(result, Err(Error::InvalidPrior)));
-    }
-
-    #[test]
     fn pr_still_none_after_transaction() {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
@@ -2168,9 +2108,8 @@ mod tests {
             "PR should be None before principal/create"
         );
 
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
@@ -2265,10 +2204,8 @@ mod tests {
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
 
-        let pre = principal.pr().clone();
-
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
@@ -2298,10 +2235,8 @@ mod tests {
 
         use crate::parsed_coz::{CozKind, ParsedCoz};
 
-        let pre = principal.pr().clone();
-
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
@@ -2326,12 +2261,11 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.pr().clone();
         let mut key2 = make_test_key(0x22);
         key2.first_seen = 0; // Caller may not set this
 
         // ParsedCoz has now=2000
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
         assert_eq!(cz.now, 2000);
 
         principal
@@ -2357,11 +2291,9 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        let pre = principal.pr().clone();
-
         // Revoke key2 (self-revoke)
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 1500 },
+            kind: CozKind::SelfRevoke { rvk: 1500 },
             signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
@@ -2392,7 +2324,6 @@ mod tests {
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
         // Apply a key/create coz with now=5000
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
 
         use coz::Czd;
@@ -2400,7 +2331,6 @@ mod tests {
         use crate::parsed_coz::{CozKind, ParsedCoz};
         let cz = ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre,
                 id: key2.tmb.clone(),
             },
             signer: key1.tmb.clone(),
@@ -2448,12 +2378,10 @@ mod tests {
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 2) as u8);
-            let pre = principal.pr().clone();
             let signer = keys.last().unwrap().tmb.clone();
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    pre,
                     id: new_key.tmb.clone(),
                 },
                 signer: signer.clone(),
@@ -2522,11 +2450,9 @@ mod tests {
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 3) as u8);
-            let pre = principal.pr().clone();
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    pre,
                     id: new_key.tmb.clone(),
                 },
                 signer: signer.clone(),
@@ -3033,10 +2959,9 @@ mod tests {
             vec![HashAlg::Sha256, HashAlg::Sha512]
         );
 
-        let pre = principal.pr().clone();
         let id = principal.auth_root().clone();
         let cz = ParsedCoz {
-            kind: CozKind::PrincipalCreate { pre, id },
+            kind: CozKind::PrincipalCreate { id },
             signer: key_es256.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x33; 32]),
@@ -3077,9 +3002,8 @@ mod tests {
 
         {
             let mut scope = principal.begin_commit();
-            let pre = pr_before.clone();
             let key2 = make_test_key(0x22);
-            let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+            let cz = make_key_add_tx(&key2, &key1.tmb);
             let vtx = crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz, Some(key2));
             scope.apply(vtx).unwrap();
             // Deliberately dropped here without calling finalize().
@@ -3132,9 +3056,8 @@ mod tests {
 
         // Ed25519 key self-revokes; ES256 remains, so this is not a
         // last-active-key revoke (which would be rejected).
-        let pre = principal.pr().clone();
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key_ed25519.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
@@ -3187,9 +3110,8 @@ mod tests {
         assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
         assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
 
-        let pre = principal.pr().clone();
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key_ed25519.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
@@ -3230,7 +3152,6 @@ mod tests {
     #[test]
     fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
         use coz::Czd;
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
         use crate::parsed_coz::CozKind;
@@ -3245,23 +3166,19 @@ mod tests {
         // A key/create tx timestamped after the action (make_test_action
         // uses now=3000; make_key_add_tx's fixed now=2000 would fail
         // timestamp ordering, so this is constructed inline instead).
-        let pre = principal.pr().clone();
         let key2 = make_test_key_ed25519(0x22);
-        let ps_bytes = pre.get(HashAlg::Sha256).unwrap();
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "Ed25519",
                 "now": 4000,
                 "tmb": key.tmb.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
                 "id": key2.tmb.to_b64()
             }),
             sig: vec![0; 64],
         };
         let cz = crate::parsed_coz::ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre: pre.clone(),
                 id: key2.tmb.clone(),
             },
             signer: key.tmb.clone(),
@@ -3314,9 +3231,8 @@ mod tests {
     // ========================================================================
 
     /// Build an explicit-genesis `principal/create` coz for `key`, signed
-    /// against `pre`/`id` taken from the given principal — the minimal
-    /// mutation that drives `establish_pg`'s Nascent → Established
-    /// transition.
+    /// against `id` taken from the given principal — the minimal mutation
+    /// that drives `establish_pg`'s Nascent → Established transition.
     fn make_principal_create_tx<S: eml::Storage>(
         principal: &Principal<S>,
         key: &Key,
@@ -3328,7 +3244,6 @@ mod tests {
 
         ParsedCoz {
             kind: CozKind::PrincipalCreate {
-                pre: principal.pr().clone(),
                 id: principal.auth_root().clone(),
             },
             signer: key.tmb.clone(),

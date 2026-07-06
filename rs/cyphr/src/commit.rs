@@ -16,7 +16,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 /// Per SPEC §4:
 /// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
-/// - `pre` of first coz references previous commit's CS (or promoted AS for genesis)
+/// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references
+///   the previous commit's CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
@@ -338,7 +339,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply(&mut self, vtx: VerifiedCoz) -> crate::error::Result<()> {

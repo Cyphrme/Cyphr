@@ -93,9 +93,6 @@ pub struct SetupIntent {
 /// Override fields for error tests.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OverrideIntent {
-    /// Override `pre` field value (for InvalidPrior tests).
-    #[serde(default)]
-    pub pre: Option<String>,
     /// Override `tmb` field value (for UnknownKey tests).
     #[serde(default)]
     pub tmb: Option<String>,
@@ -105,9 +102,6 @@ pub struct OverrideIntent {
     /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
     #[serde(default)]
     pub inject_pre: Option<bool>,
-    /// Omit the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
-    #[serde(default)]
-    pub omit_pre: Option<bool>,
     /// Bypass the empty commit validation to force an empty commit generation (for
     /// [commit-one-or-more] tests).
     #[serde(default)]

@@ -90,13 +90,11 @@ fn add(
 
     // Build pay Value for key/create (without commit — finalize_with_commit injects it)
     let now = current_timestamp();
-    let pre = principal.pr_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
     pay_map.insert("id".to_string(), Value::String(new_key_tmb.clone()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
-    pay_map.insert("pre".to_string(), Value::String(pre));
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(
         "typ".to_string(),
@@ -184,12 +182,10 @@ fn revoke(
     // Build pay Value for key/revoke. `id` MUST be absent for self-revoke;
     // its presence is rejected at parse time.
     let now = current_timestamp();
-    let pre = principal.pr_tagged()?;
 
     let mut pay_map: IndexMap<String, Value> = IndexMap::new();
     pay_map.insert("alg".to_string(), Value::String(signer_stored.alg.clone()));
     pay_map.insert("now".to_string(), Value::Number(now.into()));
-    pay_map.insert("pre".to_string(), Value::String(pre));
     pay_map.insert("rvk".to_string(), Value::Number(now.into()));
     pay_map.insert("tmb".to_string(), Value::String(signer_tmb.to_string()));
     pay_map.insert(

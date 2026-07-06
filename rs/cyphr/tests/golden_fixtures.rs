@@ -76,7 +76,6 @@ fn cad_to_b64(cad: &coz::Cad) -> String {
 fn error_name(e: &cyphr::error::Error) -> &'static str {
     use cyphr::error::Error;
     match e {
-        Error::InvalidPrior => "InvalidPrior",
         Error::UnknownKey => "UnknownKey",
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
@@ -285,10 +284,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[transaction-pre-required]" => "MalformedPayload",
         "[data-action-no-pre]" => "MalformedPayload",
-        "[commit-pre-chain]" => "InvalidPrior",
-        "[no-orphan-pre]" => "InvalidPrior",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",

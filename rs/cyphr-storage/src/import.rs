@@ -85,10 +85,6 @@ pub enum LoadError {
     #[error("invalid signature at index {index}: {message}")]
     InvalidSignature { index: usize, message: String },
 
-    /// ParsedCoz pre field doesn't match expected AS.
-    #[error("broken chain at index {index}: pre mismatch")]
-    BrokenChain { index: usize },
-
     /// Unknown signer key.
     #[error("unknown signer at index {index}: {tmb}")]
     UnknownSigner { index: usize, tmb: String },
@@ -144,7 +140,6 @@ pub(crate) fn is_transaction_typ(typ: &str) -> bool {
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -249,7 +244,6 @@ pub fn load_from_checkpoint(
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -321,7 +315,6 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                         index,
                         message: "signature verification failed".into(),
                     },
-                    cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
                         tmb: pay
@@ -493,7 +486,6 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                                 index,
                                 message: "signature verification failed".into(),
                             },
-                            cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
                             cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                                 index,
                                 tmb: pay
