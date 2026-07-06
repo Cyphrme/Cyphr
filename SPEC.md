@@ -530,10 +530,24 @@ data actions today, unlike the key-membership proof in §13.2.
 
 A **commit** is an ordered, finalized atomic bundle that mutates the Principal
 Tree (PT). A commit consist of one to many transactions, denoted by `typ`, and
-transactions themselves consist of one to many cozies. Many mutations may occur
-per commit and are applied one-by-one using a given order as dictated by the
-principal. Unlike other systems, there are no minting fees, gas, or need for a
-global ledger.
+transactions themselves consist of one to many cozies. Unlike other systems,
+there are no minting fees, gas, or need for a global ledger.
+
+Cyphr has two levels of atomicity. Each transaction is atomic, and the commit
+containing them is atomic: either every transaction in a commit applies or
+none do. Within a commit, transactions are applied sequentially in commit
+order, and each transaction observes the effects of the transactions before
+it. A key made active by an earlier transaction may authorize a later
+transaction in the same commit; a key revoked by an earlier transaction MUST
+NOT authorize a later transaction in the same commit. Authorization is
+evaluated in commit order against the running state, beginning from the state
+named by `pre`.
+
+Commit order is chosen by the principal and is normative: it determines the
+resulting state and the commit's identifiers. Because order is meaningful, it
+is carried inside the signed commit transaction itself (see [Commit
+Finality](#43-commit-finality)) and is never inferred from timestamps,
+storage layout, or transport framing.
 
 For example, a commit may have three transactions: one transaction for
 `key/replace`, signed by two keys and consisting of two cozies, one for
@@ -566,21 +580,33 @@ defines intent. Clients verify transactions based on the principal's auth tree
     "now": 1623132000,
     "typ": "cyphr.me/key/create",
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Existing key
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key's tmb
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key's tmb
+    "pre": "<b64ut>" // Prior PR, the state being mutated
   },
   "sig": "<b64ut>"
 }
 ```
+
+Every mutation transaction coz MUST carry `pre` in its signed pay, naming the
+Principal Root of the state being mutated. `pre` anchors the signed statement
+to one exact state: it groups the transaction into exactly one commit, and it
+expires the statement the moment state moves. A signed transaction whose
+`pre` no longer names the current PR is unusable, so stale or stolen
+authorizations die on the next commit rather than remaining adoptable
+forever. All transactions in one commit therefore carry an identical `pre`.
+At genesis no prior PR exists and `pre` names the promoted root instead (see
+[Genesis](#5-genesis)).
 
 The wire format for transactions, labeled by the field `txs`, is a list of
 lists, where each list item is a transaction.  Each transaction contains one to
 many cozies. Transactions and cozies are ordered as specified by the principal
 with the condition of the commit transaction appearing last.
 
-Transaction order is the sequence of `txs` and is explicitly denoted by the
-`txs_order`. Although inter-transaction coz ordering is not relevant for
-principal mutation, it is relevant for identifier calculation. Transactions
-order itself is mutation relevant.
+Transaction order is mutation relevant: it determines the resulting state.
+The normative order is the enumeration signed inside the commit transaction
+(see [Commit Finality](#43-commit-finality)); the `txs` array's order MUST
+agree with that enumeration. Inter-transaction coz ordering is not relevant
+for principal mutation, but it is relevant for identifier calculation.
 
 ### 4.2 Arrow
 
@@ -606,6 +632,17 @@ A commit's id is equal to TR, however `commit/create` uses the field `arrow`
 instead of `id` since the identifier of a commit is only calculable after
 finalization.
 
+The commit transaction's signed pay MUST also carry `txs`, the ordered
+enumeration of the commit's member transactions: a list of lists of `czd`s
+mirroring the shape of the wire format's `txs` array, excluding the commit
+transaction itself (a signature cannot sign itself; the commit transaction's
+own position is always last). This enumeration is the normative record of
+both commit membership and commit order. It is signed by the finalizing key
+exactly as a block producer signs a block body, it persists with the commit
+transaction, and any party holding the commit's cozies can reconstruct and
+verify the commit without consulting timestamps, storage order, or transport
+framing.
+
 ```json5
 {
   "txs": [[{ // Commit transaction (last entry in `txs`)
@@ -614,11 +651,33 @@ finalization.
           "now": 1623132000,
           "typ": "cyphr.me/cyphr/commit/create",
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          "arrow": "<b64ut>" // Transition arrow: MR(pre, fwd, TMR)
+          "arrow": "<b64ut>", // Transition arrow: MR(pre, fwd, TMR)
+          "txs": [["<czd>"], ["<czd>", "<czd>"]] // Ordered member enumeration
         },
         "sig": "<b64ut>"
 }]]}
 ```
+
+A commit whose provided transactions do not match its signed enumeration,
+in membership or in order, is invalid; clients MUST reject it with
+`COMMIT_ENUMERATION_INVALID` and MUST NOT attempt to recover an order by
+search.
+
+#### Commit Membership and Recovery
+
+`pre` and the signed enumeration together make every commit reconstructable
+from an unordered pool of stored cozies, with no auxiliary records:
+
+- Transactions sharing a `pre` belong to the same commit; the finalizer's
+  signed enumeration confirms membership and gives the order.
+- Two finalized commits naming the same `pre` are by definition a fork (see
+  section [Consensus](#15-consensus)); recovery surfaces forks rather than
+  merging them.
+- Artifacts that carry no `pre` (data actions, naked revokes) are not
+  members of any commit's mutation set.
+- Recovery therefore proceeds: group by `pre`, order by the finalizer's
+  enumeration, replay, and verify the result against `arrow`. A mismatch is
+  an integrity error, never an ordering puzzle.
 
 To discourage client misbehavior, inconsistencies in finality may be used as a
 proof of error (see section [Proof of Error](#152-proof-of-error)).
@@ -694,12 +753,14 @@ Transaction:
 - `TMR`:   <b64ut> MR(txm₀?, txm₁?, ...)
 - `TCR`:   <b64ut> TCR = TX꜀
 - `txs_order`: [TX₀, TX₁?, ...] An array of transaction MR identifiers (TX ids),
-  enumerating transaction order.
+  enumerating transaction order. Informative only; the normative order is the
+  enumeration signed in the commit transaction's pay (see [Commit
+  Finality](#43-commit-finality)).
 - `txs_czds`: [`czd₀`, ...] An array `czd`s enumerating cozie order for the
-  entire commit.
+  entire commit. Informative only; derivable from the signed enumeration.
 - `txs_tree`: {"TX₀":[`czd₀`: <b64ut>, ...], ...} An object with each
   transaction labeled which contains an array of `czd`s in order for the
-  transaction.
+  transaction. Informative only; derivable from the signed enumeration.
 
 State meta:
 - `pre_CT`: <b64ut> MT(TR₀, TR₁?, ...) the tree before the commit.
@@ -864,7 +925,8 @@ outside of the transactions with only `tmb` signed within the coz.
           "now": 1623132000,
           "typ": "cyphr.me/cyphr/key/create",
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The `tmb` of the new key.  In this case, itself.
+          "pre": "<b64ut>" // Genesis: the promoted root (no prior PR exists)
         },
         "sig": "<b64ut>"
       }],[{ // TX1
@@ -873,7 +935,8 @@ outside of the transactions with only `tmb` signed within the coz.
           "now": 1623132000,
           "typ": "cyphr.me/cyphr/principal/create",
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // ID == PG == SR (No Commit, no CR)
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG == SR (No Commit, no CR)
+          "pre": "<b64ut>" // Genesis: the promoted root (no prior PR exists)
         },
         "sig": "<b64ut>"
       }],[{// Commit transaction, TX2
@@ -882,7 +945,8 @@ outside of the transactions with only `tmb` signed within the coz.
           "now": 1623132000,
           "typ": "cyphr.me/cyphr/commit/create",
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          "arrow": "<b64ut>"
+          "arrow": "<b64ut>",
+          "txs": [["<czd>"], ["<czd>"]] // Signed member enumeration: TX0, TX1 in order
         },
         "sig": "<b64ut>"
   }]],
@@ -941,11 +1005,13 @@ Format](#46-json-wire-format)).
 }}
 ```
 
-In the above wire format order is given.  If using a different wire format where
-order is not provided, clients should throw error `TRANSACTION_ORDER_UNKNOWN`.
-A principal may purposely omit order to intentionally obfuscate authentication
-by witnesses; solving transaction order is 0(n!), and so with sufficient
-complexity, commit authentication is obfuscated.
+Transaction order is never absent: it rides in the commit transaction's
+signed `txs` enumeration regardless of wire format or storage layout. A
+commit whose cozies do not match its signed enumeration, or whose finalizer
+lacks the enumeration, is invalid (`COMMIT_ENUMERATION_INVALID`). Clients
+MUST NOT attempt to reconstruct an omitted order by search; recovering order
+from digests alone is O(n!) work and accepting such a burden would let any
+principal impose it on every verifying witness.
 
 ### 5.3 Multi-Key Genesis
 
@@ -989,7 +1055,8 @@ complexity, commit authentication is obfuscated.
           "now": 1623132000,
           "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
           "typ": "cyphr.me/cyphr/commit/create",
-          "arrow": "<b64ut>"
+          "arrow": "<b64ut>",
+          "txs": [["<czd>"], ["<czd>"], ["<czd>"]] // Signed member enumeration: TX0, TX1, TX2 in order
         },
         "sig": "<b64ut>"
       }]],
@@ -3521,7 +3588,7 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 | `INVALID_SIGNATURE` | Signature does not verify against claimed key   | All  |
 | `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in KR        | All  |
 | `UNKNOWN_ALG`       | Client doesn't know or support the algorithm    | All  |
-| `TRANSACTION_ORDER_UNKNOWN` | Unknown commit transaction order        | 3+   |
+| `COMMIT_ENUMERATION_INVALID` | Commit cozies missing from or mismatched with the signed `txs` enumeration | 1+   |
 | `COZ_REUSE`         | A coz was attempted to be reused                | 3+   |
 | `TIMESTAMP_PAST`    | `now` < PR timestamp or outside tolerance       | All  |
 | `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                 | All  |
