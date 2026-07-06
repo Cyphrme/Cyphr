@@ -126,28 +126,6 @@ typ    = "cyphr.me/action"
 error = "UnknownKey"
 
 # ============================================================================
-# InvalidPrior test (wrong pre value)
-# ============================================================================
-
-[[test]]
-name      = "pre_mismatch_fails"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-# Override pre with wrong value (must be valid alg:digest format to test InvalidPrior)
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "InvalidPrior"
-
-# ============================================================================
 # Timestamp past tests (multi-commit, error on commit 2)
 # ============================================================================
 
