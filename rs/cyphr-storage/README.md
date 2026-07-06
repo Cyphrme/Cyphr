@@ -16,28 +16,38 @@ Included implementations:
 
 ## Quick Start
 
+Load a principal from genesis:
+
 ```rust
-use cyphr_storage::{engine::StorageEngine, import::load_principal};
-use cyphr::Principal;
+use cyphr_storage::{Genesis, load_principal};
+use cyphr::Key;
+use coz::Thumbprint;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // In practice, StorageEngine is constructed with real blob stores and indexers.
-    // See the cyphr-cli crate for a complete working example.
-    
-    // Load a principal by its PR (principal root/identity)
-    let principal: Principal = load_principal(
-        &engine,
-        &keystore,
-        "KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc"
-    )?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a key
+    let key = Key {
+        alg: "ES256".to_string(),
+        tmb: Thumbprint::from_bytes(vec![0u8; 32]),
+        pub_key: vec![0u8; 64],
+        first_seen: 1000,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
 
-    println!("Loaded principal: {:?}", principal.pr());
+    // Implicit genesis: single key, no entries needed for basic case
+    let genesis = Genesis::Implicit(key);
+    let entries = [];
+
+    // Load principal from genesis and entries
+    let principal = load_principal(genesis, &entries)?;
+
+    println!("Created principal: {:?}", principal.pr());
     Ok(())
 }
 ```
 
-For a complete working example, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate, which demonstrates storage integration end-to-end.
+For persistent blob/index storage, the `StorageEngine<B, I, S>` coordinates real `BlobStore` and `Indexer` implementations (see [`cyphr-blob-fjall`](https://docs.rs/cyphr-blob-fjall) and [`cyphr-index-sqlite`](https://docs.rs/cyphr-index-sqlite) for production backends). For a complete working example integrating storage with the CLI, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate.
 
 ## Documentation
 
