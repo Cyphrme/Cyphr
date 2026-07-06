@@ -31,7 +31,7 @@ expected. `login/` has its own `go.mod` and is tested separately.
 ## Unknowns
 
 - **U1 — Revival trigger.** Revive when a Go eml implementation exists;
-  scope then is a re-port of the post-EMT core. Grounding: nrd 2026-07-06.
+  scope then is a re-port of the post-EMT core. Grounding: human operator directive 2026-07-06.
   Signpost: Go eml crate/module published or started.
 
 ## Spec Pointers

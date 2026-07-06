@@ -46,6 +46,29 @@ is a working scaffold, not the finished authority.
 - **Commits:** conventional commits, enforced by the installed hooks
   (message validation + doc-link audit); commit at logical boundaries.
 
+## Spec authority and the contradiction procedure
+
+`SPEC.md` (this directory) is the protocol's sole normative source. The
+machine specs (`docs/specs/*.md`) and the reference implementation are
+downstream: they can and do encode stale draft designs, and their
+constraint tags and MUST language make them look more authoritative than
+they are. When artifacts disagree, the default reading is "downstream is
+stale" — never amend SPEC.md to match downstream. Full design tenets:
+`docs/AGENTS.md` "Protocol model".
+
+Procedure when a contradiction surfaces during any work:
+
+1. **Clear contradiction** (SPEC.md plainly says X, a machine spec or the
+   implementation says not-X): fix it in the downstream artifact if it is
+   in scope for your task; otherwise schedule the fix, or at minimum open
+   a forge issue so it is tracked for visibility. Silent tolerance is the
+   only wrong move.
+2. **Non-obvious or unresolvable contradiction** (ambiguous prose, two
+   plausible intents, or a case where SPEC.md itself may be wrong):
+   escalate to the human operator. Do not resolve unilaterally and do not
+   propose SPEC.md changes to make it match downstream; SPEC.md questions
+   go to its author.
+
 ## Requirements
 
 - **R1 — Server readiness.** Portable third-party proof verification,
@@ -62,8 +85,8 @@ is a working scaffold, not the finished authority.
 - **R3 — KV index.** The query index is to be replaced with arbitrary KV
   index tables over the durable store plus a meta-table tracking them,
   behind the existing `Indexer` trait seam.
-  Grounding: nrd decision 2026-07-06 (forge #18/#23 comments).
-  Signpost: defeated only if nrd reverses it; in-repo docs recording the
+  Grounding: human operator decision 2026-07-06 (forge #18/#23 comments).
+  Signpost: defeated only if the human operator reverses it; in-repo docs recording the
   older KV→SQLite decision are superseded, not authority.
 
 ## Invariants
@@ -81,7 +104,7 @@ is a working scaffold, not the finished authority.
   PR to the `zami` branch (currently PR #5, open/draft — the in-tree
   working copy may be checked out to that branch's version for reference;
   do not commit or merge it). Other `docs/specs/*.md` are not his.
-  Grounding: standing rule; campaign ledger. Signpost: nrd says otherwise.
+  Grounding: standing rule; campaign ledger. Signpost: the human operator says otherwise.
 - **I4 — Core stays consumer-agnostic.** `rs/cyphr` gains protocol-shaped
   API (e.g. portable proofs), never server-specific hacks.
   Grounding: original server-plan constraint, reaffirmed by survey.
@@ -92,7 +115,7 @@ is a working scaffold, not the finished authority.
   justification comment.
 - **I6 — Plans are legacy.** `docs/plans/*.md` are never plan-of-record;
   the campaign workflow (forge issues + `.ledger/`) supersedes them.
-  Grounding: nrd 2026-07-06. Signpost: n/a — do not update them as plans.
+  Grounding: human operator directive 2026-07-06. Signpost: n/a — do not update them as plans.
 
 ## Unknowns
 
@@ -102,10 +125,12 @@ is a working scaffold, not the finished authority.
   reindex — that is a storage bug, not a spec gap (spec author's ruling,
   closed PR #39; tenets in `docs/AGENTS.md`). Fix: retain order at ingest,
   verify against `arrow` on replay, error on absent order, delete the
-  permutation search (`rs/cyphr-storage/src/engine/mod.rs`). Two spec
-  clarifications pending from the spec author: the explicit sequential-
-  visibility authorization rule, and whether per-mutation `pre` in signed
-  pays stays or goes (fixture-regenerating either way).
+  permutation search (`rs/cyphr-storage/src/engine/mod.rs`). Both
+  follow-up questions were answered by the spec author on the same
+  thread: sequential visibility within a commit is ratified (see
+  `docs/AGENTS.md` two-authorization-contexts tenet), and per-mutation
+  `pre` in signed pays is a rejected old draft slated for removal (see
+  `rs/AGENTS.md` traps).
 - **U2 — Live-principal concurrency.** `CloneableLog` is sound only under
   fresh-`Principal`-per-call; the server's shape (long-lived principals,
   concurrent requests) needs either external per-principal serialization
@@ -116,10 +141,10 @@ is a working scaffold, not the finished authority.
   Grounding: `load_principal` in `rs/cyphr-storage/src/engine/mod.rs`.
 - **U4 — Auth placement.** SPEC §17 authentication (login, bearer tokens)
   is greenfield; presumed the campaign *after* server-readiness.
-  Resolution: nrd scoping call. Grounding: REVIEW Q3.
+  Resolution: human operator scoping call.
 - **U5 — EMT→EML conversion.** One-way, permanent conversion of the PT's
-  EMT to an EML is a standing design ask, unscoped. Resolution: nrd
-  scoping call. Grounding: nrd note 2026-07-06.
+  EMT to an EML is a standing design ask, unscoped. Resolution: human operator
+  scoping call. Grounding: human operator design note 2026-07-06.
 
 ## Spec Pointers
 

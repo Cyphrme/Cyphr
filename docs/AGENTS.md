@@ -15,7 +15,7 @@ pass lands, calibrate trust as below.
 | `protocol/` | Constraint→test traceability matrix |
 | `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only |
 | `sites/` | Published websites — see below |
-| `level_2.5.md` | Orphaned; not linked from any spec — verify with nrd before relying on it |
+| `level_2.5.md` | Orphaned; not linked from any spec — verify with the human operator before relying on it |
 
 Markdown is formatted by `treefmt` (prettier) from the repo root; the
 pre-commit hook audits local links in touched files. Follow the
