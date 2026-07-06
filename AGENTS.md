@@ -139,12 +139,15 @@ Procedure when a contradiction surfaces during any work:
 - **U3 — Replay cost.** Every write replays full principal history from
   cold storage; caching strategy undecided. Resolution: same node as U2.
   Grounding: `load_principal` in `rs/cyphr-storage/src/engine/mod.rs`.
-- **U4 — Auth placement.** SPEC §17 authentication (login, bearer tokens)
-  is greenfield; presumed the campaign *after* server-readiness.
-  Resolution: human operator scoping call.
-- **U5 — EMT→EML conversion.** One-way, permanent conversion of the PT's
-  EMT to an EML is a standing design ask, unscoped. Resolution: human operator
-  scoping call. Grounding: human operator design note 2026-07-06.
+- **U4 — RESOLVED (2026-07-06): auth is the next campaign.** SPEC §17
+  authentication (login, bearer tokens, server principal) is new code
+  surface and begins when server implementation begins; the current
+  campaign is foundation hardening only. Grounding: human operator
+  ruling 2026-07-06.
+- **U5 — RESOLVED (2026-07-06): EMT→EML conversion is tracked feature
+  work.** One-way, permanent conversion of the PT's EMT to an EML is a
+  supported-mode design goal, deferred to a future feature campaign.
+  Grounding: forge issue #40.
 
 ## Spec Pointers
 
