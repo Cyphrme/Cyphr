@@ -24,12 +24,11 @@
             "alg": "ES256",
             "id": "3qiFqQKB-VoG2i8HgH_eHq6PfEIM9fTL1LuUKFoPE-8",
             "now": 1700000000,
-            "pre": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
             "rvk": 1700000000,
             "tmb": "1S0fVE6_p3gAX_PBfLncKdDcg7mM9sJMsNNYYC1D7Fw",
             "typ": "cyphr.me/cyphr/key/revoke"
           },
-          "sig": "k4FZ0xV0-8T0aReWHH4G3nqTjR8036GA5_nt5C0pq9paOLceN_jadjlcz8p3IZ0rxcY5gqeXtECoL8s7pUq0ww"
+          "sig": "raZ5OtakQ2FmPRqTrKlBrQ9x46MrxnAlm7cMnTsXRHZXuUNgmSwMh4AlF3mjr6vESkBtowhsxscylYlIl4Qg8g"
         }
       ],
       "keys": [
@@ -46,7 +45,7 @@
     }
   ],
   "digests": [
-    "eYAVu803rqNwvDJ3vh8ZH82zmTbPxst_ONCg_vdTplU"
+    "9O6hURFSHqbFub-ZsJ4MZ-FjFWs_ZRBnsS_q68rPqXQ"
   ],
   "expected": {
     "key_count": 2,
