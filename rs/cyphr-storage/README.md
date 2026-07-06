@@ -2,36 +2,42 @@
 
 Storage backends for the [Cyphr](https://cyphr.me) self-sovereign identity protocol.
 
-This crate complements the core [`cyphr`](https://crates.io/crates/cyphr) protocol library by providing:
+This crate provides a modern, backend-agnostic storage engine that coordinates:
 
-- **`FileStore`**: A persistent filesystem-backed storage implementation for managing Principal state.
+- **`StorageEngine<B, I, S>`**: A coordinated storage engine joining blob stores and indexers.
+- **Blob Store (`BlobStore` trait)**: Stores immutable cryptographic payloads (cozies) with BLAKE3 hashing.
+- **Indexer (`Indexer` trait)**: Maintains queryable metadata about principals, cozies, and commit structure.
 - **Export/Import**: Standardized logic for archiving and restoring Principals using cryptographic export formats.
+
+Included implementations:
+- **`cyphr-blob-fjall`**: BLOB storage backed by the Fjall LSM-tree database.
+- **`cyphr-index-sqlite`**: Indexing backed by SQLite.
+- **Memory implementations** (for testing): In-memory blob stores and indexers.
 
 ## Quick Start
 
 ```rust
-use cyphr_storage::FileStore;
-use cyphr::{Principal, Key};
-use coz::Algorithm;
+use cyphr_storage::{engine::StorageEngine, import::load_principal};
+use cyphr::Principal;
 
-fn main() -> cyphr::error::Result<()> {
-    // Initialize a file store in a directory
-    let mut store = FileStore::new("./cyphr-data")?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // In practice, StorageEngine is constructed with real blob stores and indexers.
+    // See the cyphr-cli crate for a complete working example.
+    
+    // Load a principal by its PR (principal root/identity)
+    let principal: Principal = load_principal(
+        &engine,
+        &keystore,
+        "KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc"
+    )?;
 
-    // Generate a new key and principal
-    let key = Key::generate(Algorithm::ES256)?;
-    let principal = Principal::implicit(key)?;
-
-    // Save the principal to disk
-    store.save_principal(&principal)?;
-
-    // Load the principal back from disk
-    let loaded_principal = store.load_principal(principal.pr())?;
-
-    assert_eq!(principal.pr(), loaded_principal.pr());
+    println!("Loaded principal: {:?}", principal.pr());
     Ok(())
 }
 ```
+
+For a complete working example, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate, which demonstrates storage integration end-to-end.
 
 ## Documentation
 
