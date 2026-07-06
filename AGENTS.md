@@ -30,7 +30,21 @@ is a working scaffold, not the finished authority.
 | `tests/` | Language-agnostic corpus: `intents/*.toml` → `golden/**/*.json` (see `tests/README.md`) |
 | `.ledger/` | Predicate flight recorder (sub-repo); campaign history lives here |
 
-Operational entrypoint: `cd rs && cargo test --workspace` (green, ~3 min).
+## Working in this repo
+
+- **Toolchain:** nix + direnv (`.envrc` → `use nix`) provides formatters
+  and tooling; Rust pinned by `rs/rust-toolchain.toml`.
+- **Entrypoint gate:** `cd rs && cargo test --workspace` (green, ~3 min).
+- **Formatting:** `treefmt` from the repo root (nix shell) — covers
+  rs/go/toml/md/json/yaml/nix/sh. CI enforces
+  `nix-shell --run "treefmt --fail-on-change"`. Note: `cargo fmt --check`
+  disagrees with the current tree (forge #28) — don't fix that piecemeal.
+- **CI** (`.github/workflows/ci.yml`): rust build/test/clippy(-D warnings),
+  go build/test/vet (see `go/AGENTS.md` for expected state), treefmt,
+  rustsec audit, `cargo check --all-features`. Releases:
+  `release-{rs,go}.yml` on tags.
+- **Commits:** conventional commits, enforced by the installed hooks
+  (message validation + doc-link audit); commit at logical boundaries.
 
 ## Requirements
 

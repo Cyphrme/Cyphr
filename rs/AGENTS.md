@@ -24,7 +24,14 @@ All active development happens here.
 - `cargo fmt --check` — **known red workspace-wide** (forge #28, pre-existing).
   Do not fix piecemeal on unrelated diffs; it gets a dedicated pass.
 - Protocol-behavior changes: regenerate goldens (root R2) —
-  `cargo run -p fixture-gen -- generate ...` per `tests/README.md`.
+  `fixture-gen` reads `tests/intents/*.toml` + `tests/keys/pool.toml`
+  and rewrites `tests/golden/`; exact invocation in `tests/README.md`
+  (the `--pool` flag and working directory matter — follow the README,
+  not memory).
+- Manual smoke test of the CLI: `rs/cyphr-cli/demo.sh` (full
+  key-add/export/import/revoke cycle).
+- Formatting is `treefmt` from the repo root, not `cargo fmt` (see root
+  `AGENTS.md`).
 
 ## Invariants
 
