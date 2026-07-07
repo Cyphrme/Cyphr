@@ -50,8 +50,7 @@ with infrequent writes (commit ingestion). After four research passes
 
 The storage object model sketch (ref: `.sketches/2026-05-28-storage-object-model.md`,
 Decision: ACCEPTED — Conventional Index with Chain Replay Verification)
-provides full analysis including the Fjall index critique. See N14-spec-alignment
-for sketch-reference normalization across specs.
+provides full analysis including the Fjall index critique.
 
 **Cross-references:**
 [`indexer.md`](indexer.md) (abstract API),
