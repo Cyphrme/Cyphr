@@ -129,20 +129,19 @@ impl MultihashDigest {
         self.variants
     }
 
-    /// Get digest for a specific algorithm, falling back to the first available variant.
+    /// Get the digest for a specific algorithm, or a clear error if this
+    /// multihash has no variant for it.
     ///
-    /// This is the fallible replacement for the common pattern:
-    /// ```ignore
-    /// mh.get(alg).or_else(|| mh.variants().values().next().map(AsRef::as_ref)).expect("...")
-    /// ```
+    /// Deliberately does **not** fall back to a different algorithm's bytes:
+    /// a caller asking for one algorithm's digest and silently receiving
+    /// another algorithm's bytes is a masked error, not a fallback worth
+    /// having at a trust boundary. Mirrors [`Self::tagged`]'s contract.
     ///
     /// # Errors
     ///
-    /// Returns `EmptyMultihash` if no variants exist.
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
     pub fn get_or_err(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
-        self.get(alg)
-            .or_else(|| self.variants.values().next().map(AsRef::as_ref))
-            .ok_or(crate::error::Error::EmptyMultihash)
+        self.get(alg).ok_or(crate::error::Error::MissingVariant(alg))
     }
 
     /// Get the first available variant's bytes.

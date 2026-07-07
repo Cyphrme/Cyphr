@@ -1468,7 +1468,18 @@ impl<S: eml::Storage> Principal<S> {
         let dr = compute_dr(&action_refs, None, &active_algs)?;
         let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
 
-        let tx_alg = cz.hash_alg;
+        // Prefer the signer's own algorithm for the arrow, but a self-revoke
+        // of the last key of that algorithm retires it from active_algs —
+        // `sr` (rebuilt just above from the post-mutation key set) then has
+        // no variant for it. Fall back to a surviving algorithm so the
+        // arrow's three components (pre, sr, tmr) always share one that
+        // `sr` actually has, rather than hitting `get_or_err`'s
+        // `MissingVariant` on an algorithm this commit just retired.
+        let tx_alg = if active_algs.contains(&cz.hash_alg) {
+            cz.hash_alg
+        } else {
+            active_algs.first().copied().unwrap_or(cz.hash_alg)
+        };
 
         // Compute TMR from pending transactions
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
@@ -1661,11 +1672,10 @@ impl<S: eml::Storage> Principal<S> {
         // before folding it into SR-node. DR was cached by record_action
         // under whatever active_algs were live at the time; a key of a NEW
         // algorithm added since then would otherwise leave DR missing that
-        // algorithm's variant, and StateTree::build's cell payload would
-        // silently borrow the wrong-width first-available variant via
-        // MultihashDigest::get_or_err — exactly the width mismatch the
-        // tree's fold correctly refuses to fold (unlike the old flat
-        // formula, which had no width invariant to catch it).
+        // algorithm's variant, and StateTree::build's cell payload would hit
+        // MultihashDigest::get_or_err's `MissingVariant` error for the new
+        // algorithm (unlike the old flat formula, which had no per-algorithm
+        // variant to be missing in the first place).
         let actions: Vec<&Action> = core.data.actions.iter().collect();
         core.dr = compute_dr(&actions, None, &active_algs)?;
 
