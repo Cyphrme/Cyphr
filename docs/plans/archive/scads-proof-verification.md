@@ -27,7 +27,7 @@
   Produced from /plan COMMIT phase.
   Source sketch: .sketches/2026-05-07-malt-proof-verification.md
   ADR: docs/adr/0001-self-certifying-network-architecture.md
-  Predecessor: docs/plans/cyphr-server.md (Phases 1-4 complete, Phase 5 deferred)
+  Predecessor: docs/plans/archive/cyphr-server.md (Phases 1-4 complete, Phase 5 deferred)
 -->
 
 ## Goal
@@ -274,6 +274,6 @@ No design-level open questions remain. Implementation-level decisions
 - Charter: `docs/charters/spec-alignment.md` (Item 4: Spec Alignment)
 - Sketch: `.sketches/2026-05-07-malt-proof-verification.md`
 - ADR: `docs/adr/0001-self-certifying-network-architecture.md`
-- Predecessor plan: `docs/plans/cyphr-server.md`
+- Predecessor plan: `docs/plans/archive/cyphr-server.md`
 - MALT crate (Rust): `malt` 0.1.1 — `src/proof.rs`
 - MALT library (Go): `github.com/cyphrme/malt` — `proof.go`

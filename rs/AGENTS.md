@@ -60,9 +60,11 @@ All active development happens here.
   (forge #33). Per-mutation `pre` has been removed (it was rejected-draft
   residue — spec author, PR #39 thread), and `reindex`'s sole
   genesis-vs-mutation signal was `pre` being empty, so it no longer
-  distinguishes anything: five tests are currently `#[ignore]`d citing
-  this exact break (`engine::tests::test_reindex_recovery` and four
-  siblings; tracked as `F6-reindex-genesis-drop`). A real replacement
+  distinguishes anything: five tests are currently FAILING (deliberately
+  left failing, not silenced) citing this exact break
+  (`engine::tests::test_reindex_recovery` and four siblings; tracked as
+  `F6-reindex-genesis-drop`). `cargo test --workspace` will show these
+  five red until fixed — that is the known, accepted state. A real replacement
   genesis-bootstrap signal, removing those five `#[ignore]`s, is scoped,
   mandatory campaign work — do not attempt a narrow patch elsewhere.
 - **`CloneableLog` concurrency assumption.** `block_on` under a `Mutex`
