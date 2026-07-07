@@ -124,7 +124,6 @@ use cyphr::Error;
 
 match principal.apply_transaction(vtx) {
     Ok(_) => { /* success */ }
-    Err(Error::InvalidPrior) => { /* pre doesn't match current PR */ }
     Err(Error::TimestampPast) => { /* timestamp too old */ }
     Err(Error::DuplicateKey) => { /* key already in KR */ }
     Err(Error::NoActiveKeys) => { /* would leave 0 keys */ }
