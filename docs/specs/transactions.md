@@ -43,8 +43,8 @@ TYPE TypString      = "<authority>/<action>"
 TYPE Authority      = String                               -- domain name or Principal Genesis
 TYPE Action         = "<noun>[/<noun>...]/<verb>"
 TYPE Verb           = "create" | "read" | "update" | "upsert" | "delete"
-TYPE TransactionCoz = Coz & { pay: { pre: Digest } }      -- transaction cozies require `pre`
-TYPE DataActionCoz  = Coz                                  -- no `pre` required
+TYPE TransactionCoz = Coz                                  -- classified by `typ` (key/*, principal/create, commit/create); carries no `pre`
+TYPE DataActionCoz  = Coz                                  -- MUST NOT contain `pre` (see [data-action-no-pre])
 
 -- Transaction structure: list of lists
 TYPE Transaction    = List<Coz>                            -- ≥1 related cozies
@@ -68,12 +68,17 @@ TYPE Rvk            = Integer                              -- 0 < rvk < 2^53 - 1
 rejected. (Coz itself makes all fields optional; Cyphr constrains this.)
 `VERIFIED: agent-check`
 
-**[transaction-pre-required]**: Transaction cozies (those that mutate AT and
-advance the commit chain) MUST additionally contain `pre` in `pay`, referencing
-the targeted Principal Root (PR) for mutation.
-Cozies without `pre` are not transactions (except naked revokes — see
-[revoke-naked]).
-`VERIFIED: agent-check — updated 2026-03-09 per A-2, A-4`
+**[transaction-classification]**: A coz is a transaction (one that mutates PT
+and advances the commit chain) if and only if its `typ` is one of `key/create`,
+`key/delete`, `key/replace`, `key/revoke`, `principal/create`, or
+`commit/create`. Every other `typ` is a data action (see
+[data-action-no-pre]). Transaction cozies carry no `pre` field; classification
+is by `typ`, not by field presence. Per-mutation `pre` was rejected-draft
+residue and has been removed from the wire format and implementation — commit
+atomicity, bundling, and order are carried entirely by the commit transaction's
+`arrow` (see [commit-finality-arrow]) and by wire-format position (see
+[txs-list-of-lists], [tx-grouping]), not by a chained `pre` reference.
+`VERIFIED: agent-check — updated 2026-07-06, per-mutation pre removed (rejected draft, PR #39 thread)`
 
 **[data-action-no-pre]**: Data action cozies MUST NOT contain `pre`. Data
 actions are stateless signed messages that do not mutate AT and are not part
@@ -82,25 +87,49 @@ of the commit chain.
 
 #### Authorization
 
+Authorization is evaluated in one of two contexts, which are not
+contradictory — they are different frames and MUST NOT be conflated:
+
+- **Intra-commit**: transactions within a commit apply sequentially, in
+  `txs` array order (see [intra-commit-ordering]). Each transaction's
+  authorization is evaluated against the key state as it exists immediately
+  before *that* transaction, reflecting all earlier transactions already
+  applied in the same commit.
+- **Extra-commit**: external authenticators (e.g. login, or a third party
+  verifying a principal from outside the commit) see only already-committed
+  state. Transactions inside an in-flight commit are ephemeral to them; such
+  a verifier MUST evaluate authorization against the state as of the last
+  finalized commit only.
+
 **[authorization-triple]**: A transaction MUST be authorized if and only if all
 three conditions hold:
 
-1. **Pre-mutation state**: The signing key (`tmb`) MUST be active in KR
-   _before_ the transaction is applied. A key added or revoked within the same
-   commit MUST NOT affect authorization of that commit's transactions.
+1. **Antecedent authorization gate**: The signing key (`tmb`) MUST be active
+   in KR immediately before this transaction is applied, per the intra-commit
+   or extra-commit context in effect (see [pre-mutation-key-rule]).
 2. **Lifecycle gate**: The principal's current lifecycle state MUST permit the
    operation (see `principal-lifecycle.md`).
 3. **Capability gate**: The principal MUST have the state components required
    for the operation (e.g., DT must exist for data actions, RT for rule
    operations).
-   `VERIFIED: agent-check — citation updated 2026-03-09 per A-1 (§2.3.3→§3)`
+   `VERIFIED: agent-check — citation updated 2026-07-06, SPEC.md §2.3.2 (Antecedent Authorization Gate)`
 
-**[pre-mutation-key-rule]**: Authorization is evaluated against the key state
-that existed _before_ any transactions in the current commit are applied. Keys
-added during a commit MUST NOT authorize other transactions in that same commit.
-Keys revoked or deleted during a commit MUST still authorize their own
-containing transactions if they were active before the commit.
-`VERIFIED: agent-check — citation updated 2026-03-09 per A-1 (§2.3.3→§3)`
+**[pre-mutation-key-rule]**: Within a commit (intra-commit context), a key
+activated by an earlier transaction in the same commit MUST be permitted to
+authorize a later transaction in that commit. A key revoked (or deleted) by an
+earlier transaction in the same commit MUST NOT authorize a later transaction
+in that commit. Application order determines the key state each transaction is
+checked against; this is not a single frozen commit-open snapshot (see
+[intra-commit-ordering]).
+
+Outside a commit (extra-commit context), authorization is evaluated only
+against already-committed state: transactions inside an in-flight commit are
+not visible to external authenticators.
+`VERIFIED: agent-check — updated 2026-07-06; behavior confirmed empirically
+against rs/cyphr/src/commit.rs CommitScope::verify_and_apply (dual snapshot
+check) composed with Principal::apply_transaction_internal (live-state
+re-check on the projected principal, which rejects a since-revoked signer
+regardless of the frozen commit-open snapshot); citation SPEC.md §2.3.2`
 
 #### Commit Chain
 
@@ -113,10 +142,10 @@ protocol.
 Empty commits (zero transactions) are not valid.
 `VERIFIED: agent-check`
 
-**[commit-pre-chain]**: All transaction cozies in a commit MUST reference the
-same `pre` value — the PR targeted for mutation. The `pre` field groups
-transactions into a transaction bundle for a commit.
-`VERIFIED: agent-check`
+Commit membership (which cozies belong to which commit, and which
+transaction each belongs to) is established entirely by wire-format position —
+see [txs-list-of-lists] and [tx-grouping], next — not by a chained `pre`
+reference.
 
 #### Transaction Structure
 
@@ -418,14 +447,13 @@ included `pre`.
 | Constraint                    | Method      | Result | Detail                                              |
 | :---------------------------- | :---------- | :----- | :-------------------------------------------------- |
 | [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                          |
-| [transaction-pre-required]    | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                   |
+| [transaction-classification]  | agent-check | pass   | SPEC.md §4.1 (no `pre` in example); `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
 | [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                   |
-| [authorization-triple]        | agent-check | pass   | SPEC.md §3 (relocated from §2.3.3)                  |
-| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §3 item 1 (relocated from §2.3.3)           |
+| [authorization-triple]        | agent-check | pass   | SPEC.md §2.3.2 (Antecedent Authorization Gate)      |
+| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section) |
 | [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
 | [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
-| [commit-pre-chain]            | agent-check | pass   | Explicit in SPEC.md §4.1.1                          |
-| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4 (list of lists structure)                |
+| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4.1 (list of lists structure)              |
 | [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                         |
 | [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                             |
 | [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                   |
@@ -469,10 +497,12 @@ included `pre`.
 
 ### For Implementation (`/core`)
 
-- **Authorization snapshot**: The [pre-mutation-key-rule] is the most critical
-  implementation detail — authorization is evaluated against the state _before_
-  the commit is applied, not during. Implementations must snapshot KR before
-  processing any transaction in a commit.
+- **Sequential intra-commit authorization**: The [pre-mutation-key-rule] is the
+  most critical implementation detail — authorization for each transaction in
+  a commit is evaluated against the key state as of immediately before that
+  transaction, not a single snapshot frozen at commit-open. Implementations
+  must re-check active/revoked status against the live, incrementally-mutated
+  state as they process each transaction in a commit, in `txs` array order.
 - **Revoke without `pre`**: Naked revokes are valid Coz messages that don't
   mutate PR but must be stored and propagated. Implementations must handle
   revokes arriving out-of-band (not in the commit chain).
@@ -486,8 +516,10 @@ included `pre`.
 
 - **Genesis sequence tests**: Verify the bootstrap model — single key genesis,
   multi-key genesis, and the `pre` continuity invariant.
-- **Authorization boundary tests**: Add a key in commit N, verify it cannot
-  authorize transactions in commit N (only commit N+1).
+- **Authorization boundary tests**: Add a key early in commit N, verify a
+  later transaction in commit N signed by that new key IS authorized
+  (intra-commit, sequential). Revoke a key early in commit N, verify a later
+  transaction in commit N signed by that now-revoked key is REJECTED.
 - **Revoke edge cases**: Naked revoke, revoke-with-pre, revoke-then-delete,
   revoke-of-already-deleted key.
 - **Idempotency tests**: Replay a valid transaction and verify no state change.
