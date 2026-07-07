@@ -31,7 +31,7 @@ const CR_CELL: u64 = 1;
 /// The Principal Tree: a k=2 `EpochTree` with cell 0 = SR, cell 1 = CR.
 #[derive(Debug)]
 pub struct PrincipalTree {
-    inner: eml::EpochTree,
+    inner: polydigest::EpochTree,
     /// Algorithms currently registered in `inner`, in registration order.
     algs: Vec<HashAlg>,
 }
@@ -40,7 +40,7 @@ impl PrincipalTree {
     /// Create an empty principal tree with no algorithms registered.
     #[must_use]
     pub fn new() -> Self {
-        let inner = eml::EpochTree::new(eml::CmtConfig { arity: ARITY })
+        let inner = polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
             .expect("arity 2 is within the spine's 2..=256 range");
         Self {
             inner,
@@ -106,7 +106,7 @@ impl PrincipalTree {
     /// Returns `None` if `alg_id` is unregistered or cell 1 has not yet been
     /// set (no commits exist yet — a genesis principal has no CR to prove).
     #[must_use]
-    pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+    pub fn cr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, CR_CELL)
     }
 
@@ -120,7 +120,7 @@ impl PrincipalTree {
     /// Returns `None` if `alg_id` is unregistered or cell 0 has not yet been
     /// set (no SR exists yet).
     #[must_use]
-    pub fn sr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+    pub fn sr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, SR_CELL)
     }
 
@@ -160,7 +160,7 @@ impl Default for PrincipalTree {
 /// on. This is cheap regardless: the tree never holds more than 2 cells.
 impl Clone for PrincipalTree {
     fn clone(&self) -> Self {
-        let mut inner = eml::EpochTree::new(eml::CmtConfig { arity: ARITY })
+        let mut inner = polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
             .expect("arity 2 is within the spine's 2..=256 range");
         for &alg in &self.algs {
             let alg_id = hash_alg_to_u64(alg);
@@ -245,7 +245,8 @@ mod tests {
 
         let root = pt.pr(&[HashAlg::Sha256]).unwrap();
         let hasher = MaltHasher::new(HashAlg::Sha256);
-        let sk = eml::rebalanced_skeleton(proof.tree_size, proof.arity, proof.index).unwrap();
+        let sk =
+            polydigest::rebalanced_skeleton(proof.tree_size, proof.arity, proof.index).unwrap();
         assert!(proof.verify(&hasher, &sk, root.get(HashAlg::Sha256).unwrap()));
     }
 

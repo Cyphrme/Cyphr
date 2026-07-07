@@ -334,7 +334,7 @@ impl<S: eml::Storage> Principal<S> {
 #[derive(Debug, Clone)]
 pub(crate) struct NodePathHop {
     /// The leaf proof for this hop.
-    pub(crate) proof: eml::LeafProof,
+    pub(crate) proof: polydigest::LeafProof,
 }
 
 /// A top-down chain of inclusion hops used internally by
@@ -383,7 +383,7 @@ impl NodePath {
         }
         for (hop, &root) in self.hops.iter().zip(roots.iter()) {
             let Some(skeleton) =
-                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
+                polydigest::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
             else {
                 return false;
             };
@@ -1012,7 +1012,7 @@ impl<S: eml::Storage> Principal<S> {
     ///    ([`Self::inclusion_proof`], verified with [`crate::verify_inclusion`]).
     /// 2. **Hop 2** — CR, as PT cell 1's payload, included in PR: the Principal Tree's own
     ///    inclusion proof ([`PrincipalTree::cr_inclusion_proof`], verified with
-    ///    [`eml::LeafProof::verify`]).
+    ///    [`polydigest::LeafProof::verify`]).
     ///
     /// The hops are bridged explicitly: hop 2's proven leaf value must equal
     /// hop 1's proven CR root. Without that check the two hops would each
@@ -1071,7 +1071,7 @@ impl<S: eml::Storage> Principal<S> {
             .get(alg)
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
         let hop2_skeleton =
-            eml::rebalanced_skeleton(hop2_proof.tree_size, hop2_proof.arity, hop2_proof.index)
+            polydigest::rebalanced_skeleton(hop2_proof.tree_size, hop2_proof.arity, hop2_proof.index)
                 .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
         let hop2_ok = hop2_proof.verify(&hasher, &hop2_skeleton, pr_bytes);
 
@@ -2568,7 +2568,7 @@ mod tests {
                 for idx in 0..size {
                     assert_eq!(
                         eml::mountain_skeleton(k, size, idx),
-                        eml::rebalanced_skeleton(size, k, idx),
+                        polydigest::rebalanced_skeleton(size, k, idx),
                         "k={k} size={size} idx={idx}: mountain_skeleton and rebalanced_skeleton \
                          diverged — if this fires, the wrong-topology negative test PLAN.md \
                          mandates is constructible again and should be added"
@@ -2721,7 +2721,7 @@ mod tests {
         // is genuine and matched against its own originating root here.
         for (hop, &root) in spliced.hops.iter().zip(roots.iter()) {
             let skeleton =
-                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
+                polydigest::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
                     .unwrap();
             assert!(
                 hop.proof.verify(&hasher, &skeleton, root),

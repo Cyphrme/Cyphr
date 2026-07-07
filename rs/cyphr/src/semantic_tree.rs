@@ -81,7 +81,7 @@ const OPTIONAL_CELL: u64 = 1;
 /// The single fan-out call site every node type's constructor below uses —
 /// c-liveness-centralized-registration: registration cannot drift between
 /// node types because there is exactly one place that performs it.
-fn register_algs(inner: &mut eml::EpochTree, algs: &[HashAlg]) -> Result<()> {
+fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<()> {
     let mut seen: Vec<HashAlg> = Vec::new();
     for &alg in algs {
         if seen.contains(&alg) {
@@ -137,8 +137,8 @@ fn serialize_digest(md: &MultihashDigest, algs: &[HashAlg]) -> Result<Vec<u8>> {
     serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)
 }
 
-fn new_tree(arity: u64) -> eml::EpochTree {
-    eml::EpochTree::new(eml::CmtConfig { arity })
+fn new_tree(arity: u64) -> polydigest::EpochTree {
+    polydigest::EpochTree::new(polydigest::CmtConfig { arity })
         .expect("arity is a fixed in-range constant (2 or 256)")
 }
 
@@ -148,7 +148,7 @@ fn new_tree(arity: u64) -> eml::EpochTree {
 /// Replaces `compute_kr`.
 #[derive(Debug)]
 pub struct KeyTree {
-    inner: eml::EpochTree,
+    inner: polydigest::EpochTree,
 }
 
 impl KeyTree {
@@ -224,7 +224,7 @@ impl KeyTree {
     /// Returns `None` if `alg_id` is unregistered or `index` is out of
     /// range.
     #[must_use]
-    pub fn thumbprint_inclusion_proof(&self, alg_id: u64, index: u64) -> Option<eml::LeafProof> {
+    pub fn thumbprint_inclusion_proof(&self, alg_id: u64, index: u64) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, index)
     }
 }
@@ -240,7 +240,7 @@ impl KeyTree {
 /// node implements RT.
 #[derive(Debug)]
 pub struct AuthTree {
-    inner: eml::EpochTree,
+    inner: polydigest::EpochTree,
 }
 
 impl AuthTree {
@@ -284,7 +284,7 @@ impl AuthTree {
     ///
     /// Returns `None` if `alg_id` is unregistered.
     #[must_use]
-    pub fn kr_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+    pub fn kr_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, PRIMARY_CELL)
     }
 }
@@ -301,7 +301,7 @@ impl AuthTree {
 /// see the `oracle_ar_sr_*` differential tests in [`crate::state`].
 #[derive(Debug)]
 pub struct StateTree {
-    inner: eml::EpochTree,
+    inner: polydigest::EpochTree,
 }
 
 impl StateTree {
@@ -353,7 +353,7 @@ impl StateTree {
     ///
     /// Returns `None` if `alg_id` is unregistered.
     #[must_use]
-    pub fn ar_inclusion_proof(&self, alg_id: u64) -> Option<eml::LeafProof> {
+    pub fn ar_inclusion_proof(&self, alg_id: u64) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, PRIMARY_CELL)
     }
 }
@@ -364,7 +364,7 @@ impl StateTree {
 ///
 /// No node type in this module ever exposes "roots for every registered
 /// algorithm" — every caller threads `algs` explicitly (c-liveness-explicit-algs).
-fn assemble(inner: &eml::EpochTree, algs: &[HashAlg]) -> Result<MultihashDigest> {
+fn assemble(inner: &polydigest::EpochTree, algs: &[HashAlg]) -> Result<MultihashDigest> {
     let mut variants = BTreeMap::new();
     for &alg in algs {
         let alg_id = hash_alg_to_u64(alg);
