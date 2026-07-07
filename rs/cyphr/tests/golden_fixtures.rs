@@ -71,6 +71,7 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
     use cyphr::error::Error;
     match e {
         Error::UnknownKey => "UnknownKey",
+        Error::UnknownAlg => "UnknownAlg",
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
         Error::DuplicateKey => "DuplicateKey",

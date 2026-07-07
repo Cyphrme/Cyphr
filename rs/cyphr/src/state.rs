@@ -302,11 +302,14 @@ impl<'de> serde::Deserialize<'de> for TaggedDigest {
 ///
 /// # Errors
 ///
-/// Returns `UnsupportedAlgorithm` if the algorithm is not recognized.
+/// Returns `UnknownAlg` if the client's signing algorithm is not one this
+/// implementation recognizes or supports — a client-facing protocol
+/// question, distinct from `UnsupportedAlgorithm`'s internal algorithm-ID
+/// bookkeeping.
 pub fn hash_alg_from_str(alg: &str) -> crate::error::Result<HashAlg> {
     coz::Alg::from_str(alg)
         .map(coz::Alg::hash_alg)
-        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(alg.to_string()))
+        .ok_or(crate::error::Error::UnknownAlg)
 }
 
 /// Derive the set of hash algorithms from a keyset (SPEC §14).

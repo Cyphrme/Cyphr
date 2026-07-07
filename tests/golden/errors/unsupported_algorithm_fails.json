@@ -4,6 +4,6 @@
     "unsupported_key"
   ],
   "expected": {
-    "error": "UnsupportedAlgorithm"
+    "error": "UnknownAlg"
   }
 }
