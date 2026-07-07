@@ -169,7 +169,7 @@ non-leaf node is the hash of its children, culminating in a single **Merkle
 root** (MR). More specifically, Cyphr uses a specific n-ary, arbitrarily
 structured Merkle tree (**NMT**). See section [Commit](#4-commit)
 
-#### 2.2.10 Singleton Promotion
+#### 2.2.10 Singleton Promotion and Collapse
 
 **Singleton promotion** is the elevation of a Merkle tree node digest to a
 parent slot without additional hashing when a tree component has only one node
@@ -182,41 +182,28 @@ Promotion an collapse are recursive; items deep in a tree can be promoted to the
 root level. For example, when a principal has only a single key, the key's `tmb`
 is promoted to KR without additional hashing.
 
-For NEML, a node may be null, and if children are null their null value is
-collapsed and promoted to the parent.  This results in the **null boundary**,
-there non-null values are rooted with nulls.
-"log" vs "tree" TODO Merkle Logs are append only, trees are  Spine is the linear path to the proof.
+See also Multi-Hash Merkle Root (MHMR) and appendix section EML.
 
-#### 2.2.10 NEML
-A N-ary Epoch Merkle Log (NEML) is a multihash, n-ary, append only, unbalanced
-(non-symmetrical), left filled Merkle tree.  It is multi-hash, n-ary, and append
-only.  See section [Commit](#4-commit).
-
-
-See section [Commit](#4-commit).
-
-
-
-#### 2.2.12 Commit
+#### 2.2.11 Commit
 
 A **commit** is a finalized bundle of transaction cozies that mutate PT and
 result in a new PR. See section [Commit](#4-commit).
 
-#### 2.2.13 Embedding
+#### 2.2.12 Embedding
 
 An **embedded node** is a digest with external reference. Its value may be a
 `tmb`, PR, SR, KR, AR, nonce, or other Cyphr node type. An **embedded
 principal** is a full Cyphr identity embedded into another principal. See
 section [Embedding](#10-embedding).
 
-#### 2.2.14 Reveal
+#### 2.2.13 Reveal
 
 **Reveal** is the process by which obfuscated structures, i.e. opaque nodes, are
 made transparent. Public keys must be revealed for verification; embeddings,
 nonces, and other data structures may also need revealing during commits or
 other signing operations.
 
-#### 2.2.15 Witnesses
+#### 2.2.14 Witnesses
 
 A **witness** is a client that keeps a copy of an external principal's state and
 communicates state through gossip.
@@ -225,7 +212,7 @@ An **oracle** is a witness with some degree of delegated trust by external
 clients. For example, a client may delegate some processing to an oracle for
 state jumping, where the oracle is trusted for transitory commits.
 
-#### 2.2.16 Unrecoverable Principal
+#### 2.2.15 Unrecoverable Principal
 
 An **unrecoverable principal** is a principal with no keys capable of meaningfully
 mutating AT and no viable recovery path within the protocol. See section
@@ -432,11 +419,11 @@ section [Commit](#4-commit).
 
 #### 3.7.6 Commit Root
 
-Commit Root (CR) is the EML root (EMLR) of the commit tree (CT). Each
-node in the CT is a transaction root (TR).
+Commit Root (CR) is the MR of the commit tree (CT). Each node in the CT is a
+transaction root (TR).
 
 ```
-  CR = EMLR(TR₀, TR₁?, ...)
+  CR = MR(TR₀, TR₁?, ...)
 ```
 
 #### 3.7.7 Data Root
@@ -457,26 +444,22 @@ DR = MR(czd₀, czd₁?, embedding?, ...)
 A **commit** is an ordered, finalized atomic bundle that mutates the Principal
 Tree (PT). A commit consist of one to many transactions, denoted by `typ`, and
 transactions themselves consist of one to many cozies. Many mutations may occur
-per commit and are applied one-by-one using a given order as dictated by the
+per commit and are applied one-by-one using the given order dictated by the
 principal. Unlike other systems, there are no minting fees, gas, or need for a
-global ledger.
+global ledger. 
 
 For example, a commit may have three transactions: one transaction for
 `key/replace`, signed by two keys and consisting of two cozies, one for
 `key/create`, signed by one key and consisting of one coz, and a
 `commit/create`, finalizing the commit.
 
-### Merkle Trees:  Multihash, N-ary
-A **MAL** (Merkle Append only Log, RFC 9162) is is an ordered, append only
-(forward mutable), dense left filled, and unbalanced Merkle tree.  A more
-advanced form of MAL is the Epoch Merkle Log (**EML**), which supports multiple
-hashes over distinct time frames (epochs), n-arity, promotion, and collapse.
+There are two levels of atomic composition, commit and transaction. Transaction
+atomicity enables discrete, independent mutations, and commit atomicity enables
+granular principal state.
 
-Implementations should not that Cyphr has append only components (CT) as well as
-components that may run in mutable mode (ST, AT, RT, DT).  An implementation's
-Merkle tree primitive must be able to support arity.
-
-
+Implementations should note that Cyphr has append only components (CT) as well
+as components that may run in mutable mode (ST, AT, RT, DT).  Implementations
+Merkle tree primitive must support n-arity.
 
 ### 4.1 Transaction
 
@@ -504,9 +487,10 @@ many cozies. Transactions and cozies are ordered as specified by the principal
 with the condition of the commit transaction appearing last.
 
 Transaction order is the sequence of `txs` and is explicitly denoted by the
-`txs_order`. Although inter-transaction coz ordering is not relevant for
-principal mutation, it is relevant for identifier calculation. Transactions
-order itself is mutation relevant.
+`txs_order`. Although inter-transaction coz ordering is not meaningful, it is
+relevant for identifier calculation and cryptographic verification. Transactions
+order itself is mutation.  Transactions ordered in different ways may produce
+different results.
 
 ### 4.2 Arrow
 
@@ -518,8 +502,8 @@ the new PR is calculated.
 
 A commit cannot refer to itself (a signature cannot sign itself), so instead the
 commit transaction covers all principal components except the commit transaction
-itself. For the same reason, `pre` refers to PR while `fwd` refers to ST; a
-"forward PR" isn't calculable inside of the commit itself.
+itself. For the same reason, `pre` refers to PR while `fwd` refers to the
+forward SR; a "forward PR" isn't calculable inside of the commit itself.
 
 ### 4.3 Commit Finality
 
@@ -1112,9 +1096,6 @@ timestamp?". Alternatively, the datastructure may be constructed as the
 isomorphic **key timerange table**, where multiple time ranges are associated
 with a single key. With the addition of rules (Level 5+), weights may be added
 to the tables.
-
-
-
 
 
 ---
@@ -2069,7 +2050,8 @@ Example principal fork, consisting of two transactions:
 A **multihash identifier** is a set of digests that addresses content. Multihash
 identifiers are calculated on a per commit basis for each hash algorithm
 referenced by the principal in KT at the time of commit.  MultiHash Merkle Root
-(MHMR) and Epoch Merkle Logs (EML) are used in this document.
+(MHMR) is assumed, and in reference implementations is implemented as a Epoch
+Merkle Logs (EML, see appendix).
 
 Cyphr supports pluggable cryptographic algorithms; no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
@@ -2090,8 +2072,7 @@ In summary:
   equivalent.
 
 **Algorithm Mapping**:
-Each key algorithm implies a hash algorithm, as defined by Coz. See the Coz
-specification for an exhaustive list of supported hashing algorithms.
+Each key algorithm implies a hash algorithm, as defined by Coz.
 
 | Key Algorithm | Hash Algorithm | Digest Size | Strength Category |
 | ------------- | -------------- | ----------- | ----------------- |
@@ -2114,7 +2095,7 @@ Given an ordered list of child digests (each child is a binary digest value
 computed under some hash algorithm):
 
 1. **Sort** the child digests in lexical byte order unless order is otherwise given.
-2. **Implicit promotion**:  
+2. **Singleton promotion**:  
    If there is exactly one child digest, the MHMR_H for any target H is simply
    the bytes of that child digest (no hashing occurs). Promotion is recursive.
 3. **Binary Hashing of Children**:
@@ -2123,25 +2104,23 @@ computed under some hash algorithm):
 
 **MHMR Examples**
 
-| Case                         | Children                                 | Target H | MHMR_H Computation                        | Result             |
-| ---------------------------- | ---------------------------------------- | -------- | ----------------------------------------- | ------------------ |
-| Single child (promotion)     | B (32-byte SHA-256)                      | SHA-384  | — (implicit promotion)                    | B bytes (32 bytes) |
-| Two children, same alg       | C, D (both SHA-256)                      | SHA-256  | sort(C,D) → SHA-256(C ∥ D)                | 32-byte digest     |
-| Two children, different algs | A (48-byte SHA-384), B (32-byte SHA-256) | SHA-384  | sort(A,B) → assume A < B → SHA-384(A ∥ B) | 48-byte digest     |
+| Case       | Children                 | Target   | Computation    | Result   |
+| ---------- | ------------------------ | -------- | -------------- | -------- |
+| Single     | B (SHA-256)              | SHA-384  | (promotion)    | 32 bytes |
+| Same alg   | C, D (both SHA-256)      | SHA-256  | SHA-256(C||D)  | 32 bytes |
+| Diff. algs | A (SHA-384), B (SHA-256) | SHA-384  | SHA-384(A||B)  | 48 bytes |
 
-**Important Properties**
+
+Although outside the scope of this document, security is bounded by weakest
+link.  The strength of any MHMR_hash variant is limited by the weakest hash algorithm appearing anywhere in the subtree below it.
 
 - **No re-hashing of children**: Inner digests are fed directly into the parent
   hash function as raw bytes (unless being converted, where the value is hashed
   first).
 - **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
   regardless of how children were labeled or enumerated.
-- **Security bounded by weakest link**: The strength of any MHMR_hash variant is
-  limited by the weakest hash algorithm appearing anywhere in the subtree below
-  it.
-- **Nonce injection**: A nonce carrying a desired hash algorithm can be inserted
-  as a child into KT to force computation of that algorithm variant even if no
-  active key natively supports it.
+
+
 
 ### 12.3 Conversion
 
@@ -2203,10 +2182,10 @@ For uniform security, keys from one strength category may be used.
 A multihash component is deemed **incompatible** if a client cannot support
 the specific algorithm (alg) used in a principal's message.
 
-However, due to Cyphr’s use of encapsulation, implicit promotion, and other
-features, a clients do not always require full algorithm support. For example,
-if a service can process the top-level digests, it may remain compatible even if
-it cannot verify the underlying primitives of nested components.
+However, due to Cyphr’s use of encapsulation, promotion, and other attributes, a
+clients do not always require full algorithm support. For example, if a service
+can process the top-level digests, it may remain compatible even if it cannot
+verify the underlying primitives of nested components.
 
 Compatibility is strictly required only for operations where the service must
 verify or interpret the cryptographic material. If such an operation is
@@ -3572,7 +3551,7 @@ by Coz and is inherited by Cyphr. If an algorithm is weakened, Coz will mark
 it deprecated; principals should discontinue via key removal. Implementations
 should warn and appropriately and remove support for deprecated algorithms.
 
-### Appendix 2: Prior Art
+### Appendix 2: Prior Art and References
 
 - Coz
 - Bitcoin
@@ -3584,6 +3563,8 @@ should warn and appropriately and remove support for deprecated algorithms.
 - Secure Quick Reliable Login (SQRL) (https://www.grc.com/sqrl/sqrl.htm)
 - Snix (a nix related project) https://snix.dev/docs/components/castore/blobstore-protocol-/-composition
 - BLAKE3 https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf
+- Merkle Trees: 
+  - ((1978) A Digital Signature Based on a Conventional Encryption Function)[https://people.eecs.berkeley.edu/~raluca/cs261-f15/readings/merkle.pdf]
 
 ### Appendix 3: See also
 
@@ -3620,14 +3601,33 @@ as long as genesis does not result in the same PG. Any set of keys that has not
 been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
-#### RFC 9162 Merkle Append only Log (MAL) and N-ary Epoch Merkle Log (NEML)
+#### Merkle Trees
+Cyphr does a few novel and/or technical things with Merkle Trees, so it's
+important to define our terms and describe the history:
+
+- Multihash Merkle Trees, 
+- N-ary, 
+- RFC 9162 Merkle Append only Log (MAL) and 
+- Epoch Merkle Log (EML)
 
 A **MAL** (Merkle Append only Log) as defined by RFC 9162 is an ordered, append
-only (forward mutable), dense left filled, and unbalanced Merkle tree.  A
-advanced form is the N-ary Epoch Merkle Log (**NEML**), which supports multiple
-hashes over distinct time frames (epochs) and supports promotion and collapse.
+only (forward mutable), dense left filled, and unbalanced Merkle tree.
 "Certificate Transparency Tree" is avoided as the datastructure is more
-generalized than certificate transparency.
+generalized than certificate transparency, and Certificate Transparency is more
+restrictive, including requiring binary and precluding MMR.
+
+An advanced form is the Epoch Merkle Log (**EML**), which supports multihash
+over distinct time frames (epochs), unbalanced (non-symmetrical), left filled,
+n-arity, promotion, and collapse.  EML support append only mode, Merkle tree.
+
+For EML, a node may be null, and if children are null their null value is
+collapsed and promoted to the parent.  This results in the **null boundary**,
+there non-null values are rooted with nulls.
+
+We use the convention of "log" to denote trees that are append only (leaves may
+only be left added) "tree" which is the more general term. (For the Cyphr
+reference implementation, the library "Spine" is a generalized hash tree
+library)
 
 Implementations may choose to expose the commit tree (CT) via tiled static
 storage for efficiency.
@@ -3686,6 +3686,26 @@ Advantages Over HTTP:
 Actions are first-class and atomic. AAA means the "API call" is individually
 verifiable forever, not just during a session.
 
+
+## Atomicity, Commit Vs. Transaction
+Separating commits and transactions atomicity enables a principal to decide how
+to compose operations, giving the principal fine grain control of state. state.
+In practice, transactions state communicates principal mutations and commit
+state determines principal
+
+## Extra-commit and intra-commit authorization
+
+- **Extra-commit authorization**: Principal authorization (such as login,
+leaving a comment communicating as a principal to third parties).  Extra-commit
+authorization answers the question: Did a principal perform this action?
+- **Intra-commit authorization**: Transaction authorization within a commit.
+Intra-commit authorization answers the question: Is a particular transaction
+legitimately authorized to mutate principal state?
+
+Intra-commit transactions as can be thought of as "ephemeral" to external
+authenticators, their only visible level of atomicity is the commit, unless they
+are authenticating a commit itself.
+
 ### Where Cyphr Diverges from Being a Full HTTP Replacement
 
 Cyphr's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers
@@ -3737,14 +3757,6 @@ an alternative interaction model:
 - Define Opaque reveal authorization semantics better
 - ZAMI finish Login
 - In JSON, State is upper case, plural is lower case.
-- Consider: Renaming "Implicit promotion" to:
-  - digest promotion - Preferred
-  - singleton hash elision
-  - hash elision
-  - hash bypass
-  - Degenerate case (Less preferred by related: Degenerate Identity)
-  - Singleton Bypass
-  - Singleton promotion
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
 - I think we can remove pinning

@@ -204,12 +204,17 @@ side for append, every "filled out" "subtree" is of the same size.
 
 
 
-## Synthesis:  **EML (NEML, but EML is now inclusive of N-ary so it's just EML)**
+## Synthesis:  **New EML (NEML, but EML is now inclusive of N-ary so it's just EML)**
+There are still some edge details to work out, so the spec will detail MHMR and leave EML to implementors.
+This is an acknowledgement that there will likely be further refinements.
+
 - Zami summary for neophytes: Four critical key features: 
   - One logical tree, multihash projection (one virtual tree for each hash)
   - Singleton promotion/collapse (including null)
   - Supports append only mode. (With a mutable mode for non-CT components)
-    - The append only mode uses Merkle Mountain Ranges: ephemeral hashes are not used in proofs.
+  - The append only mode may use Merkle Mountain Ranges (MMR): ephemeral hashes are not used in proofs.
+
+
 - **One logical Principal Tree** Many "projections"/"virtual trees"/"physical trees".
 - **Proofs**: Inclusion, consistency, and a new category, **cross-algorithm
   binding proofs**, aka "binding proof" using a binding root. No digital signing
@@ -229,7 +234,7 @@ side for append, every "filled out" "subtree" is of the same size.
   ```
 
   Each hashing algorithm has its own Binding root as well as a normal MR. The
-  binding proof uses only digests.  The key cryptographic advantage of the NEML
+  binding proof uses only digests.  The key cryptographic advantage of the EML
   is that the security of one algorithm is never mixed with others, even within
   the BR; despite hashing another algorithm's digest, the security of the
   external digest isn't relevant with the hash's own tree. Each algorithm hash
@@ -238,7 +243,7 @@ side for append, every "filled out" "subtree" is of the same size.
   The from one hashing tree to another assumes hashing algorithm security .
   Arrow then uses the BR as input for `pre`. This new design eliminates a class
   of cryptography (digital signatures) is also very good, instead of a signed
-  tree head (STH, signing security which is bad)) which is excluded from NEML
+  tree head (STH, signing security which is bad)) which is excluded from EML
   now.
 
   With one hash, there is one virtual tree and the tree must be full and there
@@ -287,7 +292,7 @@ If multiple algorithms are used, the MR and BR for each algorithm is required
 followed by a binding proof.
 
 - **Can't prove binding without Cyphr** Critically, binding roots must be
-trusted.  Cyphr provides BR trust. There can be no possible NEML proofs outside
+trusted.  Cyphr provides BR trust. There can be no possible EML proofs outside
 of proving given binding roots are derived from given MR's (BR consistency
 proof), and inclusion/consistency.
 
@@ -296,7 +301,7 @@ that node A₀ in hash tree H₀ correlates to node A₁ in hash tree H₁.  Wit
 Cyphr, an attacker can provide an naive prover with arbitrary BRs.  The attacker
 can spoof a dishonest BR for a dishonest MT.
 
-NEML can't prove cross consistency without hashing the concrete object, however,
+EML can't prove cross consistency without hashing the concrete object, however,
 and critically, **hashing concrete/preimage values is prohibited for the proving
 system**.  Only digests are provided and preimage verification is strictly
 prohibited for this primitive.  After the fact a client may verify that a
@@ -311,7 +316,9 @@ MT.
   point. (fantastic)  However, it might be too hard to pull this off with a BR.
   However, I don't think it's a problem if the digest continues to appear in BR
   calculations; it could be either way, the digest is dropped or continues to
-  appear.  The costs appear negligible.
+  appear.  The costs appear negligible.  Also, for streaming compatible
+  algorithms, drop digests could be organized first and so pre-computed and
+  remain static.
 - **Ordered** (Nodes are ordered as given by principal)
 - **Directionality**
 - **Left dense filled** No gaps in the tree (except for interior null
