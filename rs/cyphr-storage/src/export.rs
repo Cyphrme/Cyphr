@@ -120,42 +120,10 @@ pub fn export_commits<S: eml::Storage>(
         }
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
-        // Use first_variant() for deterministic, fallible access
-        let tr_bytes = commit.tr().0.first_variant()?;
-        let tr_alg = commit
-            .tr()
-            .0
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let commit_id = format!("{}:{}", tr_alg, Base64UrlUnpadded::encode_string(tr_bytes));
-
-        let as_bytes = commit.auth_root().as_multihash().first_variant()?;
-        let as_alg = commit
-            .auth_root()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let auth_root = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
-
-        let sr_bytes = commit.sr().as_multihash().first_variant()?;
-        let sr_alg = commit
-            .sr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let sr = format!("{}:{}", sr_alg, Base64UrlUnpadded::encode_string(sr_bytes));
-
-        let ps_bytes = commit.pr().as_multihash().first_variant()?;
-        let ps_alg = commit
-            .pr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
+        let commit_id = commit.tr().0.tagged_first()?.to_string();
+        let auth_root = commit.auth_root().as_multihash().tagged_first()?.to_string();
+        let sr = commit.sr().as_multihash().tagged_first()?.to_string();
+        let ps = commit.pr().as_multihash().tagged_first()?.to_string();
 
         commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, ps));
     }

@@ -338,6 +338,18 @@ impl std::ops::Deref for VerifiedCoz {
     }
 }
 
+/// Compute a coz's `czd` (canonical hash + digest) from its payload,
+/// signature, and signing algorithm.
+///
+/// Wraps `coz::canonical_hash_for_alg` + `coz::czd_for_alg` — the two-step
+/// computation every trust-boundary call site needs — into a single call.
+/// Returns `None` for an unrecognized algorithm, matching the underlying
+/// primitives' own idiom.
+pub fn compute_czd(pay_json: &[u8], sig: &[u8], alg: &str) -> Option<Czd> {
+    let cad = coz::canonical_hash_for_alg(pay_json, alg, None)?;
+    coz::czd_for_alg(&cad, sig, alg)
+}
+
 /// Verify a coz signature and return a VerifiedCoz.
 ///
 /// Uses coz-rs runtime verification with the key's algorithm.
