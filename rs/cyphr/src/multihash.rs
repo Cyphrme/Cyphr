@@ -158,6 +158,33 @@ impl MultihashDigest {
             .ok_or(crate::error::Error::EmptyMultihash)
     }
 
+    /// Build the tagged wire-format digest (`alg:base64digest`) for a
+    /// specific algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
+    pub fn tagged(&self, alg: HashAlg) -> crate::error::Result<crate::state::TaggedDigest> {
+        let bytes = self
+            .get(alg)
+            .ok_or(crate::error::Error::MissingVariant(alg))?;
+        crate::state::TaggedDigest::new(alg, bytes.to_vec())
+    }
+
+    /// Build the tagged wire-format digest (`alg:base64digest`) for the
+    /// first available algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if no variants exist.
+    pub fn tagged_first(&self) -> crate::error::Result<crate::state::TaggedDigest> {
+        let alg = self
+            .algorithms()
+            .next()
+            .ok_or(crate::error::Error::EmptyMultihash)?;
+        self.tagged(alg)
+    }
+
     /// Check if this multihash matches another on all common algorithms.
     ///
     /// Returns true if there is at least one common algorithm and all common

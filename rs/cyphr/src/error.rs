@@ -72,6 +72,10 @@ pub enum Error {
     #[error("empty multihash digest")]
     EmptyMultihash,
 
+    /// Requested algorithm has no variant in this multihash.
+    #[error("multihash has no variant for {0}")]
+    MissingVariant(crate::state::HashAlg),
+
     // === Action errors (§17.4) ===
     /// Action `typ` not permitted for this key (Level 5+).
     #[error("unauthorized action")]

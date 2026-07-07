@@ -177,6 +177,24 @@ pub struct TaggedDigest {
 }
 
 impl TaggedDigest {
+    /// Construct a tagged digest from an algorithm and raw digest bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DigestLengthMismatch` if `digest`'s length doesn't match
+    /// `alg`'s expected output size.
+    pub fn new(alg: HashAlg, digest: Vec<u8>) -> crate::error::Result<Self> {
+        let expected = Self::expected_len(alg);
+        if digest.len() != expected {
+            return Err(crate::error::Error::DigestLengthMismatch {
+                alg,
+                expected,
+                actual: digest.len(),
+            });
+        }
+        Ok(Self { alg, digest })
+    }
+
     /// Returns the hash algorithm of this digest.
     #[must_use]
     pub fn alg(&self) -> HashAlg {

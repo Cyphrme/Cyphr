@@ -56,7 +56,7 @@ pub use eml;
 pub use error::Error;
 pub use key::Key;
 pub use multihash::MultihashDigest;
-pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, verify_coz};
+pub use parsed_coz::{CozKind, ParsedCoz, VerifiedCoz, compute_czd, verify_coz};
 pub use principal::Principal;
 pub use state::{
     AuthRoot, CommitID, DataRoot, HashAlg, KeyRoot, PrincipalGenesis, PrincipalRoot, StateDigest,
