@@ -67,12 +67,6 @@ fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
     })
 }
 
-#[allow(dead_code)]
-fn cad_to_b64(cad: &coz::Cad) -> String {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::encode_string(cad.as_bytes())
-}
-
 fn error_name(e: &cyphr::error::Error) -> &'static str {
     use cyphr::error::Error;
     match e {

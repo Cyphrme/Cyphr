@@ -37,14 +37,6 @@ impl AppError {
             message: msg.into(),
         }
     }
-
-    /// 501 Not Implemented.
-    pub fn not_implemented(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_IMPLEMENTED,
-            message: msg.into(),
-        }
-    }
 }
 
 impl IntoResponse for AppError {
