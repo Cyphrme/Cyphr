@@ -4,7 +4,7 @@
 
 **Date:** 2026-05-11
 
-**Plan:** `docs/plans/cyphr-server.md` (continuity from Phases 1-4)
+**Plan:** `docs/plans/archive/cyphr-server.md` (continuity from Phases 1-4)
 
 ---
 
@@ -447,4 +447,4 @@ nature requires fundamentally different verification primitives.
 - tvix-castore (TVL) — generic content-addressed blob + directory service
 - iroh (n0) — BLAKE3 verified streaming, P2P content-addressed networking
 - Sketch: `.sketches/2026-05-07-malt-proof-verification.md`
-- Previous plan: `docs/plans/cyphr-server.md`
+- Previous plan: `docs/plans/archive/cyphr-server.md`

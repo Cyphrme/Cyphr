@@ -2,9 +2,9 @@
 
 <!--
   SPEC document — SQLite-specific implementation of the Indexer trait.
-  Source: .sketches/2026-05-28-storage-object-model.md (ACCEPTED decision),
-          docs/plans/cyphr-server.md (SQLite selection rationale),
+  Source: docs/plans/archive/cyphr-server.md (SQLite selection rationale),
           storage-engine.md (original constraints)
+          [source sketch archived; no longer available]
   Crate:  rs/cyphr-index-sqlite/ (see storage-engine.md [crate-isolation])
   Authority: SPEC.md (Zamicol and nrdxp)
 
@@ -48,9 +48,9 @@ with infrequent writes (commit ingestion). After four research passes
    derived, rebuildable projection — losing it is an inconvenience, not a
    catastrophe. No shared WAL needed.
 
-See the [storage object model sketch](../../.sketches/2026-05-28-storage-object-model.md)
-§ "Decision: ACCEPTED — Conventional Index with Chain Replay Verification"
-for the full analysis, including the Fjall index critique.
+The storage object model design (Decision: ACCEPTED — Conventional Index
+with Chain Replay Verification) provides full analysis including the Fjall
+index critique. See the archived plan documents for design rationale.
 
 **Cross-references:**
 [`indexer.md`](indexer.md) (abstract API),
