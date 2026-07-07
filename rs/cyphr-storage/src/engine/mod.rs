@@ -1471,16 +1471,9 @@ fn key_value_to_entry(key_obj: &serde_json::Value) -> Option<crate::KeyEntry> {
 fn format_multihash_all(
     mh: &cyphr::multihash::MultihashDigest,
 ) -> Result<Vec<String>, EngineError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let mut results = Vec::new();
-    for alg in mh.algorithms() {
-        let bytes = mh
-            .get(alg)
-            .ok_or_else(|| EngineError::InvalidInput(format!("missing variant for {alg:?}")))?;
-        results.push(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)));
-    }
-    Ok(results)
+    mh.algorithms()
+        .map(|alg| Ok(mh.tagged(alg)?.to_string()))
+        .collect()
 }
 
 /// Compute the `principal_id` a single genesis key resolves to, without

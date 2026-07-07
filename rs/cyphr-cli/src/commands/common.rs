@@ -190,15 +190,7 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
 /// Get the principal ID string for a PrincipalGenesis
 pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
     use cyphr::StateDigest;
-    let mh = pr.as_multihash();
-    let alg = mh
-        .algorithms()
-        .next()
-        .ok_or_else(|| crate::Error::Storage("empty PR algorithms".into()))?;
-    let bytes = mh
-        .get(alg)
-        .ok_or_else(|| crate::Error::Storage("missing PR variant".into()))?;
-    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+    Ok(pr.as_multihash().tagged_first()?.to_string())
 }
 
 /// Get the principal ID string from a Principal
@@ -220,14 +212,7 @@ pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
             Base64UrlUnpadded::encode_string(&bytes)
         ));
     };
-    let alg = mh
-        .algorithms()
-        .next()
-        .ok_or_else(|| crate::Error::Storage("empty PR/PS algorithms".into()))?;
-    let bytes = mh
-        .get(alg)
-        .ok_or_else(|| crate::Error::Storage("missing PR/PS variant".into()))?;
-    Ok(format!("{alg}:{}", Base64UrlUnpadded::encode_string(bytes)))
+    Ok(mh.tagged_first()?.to_string())
 }
 
 /// Load a principal from the storage engine.
