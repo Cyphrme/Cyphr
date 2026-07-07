@@ -51,25 +51,20 @@ All active development happens here.
   `Indexer`). Signpost: backend types leaking through a seam into
   consumers.
 
-## Known traps (verified 2026-07-06; fix, don't inherit)
+## Known traps (updated 2026-07-07; fix, don't inherit)
 
-- **Per-mutation `pre` is rejected-draft residue, slated for removal.**
-  The spec author ruled (PR #39 thread) that mutation transactions do NOT
-  carry `pre` — commit atomicity/chaining/order ride in the commit
-  transaction's `arrow` alone. The implementation currently requires
-  `pre` on every mutation (`verify_pre`, `rs/cyphr/src/principal.rs`),
-  all fixtures carry it, and `err_transaction_missing_pre` asserts its
-  absence is an error. Do not extend or "fix toward" this pattern; its
-  removal (code + fixtures + docs/specs/transactions.md) is scoped
-  campaign work.
-
-- **Crate READMEs lie.** All three (`cyphr`, `cyphr-storage`, `cyphr-cli`)
-  document APIs/commands that do not exist. Trust `lib.rs` exports and
-  tests, not READMEs, until the truth-restoration pass lands.
-- **`reindex` silently under-recovers.** O(n!) permutation search capped
-  at 8 same-timestamp mutations; on give-up it warns and returns `Ok(())`
+- **`reindex` silently under-recovers, and its genesis-detection is
+  actively broken right now.** O(n!) permutation search capped at 8
+  same-timestamp mutations; on give-up it warns and returns `Ok(())`
   (`engine/mod.rs` ~1162–1461). Also implicit-genesis-only bootstrap
-  (forge #33). Do not build on it as-is.
+  (forge #33). Per-mutation `pre` has been removed (it was rejected-draft
+  residue — spec author, PR #39 thread), and `reindex`'s sole
+  genesis-vs-mutation signal was `pre` being empty, so it no longer
+  distinguishes anything: five tests are currently `#[ignore]`d citing
+  this exact break (`engine::tests::test_reindex_recovery` and four
+  siblings; tracked as `F6-reindex-genesis-drop`). A real replacement
+  genesis-bootstrap signal, removing those five `#[ignore]`s, is scoped,
+  mandatory campaign work — do not attempt a narrow patch elsewhere.
 - **`CloneableLog` concurrency assumption.** `block_on` under a `Mutex`
   (`cyphr/src/commit_root.rs`); sound only because every engine call
   builds a fresh `Principal`. Do not share a live `Principal` across
