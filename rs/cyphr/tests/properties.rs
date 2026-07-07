@@ -489,14 +489,10 @@ proptest! {
             .expect("commit/create coz should carry an arrow")
             .clone();
         let tampered_arrow = arrow_tamper_digest(&genuine_arrow, signer_alg, byte_index, mask);
-        let tampered_bytes = tampered_arrow
-            .get(signer_alg)
-            .expect("tampered digest carries signer's algorithm");
-        let tampered_tagged = format!(
-            "{}:{}",
-            signer_alg,
-            Base64UrlUnpadded::encode_string(tampered_bytes)
-        );
+        let tampered_tagged = tampered_arrow
+            .tagged(signer_alg)
+            .expect("tampered digest carries signer's algorithm")
+            .to_string();
 
         // Test principal: byte-identical mutation replay, then a REAL
         // signed commit/create coz carrying the tampered arrow, through
