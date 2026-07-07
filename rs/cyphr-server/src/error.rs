@@ -64,7 +64,11 @@ impl AppError {
     /// Variant mapping:
     /// - `NotFound` → 404
     /// - `InvalidInput`, `MalformedBlob` → 400
-    /// - `Protocol` → 422 Unprocessable Entity (valid JSON, invalid protocol)
+    /// - `Protocol(cyphr::Error::Storage(_))` → 500 (infrastructure failure
+    ///   that happened to surface through the protocol layer, not a genuine
+    ///   protocol violation)
+    /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable
+    ///   Entity (valid JSON, invalid protocol)
     /// - `BlobStore`, `Indexer`, `Load`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
@@ -73,6 +77,10 @@ impl AppError {
             EngineError::NotFound(_) => Self::not_found(err.to_string()),
             EngineError::InvalidInput(_) | EngineError::MalformedBlob(_) => {
                 Self::bad_request(err.to_string())
+            },
+            EngineError::Protocol(cyphr::Error::Storage(_)) => {
+                tracing::error!(error = %err, "internal engine error");
+                Self::internal("internal storage error")
             },
             EngineError::Protocol(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,

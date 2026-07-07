@@ -356,7 +356,7 @@ pub fn commit_root_from_trees<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root(alg_id)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
     let md = MultihashDigest::new(variants)?;
@@ -379,7 +379,7 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root_at(alg_id, size)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
     let md = MultihashDigest::new(variants)?;
