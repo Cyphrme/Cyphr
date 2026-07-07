@@ -474,10 +474,8 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                         .get("alg")
                         .and_then(|a| a.as_str())
                         .ok_or(LoadError::UnsupportedAlgorithm)?;
-                    let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+                    let czd = cyphr::compute_czd(&pay_json, &sig, alg)
                         .ok_or(LoadError::UnsupportedAlgorithm)?;
-                    let czd =
-                        coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
 
                     scope
                         .verify_and_apply(&pay_json, &sig, czd, new_key)
@@ -641,8 +639,8 @@ pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 
 /// Compute Coz digest for an entry.
 ///
-/// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
-/// consistent hash computation matching the signing path.
+/// Delegates to `cyphr::compute_czd` to ensure consistent hash computation
+/// matching the signing path.
 pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadError> {
     let pay: serde_json::Value = serde_json::from_slice(pay_json).map_err(|e| LoadError::Json {
         index: 0,
@@ -653,14 +651,7 @@ pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadE
         .and_then(|a| a.as_str())
         .ok_or(LoadError::UnsupportedAlgorithm)?;
 
-    // Compute cad using canonical hash (compacts JSON first)
-    let cad =
-        coz::canonical_hash_for_alg(pay_json, alg, None).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    // Compute czd using canonical {"cad":"...","sig":"..."} format
-    let czd = coz::czd_for_alg(&cad, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    Ok(czd)
+    cyphr::compute_czd(pay_json, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)
 }
 
 // ============================================================================

@@ -513,10 +513,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     EngineError::MalformedBlob(format!("blob {i}: missing 'alg' in pay"))
                 })?
                 .to_string();
-            let cad = coz::canonical_hash_for_alg(&pay_json, &alg_str, None).ok_or_else(|| {
-                EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
-            })?;
-            let czd = coz::czd_for_alg(&cad, &sig, &alg_str).ok_or_else(|| {
+            let czd = cyphr::compute_czd(&pay_json, &sig, &alg_str).ok_or_else(|| {
                 EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
             })?;
 
@@ -909,10 +906,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                 None
             };
 
-            let cad = coz::canonical_hash_for_alg(&pay_json, &pay.alg, None).ok_or_else(|| {
-                EngineError::MalformedBlob(format!("blob {hash}: czd computation failed"))
-            })?;
-            let czd = coz::czd_for_alg(&cad, &sig, &pay.alg).ok_or_else(|| {
+            let czd = cyphr::compute_czd(&pay_json, &sig, &pay.alg).ok_or_else(|| {
                 EngineError::MalformedBlob(format!("blob {hash}: czd computation failed"))
             })?;
 
@@ -1108,11 +1102,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
                         if principal.is_key_active(&signer_tmb) {
                             let alg = &coz.alg;
-                            let cad = match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                            let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                            let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
                                 Some(c) => c,
                                 None => continue,
                             };
@@ -1188,12 +1178,11 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
                     'outer: for finalizer_coz in &finalizers {
                         let alg = &finalizer_coz.alg;
-                        let cad =
-                            match coz::canonical_hash_for_alg(&finalizer_coz.pay_json, alg, None) {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                        let finalizer_czd = match coz::czd_for_alg(&cad, &finalizer_coz.sig, alg) {
+                        let finalizer_czd = match cyphr::compute_czd(
+                            &finalizer_coz.pay_json,
+                            &finalizer_coz.sig,
+                            alg,
+                        ) {
                             Some(c) => c,
                             None => continue,
                         };
@@ -1233,15 +1222,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
                             for coz in perm {
                                 let alg = &coz.alg;
-                                let cad =
-                                    match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
-                                        Some(c) => c,
-                                        None => {
-                                            ok = false;
-                                            break;
-                                        },
-                                    };
-                                let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                                let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
                                     Some(c) => c,
                                     None => {
                                         ok = false;
@@ -1374,12 +1355,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                                 let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
 
                                 let alg = &coz.alg;
-                                let cad =
-                                    match coz::canonical_hash_for_alg(&coz.pay_json, alg, None) {
-                                        Some(c) => c,
-                                        None => continue,
-                                    };
-                                let czd = match coz::czd_for_alg(&cad, &coz.sig, alg) {
+                                let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
                                     Some(c) => c,
                                     None => continue,
                                 };
