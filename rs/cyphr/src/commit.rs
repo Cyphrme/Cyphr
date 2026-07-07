@@ -16,7 +16,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 /// Per SPEC §4:
 /// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
-/// - `pre` of first coz references previous commit's CS (or promoted AS for genesis)
+/// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references
+///   the previous commit's CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
@@ -338,7 +339,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply(&mut self, vtx: VerifiedCoz) -> crate::error::Result<()> {
@@ -639,8 +639,6 @@ mod tests {
     use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
     use crate::state::HashAlg;
 
-    // Valid alg:digest format for 32-byte SHA-256 digests
-    const TEST_PRE: &str = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
     const TEST_ID: &str = "xrYMu87EXes58PnEACcDW1t0jF2ez4FCN-njTF0MHNo";
 
     /// Create a test coz. When `is_commit` is true, creates a commit/create
@@ -659,7 +657,6 @@ mod tests {
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
         if !is_commit {
-            pay.extra.insert("pre".into(), json!(TEST_PRE));
             pay.extra.insert("id".into(), json!(TEST_ID));
         }
         if is_commit {

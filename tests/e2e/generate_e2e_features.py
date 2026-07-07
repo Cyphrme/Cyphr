@@ -5,7 +5,7 @@ def generate_toml():
     toml_lines = [
         "# E2E Features Matrix Tests",
         "# Generated automatically by generate_e2e_features.py",
-        "# Covers 16 features across 4 tiers with a minimum of 184 cases.",
+        "# Covers 16 features across 4 tiers with a minimum of 179 cases.",
         ""
     ]
 
@@ -752,29 +752,6 @@ def generate_toml():
             "",
             "[test.expected]",
             'error     = "[commit-one-or-more]"',
-            ""
-        ])
-
-    # F-12: Commit Finality Arrow (Errors)
-    # Case 1..5: Broken chain pre mismatch -> [commit-pre-chain]
-    for i in range(5):
-        toml_lines.extend([
-            "[[test]]",
-            f'name      = "t2_f12_case{i+1}"',
-            'principal = ["golden"]',
-            "",
-            "[[test.commit]]",
-            "tx = [",
-            "  [",
-            f'    {{ now = {base_time}, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" }},',
-            "  ],",
-            "]",
-            "",
-            "[test.override]",
-            'pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"',
-            "",
-            "[test.expected]",
-            'error     = "[commit-pre-chain]"',
             ""
         ])
 

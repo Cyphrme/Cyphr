@@ -369,10 +369,8 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::MissingTimestamp { .. } => "MissingTimestamp",
         LoadError::MissingSig { .. } => "MissingSig",
         LoadError::InvalidSignature { .. } => "InvalidSignature",
-        LoadError::BrokenChain { .. } => "BrokenChain",
         LoadError::UnknownSigner { .. } => "UnknownSigner",
         LoadError::Protocol(e) => match e {
-            cyphr::Error::InvalidPrior => "InvalidPrior",
             cyphr::Error::UnknownKey => "UnknownKey",
             cyphr::Error::KeyRevoked => "KeyRevoked",
             cyphr::Error::NoActiveKeys => "NoActiveKeys",
@@ -401,10 +399,7 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         // Transactions
         "[commit-one-or-more]" => "EmptyCommit",
         "[no-empty-mr]" => "NoGenesisKeys",
-        "[transaction-pre-required]" => "MalformedPayload",
         "[data-action-no-pre]" => "MalformedPayload",
-        "[commit-pre-chain]" => "BrokenChain",
-        "[no-orphan-pre]" => "BrokenChain",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",

@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::{AuthRoot, PrincipalRoot};
+use crate::state::AuthRoot;
 
 // ============================================================================
 // ParsedCoz Types (SPEC §4.2)
@@ -40,43 +40,30 @@ pub mod typ {
 pub enum CozKind {
     /// Create a new key (Level 3+) - SPEC §4.2.1
     KeyCreate {
-        /// Previous Principal State.
-        pre: PrincipalRoot,
         /// Thumbprint of key being created.
         id: Thumbprint,
     },
 
     /// Remove key without invalidation (Level 3+) - SPEC §4.2.2
     KeyDelete {
-        /// Previous Principal State.
-        pre: PrincipalRoot,
         /// Thumbprint of key being deleted.
         id: Thumbprint,
     },
 
     /// Atomic key swap (Level 2+) - SPEC §4.2.3
     KeyReplace {
-        /// Previous Principal State.
-        pre: PrincipalRoot,
         /// Thumbprint of new key.
         id: Thumbprint,
     },
 
     /// Self-revoke (Level 1+) - SPEC §4.2.4
-    /// Per protocol simplification, revoke requires `pre` like all other coz.
     SelfRevoke {
-        /// Previous Principal State.
-        pre: PrincipalRoot,
         /// Revocation timestamp.
         rvk: i64,
     },
 
     /// Principal creation (explicit genesis finalization) - SPEC §5.1
-    ///
-    /// Finalizes explicit genesis. `pre` references current Principal State.
     PrincipalCreate {
-        /// Previous Principal State (required per implicit first key model).
-        pre: PrincipalRoot,
         /// Final Auth State bundle identifier (becomes PR).
         id: AuthRoot,
     },
@@ -205,58 +192,34 @@ impl ParsedCoz {
     fn parse_kind(pay: &Pay, typ: &str, _signer: &Thumbprint) -> Result<CozKind> {
         // Check if typ ends with a known coz type
         if typ.ends_with(typ::KEY_CREATE) {
-            let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(CozKind::KeyCreate { pre, id })
+            Ok(CozKind::KeyCreate { id })
         } else if typ.ends_with(typ::KEY_DELETE) {
-            let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(CozKind::KeyDelete { pre, id })
+            Ok(CozKind::KeyDelete { id })
         } else if typ.ends_with(typ::KEY_REPLACE) {
-            let pre = Self::extract_pre(pay)?;
             let id = Self::extract_id(pay)?;
-            Ok(CozKind::KeyReplace { pre, id })
+            Ok(CozKind::KeyReplace { id })
         } else if typ.ends_with(typ::KEY_REVOKE) {
             // Self-revoke: signer revokes itself. `id` MUST be absent — the
             // signer IS the revoked key. Presence of `id` is a malformed payload.
             // [no-revoke-non-self]: non-self revoke is not permitted at any level.
-            let pre = Self::extract_pre(pay)?;
             let rvk = pay.rvk.ok_or(Error::MalformedPayload)?;
             if Self::try_extract_id(pay).is_some() {
                 return Err(Error::MalformedPayload);
             }
-            Ok(CozKind::SelfRevoke { pre, rvk })
+            Ok(CozKind::SelfRevoke { rvk })
         } else if typ.ends_with(typ::PRINCIPAL_CREATE) {
             // Genesis finalization (SPEC §5.1)
-            // `pre` references current AS, `id` is final AS (becomes PR)
-            let pre = Self::extract_pre(pay)?;
+            // `id` is final AS (becomes PR)
             let id = Self::extract_as(pay)?;
-            Ok(CozKind::PrincipalCreate { pre, id })
+            Ok(CozKind::PrincipalCreate { id })
         } else if typ.ends_with(typ::COMMIT_CREATE) {
             let arrow = Self::extract_arrow(pay)?.ok_or(Error::MalformedPayload)?;
             Ok(CozKind::CommitCreate { arrow })
         } else {
             Err(Error::MalformedPayload)
         }
-    }
-
-    /// Extract `pre` field (previous Principal State) from pay.extra.
-    ///
-    /// Expects `alg:digest` format (e.g., `SHA-256:U5XUZots...`).
-    fn extract_pre(pay: &Pay) -> Result<PrincipalRoot> {
-        use crate::multihash::MultihashDigest;
-        use crate::state::TaggedDigest;
-
-        let pre_value = pay.extra.get("pre").ok_or(Error::MalformedPayload)?;
-        let pre_str = pre_value.as_str().ok_or(Error::MalformedPayload)?;
-
-        // Parse tagged digest (validates algorithm and length)
-        let tagged: TaggedDigest = pre_str.parse().map_err(|_| Error::MalformedPayload)?;
-
-        Ok(PrincipalRoot(
-            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
-                .map_err(|_| Error::MalformedPayload)?,
-        ))
     }
 
     /// Extract `id` field (target key thumbprint) from pay.extra.
@@ -442,7 +405,6 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
@@ -460,7 +422,6 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
@@ -477,7 +438,6 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
         pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
@@ -488,15 +448,13 @@ mod tests {
 
     #[test]
     fn parse_self_revoke() {
-        let mut pay = PayBuilder::new()
+        let pay = PayBuilder::new()
             .typ("cyphr.me/cyphr/key/revoke")
             .alg("ES256")
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .rvk(1000)
             .build();
-        // Per protocol simplification, revoke requires pre like all other coz
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
 
         let czd = Czd::from_bytes(vec![0; 32]);
         let cz = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay)).unwrap();
@@ -514,7 +472,6 @@ mod tests {
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .rvk(1000)
             .build();
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
         pay.extra.insert("id".into(), json!(TEST_ID)); // forbidden
 
         let czd = Czd::from_bytes(vec![0; 32]);
@@ -535,8 +492,6 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-        // pre is the current AS before finalization (required per SPEC §5.1)
-        pay.extra.insert("pre".into(), json!(TEST_PRE));
         // id is the final AS (becomes PR)
         pay.extra.insert("id".into(), json!(TEST_PRE));
         pay.extra.insert("commit".into(), json!(true));
@@ -554,22 +509,6 @@ mod tests {
             .now(1000)
             .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
             .build();
-
-        let czd = Czd::from_bytes(vec![0; 32]);
-        let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
-
-        assert!(matches!(result, Err(Error::MalformedPayload)));
-    }
-
-    #[test]
-    fn parse_missing_pre_fails() {
-        let mut pay = PayBuilder::new()
-            .typ("cyphr.me/cyphr/key/create")
-            .alg("ES256")
-            .now(1000)
-            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
-            .build();
-        pay.extra.insert("id".into(), json!(TEST_ID));
 
         let czd = Czd::from_bytes(vec![0; 32]);
         let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));

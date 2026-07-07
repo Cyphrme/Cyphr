@@ -18,10 +18,6 @@ pub enum Error {
     #[error("unknown algorithm")]
     UnknownAlg,
 
-    /// `pre` does not match current AS.
-    #[error("invalid prior state")]
-    InvalidPrior,
-
     /// `now` < latest known PS timestamp.
     #[error("timestamp in past")]
     TimestampPast,

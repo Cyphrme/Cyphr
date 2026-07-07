@@ -126,7 +126,6 @@ For each JSON file in `golden/`:
 | `edge_cases`                 | `golden/edge_cases/`                 | Ordering, idempotency, combined operations           |
 | `actions`                    | `golden/actions/`                    | Level 4 action recording                             |
 | `errors`                     | `golden/errors/`                     | Error condition rejection tests                      |
-| `authentication_constraints` | `golden/authentication_constraints/` | Constraints verifying authentication rules           |
 | `data_action_constraints`    | `golden/data_action_constraints/`    | Constraints over data actions                        |
 | `structural_constraints`     | `golden/structural_constraints/`     | Structural validation algorithms                     |
 
@@ -143,7 +142,6 @@ Tests with `expected.error` verify that operations are correctly rejected:
 
 | Error                  | Trigger                                    |
 | ---------------------- | ------------------------------------------ |
-| `InvalidPrior`         | Transaction `pre` doesn't match current PR |
 | `UnknownKey`           | Signer not in principal's key set          |
 | `KeyRevoked`           | Signer key is revoked                      |
 | `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)    |
@@ -299,17 +297,17 @@ error = "KeyRevoked"
 
 ```toml
 [[test]]
-name      = "pre_mismatch_fails"
+name      = "err_empty_commit"
 principal = ["golden"]
 
 [[test.commit]]
-tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create"}]]
+tx = []
 
 [test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+empty_commit = true
 
 [test.expected]
-error = "InvalidPrior"
+error = "[commit-one-or-more]"
 ```
 
 ### Intent Field Reference
@@ -327,7 +325,6 @@ error = "InvalidPrior"
 | `action[].now`       | i64      | Action timestamp                                    |
 | `action[].signer`    | string   | Action signer key name                              |
 | `action[].msg`       | string   | Action message content                              |
-| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)       |
 | `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)         |
 | `expected.key_count` | int      | Expected active key count                           |
 | `expected.level`     | int      | Expected principal level (1-4)                      |
@@ -360,11 +357,10 @@ cargo run -p fixture-gen -- \
 | state_computation          | 9      |
 | edge_cases                 | 4      |
 | actions                    | 5      |
-| errors                     | 13     |
-| authentication_constraints | 1      |
+| errors                     | 12     |
 | data_action_constraints    | 1      |
 | structural_constraints     | 2      |
-| **Total**                  | **47** |
+| **Total**                  | **45** |
 
 ---
 
@@ -385,10 +381,10 @@ In addition to golden tests, `tests/e2e/` contains **intent files** that are par
 | `round_trip.toml`          | 5       | Export/import round-trip verification                                                            |
 | `genesis_load.toml`        | 4       | Genesis creation and initial state                                                                |
 | `edge_cases.toml`          | 4       | Algorithm diversity, large history, timing                                                        |
-| `error_conditions.toml`    | 11      | Error rejection (broken chain, revoked)                                                           |
+| `error_conditions.toml`    | 9       | Error rejection (revoked, timestamp order)                                                        |
 | `multihash_coherence.toml` | 2       | Multi-algorithm state coherence (SPEC §14)                                                       |
-| `e2e_features.toml`        | 184     | Generated feature-coverage matrix: 16 features across 4 tiers (see `generate_e2e_features.py`)    |
-| **Total**                  | **210** |                                                                                                    |
+| `e2e_features.toml`        | 179     | Generated feature-coverage matrix: 16 features across 4 tiers (see `generate_e2e_features.py`)    |
+| **Total**                  | **203** |                                                                                                    |
 
 ### Running E2E Tests
 
