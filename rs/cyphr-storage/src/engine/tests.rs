@@ -691,6 +691,178 @@ async fn submit_then_load_round_trip() {
     assert_eq!(tip.commit_count, commits.len() as u64);
 }
 
+// ========================================================================
+// Durable ingest: crash-window closure + order retention (N04)
+// ========================================================================
+
+/// Crash simulated between `store_blobs_and_manifest`'s manifest write and
+/// `ingest_commit`'s subsequent index write: the blobs and the durable
+/// commit-manifest are stored, but the index was never written -- exactly
+/// what a process crash after `ingest_commit`'s manifest `put` but before
+/// its `indexer.index_commit` call would leave behind.
+///
+/// The commit must not be silently lost: `rebuild_index_from_manifests`
+/// (called here in place of "the next engine open") must recover it in
+/// full from the manifest alone, with no index entry ever pointing at a
+/// missing blob in the meantime.
+#[tokio::test]
+async fn crash_between_manifest_and_index_write_is_recoverable() {
+    let engine = test_engine();
+    let blob = b"{\"pay\":{\"now\":1000}}";
+    let meta = make_meta("alice", 0, 1000);
+
+    let (commit, manifest_hash) = engine
+        .store_blobs_and_manifest(&[blob.as_slice()], meta)
+        .await
+        .expect("store_blobs_and_manifest failed");
+
+    // Before recovery: no index entry exists at all -- not a partial one,
+    // not one pointing at a missing blob. Full absence.
+    assert!(
+        engine.get_tip("alice").await.unwrap().is_none(),
+        "index must not have been written yet"
+    );
+
+    // The manifest itself is durably present in the blob store.
+    assert!(
+        engine
+            .blob_store()
+            .get(&manifest_hash)
+            .await
+            .unwrap()
+            .is_some(),
+        "commit manifest must be durably stored before the index write"
+    );
+
+    // "Reopen": scan the blob store for manifests and complete indexing.
+    let recovered = engine
+        .rebuild_index_from_manifests()
+        .await
+        .expect("rebuild_index_from_manifests failed");
+    assert_eq!(recovered, 1, "exactly one manifest should be found");
+
+    // After recovery: full presence, matching what a normal ingest_commit
+    // call would have produced.
+    let tip = engine
+        .get_tip("alice")
+        .await
+        .unwrap()
+        .expect("tip must exist after manifest-based recovery");
+    assert_eq!(tip.commit_count, 1);
+    assert_eq!(tip.pr, commit.prs[0]);
+
+    // Idempotent: calling recovery again must not double-index.
+    let recovered_again = engine.rebuild_index_from_manifests().await.unwrap();
+    assert_eq!(
+        recovered_again, 1,
+        "manifest is still found, but re-indexing is a no-op"
+    );
+    let tip_again = engine.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(
+        tip_again.commit_count, 1,
+        "re-running recovery must not duplicate the commit"
+    );
+}
+
+/// Crash simulated mid coz-blob loop, before the manifest itself is ever
+/// written: a coz blob lands in the blob store directly (bypassing
+/// `ingest_commit` entirely), with no manifest tying it to any commit.
+///
+/// This must resolve to full absence -- the orphaned blob is harmless,
+/// content-addressed leftover data (never surfaced through the index),
+/// not a half-formed commit.
+#[tokio::test]
+async fn crash_before_manifest_write_leaves_commit_fully_absent() {
+    let engine = test_engine();
+
+    let orphan_hash = engine.blob_store().put(b"orphan-coz-blob").await.unwrap();
+
+    let recovered = engine
+        .rebuild_index_from_manifests()
+        .await
+        .expect("rebuild_index_from_manifests failed");
+    assert_eq!(
+        recovered, 0,
+        "no manifest exists, so nothing should be indexed"
+    );
+
+    assert!(engine.get_tip("alice").await.unwrap().is_none());
+    // The orphan blob is still retrievable (harmless leftover content) but
+    // never claims to be part of any indexed commit.
+    assert!(
+        engine
+            .blob_store()
+            .get(&orphan_hash)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The commit's intra-commit transaction order must be readable directly
+/// from its durable manifest -- not via `reindex`'s permutation search --
+/// and must match the exact order `ingest_commit` was called with.
+#[tokio::test]
+async fn manifest_retains_ingest_order_without_search() {
+    let engine = test_engine();
+    let blob_a = b"tx-a-first";
+    let blob_b = b"tx-b-second";
+    let blob_c = b"tx-c-third";
+
+    let mut meta = make_meta("alice", 0, 1000);
+    // Three cozies, matching the three blobs positionally (make_meta only
+    // seeds one; extend to match blobs.len()).
+    meta.cozies = vec![
+        meta.cozies[0].clone(),
+        meta.cozies[0].clone(),
+        meta.cozies[0].clone(),
+    ];
+
+    let result = engine
+        .ingest_commit(
+            &[blob_a.as_slice(), blob_b.as_slice(), blob_c.as_slice()],
+            meta,
+        )
+        .await
+        .expect("ingest failed");
+
+    let expected_order = vec![
+        blake3::hash(blob_a).as_bytes().to_vec(),
+        blake3::hash(blob_b).as_bytes().to_vec(),
+        blake3::hash(blob_c).as_bytes().to_vec(),
+    ];
+
+    // Read the manifest back directly from the blob store -- the same
+    // mechanism `rebuild_index_from_manifests` uses -- rather than via
+    // `reindex`'s permutation search.
+    let manifest_bytes = engine
+        .blob_store()
+        .get(&result.manifest_hash)
+        .await
+        .unwrap()
+        .expect("manifest must be present in the blob store");
+    let manifest: super::CommitManifest =
+        serde_json::from_slice(&manifest_bytes).expect("manifest must deserialize");
+
+    assert_eq!(manifest.kind, super::COMMIT_MANIFEST_KIND);
+    let retained_order: Vec<Vec<u8>> = manifest
+        .commit
+        .blob_hashes
+        .iter()
+        .map(|h| h.as_bytes().to_vec())
+        .collect();
+    assert_eq!(
+        retained_order, expected_order,
+        "retained manifest order must match the exact ingest-time transaction sequence"
+    );
+
+    // The manifest also carries the commit's derived Auth Root -- the
+    // arrow the retained order is verified against -- so a reader never
+    // needs to re-derive it via search.
+    let tip = engine.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(manifest.commit.ars, vec![tip.ar]);
+}
+
 #[tokio::test]
 async fn test_reindex_recovery() {
     use coz::base64ct::Encoding;

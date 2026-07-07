@@ -100,6 +100,28 @@ fn map_coz_info(parsed: &ParsedCozInfo, active_algs: &[cyphr::state::HashAlg]) -
 pub struct IngestResult {
     /// BLAKE3 hashes of the stored blobs.
     pub blob_hashes: Vec<Blake3Hash>,
+    /// BLAKE3 hash of this commit's durable [`CommitManifest`] blob.
+    pub manifest_hash: Blake3Hash,
+}
+
+/// Discriminator embedded in every [`CommitManifest`], distinguishing it
+/// from an ordinary coz blob during a full blob-store scan.
+const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
+
+/// A durable, content-addressed record of one [`ingest_commit`](StorageEngine::ingest_commit)
+/// call's fully-resolved [`IndexableCommit`] — written to the blob store
+/// (never only to the index) so a commit's intra-commit transaction order
+/// and derived state digests survive independently of the index.
+///
+/// This is the signal that lets an index rebuild ([`StorageEngine::rebuild_index_from_manifests`])
+/// re-derive a commit directly, without the permutation search
+/// [`StorageEngine::reindex`] otherwise needs to reconstruct same-timestamp
+/// mutation order. Per root `AGENTS.md` invariant I1, the manifest is
+/// itself blob-store content, not a new index-only source of truth.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CommitManifest {
+    kind: String,
+    commit: IndexableCommit,
 }
 
 /// Produces a fresh, independent `S` instance for a `Principal`'s Commit
@@ -253,12 +275,55 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     // Write path
     // ========================================================================
 
+    /// Store this commit's coz blobs and its durable [`CommitManifest`],
+    /// without touching the index.
+    ///
+    /// This is [`ingest_commit`](Self::ingest_commit)'s crash-safe first
+    /// phase: once the manifest write here completes, the commit is
+    /// durably recoverable from the blob store alone — a crash before it
+    /// (mid coz-blob loop, or before the manifest itself lands) leaves
+    /// only harmless, unreferenced content-addressed blobs behind, never
+    /// a commit that's half-recorded. [`Self::rebuild_index_from_manifests`]
+    /// is what completes the second phase (the index write) for a commit
+    /// whose manifest landed but whose index write did not.
+    async fn store_blobs_and_manifest(
+        &self,
+        blobs: &[&[u8]],
+        mut commit: IndexableCommit,
+    ) -> Result<(IndexableCommit, Blake3Hash), EngineError> {
+        // Store each blob.
+        let mut blob_hashes = Vec::with_capacity(blobs.len());
+        for (i, blob) in blobs.iter().enumerate() {
+            let hash = self.blob_store.put(blob).await?;
+            blob_hashes.push(hash);
+            if i < commit.cozies.len() {
+                commit.cozies[i].blob_hash = hash;
+            }
+        }
+        commit.blob_hashes = blob_hashes;
+
+        // Durable commit point: once this manifest is stored, the full
+        // IndexableCommit -- including the exact ingest-time order of its
+        // cozies -- is recoverable from the blob store alone.
+        let manifest = CommitManifest {
+            kind: COMMIT_MANIFEST_KIND.to_string(),
+            commit: commit.clone(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest)
+            .map_err(|e| EngineError::MalformedBlob(format!("commit manifest serialize: {e}")))?;
+        let manifest_hash = self.blob_store.put(&manifest_bytes).await?;
+
+        Ok((commit, manifest_hash))
+    }
+
     /// Ingest a pre-validated commit: store blobs and index metadata.
     ///
     /// Each entry in `blobs` is a raw coz byte slice. The engine:
     /// 1. Puts each blob into the blob store (content-addressed)
     /// 2. Builds an `IndexableCommit` from the metadata + blob hashes
-    /// 3. Calls the indexer to record relational data
+    /// 3. Stores a durable [`CommitManifest`] recording that `IndexableCommit` (see
+    ///    [`Self::store_blobs_and_manifest`]) -- the crash-safe commit point
+    /// 4. Calls the indexer to record relational data
     ///
     /// Returns the BLAKE3 hashes of the stored blobs.
     ///
@@ -275,23 +340,63 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     pub async fn ingest_commit(
         &self,
         blobs: &[&[u8]],
-        mut commit: IndexableCommit,
+        commit: IndexableCommit,
     ) -> Result<IngestResult, EngineError> {
-        // Store each blob.
-        let mut blob_hashes = Vec::with_capacity(blobs.len());
-        for (i, blob) in blobs.iter().enumerate() {
-            let hash = self.blob_store.put(blob).await?;
-            blob_hashes.push(hash);
-            if i < commit.cozies.len() {
-                commit.cozies[i].blob_hash = hash;
-            }
-        }
-        commit.blob_hashes = blob_hashes.clone();
+        let (commit, manifest_hash) = self.store_blobs_and_manifest(blobs, commit).await?;
+        let blob_hashes = commit.blob_hashes.clone();
 
-        // Build and submit index entry.
         self.indexer.index_commit(&commit).await?;
 
-        Ok(IngestResult { blob_hashes })
+        Ok(IngestResult {
+            blob_hashes,
+            manifest_hash,
+        })
+    }
+
+    /// Scan the blob store for [`CommitManifest`] blobs and (re-)index each
+    /// one, idempotently.
+    ///
+    /// Closes the ingest crash window: a crash between
+    /// [`Self::store_blobs_and_manifest`]'s manifest write and
+    /// [`Self::ingest_commit`]'s subsequent `indexer.index_commit` call
+    /// leaves a manifest durably stored with no index entry yet -- calling
+    /// this after such a crash (e.g. on the next engine open) completes
+    /// the index write directly from the manifest's already-resolved
+    /// `IndexableCommit`, with no permutation search needed since the
+    /// manifest already carries the resolved order and digests.
+    ///
+    /// Also serves full index reconstruction: since every manifest is
+    /// itself blob-store content (root `AGENTS.md` invariant I1), clearing
+    /// the index entirely and calling this rebuilds every manifest-backed
+    /// commit from the blob store alone.
+    ///
+    /// `indexer.index_commit` is documented idempotent (a no-op for a
+    /// `commit_id` already indexed), so calling this is always safe,
+    /// whether or not any manifest is actually pending.
+    ///
+    /// Returns the number of manifests found (indexed or already-indexed).
+    #[tracing::instrument(skip(self))]
+    pub async fn rebuild_index_from_manifests(&self) -> Result<usize, EngineError> {
+        let iter = self.blob_store.iter().await?;
+        let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
+
+        let mut count = 0;
+        for hash in hashes {
+            let Some(data) = self.blob_store.get(&hash).await? else {
+                continue;
+            };
+            let Ok(manifest) = serde_json::from_slice::<CommitManifest>(&data) else {
+                continue;
+            };
+            if manifest.kind != COMMIT_MANIFEST_KIND {
+                continue;
+            }
+
+            self.indexer.index_commit(&manifest.commit).await?;
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     // ========================================================================
@@ -700,13 +805,19 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
             self.ingest_commit(raw_blobs, commit).await
         } else {
-            // Action-only bundle: just store blobs in blob store without indexing
+            // Action-only bundle: just store blobs in blob store without
+            // indexing. No commit was formed, so there is nothing to
+            // record in a CommitManifest -- manifest_hash is a sentinel,
+            // never a real content address.
             let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
             for blob in raw_blobs {
                 let hash = self.blob_store.put(blob).await?;
                 blob_hashes.push(hash);
             }
-            Ok(IngestResult { blob_hashes })
+            Ok(IngestResult {
+                blob_hashes,
+                manifest_hash: Blake3Hash::from_bytes([0; 32]),
+            })
         }
     }
 
