@@ -98,10 +98,12 @@ SPEC.md change:
   thread, 2026-07-06): per-mutation `pre` in signed transaction pays is
   a rejected old draft — commit atomicity, bundling, and order all ride
   in the commit transaction's `arrow`, and only commit cozies need it —
-  yet the implementation requires `pre` on every mutation,
-  `transactions.md` mandates it ([transaction-pre-required],
-  [commit-pre-chain]), and a golden fixture asserts its absence errors.
-  When SPEC.md and downstream artifacts disagree, the default reading is
+  yet at the time the implementation required `pre` on every mutation,
+  `transactions.md` mandated it ([transaction-pre-required],
+  [commit-pre-chain]), and a golden fixture asserted its absence errors.
+  (Since resolved: `pre` is removed from mutations and both tags are gone
+  from `transactions.md`.) When SPEC.md and downstream artifacts disagree,
+  the default reading is
   "downstream is stale," and the resolution is a question to the spec
   author, never a spec amendment to match downstream.
 - **Two authorization contexts — never mix their rules.** *Intra-commit*:
