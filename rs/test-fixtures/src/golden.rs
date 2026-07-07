@@ -481,6 +481,50 @@ impl<'a> Generator<'a> {
         })
     }
 
+    /// Build a `CozSignerInfo` (alg, prv, pub, tmb_b64, now) for `name`, for
+    /// use as a candidate signer of a commit's terminal `commit/create` coz.
+    fn signer_info_for(&self, name: &str, now: i64) -> Result<CozSignerInfo, Error> {
+        let key = self.resolve_key(name)?;
+        let tmb_b64 = key.compute_tmb_b64()?;
+        let prv_b64 = key.prv.as_ref().ok_or_else(|| Error::MissingPrivateKey {
+            name: key.name.clone(),
+        })?;
+        let prv_bytes = Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::PoolValidation {
+            message: format!("key '{}': invalid prv base64: {}", name, e),
+        })?;
+        let pub_bytes =
+            Base64UrlUnpadded::decode_vec(&key.pub_key).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid pub base64: {}", name, e),
+            })?;
+        Ok((key.alg.clone(), prv_bytes, pub_bytes, tmb_b64, now))
+    }
+
+    /// Choose which candidate should sign a commit's terminal `commit/create`
+    /// coz: the commit's first coz signer, unless that signer's key was
+    /// itself retired by a later mutation in the same commit (e.g. a
+    /// `key/replace` or self-revoke of the commit's own first signer) — in
+    /// which case the most-recently-introduced new key (guaranteed active)
+    /// is used instead. Falls back to the first signer if no later key was
+    /// introduced, unchanged from previous behavior.
+    fn choose_commit_signer(
+        scope: &cyphr::CommitScope<'_>,
+        first_coz_signer: Option<CozSignerInfo>,
+        last_new_key_signer: Option<CozSignerInfo>,
+    ) -> Option<CozSignerInfo> {
+        let first_still_active = first_coz_signer.as_ref().is_some_and(|(_, _, _, tmb_b64, _)| {
+            Base64UrlUnpadded::decode_vec(tmb_b64)
+                .ok()
+                .map(coz::Thumbprint::from_bytes)
+                .is_some_and(|tmb| scope.is_key_active(&tmb))
+        });
+
+        if first_still_active {
+            first_coz_signer
+        } else {
+            last_new_key_signer.or(first_coz_signer)
+        }
+    }
+
     /// Generate a single-commit golden test case.
     fn generate_single_commit(
         &self,
@@ -568,8 +612,9 @@ impl<'a> Generator<'a> {
             let mut scope = principal.begin_commit();
 
             // We need to keep track of the first signer to sign the final commit/create (Arrow)
-            // cozy
+            // cozy, unless it's since been retired (see choose_commit_signer).
             let mut first_coz_signer: Option<CozSignerInfo> = None;
+            let mut last_new_key_signer: Option<CozSignerInfo> = None;
 
             for tx_group in &commit_intent.tx {
                 for tx_cz in tx_group {
@@ -612,6 +657,7 @@ impl<'a> Generator<'a> {
                         || tx_cz.typ.ends_with("key/replace"))
                         && let Some(target_name) = tx_cz.target.as_ref()
                     {
+                        last_new_key_signer = Some(self.signer_info_for(target_name, tx_cz.now)?);
                         Some(self.pool_key_to_cyphr_key(target_name)?)
                     } else {
                         None
@@ -636,12 +682,13 @@ impl<'a> Generator<'a> {
                 }
             }
 
-            // Finalize the commit scope using the first signer's credentials (this generates the
-            // commit/create)
+            // Finalize the commit scope using the first signer's credentials, unless that
+            // signer's key was itself retired within this commit (this generates the commit/create)
             let (alg, prv, pub_k, tmb_str, coz_now) =
-                first_coz_signer.ok_or_else(|| Error::InvalidIntent {
-                    message: format!("test '{}': no cozies applied", test.name),
-                })?;
+                Self::choose_commit_signer(&scope, first_coz_signer, last_new_key_signer)
+                    .ok_or_else(|| Error::InvalidIntent {
+                        message: format!("test '{}': no cozies applied", test.name),
+                    })?;
             let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
             let _commit = scope
                 .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
@@ -927,6 +974,7 @@ impl<'a> Generator<'a> {
                     let pre = Self::format_pr_tagged(principal)?;
                     let mut scope = principal.begin_commit();
                     let mut first_coz_signer: Option<CozSignerInfo> = None;
+                    let mut last_new_key_signer: Option<CozSignerInfo> = None;
 
                     for tx_group in &commit_intent.tx {
                         for tx_cz in tx_group {
@@ -969,6 +1017,8 @@ impl<'a> Generator<'a> {
                                 || tx_cz.typ.ends_with("key/replace"))
                                 && let Some(target_name) = tx_cz.target.as_ref()
                             {
+                                last_new_key_signer =
+                                    Some(self.signer_info_for(target_name, tx_cz.now)?);
                                 Some(self.pool_key_to_cyphr_key(target_name)?)
                             } else {
                                 None
@@ -995,11 +1045,13 @@ impl<'a> Generator<'a> {
                         }
                     }
 
-                    // Finalize the commit scope using the first signer's credentials
+                    // Finalize the commit scope using the first signer's credentials, unless
+                    // that signer's key was itself retired within this commit
                     let (alg, prv, pub_k, tmb_str, coz_now) =
-                        first_coz_signer.ok_or_else(|| Error::InvalidIntent {
-                            message: format!("test '{}': no cozies applied", test.name),
-                        })?;
+                        Self::choose_commit_signer(&scope, first_coz_signer, last_new_key_signer)
+                            .ok_or_else(|| Error::InvalidIntent {
+                                message: format!("test '{}': no cozies applied", test.name),
+                            })?;
                     let tmb = coz::Thumbprint::from_bytes(
                         Base64UrlUnpadded::decode_vec(&tmb_str).unwrap(),
                     );

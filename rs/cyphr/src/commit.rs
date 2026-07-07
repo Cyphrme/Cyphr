@@ -435,6 +435,20 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         self.principal.hash_alg()
     }
 
+    /// Check whether `tmb` is an active key in this scope's projected
+    /// (post-mutation, pre-finalize) state.
+    ///
+    /// Lets a caller choosing which key should sign the terminal
+    /// `commit/create` coz confirm its intended signer actually survives
+    /// the mutations already applied in this commit — e.g. a `key/replace`
+    /// or self-revoke earlier in the same commit can retire the very key
+    /// (and, if it was the sole key of its algorithm, the hash algorithm)
+    /// that would otherwise be used to sign and tag the arrow.
+    #[must_use]
+    pub fn is_key_active(&self, tmb: &coz::Thumbprint) -> bool {
+        self.projected.is_key_active(tmb)
+    }
+
     /// Get the number of cozies applied so far.
     pub fn len(&self) -> usize {
         self.pending.len()
