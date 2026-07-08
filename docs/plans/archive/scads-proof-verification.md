@@ -9,7 +9,7 @@
 > `malt::verify_consistency`) that does not exist anywhere in this workspace —
 > zero hits for `malt` in `rs/Cargo.toml` and no `malt` directory under `rs/`.
 > It was superseded by the EML crate's `Log`/`Hasher` formalization (see
-> `docs/specs/multihash-simplification.md`).
+> `docs/plans/archive/multihash-simplification.md`).
 >
 > The proof-verification capability this plan set out to build now exists as
 > `Principal::verify_transaction_inclusion` (2-hop: transaction included in

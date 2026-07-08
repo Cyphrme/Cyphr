@@ -1,6 +1,18 @@
-# SPEC: Multihash Simplification
+# ARCHIVED: Multihash Simplification
 
 <!--
+  ARCHIVED 2026-07-08 (N14-spec-alignment). This was a live "SPEC:" document
+  describing a migration in progress, but the migration it describes is
+  complete: CyphrHasher (rs/cyphr/src/hasher.rs), DataRoot's use of
+  MultihashDigest, the removed standalone `hash_alg` field, the EML-backed
+  Commit Tree, and the unified StateDigest newtypes are all confirmed
+  present in the current rs/cyphr/src tree. Kept for historical /
+  architectural-rationale reference only — read for why the migration
+  happened, not as a live behavior contract. The live state-tree
+  constraints are `docs/specs/state-tree.md`.
+
+  Original header, preserved below for provenance:
+
   SPEC document produced by /spec Create mode.
   Source: EML formalization (log.rs, storage.rs), Cyphr state tree (state.rs,
   principal.rs), state-tree.md spec.

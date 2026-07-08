@@ -61,8 +61,8 @@ architectural description and proofs.
 **Cross-references:**
 [`state-tree.md`](state-tree.md) (MHMR computation, sort order, promotion),
 [`transactions.md`](transactions.md) (commit atomicity, finality, arrow),
-[`multihash-simplification.md`](multihash-simplification.md) (Hasher trait,
-DataRoot fix, EML-for-CT migration).
+[`../plans/archive/multihash-simplification.md`](../plans/archive/multihash-simplification.md)
+(historical — Hasher trait, DataRoot fix, EML-for-CT migration, now complete).
 
 **Criticality Tier:** High — storage failures directly compromise principal
 state integrity, cryptographic history, and recovery capability.

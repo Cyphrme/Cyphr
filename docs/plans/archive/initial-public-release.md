@@ -18,7 +18,7 @@ polish.
 - Docs (`docs.cyphr.me`) and Blog (`blog.cyphr.me`) must share a cohesive aesthetic despite separate subdomains.
 - `git-cliff` handles raw changelog parsing; AI is used strictly for editorial polish of the output — not raw commit ingestion.
 - Code documentation (in-code Rust/Go docs, `SPEC.md`, `docs/`) must not be overlooked; it requires a rigorous audit.
-- ~~`malt` remains in the monorepo but must be published via standard registries as an independent utility.~~ N/A: `malt` was superseded by the EML crate (see `docs/specs/multihash-simplification.md`), which already lives in its own separate repository (`Cyphrme/eml`), not as a workspace member here — there is nothing left in this monorepo to publish independently.
+- ~~`malt` remains in the monorepo but must be published via standard registries as an independent utility.~~ N/A: `malt` was superseded by the EML crate (see `docs/plans/archive/multihash-simplification.md`), which already lives in its own separate repository (`Cyphrme/eml`), not as a workspace member here — there is nothing left in this monorepo to publish independently.
 
 ## Decisions
 
