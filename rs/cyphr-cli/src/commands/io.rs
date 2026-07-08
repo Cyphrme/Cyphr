@@ -8,8 +8,8 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    extract_genesis_from_commits, get_commits_from_engine, get_principal_id, parse_store,
-    save_principal_to_engine,
+    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
+    parse_store, save_principal_to_engine,
 };
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
@@ -99,11 +99,7 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     // Check if identity already exists in storage
     let pg_id = get_principal_id(&pg)?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let tip = rt
-        .block_on(async { store.get_tip(&pg_id).await })
+    let tip = block_on(async { store.get_tip(&pg_id).await })?
         .map_err(|e| Error::Storage(e.to_string()))?;
     if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};

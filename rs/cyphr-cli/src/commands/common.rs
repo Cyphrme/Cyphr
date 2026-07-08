@@ -24,6 +24,19 @@ pub type CliPrincipal = cyphr::Principal<cyphr_blob_fjall::storage_fjall::FjallS
 use crate::Error;
 use crate::keystore::{JsonKeyStore, KeyStore, StoredKey};
 
+/// Build a fresh single-threaded tokio runtime and drive `fut` to
+/// completion on it.
+///
+/// The CLI is synchronous end-to-end; every entry point that needs to await
+/// one async storage call spins up a short-lived runtime just for that call
+/// rather than making the whole CLI async.
+pub fn block_on<F: std::future::Future>(fut: F) -> crate::Result<F::Output> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    Ok(rt.block_on(fut))
+}
+
 /// Get Unix timestamp as i64 seconds.
 pub fn current_timestamp() -> i64 {
     SystemTime::now()
@@ -173,10 +186,7 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
         }
 
         // Reindex on startup synchronously
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async { engine.reindex(&keys, total_check).await })
+        block_on(engine.reindex(&keys, total_check))?
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
 
         Ok(engine)
@@ -248,11 +258,7 @@ pub fn load_principal_from_engine(
     let pg = parse_principal_genesis(identity)?;
     let principal_id = get_principal_id(&pg)?;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async {
+    block_on(async {
         let tip = engine
             .get_tip(&principal_id)
             .await
@@ -295,22 +301,17 @@ pub fn load_principal_from_engine(
             .load_principal(&principal_id, genesis)
             .await
             .map_err(|e| crate::Error::Storage(e.to_string()))
-    })
+    })?
 }
 
 /// Whether a coz `typ` string indicates a key-embedding transaction
 /// (`key/create` or `key/replace`) -- i.e. one whose blob must carry the
 /// new key's material inline, not just the signer's thumbprint.
 ///
-/// This is the CLI's single canonical implementation of that rule; every
-/// call site within this crate that needs it MUST go through this
-/// function rather than re-deriving the `.contains(...)` check locally.
-/// (`cyphr::parsed_coz`'s `typ.ends_with(...)` checks and
-/// `cyphr_storage::import`'s private `is_key_introducing_typ` implement
-/// the same rule again in their own crates; consolidating across crate
-/// boundaries is out of this crate's scope.)
+/// Thin wrapper over `cyphr::parsed_coz::typ::is_key_introducing`, the
+/// crate-spanning canonical implementation of this rule (F41).
 fn is_key_embedding_typ(typ: &str) -> bool {
-    typ.contains("/key/create") || typ.contains("/key/replace")
+    cyphr::parsed_coz::typ::is_key_introducing(typ)
 }
 
 /// Save a principal's new commits to the storage engine.
@@ -327,11 +328,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
     keystore: &JsonKeyStore,
     principal: &cyphr::Principal<S>,
 ) -> crate::Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async {
+    block_on(async {
         let principal_id = get_principal_id_from_principal(principal, keystore)?;
 
         let tip = engine
@@ -419,7 +416,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
         }
 
         Ok(())
-    })
+    })?
 }
 
 /// Retrieve all commits for an identity from the storage engine.
@@ -430,11 +427,7 @@ pub fn get_commits_from_engine(
     let pg = parse_principal_genesis(identity)?;
     let principal_id = get_principal_id(&pg)?;
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    rt.block_on(async {
+    block_on(async {
         use cyphr_storage::blob::BlobStore;
         use cyphr_storage::index::Indexer;
 
@@ -484,7 +477,7 @@ pub fn get_commits_from_engine(
         }
 
         Ok(commit_entries)
-    })
+    })?
 }
 
 /// Parse a base64url principal genesis string into a PrincipalGenesis.
