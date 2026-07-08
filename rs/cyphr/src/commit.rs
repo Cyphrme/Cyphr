@@ -503,18 +503,20 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         // 3. Compute Arrow = MR(pre, sr, tmr)
         let pre = &self.principal.pr;
-        let Ok(pre_bytes) = pre.0.get_or_err(signer_hash_alg) else {
+        let Ok(pre_bytes) = pre.0.arrow_component_bytes(signer_hash_alg) else {
             return false;
         };
-        let Ok(sr_bytes) = sr.0.get_or_err(signer_hash_alg) else {
+        let Ok(sr_bytes) = sr.0.arrow_component_bytes(signer_hash_alg) else {
             return false;
         };
-        let Some(tmr_bytes) = tmr.0.get(signer_hash_alg) else {
+        let Ok(tmr_bytes) = tmr.0.arrow_component_bytes(signer_hash_alg) else {
             return false;
         };
 
-        let computed_digest =
-            hash_sorted_concat_bytes(signer_hash_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let computed_digest = hash_sorted_concat_bytes(
+            signer_hash_alg,
+            &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
+        );
 
         let Some(claimed_digest) = claimed_arrow.get(signer_hash_alg) else {
             return false;
@@ -651,6 +653,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use coz::base64ct::Encoding;
     use coz::{Czd, PayBuilder, Thumbprint};
     use serde_json::json;
 
@@ -896,6 +899,197 @@ mod tests {
             out.contains("commit"),
             "coz::CozJson serialization dropped 'commit'! Output: {}",
             out
+        );
+    }
+
+    // ========================================================================
+    // matches_arrow / arrow_component_bytes multi-variant fold symmetry
+    // ========================================================================
+
+    fn fold_pool() -> test_fixtures::Pool {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("should have rs/ parent")
+            .parent()
+            .expect("should have repo root parent")
+            .join("tests")
+            .join("keys")
+            .join("pool.toml");
+        test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
+    }
+
+    fn fold_pool_key<'p>(pool: &'p test_fixtures::Pool, name: &str) -> &'p test_fixtures::PoolKey {
+        pool.get(name)
+            .unwrap_or_else(|| panic!("pool key '{}' not found", name))
+    }
+
+    fn fold_domain_key(pk: &test_fixtures::PoolKey) -> crate::key::Key {
+        let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&pk.pub_key)
+            .expect("invalid pool pub key base64");
+        let tmb = pk.compute_tmb().expect("failed to compute tmb");
+        crate::key::Key {
+            alg: pk.alg.clone(),
+            tmb,
+            pub_key: pub_bytes,
+            first_seen: 0,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        }
+    }
+
+    fn fold_prv_bytes(pk: &test_fixtures::PoolKey) -> Vec<u8> {
+        let prv_b64 = pk
+            .prv
+            .as_ref()
+            .unwrap_or_else(|| panic!("pool key '{}' has no private key material", pk.name));
+        coz::base64ct::Base64UrlUnpadded::decode_vec(prv_b64).expect("invalid pool prv base64")
+    }
+
+    fn fold_signed_key_create(
+        signer: &test_fixtures::PoolKey,
+        signer_tmb_b64: &str,
+        target: &test_fixtures::PoolKey,
+        now: i64,
+    ) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+        let target_tmb_b64 = target.compute_tmb_b64().expect("target tmb b64");
+
+        let mut pay = serde_json::Map::new();
+        pay.insert("alg".to_string(), json!(signer.alg));
+        pay.insert("id".to_string(), json!(target_tmb_b64));
+        pay.insert("now".to_string(), json!(now));
+        pay.insert("tmb".to_string(), json!(signer_tmb_b64));
+        pay.insert("typ".to_string(), json!("cyphr.me/cyphr/key/create"));
+        let mut pay_obj = serde_json::Value::Object(pay);
+        pay_obj.as_object_mut().expect("object").sort_keys();
+        let pay_vec = serde_json::to_vec(&pay_obj).expect("serialize key/create pay");
+
+        let prv_bytes = fold_prv_bytes(signer);
+        let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&signer.pub_key)
+            .expect("signer pub base64");
+        let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes)
+            .expect("sign_json should support pool algorithm");
+        let czd = coz::czd_for_alg(&cad, &sig, &signer.alg)
+            .expect("czd_for_alg should support pool algorithm");
+        (pay_vec, sig, czd)
+    }
+
+    fn fold_signed_self_revoke(
+        signer: &test_fixtures::PoolKey,
+        signer_tmb_b64: &str,
+        now: i64,
+    ) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+        let mut pay = serde_json::Map::new();
+        pay.insert("alg".to_string(), json!(signer.alg));
+        pay.insert("now".to_string(), json!(now));
+        pay.insert("rvk".to_string(), json!(now));
+        pay.insert("tmb".to_string(), json!(signer_tmb_b64));
+        pay.insert("typ".to_string(), json!("cyphr.me/cyphr/key/revoke"));
+        let mut pay_obj = serde_json::Value::Object(pay);
+        pay_obj.as_object_mut().expect("object").sort_keys();
+        let pay_vec = serde_json::to_vec(&pay_obj).expect("serialize key/revoke pay");
+
+        let prv_bytes = fold_prv_bytes(signer);
+        let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&signer.pub_key)
+            .expect("signer pub base64");
+        let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes)
+            .expect("sign_json should support pool algorithm");
+        let czd = coz::czd_for_alg(&cad, &sig, &signer.alg)
+            .expect("czd_for_alg should support pool algorithm");
+        (pay_vec, sig, czd)
+    }
+
+    /// Regression test for the arrow-fold/matches_arrow symmetry fix: a
+    /// principal has 3 active algorithms (SHA-256/384/512), then the
+    /// SHA-384 signer revokes its own key in the same commit it signs.
+    /// Post-mutation SR then has only 2 variants (SHA-256, SHA-512) --
+    /// neither matching the SHA-384 signer -- forcing
+    /// `arrow_component_bytes`'s multi-variant fold branch.
+    /// `finalize_with_arrow` (construction) must succeed, and
+    /// `matches_arrow` (independent verification) must accept the
+    /// resulting arrow via the same fallback.
+    #[test]
+    fn matches_arrow_accepts_multi_variant_fold() {
+        let pool = fold_pool();
+        let genesis = fold_pool_key(&pool, "golden");
+        let diana = fold_pool_key(&pool, "diana_es384");
+        let eve = fold_pool_key(&pool, "eve_ed25519");
+
+        let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb b64");
+        let genesis_tmb = genesis.compute_tmb().expect("genesis tmb");
+        let now = 1_700_000_000i64;
+
+        let mut principal = crate::principal::Principal::implicit(fold_domain_key(genesis))
+            .expect("genesis principal");
+        let mut scope = principal.begin_commit();
+
+        let (pay1, sig1, czd1) = fold_signed_key_create(genesis, &genesis_tmb_b64, diana, now);
+        scope
+            .verify_and_apply(&pay1, &sig1, czd1, Some(fold_domain_key(diana)))
+            .expect("diana key/create should apply");
+        let (pay2, sig2, czd2) = fold_signed_key_create(genesis, &genesis_tmb_b64, eve, now);
+        scope
+            .verify_and_apply(&pay2, &sig2, czd2, Some(fold_domain_key(eve)))
+            .expect("eve key/create should apply");
+
+        let genesis_prv = fold_prv_bytes(genesis);
+        let genesis_pub = coz::base64ct::Base64UrlUnpadded::decode_vec(&genesis.pub_key)
+            .expect("genesis pub base64");
+        scope
+            .finalize_with_arrow(
+                &genesis.alg,
+                &genesis_prv,
+                &genesis_pub,
+                &genesis_tmb,
+                now + 1,
+                "cyphr.me",
+            )
+            .expect("commit1 (key creates) should finalize");
+
+        // Clone post-commit1 state so both branches replay the identical
+        // self-revoke bytes onto byte-identical starting states, the same
+        // technique properties.rs uses to keep a/b in lockstep without
+        // re-signing (ECDSA signing is randomized per call).
+        let mut principal_b = principal.clone();
+
+        let diana_tmb_b64 = diana.compute_tmb_b64().expect("diana tmb b64");
+        let diana_tmb = diana.compute_tmb().expect("diana tmb");
+        let (pay3, sig3, czd3) = fold_signed_self_revoke(diana, &diana_tmb_b64, now + 2);
+
+        let mut scope_a = principal.begin_commit();
+        scope_a
+            .verify_and_apply(&pay3, &sig3, czd3.clone(), None)
+            .expect("diana self-revoke should apply to scope_a");
+        let mut scope_b = principal_b.begin_commit();
+        scope_b
+            .verify_and_apply(&pay3, &sig3, czd3, None)
+            .expect("diana self-revoke should apply to scope_b");
+
+        let diana_prv = fold_prv_bytes(diana);
+        let diana_pub =
+            coz::base64ct::Base64UrlUnpadded::decode_vec(&diana.pub_key).expect("diana pub base64");
+        let commit2 = scope_a
+            .finalize_with_arrow(
+                &diana.alg,
+                &diana_prv,
+                &diana_pub,
+                &diana_tmb,
+                now + 3,
+                "cyphr.me",
+            )
+            .expect("self-revoke commit should finalize via the multi-variant fold");
+        let genuine_arrow = commit2
+            .commit_tx()
+            .0
+            .last()
+            .expect("commit tx should carry at least one coz")
+            .arrow()
+            .expect("commit/create coz should carry an arrow")
+            .clone();
+
+        assert!(
+            scope_b.matches_arrow(&genuine_arrow),
+            "matches_arrow must accept a genuinely fallback-constructed (multi-variant fold) arrow"
         );
     }
 }
