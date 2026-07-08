@@ -127,9 +127,9 @@ impl StateDigest for PrincipalRoot {
     }
 }
 
-/// Principal Root (PR) - SPEC §7.7
+/// Principal Genesis (PG) - SPEC §3.7.1
 ///
-/// The first PS ever computed. Permanent, never changes.
+/// The first PR ever computed. Permanent, never changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrincipalGenesis(pub MultihashDigest);
 
@@ -140,9 +140,9 @@ impl PrincipalGenesis {
         Self(MultihashDigest::from_single(HashAlg::Sha256, bytes).unwrap())
     }
 
-    /// Create PR from the initial principal state (at genesis).
-    pub fn from_initial(ps: &PrincipalRoot) -> Self {
-        Self(ps.0.clone())
+    /// Create PG from the initial PR (at genesis).
+    pub fn from_initial(pr: &PrincipalRoot) -> Self {
+        Self(pr.0.clone())
     }
 }
 
@@ -1001,16 +1001,16 @@ mod tests {
     }
 
     #[test]
-    fn ps_promotion_from_sr() {
+    fn pr_promotion_from_sr() {
         // Only SR, no CR: PR = SR (implicit promotion)
         let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
+        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
 
         assert_eq!(
-            ps.get(HashAlg::Sha256).unwrap(),
+            pr.get(HashAlg::Sha256).unwrap(),
             auth_root.get(HashAlg::Sha256).unwrap()
         );
     }
@@ -1022,16 +1022,16 @@ mod tests {
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-        let pr = PrincipalGenesis::from_initial(&ps);
+        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
+        let pg = PrincipalGenesis::from_initial(&pr);
 
         // All should be identical to tmb
         let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
         let as_bytes = auth_root.get(HashAlg::Sha256).unwrap();
         assert_eq!(ks_bytes, tmb.as_bytes());
         assert_eq!(as_bytes, tmb.as_bytes());
-        assert_eq!(ps.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
         assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
+        assert_eq!(pg.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
 
     /// SPEC §14.2 Cross-Algorithm Conversion Test

@@ -89,18 +89,18 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let key = load_key_from_keystore(&keystore, identity)?;
         let principal = cyphr::Principal::implicit(key)?;
 
-        // Verify PR matches (L1 has no PR)
-        if let Some(pr) = principal.pg() {
+        // Verify PG matches (L1 has no PG)
+        if let Some(pg) = principal.pg() {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let computed_pr = pr
+            let computed_pg = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-            if computed_pr != identity {
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+            if computed_pg != identity {
                 return Err(Error::Storage(format!(
-                    "PR mismatch: computed {} != {}",
-                    computed_pr, identity
+                    "PG mismatch: computed {} != {}",
+                    computed_pg, identity
                 )));
             }
         }
@@ -131,18 +131,18 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
     let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
-    // Verify PR matches
+    // Verify PG matches
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    if let Some(pr) = principal.pg() {
-        let computed_pr = pr
+    if let Some(pg) = principal.pg() {
+        let computed_pg = pg
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-        if computed_pr != identity {
+            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+        if computed_pg != identity {
             return Err(Error::Storage(format!(
-                "PR mismatch: computed {} != expected {}",
-                computed_pr, identity
+                "PG mismatch: computed {} != expected {}",
+                computed_pg, identity
             )));
         }
     }
@@ -151,20 +151,20 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let Some(last_commit) = commits.last() else {
         return Ok(());
     };
-    let computed_ps = principal
+    let computed_pr = principal
         .pr()
         .as_multihash()
         .first_variant()
         .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PS empty: {e}")))?;
+        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
 
-    // Parse stored ps which may be in "alg:digest" format
-    let stored_ps_digest = last_commit.pr.split(':').next_back().unwrap_or(&last_commit.pr);
+    // Parse stored pr which may be in "alg:digest" format
+    let stored_pr_digest = last_commit.pr.split(':').next_back().unwrap_or(&last_commit.pr);
 
-    if computed_ps != stored_ps_digest {
+    if computed_pr != stored_pr_digest {
         return Err(Error::Storage(format!(
-            "PS mismatch: computed {} != stored {}",
-            computed_ps, stored_ps_digest
+            "PR mismatch: computed {} != stored {}",
+            computed_pr, stored_pr_digest
         )));
     }
 
@@ -177,7 +177,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
                 "status": "OK",
                 "commits_verified": commits.len(),
                 "transactions_verified": tx_count,
-                "computed_ps": computed_ps,
+                "computed_pr": computed_pr,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
@@ -186,7 +186,7 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
             println!("  Identity: {identity}");
             println!("  Commits: {} verified", commits.len());
             println!("  Transactions: {} verified", tx_count);
-            println!("  PS: {}", computed_ps);
+            println!("  PR: {}", computed_pr);
         },
     }
 

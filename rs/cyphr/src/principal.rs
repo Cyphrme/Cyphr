@@ -172,17 +172,17 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
     }
 }
 
-/// Internal variant: tracks whether PR has been established.
+/// Internal variant: tracks whether PG has been established.
 ///
-/// - **Nascent**: L1/L2 — no PR exists. Cannot fabricate one.
-/// - **Established**: L3+ — PR is frozen from initial PS. Cannot remove it.
+/// - **Nascent**: L1/L2 — no PG exists. Cannot fabricate one.
+/// - **Established**: L3+ — PG is frozen from the initial PR. Cannot remove it.
 enum PrincipalKind<S: eml::Storage = eml::MemoryStorage> {
-    /// Pre-genesis-finalization: no PR field at all.
+    /// Pre-genesis-finalization: no PG field at all.
     Nascent(PrincipalCore<S>),
-    /// Post-principal/create: PR is structurally required.
+    /// Post-principal/create: PG is structurally required.
     Established {
         core: PrincipalCore<S>,
-        pr: PrincipalGenesis,
+        pg: PrincipalGenesis,
     },
 }
 
@@ -190,9 +190,9 @@ impl<S: eml::Storage> Clone for PrincipalKind<S> {
     fn clone(&self) -> Self {
         match self {
             Self::Nascent(core) => Self::Nascent(core.clone()),
-            Self::Established { core, pr } => Self::Established {
+            Self::Established { core, pg } => Self::Established {
                 core: core.clone(),
-                pr: pr.clone(),
+                pg: pg.clone(),
             },
         }
     }
@@ -202,10 +202,10 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Nascent(core) => f.debug_tuple("Nascent").field(core).finish(),
-            Self::Established { core, pr } => f
+            Self::Established { core, pg } => f
                 .debug_struct("Established")
                 .field("core", core)
-                .field("pr", pr)
+                .field("pg", pg)
                 .finish(),
         }
     }
@@ -219,9 +219,9 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
 ///
 /// # Type Safety
 ///
-/// PR is represented via an internal enum:
-/// - **Nascent** (L1/L2): PR does not exist — cannot be forged.
-/// - **Established** (L3+): PR is frozen — cannot be removed.
+/// PG is represented via an internal enum:
+/// - **Nascent** (L1/L2): PG does not exist — cannot be forged.
+/// - **Established** (L3+): PG is frozen — cannot be removed.
 ///
 /// All shared state is accessed via `Deref<Target = PrincipalCore<S>>`, so
 /// `self.pr`, `self.kr`, etc. work transparently in all code paths.
@@ -450,7 +450,7 @@ impl Principal<eml::MemoryStorage> {
     /// # Security
     ///
     /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
     ///
     /// # Errors
     ///
@@ -527,7 +527,7 @@ impl Principal<eml::MemoryStorage> {
         };
 
         Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
             None => Self(Some(PrincipalKind::Nascent(core))),
         })
     }
@@ -538,7 +538,7 @@ impl<S: eml::Storage> Principal<S> {
     // Internal helpers
     // ========================================================================
 
-    /// Transition from Nascent to Established by freezing PR.
+    /// Transition from Nascent to Established by freezing PG.
     ///
     /// This is the only code path that can create an Established principal.
     /// Called exclusively from the PrincipalCreate coz handler.
@@ -555,14 +555,14 @@ impl<S: eml::Storage> Principal<S> {
     /// "empty" instance to hand back on the swap-out. Wrapping `Principal`'s
     /// inner kind in `Option` sidesteps this entirely: `Option::take` swaps
     /// in `None`, which needs no bound on `S` at all.
-    fn establish_pg(&mut self, pr: PrincipalGenesis) -> Result<()> {
+    fn establish_pg(&mut self, pg: PrincipalGenesis) -> Result<()> {
         let old = self
             .0
             .take()
             .expect("Principal's inner kind is only None transiently inside establish_pg");
         match old {
             PrincipalKind::Nascent(core) => {
-                self.0 = Some(PrincipalKind::Established { core, pr });
+                self.0 = Some(PrincipalKind::Established { core, pg });
                 Ok(())
             },
             est @ PrincipalKind::Established { .. } => {
@@ -693,7 +693,7 @@ impl<S: eml::Storage> Principal<S> {
     /// # Security
     ///
     /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
     ///
     /// # Errors
     ///
@@ -772,7 +772,7 @@ impl<S: eml::Storage> Principal<S> {
         };
 
         Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
             None => Self(Some(PrincipalKind::Nascent(core))),
         })
     }
@@ -781,18 +781,18 @@ impl<S: eml::Storage> Principal<S> {
     // Accessors
     // ========================================================================
 
-    /// Get the Principal Root, or None if not yet established (L1/L2).
+    /// Get the Principal Genesis, or None if not yet established (L1/L2).
     ///
-    /// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+    /// PG is only set when principal/create is processed (Level 3+, SPEC §5.1).
     /// For Established principals, this always returns `Some`.
     pub fn pg(&self) -> Option<&PrincipalGenesis> {
         match self.kind() {
-            PrincipalKind::Established { pr, .. } => Some(pr),
+            PrincipalKind::Established { pg, .. } => Some(pg),
             PrincipalKind::Nascent(_) => None,
         }
     }
 
-    /// Get the current Principal State.
+    /// Get the current Principal Root.
     pub fn pr(&self) -> &PrincipalRoot {
         &self.pr
     }

@@ -58,21 +58,21 @@ pub fn run(
         },
     };
 
-    // Get identity string for output: PR if available, else PS
+    // Get identity string for output: PG if available, else PR
     let identity_str = {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        if let Some(pr) = principal.pg() {
-            pr.as_multihash()
+        if let Some(pg) = principal.pg() {
+            pg.as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?
         } else {
             principal
                 .pr()
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PS empty: {e}")))?
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
         }
     };
 

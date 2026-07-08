@@ -84,37 +84,37 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     // Verify by loading the principal (this replays and verifies all cozies)
     let principal = load_principal_from_commits(genesis.clone(), &commits)?;
-    // For Level 2 identities (no PR established), use the genesis thumbprint
-    let pr = match principal.pg() {
-        Some(pr) => pr.clone(),
+    // For Level 2 identities (no PG established), use the genesis thumbprint
+    let pg = match principal.pg() {
+        Some(pg) => pg.clone(),
         None => match &genesis {
             Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec()),
             Genesis::Explicit(_) => {
                 return Err(Error::Storage(
-                    "explicit genesis must establish a PR".into(),
+                    "explicit genesis must establish a PG".into(),
                 ));
             },
         },
     };
 
     // Check if identity already exists in storage
-    let pr_id = get_principal_id(&pr)?;
+    let pg_id = get_principal_id(&pg)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let tip = rt
-        .block_on(async { store.get_tip(&pr_id).await })
+        .block_on(async { store.get_tip(&pg_id).await })
         .map_err(|e| Error::Storage(e.to_string()))?;
     if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};
-        let pr_b64 = pr
+        let pg_b64 = pg
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
         return Err(Error::Storage(format!(
             "identity {} already exists in storage",
-            pr_b64
+            pg_b64
         )));
     }
 
@@ -124,13 +124,13 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     match cli.output {
         OutputFormat::Json => {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pr_b64 = pr
+            let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
             let result = serde_json::json!({
-                "identity": pr_b64,
+                "identity": pg_b64,
                 "input": input.display().to_string(),
                 "commits": commits.len(),
                 "verified": true,
@@ -139,13 +139,13 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
         },
         OutputFormat::Table => {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pr_b64 = pr
+            let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
             println!("Imported identity from {}", input.display());
-            println!("  identity: {}", pr_b64);
+            println!("  identity: {}", pg_b64);
             println!("  commits: {}", commits.len());
             println!("  verified: OK");
         },

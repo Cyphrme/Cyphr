@@ -288,9 +288,9 @@ fn test_inspect_genesis() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // At genesis, PR is not yet established
-    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
-    assert_eq!(inspect["ps"].as_str().unwrap(), genesis_tmb);
+    // At genesis, PG is not yet established
+    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
+    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["ks"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["as"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["commit_count"], 0);
@@ -316,8 +316,8 @@ fn test_inspect_after_transactions() {
     // Inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PR is still <none> until a principal/create coz establishes it
-    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
+    // PG is still <none> until a principal/create coz establishes it
+    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
         genesis_tmb,
@@ -498,7 +498,7 @@ fn test_tx_verify_after_transactions() {
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Verify coz chain - THIS IS THE CRITICAL TEST
-    // If PS Mismatch bug exists, this will fail
+    // If PR Mismatch bug exists, this will fail
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 
     assert_eq!(verify["status"], "OK", "tx verify should succeed");

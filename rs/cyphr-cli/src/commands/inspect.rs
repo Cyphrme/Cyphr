@@ -29,7 +29,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 
             let output = serde_json::json!({
                 "pr": format_pr(&principal),
-                "ps": format_ps(&principal),
+                "pg": format_pg(&principal),
                 "ks": format_ks(&principal),
                 "as": format_as(&principal),
                 "active_keys": active_keys,
@@ -38,11 +38,11 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
-            println!("Identity: {}", format_pr(&principal));
+            println!("Identity: {}", format_pg(&principal));
             println!();
             println!("State:");
             println!("  PR: {}", format_pr(&principal));
-            println!("  PS: {}", format_ps(&principal));
+            println!("  PG: {}", format_pg(&principal));
             println!("  KS: {}", format_ks(&principal));
             println!("  AS: {}", format_as(&principal));
             println!();
@@ -93,26 +93,26 @@ fn format_as(principal: &CliPrincipal) -> String {
 }
 
 /// Format PrincipalRoot for display.
-fn format_ps(principal: &CliPrincipal) -> String {
+fn format_pr(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let ps = principal.pr();
+    let pr = principal.pr();
     let hash_alg = principal.hash_alg();
 
-    ps.get(hash_alg)
+    pr.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
 /// Format PrincipalGenesis for display.
-fn format_pr(principal: &CliPrincipal) -> String {
+fn format_pg(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let hash_alg = principal.hash_alg();
 
     principal
         .pg()
-        .and_then(|pr| pr.get(hash_alg))
+        .and_then(|pg| pg.get(hash_alg))
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<none>".to_string())
 }

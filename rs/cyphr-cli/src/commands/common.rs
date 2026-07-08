@@ -188,9 +188,9 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
 }
 
 /// Get the principal ID string for a PrincipalGenesis
-pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
+pub fn get_principal_id(pg: &cyphr::PrincipalGenesis) -> crate::Result<String> {
     use cyphr::StateDigest;
-    Ok(pr.as_multihash().tagged_first()?.to_string())
+    Ok(pg.as_multihash().tagged_first()?.to_string())
 }
 
 /// Get the principal ID string from a Principal.
@@ -245,8 +245,8 @@ pub fn load_principal_from_engine(
     keystore: &JsonKeyStore,
     identity: &str,
 ) -> crate::Result<CliPrincipal> {
-    let pr = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pr)?;
+    let pg = parse_principal_genesis(identity)?;
+    let principal_id = get_principal_id(&pg)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -427,8 +427,8 @@ pub fn get_commits_from_engine(
     engine: &CliStorageEngine,
     identity: &str,
 ) -> crate::Result<Vec<CommitEntry>> {
-    let pr = parse_principal_genesis(identity)?;
-    let principal_id = get_principal_id(&pr)?;
+    let pg = parse_principal_genesis(identity)?;
+    let principal_id = get_principal_id(&pg)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -487,7 +487,7 @@ pub fn get_commits_from_engine(
     })
 }
 
-/// Parse a base64url principal root string into a PrincipalGenesis.
+/// Parse a base64url principal genesis string into a PrincipalGenesis.
 pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis> {
     let bytes = Base64UrlUnpadded::decode_vec(s)?;
     Ok(cyphr::PrincipalGenesis::from_bytes(bytes))
