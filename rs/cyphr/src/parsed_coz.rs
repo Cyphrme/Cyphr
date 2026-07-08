@@ -33,6 +33,15 @@ pub mod typ {
     pub const PRINCIPAL_CREATE: &str = "cyphr/principal/create";
     /// `<authority>/cyphr/commit/create` - Finalize a commit (Arrow finality)
     pub const COMMIT_CREATE: &str = "cyphr/commit/create";
+
+    /// Returns true if `typ` introduces new key material into the Auth State
+    /// (`key/create` or `key/replace`).
+    ///
+    /// Canonical predicate: callers MUST use this rather than re-deriving the
+    /// same classification from hardcoded typ substrings.
+    pub fn is_key_introducing(typ: &str) -> bool {
+        typ.ends_with(KEY_CREATE) || typ.ends_with(KEY_REPLACE)
+    }
 }
 
 /// ParsedCoz kind variants (SPEC §4.2).
@@ -541,5 +550,15 @@ mod tests {
         let result = ParsedCoz::from_pay(&pay, czd, HashAlg::Sha256, to_raw(&pay));
 
         assert!(matches!(result, Err(Error::MalformedPayload)));
+    }
+
+    #[test]
+    fn typ_is_key_introducing() {
+        assert!(typ::is_key_introducing("cyphr.me/cyphr/key/create"));
+        assert!(typ::is_key_introducing("cyphr.me/cyphr/key/replace"));
+        assert!(!typ::is_key_introducing("cyphr.me/cyphr/key/delete"));
+        assert!(!typ::is_key_introducing("cyphr.me/cyphr/key/revoke"));
+        assert!(!typ::is_key_introducing("cyphr.me/cyphr/principal/create"));
+        assert!(!typ::is_key_introducing("cyphr.me/cyphr/commit/create"));
     }
 }

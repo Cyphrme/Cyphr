@@ -579,9 +579,10 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
 }
 
 /// Returns true if a coz type introduces new key material.
-pub(crate) fn is_key_introducing_typ(typ: &str) -> bool {
-    typ.contains("/key/create") || typ.contains("/key/replace")
-}
+///
+/// Canonical implementation lives in `cyphr::parsed_coz::typ` -- this is a
+/// thin re-export so existing call sites don't need to change.
+pub(crate) use cyphr::parsed_coz::typ::is_key_introducing as is_key_introducing_typ;
 
 /// Convert a commit-level KeyEntry to a Principal Key.
 pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
@@ -708,6 +709,14 @@ mod tests {
     fn load_explicit_genesis_empty_keys_fails() {
         let result = load_principal(Genesis::Explicit(vec![]), &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
+    }
+
+    #[test]
+    fn is_key_introducing_typ_delegates_to_canonical_predicate() {
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/create"));
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/replace"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/key/delete"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/commit/create"));
     }
 
     #[test]
