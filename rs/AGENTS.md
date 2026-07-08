@@ -51,22 +51,19 @@ All active development happens here.
   `Indexer`). Signpost: backend types leaking through a seam into
   consumers.
 
-## Known traps (updated 2026-07-07; fix, don't inherit)
+## Known traps (updated 2026-07-08; fix, don't inherit)
 
-- **`reindex` silently under-recovers, and its genesis-detection is
-  actively broken right now.** O(n!) permutation search capped at 8
-  same-timestamp mutations; on give-up it warns and returns `Ok(())`
-  (`engine/mod.rs` ~1162–1461). Also implicit-genesis-only bootstrap
-  (forge #33). Per-mutation `pre` has been removed (it was rejected-draft
-  residue — spec author, PR #39 thread), and `reindex`'s sole
-  genesis-vs-mutation signal was `pre` being empty, so it no longer
-  distinguishes anything: five tests are currently FAILING (deliberately
-  left failing, not silenced) citing this exact break
-  (`engine::tests::test_reindex_recovery` and four siblings; tracked as
-  `F6-reindex-genesis-drop`). `cargo test --workspace` will show these
-  five red until fixed — that is the known, accepted state. A real replacement
-  genesis-bootstrap signal, removing those five `#[ignore]`s, is scoped,
-  mandatory campaign work — do not attempt a narrow patch elsewhere.
+- **Arrow verification is asymmetric with arrow construction.**
+  `finalize_with_arrow` (`cyphr/src/commit.rs`) builds `pre`/`sr`/`tmr`
+  bytes via `MultihashDigest::arrow_component_bytes`, which falls back
+  to a single available variant when the exact target algorithm isn't
+  present (the genesis-promotion case: a same-commit key-algorithm
+  replacement). `matches_arrow` — the verification side, gating
+  `reindex`'s recovery path and `submit_commit` — still calls the
+  strict `get_or_err` directly, with no such fallback. A commit whose
+  arrow was legitimately constructed via the fallback will fail to
+  re-verify. Tracked as `F37-arrow-multi-variant-fold-incomplete`;
+  `matches_arrow` needs the same primitive `finalize_with_arrow` uses.
 - **`CloneableLog` concurrency assumption.** `block_on` under a `Mutex`
   (`cyphr/src/commit_root.rs`); sound only because every engine call
   builds a fresh `Principal`. Do not share a live `Principal` across
