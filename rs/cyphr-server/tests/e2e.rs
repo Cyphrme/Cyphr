@@ -350,3 +350,338 @@ async fn push_malformed_json_rejected() {
         "malformed blob should return 400 or 422, got {status}"
     );
 }
+
+// ========================================================================
+// Tests — write concurrency (per-principal serialization)
+// ========================================================================
+//
+// These drive `StorageEngine::submit_commit` directly rather than through
+// `POST /push`: HTTP's genesis auto-detection (`resolve_genesis`'s
+// existing-principal branch) cannot recover the true signer for these
+// multi-commit fixtures once the genesis key no longer reappears with an
+// embedded `"key"` field in the first commit's blobs (the same pre-existing
+// limitation `bootstrap_principal` above already works around). Calling the
+// engine directly with explicit genesis sidesteps that unrelated limitation
+// while still exercising the real lock and the real `EngineError` it
+// produces. The HTTP-facing 409 mapping itself is verified separately
+// (`rs/cyphr-server/src/error.rs`'s own tests) against that exact
+// `EngineError`, so together these cover "hits the HTTP layer" per this
+// node's acceptance criteria.
+
+/// Load the shared cryptographic key pool backing the golden fixtures.
+fn load_pool() -> test_fixtures::Pool {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/keys/pool.toml");
+    test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
+}
+
+/// Sign a fresh "add `new_key_name`" commit onto `principal` (consumed by
+/// value -- see call site for why), signed by `signer_name` (must have a
+/// known private key in `pool`). Returns the new commit's raw coz blob
+/// bytes, wire-ready for `submit_commit`.
+///
+/// Takes `principal` by value rather than `&Principal` + internal `.clone()`
+/// deliberately: `Principal::clone()` shares the underlying `CloneableLog`'s
+/// `Arc<Mutex<Log<S>>>>`, not a deep copy, so cloning one shared starting
+/// principal for N variants would have all N append to the SAME commit
+/// tree. Each call site must instead build its own independent `Principal`
+/// (e.g. via a fresh `load_principal_from_commits` call) to get genuinely
+/// independent, mutually-exclusive alternative "next commits".
+fn sign_key_create_commit(
+    mut principal: cyphr::Principal,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    new_key_name: &str,
+    now: i64,
+) -> Vec<Vec<u8>> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let signer = pool.get(signer_name).expect("signer key in pool");
+    let new_key = pool.get(new_key_name).expect("new key in pool");
+
+    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
+    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
+
+    // Field order is alphabetical, matching `canonicalize_value`'s
+    // `sort_keys()` byte-for-byte -- the server re-canonicalizes before
+    // computing czd/verifying, so signing over any other order would make
+    // the signature mismatch what the server re-derives.
+    let pay_value = serde_json::json!({
+        "alg": signer.alg,
+        "id": new_tmb_b64,
+        "now": now,
+        "tmb": signer_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+
+    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("valid signer prv base64");
+    let signer_pub =
+        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
+    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
+        .expect("signing supported for this algorithm");
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
+
+    let new_cyphr_key = cyphr::Key {
+        alg: new_key.alg.clone(),
+        tmb: coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
+        ),
+        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+        first_seen: now,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
+        .expect("key/create should verify against the starting principal state");
+
+    let signer_tmb = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
+    );
+    scope
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            now,
+            "cyphr.me",
+        )
+        .expect("commit should finalize");
+
+    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
+    let new_commit = entries.last().expect("at least one commit after finalize");
+
+    // `export_commits` deliberately doesn't embed "key" into the cozy JSON
+    // (it carries key material separately, at the commit level, for the
+    // internal CommitEntry storage format) -- but the wire format
+    // `submit_commit` parses from raw client blobs expects "key" embedded
+    // directly on the key-introducing cozy itself (mirroring
+    // `build_raw_blobs` above). Embed it here for the one key/create cozy.
+    let mut key_idx = 0;
+    new_commit
+        .cozies
+        .iter()
+        .map(|v| {
+            let mut coz = v.clone();
+            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+            if (typ.contains("/key/create") || typ.contains("/key/replace"))
+                && key_idx < new_commit.keys.len()
+            {
+                let key = &new_commit.keys[key_idx];
+                coz.as_object_mut().unwrap().insert(
+                    "key".to_string(),
+                    serde_json::json!({
+                        "alg": key.alg,
+                        "pub": key.pub_key,
+                        "tmb": key.tmb,
+                    }),
+                );
+                key_idx += 1;
+            }
+            serde_json::to_vec(&coz).expect("cozy serializes")
+        })
+        .collect()
+}
+
+/// N concurrent submissions of independent, mutually-exclusive next commits
+/// for the SAME principal (each adds a different new key, so none collide on
+/// `DuplicateKey` -- only on the sequence slot itself): only one can
+/// genuinely claim the next sequence slot. The rest, once serialized behind
+/// the winner, find the principal's state already advanced past what their
+/// own signed commit assumed -- a genuine write conflict (`CommitMismatch`),
+/// not silent index corruption and not an undifferentiated backend error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let principal_id = "e2e-concurrent-same-principal";
+
+    let state = test_state();
+    let pool = load_pool();
+
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let commit0_blobs = build_raw_blobs(&commits[0]);
+    let commit0_slices: Vec<&[u8]> = commit0_blobs.iter().map(|b| b.as_slice()).collect();
+    state
+        .engine
+        .submit_commit(
+            principal_id,
+            Some(make_genesis(genesis_keys)),
+            &commit0_slices,
+        )
+        .await
+        .expect("bootstrap commit 0 failed");
+
+    // A CommitEntry matching commit 0, replayed fresh (via the library's own
+    // replay path) for every variant below -- each variant needs its own
+    // independent `Principal` (see `sign_key_create_commit`'s doc comment
+    // for why a shared clone doesn't work), all starting from the identical
+    // post-commit-0 state.
+    let commit0_entry: cyphr_storage::CommitEntry =
+        serde_json::from_value(commits[0].clone()).expect("commit 0 matches CommitEntry shape");
+
+    // Race N independent, mutually-exclusive "add a new key" commits for the
+    // same already-established principal.
+    // "key_a" is excluded: commit 0 introduces it, so it would collide with
+    // `DuplicateKey` rather than testing the sequence-slot race.
+    let candidate_keys = [
+        "key_b",
+        "alice",
+        "bob",
+        "carol",
+        "diana_es384",
+        "eve_ed25519",
+    ];
+    let n = candidate_keys.len();
+    let mut handles = Vec::with_capacity(n);
+    for new_key_name in candidate_keys {
+        let state = state.clone();
+        let genesis_keys = genesis_keys.clone();
+        let fresh_principal = cyphr_storage::load_principal_from_commits(
+            make_genesis(&genesis_keys),
+            std::slice::from_ref(&commit0_entry),
+        )
+        .expect("replay commit 0 onto a fresh principal");
+        let variant_blobs = sign_key_create_commit(
+            fresh_principal,
+            &pool,
+            "golden",
+            new_key_name,
+            1_700_000_100,
+        );
+        handles.push(tokio::spawn(async move {
+            let variant_slices: Vec<&[u8]> = variant_blobs.iter().map(|b| b.as_slice()).collect();
+            state
+                .engine
+                .submit_commit(
+                    "e2e-concurrent-same-principal",
+                    Some(make_genesis(&genesis_keys)),
+                    &variant_slices,
+                )
+                .await
+        }));
+    }
+
+    let mut succeeded = 0;
+    let mut conflicts = 0;
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(_) => succeeded += 1,
+            Err(cyphr_storage::engine::EngineError::Protocol(cyphr::Error::CommitMismatch)) => {
+                conflicts += 1
+            },
+            Err(other) => panic!("unexpected error for a racing submission: {other}"),
+        }
+    }
+
+    assert_eq!(
+        succeeded, 1,
+        "exactly one concurrent submission should win the sequence slot"
+    );
+    assert_eq!(
+        conflicts,
+        n - 1,
+        "every losing submission should get a genuine, typed CommitMismatch conflict -- not a \
+         silent success and not an undifferentiated backend error"
+    );
+
+    // No lost/duplicated update: the tip shows exactly commit 0 + the one
+    // winning commit 1 -- never more (corruption) or fewer (lost update).
+    let tip = state
+        .engine
+        .get_tip(principal_id)
+        .await
+        .unwrap()
+        .expect("principal should exist");
+    assert_eq!(
+        tip.commit_count, 2,
+        "exactly 2 commits should be durably recorded: bootstrap + the one race winner"
+    );
+}
+
+/// M concurrent submissions for M DISTINCT principals must not interfere
+/// with each other, and should complete meaningfully faster than the same
+/// work forced sequential -- proving the per-principal lock scales with the
+/// number of distinct principals rather than degrading into a single global
+/// choke point.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn submit_commit_concurrent_different_principals_do_not_block() {
+    let fixture = load_golden("mutations", "transaction_sequence_replay");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let m = 6;
+    let principal_ids: Vec<String> = (0..m)
+        .map(|i| format!("e2e-concurrent-distinct-{i}"))
+        .collect();
+
+    let state = test_state();
+    for pid in &principal_ids {
+        let commit0_blobs = build_raw_blobs(&commits[0]);
+        let commit0_slices: Vec<&[u8]> = commit0_blobs.iter().map(|b| b.as_slice()).collect();
+        state
+            .engine
+            .submit_commit(pid, Some(make_genesis(genesis_keys)), &commit0_slices)
+            .await
+            .expect("bootstrap commit 0 failed");
+    }
+
+    // Concurrent: submit commit 1 for every distinct principal at once.
+    let concurrent_start = std::time::Instant::now();
+    let mut handles = Vec::with_capacity(m);
+    for pid in principal_ids.clone() {
+        let state = state.clone();
+        let genesis_keys = genesis_keys.clone();
+        let commit1_blobs = build_raw_blobs(&commits[1]);
+        handles.push(tokio::spawn(async move {
+            let commit1_slices: Vec<&[u8]> = commit1_blobs.iter().map(|b| b.as_slice()).collect();
+            state
+                .engine
+                .submit_commit(&pid, Some(make_genesis(&genesis_keys)), &commit1_slices)
+                .await
+        }));
+    }
+    for handle in handles {
+        handle
+            .await
+            .unwrap()
+            .expect("each distinct principal's submission should succeed independently");
+    }
+    let concurrent_elapsed = concurrent_start.elapsed();
+
+    // Sequential baseline: the same M submissions, one at a time (commit 2,
+    // so it isn't rejected as an already-applied duplicate of commit 1).
+    let sequential_start = std::time::Instant::now();
+    for pid in &principal_ids {
+        let commit2_blobs = build_raw_blobs(&commits[2]);
+        let commit2_slices: Vec<&[u8]> = commit2_blobs.iter().map(|b| b.as_slice()).collect();
+        state
+            .engine
+            .submit_commit(pid, Some(make_genesis(genesis_keys)), &commit2_slices)
+            .await
+            .expect("sequential baseline submission should succeed");
+    }
+    let sequential_elapsed = sequential_start.elapsed();
+
+    // Generous, qualitative margin (not a tight ratio) to avoid flaking
+    // under CI scheduling noise: distinct principals genuinely running in
+    // parallel should beat the same work forced one-at-a-time. A single
+    // global lock masquerading as per-principal would make these roughly
+    // equal instead.
+    assert!(
+        concurrent_elapsed < sequential_elapsed,
+        "concurrent submissions for distinct principals ({concurrent_elapsed:?}) should be faster \
+         than the same work forced sequential ({sequential_elapsed:?}) -- a global (not \
+         per-principal) lock would make these roughly equal or concurrent slower"
+    );
+}

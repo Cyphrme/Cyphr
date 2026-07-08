@@ -19,6 +19,9 @@
 
 mod error;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
 
@@ -155,6 +158,22 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// database can give each principal an isolated keyspace instead of
     /// colliding on positional Commit Tree keys.
     storage_factory: StorageFactory<S>,
+    /// Per-principal serialization points for [`Self::submit_commit`].
+    ///
+    /// Keyed-mutex map: each `principal_id` gets its own
+    /// `tokio::sync::Mutex`, so concurrent writers for the *same* principal
+    /// serialize (making [`CloneableLog`](cyphr::commit_root::CloneableLog)'s
+    /// documented fresh-Principal-per-call assumption hold by construction)
+    /// while writers for *different* principals never contend. The outer
+    /// `std::sync::Mutex` only ever guards the fast, non-blocking
+    /// get-or-insert into the map itself, never the write critical section.
+    ///
+    /// Entries are never removed: the map's memory footprint grows with the
+    /// number of distinct principals ever written to over the engine's
+    /// lifetime. Acceptable for this in-process precursor (see root
+    /// `AGENTS.md` I2); bounding it is future work alongside the
+    /// cross-process write serialization this node explicitly defers.
+    principal_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -170,6 +189,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
             blob_store,
             indexer,
             storage_factory: Box::new(|_principal_id: &str| Ok(cyphr::eml::MemoryStorage::new())),
+            principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -190,7 +210,23 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             blob_store,
             indexer,
             storage_factory: Box::new(storage_factory),
+            principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Fetch (or create) this `principal_id`'s serialization point.
+    ///
+    /// Never blocks on a write: only ever holds the map's own lock for the
+    /// duration of a `HashMap` lookup/insert, not across any `.await`.
+    fn principal_lock(&self, principal_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .principal_locks
+            .lock()
+            .expect("principal lock map poisoned");
+        locks
+            .entry(principal_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Get a reference to the underlying blob store.
@@ -569,6 +605,14 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
+        // Serialize the whole sequence-resolution-through-ingest critical
+        // section per principal_id: two concurrent callers for the SAME
+        // principal must never both resolve `next_seq` before either has
+        // ingested. Held for the remainder of this function; a concurrent
+        // caller for a DIFFERENT principal_id never contends on this lock.
+        let lock = self.principal_lock(principal_id);
+        let _serialize_writes = lock.lock().await;
+
         // 1. Resolve genesis.
         let genesis = match genesis {
             Some(g) => g,
@@ -939,17 +983,14 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// [recovery-convergence]. Two independent recovery paths run in the same
     /// pass:
     ///
-    /// - Raw blobs with no manifest (legacy content, or content seeded
-    ///   directly into the blob store bypassing `ingest_commit`) are scanned
-    ///   first and, where they resolve to a genesis bootstrap or a
-    ///   deterministically-orderable commit, indexed.
-    /// - Manifest-backed commits -- anything ingested via
-    ///   [`Self::ingest_commit`]/`submit_commit` -- are recovered last,
-    ///   directly from their [`CommitManifest`] via
-    ///   [`Self::rebuild_index_from_manifests`]: their exact ingest-time
-    ///   order and derived digests are read, never searched for. Running
-    ///   this pass last makes a manifest-backed principal's real tip always
-    ///   win over any raw content indexed above for the same `principal_id`.
+    /// - Raw blobs with no manifest (legacy content, or content seeded directly into the blob store
+    ///   bypassing `ingest_commit`) are scanned first and, where they resolve to a genesis
+    ///   bootstrap or a deterministically-orderable commit, indexed.
+    /// - Manifest-backed commits -- anything ingested via [`Self::ingest_commit`]/`submit_commit`
+    ///   -- are recovered last, directly from their [`CommitManifest`] via
+    ///   [`Self::rebuild_index_from_manifests`]: their exact ingest-time order and derived digests
+    ///   are read, never searched for. Running this pass last makes a manifest-backed principal's
+    ///   real tip always win over any raw content indexed above for the same `principal_id`.
     #[tracing::instrument(skip(self, keys))]
     pub async fn reindex(&self, keys: &[cyphr::Key], total_check: bool) -> Result<(), EngineError> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -1272,8 +1313,11 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                             None => continue,
                         };
 
-                        let res =
-                            principal.verify_and_record_action(&coz.pay_json, &coz.sig, czd.clone());
+                        let res = principal.verify_and_record_action(
+                            &coz.pay_json,
+                            &coz.sig,
+                            czd.clone(),
+                        );
                         tracing::debug!(
                             "reindex pre-action: typ={}, now={}, res={:?}",
                             coz.typ,
@@ -1322,26 +1366,33 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
                 for finalizer_coz in &finalizers {
                     let alg = &finalizer_coz.alg;
-                    let finalizer_czd =
-                        match cyphr::compute_czd(&finalizer_coz.pay_json, &finalizer_coz.sig, alg) {
-                            Some(c) => c,
-                            None => continue,
-                        };
+                    let finalizer_czd = match cyphr::compute_czd(
+                        &finalizer_coz.pay_json,
+                        &finalizer_coz.sig,
+                        alg,
+                    ) {
+                        Some(c) => c,
+                        None => continue,
+                    };
 
                     let claimed_arrow = if let Ok(value) =
                         serde_json::from_slice::<serde_json::Value>(&finalizer_coz.pay_json)
                     {
-                        value.get("arrow").and_then(|v| v.as_str()).and_then(|arrow_val| {
-                            arrow_val.parse::<cyphr::state::TaggedDigest>().ok().and_then(
-                                |tagged| {
-                                    cyphr::multihash::MultihashDigest::from_single(
-                                        tagged.alg(),
-                                        tagged.as_bytes().to_vec(),
-                                    )
+                        value
+                            .get("arrow")
+                            .and_then(|v| v.as_str())
+                            .and_then(|arrow_val| {
+                                arrow_val
+                                    .parse::<cyphr::state::TaggedDigest>()
                                     .ok()
-                                },
-                            )
-                        })
+                                    .and_then(|tagged| {
+                                        cyphr::multihash::MultihashDigest::from_single(
+                                            tagged.alg(),
+                                            tagged.as_bytes().to_vec(),
+                                        )
+                                        .ok()
+                                    })
+                            })
                     } else {
                         None
                     };
@@ -1413,8 +1464,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                                 Ok(ids) => ids,
                                 Err(_) => continue,
                             };
-                            let ar = match format_multihash_all(commit.auth_root().as_multihash())
-                            {
+                            let ar = match format_multihash_all(commit.auth_root().as_multihash()) {
                                 Ok(val) => val,
                                 Err(_) => continue,
                             };
@@ -1441,8 +1491,15 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     }
                 }
 
-                let Some((mut next_principal, commit_ids, ar, sr, pr, matched_finalizer, commit_keys)) =
-                    matched_combination
+                let Some((
+                    mut next_principal,
+                    commit_ids,
+                    ar,
+                    sr,
+                    pr,
+                    matched_finalizer,
+                    commit_keys,
+                )) = matched_combination
                 else {
                     return Err(EngineError::MalformedBlob(format!(
                         "reindex: principal {principal_id}'s commit at timestamp {target_time} \
