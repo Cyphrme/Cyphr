@@ -28,13 +28,20 @@ use cyphr_storage::engine::StorageEngine;
 ///
 /// ## Backend note
 ///
-/// The blob store, index, and each principal's Commit Tree are all
-/// durable and share one physical `Database` (`FjallBlobStore::from_database`,
-/// `FjallIndexer::from_database`, and
+/// The blob store, each principal's Commit Tree, and the index are all
+/// durable. The blob store and Commit Trees share one physical `Database`
+/// (`FjallBlobStore::from_database` plus
 /// `cyphr_blob_fjall::open_eml_storage_scoped`, per
-/// `docs/specs/blob-store-fjall.md`'s `[fjall-single-keyspace]` mandate),
-/// with each principal's Commit Tree keyed to its own scoped keyspace by
-/// `principal_id` so multiple principals safely share the one database.
+/// `docs/specs/blob-store-fjall.md`'s `[fjall-single-keyspace]` mandate --
+/// which is scoped to blobs+EML, not the index), with each principal's
+/// Commit Tree keyed to its own scoped keyspace by `principal_id` so
+/// multiple principals safely share the one database. The index opens
+/// its own, separate `Database`: the index is a derived, rebuildable
+/// projection of the blob store (root `AGENTS.md` I1), and keeping its
+/// storage independent preserves that a blob-store-only failure (lost or
+/// corrupted blob content with the index otherwise intact) surfaces as a
+/// real, loud lookup failure rather than silently disappearing along with
+/// the index that would otherwise share its fate.
 pub struct AppState {
     /// Resolved server configuration.
     pub config: config::ServerConfig,
@@ -49,7 +56,7 @@ impl AppState {
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let db = fjall::Database::builder(config.data_dir.join("blobs")).open()?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
-        let indexer = FjallIndexer::from_database(db.clone())?;
+        let indexer = FjallIndexer::open(&config.data_dir.join("index"))?;
         let engine =
             StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
