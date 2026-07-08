@@ -53,25 +53,17 @@ All active development happens here.
 
 ## Known traps (updated 2026-07-08; fix, don't inherit)
 
-- **Arrow verification is asymmetric with arrow construction.**
-  `finalize_with_arrow` (`cyphr/src/commit.rs`) builds `pre`/`sr`/`tmr`
-  bytes via `MultihashDigest::arrow_component_bytes`, which falls back
-  to a single available variant when the exact target algorithm isn't
-  present (the genesis-promotion case: a same-commit key-algorithm
-  replacement). `matches_arrow` — the verification side, gating
-  `reindex`'s recovery path and `submit_commit` — still calls the
-  strict `get_or_err` directly, with no such fallback. A commit whose
-  arrow was legitimately constructed via the fallback will fail to
-  re-verify. Tracked as `F37-arrow-multi-variant-fold-incomplete`;
-  `matches_arrow` needs the same primitive `finalize_with_arrow` uses.
 - **`CloneableLog` concurrency assumption.** `block_on` under a `Mutex`
   (`cyphr/src/commit_root.rs`); sound only because every engine call
-  builds a fresh `Principal`. Do not share a live `Principal` across
-  concurrent tasks (root U2).
-- **Error collapse.** eml storage errors become
-  `Error::UnsupportedAlgorithm` (forge #32), and the server maps all
-  protocol errors to one 422. Don't branch on those error values as if
-  they were accurate.
+  builds a fresh `Principal`. A shared, long-lived `Principal` across
+  concurrent tasks would violate this -- resolved externally, not by
+  changing `CloneableLog` itself: `StorageEngine::submit_commit` now
+  holds a per-principal async lock across its whole critical section
+  (`F3`/`F24`, mitigated), so the server's real access pattern never
+  exercises concurrent calls against the same live `Principal`. The
+  assumption above is still true of `CloneableLog` in isolation --
+  don't drive it directly from concurrent tasks without an equivalent
+  guard.
 - **Trust-boundary parsing is multiplied.** Coz header extraction /
   czd computation are hand-rolled in ~4/10 places (engine, reindex,
   import, CLI) with silent defaults. Don't add a fifth — the campaign
