@@ -152,7 +152,7 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 
         if exp.pr != expected_commit.pr {
             return Err(format!(
-                "commit {}: ps mismatch\n  exported: {:?}\n  expected: {:?}",
+                "commit {}: pr mismatch\n  exported: {:?}\n  expected: {:?}",
                 i, exp.pr, expected_commit.pr
             ));
         }
@@ -301,7 +301,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] commit_id={}, as={}, ps={}",
+            "  [0] commit_id={}, as={}, pr={}",
             commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
@@ -638,8 +638,8 @@ fn e2e_checkpoint_load() {
     let principal = cyphr::Principal::implicit(key.clone()).expect("implicit failed");
     let initial_as = principal.auth_root().clone();
 
-    // L1 principal has no PR
-    assert!(principal.pg().is_none(), "L1 principal should have no PR");
+    // L1 principal has no PG
+    assert!(principal.pg().is_none(), "L1 principal should have no PG");
 
     // Create checkpoint at genesis
     let checkpoint = Checkpoint {
@@ -649,16 +649,16 @@ fn e2e_checkpoint_load() {
         cr: None,
     };
 
-    // Load from checkpoint with no additional entries (no PR for L1)
+    // Load from checkpoint with no additional entries (no PG for L1)
     let loaded = load_from_checkpoint(None, checkpoint, None, &[]).expect("load failed");
 
-    // Verify PR is still None for L1
+    // Verify PG is still None for L1
     assert!(
         loaded.pg().is_none(),
-        "checkpoint_matches_pr: L1 should have no PR"
+        "checkpoint_matches_pg: L1 should have no PG"
     );
 
-    eprintln!("  ✓ checkpoint_matches_pr (L1: no PR)");
+    eprintln!("  ✓ checkpoint_matches_pg (L1: no PG)");
 
     // Test checkpoint_with_suffix is implicitly tested by round-trip tests
     // that load entries after genesis - the load_principal path is the same
@@ -778,34 +778,34 @@ fn e2e_multihash_round_trip() {
                 alg
             );
 
-            // Verify PS variant exists
-            let principal_ps = principal.pr().get(alg);
+            // Verify PR variant exists
+            let principal_pr = principal.pr().get(alg);
             assert!(
-                principal_ps.is_some(),
-                "{}: PS variant {:?} should exist",
+                principal_pr.is_some(),
+                "{}: PR variant {:?} should exist",
                 test.name,
                 alg
             );
 
-            eprintln!("    ✓ {:?} variant present (KS/AS/PS)", alg);
+            eprintln!("    ✓ {:?} variant present (KS/AS/PR)", alg);
         }
 
-        // PR check: None for L1/L2, has genesis variant for L3+
-        if let Some(pr) = principal.pg() {
+        // PG check: None for L1/L2, has genesis variant for L3+
+        if let Some(pg) = principal.pg() {
             let genesis_alg = principal.hash_alg();
-            let principal_pr = pr.get(genesis_alg);
+            let principal_pg = pg.get(genesis_alg);
             assert!(
-                principal_pr.is_some(),
-                "{}: PR should have genesis algorithm {:?} variant",
+                principal_pg.is_some(),
+                "{}: PG should have genesis algorithm {:?} variant",
                 test.name,
                 genesis_alg
             );
-            eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
+            eprintln!("    ✓ PG has genesis algorithm {:?} variant", genesis_alg);
         } else {
-            eprintln!("    ✓ PR is None (L1/L2 principal)");
+            eprintln!("    ✓ PG is None (L1/L2 principal)");
         }
 
-        // --- Step 4: Full AS/CS/PS recomputation verification ---
+        // --- Step 4: Full AS/CS/PR recomputation verification ---
         // Recompute AS from KS via the real AR-node.
         let recomputed_as = AuthTree::build(&recomputed_ks, &active_algs).unwrap();
 
@@ -825,13 +825,13 @@ fn e2e_multihash_round_trip() {
 
         // Recompute PR from SR + CR?
         let cr = principal.cr();
-        let recomputed_ps = compute_pr(&recomputed_sr, cr, &active_algs).unwrap();
+        let recomputed_pr = compute_pr(&recomputed_sr, cr, &active_algs).unwrap();
 
         for alg in active_algs {
             assert_eq!(
                 principal.pr().get(alg),
-                recomputed_ps.get(alg),
-                "{}: PS variant {:?} mismatch after recomputation",
+                recomputed_pr.get(alg),
+                "{}: PR variant {:?} mismatch after recomputation",
                 test.name,
                 alg
             );

@@ -415,8 +415,8 @@ impl Principal<eml::MemoryStorage> {
     /// Create a principal with implicit genesis (single key).
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
-    /// - `PS = AS = KS = tmb` (fully promoted)
-    /// - PR is absent (L1/L2 have no PR per SPEC §5.1)
+    /// - `PR = AR = KR = tmb` (fully promoted)
+    /// - PG is absent (L1/L2 have no PG per SPEC §5.1)
     ///
     /// This is the Level 1/2 genesis path.
     ///
@@ -1594,11 +1594,13 @@ impl<S: eml::Storage> Principal<S> {
                 if !self.genesis_keys.contains(&signer_b64) {
                     return Err(Error::UnknownKey);
                 }
-                // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
+                // Verify that `id` matches the computed PR (SPEC §5.1 step 3:
+                // `id` equals the future SR, which equals the current PR here
+                // since no CR exists yet)
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
+                // Freeze PG at the current PR (SPEC §5.1 step 3: "principal/create ... establishes PG")
                 // establish_pg() is the ONLY code path that transitions Nascent → Established.
                 self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
             },
@@ -2020,16 +2022,16 @@ mod tests {
     }
 
     #[test]
-    fn pr_is_none_at_level1() {
+    fn pg_is_none_at_level1() {
         let key = make_test_key(0xCC);
         let principal = Principal::implicit(key).unwrap();
 
-        // PR is None at Level 1 (no principal/create)
-        assert!(principal.pg().is_none(), "PR should be None at Level 1");
+        // PG is None at Level 1 (no principal/create)
+        assert!(principal.pg().is_none(), "PG should be None at Level 1");
 
-        // PS still exists and is stable
-        let ps_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        assert!(!ps_bytes.is_empty());
+        // PR still exists and is stable
+        let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        assert!(!pr_bytes.is_empty());
     }
 
     // ========================================================================
@@ -2177,14 +2179,14 @@ mod tests {
         let key = make_test_key(0xBB);
         let mut principal = Principal::implicit(key.clone()).unwrap();
 
-        let ps_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
 
         let action = make_test_action(&key.tmb);
         principal.record_action(action).unwrap();
 
-        let ps_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        // PS changes when DS is added
-        assert_ne!(ps_before, ps_after);
+        let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        // PR changes when DS is added
+        assert_ne!(pr_before, pr_after);
     }
 
     #[test]

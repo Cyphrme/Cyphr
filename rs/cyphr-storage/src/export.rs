@@ -73,7 +73,7 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 /// - `commit_id`: Commit ID (Merkle root of coz czds, base64url)
 /// - `as`: Auth State (base64url)
 /// - `sr`: State Root (base64url)
-/// - `ps`: Principal State (base64url)
+/// - `pr`: Principal Root (base64url)
 ///
 /// **Note**: Actions are not included in commits; they are stored separately
 /// or handled by the caller.
@@ -123,9 +123,9 @@ pub fn export_commits<S: eml::Storage>(
         let commit_id = commit.tr().0.tagged_first()?.to_string();
         let auth_root = commit.auth_root().as_multihash().tagged_first()?.to_string();
         let sr = commit.sr().as_multihash().tagged_first()?.to_string();
-        let ps = commit.pr().as_multihash().tagged_first()?.to_string();
+        let pr = commit.pr().as_multihash().tagged_first()?.to_string();
 
-        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, ps));
+        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr));
     }
 
     Ok(commit_entries)

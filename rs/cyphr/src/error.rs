@@ -18,7 +18,7 @@ pub enum Error {
     #[error("unknown algorithm")]
     UnknownAlg,
 
-    /// `now` < latest known PS timestamp.
+    /// `now` < the principal's latest known timestamp.
     #[error("timestamp in past")]
     TimestampPast,
 
@@ -39,7 +39,7 @@ pub enum Error {
     DuplicateKey,
 
     // === State errors (§17.3) ===
-    /// Computed PS does not match claimed PS.
+    /// Computed PR does not match claimed PR.
     #[error("state mismatch")]
     StateMismatch,
 

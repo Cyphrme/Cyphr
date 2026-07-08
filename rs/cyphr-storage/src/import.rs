@@ -26,7 +26,7 @@ pub enum Genesis {
     /// Implicit genesis: single key, no coz required.
     ///
     /// Per SPEC §5.1: "Identity emerges from first key possession"
-    /// - `PS = AS = KS = tmb` (PR is None at L1/L2)
+    /// - `PR = AR = KR = tmb` (PG is None at L1/L2)
     Implicit(Key),
 
     /// Explicit genesis: multiple keys established at creation.
@@ -681,8 +681,8 @@ mod tests {
 
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
-        // Implicit genesis: PR is None at L1
-        assert!(principal.pg().is_none(), "PR should be None at L1");
+        // Implicit genesis: PG is None at L1
+        assert!(principal.pg().is_none(), "PG should be None at L1");
         assert_eq!(principal.active_key_count(), 1);
     }
 
@@ -694,10 +694,10 @@ mod tests {
         let principal =
             load_principal(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[]).unwrap();
 
-        // Explicit genesis: PR is None (needs principal/create)
+        // Explicit genesis: PG is None (needs principal/create)
         assert!(
             principal.pg().is_none(),
-            "PR should be None before principal/create"
+            "PG should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
         assert!(principal.is_key_active(&key1.tmb));
