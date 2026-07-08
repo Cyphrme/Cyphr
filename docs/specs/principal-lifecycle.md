@@ -17,8 +17,11 @@
 determine capability, the lifecycle states a principal can occupy, and the
 principal-level operations (close, merge, fork) that alter identity.
 
-**Target System:** `SPEC.md` §3 (Feature Levels), §11 (Principal Lifecycle
-States), §19 (Close, Merge, Fork).
+**Target System:** `SPEC.md` §3.0 (Feature Levels), §11 (Principal
+Lifecycle States), §11.4-11.5 (Close, Merge, Fork). Citation corrected
+2026-07-08 — §19 is now Error Conditions, not Close/Merge/Fork, which
+SPEC.md places within §11 itself; this document's own per-constraint
+Verification table below has not yet been re-audited line-by-line.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)

@@ -17,7 +17,11 @@
 (PoP), bearer tokens, login flows, and Mutual State Synchronization (MSS). Also
 covers embedding and conjunctive authorization for delegated identity.
 
-**Target System:** `SPEC.md` §12 (Embedding), §14 (Authentication), §16 (MSS).
+**Target System:** `SPEC.md` §10 (Embedding), §17 (Authentication), §13
+(MSS). Citation corrected 2026-07-08 — SPEC.md was renumbered and these
+topics previously sat at §12/§14/§16; this document's own per-constraint
+Verification table below still cites the old numbers and has not yet been
+re-audited line-by-line.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)

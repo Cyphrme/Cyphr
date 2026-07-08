@@ -18,8 +18,11 @@ resync, witness behavior, state jumping, and the complete error taxonomy.
 The consensus model is deliberately minimal, favoring simplicity and
 independent verifiability over global coordination.
 
-**Target System:** `SPEC.md` §17 (Consensus), §23 (State Jumping), §24 (Error
-Conditions).
+**Target System:** `SPEC.md` §15 (Consensus), §18 (State Jumping), §19
+(Error Conditions). Citation corrected 2026-07-08 — SPEC.md was renumbered
+and these topics previously sat at §17/§23/§24; this document's own
+per-constraint Verification table below still cites the old numbers and
+has not yet been re-audited line-by-line.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
