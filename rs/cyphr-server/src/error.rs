@@ -37,6 +37,14 @@ impl AppError {
             message: msg.into(),
         }
     }
+
+    /// 409 Conflict.
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -64,11 +72,14 @@ impl AppError {
     /// Variant mapping:
     /// - `NotFound` → 404
     /// - `InvalidInput`, `MalformedBlob` → 400
-    /// - `Protocol(cyphr::Error::Storage(_))` → 500 (infrastructure failure
-    ///   that happened to surface through the protocol layer, not a genuine
-    ///   protocol violation)
-    /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable
-    ///   Entity (valid JSON, invalid protocol)
+    /// - `Protocol(cyphr::Error::StateMismatch | cyphr::Error::CommitMismatch)` → 409 Conflict (the
+    ///   submitted commit's claimed predecessor state no longer matches the principal's actual
+    ///   current state — the signature that a concurrent writer already claimed this principal's
+    ///   next write, not that this submission is itself malformed)
+    /// - `Protocol(cyphr::Error::Storage(_))` → 500 (infrastructure failure that happened to
+    ///   surface through the protocol layer, not a genuine protocol violation)
+    /// - `Protocol` (any other wrapped [`cyphr::Error`]) → 422 Unprocessable Entity (valid JSON,
+    ///   invalid protocol)
     /// - `BlobStore`, `Indexer`, `Load`, `Storage` → 500
     pub fn engine(err: cyphr_storage::engine::EngineError) -> Self {
         use cyphr_storage::engine::EngineError;
@@ -77,6 +88,9 @@ impl AppError {
             EngineError::NotFound(_) => Self::not_found(err.to_string()),
             EngineError::InvalidInput(_) | EngineError::MalformedBlob(_) => {
                 Self::bad_request(err.to_string())
+            },
+            EngineError::Protocol(cyphr::Error::StateMismatch | cyphr::Error::CommitMismatch) => {
+                Self::conflict(err.to_string())
             },
             EngineError::Protocol(cyphr::Error::Storage(_)) => {
                 tracing::error!(error = %err, "internal engine error");
@@ -94,5 +108,33 @@ impl AppError {
                 Self::internal("internal storage error")
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cyphr_storage::engine::EngineError;
+
+    use super::*;
+
+    #[test]
+    fn state_mismatch_maps_to_conflict() {
+        let resp =
+            AppError::engine(EngineError::Protocol(cyphr::Error::StateMismatch)).into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn commit_mismatch_maps_to_conflict() {
+        let resp =
+            AppError::engine(EngineError::Protocol(cyphr::Error::CommitMismatch)).into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn other_protocol_errors_remain_unprocessable_entity() {
+        let resp =
+            AppError::engine(EngineError::Protocol(cyphr::Error::InvalidSignature)).into_response();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
