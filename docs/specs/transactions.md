@@ -411,10 +411,23 @@ The path grammar is: `cyphr/<tree-path>/nonce/<verb>`. Examples:
 
 ### Forbidden States
 
-**[no-orphan-pre]**: A transaction's `pre` MUST reference a valid, known PR.
-Transactions referencing a `pre` that does not correspond to any known state
-in the commit chain MUST be rejected.
-`VERIFIED: agent-check`
+**[no-orphan-pre]**: The commit's `pre` (the arrow component identifying the
+prior PR being mutated, per [commit-finality-arrow]) MUST reference the
+actual known PR. A commit whose arrow does not resolve against the real
+prior state MUST be rejected.
+
+> [!NOTE]
+> **Wording note (2026-07-08)**: This constraint predates per-mutation `pre`
+> removal and originally described a client-supplied `pre` field on every
+> mutation cozy. No such field exists anywhere in the wire format now (see
+> [transaction-classification]) — the only surviving `pre` is the one
+> conceptual input to the commit transaction's `arrow` computation, which
+> is derived, not client-declared. The underlying safety property (reject a
+> commit that doesn't chain from the real prior state) is unchanged and is
+> now the sole job of arrow verification (`Error::CommitMismatch` in
+> `rs/cyphr/src/principal.rs`'s `finalize_commit`).
+
+`VERIFIED: rs/cyphr/tests/properties.rs — arrow/CommitMismatch property tests`
 
 **[no-unauthorized-transaction]**: A transaction signed by a key not active in
 KR at the pre-mutation state MUST be rejected. There MUST NOT be a state where

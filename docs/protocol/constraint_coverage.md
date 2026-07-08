@@ -1,6 +1,8 @@
 # Constraint Coverage Matrix
 
-Cross-reference of all 177 machine spec constraints against existing test coverage.
+Cross-reference of all 176 machine spec constraints against existing test coverage
+(recomputed 2026-07-08: Transactions dropped from 49 to 48 tags after the
+per-mutation-`pre` removal — see that section's note).
 
 **Legend:**
 
@@ -13,18 +15,26 @@ Cross-reference of all 177 machine spec constraints against existing test covera
 
 ---
 
-## Transactions (49 constraints)
+## Transactions (48 constraints)
+
+Re-audited 2026-07-08 against the current `transactions.md` (post
+per-mutation-`pre` removal): `[transaction-pre-required]` and
+`[commit-pre-chain]` no longer exist as tags — `pre` was removed from every
+transaction-classified coz, so there is no `pre`-chaining constraint left to
+test (their old evidence fixtures, `err_transaction_missing_pre` and
+`pre_mismatch_fails`/`err_broken_chain`, no longer exist in the repo either).
+`[transaction-classification]` is new — it replaces the old field-presence
+discriminator with a `typ`-based one.
 
 | Tag                             | Description                           | Status        | Evidence                                                                   |
 | :------------------------------ | :------------------------------------ | :------------ | :------------------------------------------------------------------------- |
 | `[coz-required-fields]`         | alg, tmb, now, typ required           | ⬜ STRUCTURAL | Implicitly tested by all golden fixtures                                   |
-| `[transaction-pre-required]`    | Mutations must have `pre`             | ✅ TESTED     | `authentication_constraints.toml:err_transaction_missing_pre`              |
+| `[transaction-classification]`  | Transaction vs. data action is by `typ`, not `pre` presence | ⬜ STRUCTURAL | `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
 | `[data-action-no-pre]`          | Actions must NOT have `pre`           | ✅ TESTED     | `error_conditions.toml:err_data_action_with_pre`                           |
-| `[authorization-triple]`        | tmb+sig+pre triple                    | ⬜ STRUCTURAL | Covered by golden verification                                             |
-| `[pre-mutation-key-rule]`       | Auth checked against pre-mutation KR  | ⬜ STRUCTURAL | Implicit in verification flow                                              |
+| `[authorization-triple]`        | Antecedent (active-key) + lifecycle + capability gates, all three MUST hold | ⬜ STRUCTURAL | Covered by golden verification                                             |
+| `[pre-mutation-key-rule]`       | Intra-commit: checked against live, incrementally-mutated key state as each tx applies; extra-commit: against last finalized commit only | ⬜ STRUCTURAL | Implicit in verification flow                                              |
 | `[commit-append-only]`          | Commits immutable after publish       | 🔵 RUNTIME    | Policy constraint, not rejection                                           |
 | `[commit-one-or-more]`          | Commit must have ≥1 coz               | ✅ TESTED     | `structural_constraints.toml:err_empty_commit`                             |
-| `[commit-pre-chain]`            | All cozies in commit ref same `pre`   | ✅ TESTED     | `errors.toml:pre_mismatch_fails`, `error_conditions.toml:err_broken_chain` |
 | `[txs-list-of-lists]`           | txs is list of lists                  | ⬜ STRUCTURAL | Enforced by TOML schema                                                    |
 | `[tx-grouping]`                 | No interlacing mutations              | ⬜ STRUCTURAL | Enforced by commit batch API                                               |
 | `[tx-root-computation]`         | TR = MR(czds)                         | ⬜ STRUCTURAL | Verified by golden fixtures                                                |
@@ -52,28 +62,33 @@ Cross-reference of all 177 machine spec constraints against existing test covera
 | `[key-replace]`                 | key/replace atomic swap               | ✅ TESTED     | `mutations.toml:key_replace_maintains_count`                               |
 | `[key-revoke]`                  | key/revoke self-declaration           | ✅ TESTED     | `mutations.toml:self_revoke_decreases_count`                               |
 | `[naked-revoke-error]`          | Naked revoke → Dead/Errored           | ✅ TESTED     | `errors.toml:last_key_revoke_fails`                                        |
-| `[revoke-naked]`                | Naked revoke may omit `pre`           | 🔵 RUNTIME    | Design guidance                                                            |
+| `[revoke-naked]`                | SUPERSEDED — `pre`-presence no longer distinguishes a naked revoke (see transactions.md note); open question, not a tested constraint | 🔵 RUNTIME | Design guidance (stale)                                                    |
 | `[revoke-self-signed]`          | Revoke must be self-signed            | ✅ TESTED     | `e2e:err_revoke_non_self` uses `[no-revoke-non-self]` tag                  |
 | `[key-active-period]`           | Key active when rvk unset or > now    | ⬜ STRUCTURAL | Implicit in revocation logic                                               |
 | `[data-action-stateless]`       | Actions are stateless                 | ⬜ STRUCTURAL | Verified by action tests                                                   |
 | `[dr-inclusion]`                | DR requires ds/create                 | ⬜ STRUCTURAL | Verified by action golden                                                  |
 | `[nonce-path]`                  | Nonce typ specifies tree path         | ⚪ OOS        | Level 5+                                                                   |
-| `[no-orphan-pre]`               | pre must reference valid PR           | ✅ TESTED     | `errors.toml:pre_mismatch_fails`                                           |
+| `[no-orphan-pre]`               | Commit's arrow `pre` component must match the actual known PR (no per-mutation `pre` field remains — see transactions.md note) | ✅ TESTED | `rs/cyphr/tests/properties.rs` (arrow/CommitMismatch property tests); citation was stale (`errors.toml:pre_mismatch_fails` no longer exists) |
 | `[no-unauthorized-transaction]` | Unknown signer rejected               | ✅ TESTED     | `errors.toml:unknown_key_fails`, `e2e:err_unknown_signer`                  |
 | `[no-self-revoke-recovery]`     | L1 self-revoke = permanent            | ✅ TESTED     | `errors.toml:last_key_revoke_fails`                                        |
 | `[no-revoke-non-self]`          | Revoke by non-self rejected           | ✅ TESTED     | `errors.toml:revoke_non_self_fails`, `e2e:err_revoke_non_self`             |
 | `[intra-commit-ordering]`       | Commit order deterministic            | ⬜ STRUCTURAL | Verified by golden fixtures                                                |
 | `[commit-deterministic]`        | Same cozies → same state              | ⬜ STRUCTURAL | Verified by golden fixtures                                                |
 | `[genesis-irreversible]`        | PG immutable after genesis            | 🔵 RUNTIME    | Architectural invariant                                                    |
-| `[revoke-propagation]`          | Revoke must be honored                | 🔵 RUNTIME    | Policy constraint                                                          |
+| `[revoke-propagation]`          | Revoke must be honored (description no longer conditions on `pre` presence) | 🔵 RUNTIME | Policy constraint                                                          |
 
 ### Transactions Summary
 
-- ✅ TESTED: 15 (+5: `[revoke-self-signed]`, `[no-revoke-non-self]`, `[transaction-pre-required]`, `[data-action-no-pre]`, `[commit-one-or-more]`)
+Recomputed 2026-07-08 by direct count of the table above (48 rows; the
+prior counts here did not sum to the stated total even before the
+per-mutation-`pre` removal, an independent staleness from the dead-tag
+issue).
+
+- ✅ TESTED: 13
 - 🟡 TESTABLE: 0
 - 🔶 NEEDS_OVERRIDE: 0
-- ⬜ STRUCTURAL: 18 (verified by existing golden/state computation tests)
-- 🔵 RUNTIME: 13 (policy/design constraints, not rejection tests)
+- ⬜ STRUCTURAL: 22 (verified by existing golden/state computation tests)
+- 🔵 RUNTIME: 12 (policy/design constraints, not rejection tests)
 - ⚪ OOS: 1
 
 ---
@@ -124,7 +139,7 @@ Cross-reference of all 177 machine spec constraints against existing test covera
 | `[identifier-is-cid]`               | ⬜ STRUCTURAL | All identifiers are CIDs                        |
 | `[mr-sort-order]`                   | ✅ TESTED     | `edge_cases.toml:key_thumbprint_sort_order`     |
 | `[pg-immutable]`                    | 🔵 RUNTIME    | Architectural invariant                         |
-| `[alg-alignment]`                   | ⬜ STRUCTURAL | Enforced by MALT                                |
+| `[alg-alignment]`                   | ⬜ STRUCTURAL | Enforced by EMT (SPEC.md's current name; was "MALT") |
 | `[digest-alg-from-coz]`             | ⬜ STRUCTURAL | Enforced by coz parsing                         |
 | `[nonce-bit-length]`                | ⚪ OOS        | Level 5+                                        |
 | `[nonce-indistinguishable]`         | ⚪ OOS        | Level 5+                                        |
@@ -132,15 +147,15 @@ Cross-reference of all 177 machine spec constraints against existing test covera
 | `[mhmr-equivalence]`                | ⬜ STRUCTURAL | `multihash_coherence.toml`                      |
 | `[implicit-promotion]`              | ⬜ STRUCTURAL | Verified by state computation                   |
 | `[state-computation]`               | ✅ TESTED     | `state_computation.toml` (9 test cases)         |
-| `[conversion]`                      | ⬜ STRUCTURAL | Cross-alg conversion in MALT                    |
+| `[conversion]`                      | ⬜ STRUCTURAL | SUPERSEDED description — no per-child conversion step exists; see state-tree.md's resolution note (raw-byte fold under target alg, not per-child re-hash) |
 | `[mhmr-computation]`                | ⬜ STRUCTURAL | `multihash_coherence.toml`                      |
 | `[alg-set-evolution]`               | 🔵 RUNTIME    | Design guidance                                 |
 | `[no-empty-mr]`                     | ✅ TESTED     | `structural_constraints.toml:err_empty_genesis` |
 | `[no-circular-state]`               | 🔵 RUNTIME    | Architectural invariant                         |
 | `[no-non-canonical-b64ut]`          | 🔵 RUNTIME    | Enforced by coz library                         |
 | `[deterministic-state]`             | ✅ TESTED     | `edge_cases.toml:same_keys_different_order`     |
-| `[promotion-recursive-termination]` | ⬜ STRUCTURAL | Implicit in MALT traversal                      |
-| `[mhmr-no-rehash-children]`         | ⬜ STRUCTURAL | Verified by MALT impl                           |
+| `[promotion-recursive-termination]` | ⬜ STRUCTURAL | Implicit in EMT traversal (SPEC.md's current name; was "MALT") |
+| `[mhmr-no-rehash-children]`         | ⬜ STRUCTURAL | `rs/cyphr/src/multihash.rs` (`MultihashDigest::arrow_component_bytes`); see state-tree.md's resolution note |
 
 ### State Tree Summary
 
@@ -215,12 +230,12 @@ Entirely ⚪ OOS — recovery protocol not yet implemented at Level 1-4.
 
 ---
 
-## Phase 1 Actionable Gaps (🟡 TESTABLE)
+## Phase 1 Actionable Gaps — RESOLVED (2026-07-08)
 
-These constraints can be tested **right now** with existing infrastructure:
-
-1. **`[revoke-self-signed]`** — Attempt `key/revoke` where the `signer` is a _different_ key than the target. Should fail with `UnknownKey` (signer can't revoke another key's thumbprint).
-2. **`[no-revoke-non-self]`** — Same as above; enforcement overlap.
-3. **`[transaction-pre-required]`** — Override `pre` to empty string. Should fail with `InvalidPrior`.
-
-These 3 constraints map to 2 new test cases (revoke-non-self covers both revoke constraints).
+This section listed 3 constraints as 🟡 TESTABLE gaps to close. All 3 are
+now moot: `[revoke-self-signed]` and `[no-revoke-non-self]` are already
+✅ TESTED per the Transactions table above (`e2e:err_revoke_non_self`,
+`errors.toml:revoke_non_self_fails`); the third item's tag,
+`[transaction-pre-required]`, no longer exists — `pre` was removed from
+every transaction-classified coz (see the Transactions section note). No
+open gap remains from this list.
