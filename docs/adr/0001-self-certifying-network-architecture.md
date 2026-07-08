@@ -1,6 +1,7 @@
 # ADR-0001: Self-Certifying Network Architecture
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (architecture and vocabulary); implementation partial —
+see "Implementation Status" below
 
 **Date:** 2026-05-11
 
@@ -310,6 +311,36 @@ genesis. It is used for bootstrap, audit, and recovery.
 > **SPEC gap (G1):** §13.4 says "verifies chain validity" without defining
 > what validation is required. This ADR's verification table is our
 > working model pending SPEC clarification.
+
+---
+
+## Implementation Status (2026-07-08)
+
+This ADR's architecture, vocabulary, and axioms (Cryptographic Truth,
+Principal Sovereignty, Partial Visibility, Proof-Verifiable State) are the
+governing mental model and are not in question. What is **not yet landed**
+is the specific server-side consequence this ADR calls for in "Consequences"
+below (thin-witness push replacing full replay as the default path):
+
+- **Proof primitives exist as a library capability.** `rs/cyphr/src/principal.rs`
+  implements `Principal::inclusion_proof`, `Principal::consistency_proof`,
+  `Principal::verify_transaction_inclusion`, and `Principal::verify_key_inclusion`
+  (built on EML's proof primitives, exposed via `rs/cyphr/src/commit_root.rs`),
+  all covered by unit tests.
+- **Nothing in the storage or server layer calls them.** `rs/cyphr-storage/src/engine/mod.rs`'s
+  `submit_commit` unconditionally calls `load_principal`, which replays the
+  full commit chain from the indexer on every push — there is no
+  proof-based shortcut. `rs/cyphr-server/src/routes.rs`'s `PushRequest`
+  carries only `principal_id` and raw `blobs`; it has no consistency-proof
+  or inclusion-proof fields. `TipState` (`rs/cyphr-storage/src/index/types.rs`)
+  does carry `cr` and `commit_count` (tree_size), so the trust-anchor data
+  this ADR calls for is available in the index — it is just not consumed
+  by a thin-witness push path, because none exists yet.
+
+In short: full replay remains the **sole** write-path verification mode
+today, not merely the bootstrap/audit fallback the "Consequences" section
+below describes. That section is retained as the still-accurate design
+intent — the next implementation step, not a status claim.
 
 ---
 

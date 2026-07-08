@@ -57,8 +57,14 @@ sites; Netlify builds on push.
   §-reference.
 - **`docs/plans/` is legacy.** Never plan-of-record (root I6); campaign
   workflow supersedes. Same for `docs/protocol/constraint_coverage.md`
-  tag-counts (stale ~3 months, still says "MALT") and ADR-0001's
-  "PROPOSED" status (its design landed).
+  tag-counts (stale ~3 months, still says "MALT" where SPEC.md now says
+  "EMT"). ADR-0001's status was corrected 2026-07-08 from "PROPOSED" to
+  "ACCEPTED (architecture); implementation partial" — its axioms and
+  vocabulary are the governing mental model, but the specific consequence
+  it calls for (thin-witness proof-based push replacing full replay as the
+  write path's default) has NOT landed: `submit_commit` still replays the
+  full chain unconditionally and `PushRequest` carries no proof fields. See
+  the ADR's own "Implementation Status" section for the evidence.
 - **`SPEC.md` in-tree ≠ implemented design** until PR #5 lands on `zami`
   (Principal-Tree-as-EMT amendment). The working copy may be checked out
   to the PR branch for reference — do not commit it (root I3).
