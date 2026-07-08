@@ -12,6 +12,13 @@ repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"
 
+[features]
+# Exposes `index::conformance`, the shared Indexer behavioral test suite,
+# outside `#[cfg(test)]` so another crate's Indexer implementation can add
+# this crate as a dev-dependency with this feature enabled and hold its own
+# backend to the same conformance functions MemoryIndexer's tests use.
+conformance-tests = []
+
 [dependencies]
 blake3     = { workspace = true }
 coz        = { workspace = true }

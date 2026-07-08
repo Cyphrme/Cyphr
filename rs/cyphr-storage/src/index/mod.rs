@@ -12,6 +12,8 @@
 //! - [`MemoryIndexer`] — `HashMap`-backed (testing)
 //! - `SqliteIndexer` — SQLite-backed (production, Phase 2b)
 
+#[cfg(any(test, feature = "conformance-tests"))]
+pub mod conformance;
 mod memory;
 pub mod types;
 
