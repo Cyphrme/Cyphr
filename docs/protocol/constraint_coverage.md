@@ -124,9 +124,12 @@ issue).
 
 ### Authentication Summary
 
+Recomputed 2026-07-08 by direct count of the table above (the prior counts
+did not sum to 24 — an independent staleness from the pre-removal issue).
+
 - ✅ TESTED: 1
-- ⬜ STRUCTURAL: 3
-- ⚪ OOS: 16 (mostly service-side or Level 5+)
+- ⬜ STRUCTURAL: 4
+- ⚪ OOS: 18 (mostly service-side, Level 5+, or genuinely unimplemented — see `docs/specs/authentication.md`'s "Implementation Status")
 - 🔵 RUNTIME: 1
 
 ---

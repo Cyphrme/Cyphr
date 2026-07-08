@@ -33,6 +33,30 @@ verification and access control.
 [`state-tree.md`](./state-tree.md)
 — Merkle tree structure for embeddings.
 
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
+"implemented."** The Verification table's uniform 24/24 `pass` is
+misleading — confirmed by direct search of `rs/`:
+
+- **Unimplemented**: login (challenge-response and timestamp-based — zero
+  matches for `fn login` or `bearer` anywhere in non-test `.rs`), bearer
+  tokens, MSS push, and Principal Embedding — `rs/cyphr/src/state.rs`'s own
+  doc comments say embedding "is reserved for future use; pass `None`,"
+  confirming [embedding-weight-default] through [embedding-pinning] (5
+  constraints) have no working code behind them.
+- **Implemented**: signature-based PoP, checkpoint restore
+  (`Principal::from_checkpoint`/`from_checkpoint_with_trees` in
+  `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
+  [checkpoint-genesis-foundational]), and chain-replay verification. There
+  is no `checkpoint/create` declarative transaction `typ`, so
+  [checkpoint-declarative] specifically remains unimplemented.
+
+`docs/protocol/constraint_coverage.md`'s Authentication section (1 TESTED,
+4 STRUCTURAL, 18 OOS, 1 RUNTIME) already reflects this breakdown far more
+accurately than this document's own Verification table below, whose
+uniform `pass` result overclaims.
+
 ## Constraints
 
 ### Invariants
@@ -196,6 +220,11 @@ keys are the sole authentication factor, verifiable by any party.
 <!-- Tier 2+ formalization is structured for but not populated in this pass. -->
 
 ## Verification
+
+> See "Implementation Status" above: `pass` below means SPEC-internal
+> consistency, not implementation. Login, bearer tokens, MSS push, and
+> Principal Embedding are unimplemented; checkpoint restore and
+> signature-based PoP are implemented.
 
 | Constraint                        | Method      | Result | Detail                             |
 | :-------------------------------- | :---------- | :----- | :--------------------------------- |

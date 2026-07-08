@@ -33,6 +33,20 @@ history rewriting, or denial of service.
 [`principal-lifecycle.md`](./principal-lifecycle.md)
 — lifecycle state transitions triggered by consensus violations.
 
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` in this document means "explicit in or
+inferable from SPEC.md," not "implemented in `rs/` or `go/`.** Confirmed by
+direct search of `rs/`: there is no witness consensus-state machine, no
+fork detection or resync/patch protocol, no state-jump mechanism, and no
+proof-of-error retention anywhere in the codebase — zero matches for
+`resync`, `ConsensusState`, `state_jump`/`jump_to_ps`, or `ProofOfError` in
+any non-test `.rs` file. The entire witness/consensus protocol this
+document specifies is unimplemented; every row in the Verification table
+below reflects internal consistency with SPEC.md, not a working
+implementation. This is unchanged by any work landed elsewhere in the
+current campaign — no witness/consensus node has been dispatched.
+
 ## Constraints
 
 ### Type Declarations
@@ -260,6 +274,10 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 <!-- Tier 2+ formalization is structured for but not populated in this pass. -->
 
 ## Verification
+
+> See "Implementation Status" above: every `pass` below means SPEC-internal
+> consistency, not a working implementation. None of this document's
+> constraints have rs/go code behind them.
 
 | Constraint                     | Method      | Result | Detail                           |
 | :----------------------------- | :---------- | :----- | :------------------------------- |
