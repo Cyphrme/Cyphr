@@ -49,7 +49,7 @@ implementation-level spec document yet (unlike `blob-store-fjall.md`'s
 split for the BlobStore side). `docs/specs/indexer-sqlite.md`, which
 specified the prior SQLite-backed Indexer, is archived to
 `docs/plans/archive/` — that implementation was retired 2026-07-08
-(N09-kv-index) in favor of Fjall.
+by the KV-index migration in favor of Fjall.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
@@ -91,7 +91,7 @@ truth; the index is a derived, rebuildable projection. If the index is lost,
 it is reconstructed from the content store via re-indexing. Cross-store
 atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
-`VERIFIED: cyphr-index-fjall is the production Indexer; cyphr-index-sqlite was retired 2026-07-08 (N09-kv-index) — see indexer.md`
+`VERIFIED: cyphr-index-fjall is the production Indexer; cyphr-index-sqlite was retired 2026-07-08 in the KV-index migration — see indexer.md`
 
 **[crate-isolation]**: Implementation backends MUST be isolated in their
 own crates, separate from the trait definitions. The trait crate defines
@@ -380,7 +380,7 @@ design lives in the crate itself (`rs/cyphr-index-fjall/src/lib.rs`).
 `docs/specs/indexer-sqlite.md` (the prior SQLite implementation's spec,
 including its own now-inapplicable `[sqlite-write-transaction]` constraint)
 is archived to `docs/plans/archive/` — that implementation was retired
-2026-07-08 (N09-kv-index).
+2026-07-08 by the KV-index migration.
 
 ### For Testing
 
@@ -420,7 +420,7 @@ is archived to `docs/plans/archive/` — that implementation was retired
    distributed primitives) were evaluated and rejected. Chain replay
    provides trustless completeness for per-principal queries.
 
-5. **Index backend** — **SUPERSEDED 2026-07-08 (N09-kv-index).** The
+5. **Index backend** — **SUPERSEDED 2026-07-08 (KV-index migration).** The
    2026-06-01 SQLite decision below was reversed: `cyphr-index-sqlite` was
    retired and Fjall (`cyphr-index-fjall`) is the production Indexer. See
    [`indexer.md`](indexer.md) § Implementations. Original entry, kept for

@@ -1,8 +1,8 @@
 # ARCHIVED: Multihash Simplification
 
 <!--
-  ARCHIVED 2026-07-08 (N14-spec-alignment). This was a live "SPEC:" document
-  describing a migration in progress, but the migration it describes is
+  ARCHIVED 2026-07-08. This was a live "SPEC:" document describing a
+  migration in progress, but the migration it describes is
   complete: CyphrHasher (rs/cyphr/src/hasher.rs), DataRoot's use of
   MultihashDigest, the removed standalone `hash_alg` field, the EML-backed
   Commit Tree, and the unified StateDigest newtypes are all confirmed

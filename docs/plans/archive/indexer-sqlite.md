@@ -1,11 +1,11 @@
 # ARCHIVED: SQLite Indexer Implementation
 
 <!--
-  ARCHIVED 2026-07-08 (N14-spec-alignment, F42). This is no longer a live
-  spec. It documented the SQLite implementation of the Indexer trait, which
-  was itself a 2026-06-01 replacement of the original FjallIndexer. That
-  SQLite implementation (`cyphr-index-sqlite`) was in turn retired
-  2026-07-08 by N09-kv-index, which reinstated a Fjall-backed Indexer
+  ARCHIVED 2026-07-08. This is no longer a live spec. It documented the
+  SQLite implementation of the Indexer trait, which was itself a
+  2026-06-01 replacement of the original FjallIndexer. That SQLite
+  implementation (`cyphr-index-sqlite`) was in turn retired 2026-07-08 by
+  the KV-index migration, which reinstated a Fjall-backed Indexer
   (`cyphr-index-fjall`) as production. This document is kept for historical
   / archaeological reference only — read for the schema-design rationale
   that motivated the SQLite detour, not as a description of current
