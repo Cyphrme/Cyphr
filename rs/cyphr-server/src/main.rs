@@ -50,7 +50,12 @@ fn main() -> ExitCode {
             }
         },
         Command::Export { .. } => {
-            tracing::warn!("export not yet implemented");
+            // Not yet implemented: fail loudly with a non-zero exit code
+            // rather than logging a warning (easily missed, or filtered
+            // out entirely depending on log level) and then exiting 0 as
+            // if the export had actually happened.
+            eprintln!("error: export is not yet implemented");
+            return ExitCode::FAILURE;
         },
     }
 

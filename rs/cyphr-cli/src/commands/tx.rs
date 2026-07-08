@@ -76,8 +76,12 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let store = parse_store(cli)?;
 
-    // Load commits from store
-    let commits = get_commits_from_engine(&store, identity).unwrap_or_default();
+    // Load commits from store. A real storage error here (corrupted
+    // index, missing blob, etc.) must propagate -- collapsing it into an
+    // empty Vec would make this indistinguishable from a genuine
+    // zero-commit genesis identity and falsely report "OK, genesis state
+    // verified" over data that actually failed to load.
+    let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore

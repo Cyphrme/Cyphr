@@ -193,26 +193,50 @@ pub fn get_principal_id(pr: &cyphr::PrincipalGenesis) -> crate::Result<String> {
     Ok(pr.as_multihash().tagged_first()?.to_string())
 }
 
-/// Get the principal ID string from a Principal
+/// Get the principal ID string from a Principal.
+///
+/// This must be *stable*: it is used as the storage engine's lookup key for
+/// this principal's tip across its entire lifetime, so calling it again
+/// after further commits have been applied must still yield the same
+/// string it returned right after genesis.
+///
+/// Established (Level 3+) principals key off `pg()`, which is frozen for
+/// life the moment `principal/create` sets it. But a still-nascent
+/// principal (including multi-key explicit genesis before that commit --
+/// the common case, since the CLI never issues `principal/create`) has no
+/// stable field to key off other than `genesis_keys()`, which is fixed at
+/// construction and never mutated afterward. `pr()` is NOT stable here: it
+/// is the live, continuously-recomputed Principal State, which moves with
+/// every subsequent commit -- using it produced a different "stable" ID on
+/// every save once any operation happened after genesis, silently losing
+/// the principal's own tip.
+///
+/// So a nascent principal's ID is the genesis-time PR, recomputed by
+/// rebuilding a throwaway `Principal` from the original genesis keys
+/// (looked up in `keystore` by their still-immutable thumbprints) --
+/// byte-identical to what `init` computed and showed the user, regardless
+/// of how many mutations this principal has since accumulated.
 pub fn get_principal_id_from_principal<S: cyphr::eml::Storage>(
     principal: &cyphr::Principal<S>,
+    keystore: &JsonKeyStore,
 ) -> crate::Result<String> {
     use cyphr::StateDigest;
-    let mh = if let Some(pg) = principal.pg() {
-        pg.as_multihash()
-    } else {
-        let genesis_tmb = principal
-            .genesis_keys()
-            .first()
-            .ok_or_else(|| crate::Error::Storage("no genesis keys found".into()))?;
-        let bytes = Base64UrlUnpadded::decode_vec(genesis_tmb)?;
-        let alg = principal.hash_alg();
-        return Ok(format!(
-            "{alg}:{}",
-            Base64UrlUnpadded::encode_string(&bytes)
-        ));
-    };
-    Ok(mh.tagged_first()?.to_string())
+
+    if let Some(pg) = principal.pg() {
+        return Ok(pg.as_multihash().tagged_first()?.to_string());
+    }
+
+    let genesis_keys = principal
+        .genesis_keys()
+        .iter()
+        .map(|tmb| load_key_from_keystore(keystore, tmb))
+        .collect::<crate::Result<Vec<_>>>()?;
+    let genesis_principal = cyphr::Principal::<cyphr::eml::MemoryStorage>::explicit(genesis_keys)?;
+    Ok(genesis_principal
+        .pr()
+        .as_multihash()
+        .tagged_first()?
+        .to_string())
 }
 
 /// Load a principal from the storage engine.
@@ -234,17 +258,32 @@ pub fn load_principal_from_engine(
             .await
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
 
+        // `identity` matching a keystore thumbprint directly IS implicit
+        // (single-key) genesis, independent of whether a tip has been
+        // stored yet -- this must be checked before falling back on
+        // `tip.is_none()`, otherwise a never-yet-pushed *explicit*
+        // multi-key genesis (whose identity is a combined digest, not any
+        // single key's thumbprint) gets misread as implicit and fails to
+        // reload with a confusing "key not found" error.
         let is_implicit_genesis = keystore.get(identity).is_ok();
 
-        let genesis = if tip.is_none() {
-            // Genesis state - reconstruct from keystore. load_principal
-            // handles an empty commit chain correctly, returning a fresh
-            // principal backed by this engine's durable storage.
-            let key = load_key_from_keystore(keystore, identity)?;
-            cyphr_storage::Genesis::Implicit(key)
-        } else if is_implicit_genesis {
+        let genesis = if is_implicit_genesis {
             let genesis_key = load_key_from_keystore(keystore, identity)?;
             cyphr_storage::Genesis::Implicit(genesis_key)
+        } else if let Some(tmbs) = keystore.lookup_genesis(&principal_id) {
+            // Explicit multi-key genesis recorded locally at `init` time
+            // (see `init`'s call to `record_genesis`) -- the only way to
+            // reconstruct it before any commit exists to anchor it in
+            // storage.
+            let keys = tmbs
+                .iter()
+                .map(|tmb| load_key_from_keystore(keystore, tmb))
+                .collect::<crate::Result<Vec<_>>>()?;
+            cyphr_storage::Genesis::Explicit(keys)
+        } else if tip.is_none() {
+            return Err(crate::Error::Storage(format!(
+                "identity {identity} has no stored commits and does not match any keystore key or recorded genesis; cannot resolve genesis"
+            )));
         } else {
             engine
                 .resolve_genesis(&principal_id, &[])
@@ -257,6 +296,21 @@ pub fn load_principal_from_engine(
             .await
             .map_err(|e| crate::Error::Storage(e.to_string()))
     })
+}
+
+/// Whether a coz `typ` string indicates a key-embedding transaction
+/// (`key/create` or `key/replace`) -- i.e. one whose blob must carry the
+/// new key's material inline, not just the signer's thumbprint.
+///
+/// This is the CLI's single canonical implementation of that rule; every
+/// call site within this crate that needs it MUST go through this
+/// function rather than re-deriving the `.contains(...)` check locally.
+/// (`cyphr::parsed_coz`'s `typ.ends_with(...)` checks and
+/// `cyphr_storage::import`'s private `is_key_introducing_typ` implement
+/// the same rule again in their own crates; consolidating across crate
+/// boundaries is out of this crate's scope.)
+fn is_key_embedding_typ(typ: &str) -> bool {
+    typ.contains("/key/create") || typ.contains("/key/replace")
 }
 
 /// Save a principal's new commits to the storage engine.
@@ -278,7 +332,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
         .build()?;
 
     rt.block_on(async {
-        let principal_id = get_principal_id_from_principal(principal)?;
+        let principal_id = get_principal_id_from_principal(principal, keystore)?;
 
         let tip = engine
             .get_tip(&principal_id)
@@ -301,7 +355,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                     .and_then(|t| t.as_str())
                     .unwrap_or("");
 
-                if typ.contains("/key/create") || typ.contains("/key/replace") {
+                if is_key_embedding_typ(typ) {
                     if let Some(key_entry) = key_iter.next() {
                         if let Some(obj) = coz_mut.as_object_mut() {
                             obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
@@ -423,8 +477,8 @@ pub fn get_commits_from_engine(
                 cozies,
                 keys,
                 commit_ref.commit_id.clone(),
-                String::new(),
-                String::new(),
+                commit_ref.ar.clone(),
+                commit_ref.sr.clone(),
                 commit_ref.pr.clone(),
             ));
         }

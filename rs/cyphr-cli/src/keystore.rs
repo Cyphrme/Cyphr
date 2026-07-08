@@ -76,6 +76,14 @@ pub trait KeyStore {
 pub struct JsonKeyStore {
     path: PathBuf,
     keys: HashMap<String, StoredKey>,
+    genesis_path: PathBuf,
+    /// Constituent key thumbprints of explicit multi-key genesis principals,
+    /// keyed by principal ID. An explicit genesis's principal ID is a
+    /// combined digest, not any single key's thumbprint, so unlike implicit
+    /// genesis it cannot be reconstructed from `keys` alone -- and no commit
+    /// exists yet to recover it from storage either. This is the only local
+    /// record of that key set until a real commit anchors it.
+    genesis: HashMap<String, Vec<String>>,
 }
 
 impl JsonKeyStore {
@@ -90,12 +98,47 @@ impl JsonKeyStore {
             HashMap::new()
         };
 
-        Ok(Self { path, keys })
+        let genesis_path = Self::genesis_path_for(&path);
+        let genesis = if genesis_path.exists() {
+            let content = fs::read_to_string(&genesis_path)?;
+            serde_json::from_str(&content)?
+        } else {
+            HashMap::new()
+        };
+
+        Ok(Self {
+            path,
+            keys,
+            genesis_path,
+            genesis,
+        })
     }
 
     /// Get the path to the keystore file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn genesis_path_for(keystore_path: &Path) -> PathBuf {
+        let mut os = keystore_path.as_os_str().to_owned();
+        os.push(".genesis.json");
+        PathBuf::from(os)
+    }
+
+    /// Record the constituent key thumbprints of an explicit multi-key
+    /// genesis under its principal ID, persisting immediately to the
+    /// sidecar genesis file.
+    pub fn record_genesis(&mut self, principal_id: &str, key_tmbs: Vec<String>) -> Result<(), Error> {
+        self.genesis.insert(principal_id.to_string(), key_tmbs);
+        let content = serde_json::to_string_pretty(&self.genesis)?;
+        fs::write(&self.genesis_path, content)?;
+        Ok(())
+    }
+
+    /// Look up the constituent key thumbprints of a previously-recorded
+    /// explicit multi-key genesis by principal ID.
+    pub fn lookup_genesis(&self, principal_id: &str) -> Option<&[String]> {
+        self.genesis.get(principal_id).map(Vec::as_slice)
     }
 }
 
