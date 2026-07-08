@@ -144,6 +144,34 @@ impl MultihashDigest {
         self.get(alg).ok_or(crate::error::Error::MissingVariant(alg))
     }
 
+    /// Get the digest bytes for Arrow's genesis-promotion fallback: try
+    /// `alg` first, else, if this multihash has exactly one variant,
+    /// promote it regardless of `alg` (mirrors
+    /// `polydigest::root::combined_root`'s single-member fold rule — a
+    /// component with only one active algorithm contributes that
+    /// algorithm's digest regardless of the signer's, rather than erroring
+    /// just because the signer replaced the sole active key with one of a
+    /// different algorithm in this same commit).
+    ///
+    /// A no-op when this multihash already has `alg`, and still an honest
+    /// `MissingVariant` error when it has multiple variants, none of which
+    /// is `alg` — that ambiguous case has no single natural fallback and is
+    /// left as a hard error rather than guessed at.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MissingVariant` if `alg` is absent and this multihash has
+    /// zero or more than one variant.
+    pub fn arrow_component_bytes(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
+        if let Some(bytes) = self.get(alg) {
+            return Ok(bytes);
+        }
+        if self.len() == 1 {
+            return self.first_variant();
+        }
+        self.get_or_err(alg)
+    }
+
     /// Get the first available variant's bytes.
     ///
     /// # Errors

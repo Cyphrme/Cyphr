@@ -533,33 +533,6 @@ impl Principal<eml::MemoryStorage> {
     }
 }
 
-/// Get `digest`'s bytes for `alg`, falling back to its sole variant when
-/// `digest` doesn't carry `alg` but has exactly one variant of a different
-/// algorithm.
-///
-/// Mirrors `polydigest::root::combined_root`'s genesis-promotion rule: a
-/// fold over a single member root promotes that root verbatim, independent
-/// of which hasher the fold is keyed on. Arrow's pre/sr components are the
-/// equivalent single-member case here — a component with only one active
-/// algorithm contributes that algorithm's digest regardless of the
-/// signer's, rather than erroring just because the signer replaced the sole
-/// active key with one of a different algorithm in this same commit. See
-/// the identical helper in `commit.rs` (`arrow_component_bytes`), which
-/// this mirrors for the replay-path validation below.
-///
-/// A no-op when `digest` already has `alg`, and still an honest
-/// `MissingVariant` error when `digest` has multiple variants, none of
-/// which is `alg`.
-fn arrow_component_bytes(digest: &MultihashDigest, alg: crate::state::HashAlg) -> Result<&[u8]> {
-    if let Some(bytes) = digest.get(alg) {
-        return Ok(bytes);
-    }
-    if digest.len() == 1 {
-        return digest.first_variant();
-    }
-    digest.get_or_err(alg)
-}
-
 impl<S: eml::Storage> Principal<S> {
     // ========================================================================
     // Internal helpers
@@ -1729,8 +1702,8 @@ impl<S: eml::Storage> Principal<S> {
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let pre_bytes = arrow_component_bytes(&core.pr.0, tx_alg)?;
-            let sr_bytes = arrow_component_bytes(&sr.0, tx_alg)?;
+            let pre_bytes = core.pr.0.arrow_component_bytes(tx_alg)?;
+            let sr_bytes = sr.0.arrow_component_bytes(tx_alg)?;
             let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
             let computed_digest =

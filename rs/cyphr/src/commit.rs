@@ -322,32 +322,6 @@ pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
 /// `digest` doesn't carry `alg` but has exactly one variant of a different
 /// algorithm.
 ///
-/// Mirrors `polydigest::root::combined_root`'s genesis-promotion rule: a
-/// fold over a single member root promotes that root verbatim, independent
-/// of which hasher the fold is keyed on (see `spine::mr::nary_mr`'s
-/// single-child case). Arrow's pre/sr/tmr components are the equivalent
-/// single-member case here — a component with only one active algorithm
-/// contributes that algorithm's digest regardless of the signer's, rather
-/// than erroring just because the signer replaced the sole active key with
-/// one of a different algorithm in this same commit.
-///
-/// A no-op when `digest` already has `alg`, and still an honest
-/// `MissingVariant` error when `digest` has multiple variants, none of
-/// which is `alg` — that ambiguous case has no single natural fallback and
-/// is left as a hard error rather than guessed at.
-fn arrow_component_bytes(
-    digest: &crate::multihash::MultihashDigest,
-    alg: crate::state::HashAlg,
-) -> crate::error::Result<&[u8]> {
-    if let Some(bytes) = digest.get(alg) {
-        return Ok(bytes);
-    }
-    if digest.len() == 1 {
-        return digest.first_variant();
-    }
-    digest.get_or_err(alg)
-}
-
 impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
     pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
@@ -614,9 +588,9 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // pre is the principal root of the previous state!
         let pre = &self.principal.pr;
 
-        let pre_bytes = arrow_component_bytes(&pre.0, signer_hash_alg)?;
-        let sr_bytes = arrow_component_bytes(&sr.0, signer_hash_alg)?;
-        let tmr_bytes = arrow_component_bytes(&tmr.0, signer_hash_alg)?;
+        let pre_bytes = pre.0.arrow_component_bytes(signer_hash_alg)?;
+        let sr_bytes = sr.0.arrow_component_bytes(signer_hash_alg)?;
+        let tmr_bytes = tmr.0.arrow_component_bytes(signer_hash_alg)?;
 
         // Arrow = MR(pre, fwd, TMR)
         let arrow_digest =
