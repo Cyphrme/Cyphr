@@ -1,6 +1,6 @@
-//! # Relational Index
+//! # Index
 //!
-//! Backend-agnostic trait for relational indexing of Cyphr commits.
+//! Backend-agnostic trait for indexing Cyphr commits.
 //!
 //! The index is a secondary projection of the BlobStore — always
 //! rebuildable by scanning blobs and re-parsing. It accelerates
@@ -10,7 +10,7 @@
 //! ## Implementations
 //!
 //! - [`MemoryIndexer`] — `HashMap`-backed (testing)
-//! - `SqliteIndexer` — SQLite-backed (production, Phase 2b)
+//! - `FjallIndexer` (in `cyphr-index-fjall`) — fjall KV-backed (production)
 
 #[cfg(any(test, feature = "conformance-tests"))]
 pub mod conformance;
