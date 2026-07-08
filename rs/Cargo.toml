@@ -3,6 +3,7 @@ members = [
   "cyphr",
   "cyphr-storage",
   "cyphr-blob-fjall",
+  "cyphr-index-fjall",
   "cyphr-index-sqlite",
   "cyphr-server",
   "cyphr-cli",
@@ -26,6 +27,7 @@ coz = { package = "coz-rs", version = "0.4.1" }
 # Storage
 blake3             = "1"
 cyphr-blob-fjall   = { path = "cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-fjall  = { path = "cyphr-index-fjall", version = "0.1.0" }
 cyphr-index-sqlite = { path = "cyphr-index-sqlite", version = "0.1.0" }
 eml                = { version = "0.11" }
 fjall              = "3"
