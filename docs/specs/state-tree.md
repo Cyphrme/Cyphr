@@ -195,13 +195,12 @@ promotion, no hashing at all.
 > folding it into a parent digest. That is superseded: confirmed directly
 > against the `eml` sibling repo's `polydigest::root::combined_root` /
 > `nary_mr` (commit `2bde639`) and the spec author's ruling on forge issue
-> #51 (see F31/F37 in `.ledger/state/findings.yaml`), the actual rule folds
-> each component's raw, un-converted variant bytes together under whichever
-> algorithm is requested — there is no standalone per-child conversion
-> sub-step, and no requirement that the target algorithm match any existing
-> variant. `rs/cyphr/src/multihash.rs`'s `arrow_component_bytes` (landed via
-> N20/N21/N22, PRs #52/#56) implements this general fold, not merely the
-> single-variant degenerate case.
+> #51, the actual rule folds each component's raw, un-converted variant
+> bytes together under whichever algorithm is requested — there is no
+> standalone per-child conversion sub-step, and no requirement that the
+> target algorithm match any existing variant. `rs/cyphr/src/multihash.rs`'s
+> `arrow_component_bytes` (landed via PRs #52 and #56) implements this
+> general fold, not merely the single-variant degenerate case.
 
 **[mhmr-computation]**: For each supported hash algorithm H at a given commit,
 implementations MUST compute an MHMR variant for every state node:

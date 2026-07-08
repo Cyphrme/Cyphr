@@ -333,14 +333,42 @@ key is compromised. The `tmb` signing the revoke MUST be the key being revoked
   `VERIFIED: agent-check`
 
 **[naked-revoke-error]**: A "naked revoke" (a `key/revoke` action causing `HasActiveKeys` to drop to false) directly transitions the principal out of the `Active` state into the `Dead` state (Level 1/2) or `Errored`. This represents an error or termination condition where no further mutative transitions can occur.
+
+> [!NOTE]
+> **Terminology overlap with [revoke-naked]**: This constraint's "naked
+> revoke" (HasActiveKeys → false) and [revoke-naked]'s "naked revoke"
+> (an out-of-band revoke, historically distinguished by omitting `pre`)
+> are two different concepts sharing one name. This constraint's
+> definition does not depend on `pre` and is unaffected by its removal
+> (see [revoke-naked]'s note). Whether these should be unified under
+> distinct names, or are genuinely orthogonal properties that happen to
+> share a word, is an open question for the spec author — not resolved
+> here.
+
 `VERIFIED: agent-check`
 
-**[revoke-naked]**: A revoke MAY omit `pre` (naked revoke). A naked revoke
+**[revoke-naked]**: SUPERSEDED discriminator — see resolution note below.
+Historically: a revoke MAY omit `pre` (naked revoke). A naked revoke
 does NOT mutate PR. Third parties MAY sign naked revokes to declare a key
 compromised without knowledge of the principal's state. A naked revoke, or a
 revoke with `pre` but without a subsequent `delete`, puts the principal in an
 error state (see `consensus.md`).
-`VERIFIED: agent-check`
+
+> [!NOTE]
+> **Open question (2026-07-08, unresolved)**: Per-mutation `pre` has been
+> removed from every transaction-classified coz, including `key/revoke`
+> (see [transaction-classification]) — so "omits `pre`" can no longer
+> distinguish a naked (out-of-band, non-committed) revoke from an ordinary
+> in-chain one, since NEITHER carries `pre` anymore. Whether the underlying
+> concept this constraint protects — a revoke a witness can act on
+> immediately, without it being part of any principal's commit chain —
+> still holds meaning under some other discriminator (e.g. whether the coz
+> arrived inside a commit's `txs` array vs. independently), or whether the
+> concept should be retired, is an open design question for the spec
+> author. It is NOT resolved by this pass — deliberately left open rather
+> than inventing a replacement mechanism.
+
+`VERIFIED: superseded — see open question above; the `pre`-based discriminator this constraint describes no longer applies`
 
 **[revoke-self-signed]**: Revoke MUST be self-signed — the key signing the
 revoke coz MUST be the same key identified by `tmb`. Third-party revokes are
