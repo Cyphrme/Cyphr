@@ -2,7 +2,8 @@
 
 <!--
   SPEC document — abstract API requirements for the Indexer layer.
-  Source: storage-engine.md (original), .sketches/2026-05-28-storage-object-model.md
+  Source: storage-engine.md (original), a 2026-05-28 storage-object-model
+  design sketch (no longer in the repository)
   Authority: SPEC.md (Zamicol and nrdxp)
 
   This document specifies the backend-agnostic contract for the query

@@ -3,7 +3,8 @@
 <!--
   SPEC document — coordination layer between protocol engine and persistent
   backends. Updated 2026-06-01 to reflect four-document split and research
-  conclusions from .sketches/2026-05-28-storage-object-model.md.
+  conclusions from a 2026-05-28 storage-object-model design sketch (no
+  longer in the repository).
 
   This document governs the StorageEngine coordination layer. Backend-specific
   contracts are defined in their respective specs:
@@ -19,8 +20,6 @@
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
   document are to be interpreted as described in BCP 14 (RFC 2119, RFC 8174) when,
   and only when, they appear in all capitals, as shown here.
-
-  See: .agent/workflows/spec.md for the full protocol specification.
 -->
 
 ## Domain

@@ -477,5 +477,6 @@ nature requires fundamentally different verification primitives.
 - KERI (Key Event Receipt Infrastructure) — parallel architecture
 - tvix-castore (TVL) — generic content-addressed blob + directory service
 - iroh (n0) — BLAKE3 verified streaming, P2P content-addressed networking
-- Sketch: `.sketches/2026-05-07-malt-proof-verification.md`
+- Sketch: 2026-05-07 MALT proof-verification design sketch (no longer in
+  the repository)
 - Previous plan: `docs/plans/archive/cyphr-server.md`
