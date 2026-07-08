@@ -375,12 +375,23 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// whether or not any manifest is actually pending.
     ///
     /// Returns the number of manifests found (indexed or already-indexed).
+    ///
+    /// Manifests are indexed in ascending `commit.sequence` order (not the
+    /// blob store's own, unspecified iteration order): each `index_commit`
+    /// call unconditionally overwrites the indexer's per-principal tip
+    /// (last write wins, by design -- see `Indexer::index_commit`), so for a
+    /// principal with more than one commit, tip correctness depends on the
+    /// truly-latest commit being applied last. The blob store's iteration
+    /// order is not guaranteed to correlate with sequence (`MemoryBlobStore`
+    /// is a `HashMap`, genuinely unordered), so sorting here is what makes
+    /// that guarantee hold rather than merely happening to hold by luck of
+    /// hash placement.
     #[tracing::instrument(skip(self))]
     pub async fn rebuild_index_from_manifests(&self) -> Result<usize, EngineError> {
         let iter = self.blob_store.iter().await?;
         let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
 
-        let mut count = 0;
+        let mut manifests = Vec::new();
         for hash in hashes {
             let Some(data) = self.blob_store.get(&hash).await? else {
                 continue;
@@ -391,7 +402,13 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             if manifest.kind != COMMIT_MANIFEST_KIND {
                 continue;
             }
+            manifests.push(manifest);
+        }
 
+        manifests.sort_by_key(|m| m.commit.sequence);
+
+        let mut count = 0;
+        for manifest in manifests {
             self.indexer.index_commit(&manifest.commit).await?;
             count += 1;
         }
