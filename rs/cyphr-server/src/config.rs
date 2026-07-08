@@ -165,6 +165,15 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(mode) = args.mode {
             config.mode = mode;
         }
+
+        // Witness mode is parsed but has no enforcement anywhere in the
+        // server (no route or handler reads `config.mode` at all) --
+        // silently accepting it would let a deployer believe they've
+        // configured a read-only, sync-from-authority server when
+        // nothing about that behavior actually exists yet.
+        if config.mode == ServerMode::Witness {
+            return Err(ConfigError::WitnessModeUnimplemented);
+        }
     }
 
     Ok(config)
@@ -176,4 +185,65 @@ pub enum ConfigError {
     /// Figment extraction failed (bad TOML, type mismatch, etc.).
     #[error("configuration: {0}")]
     Figment(Box<figment::Error>),
+
+    /// `mode = "witness"` was configured for `serve`, but witness mode has
+    /// no enforcement anywhere in the server yet.
+    #[error(
+        "witness mode is not yet implemented -- no route or handler enforces read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
+    )]
+    WitnessModeUnimplemented,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("valid CLI args")
+    }
+
+    #[test]
+    fn serve_with_witness_mode_is_rejected() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--mode",
+            "witness",
+        ]);
+        let result = resolve_config(&cli);
+        assert!(
+            matches!(result, Err(ConfigError::WitnessModeUnimplemented)),
+            "witness mode must be rejected at config-resolution time, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn serve_with_authority_mode_succeeds() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--mode",
+            "authority",
+        ]);
+        let config = resolve_config(&cli).expect("authority mode must resolve successfully");
+        assert_eq!(config.mode, ServerMode::Authority);
+    }
+
+    #[test]
+    fn serve_with_default_mode_succeeds() {
+        // No --mode flag at all: falls back to the compiled default
+        // (Authority), which must not be rejected.
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+        ]);
+        let config = resolve_config(&cli).expect("default mode must resolve successfully");
+        assert_eq!(config.mode, ServerMode::Authority);
+    }
 }
