@@ -296,6 +296,74 @@ fn test_inspect_after_transactions() {
 }
 
 #[test]
+fn test_explicit_multi_key_genesis_reload() {
+    // An identity created with explicit genesis (multiple keys) must be
+    // reloadable before any commit has ever been made against it -- e.g.
+    // before it has been pushed to a server. Regression test for a bug
+    // where the load path unconditionally treated a never-yet-committed
+    // identity as implicit (single-key) genesis, so it tried to look up
+    // the combined multi-key digest as if it were a single key's
+    // thumbprint in the keystore, and failed with a confusing
+    // "key not found" error even though both genesis keys were present
+    // locally.
+    let cli = CliTest::new();
+
+    let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
+    let key1_tmb = key1["tmb"].as_str().unwrap().to_string();
+    let key2 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k2"]);
+    let key2_tmb = key2["tmb"].as_str().unwrap().to_string();
+
+    let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
+    let init = cli.run_json(&["init", &keys_arg]);
+    let pr = init["pr"].as_str().unwrap().to_string();
+
+    // Reload without ever having pushed anywhere -- same store, same
+    // keystore, brand new process invocation.
+    let identity_arg = format!("--identity={pr}");
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
+
+    assert_eq!(inspect["commit_count"], 0);
+    let active_keys: Vec<_> = inspect["active_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["tmb"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        active_keys.len(),
+        2,
+        "explicit genesis must reload with both original keys, not silently drop one"
+    );
+    assert!(active_keys.contains(&key1_tmb));
+    assert!(active_keys.contains(&key2_tmb));
+}
+
+#[test]
+fn test_unresolvable_identity_fails_loudly() {
+    // An identity that matches neither a keystore key, a recorded
+    // explicit genesis, nor any stored commit must fail with a clear
+    // error -- not silently misinterpret it as some other identity's
+    // genesis.
+    let cli = CliTest::new();
+
+    // Never generated, never initialized: a syntactically valid but
+    // otherwise unknown base64url digest.
+    let bogus = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let identity_arg = format!("--identity={bogus}");
+
+    let result = cli.run(&["inspect", &identity_arg]);
+    assert!(
+        result.is_err(),
+        "reload of an unresolvable identity must fail, not silently succeed"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("cannot resolve genesis"),
+        "error should honestly explain genesis could not be resolved, got: {err}"
+    );
+}
+
+#[test]
 fn test_full_workflow() {
     // Comprehensive test mimicking the demo script
     let cli = CliTest::new();
