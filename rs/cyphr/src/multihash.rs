@@ -52,11 +52,7 @@ impl MultihashDigest {
             return Err(crate::error::Error::EmptyMultihash);
         }
         for (&alg, digest) in &variants {
-            let expected = match alg {
-                HashAlg::Sha256 => 32,
-                HashAlg::Sha384 => 48,
-                HashAlg::Sha512 => 64,
-            };
+            let expected = crate::state::TaggedDigest::expected_len(alg);
             if digest.len() != expected {
                 return Err(crate::error::Error::DigestLengthMismatch {
                     alg,
@@ -71,11 +67,7 @@ impl MultihashDigest {
     /// Create from a single-algorithm digest.
     pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> crate::error::Result<Self> {
         let digest_box = digest.into();
-        let expected = match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        };
+        let expected = crate::state::TaggedDigest::expected_len(alg);
         if digest_box.len() != expected {
             return Err(crate::error::Error::DigestLengthMismatch {
                 alg,
