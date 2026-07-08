@@ -15,7 +15,7 @@ pub mod routes;
 use std::sync::Arc;
 
 use cyphr_blob_fjall::FjallBlobStore;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::engine::StorageEngine;
 
 // ========================================================================
@@ -29,8 +29,8 @@ use cyphr_storage::engine::StorageEngine;
 /// ## Backend note
 ///
 /// The blob store, index, and each principal's Commit Tree are all
-/// durable: the blob store and Commit Trees share one physical `Database`
-/// (`FjallBlobStore::from_database` plus
+/// durable and share one physical `Database` (`FjallBlobStore::from_database`,
+/// `FjallIndexer::from_database`, and
 /// `cyphr_blob_fjall::open_eml_storage_scoped`, per
 /// `docs/specs/blob-store-fjall.md`'s `[fjall-single-keyspace]` mandate),
 /// with each principal's Commit Tree keyed to its own scoped keyspace by
@@ -41,7 +41,7 @@ pub struct AppState {
 
     /// Protocol-aware storage engine.
     pub engine:
-        StorageEngine<FjallBlobStore, SqliteIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>,
+        StorageEngine<FjallBlobStore, FjallIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>,
 }
 
 impl AppState {
@@ -49,7 +49,7 @@ impl AppState {
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let db = fjall::Database::builder(config.data_dir.join("blobs")).open()?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
-        let indexer = SqliteIndexer::open(&config.data_dir.join("index.db"))?;
+        let indexer = FjallIndexer::from_database(db.clone())?;
         let engine =
             StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
