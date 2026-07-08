@@ -471,3 +471,44 @@ fn test_tx_verify_after_transactions() {
     assert_eq!(verify["commits_verified"], 1);
     assert_eq!(verify["transactions_verified"], 2);
 }
+
+#[test]
+fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
+    // Regression test: `tx verify` used to collapse any storage error
+    // while loading commits into an empty list via `unwrap_or_default()`,
+    // making a real failure (corrupted index, missing blob, etc.)
+    // indistinguishable from a legitimate zero-commit genesis identity --
+    // and then reporting "OK, genesis state verified" over data that
+    // actually failed to load.
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+
+    // Create a real commit so this identity is NOT legitimately empty.
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+    let verify_before = cli.run_json(&["tx", "verify", &identity_arg]);
+    assert_eq!(verify_before["status"], "OK");
+    assert_eq!(verify_before["commits_verified"], 1);
+
+    // Simulate real data loss: wipe the blob store contents while
+    // leaving the index's references to them intact, so retrieving this
+    // identity's commits now genuinely fails instead of finding nothing.
+    let blobs_dir = cli.store_path().join("blobs");
+    std::fs::remove_dir_all(&blobs_dir).expect("remove blobs dir");
+    std::fs::create_dir_all(&blobs_dir).expect("recreate empty blobs dir");
+
+    let result = cli.run(&["tx", "verify", &identity_arg]);
+    assert!(
+        result.is_err(),
+        "tx verify must fail loudly when the underlying commit data cannot be read, \
+         not silently report genesis-state success"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("not found"),
+        "error should surface the real storage failure, got: {err}"
+    );
+}
