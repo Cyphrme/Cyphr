@@ -302,9 +302,7 @@ async fn ingest_fixture(
             // If this is a key-introducing transaction, embed the key
             // material from the commit-level keys[] into the blob.
             let typ = coz["pay"]["typ"].as_str().unwrap_or("").to_string();
-            let is_key_introducing = typ.contains("/key/create")
-                || typ.contains("/key/replace")
-                || typ.contains("/key/add");
+            let is_key_introducing = crate::import::is_key_introducing_typ(&typ);
 
             if is_key_introducing {
                 if let Some(ks) = keys_json {
@@ -524,9 +522,8 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
         let mut coz = coz_value.clone();
 
         let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
 
-        if is_key_introducing {
+        if crate::import::is_key_introducing_typ(typ) {
             if let Some(ks) = keys {
                 if key_idx < ks.len() {
                     coz.as_object_mut()

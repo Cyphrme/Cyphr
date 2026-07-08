@@ -160,60 +160,20 @@ impl Indexer for MemoryIndexer {
                 );
             }
 
-            // Map all commit ID variants
-            for cid in &commit.commit_ids {
+            // Map every commit-level digest variant (commit IDs, PR/SR/AR/CR)
+            // to the same EntityRef, mirroring FjallIndexer's db_index_commit.
+            for variant in commit
+                .commit_ids
+                .iter()
+                .chain(commit.prs.iter())
+                .chain(commit.srs.iter())
+                .chain(commit.ars.iter())
+                .chain(commit.crs.iter())
+            {
                 state.digest_index.insert(
-                    cid.clone(),
+                    variant.clone(),
                     EntityRef {
-                        digest: cid.clone(),
-                        blob_hash: commit.blob_hashes[0],
-                        entity_type: EntityType::Commit,
-                    },
-                );
-            }
-
-            // Map all PR variants
-            for pr in &commit.prs {
-                state.digest_index.insert(
-                    pr.clone(),
-                    EntityRef {
-                        digest: pr.clone(),
-                        blob_hash: commit.blob_hashes[0],
-                        entity_type: EntityType::Commit,
-                    },
-                );
-            }
-
-            // Map all SR variants
-            for sr in &commit.srs {
-                state.digest_index.insert(
-                    sr.clone(),
-                    EntityRef {
-                        digest: sr.clone(),
-                        blob_hash: commit.blob_hashes[0],
-                        entity_type: EntityType::Commit,
-                    },
-                );
-            }
-
-            // Map all AR variants
-            for ar in &commit.ars {
-                state.digest_index.insert(
-                    ar.clone(),
-                    EntityRef {
-                        digest: ar.clone(),
-                        blob_hash: commit.blob_hashes[0],
-                        entity_type: EntityType::Commit,
-                    },
-                );
-            }
-
-            // Map all CR variants
-            for cr in &commit.crs {
-                state.digest_index.insert(
-                    cr.clone(),
-                    EntityRef {
-                        digest: cr.clone(),
+                        digest: variant.clone(),
                         blob_hash: commit.blob_hashes[0],
                         entity_type: EntityType::Commit,
                     },

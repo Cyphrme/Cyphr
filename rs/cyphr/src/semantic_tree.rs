@@ -482,11 +482,7 @@ mod oracle_tests {
     }
 
     fn key(alg: HashAlg, tag: u8) -> Thumbprint {
-        let len = match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        };
+        let len = crate::state::TaggedDigest::expected_len(alg);
         tmb(&vec![tag; len])
     }
 
@@ -729,14 +725,9 @@ mod oracle_properties {
         ]
     }
 
-    /// Native digest length for `alg` — the same three-way match `key()`
-    /// (in `oracle_tests`) hard-codes for its fixed cases.
+    /// Native digest length for `alg`.
     fn native_len(alg: HashAlg) -> usize {
-        match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        }
+        crate::state::TaggedDigest::expected_len(alg)
     }
 
     /// A digest's worth of random bytes, tagged with the algorithm it is
