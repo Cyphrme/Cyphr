@@ -372,6 +372,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::UnknownSigner { .. } => "UnknownSigner",
         LoadError::Protocol(e) => match e {
             cyphr::Error::UnknownKey => "UnknownKey",
+            cyphr::Error::UnknownAlg => "UnknownAlg",
             cyphr::Error::KeyRevoked => "KeyRevoked",
             cyphr::Error::NoActiveKeys => "NoActiveKeys",
             cyphr::Error::DuplicateKey => "DuplicateKey",

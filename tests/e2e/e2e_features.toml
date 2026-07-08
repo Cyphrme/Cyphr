@@ -2326,7 +2326,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case2"
@@ -2340,7 +2340,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case3"
@@ -2354,7 +2354,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case4"
@@ -2368,7 +2368,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case5"
@@ -2382,7 +2382,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f15_case1"
