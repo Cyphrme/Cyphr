@@ -12,7 +12,7 @@
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_blob_fjall::FjallBlobStore;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::Genesis;
 use cyphr_storage::engine::StorageEngine;
 
@@ -80,7 +80,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 /// c4 — deleting the index entirely and rebuilding it from the blob store
 /// alone (via the durable manifests `ingest_commit` wrote) must recover
 /// the exact same tip state and per-commit blob order as the original
-/// index, with real disk-backed `FjallBlobStore`/`SqliteIndexer` backends.
+/// index, with real disk-backed `FjallBlobStore`/`FjallIndexer` backends.
 #[tokio::test]
 async fn rebuild_index_from_manifests_survives_index_deletion() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
@@ -97,11 +97,11 @@ async fn rebuild_index_from_manifests_survives_index_deletion() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
-    let index_path = dir.path().join("index.db");
+    let index_path = dir.path().join("index");
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-    let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
+    let indexer = FjallIndexer::open(&index_path).expect("open indexer");
     let engine = StorageEngine::with_storage_factory(blob_store, indexer, {
         let db = db.clone();
         move |_principal_id: &str| {
@@ -131,13 +131,13 @@ async fn rebuild_index_from_manifests_survives_index_deletion() {
     assert_eq!(original_chain.len(), commits.len());
 
     // Delete the index entirely -- not just clear it in place, a genuine
-    // fresh SQLite file at the same path -- proving recovery does not
-    // depend on any residual index state.
+    // fresh fjall database directory at the same path -- proving recovery
+    // does not depend on any residual index state.
     drop(engine);
-    std::fs::remove_file(&index_path).expect("remove index file");
+    std::fs::remove_dir_all(&index_path).expect("remove index directory");
 
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("reopen blob store");
-    let fresh_indexer = SqliteIndexer::open(&index_path).expect("open fresh indexer");
+    let fresh_indexer = FjallIndexer::open(&index_path).expect("open fresh indexer");
     let recovery_engine = StorageEngine::with_storage_factory(blob_store, fresh_indexer, {
         let db = db.clone();
         move |_principal_id: &str| {

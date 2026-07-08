@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use coz::base64ct::Encoding;
 use cyphr::StateDigest;
 use cyphr_blob_fjall::FjallBlobStore;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::MemoryIndexer;
@@ -478,7 +478,7 @@ proptest! {
         let temp_dir_blob = tempfile::tempdir().unwrap();
         let temp_dir_index = tempfile::tempdir().unwrap();
         let blob_store = FjallBlobStore::open(temp_dir_blob.path()).unwrap();
-        let indexer = SqliteIndexer::open(&temp_dir_index.path().join("index.db")).unwrap();
+        let indexer = FjallIndexer::open(&temp_dir_index.path().join("index")).unwrap();
         let engine = StorageEngine::new(blob_store, indexer);
         run_engine_recovery_test(&pool, intent, engine);
     }

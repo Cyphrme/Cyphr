@@ -9,13 +9,13 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use coz::Thumbprint;
 use cyphr::Key;
 use cyphr_blob_fjall::FjallBlobStore;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::{CommitEntry, Genesis};
 
 /// Type alias representing the concrete storage engine type used by the CLI.
 pub type CliStorageEngine =
-    StorageEngine<FjallBlobStore, SqliteIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
+    StorageEngine<FjallBlobStore, FjallIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>;
 
 /// Type alias for a `Principal` backed by the CLI's durable Commit Tree
 /// storage — what [`load_principal_from_engine`] always returns.
@@ -154,7 +154,7 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let blob_store = FjallBlobStore::from_database(db.clone())
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
-        let indexer = SqliteIndexer::open(&path.join("index.db"))
+        let indexer = FjallIndexer::open(&path.join("index"))
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let engine =
             StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {

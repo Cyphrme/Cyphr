@@ -11,7 +11,7 @@ This crate provides a modern, backend-agnostic storage engine that coordinates:
 
 Included implementations:
 - **`cyphr-blob-fjall`**: BLOB storage backed by the Fjall LSM-tree database.
-- **`cyphr-index-sqlite`**: Indexing backed by SQLite.
+- **`cyphr-index-fjall`**: Indexing backed by the Fjall LSM-tree database (KV, not relational).
 - **Memory implementations** (for testing): In-memory blob stores and indexers.
 
 ## Quick Start
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-For persistent blob/index storage, the `StorageEngine<B, I, S>` coordinates real `BlobStore` and `Indexer` implementations (see [`cyphr-blob-fjall`](https://docs.rs/cyphr-blob-fjall) and [`cyphr-index-sqlite`](https://docs.rs/cyphr-index-sqlite) for production backends). For a complete working example integrating storage with the CLI, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate.
+For persistent blob/index storage, the `StorageEngine<B, I, S>` coordinates real `BlobStore` and `Indexer` implementations (see [`cyphr-blob-fjall`](https://docs.rs/cyphr-blob-fjall) and [`cyphr-index-fjall`](https://docs.rs/cyphr-index-fjall) for production backends). For a complete working example integrating storage with the CLI, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate.
 
 ## Documentation
 

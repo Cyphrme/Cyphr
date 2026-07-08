@@ -11,7 +11,7 @@ All active development happens here.
 | `cyphr` | Protocol core: `Principal<S: eml::Storage>`, commit/transaction machinery, Merkle trees (`principal_tree`, `semantic_tree`), multihash. Consumer-agnostic (root I4). |
 | `cyphr-storage` | `StorageEngine<B: BlobStore, I: Indexer, S>`: validated write path (`submit_commit`), read paths, recovery (`reindex`), import/export |
 | `cyphr-blob-fjall` | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction) |
-| `cyphr-index-sqlite` | SQLite `Indexer` (actor thread). **Transitional** — slated for replacement by KV index tables (root R3) |
+| `cyphr-index-fjall` | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version |
 | `cyphr-server` | axum HTTP scaffold: `/tip`, `/patch`, `/push`, `/e/{digest}` wired to durable backends. No auth yet; `Export` subcommand and `witness` mode are non-functional stubs |
 | `cyphr-cli` | Single-user dev CLI; plaintext keystore, not secure by design |
 | `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator) |

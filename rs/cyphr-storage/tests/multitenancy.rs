@@ -10,7 +10,7 @@
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_blob_fjall::storage_fjall::FjallStorage;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::BlobStore;
 use cyphr_storage::engine::StorageEngine;
@@ -78,7 +78,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 }
 
 async fn submit_all_commits(
-    engine: &StorageEngine<FjallBlobStore, SqliteIndexer, FjallStorage>,
+    engine: &StorageEngine<FjallBlobStore, FjallIndexer, FjallStorage>,
     principal_id: &str,
     genesis_key: &cyphr::Key,
     commits: &[serde_json::Value],
@@ -124,13 +124,13 @@ fn two_principals_share_one_database_without_collision() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
-    let index_path = dir.path().join("index.db");
+    let index_path = dir.path().join("index");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let db = fjall::Database::builder(&db_path).open().expect("open db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
+        let indexer = FjallIndexer::open(&index_path).expect("open indexer");
         let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
             cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
         });
@@ -139,14 +139,14 @@ fn two_principals_share_one_database_without_collision() {
         submit_all_commits(&engine, principal_id_b, &genesis_key_b, &commits_b).await;
     });
 
-    // Fresh reload — a new Database/SqliteIndexer/StorageEngine, not clones
+    // Fresh reload — a new Database/FjallIndexer/StorageEngine, not clones
     // of the ones above — to prove the isolation is genuinely durable.
     let (pr_a, cr_a, count_a, pr_b, cr_b, count_b) = rt.block_on(async {
         let db = fjall::Database::builder(&db_path)
             .open()
             .expect("reopen db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let indexer = SqliteIndexer::open(&index_path).expect("reopen indexer");
+        let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
         let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
             cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
         });
@@ -205,7 +205,7 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
-    let index_path = dir.path().join("index.db");
+    let index_path = dir.path().join("index");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -222,7 +222,7 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
             blob_store.put(blob).await.expect("seed blob");
         }
 
-        let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
+        let indexer = FjallIndexer::open(&index_path).expect("open indexer");
         let db_for_inspection = db.clone();
         let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
             cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
@@ -276,7 +276,7 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
             .open()
             .expect("reopen db");
         let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let indexer = SqliteIndexer::open(&index_path).expect("reopen indexer");
+        let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
         let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |pid: &str| {
             cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
         });

@@ -362,7 +362,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 #[test]
 fn principal_replay_survives_disk_drop_and_reload() {
     use cyphr_blob_fjall::FjallBlobStore;
-    use cyphr_index_sqlite::SqliteIndexer;
+    use cyphr_index_fjall::FjallIndexer;
     use cyphr_storage::Genesis;
     use cyphr_storage::engine::StorageEngine;
 
@@ -380,13 +380,13 @@ fn principal_replay_survives_disk_drop_and_reload() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
-    let index_path = dir.path().join("index.db");
+    let index_path = dir.path().join("index");
 
     let (original_pr, original_cr, original_leaf_count) =
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let db = fjall::Database::builder(&db_path).open().expect("open db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let indexer = SqliteIndexer::open(&index_path).expect("open indexer");
+            let indexer = FjallIndexer::open(&index_path).expect("open indexer");
             let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |_principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
             });
@@ -421,7 +421,7 @@ fn principal_replay_survives_disk_drop_and_reload() {
         "the durable log must carry exactly one leaf per commit, not duplicated"
     );
 
-    // Reopen from scratch — a fresh `Database`/`SqliteIndexer`/`StorageEngine`,
+    // Reopen from scratch — a fresh `Database`/`FjallIndexer`/`StorageEngine`,
     // not clones of the ones above — to prove reconstruction genuinely
     // replays from durable storage rather than reusing live state.
     let (restored_pr, restored_cr, restored_leaf_count) =
@@ -430,7 +430,7 @@ fn principal_replay_survives_disk_drop_and_reload() {
                 .open()
                 .expect("reopen db");
             let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let indexer = SqliteIndexer::open(&index_path).expect("reopen indexer");
+            let indexer = FjallIndexer::open(&index_path).expect("reopen indexer");
             let engine = StorageEngine::with_storage_factory(blob_store, indexer, move |_principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
             });
