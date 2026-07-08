@@ -298,6 +298,21 @@ pub fn load_principal_from_engine(
     })
 }
 
+/// Whether a coz `typ` string indicates a key-embedding transaction
+/// (`key/create` or `key/replace`) -- i.e. one whose blob must carry the
+/// new key's material inline, not just the signer's thumbprint.
+///
+/// This is the CLI's single canonical implementation of that rule; every
+/// call site within this crate that needs it MUST go through this
+/// function rather than re-deriving the `.contains(...)` check locally.
+/// (`cyphr::parsed_coz`'s `typ.ends_with(...)` checks and
+/// `cyphr_storage::import`'s private `is_key_introducing_typ` implement
+/// the same rule again in their own crates; consolidating across crate
+/// boundaries is out of this crate's scope.)
+fn is_key_embedding_typ(typ: &str) -> bool {
+    typ.contains("/key/create") || typ.contains("/key/replace")
+}
+
 /// Save a principal's new commits to the storage engine.
 ///
 /// Generic over `principal`'s own Commit Tree backend `S`: callers pass
@@ -340,7 +355,7 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                     .and_then(|t| t.as_str())
                     .unwrap_or("");
 
-                if typ.contains("/key/create") || typ.contains("/key/replace") {
+                if is_key_embedding_typ(typ) {
                     if let Some(key_entry) = key_iter.next() {
                         if let Some(obj) = coz_mut.as_object_mut() {
                             obj.insert("key".to_string(), serde_json::to_value(key_entry)?);
