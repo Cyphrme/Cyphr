@@ -144,32 +144,40 @@ impl MultihashDigest {
         self.get(alg).ok_or(crate::error::Error::MissingVariant(alg))
     }
 
-    /// Get the digest bytes for Arrow's genesis-promotion fallback: try
-    /// `alg` first, else, if this multihash has exactly one variant,
-    /// promote it regardless of `alg` (mirrors
-    /// `polydigest::root::combined_root`'s single-member fold rule — a
-    /// component with only one active algorithm contributes that
-    /// algorithm's digest regardless of the signer's, rather than erroring
-    /// just because the signer replaced the sole active key with one of a
-    /// different algorithm in this same commit).
+    /// Get the digest bytes for Arrow's algorithm-fallback rule, mirroring
+    /// `polydigest::root::combined_root`'s general fold: try `alg` first;
+    /// else, if this multihash has exactly one variant, promote it
+    /// regardless of `alg` (genesis promotion — a component with only one
+    /// active algorithm contributes that algorithm's digest regardless of
+    /// the signer's, rather than erroring just because the signer replaced
+    /// the sole active key with one of a different algorithm in this same
+    /// commit); else, with two or more variants and none matching `alg`,
+    /// fold ALL currently-available variants together — sort, concatenate,
+    /// and hash under `alg` — exactly mirroring
+    /// [`crate::state::hash_sorted_concat_bytes`].
     ///
-    /// A no-op when this multihash already has `alg`, and still an honest
-    /// `MissingVariant` error when it has multiple variants, none of which
-    /// is `alg` — that ambiguous case has no single natural fallback and is
-    /// left as a hard error rather than guessed at.
+    /// A no-op when this multihash already has `alg`.
     ///
     /// # Errors
     ///
-    /// Returns `MissingVariant` if `alg` is absent and this multihash has
-    /// zero or more than one variant.
-    pub fn arrow_component_bytes(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
+    /// Returns `EmptyMultihash` if this multihash has zero variants.
+    pub fn arrow_component_bytes(
+        &self,
+        alg: HashAlg,
+    ) -> crate::error::Result<std::borrow::Cow<'_, [u8]>> {
         if let Some(bytes) = self.get(alg) {
-            return Ok(bytes);
+            return Ok(std::borrow::Cow::Borrowed(bytes));
         }
         if self.len() == 1 {
-            return self.first_variant();
+            return self.first_variant().map(std::borrow::Cow::Borrowed);
         }
-        self.get_or_err(alg)
+        if self.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        let all_variants: Vec<&[u8]> = self.variants.values().map(AsRef::as_ref).collect();
+        Ok(std::borrow::Cow::Owned(
+            crate::state::hash_sorted_concat_bytes(alg, &all_variants),
+        ))
     }
 
     /// Get the first available variant's bytes.

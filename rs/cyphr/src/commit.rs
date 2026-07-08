@@ -593,8 +593,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let tmr_bytes = tmr.0.arrow_component_bytes(signer_hash_alg)?;
 
         // Arrow = MR(pre, fwd, TMR)
-        let arrow_digest =
-            hash_sorted_concat_bytes(signer_hash_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let arrow_digest = hash_sorted_concat_bytes(
+            signer_hash_alg,
+            &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
+        );
 
         // Arrow string format
         let arrow_tagged = format!(

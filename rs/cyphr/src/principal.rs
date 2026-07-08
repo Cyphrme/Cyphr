@@ -1706,8 +1706,10 @@ impl<S: eml::Storage> Principal<S> {
             let sr_bytes = sr.0.arrow_component_bytes(tx_alg)?;
             let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
-            let computed_digest =
-                crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+            let computed_digest = crate::state::hash_sorted_concat_bytes(
+                tx_alg,
+                &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes],
+            );
 
             let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
             if claimed_digest != computed_digest.as_slice() {
