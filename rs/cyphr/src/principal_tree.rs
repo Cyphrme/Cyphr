@@ -28,6 +28,13 @@ const SR_CELL: u64 = 0;
 /// Cell index of the Commit Root.
 const CR_CELL: u64 = 1;
 
+/// Construct a fresh, empty `EpochTree` at the fixed arity-2 spine shape
+/// every `PrincipalTree` (and its clones) uses.
+fn new_inner() -> polydigest::EpochTree {
+    polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
+        .expect("arity 2 is within the spine's 2..=256 range")
+}
+
 /// The Principal Tree: a k=2 `EpochTree` with cell 0 = SR, cell 1 = CR.
 #[derive(Debug)]
 pub struct PrincipalTree {
@@ -40,10 +47,8 @@ impl PrincipalTree {
     /// Create an empty principal tree with no algorithms registered.
     #[must_use]
     pub fn new() -> Self {
-        let inner = polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
-            .expect("arity 2 is within the spine's 2..=256 range");
         Self {
-            inner,
+            inner: new_inner(),
             algs: Vec::new(),
         }
     }
@@ -160,8 +165,7 @@ impl Default for PrincipalTree {
 /// on. This is cheap regardless: the tree never holds more than 2 cells.
 impl Clone for PrincipalTree {
     fn clone(&self) -> Self {
-        let mut inner = polydigest::EpochTree::new(polydigest::CmtConfig { arity: ARITY })
-            .expect("arity 2 is within the spine's 2..=256 range");
+        let mut inner = new_inner();
         for &alg in &self.algs {
             let alg_id = hash_alg_to_u64(alg);
             inner
