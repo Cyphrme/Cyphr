@@ -190,6 +190,40 @@ fn test_export_import_roundtrip() {
 }
 
 #[test]
+fn test_exported_commits_carry_real_auth_root_and_state_root() {
+    // Regression test: exported CommitEntry lines used to hardcode empty
+    // "ar" (auth_root) and "sr" (state root) placeholders even though the
+    // indexer already computes and stores real values for both -- the
+    // export just never wired them through. An exported JSONL file
+    // claiming a full commit record should not silently drop two of its
+    // core digest fields.
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    let export_path = cli.temp_dir.path().join("export.jsonl");
+    let output_path_arg = format!("--output={}", export_path.to_str().unwrap());
+    cli.run_ok(&["export", &identity_arg, &output_path_arg]);
+
+    let content = std::fs::read_to_string(&export_path).expect("read export file");
+    let line = content.lines().next().expect("at least one commit line");
+    let entry: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+
+    assert!(
+        !entry["ar"].as_str().unwrap_or("").is_empty(),
+        "exported commit's auth_root (ar) must not be an empty placeholder"
+    );
+    assert!(
+        !entry["sr"].as_str().unwrap_or("").is_empty(),
+        "exported commit's state root (sr) must not be an empty placeholder"
+    );
+}
+
+#[test]
 fn test_keystore_list() {
     let cli = CliTest::new();
 

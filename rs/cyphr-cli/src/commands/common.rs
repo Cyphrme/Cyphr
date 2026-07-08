@@ -462,8 +462,8 @@ pub fn get_commits_from_engine(
                 cozies,
                 keys,
                 commit_ref.commit_id.clone(),
-                String::new(),
-                String::new(),
+                commit_ref.ar.clone(),
+                commit_ref.sr.clone(),
                 commit_ref.pr.clone(),
             ));
         }
