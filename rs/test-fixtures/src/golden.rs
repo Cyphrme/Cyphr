@@ -13,7 +13,7 @@
 //! 2. For each coz, captures `pre` from current state root
 //! 3. Builds and signs the Coz message
 //! 4. Applies the coz to the Principal
-//! 5. Extracts final state digests (ks, as, sr, ps, commit_id)
+//! 5. Extracts final state digests (ks, as, sr, pr, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::StateDigest;
@@ -45,7 +45,7 @@ pub struct Golden {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
     /// Commit bundles in application order (one commit per line in JSONL).
-    /// Each commit contains: cozies (cozies), ts, as, ps digests.
+    /// Each commit contains: cozies (cozies), ts, as, pr digests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<CommitEntry>>,
     /// Coz digests (czd) parallel to all cozies across commits.
@@ -418,7 +418,7 @@ impl<'a> Generator<'a> {
             String::new(), // commit_id placeholder for error tests
             String::new(), // as placeholder for error tests
             String::new(), // sr placeholder for error tests
-            String::new(), // ps placeholder for error tests
+            String::new(), // pr placeholder for error tests
         )
     }
 
@@ -580,8 +580,8 @@ impl<'a> Generator<'a> {
             .and_then(|e| e.error.as_ref())
             .is_some();
 
-        // Capture the current PS (used only for principal/create's `id` field).
-        let current_ps = Self::format_pr_tagged(principal)?;
+        // Capture the current PR (used only for principal/create's `id` field).
+        let current_pr = Self::format_pr_tagged(principal)?;
 
         // Apply override.now if specified (for TimestampPast tests)
         let cz_modified;
@@ -599,7 +599,7 @@ impl<'a> Generator<'a> {
             // Error tests: sign manually — CommitScope would reject invalid payloads.
             // We need valid signatures over intentionally bad data.
             let (coz, _sig_bytes, _czd) =
-                self.build_golden_coz(cz, &test.name, Some(&current_ps))?;
+                self.build_golden_coz(cz, &test.name, Some(&current_pr))?;
             coz
         } else {
             let commit_intent = test.commit.first().ok_or_else(|| Error::InvalidIntent {
@@ -639,10 +639,10 @@ impl<'a> Generator<'a> {
                             }
                         })?;
 
-                    // Build pay value for this cozy. current_ps only matters for a
+                    // Build pay value for this cozy. current_pr only matters for a
                     // principal/create's `id` field; other cozy types ignore it.
                     let pay_value =
-                        self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&current_ps))?;
+                        self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&current_pr))?;
                     let pay_vec =
                         serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
                             name: test.name.clone(),
@@ -1465,14 +1465,14 @@ impl<'a> Generator<'a> {
         &self,
         cz: &TxIntent,
         test_name: &str,
-        current_ps: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer
         let signer = self.resolve_key(&cz.signer)?;
 
         // Build pay JSON with derived fields
         let pay_json =
-            self.build_pay_json(cz, &signer.alg, &signer.compute_tmb_b64()?, current_ps)?;
+            self.build_pay_json(cz, &signer.alg, &signer.compute_tmb_b64()?, current_pr)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
@@ -1496,17 +1496,19 @@ impl<'a> Generator<'a> {
     /// Returns the pay without `commit` field — CommitScope injects that.
     /// Per Coz spec, standard fields appear in canonical (alphabetic) order.
     ///
-    /// `current_ps` is the Principal State immediately before this cozy — it
+    /// `current_pr` is the Principal Root immediately before this cozy — it
     /// no longer appears on the wire as a `pre` field (only the closing
     /// `commit/create`'s `arrow` carries chain data), but `principal/create`
-    /// still needs it to derive its `id` field (SPEC §5.1: "id: Final PS =
-    /// PR"), since `principal/create` doesn't mutate state, only freezes PR.
+    /// still needs it to derive its `id` field (SPEC §5.1 step 3: `id` equals
+    /// the future SR, which — absent a CR at this pre-commit point — is the
+    /// same value as the current PR), since `principal/create` doesn't
+    /// mutate state, only freezes PG.
     fn build_pay_value(
         &self,
         cz: &TxIntent,
         alg: &str,
         tmb: &str,
-        current_ps: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<Value, Error> {
         let mut fields: IndexMap<String, Value> = IndexMap::new();
 
@@ -1516,11 +1518,11 @@ impl<'a> Generator<'a> {
         // id field handling depends on coz type
         let is_principal_create = cz.typ.contains("principal/create");
         if is_principal_create {
-            let ps_val = current_ps.ok_or_else(|| Error::Generation {
+            let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
-                reason: "principal/create requires current PS for id field".to_string(),
+                reason: "principal/create requires current PR for id field".to_string(),
             })?;
-            fields.insert("id".to_string(), Value::String(ps_val.to_string()));
+            fields.insert("id".to_string(), Value::String(pr_val.to_string()));
         } else if let Some(target_name) = &cz.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
@@ -1561,9 +1563,9 @@ impl<'a> Generator<'a> {
         cz: &TxIntent,
         alg: &str,
         tmb: &str,
-        current_ps: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
-        let value = self.build_pay_value(cz, alg, tmb, current_ps)?;
+        let value = self.build_pay_value(cz, alg, tmb, current_pr)?;
         serde_json::to_vec(&value).map_err(|e| Error::Signing {
             message: format!("failed to serialize pay: {}", e),
         })
@@ -1964,7 +1966,7 @@ tx = [
 
         let golden = &goldens[0];
 
-        // For single-key implicit genesis, PR = PS = AS = KS = tmb
+        // For single-key implicit genesis, PR = SR = AR = KR = tmb
         // After adding alice, we should have 2 keys
         assert_eq!(golden.expected.key_count, Some(2));
 

@@ -135,19 +135,19 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
     }
 
-    if let Some(ref ps) = expected.pr {
+    if let Some(ref pr) = expected.pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(ps)
-            .unwrap_or_else(|| panic!("{}: invalid ps format (expected alg:digest)", test_name));
+        let (alg, expected_digest) = parse_alg_digest(pr)
+            .unwrap_or_else(|| panic!("{}: invalid pr format (expected alg:digest)", test_name));
         let hash_alg = parse_hash_alg(&alg)
             .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_ps = principal
+        let actual_pr = principal
             .pr()
             .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
-        assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
+        assert_eq!(actual_pr, expected_digest, "{}: pr mismatch", test_name);
     }
 
     // NOTE: none of the persisted fixtures under tests/golden/ currently
@@ -253,9 +253,9 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         }
     }
 
-    if let Some(ref mh_ps) = expected.multihash_pr {
+    if let Some(ref mh_pr) = expected.multihash_pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        for (alg_name, expected_digest) in mh_ps {
+        for (alg_name, expected_digest) in mh_pr {
             let hash_alg = parse_hash_alg(alg_name)
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
@@ -265,7 +265,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_default();
             assert_eq!(
                 actual, *expected_digest,
-                "{}: multihash_ps[{}] mismatch",
+                "{}: multihash_pr[{}] mismatch",
                 test_name, alg_name
             );
         }
