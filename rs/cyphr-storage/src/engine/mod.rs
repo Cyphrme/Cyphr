@@ -886,8 +886,14 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     ///
     /// - If the principal already exists in storage, extracts key material from the first stored
     ///   commit's blobs.
-    /// - If the principal is new, extracts key material from the first submitted blob's `"key"`
-    ///   field.
+    /// - If the principal is new, extracts key material from the first submitted commit's blobs.
+    ///
+    /// Both cases apply the identical genesis-discovery rule (see
+    /// [`Self::genesis_from_raw_blobs`]) over their respective blob set: this system's wire
+    /// convention embeds the genesis key on the bundle's `commit/create` cozy, not on whichever
+    /// blob happens to be first -- a mutation-introducing cozy earlier in the same bundle (e.g. a
+    /// `key/create` adding a second key) carries the *new* key in its own `"key"` field, never
+    /// genesis.
     pub async fn resolve_genesis(
         &self,
         principal_id: &str,
@@ -900,60 +906,55 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             .await?;
 
         if let Some(first_commit) = chain.first() {
-            // Existing principal — scan blobs of the first commit to find the genesis key
-            // (stored in the commit/create cozy's "key" field, or fallback to the first blob's key
-            // field).
-            let mut fallback_data = None;
-            tracing::debug!(
-                "resolve_genesis: first commit has {} blobs",
-                first_commit.blob_hashes.len()
-            );
-            for (idx, hash) in first_commit.blob_hashes.iter().enumerate() {
+            // Existing principal — fetch the first stored commit's blobs from the blob store.
+            let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
+            for hash in &first_commit.blob_hashes {
                 let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!("blob {hash} not found in store"))
                 })?;
-                if idx == 0 {
-                    fallback_data = Some(data.clone());
-                }
-
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
-                    let pay = value.get("pay");
-                    let typ = pay
-                        .and_then(|p| p.get("typ"))
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
-                    let has_key = value.get("key").is_some();
-                    tracing::debug!(
-                        "resolve_genesis: blob idx={}, typ={}, has_key={}",
-                        idx,
-                        typ,
-                        has_key
-                    );
-                    if typ.contains("/commit/create") && has_key {
-                        tracing::debug!("resolve_genesis: found genesis key in commit/create!");
-                        return Self::genesis_from_blob(&data);
-                    }
-                }
+                blobs.push(data);
             }
-
-            if let Some(data) = fallback_data {
-                tracing::debug!("resolve_genesis: fallback to first blob");
-                if let Ok(genesis_val) = self.genesis_val_from_blob(&data) {
-                    return Ok(genesis_val);
-                }
-            }
-            Err(EngineError::NotFound(
-                "genesis key not found in first commit".into(),
-            ))
+            Self::genesis_from_raw_blobs(&blobs)
         } else {
-            // New principal — extract genesis from the first submitted blob.
-            Self::genesis_from_blob(raw_blobs[0])
+            // New principal — the caller's own submitted blobs are the first commit.
+            Self::genesis_from_raw_blobs(raw_blobs)
         }
     }
 
-    /// Extract an implicit genesis key from a raw coz blob's "key" field.
-    fn genesis_val_from_blob(&self, blob: &[u8]) -> Result<crate::Genesis, EngineError> {
-        Self::genesis_from_blob(blob)
+    /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy
+    /// carrying a `"key"` field -- this system's genesis-key carrier -- falling back to `blobs[0]`
+    /// only if that scan finds nothing.
+    fn genesis_from_raw_blobs<D: AsRef<[u8]>>(blobs: &[D]) -> Result<crate::Genesis, EngineError> {
+        if blobs.is_empty() {
+            return Err(EngineError::NotFound(
+                "no blobs to resolve genesis from".into(),
+            ));
+        }
+
+        for (idx, data) in blobs.iter().enumerate() {
+            let data = data.as_ref();
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                let pay = value.get("pay");
+                let typ = pay
+                    .and_then(|p| p.get("typ"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("");
+                let has_key = value.get("key").is_some();
+                tracing::debug!(
+                    "genesis_from_raw_blobs: blob idx={}, typ={}, has_key={}",
+                    idx,
+                    typ,
+                    has_key
+                );
+                if typ.contains("/commit/create") && has_key {
+                    tracing::debug!("genesis_from_raw_blobs: found genesis key in commit/create!");
+                    return Self::genesis_from_blob(data);
+                }
+            }
+        }
+
+        tracing::debug!("genesis_from_raw_blobs: fallback to first blob");
+        Self::genesis_from_blob(blobs[0].as_ref())
     }
 
     /// Extract an implicit genesis key from a raw coz blob's `"key"` field.
