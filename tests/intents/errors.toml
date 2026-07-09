@@ -11,7 +11,7 @@ name      = "unsupported_algorithm_fails"
 principal = ["unsupported_key"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 # ============================================================================
 # Revoked key tests
