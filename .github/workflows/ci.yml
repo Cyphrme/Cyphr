@@ -32,6 +32,24 @@ jobs:
       - run: cargo test --verbose
       - run: cargo clippy -- -D warnings
 
+  fuzz:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs/fuzz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      # Bounded smoke runs, not continuous fuzzing: catch crashes and
+      # regressions on every push without a dedicated fuzzing corpus/farm.
+      - run: cargo fuzz run fuzz_coz_parser -- -max_total_time=60
+      - run: cargo fuzz run fuzz_reindex -- -max_total_time=60
+
   go:
     strategy:
       matrix:
