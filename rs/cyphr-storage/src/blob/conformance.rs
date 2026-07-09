@@ -1,6 +1,7 @@
 //! Shared behavioral conformance suite for [`BlobStore`] implementations.
 //!
-//! Mirrors `index::conformance` (see N09-kv-index premise p4): every
+//! Mirrors `index::conformance` (the same shared-conformance-suite
+//! requirement the KV-index migration established): every
 //! `BlobStore` backend (in this crate or another) is held to the same
 //! functions here rather than a hand-duplicated, backend-specific subset.
 //! Feature-gated (`conformance-tests`) so an out-of-crate backend can add

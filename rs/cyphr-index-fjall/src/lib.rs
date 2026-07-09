@@ -364,7 +364,7 @@ impl Indexer for FjallIndexer {
 /// Synchronous body of `index_commit`, run inside `spawn_blocking`.
 ///
 /// Mirrors `MemoryIndexer`'s reference semantics (the behavioral baseline
-/// per N09-kv-index premise p2): idempotent on an already-indexed
+/// the KV-index migration established): idempotent on an already-indexed
 /// `(principal_id, sequence)` (matching `SqliteIndexer`'s `INSERT OR
 /// IGNORE`-on-primary-key behavior, which the shared conformance suite's
 /// `index_commit_idempotent` test already holds every backend to); tracks

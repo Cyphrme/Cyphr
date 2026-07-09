@@ -2,7 +2,8 @@
 //!
 //! Every `Indexer` backend (in this crate or another) is held to the same
 //! functions here rather than a hand-duplicated, backend-specific subset —
-//! see N09-kv-index's premise p4. Feature-gated (`conformance-tests`) so an
+//! the same shared-conformance-suite requirement the KV-index migration
+//! established. Feature-gated (`conformance-tests`) so an
 //! out-of-crate backend can add this crate as a dev-dependency with that
 //! feature enabled and call these functions directly from its own
 //! `#[tokio::test]` wrappers.

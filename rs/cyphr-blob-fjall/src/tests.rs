@@ -2,10 +2,10 @@
 //!
 //! The conformance functions are the same ones `MemoryBlobStore`'s own test
 //! suite calls (`cyphr_storage::blob::conformance`, gated behind that
-//! crate's `conformance-tests` dev-dependency feature) -- per N09-kv-index
-//! premise p4 (applied here to `BlobStore` per N15-test-hardening), this
-//! backend must be held to the identical behavioral bar, not a hand-picked
-//! subset.
+//! crate's `conformance-tests` dev-dependency feature) -- per the shared-
+//! conformance-suite requirement (extended to `BlobStore` during the test-
+//! hardening pass), this backend must be held to the identical behavioral
+//! bar, not a hand-picked subset.
 
 use cyphr_storage::blob::conformance;
 use eml::Storage as _;

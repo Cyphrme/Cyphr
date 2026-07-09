@@ -1176,7 +1176,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         // 1. Bootstrap from raw, non-manifest genesis markers: a standalone
         // coz whose `pre` is present AND explicitly empty. This is never true
         // for an ordinary mutation cozy, which omits `pre` entirely
-        // (deserializing to `None`) now that N01 dropped the field from every
+        // (deserializing to `None`) now that the field was dropped from every
         // mutation, not just genesis ones -- only a deliberately-marked
         // legacy/synthetic genesis coz sets it to `Some("")`.
         // Exclude finalizer commit/create cozies from being consumed as mock genesis cozies
@@ -1243,8 +1243,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
         // 2. Bootstrap explicitly-supplied genesis keys (e.g. loaded from a
         // keystore at startup, per `cyphr-cli`'s parse_store). Trusted
-        // directly rather than filtered by any in-band cozy signal: since N01
-        // removed `pre` from every ordinary mutation cozy, no reliable
+        // directly rather than filtered by any in-band cozy signal: since `pre`
+        // was removed from every ordinary mutation cozy, no reliable
         // per-cozy marker distinguishes a genesis key/create from a later
         // one, so the caller-supplied candidate is the only signal left.
         // Skips any key whose principal is already bootstrapped above.

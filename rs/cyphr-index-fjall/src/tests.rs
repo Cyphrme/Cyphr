@@ -2,9 +2,10 @@
 //!
 //! The conformance functions are the same ones `MemoryIndexer`'s own
 //! test suite calls (`cyphr_storage::index::conformance`, gated behind
-//! that crate's `conformance-tests` dev-dependency feature) — per N09-kv-index
-//! premise p4, this backend must be held to the identical behavioral bar,
-//! not a hand-picked subset.
+//! that crate's `conformance-tests` dev-dependency feature) — per the
+//! shared-conformance-suite requirement the KV-index migration established,
+//! this backend must be held to the identical behavioral bar, not a
+//! hand-picked subset.
 
 use cyphr_storage::index::conformance;
 

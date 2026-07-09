@@ -689,7 +689,7 @@ async fn submit_then_load_round_trip() {
 }
 
 // ========================================================================
-// Durable ingest: crash-window closure + order retention (N04)
+// Durable ingest: crash-window closure + order retention
 // ========================================================================
 
 /// Crash simulated between `store_blobs_and_manifest`'s manifest write and
