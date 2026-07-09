@@ -676,8 +676,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             let pay = value
                 .get("pay")
                 .ok_or_else(|| EngineError::MalformedBlob(format!("blob {i}: missing 'pay'")))?;
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
-            if is_transaction_typ(typ) {
+            let header = cyphr::parsed_coz::CozHeader::parse(pay)
+                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
+            if is_transaction_typ(&header.typ) {
                 first_tx_idx = Some(i);
                 break;
             }
@@ -703,11 +704,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             let pay_json = serde_json::to_vec(&pay_val)
                 .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: pay serialize: {e}")))?;
 
-            let typ = pay
-                .get("typ")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
+            let header = cyphr::parsed_coz::CozHeader::parse(pay)
+                .map_err(|e| EngineError::MalformedBlob(format!("blob {i}: {e}")))?;
+            let typ = header.typ;
 
             let alg_str = pay
                 .get("alg")
@@ -720,12 +719,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                 EngineError::MalformedBlob(format!("blob {i}: czd computation failed"))
             })?;
 
-            let tmb = pay
-                .get("tmb")
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            let now = pay.get("now").and_then(|n| n.as_i64()).unwrap_or(0);
+            let tmb = header.tmb.to_b64();
+            let now = header.now;
             let pre = pay
                 .get("pre")
                 .and_then(|p| p.as_str())

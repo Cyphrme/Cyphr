@@ -291,6 +291,60 @@ impl ParsedCoz {
 }
 
 // ============================================================================
+// Key-agnostic header parsing
+// ============================================================================
+
+/// A minimal, key-agnostic view of a coz's `typ`/`tmb`/`now` header fields.
+///
+/// [`verify_coz`] requires the signer's [`Key`] up front (to verify the
+/// signature and derive `hash_alg` from `key.alg`), and its internal call
+/// into [`ParsedCoz::from_pay`] additionally requires `hash_alg` and a
+/// [`Czd`] the caller has not necessarily computed yet. A caller that only
+/// needs to classify an untrusted coz -- e.g. a storage engine deciding
+/// how to route a submitted blob before it has resolved a `Key` at all --
+/// has no lighter-weight primitive to reach for, and ends up hand-rolling
+/// `pay.get("typ").and_then(...).unwrap_or(...)`-style extraction instead,
+/// which silently substitutes a default for a missing or malformed field
+/// rather than rejecting it.
+#[derive(Debug, Clone)]
+pub struct CozHeader {
+    /// The coz's `typ` field, verbatim.
+    pub typ: String,
+    /// The coz's `tmb` field: the claimed signer's thumbprint. Not yet
+    /// verified against any signature -- this is metadata extraction, not
+    /// authentication.
+    pub tmb: Thumbprint,
+    /// The coz's `now` field: the claimed signing timestamp.
+    pub now: i64,
+}
+
+impl CozHeader {
+    /// Parse `typ`/`tmb`/`now` from a coz's `pay` JSON value, without
+    /// requiring the signer's [`Key`] or any other prerequisite
+    /// [`verify_coz`] needs.
+    ///
+    /// Reuses [`coz::Pay`]'s own `Deserialize` impl (the same one
+    /// [`ParsedCoz::from_pay`]'s caller feeds), so the accepted shape
+    /// matches the rest of this crate exactly -- this is a narrower
+    /// read of the same structure, not a second parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::MalformedPayload` if `pay` does not deserialize as
+    /// a [`coz::Pay`], or if `typ`, `tmb`, or `now` is missing. There is
+    /// no default for a missing field: at the trust boundary this exists
+    /// for, a caller must not mistake "absent" for "empty" or "zero".
+    pub fn parse(pay: &serde_json::Value) -> Result<Self> {
+        let pay: Pay = serde_json::from_value(pay.clone()).map_err(|_| Error::MalformedPayload)?;
+        Ok(Self {
+            typ: pay.typ.ok_or(Error::MalformedPayload)?,
+            tmb: pay.tmb.ok_or(Error::MalformedPayload)?,
+            now: pay.now.ok_or(Error::MalformedPayload)?,
+        })
+    }
+}
+
+// ============================================================================
 // Verified ParsedCoz
 // ============================================================================
 
@@ -416,6 +470,81 @@ mod tests {
             pay: serde_json::to_value(pay).unwrap(),
             sig: vec![0; 64],
         }
+    }
+
+    /// F29: `CozHeader::parse` must reject a coz missing `typ`, `tmb`, or
+    /// `now` -- not silently substitute a default -- since callers use it
+    /// at a trust boundary specifically to avoid that failure mode.
+    #[test]
+    fn coz_header_parse_rejects_missing_typ() {
+        let mut pay = PayBuilder::new()
+            .alg("ES256")
+            .now(1000)
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        pay.typ = None;
+        let value = serde_json::to_value(&pay).unwrap();
+
+        assert!(matches!(
+            CozHeader::parse(&value),
+            Err(Error::MalformedPayload)
+        ));
+    }
+
+    #[test]
+    fn coz_header_parse_rejects_missing_tmb() {
+        let pay = PayBuilder::new()
+            .typ("cyphr.me/cyphr/key/create")
+            .alg("ES256")
+            .now(1000)
+            .build();
+        let value = serde_json::to_value(&pay).unwrap();
+
+        assert!(matches!(
+            CozHeader::parse(&value),
+            Err(Error::MalformedPayload)
+        ));
+    }
+
+    #[test]
+    fn coz_header_parse_rejects_missing_now() {
+        let pay = PayBuilder::new()
+            .typ("cyphr.me/cyphr/key/create")
+            .alg("ES256")
+            .tmb(Thumbprint::from_bytes(vec![0xAA; 32]))
+            .build();
+        let value = serde_json::to_value(&pay).unwrap();
+
+        assert!(matches!(
+            CozHeader::parse(&value),
+            Err(Error::MalformedPayload)
+        ));
+    }
+
+    #[test]
+    fn coz_header_parse_accepts_well_formed_pay() {
+        let tmb = Thumbprint::from_bytes(vec![0xAA; 32]);
+        let pay = PayBuilder::new()
+            .typ("cyphr.me/cyphr/key/create")
+            .alg("ES256")
+            .now(1000)
+            .tmb(tmb.clone())
+            .build();
+        let value = serde_json::to_value(&pay).unwrap();
+
+        let header = CozHeader::parse(&value).expect("well-formed pay should parse");
+        assert_eq!(header.typ, "cyphr.me/cyphr/key/create");
+        assert_eq!(header.tmb, tmb);
+        assert_eq!(header.now, 1000);
+    }
+
+    #[test]
+    fn coz_header_parse_rejects_non_object_pay() {
+        let value = serde_json::json!("not an object");
+        assert!(matches!(
+            CozHeader::parse(&value),
+            Err(Error::MalformedPayload)
+        ));
     }
 
     #[test]

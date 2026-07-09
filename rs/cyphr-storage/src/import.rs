@@ -297,9 +297,9 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             .map_err(|_| LoadError::MissingTimestamp { index })?;
 
         // Determine if this is a coz or action by typ prefix
-        let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+        let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
 
-        if is_transaction_typ(typ) {
+        if is_transaction_typ(&header.typ) {
             // ParsedCoz: extract key material if present
             let new_key = extract_key_from_entry(&raw);
 
@@ -316,11 +316,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                     },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
@@ -337,11 +333,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                     },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
@@ -381,8 +373,8 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
             let pay = tx_value.get("pay").ok_or(LoadError::MissingTimestamp {
                 index: commit_idx * 1000 + tx_idx,
             })?;
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
-            if is_transaction_typ(typ) {
+            let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
+            if is_transaction_typ(&header.typ) {
                 first_tx_idx = Some(tx_idx);
                 break;
             }
@@ -460,10 +452,10 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                 let pay_json = serde_json::to_vec(&pay_val)
                     .map_err(|e| LoadError::Json { index, source: e })?;
 
-                let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+                let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
 
-                if is_transaction_typ(typ) {
-                    let new_key = if is_key_introducing_typ(typ) {
+                if is_transaction_typ(&header.typ) {
+                    let new_key = if is_key_introducing_typ(&header.typ) {
                         key_iter.next().map(key_entry_to_key).transpose()?
                     } else {
                         None
@@ -485,21 +477,13 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                             },
                             cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                                 index,
-                                tmb: pay
-                                    .get("tmb")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("?")
-                                    .into(),
+                                tmb: header.tmb.to_b64(),
                             },
                             other => LoadError::Protocol(other),
                         })?;
                     applied_tx_count += 1;
                 } else {
-                    let tmb = pay
-                        .get("tmb")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("?")
-                        .to_string();
+                    let tmb = header.tmb.to_b64();
                     deferred_actions.push((index, pay_json, sig, tmb));
                 }
             }
@@ -708,6 +692,38 @@ mod tests {
     fn load_explicit_genesis_empty_keys_fails() {
         let result = load_principal(Genesis::Explicit(vec![]), &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
+    }
+
+    /// F29: an entry whose pay is missing `typ` must be rejected outright
+    /// during replay, not silently misclassified. Before the fix,
+    /// replay_entries's hand-rolled extraction defaulted a missing `typ`
+    /// to `""`, and `is_transaction_typ("")` is false -- so a malformed
+    /// coz could be silently routed to `verify_and_record_action` instead
+    /// of being rejected. `now` must still be present here: `Entry`
+    /// construction itself already validates that field independently, so
+    /// this test isolates the `typ` gap `CozHeader::parse` closes.
+    #[test]
+    fn load_principal_rejects_entry_missing_typ() {
+        let key = make_test_key(0xAA);
+        let tmb_b64 = key.tmb.to_b64();
+
+        let malformed = serde_json::json!({
+            "pay": {
+                "alg": "ES256",
+                "tmb": tmb_b64,
+                "now": 1000
+                // "typ" deliberately omitted
+            },
+            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        });
+        let entry = crate::Entry::from_value(&malformed).expect("entry construction");
+
+        let result = load_principal(Genesis::Implicit(key), &[entry]);
+        assert!(
+            matches!(result, Err(LoadError::Protocol(cyphr::Error::MalformedPayload))),
+            "an entry missing 'typ' must be rejected as malformed, not silently \
+             misclassified as an action, got {result:?}"
+        );
     }
 
     #[test]

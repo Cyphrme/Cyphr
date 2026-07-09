@@ -627,6 +627,41 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
     );
 }
 
+/// F29: a submitted blob whose pay is missing `typ` must be rejected
+/// outright, not silently misclassified. Before the fix, engine/mod.rs's
+/// hand-rolled extraction defaulted a missing `typ` to `""`, and
+/// `is_transaction_typ("")` is false -- so a coz that was actually a
+/// mutation (e.g. a corrupted `key/create`) could be silently routed down
+/// the action-only path instead of being rejected as malformed.
+#[tokio::test]
+async fn submit_commit_rejects_blob_missing_typ() {
+    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+
+    let malformed = serde_json::json!({
+        "pay": {
+            "alg": "ES256",
+            "tmb": genesis_keys[0]["tmb"],
+            "now": 1000
+            // "typ" deliberately omitted
+        },
+        "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    });
+    let bytes = serde_json::to_vec(&malformed).unwrap();
+
+    let engine = test_engine();
+    let result = engine
+        .submit_commit("f29-missing-typ", Some(genesis), &[&bytes])
+        .await;
+
+    assert!(
+        matches!(result, Err(EngineError::MalformedBlob(_))),
+        "a blob missing 'typ' must be rejected as malformed, not silently \
+         misclassified as an action, got {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn submit_commit_bad_signature_rejected() {
     let fixture = load_golden("mutations", "key_add_changes_state");
