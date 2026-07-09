@@ -37,8 +37,14 @@ is a working scaffold, not the finished authority.
 - **Entrypoint gate:** `cd rs && cargo test --workspace` (green, ~3 min).
 - **Formatting:** `treefmt` from the repo root (nix shell) — covers
   rs/go/toml/md/json/yaml/nix/sh. CI enforces
-  `nix-shell --run "treefmt --fail-on-change"`. Note: `cargo fmt --check`
-  disagrees with the current tree (forge #28) — don't fix that piecemeal.
+  `nix-shell --run "treefmt --fail-on-change"`. `treefmt` is authoritative
+  for Rust because it runs under the project's pinned nightly toolchain
+  (`rs/rust-toolchain.toml`), which is what makes `rs/.rustfmt.toml`'s
+  nightly-only options (import grouping, comment wrapping, etc.) take
+  effect. A stable `cargo fmt --check` agrees with it today (forge #28,
+  resolved by a full workspace reformat) but only warns-and-skips those
+  nightly-only rules rather than enforcing them on new code — see
+  `rs/AGENTS.md`.
 - **CI** (`.github/workflows/ci.yml`): rust build/test/clippy(-D warnings),
   go build/test/vet (see `go/AGENTS.md` for expected state), treefmt,
   rustsec audit, `cargo check --all-features`. Releases:
