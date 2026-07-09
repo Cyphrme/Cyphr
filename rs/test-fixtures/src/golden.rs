@@ -148,6 +148,27 @@ pub struct GoldenExpected {
 // Generator
 // ============================================================================
 
+/// Canonical name for a genesis-time protocol error, matching the
+/// vocabulary test intents declare in their `expected.error` field (see
+/// `error_name` in `rs/cyphr/tests/golden_fixtures.rs`, which independently
+/// maintains the same mapping for the consumer side).
+fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
+    use cyphr::error::Error;
+    match e {
+        Error::UnknownKey => "UnknownKey",
+        Error::UnknownAlg => "UnknownAlg",
+        Error::KeyRevoked => "KeyRevoked",
+        Error::NoActiveKeys => "NoActiveKeys",
+        Error::DuplicateKey => "DuplicateKey",
+        Error::TimestampPast => "TimestampPast",
+        Error::TimestampFuture => "TimestampFuture",
+        Error::InvalidSignature => "InvalidSignature",
+        Error::MalformedPayload => "MalformedPayload",
+        Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+        _ => "UnknownError",
+    }
+}
+
 /// Generates golden test cases from intent definitions.
 ///
 /// The generator transforms human-readable intent files into
@@ -203,8 +224,23 @@ impl<'a> Generator<'a> {
         let mut principal = match principal_result {
             Ok(p) => p,
             Err(e) => {
-                // If we expected an error and got one during genesis, generate error golden
-                if expected_error.is_some() {
+                // If we expected an error and got one during genesis, generate
+                // error golden -- but only once the declared string is
+                // confirmed to match the error genesis actually raised, so a
+                // wrong declared expectation fails generation loudly instead
+                // of silently shipping a fixture that encodes it.
+                if let Some(declared) = expected_error {
+                    if let Error::GenesisFailed { source, .. } = e {
+                        let actual = cyphr_error_name(&source);
+                        if declared != actual {
+                            return Err(Error::DeclaredErrorMismatch {
+                                name: test.name.clone(),
+                                declared,
+                                actual,
+                                source,
+                            });
+                        }
+                    }
                     return Ok(Golden {
                         name: test.name.clone(),
                         principal: test.principal.clone(),
@@ -213,7 +249,7 @@ impl<'a> Generator<'a> {
                         commits: None,
                         digests: None,
                         expected: GoldenExpected {
-                            error: expected_error,
+                            error: Some(declared),
                             ..Default::default()
                         },
                     });
@@ -438,16 +474,16 @@ impl<'a> Generator<'a> {
 
         // Auto-promotion: 1 key = implicit, >1 = explicit
         if keys.len() == 1 {
-            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|e| {
-                Error::Generation {
+            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|source| {
+                Error::GenesisFailed {
                     name: test_name.to_string(),
-                    reason: format!("failed to create implicit principal: {}", e),
+                    source,
                 }
             })
         } else {
-            cyphr::Principal::explicit(keys).map_err(|e| Error::Generation {
+            cyphr::Principal::explicit(keys).map_err(|source| Error::GenesisFailed {
                 name: test_name.to_string(),
-                reason: format!("failed to create explicit principal: {}", e),
+                source,
             })
         }
     }
@@ -1777,6 +1813,75 @@ tx = [
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("nonexistent_key"));
+    }
+
+    #[test]
+    fn test_declared_genesis_error_matching_actual_succeeds() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+
+        // "unsupported_key" (RS256) genuinely fails genesis with UnknownAlg.
+        let intent_str = r#"
+[[test]]
+name = "unsupported_algorithm_fails"
+principal = ["unsupported_key"]
+
+[test.expected]
+error = "UnknownAlg"
+"#;
+
+        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
+        let goldens = generate(&intent, &pool).expect("declared error matches actual");
+
+        assert_eq!(goldens[0].expected.error.as_deref(), Some("UnknownAlg"));
+    }
+
+    #[test]
+    fn test_declared_genesis_error_mismatch_fails_loudly() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+
+        // "unsupported_key" (RS256) genuinely fails genesis with UnknownAlg,
+        // not UnsupportedAlgorithm -- this mirrors the exact drift F45
+        // describes (tests/intents/errors.toml once declared
+        // "UnsupportedAlgorithm" for this same case). The generator must
+        // reject the wrong declared string rather than shipping a fixture
+        // that silently encodes it.
+        let intent_str = r#"
+[[test]]
+name = "unsupported_algorithm_fails"
+principal = ["unsupported_key"]
+
+[test.expected]
+error = "UnsupportedAlgorithm"
+"#;
+
+        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
+        let result = generate(&intent, &pool);
+
+        let err = result.expect_err(
+            "generation must fail loudly when the declared error doesn't match the actual one",
+        );
+        assert!(
+            matches!(err, Error::DeclaredErrorMismatch { .. }),
+            "expected DeclaredErrorMismatch, got {:?}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("UnsupportedAlgorithm"), "{}", msg);
+        assert!(msg.contains("UnknownAlg"), "{}", msg);
     }
 
     #[test]
