@@ -382,9 +382,11 @@ impl NodePath {
             return false;
         }
         for (hop, &root) in self.hops.iter().zip(roots.iter()) {
-            let Some(skeleton) =
-                polydigest::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
-            else {
+            let Some(skeleton) = polydigest::rebalanced_skeleton(
+                hop.proof.tree_size,
+                hop.proof.arity,
+                hop.proof.index,
+            ) else {
                 return false;
             };
             if !hop.proof.verify(hasher, &skeleton, root) {
@@ -1173,7 +1175,9 @@ impl<S: eml::Storage> Principal<S> {
         let hops: Vec<polydigest::LeafProof> = path.hops.iter().map(|h| h.proof.clone()).collect();
         let roots: [&[u8]; 4] = [kr_bytes, ar_bytes, sr_bytes, pr_bytes];
 
-        Ok(crate::inclusion::verify_key_inclusion(alg, tmb, &hops, &roots))
+        Ok(crate::inclusion::verify_key_inclusion(
+            alg, tmb, &hops, &roots,
+        ))
     }
 
     /// Begin a new commit scope.
@@ -1597,8 +1601,9 @@ impl<S: eml::Storage> Principal<S> {
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                // Freeze PG at the current PR (SPEC §5.1 step 3: "principal/create ... establishes PG")
-                // establish_pg() is the ONLY code path that transitions Nascent → Established.
+                // Freeze PG at the current PR (SPEC §5.1 step 3: "principal/create ... establishes
+                // PG") establish_pg() is the ONLY code path that transitions
+                // Nascent → Established.
                 self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
             },
             CozKind::CommitCreate { .. } => {
@@ -2721,9 +2726,12 @@ mod tests {
         // The hop-verify loop alone accepts every spliced hop: each proof
         // is genuine and matched against its own originating root here.
         for (hop, &root) in spliced.hops.iter().zip(roots.iter()) {
-            let skeleton =
-                polydigest::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
-                    .unwrap();
+            let skeleton = polydigest::rebalanced_skeleton(
+                hop.proof.tree_size,
+                hop.proof.arity,
+                hop.proof.index,
+            )
+            .unwrap();
             assert!(
                 hop.proof.verify(&hasher, &skeleton, root),
                 "each spliced hop must verify in isolation against its own root"

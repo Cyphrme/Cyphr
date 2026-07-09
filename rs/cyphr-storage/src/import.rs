@@ -182,10 +182,9 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///
 /// * `expected_pr` - The expected Principal Root (for security validation)
 /// * `checkpoint` - Trusted state to start from
-/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint
-///   carries MALT proof-generation state. `None` yields a principal with no
-///   CR, matching pre-checkpoint-CR behavior. When `Some` and
-///   `checkpoint.cr` is also `Some`, the CR computed from `trees` is
+/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint carries MALT
+///   proof-generation state. `None` yields a principal with no CR, matching pre-checkpoint-CR
+///   behavior. When `Some` and `checkpoint.cr` is also `Some`, the CR computed from `trees` is
 ///   verified against `checkpoint.cr` before it's trusted.
 /// * `entries` - Entries after the checkpoint to replay
 ///

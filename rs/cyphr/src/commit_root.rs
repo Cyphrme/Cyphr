@@ -385,4 +385,3 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
     let md = MultihashDigest::new(variants)?;
     Ok(CommitRoot(md))
 }
-

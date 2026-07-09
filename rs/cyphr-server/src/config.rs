@@ -189,7 +189,8 @@ pub enum ConfigError {
     /// `mode = "witness"` was configured for `serve`, but witness mode has
     /// no enforcement anywhere in the server yet.
     #[error(
-        "witness mode is not yet implemented -- no route or handler enforces read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
+        "witness mode is not yet implemented -- no route or handler enforces \
+         read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
     )]
     WitnessModeUnimplemented,
 }

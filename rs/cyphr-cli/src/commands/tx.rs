@@ -159,7 +159,11 @@ pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
 
     // Parse stored pr which may be in "alg:digest" format
-    let stored_pr_digest = last_commit.pr.split(':').next_back().unwrap_or(&last_commit.pr);
+    let stored_pr_digest = last_commit
+        .pr
+        .split(':')
+        .next_back()
+        .unwrap_or(&last_commit.pr);
 
     if computed_pr != stored_pr_digest {
         return Err(Error::Storage(format!(

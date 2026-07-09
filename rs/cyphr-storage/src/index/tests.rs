@@ -6,8 +6,7 @@
 //! durable backend are held to one behavioral bar, not independently
 //! hand-duplicated ones.
 
-use super::conformance;
-use super::*;
+use super::{conformance, *};
 
 #[tokio::test]
 async fn index_commit_and_get_tip() {

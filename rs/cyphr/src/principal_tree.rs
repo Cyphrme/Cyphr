@@ -173,11 +173,7 @@ impl Clone for PrincipalTree {
                 .expect("self.algs is already deduplicated by ensure_algorithm");
         }
         for index in 0..self.inner.len() {
-            let payload = self
-                .inner
-                .get(index)
-                .expect("index within len")
-                .to_vec();
+            let payload = self.inner.get(index).expect("index within len").to_vec();
             let metadata = self.inner.metadata(index).unwrap_or(&[]).to_vec();
             inner
                 .set(index, payload, metadata)
@@ -259,7 +255,9 @@ mod tests {
     #[test]
     fn clone_is_independent_of_source() {
         let mut original = PrincipalTree::new();
-        original.set_sr(&sr(&[0x01; 32]), &[HashAlg::Sha256]).unwrap();
+        original
+            .set_sr(&sr(&[0x01; 32]), &[HashAlg::Sha256])
+            .unwrap();
         let original_pr_before = original.pr(&[HashAlg::Sha256]).unwrap();
 
         let mut cloned = original.clone();

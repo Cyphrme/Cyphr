@@ -128,7 +128,11 @@ impl JsonKeyStore {
     /// Record the constituent key thumbprints of an explicit multi-key
     /// genesis under its principal ID, persisting immediately to the
     /// sidecar genesis file.
-    pub fn record_genesis(&mut self, principal_id: &str, key_tmbs: Vec<String>) -> Result<(), Error> {
+    pub fn record_genesis(
+        &mut self,
+        principal_id: &str,
+        key_tmbs: Vec<String>,
+    ) -> Result<(), Error> {
         self.genesis.insert(principal_id.to_string(), key_tmbs);
         let content = serde_json::to_string_pretty(&self.genesis)?;
         fs::write(&self.genesis_path, content)?;

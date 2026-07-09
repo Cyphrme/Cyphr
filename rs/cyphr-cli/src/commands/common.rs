@@ -288,7 +288,8 @@ pub fn load_principal_from_engine(
             cyphr_storage::Genesis::Explicit(keys)
         } else if tip.is_none() {
             return Err(crate::Error::Storage(format!(
-                "identity {identity} has no stored commits and does not match any keystore key or recorded genesis; cannot resolve genesis"
+                "identity {identity} has no stored commits and does not match any keystore key or \
+                 recorded genesis; cannot resolve genesis"
             )));
         } else {
             engine

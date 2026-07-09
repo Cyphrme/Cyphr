@@ -19,10 +19,10 @@
 //!
 //! - [`engine::StorageEngine`]: The unified storage engine that coordinates persistent blobs and
 //!   indexers.
-//! - `cyphr_blob_fjall::FjallBlobStore` (in the `cyphr-blob-fjall` crate): A persistent blob
-//!   store backed by the Fjall LSM-tree storage engine.
-//! - `cyphr_index_fjall::FjallIndexer` (in the `cyphr-index-fjall` crate): A persistent KV
-//!   indexer backed by the Fjall LSM-tree storage engine.
+//! - `cyphr_blob_fjall::FjallBlobStore` (in the `cyphr-blob-fjall` crate): A persistent blob store
+//!   backed by the Fjall LSM-tree storage engine.
+//! - `cyphr_index_fjall::FjallIndexer` (in the `cyphr-index-fjall` crate): A persistent KV indexer
+//!   backed by the Fjall LSM-tree storage engine.
 //! - [`index::memory::MemoryIndexer`]: An in-memory indexer for testing.
 
 #![forbid(unsafe_code)]

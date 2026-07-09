@@ -489,9 +489,10 @@ impl<'a> Generator<'a> {
         let prv_b64 = key.prv.as_ref().ok_or_else(|| Error::MissingPrivateKey {
             name: key.name.clone(),
         })?;
-        let prv_bytes = Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::PoolValidation {
-            message: format!("key '{}': invalid prv base64: {}", name, e),
-        })?;
+        let prv_bytes =
+            Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid prv base64: {}", name, e),
+            })?;
         let pub_bytes =
             Base64UrlUnpadded::decode_vec(&key.pub_key).map_err(|e| Error::PoolValidation {
                 message: format!("key '{}': invalid pub base64: {}", name, e),
@@ -511,12 +512,14 @@ impl<'a> Generator<'a> {
         first_coz_signer: Option<CozSignerInfo>,
         last_new_key_signer: Option<CozSignerInfo>,
     ) -> Option<CozSignerInfo> {
-        let first_still_active = first_coz_signer.as_ref().is_some_and(|(_, _, _, tmb_b64, _)| {
-            Base64UrlUnpadded::decode_vec(tmb_b64)
-                .ok()
-                .map(coz::Thumbprint::from_bytes)
-                .is_some_and(|tmb| scope.is_key_active(&tmb))
-        });
+        let first_still_active = first_coz_signer
+            .as_ref()
+            .is_some_and(|(_, _, _, tmb_b64, _)| {
+                Base64UrlUnpadded::decode_vec(tmb_b64)
+                    .ok()
+                    .map(coz::Thumbprint::from_bytes)
+                    .is_some_and(|tmb| scope.is_key_active(&tmb))
+            });
 
         if first_still_active {
             first_coz_signer
@@ -549,26 +552,27 @@ impl<'a> Generator<'a> {
             for tx_cz in tx_group {
                 let signer = self.resolve_key(&tx_cz.signer)?;
                 let signer_tmb = signer.compute_tmb_b64()?;
-                let prv_b64 = signer.prv.as_ref().ok_or_else(|| Error::MissingPrivateKey {
-                    name: signer.name.clone(),
-                })?;
+                let prv_b64 = signer
+                    .prv
+                    .as_ref()
+                    .ok_or_else(|| Error::MissingPrivateKey {
+                        name: signer.name.clone(),
+                    })?;
                 let prv_bytes =
                     Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::Generation {
                         name: test_name.to_string(),
                         reason: format!("invalid prv base64: {}", e),
                     })?;
-                let pub_bytes =
-                    Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| {
-                        Error::Generation {
-                            name: test_name.to_string(),
-                            reason: format!("invalid pub base64: {}", e),
-                        }
-                    })?;
+                let pub_bytes = Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| {
+                    Error::Generation {
+                        name: test_name.to_string(),
+                        reason: format!("invalid pub base64: {}", e),
+                    }
+                })?;
 
                 // Build pay value for this cozy. `pre` only matters for a
                 // principal/create's `id` field; other cozy types ignore it.
-                let pay_value =
-                    self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
+                let pay_value = self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
                 let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
                     name: test_name.to_string(),
                     reason: e.to_string(),
@@ -620,10 +624,11 @@ impl<'a> Generator<'a> {
         // Finalize the commit scope using the first signer's credentials, unless that
         // signer's key was itself retired within this commit (see choose_commit_signer).
         let (alg, prv, pub_k, tmb_str, coz_now) =
-            Self::choose_commit_signer(&scope, first_coz_signer, last_new_key_signer)
-                .ok_or_else(|| Error::InvalidIntent {
+            Self::choose_commit_signer(&scope, first_coz_signer, last_new_key_signer).ok_or_else(
+                || Error::InvalidIntent {
                     message: format!("test '{}': no cozies applied", test_name),
-                })?;
+                },
+            )?;
         let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
         scope
             .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")

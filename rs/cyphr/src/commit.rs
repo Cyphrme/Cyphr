@@ -16,8 +16,8 @@ use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 /// Per SPEC §4:
 /// - `Commit ID = MR(sort(czd₀, czd₁, ...))` for cozies in this commit only
 /// - `CS = MR(AS, Commit ID)` binds the auth state to the commit
-/// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references
-///   the previous commit's CS (or promoted AS for genesis)
+/// - `arrow = MR(pre, fwd, TMR)` on the closing `commit/create` cz references the previous commit's
+///   CS (or promoted AS for genesis)
 ///
 /// A Commit is immutable once finalized.
 #[derive(Debug, Clone)]
@@ -325,7 +325,6 @@ pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
 /// Get `digest`'s bytes for `alg`, falling back to its sole variant when
 /// `digest` doesn't carry `alg` but has exactly one variant of a different
 /// algorithm.
-///
 impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
     pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
@@ -490,8 +489,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             return false;
         };
 
-        let Ok((_kr, _ar, sr)) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)
-        else {
+        let Ok((_kr, _ar, sr)) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs) else {
             return false;
         };
 
@@ -566,8 +564,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
-        // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for
-        //    Arrow construction. This reads the projected state.
+        // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
+        //    reads the projected state.
         let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
@@ -579,11 +577,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let action_refs: Vec<&crate::action::Action> = self.projected.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs)?;
 
-        let (_kr, _ar, sr) = crate::semantic_tree::derive_state_roots(
-            &thumbprints,
-            dr.as_ref(),
-            &active_algs,
-        )?;
+        let (_kr, _ar, sr) =
+            crate::semantic_tree::derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
 
         // For TMR we just use compute_roots early
         let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);

@@ -126,7 +126,10 @@ fn commit_key_same_length_principals_do_not_overlap() {
 
     let (a_lo, a_hi) = commit_key_range(a, 0, u64::MAX);
     let (b_lo, b_hi) = commit_key_range(b, 0, u64::MAX);
-    assert!(a_hi < b_lo || b_hi < a_lo, "ranges for distinct same-length principals must not overlap");
+    assert!(
+        a_hi < b_lo || b_hi < a_lo,
+        "ranges for distinct same-length principals must not overlap"
+    );
 }
 
 /// End-to-end: two principals whose IDs are literal prefixes of one
@@ -153,13 +156,21 @@ async fn multitenancy_prefix_principals_are_isolated() {
         .get_commit_chain("alice", None, None)
         .await
         .expect("alice chain");
-    assert_eq!(alice_chain.len(), 3, "alice must see only its own 3 commits");
+    assert_eq!(
+        alice_chain.len(),
+        3,
+        "alice must see only its own 3 commits"
+    );
 
     let alice2_chain = indexer
         .get_commit_chain("alice2", None, None)
         .await
         .expect("alice2 chain");
-    assert_eq!(alice2_chain.len(), 2, "alice2 must see only its own 2 commits");
+    assert_eq!(
+        alice2_chain.len(),
+        2,
+        "alice2 must see only its own 2 commits"
+    );
 
     let alice_tip = indexer.get_tip("alice").await.unwrap().unwrap();
     assert_eq!(alice_tip.commit_count, 3);

@@ -537,8 +537,8 @@ fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
     let result = cli.run(&["tx", "verify", &identity_arg]);
     assert!(
         result.is_err(),
-        "tx verify must fail loudly when the underlying commit data cannot be read, \
-         not silently report genesis-state success"
+        "tx verify must fail loudly when the underlying commit data cannot be read, not silently \
+         report genesis-state success"
     );
     let err = result.unwrap_err();
     assert!(

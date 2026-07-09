@@ -69,8 +69,7 @@ pub struct TransactionHop2<'a> {
 /// instead of read from a live `Principal`.
 ///
 /// 1. **Hop 1** — `tr` included in the Commit Root (`hop1.cr_root`).
-/// 2. **Hop 2** — `hop1.cr_root`, as PT cell 1's payload, included in
-///    `hop2.pr_root`.
+/// 2. **Hop 2** — `hop1.cr_root`, as PT cell 1's payload, included in `hop2.pr_root`.
 ///
 /// The hops are bridged explicitly: hop 2's proven leaf value must equal
 /// `hop1.cr_root` — otherwise the two hops would each verify independently
@@ -102,11 +101,9 @@ pub fn verify_transaction_inclusion(
         hop1.cr_root,
     );
 
-    let Some(hop2_skeleton) = polydigest::rebalanced_skeleton(
-        hop2.proof.tree_size,
-        hop2.proof.arity,
-        hop2.proof.index,
-    ) else {
+    let Some(hop2_skeleton) =
+        polydigest::rebalanced_skeleton(hop2.proof.tree_size, hop2.proof.arity, hop2.proof.index)
+    else {
         return false;
     };
     let hop2_ok = hop2.proof.verify(&hasher, &hop2_skeleton, hop2.pr_root);

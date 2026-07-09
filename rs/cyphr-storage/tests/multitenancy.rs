@@ -180,14 +180,12 @@ fn two_principals_share_one_database_without_collision() {
     assert_eq!(
         count_a,
         commits_a.len() as u64,
-        "principal a's durable log must carry exactly its own commits, not \
-         principal b's"
+        "principal a's durable log must carry exactly its own commits, not principal b's"
     );
     assert_eq!(
         count_b,
         commits_b.len() as u64,
-        "principal b's durable log must carry exactly its own commits, not \
-         principal a's"
+        "principal b's durable log must carry exactly its own commits, not principal a's"
     );
 }
 
@@ -262,8 +260,8 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
         assert_eq!(
             trees.global_size(),
             1,
-            "reindex's bootstrapped commit must be durably present in the \
-             principal_id-scoped keyspace"
+            "reindex's bootstrapped commit must be durably present in the principal_id-scoped \
+             keyspace"
         );
 
         principal_id
@@ -288,8 +286,8 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
             .submit_commit(&principal_id, Some(genesis.clone()), &blob_refs)
             .await
             .expect(
-                "submit_commit onto a reindex-bootstrapped principal must \
-                 succeed — a scope mismatch would break the commit chain",
+                "submit_commit onto a reindex-bootstrapped principal must succeed — a scope \
+                 mismatch would break the commit chain",
             );
 
         let principal = engine
@@ -299,8 +297,8 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
         assert_eq!(
             principal.commit_trees().global_size(),
             2,
-            "both the reindex-bootstrapped commit and the newly-submitted \
-             commit must land in the same durable log, with no duplication"
+            "both the reindex-bootstrapped commit and the newly-submitted commit must land in the \
+             same durable log, with no duplication"
         );
         assert!(principal.cr().is_some());
     });
@@ -312,15 +310,15 @@ fn reindex_bootstrapped_principal_resolves_same_scope_as_load_principal() {
         let db = fjall::Database::builder(&db_path)
             .open()
             .expect("reopen db");
-        let scoped = cyphr_blob_fjall::open_eml_storage_scoped(db, &principal_id)
-            .expect("scoped open");
+        let scoped =
+            cyphr_blob_fjall::open_eml_storage_scoped(db, &principal_id).expect("scoped open");
         let trees: cyphr::commit_root::CommitTrees<FjallStorage> =
             cyphr::commit_root::CommitTrees::open(scoped).expect("open commit trees");
         assert_eq!(
             trees.global_size(),
             2,
-            "the principal_id-scoped keyspace must carry both commits — \
-             proving reindex and submit_commit resolved to the same scope"
+            "the principal_id-scoped keyspace must carry both commits — proving reindex and \
+             submit_commit resolved to the same scope"
         );
     });
 }

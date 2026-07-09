@@ -42,11 +42,13 @@ fn transaction_inclusion_verifies_without_principal() {
     let index = 0u64;
     let tree_size = commit_trees.tree_size(alg_id).unwrap();
     let hop1_proof = commit_trees.inclusion_proof(alg_id, index).unwrap();
-    let cr = CommitRoot(MultihashDigest::new(BTreeMap::from([(
-        alg,
-        commit_trees.root(alg_id).unwrap().into_boxed_slice(),
-    )]))
-    .unwrap());
+    let cr = CommitRoot(
+        MultihashDigest::new(BTreeMap::from([(
+            alg,
+            commit_trees.root(alg_id).unwrap().into_boxed_slice(),
+        )]))
+        .unwrap(),
+    );
 
     // Build a Principal Tree directly (no Principal), write SR and CR.
     let mut pt = PrincipalTree::new();
@@ -91,11 +93,13 @@ fn transaction_inclusion_rejects_forged_transaction_without_principal() {
     let index = 0u64;
     let tree_size = commit_trees.tree_size(alg_id).unwrap();
     let hop1_proof = commit_trees.inclusion_proof(alg_id, index).unwrap();
-    let cr = CommitRoot(MultihashDigest::new(BTreeMap::from([(
-        alg,
-        commit_trees.root(alg_id).unwrap().into_boxed_slice(),
-    )]))
-    .unwrap());
+    let cr = CommitRoot(
+        MultihashDigest::new(BTreeMap::from([(
+            alg,
+            commit_trees.root(alg_id).unwrap().into_boxed_slice(),
+        )]))
+        .unwrap(),
+    );
 
     let mut pt = PrincipalTree::new();
     let sr = StateRoot(MultihashDigest::from_single(alg, vec![0x11; 32]).unwrap());
@@ -130,7 +134,12 @@ fn transaction_inclusion_rejects_forged_transaction_without_principal() {
 /// tmb_a, tmb_b)`.
 fn build_key_inclusion_material(
     alg: HashAlg,
-) -> (Vec<polydigest::LeafProof>, Vec<Vec<u8>>, Thumbprint, Thumbprint) {
+) -> (
+    Vec<polydigest::LeafProof>,
+    Vec<Vec<u8>>,
+    Thumbprint,
+    Thumbprint,
+) {
     let alg_id = hash_alg_to_u64(alg);
     let tmb_a = Thumbprint::from_bytes(vec![0x01; 32]);
     let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
@@ -148,10 +157,7 @@ fn build_key_inclusion_material(
 
     let mut sorted: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
     sorted.sort();
-    let index = sorted
-        .iter()
-        .position(|&b| b == tmb_a.as_bytes())
-        .unwrap() as u64;
+    let index = sorted.iter().position(|&b| b == tmb_a.as_bytes()).unwrap() as u64;
 
     let hops = vec![
         kt.thumbprint_inclusion_proof(alg_id, index).unwrap(),

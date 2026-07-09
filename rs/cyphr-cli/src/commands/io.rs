@@ -8,8 +8,8 @@ use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
 use super::common::{
-    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id,
-    parse_store, save_principal_to_engine,
+    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id, parse_store,
+    save_principal_to_engine,
 };
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};

@@ -10,7 +10,6 @@ use std::path::Path;
 
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
-
 /// Re-exported so a caller wiring up a shared-database
 /// [`StorageEngine`](cyphr_storage::engine::StorageEngine) (via
 /// [`open_eml_storage`]) can name `storage_fjall::FjallStorage` without
@@ -36,8 +35,8 @@ impl FjallBlobStore {
     /// Create a fresh disk-backed blob store in a temp dir, for tests.
     #[cfg(test)]
     pub fn temp() -> Result<(Self, tempfile::TempDir), BlobStoreError> {
-        let dir = tempfile::tempdir()
-            .map_err(|e| BlobStoreError::Backend(format!("tempdir: {e}")))?;
+        let dir =
+            tempfile::tempdir().map_err(|e| BlobStoreError::Backend(format!("tempdir: {e}")))?;
         let store = Self::open(dir.path())?;
         Ok((store, dir))
     }

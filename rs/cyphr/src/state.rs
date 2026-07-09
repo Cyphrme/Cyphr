@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use coz::{Cad, Czd};
 // `Thumbprint` is only referenced by test-support-only oracle functions
 // (compute_kr, derive_auth_state) and unit tests below.
 #[cfg(test)]
 use coz::Thumbprint;
+use coz::{Cad, Czd};
 
 use crate::multihash::MultihashDigest;
 

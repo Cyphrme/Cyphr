@@ -121,7 +121,11 @@ pub fn export_commits<S: eml::Storage>(
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
         let commit_id = commit.tr().0.tagged_first()?.to_string();
-        let auth_root = commit.auth_root().as_multihash().tagged_first()?.to_string();
+        let auth_root = commit
+            .auth_root()
+            .as_multihash()
+            .tagged_first()?
+            .to_string();
         let sr = commit.sr().as_multihash().tagged_first()?.to_string();
         let pr = commit.pr().as_multihash().tagged_first()?.to_string();
 

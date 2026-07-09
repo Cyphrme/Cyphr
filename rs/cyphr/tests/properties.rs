@@ -473,7 +473,12 @@ proptest! {
         let mut principal_ref = Principal::implicit(arrow_domain_key(genesis)).expect("genesis ref");
         let mut scope_ref = principal_ref.begin_commit();
         scope_ref
-            .verify_and_apply(&mutation_pay, &mutation_sig, mutation_czd.clone(), Some(arrow_domain_key(target)))
+            .verify_and_apply(
+                &mutation_pay,
+                &mutation_sig,
+                mutation_czd.clone(),
+                Some(arrow_domain_key(target)),
+            )
             .expect("mutation should apply to reference scope");
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
@@ -500,7 +505,12 @@ proptest! {
         let mut principal = Principal::implicit(arrow_domain_key(genesis)).expect("genesis test");
         let mut scope = principal.begin_commit();
         scope
-            .verify_and_apply(&mutation_pay, &mutation_sig, mutation_czd, Some(arrow_domain_key(target)))
+            .verify_and_apply(
+                &mutation_pay,
+                &mutation_sig,
+                mutation_czd,
+                Some(arrow_domain_key(target)),
+            )
             .expect("mutation should apply to test scope");
 
         let (commit_pay, commit_sig, commit_czd) =

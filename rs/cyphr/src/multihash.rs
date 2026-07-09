@@ -133,7 +133,8 @@ impl MultihashDigest {
     ///
     /// Returns `MissingVariant` if `alg` has no variant in this multihash.
     pub fn get_or_err(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
-        self.get(alg).ok_or(crate::error::Error::MissingVariant(alg))
+        self.get(alg)
+            .ok_or(crate::error::Error::MissingVariant(alg))
     }
 
     /// Get the digest bytes for Arrow's algorithm-fallback rule, mirroring

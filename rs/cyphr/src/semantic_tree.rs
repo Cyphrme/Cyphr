@@ -11,33 +11,26 @@
 //! are now demoted to differential test-only oracles; the values `Principal`
 //! actually uses come from the tree types here:
 //!
-//! - [`KeyTree`] — a k=256 collection node, one leaf per active key
-//!   thumbprint, lexically sorted. Its root is KR. A thumbprint's raw byte
-//!   length is native to *its own signing key's* algorithm (an ES256 tmb is
-//!   32 bytes, an Ed25519 tmb is 64), so a mixed-algorithm keyset's
-//!   thumbprints do not share a width. `EpochTree`'s generic node fold
-//!   requires same-width siblings (an unprefixed concatenation is only
-//!   unambiguously parseable when children share a width — see
-//!   `spine::nary_mr`'s contract), so each non-native thumbprint is
-//!   converted to its canonical digest under the target algorithm before
-//!   folding, via the same `infer_alg_from_len`/`hash_bytes` mechanism
-//!   [`crate::state::compute_dr`] already uses for czd content. This is a
-//!   real, authorized divergence from `compute_kr`'s raw-concat-regardless-of-size
-//!   behavior for mixed-algorithm keysets — single-algorithm keysets are
-//!   unaffected (every thumbprint is already native, so conversion is a
-//!   no-op).
-//! - [`AuthTree`] — a k=2 role-slot node: cell 0 = KT's root, cell 1 = RT's
-//!   root (Rule Tree — Level 5, not yet implemented, permanently absent).
-//!   Its root is AR. Because cell 1 never gets set, AR always promotes from
-//!   KT alone (native singleton promotion — see
+//! - [`KeyTree`] — a k=256 collection node, one leaf per active key thumbprint, lexically sorted.
+//!   Its root is KR. A thumbprint's raw byte length is native to *its own signing key's* algorithm
+//!   (an ES256 tmb is 32 bytes, an Ed25519 tmb is 64), so a mixed-algorithm keyset's thumbprints do
+//!   not share a width. `EpochTree`'s generic node fold requires same-width siblings (an unprefixed
+//!   concatenation is only unambiguously parseable when children share a width — see
+//!   `spine::nary_mr`'s contract), so each non-native thumbprint is converted to its canonical
+//!   digest under the target algorithm before folding, via the same
+//!   `infer_alg_from_len`/`hash_bytes` mechanism [`crate::state::compute_dr`] already uses for czd
+//!   content. This is a real, authorized divergence from `compute_kr`'s
+//!   raw-concat-regardless-of-size behavior for mixed-algorithm keysets — single-algorithm keysets
+//!   are unaffected (every thumbprint is already native, so conversion is a no-op).
+//! - [`AuthTree`] — a k=2 role-slot node: cell 0 = KT's root, cell 1 = RT's root (Rule Tree — Level
+//!   5, not yet implemented, permanently absent). Its root is AR. Because cell 1 never gets set, AR
+//!   always promotes from KT alone (native singleton promotion — see
 //!   [`crate::principal_tree::PrincipalTree`]'s own genesis test).
-//! - [`StateTree`] — a k=2 role-slot node: cell 0 = AR-node's root, cell 1 =
-//!   DR (Data Root). DR itself keeps coming from the unchanged
-//!   [`crate::state::compute_dr`] (SPEC §14.2's per-algorithm conversion
-//!   logic survives as the DT leaf producer) — only the final concat step
-//!   that used to fold DR into SR by hand moves into this tree, embedding DR
-//!   as an opaque leaf exactly as [`crate::principal_tree::PrincipalTree`]
-//!   already embeds CR into PT's cell 1.
+//! - [`StateTree`] — a k=2 role-slot node: cell 0 = AR-node's root, cell 1 = DR (Data Root). DR
+//!   itself keeps coming from the unchanged [`crate::state::compute_dr`] (SPEC §14.2's
+//!   per-algorithm conversion logic survives as the DT leaf producer) — only the final concat step
+//!   that used to fold DR into SR by hand moves into this tree, embedding DR as an opaque leaf
+//!   exactly as [`crate::principal_tree::PrincipalTree`] already embeds CR into PT's cell 1.
 //!
 //! `StateTree`'s root then becomes the value written into
 //! [`crate::principal_tree::PrincipalTree`]'s existing cell 0 — PT's root
@@ -224,7 +217,11 @@ impl KeyTree {
     /// Returns `None` if `alg_id` is unregistered or `index` is out of
     /// range.
     #[must_use]
-    pub fn thumbprint_inclusion_proof(&self, alg_id: u64, index: u64) -> Option<polydigest::LeafProof> {
+    pub fn thumbprint_inclusion_proof(
+        &self,
+        alg_id: u64,
+        index: u64,
+    ) -> Option<polydigest::LeafProof> {
         self.inner.leaf_proof(alg_id, index)
     }
 }
@@ -564,13 +561,12 @@ mod oracle_tests {
             let new_bytes = new.get(alg).unwrap();
             assert_eq!(
                 new_bytes, expected_new,
-                "KT root for {alg:?} must equal the independently-computed \
-                 conversion fold"
+                "KT root for {alg:?} must equal the independently-computed conversion fold"
             );
             assert_ne!(
                 new_bytes, old_bytes,
-                "KT root for {alg:?} must diverge from compute_kr's raw \
-                 concat for a mixed-algorithm keyset"
+                "KT root for {alg:?} must diverge from compute_kr's raw concat for a \
+                 mixed-algorithm keyset"
             );
         }
     }
@@ -688,18 +684,9 @@ mod oracle_tests {
         let (old_kr, old_ar, old_sr) = derive_auth_state(&[&a, &b], None, &algs).unwrap();
         let (new_kr, new_ar, new_sr) = derive_state_roots(&[&a, &b], None, &algs).unwrap();
 
-        assert_eq!(
-            old_kr.get(HashAlg::Sha256),
-            new_kr.get(HashAlg::Sha256)
-        );
-        assert_eq!(
-            old_ar.get(HashAlg::Sha256),
-            new_ar.get(HashAlg::Sha256)
-        );
-        assert_eq!(
-            old_sr.get(HashAlg::Sha256),
-            new_sr.get(HashAlg::Sha256)
-        );
+        assert_eq!(old_kr.get(HashAlg::Sha256), new_kr.get(HashAlg::Sha256));
+        assert_eq!(old_ar.get(HashAlg::Sha256), new_ar.get(HashAlg::Sha256));
+        assert_eq!(old_sr.get(HashAlg::Sha256), new_sr.get(HashAlg::Sha256));
     }
 }
 
@@ -733,13 +720,18 @@ mod oracle_properties {
     /// A digest's worth of random bytes, tagged with the algorithm it is
     /// native to (i.e. its length matches that algorithm's digest size).
     fn alg_and_native_bytes_strategy() -> impl Strategy<Value = (HashAlg, Vec<u8>)> {
-        hash_alg_strategy()
-            .prop_flat_map(|alg| (Just(alg), prop::collection::vec(any::<u8>(), native_len(alg))))
+        hash_alg_strategy().prop_flat_map(|alg| {
+            (
+                Just(alg),
+                prop::collection::vec(any::<u8>(), native_len(alg)),
+            )
+        })
     }
 
     /// A random thumbprint, tagged with the algorithm it is native to.
     fn tagged_thumbprint_strategy() -> impl Strategy<Value = (HashAlg, Thumbprint)> {
-        alg_and_native_bytes_strategy().prop_map(|(alg, bytes)| (alg, Thumbprint::from_bytes(bytes)))
+        alg_and_native_bytes_strategy()
+            .prop_map(|(alg, bytes)| (alg, Thumbprint::from_bytes(bytes)))
     }
 
     /// A pair of independently random byte strings, both sized to `alg`'s
@@ -871,7 +863,10 @@ mod liveness_tests {
 
     fn payload_with_foreign(native_alg: HashAlg, bytes: &[u8]) -> Vec<u8> {
         let mut mapped: BTreeMap<u64, Box<[u8]>> = BTreeMap::new();
-        mapped.insert(hash_alg_to_u64(native_alg), bytes.to_vec().into_boxed_slice());
+        mapped.insert(
+            hash_alg_to_u64(native_alg),
+            bytes.to_vec().into_boxed_slice(),
+        );
         mapped.insert(FOREIGN_ALG_ID, vec![0xFF; 32].into_boxed_slice());
         serde_json::to_vec(&mapped).unwrap()
     }

@@ -12,14 +12,13 @@
 //! version:
 //!
 //! - `tips` — `principal_id` bytes → [`TipState`] (point lookup only)
-//! - `principals` — `principal_id` bytes → [`PrincipalSummary`] (point lookup
-//!   only, `list_principals` does a full scan)
-//! - `commits` — [`commit_key`] (length-prefixed `principal_id` + big-endian
-//!   sequence) → [`CommitRef`] (ordered range scan by sequence)
-//! - `digests` — tagged-digest or blob-hash string → [`EntityRef`] (point
-//!   lookup; also backs `is_blob_indexed`, mirroring [`MemoryIndexer`]'s
-//!   single `digest_index` map rather than `SqliteIndexer`'s separate
-//!   `cozies` table, since no `Indexer` method exposes per-coz metadata
+//! - `principals` — `principal_id` bytes → [`PrincipalSummary`] (point lookup only,
+//!   `list_principals` does a full scan)
+//! - `commits` — [`commit_key`] (length-prefixed `principal_id` + big-endian sequence) →
+//!   [`CommitRef`] (ordered range scan by sequence)
+//! - `digests` — tagged-digest or blob-hash string → [`EntityRef`] (point lookup; also backs
+//!   `is_blob_indexed`, mirroring [`MemoryIndexer`]'s single `digest_index` map rather than
+//!   `SqliteIndexer`'s separate `cozies` table, since no `Indexer` method exposes per-coz metadata
 //!   directly)
 //! - `public_keys` — thumbprint bytes → [`PublicKeyInfo`] (point lookup)
 //!
@@ -94,10 +93,7 @@ fn commit_key(principal_id: &str, sequence: u64) -> Vec<u8> {
 
 /// Inclusive `[from, to]` range of [`commit_key`]s for one `principal_id`.
 fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>) {
-    (
-        commit_key(principal_id, from),
-        commit_key(principal_id, to),
-    )
+    (commit_key(principal_id, from), commit_key(principal_id, to))
 }
 
 fn to_backend_err(e: fjall::Error) -> IndexerError {
@@ -152,8 +148,8 @@ impl FjallIndexer {
     /// Create a fresh disk-backed indexer in a temp dir, for tests.
     #[cfg(test)]
     pub fn temp() -> Result<(Self, tempfile::TempDir), IndexerError> {
-        let dir = tempfile::tempdir()
-            .map_err(|e| IndexerError::Backend(format!("tempdir: {e}")))?;
+        let dir =
+            tempfile::tempdir().map_err(|e| IndexerError::Backend(format!("tempdir: {e}")))?;
         let indexer = Self::open(dir.path())?;
         Ok((indexer, dir))
     }
@@ -217,7 +213,15 @@ impl Indexer for FjallIndexer {
         async move {
             let _guard = self.write_lock.lock().await;
             tokio::task::spawn_blocking(move || {
-                db_index_commit(&db, &tips, &principals, &commits, &digests, &public_keys, &commit)
+                db_index_commit(
+                    &db,
+                    &tips,
+                    &principals,
+                    &commits,
+                    &digests,
+                    &public_keys,
+                    &commit,
+                )
             })
             .await
             .map_err(join_err)?
@@ -407,10 +411,7 @@ fn db_index_commit(
         .map(|b| de(&b))
         .transpose()?;
 
-    let commit_count = existing_summary
-        .as_ref()
-        .map_or(0, |p| p.commit_count)
-        + 1;
+    let commit_count = existing_summary.as_ref().map_or(0, |p| p.commit_count) + 1;
     let created = existing_summary
         .as_ref()
         .map_or(commit.timestamp, |p| p.created);
