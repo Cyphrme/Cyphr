@@ -590,6 +590,43 @@ async fn submit_commit_valid_fixture() {
     }
 }
 
+/// F36: `submit_commit`'s action-only branch (a bundle with no
+/// transaction-typed cozy, only actions) must report `manifest_hash: None`
+/// -- no commit was formed, so there is genuinely no manifest to name, not
+/// a zero-hash sentinel in a field whose type otherwise implies a real
+/// content address.
+#[tokio::test]
+async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
+    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 1, "fixture must be a single action-only bundle");
+
+    let engine = test_engine();
+    let principal_id = "action-only-test";
+    let genesis = make_genesis(genesis_keys);
+
+    let blobs = build_raw_blobs(&commits[0]);
+    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+
+    let result = engine
+        .submit_commit(principal_id, Some(genesis), &blob_slices)
+        .await
+        .expect("submit_commit failed for action-only bundle");
+
+    assert_eq!(
+        result.manifest_hash, None,
+        "action-only bundle forms no commit, so it must report no manifest hash"
+    );
+    assert_eq!(result.blob_hashes.len(), 1);
+
+    // No commit was indexed -- an action-only bundle never advances tip.
+    assert!(
+        engine.get_tip(principal_id).await.unwrap().is_none(),
+        "action-only bundle must not create an indexed commit"
+    );
+}
+
 #[tokio::test]
 async fn submit_commit_bad_signature_rejected() {
     let fixture = load_golden("mutations", "key_add_changes_state");
@@ -834,7 +871,7 @@ async fn manifest_retains_ingest_order_without_search() {
     // `reindex`'s permutation search.
     let manifest_bytes = engine
         .blob_store()
-        .get(&result.manifest_hash)
+        .get(&result.manifest_hash.expect("ingest_commit always forms a manifest"))
         .await
         .unwrap()
         .expect("manifest must be present in the blob store");

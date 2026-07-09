@@ -98,13 +98,17 @@ fn map_coz_info(parsed: &ParsedCozInfo, active_algs: &[cyphr::state::HashAlg]) -
     }
 }
 
-/// Result from [`StorageEngine::ingest_commit`].
+/// Result from [`StorageEngine::ingest_commit`] and
+/// [`StorageEngine::submit_commit`].
 #[derive(Debug, Clone)]
 pub struct IngestResult {
     /// BLAKE3 hashes of the stored blobs.
     pub blob_hashes: Vec<Blake3Hash>,
     /// BLAKE3 hash of this commit's durable [`CommitManifest`] blob.
-    pub manifest_hash: Blake3Hash,
+    ///
+    /// `None` for an action-only bundle (`submit_commit`'s action-only
+    /// branch): no commit was formed, so there is no manifest to hash.
+    pub manifest_hash: Option<Blake3Hash>,
 }
 
 /// Discriminator embedded in every [`CommitManifest`], distinguishing it
@@ -418,7 +422,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
         Ok(IngestResult {
             blob_hashes,
-            manifest_hash,
+            manifest_hash: Some(manifest_hash),
         })
     }
 
@@ -900,9 +904,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             self.ingest_commit(raw_blobs, commit).await
         } else {
             // Action-only bundle: just store blobs in blob store without
-            // indexing. No commit was formed, so there is nothing to
-            // record in a CommitManifest -- manifest_hash is a sentinel,
-            // never a real content address.
+            // indexing. No commit was formed, so there is no manifest.
             let mut blob_hashes = Vec::with_capacity(raw_blobs.len());
             for blob in raw_blobs {
                 let hash = self.blob_store.put(blob).await?;
@@ -910,7 +912,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             }
             Ok(IngestResult {
                 blob_hashes,
-                manifest_hash: Blake3Hash::from_bytes([0; 32]),
+                manifest_hash: None,
             })
         }
     }
