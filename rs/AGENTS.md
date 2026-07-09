@@ -21,8 +21,9 @@ All active development happens here.
 
 - `cargo test --workspace` — green (~3 min; slowest: persistent-engine proptest).
 - `cargo clippy --workspace --all-targets` — clean; keep it that way.
-- `cargo fmt --check` — **known red workspace-wide** (forge #28, pre-existing).
-  Do not fix piecemeal on unrelated diffs; it gets a dedicated pass.
+- `cargo fmt --check` — green, on stable or nightly (forge #28, resolved by
+  a full-workspace reformat; see below — `.rustfmt.toml`'s nightly-only
+  keys were kept, not dropped).
 - Protocol-behavior changes: regenerate goldens (root R2) —
   `fixture-gen` reads `tests/intents/*.toml` + `tests/keys/pool.toml`
   and rewrites `tests/golden/`; exact invocation in `tests/README.md`
@@ -30,8 +31,17 @@ All active development happens here.
   not memory).
 - Manual smoke test of the CLI: `rs/cyphr-cli/demo.sh` (full
   key-add/export/import/revoke cycle).
-- Formatting is `treefmt` from the repo root, not `cargo fmt` (see root
-  `AGENTS.md`).
+- Formatting: `treefmt` from the repo root is authoritative (see root
+  `AGENTS.md`). `rs/.rustfmt.toml` sets `unstable_features = true` plus
+  several nightly-only keys (import grouping, comment wrapping,
+  macro/doc-comment formatting) — `treefmt` enforces these because it runs
+  under the project's pinned nightly toolchain (`rs/rust-toolchain.toml`).
+  A stable `cargo fmt --check` currently agrees (it prints harmless "can't
+  set X, unstable features are only available in nightly channel"
+  warnings and falls back to defaults for those keys, which happen to
+  match the already-canonical tree), but a stable `cargo fmt` won't
+  auto-fix a new nightly-gated violation — use `treefmt` or a nightly
+  `cargo fmt` for that.
 
 ## Invariants
 
