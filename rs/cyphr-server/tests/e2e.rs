@@ -87,7 +87,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
         let mut coz = coz_value.clone();
 
         let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
 
         if is_key_introducing {
             if let Some(ks) = keys {
@@ -476,9 +476,7 @@ fn sign_key_create_commit(
         .map(|v| {
             let mut coz = v.clone();
             let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if (typ.contains("/key/create") || typ.contains("/key/replace"))
-                && key_idx < new_commit.keys.len()
-            {
+            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
                 let key = &new_commit.keys[key_idx];
                 coz.as_object_mut().unwrap().insert(
                     "key".to_string(),

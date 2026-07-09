@@ -116,7 +116,7 @@ fn apply_golden_commit<S: eml::Storage>(
         let coz = coz_value.clone();
         let pay = coz["pay"].clone();
         let typ = pay["typ"].as_str().unwrap_or("").to_string();
-        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(&typ);
 
         let mut new_key = None;
         if is_key_introducing {
@@ -328,7 +328,7 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     for coz_value in cozies {
         let mut coz = coz_value.clone();
         let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
+        let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
 
         if is_key_introducing {
             if let Some(ks) = keys {

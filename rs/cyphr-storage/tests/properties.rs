@@ -334,8 +334,7 @@ fn run_engine_recovery_test<B, I>(
                     .and_then(|p| p.get("typ"))
                     .and_then(|t| t.as_str())
                 {
-                    let is_key_introducing =
-                        typ.contains("/key/create") || typ.contains("/key/replace");
+                    let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
                     if is_key_introducing && key_idx < commit.keys.len() {
                         let key_entry = &commit.keys[key_idx];
                         let key_val = serde_json::to_value(key_entry).unwrap();
@@ -381,8 +380,7 @@ fn run_engine_recovery_test<B, I>(
                 .and_then(|p| p.get("typ"))
                 .and_then(|t| t.as_str())
             {
-                let is_key_introducing =
-                    typ.contains("/key/create") || typ.contains("/key/replace");
+                let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
                 if is_key_introducing && key_idx < last_commit.keys.len() {
                     let key_entry = &last_commit.keys[key_idx];
                     let key_val = serde_json::to_value(key_entry).unwrap();
