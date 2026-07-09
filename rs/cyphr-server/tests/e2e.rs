@@ -265,6 +265,10 @@ async fn tip_unknown_principal() {
 }
 
 /// GET /e/{bad-digest} → 400 (malformed digest parse failure).
+///
+/// `entity`'s handler (`rs/cyphr-server/src/routes.rs`) always maps a
+/// `TaggedDigest` parse failure to `AppError::bad_request` -- 404 only
+/// arises later, for a well-formed digest that isn't found in the store.
 #[tokio::test]
 async fn entity_bad_digest() {
     let app = build_router(test_state());
@@ -275,11 +279,7 @@ async fn entity_bad_digest() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert!(
-        resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND,
-        "bad digest should return 400 or 404, got {}",
-        resp.status()
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// POST /push with empty blob list → 400.
@@ -324,7 +324,14 @@ async fn push_bad_base64_rejected() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-/// POST /push with malformed JSON blob (valid base64, not JSON) → 422.
+/// POST /push with malformed JSON blob (valid base64, not JSON) → 400.
+///
+/// Whichever path rejects it first -- `resolve_genesis`'s new-principal
+/// branch (`genesis_from_blob`) for this never-before-seen principal, or
+/// `submit_commit`'s own per-blob JSON parse -- both raise
+/// `EngineError::MalformedBlob`, which `AppError::engine`
+/// (`rs/cyphr-server/src/error.rs`) always maps to 400, never 422 (422 is
+/// reserved for a well-formed-JSON blob that fails protocol validation).
 #[tokio::test]
 async fn push_malformed_json_rejected() {
     let app = build_router(test_state());
@@ -343,12 +350,7 @@ async fn push_malformed_json_rejected() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    // Could be 400 (MalformedBlob) or 422 (Protocol) depending on parsing order.
-    let status = resp.status();
-    assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "malformed blob should return 400 or 422, got {status}"
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // ========================================================================
@@ -683,5 +685,122 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
         "concurrent submissions for distinct principals ({concurrent_elapsed:?}) should be faster \
          than the same work forced sequential ({sequential_elapsed:?}) -- a global (not \
          per-principal) lock would make these roughly equal or concurrent slower"
+    );
+}
+
+// ========================================================================
+// Tests — HTTP happy path via genuine genesis auto-detection
+// ========================================================================
+//
+// Unlike every test above (which bootstraps via the engine's explicit-genesis
+// API and only exercises HTTP for reads/error paths -- golden fixtures don't
+// embed genesis key material on wire blobs, see the module doc comment),
+// this drives a brand new principal's first-ever commit through the real
+// `POST /push` path end to end, including `resolve_genesis`'s genesis=None
+// auto-detection (`rs/cyphr-storage/src/engine/mod.rs`).
+
+/// A brand new principal's first-ever push -- a `key/create` adding a second
+/// key, closed by `commit/create` -- lands over real HTTP with no explicit
+/// genesis, is readable back via `/tip`, and its blobs round-trip via
+/// `/patch`.
+///
+/// This is this system's actual wire contract for bootstrapping a new
+/// principal: the closing `commit/create` cozy carries the genesis key in
+/// its own `"key"` field (distinct from the `key/create` cozy's `"key"`,
+/// which carries the *new* key being added) -- `resolve_genesis` scans for
+/// exactly that (`genesis_from_raw_blobs`). Before that scan existed, this
+/// exact scenario failed with 422 "unknown key" (F44): the new-principal
+/// branch blindly read blob 0's `"key"` field, which is the new key, not
+/// genesis.
+#[tokio::test]
+async fn push_new_principal_happy_path() {
+    let pool = load_pool();
+    let golden = pool.get("golden").expect("golden key in pool");
+    let golden_key = cyphr::Key {
+        alg: golden.alg.clone(),
+        tmb: golden.compute_tmb().expect("golden tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+    let now = 1_700_000_000;
+    let mut blobs = sign_key_create_commit(principal, &pool, "golden", "key_a", now);
+
+    // Embed the genesis key on the closing commit/create cozy -- the wire
+    // contract `resolve_genesis` requires for a brand new principal.
+    let closing_idx = blobs.len() - 1;
+    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
+    assert_eq!(
+        closing["pay"]["typ"], "cyphr.me/cyphr/commit/create",
+        "expected the last cozy in the bundle to be the closing commit/create"
+    );
+    closing.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({
+            "alg": golden_key.alg,
+            "pub": golden.pub_key,
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+        }),
+    );
+    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
+
+    let principal_id = "http-happy-path";
+    let body = serde_json::json!({
+        "principal_id": principal_id,
+        "blobs": blobs
+            .iter()
+            .map(|b| Base64UrlUnpadded::encode_string(b))
+            .collect::<Vec<_>>(),
+    })
+    .to_string();
+
+    let state = test_state();
+    let app = build_router(state);
+
+    let push_req = Request::builder()
+        .method("POST")
+        .uri("/push")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let push_resp = app.clone().oneshot(push_req).await.unwrap();
+    assert_eq!(push_resp.status(), StatusCode::CREATED);
+    let push_body = push_resp.into_body().collect().await.unwrap().to_bytes();
+    let push_json: serde_json::Value = serde_json::from_slice(&push_body).unwrap();
+    assert_eq!(
+        push_json["blob_hashes"].as_array().unwrap().len(),
+        blobs.len(),
+        "response should report a hash for every submitted blob"
+    );
+
+    let tip_req = Request::builder()
+        .uri(format!("/tip?pr={principal_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let tip_resp = app.clone().oneshot(tip_req).await.unwrap();
+    assert_eq!(tip_resp.status(), StatusCode::OK);
+    let tip_body = tip_resp.into_body().collect().await.unwrap().to_bytes();
+    let tip: serde_json::Value = serde_json::from_slice(&tip_body).unwrap();
+    assert_eq!(tip["principal_id"], principal_id);
+    assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
+
+    let patch_req = Request::builder()
+        .uri(format!("/patch?pr={principal_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let patch_resp = app.oneshot(patch_req).await.unwrap();
+    assert_eq!(patch_resp.status(), StatusCode::OK);
+    let patch_body = patch_resp.into_body().collect().await.unwrap().to_bytes();
+    let patch: serde_json::Value = serde_json::from_slice(&patch_body).unwrap();
+    let entries = patch["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "one commit was pushed");
+    assert_eq!(
+        entries[0]["blobs"].as_array().unwrap().len(),
+        blobs.len(),
+        "patch should return every blob from the pushed commit"
     );
 }
