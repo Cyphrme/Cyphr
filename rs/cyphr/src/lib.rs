@@ -24,6 +24,10 @@ pub mod commit;
 pub mod commit_root;
 pub mod error;
 pub mod hasher;
+/// Portable inclusion-proof verification (F9) — free functions taking proof
+/// material and a trusted root as plain parameters, with no `Principal`
+/// dependency.
+pub mod inclusion;
 pub mod key;
 pub mod multihash;
 pub mod parsed_coz;
@@ -45,9 +49,12 @@ pub mod transaction_root;
 pub use action::Action;
 pub use commit::{Commit, CommitScope, PendingCommit};
 pub use commit_root::{CommitRoot, CommitTrees, MaltHasher, verify_consistency, verify_inclusion};
-// EML proof types.
-// Re-exported so consumers can verify proofs without depending on `eml` directly.
-pub use eml::{ConsistencyProof, InclusionProof};
+// EML/polydigest proof types.
+// Re-exported so consumers can verify proofs without depending on `eml`/`polydigest` directly.
+pub use eml::{ConsistencyProof, InclusionProof, LeafProof};
+pub use inclusion::{
+    TransactionHop1, TransactionHop2, verify_key_inclusion, verify_transaction_inclusion,
+};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and
 // `eml::MemoryStorage` — the bound and default for `Principal`'s storage

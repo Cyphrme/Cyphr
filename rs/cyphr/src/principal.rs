@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 
 use coz::Thumbprint;
-use eml::Hasher as _;
 use indexmap::IndexMap;
 
 use crate::action::Action;
@@ -353,10 +352,11 @@ pub(crate) struct NodePathHop {
 /// ([`Principal::verify_key_inclusion`]) that's the right shape: generation
 /// is keyed on the target thumbprint and the roots come from the
 /// principal's own trusted cache, so it functions correctly as an
-/// internal proof/cache cross-check. A genuinely portable proof — one a
-/// remote verifier holding only a published PR and a thumbprint could
-/// check unassisted — is separate design work for whichever future node
-/// needs cross-crate verification, not a widening of this type now.
+/// internal proof/cache cross-check. The genuinely portable proof — one a
+/// remote verifier holding only a published PR and a thumbprint can check
+/// unassisted — is [`crate::inclusion::verify_key_inclusion`], which adds
+/// the missing thumbprint-to-leaf binding this type's `verify` alone does
+/// not provide, rather than widening this type itself.
 #[derive(Debug, Clone)]
 pub(crate) struct NodePath {
     /// Hops in leaf-to-root order.
@@ -1033,9 +1033,8 @@ impl<S: eml::Storage> Principal<S> {
         tr: &MultihashDigest,
     ) -> Result<bool> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-        let hasher = crate::commit_root::MaltHasher::new(alg);
 
-        // Hop 1: tr included in CR.
+        // Hop 1 material: tr's claimed inclusion in CR.
         let hop1_proof = self.inclusion_proof(alg, index)?;
         let tree_size = self
             .commit_trees
@@ -1050,17 +1049,7 @@ impl<S: eml::Storage> Principal<S> {
             .get(alg)
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
 
-        let mut mapped = BTreeMap::new();
-        for (&a, digest) in tr.variants() {
-            mapped.insert(crate::commit_root::hash_alg_to_u64(a), digest.clone());
-        }
-        let serialized = serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)?;
-        let leaf_hash = hasher.leaf(&serialized);
-
-        let hop1_ok =
-            crate::verify_inclusion(&hasher, &leaf_hash, index, tree_size, &hop1_proof, cr_bytes);
-
-        // Hop 2: CR (PT cell 1) included in PR.
+        // Hop 2 material: CR's (PT cell 1) claimed inclusion in PR.
         let hop2_proof = self
             .pt
             .cr_inclusion_proof(alg_id)
@@ -1070,15 +1059,21 @@ impl<S: eml::Storage> Principal<S> {
             .0
             .get(alg)
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        let hop2_skeleton =
-            polydigest::rebalanced_skeleton(hop2_proof.tree_size, hop2_proof.arity, hop2_proof.index)
-                .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        let hop2_ok = hop2_proof.verify(&hasher, &hop2_skeleton, pr_bytes);
 
-        // Bridge: hop 2's proven leaf is exactly hop 1's proven CR root.
-        let bridge_ok = hop2_proof.leaf_hash == cr_bytes;
-
-        Ok(hop1_ok && hop2_ok && bridge_ok)
+        Ok(crate::inclusion::verify_transaction_inclusion(
+            alg,
+            tr,
+            &crate::inclusion::TransactionHop1 {
+                index,
+                tree_size,
+                proof: &hop1_proof,
+                cr_root: cr_bytes,
+            },
+            &crate::inclusion::TransactionHop2 {
+                proof: &hop2_proof,
+                pr_root: pr_bytes,
+            },
+        ))
     }
 
     /// Prove that the currently active key with thumbprint `tmb` is
@@ -1175,8 +1170,10 @@ impl<S: eml::Storage> Principal<S> {
             .get_or_err(alg)?;
         let pr_bytes = self.pr.0.get_or_err(alg)?;
 
-        let hasher = crate::commit_root::MaltHasher::new(alg);
-        Ok(path.verify(&hasher, &[kr_bytes, ar_bytes, sr_bytes, pr_bytes]))
+        let hops: Vec<polydigest::LeafProof> = path.hops.iter().map(|h| h.proof.clone()).collect();
+        let roots: [&[u8]; 4] = [kr_bytes, ar_bytes, sr_bytes, pr_bytes];
+
+        Ok(crate::inclusion::verify_key_inclusion(alg, tmb, &hops, &roots))
     }
 
     /// Begin a new commit scope.
