@@ -265,6 +265,10 @@ async fn tip_unknown_principal() {
 }
 
 /// GET /e/{bad-digest} → 400 (malformed digest parse failure).
+///
+/// `entity`'s handler (`rs/cyphr-server/src/routes.rs`) always maps a
+/// `TaggedDigest` parse failure to `AppError::bad_request` -- 404 only
+/// arises later, for a well-formed digest that isn't found in the store.
 #[tokio::test]
 async fn entity_bad_digest() {
     let app = build_router(test_state());
@@ -275,11 +279,7 @@ async fn entity_bad_digest() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert!(
-        resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND,
-        "bad digest should return 400 or 404, got {}",
-        resp.status()
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// POST /push with empty blob list → 400.
@@ -324,7 +324,14 @@ async fn push_bad_base64_rejected() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-/// POST /push with malformed JSON blob (valid base64, not JSON) → 422.
+/// POST /push with malformed JSON blob (valid base64, not JSON) → 400.
+///
+/// Whichever path rejects it first -- `resolve_genesis`'s new-principal
+/// branch (`genesis_from_blob`) for this never-before-seen principal, or
+/// `submit_commit`'s own per-blob JSON parse -- both raise
+/// `EngineError::MalformedBlob`, which `AppError::engine`
+/// (`rs/cyphr-server/src/error.rs`) always maps to 400, never 422 (422 is
+/// reserved for a well-formed-JSON blob that fails protocol validation).
 #[tokio::test]
 async fn push_malformed_json_rejected() {
     let app = build_router(test_state());
@@ -343,12 +350,7 @@ async fn push_malformed_json_rejected() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    // Could be 400 (MalformedBlob) or 422 (Protocol) depending on parsing order.
-    let status = resp.status();
-    assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "malformed blob should return 400 or 422, got {status}"
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // ========================================================================
