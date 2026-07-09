@@ -219,6 +219,12 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Never blocks on a write: only ever holds the map's own lock for the
     /// duration of a `HashMap` lookup/insert, not across any `.await`.
     fn principal_lock(&self, principal_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        // A poisoned std Mutex means some prior holder of THIS lock panicked
+        // while holding it. The critical section below is only a HashMap
+        // entry/insert/clone on an owned String key -- no `.await`, no
+        // user-controlled Hash/Eq impl, nothing that can panic -- so
+        // poisoning here would imply a bug already crashing the server
+        // elsewhere, not a condition adversarial request input can trigger.
         let mut locks = self
             .principal_locks
             .lock()
@@ -1202,6 +1208,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             // Index the mock genesis cozy at the next free sequence.
             let genesis_commit_ids = format_multihash_all(principal.pr().as_multihash())?;
             let genesis_prs = format_multihash_all(principal.pr().as_multihash())?;
+            // `implicit_with_storage` (two lines above) unconditionally sets
+            // `sr: Some(sr)` -- a freshly constructed implicit principal
+            // always has an SR, never None.
             let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
             let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
 

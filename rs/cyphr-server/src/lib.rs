@@ -121,6 +121,13 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 }
 
 /// Wait for a shutdown signal (Ctrl-C / SIGTERM).
+///
+/// `axum::serve(..).with_graceful_shutdown(..)` requires a
+/// `Future<Output = ()>`, so there is no `Result` to propagate here even in
+/// principle. `ctrl_c()` only errs if the OS refuses to let the process
+/// install a signal handler at all -- a process-level failure unrelated to
+/// any request or its input, and one this process cannot meaningfully
+/// recover from (it would run with no way to shut down gracefully).
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await

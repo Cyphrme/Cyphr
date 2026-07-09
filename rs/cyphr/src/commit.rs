@@ -65,6 +65,10 @@ impl Commit {
     }
 
     /// Returns the commit transaction, which is the final logical transaction of the atomic bundle.
+    ///
+    /// `Commit::new` (the only constructor) rejects an empty `transactions`
+    /// with `Error::EmptyCommit`, and nothing mutates `transactions` after
+    /// construction -- a live `Commit` always has at least one.
     pub fn commit_tx(&self) -> &crate::transaction::Transaction {
         self.transactions.last().unwrap()
     }
