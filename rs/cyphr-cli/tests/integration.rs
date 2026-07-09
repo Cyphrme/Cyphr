@@ -373,6 +373,74 @@ fn test_explicit_multi_key_genesis_reload() {
 }
 
 #[test]
+fn test_explicit_multi_key_genesis_accepts_commits() {
+    // F40 regression: a genuinely fresh explicit multi-key genesis (2+
+    // keys, zero prior commits) must accept commits signed on top of it --
+    // not just reload (test_explicit_multi_key_genesis_reload, above).
+    //
+    // Root cause: `save_principal_to_engine` (cyphr-cli/src/commands/
+    // common.rs) reconstructed the `Genesis` it handed to
+    // `StorageEngine::submit_commit` from only `genesis_keys().first()`,
+    // silently collapsing a multi-key explicit genesis down to a
+    // single-key implicit one. The resubmitted commit's signer then didn't
+    // match the (wrongly narrowed) reconstructed principal's active key
+    // set, so `submit_commit`'s independent `load_principal` replay
+    // diverged from what the CLI had actually signed the arrow against --
+    // `finalize_commit`'s arrow-verification check (the sole surviving
+    // chain-integrity guard) correctly rejected the divergence with a
+    // "state root mismatch" error. A second, related bug at the same site
+    // affected only the second-and-later commit (this test's `key add`
+    // #2/#3): genesis was only supplied for the first commit, so later
+    // commits fell back to `StorageEngine::submit_commit`'s own
+    // server-side genesis reconstruction, which can only recover a
+    // *single* key from stored blob material and has no wire
+    // representation for a multi-key genesis at all.
+    let cli = CliTest::new();
+
+    let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
+    let key1_tmb = key1["tmb"].as_str().unwrap().to_string();
+    let key2 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k2"]);
+    let key2_tmb = key2["tmb"].as_str().unwrap().to_string();
+
+    let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
+    let init = cli.run_json(&["init", &keys_arg]);
+    let pr = init["pr"].as_str().unwrap().to_string();
+    let identity_arg = format!("--identity={pr}");
+    let signer_arg = format!("--signer={key1_tmb}");
+
+    // Commit #1 on top of the fresh multi-key genesis -- the exact F40
+    // scenario ("a second commit is signed on top of it", counting
+    // genesis itself as the first "commit").
+    let add1 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key3_tmb = add1["added_key"].as_str().unwrap().to_string();
+
+    // Commit #2: reload (replaying the one stored commit) and resubmit.
+    let add2 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key4_tmb = add2["added_key"].as_str().unwrap().to_string();
+
+    // Commit #3, for good measure -- proves this isn't merely "the second
+    // commit specifically" but genuinely fixed for the general case.
+    let add3 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key5_tmb = add3["added_key"].as_str().unwrap().to_string();
+
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
+    assert_eq!(inspect["commit_count"], 3);
+    let active_keys: Vec<_> = inspect["active_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["tmb"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(active_keys.len(), 5, "genesis's 2 keys plus 3 added keys");
+    for tmb in [&key1_tmb, &key2_tmb, &key3_tmb, &key4_tmb, &key5_tmb] {
+        assert!(
+            active_keys.contains(tmb),
+            "expected key {tmb} to be active after 3 commits on a multi-key genesis"
+        );
+    }
+}
+
+#[test]
 fn test_unresolvable_identity_fails_loudly() {
     // An identity that matches neither a keystore key, a recorded
     // explicit genesis, nor any stored commit must fail with a clear

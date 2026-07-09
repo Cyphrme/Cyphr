@@ -300,6 +300,37 @@ fn arrow_signed_commit_create(
     (pay_vec, sig, czd)
 }
 
+/// Build and sign a real `principal/create` coz under `signer`, carrying
+/// `id_tagged` (the pre-genesis Auth State digest, `alg:base64digest`) —
+/// the coz that transitions a Nascent multi-key principal to Established.
+fn arrow_signed_principal_create(
+    signer: &test_fixtures::PoolKey,
+    signer_tmb_b64: &str,
+    id_tagged: &str,
+    now: i64,
+) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+    let mut pay = serde_json::Map::new();
+    pay.insert("alg".to_string(), serde_json::json!(signer.alg));
+    pay.insert("id".to_string(), serde_json::json!(id_tagged));
+    pay.insert("now".to_string(), serde_json::json!(now));
+    pay.insert("tmb".to_string(), serde_json::json!(signer_tmb_b64));
+    pay.insert(
+        "typ".to_string(),
+        serde_json::json!("cyphr.me/cyphr/principal/create"),
+    );
+    let mut pay_obj = serde_json::Value::Object(pay);
+    pay_obj.as_object_mut().expect("object").sort_keys();
+    let pay_vec = serde_json::to_vec(&pay_obj).expect("serialize principal/create pay");
+
+    let prv_bytes = arrow_prv_bytes(signer);
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("signer pub base64");
+    let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes)
+        .expect("sign_json should support pool algorithm");
+    let czd = coz::czd_for_alg(&cad, &sig, &signer.alg)
+        .expect("czd_for_alg should support pool algorithm");
+    (pay_vec, sig, czd)
+}
+
 /// Flip one byte of `digest`'s bytes at `alg`, preserving byte length
 /// exactly, and rebuild as a single-variant `MultihashDigest`.
 fn arrow_tamper_digest(
@@ -526,4 +557,68 @@ proptest! {
             result.map(|_| ())
         );
     }
+}
+
+/// F40 regression: a genuinely fresh explicit multi-key genesis (2+ keys,
+/// zero prior commits) — signed and applied through the real production
+/// path (`CommitScope::verify_and_apply` + `finalize_with_arrow`, exactly
+/// as `cyphr-storage`'s write path and the CLI use it) — must accept a
+/// second, ordinary commit signed on top of it. Every prior arrow-property
+/// test in this file only ever exercises `Principal::implicit` (single-key,
+/// PG-less L1/L2) genesis; no existing test drives an *established*
+/// (`principal/create`-finalized) multi-key genesis through a second commit.
+#[test]
+fn test_explicit_multi_key_genesis_second_commit_succeeds() {
+    let pool = arrow_pool();
+    let key_a = arrow_pool_key(&pool, "golden");
+    let key_b = arrow_pool_key(&pool, "eve_ed25519");
+    let key_c = arrow_pool_key(&pool, "bob");
+
+    let a_tmb_b64 = key_a.compute_tmb_b64().expect("golden tmb b64");
+    let tmb_a = key_a.compute_tmb().expect("golden tmb");
+    let prv_a = arrow_prv_bytes(key_a);
+    let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
+    let now = 1_700_000_000i64;
+
+    let mut principal =
+        Principal::explicit(vec![arrow_domain_key(key_a), arrow_domain_key(key_b)])
+            .expect("explicit multi-key genesis construction");
+    assert!(
+        principal.pg().is_none(),
+        "PG must not exist before principal/create"
+    );
+
+    // pre-genesis PR == pre-genesis AR (singleton promotion, no CR/DR yet) —
+    // exactly what `principal/create`'s `id` field must carry per SPEC §5.1.
+    let id_tagged = principal
+        .pr_tagged()
+        .expect("pr_tagged should succeed for a fresh genesis");
+
+    // ---- Commit #1: principal/create, establishing PG. ----
+    let (pc_pay, pc_sig, pc_czd) = arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
+    let mut scope1 = principal.begin_commit();
+    scope1
+        .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
+        .expect("principal/create should apply to a fresh multi-key genesis");
+    scope1
+        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .expect("genesis commit should finalize");
+
+    assert!(
+        principal.pg().is_some(),
+        "PG must be established after the genesis commit"
+    );
+
+    // ---- Commit #2: an ordinary mutation signed on top of the now-Established principal. ----
+    let (kc_pay, kc_sig, kc_czd) = arrow_signed_key_create(key_a, &a_tmb_b64, key_c, now + 2);
+    let mut scope2 = principal.begin_commit();
+    scope2
+        .verify_and_apply(&kc_pay, &kc_sig, kc_czd, Some(arrow_domain_key(key_c)))
+        .expect("key/create mutation should apply to the second commit");
+    scope2
+        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .expect(
+            "a second commit signed on top of a fresh multi-key established genesis must \
+             finalize without a state-root mismatch (F40)",
+        );
 }

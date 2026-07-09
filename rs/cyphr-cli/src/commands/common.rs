@@ -315,6 +315,33 @@ fn is_key_embedding_typ(typ: &str) -> bool {
     cyphr::parsed_coz::typ::is_key_introducing(typ)
 }
 
+/// Resolve `principal`'s original genesis (implicit single-key, or explicit
+/// multi-key) from its own `genesis_keys()` and local `keystore` records —
+/// covering *every* genesis key, not just the first.
+///
+/// # Errors
+///
+/// Returns an error if any genesis key's thumbprint is not found in
+/// `keystore` (e.g. an imported principal whose genesis material never
+/// lived in this local keystore) — callers fall back to reconstructing
+/// genesis from stored blob material instead (see
+/// [`extract_genesis_from_commits`]).
+fn resolve_local_genesis<S: cyphr::eml::Storage>(
+    principal: &cyphr::Principal<S>,
+    keystore: &JsonKeyStore,
+) -> crate::Result<Genesis> {
+    let keys = principal
+        .genesis_keys()
+        .iter()
+        .map(|tmb| load_key_from_keystore(keystore, tmb))
+        .collect::<crate::Result<Vec<_>>>()?;
+
+    Ok(match keys.len() {
+        1 => Genesis::Implicit(keys.into_iter().next().unwrap()),
+        _ => Genesis::Explicit(keys),
+    })
+}
+
 /// Save a principal's new commits to the storage engine.
 ///
 /// Generic over `principal`'s own Commit Tree backend `S`: callers pass
@@ -360,23 +387,33 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                         }
                     }
                 } else if i == 0 && typ.contains("/commit/create") {
+                    // Best-effort: embed the genesis key's material into the
+                    // first commit's terminal coz, so a *single-key*
+                    // (implicit) genesis can be reconstructed later purely
+                    // from stored blobs even without a local keystore
+                    // record. A single JSON "key" field can only carry one
+                    // key's material, so this cannot represent a multi-key
+                    // (explicit) genesis without silently narrowing it down
+                    // to just the first key (the F40 root cause, in this
+                    // function's sibling `genesis` resolution below) — for
+                    // that case genesis reconstruction instead relies on
+                    // the local keystore's recorded genesis
+                    // (`keystore.lookup_genesis`, set at `init` time) or,
+                    // failing that, `extract_genesis_from_commits` scanning
+                    // every cozy's own embedded key material.
                     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-                    let identity_fallback =
-                        principal_id.split(':').next_back().unwrap().to_string();
-                    let identity = principal
-                        .genesis_keys()
-                        .first()
-                        .unwrap_or(&identity_fallback);
-                    if let Ok(key) = load_key_from_keystore(keystore, identity) {
-                        let key_entry = cyphr_storage::KeyEntry {
-                            alg: key.alg.clone(),
-                            pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
-                            tmb: key.tmb.to_b64(),
-                            tag: key.tag.clone(),
-                            now: Some(key.first_seen),
-                        };
-                        if let Some(obj) = coz_mut.as_object_mut() {
-                            obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
+                    if let [identity] = principal.genesis_keys() {
+                        if let Ok(key) = load_key_from_keystore(keystore, identity) {
+                            let key_entry = cyphr_storage::KeyEntry {
+                                alg: key.alg.clone(),
+                                pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
+                                tmb: key.tmb.to_b64(),
+                                tag: key.tag.clone(),
+                                now: Some(key.first_seen),
+                            };
+                            if let Some(obj) = coz_mut.as_object_mut() {
+                                obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
+                            }
                         }
                     }
                 }
@@ -386,15 +423,23 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
             }
             let raw_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
-            let genesis = if i == 0 {
-                let identity_fallback = principal_id.split(':').next_back().unwrap().to_string();
-                let identity = principal
-                    .genesis_keys()
-                    .first()
-                    .unwrap_or(&identity_fallback);
-                if let Ok(key) = load_key_from_keystore(keystore, identity) {
-                    Some(cyphr_storage::Genesis::Implicit(key))
-                } else {
+            // F40: always resolve genesis from what this caller already
+            // knows locally (covering every genesis key, not just the
+            // first), rather than only supplying it for the first commit
+            // and letting `submit_commit` fall back to reconstructing it
+            // server-side from stored blob material for i > 0. That
+            // server-side fallback (`StorageEngine::resolve_genesis`) can
+            // only recover a *single* embedded key from the first commit's
+            // blobs — it has no wire representation for a multi-key
+            // genesis at all — so relying on it for a multi-key genesis's
+            // second-and-later commits silently reconstructs the wrong
+            // principal (e.g. treating the first commit's newly-*added*
+            // key as if it were the whole genesis) and
+            // `finalize_commit`'s arrow check correctly rejects the
+            // resulting state-root divergence.
+            let genesis = match resolve_local_genesis(principal, keystore) {
+                Ok(genesis) => genesis,
+                Err(_) => {
                     let parsed_commit = cyphr_storage::CommitEntry {
                         cozies: commit.cozies.clone(),
                         keys: commit.keys.clone(),
@@ -403,15 +448,12 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                         sr: commit.sr.clone(),
                         pr: commit.pr.clone(),
                     };
-                    let extracted = extract_genesis_from_commits(&[parsed_commit], Some(keystore))?;
-                    Some(extracted)
-                }
-            } else {
-                None
+                    extract_genesis_from_commits(&[parsed_commit], Some(keystore))?
+                },
             };
 
             engine
-                .submit_commit(&principal_id, genesis, &raw_refs)
+                .submit_commit(&principal_id, Some(genesis), &raw_refs)
                 .await
                 .map_err(|e| crate::Error::Storage(e.to_string()))?;
         }
