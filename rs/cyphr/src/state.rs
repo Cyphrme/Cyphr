@@ -136,8 +136,15 @@ pub struct PrincipalGenesis(pub MultihashDigest);
 impl PrincipalGenesis {
     /// Create a PrincipalGenesis from raw bytes (e.g., for testing).
     /// Assumes SHA-256 algorithm for single-variant construction.
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self(MultihashDigest::from_single(HashAlg::Sha256, bytes).unwrap())
+    ///
+    /// # Errors
+    ///
+    /// Returns `DigestLengthMismatch` if `bytes` is not exactly 32 bytes —
+    /// reachable from untrusted input (e.g. a CLI-supplied genesis string,
+    /// or an implicit genesis whose thumbprint algorithm hashes to a
+    /// different width than SHA-256).
+    pub fn from_bytes(bytes: Vec<u8>) -> crate::error::Result<Self> {
+        Ok(Self(MultihashDigest::from_single(HashAlg::Sha256, bytes)?))
     }
 
     /// Create PG from the initial PR (at genesis).
@@ -896,6 +903,28 @@ mod tests {
         let digest = ks.get(HashAlg::Sha256).unwrap();
         assert_eq!(digest.len(), 32);
         assert_ne!(digest, tmb.as_bytes());
+    }
+
+    /// F46 regression: malformed (non-32-byte) input must be rejected with
+    /// `DigestLengthMismatch`, not panic — reachable from untrusted CLI
+    /// input via `parse_principal_genesis`.
+    #[test]
+    fn principal_genesis_from_bytes_rejects_wrong_length() {
+        let result = PrincipalGenesis::from_bytes(vec![0xAA; 31]);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::DigestLengthMismatch {
+                alg: HashAlg::Sha256,
+                expected: 32,
+                actual: 31,
+            })
+        ));
+    }
+
+    #[test]
+    fn principal_genesis_from_bytes_accepts_correct_length() {
+        let pg = PrincipalGenesis::from_bytes(vec![0xAA; 32]).expect("32 bytes should succeed");
+        assert_eq!(pg.0.get(HashAlg::Sha256).unwrap(), &[0xAA; 32][..]);
     }
 
     #[test]

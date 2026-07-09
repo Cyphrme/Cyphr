@@ -723,7 +723,7 @@ mod tests {
         use cyphr::multihash::MultihashDigest;
         use cyphr::state::HashAlg;
 
-        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]);
+        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]).unwrap();
         let checkpoint = Checkpoint {
             auth_root: AuthRoot(
                 MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap(),

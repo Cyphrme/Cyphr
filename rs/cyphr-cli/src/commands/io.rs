@@ -88,7 +88,9 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let pg = match principal.pg() {
         Some(pg) => pg.clone(),
         None => match &genesis {
-            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec()),
+            Genesis::Implicit(k) => {
+                cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec())?
+            },
             Genesis::Explicit(_) => {
                 return Err(Error::Storage(
                     "explicit genesis must establish a PG".into(),

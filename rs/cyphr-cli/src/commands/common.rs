@@ -484,7 +484,7 @@ pub fn get_commits_from_engine(
 /// Parse a base64url principal genesis string into a PrincipalGenesis.
 pub fn parse_principal_genesis(s: &str) -> crate::Result<cyphr::PrincipalGenesis> {
     let bytes = Base64UrlUnpadded::decode_vec(s)?;
-    Ok(cyphr::PrincipalGenesis::from_bytes(bytes))
+    Ok(cyphr::PrincipalGenesis::from_bytes(bytes)?)
 }
 
 /// Decode base64url string to bytes.
