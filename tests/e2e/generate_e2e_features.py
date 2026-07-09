@@ -480,14 +480,16 @@ def generate_toml():
         'error     = "NoGenesisKeys"',
         ""
     ])
-    # Case 2: Unsupported algorithm (RS256) -> UnsupportedAlgorithm
+    # Case 2: Unsupported algorithm (RS256) -> UnknownAlg (genesis-time
+    # construction rejects the algorithm itself; UnsupportedAlgorithm is a
+    # distinct error raised only at signing time, not genesis)
     toml_lines.extend([
         "[[test]]",
         'name      = "t2_f01_case2"',
         'principal = ["unsupported_key"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 3: Mixed genesis with unsupported key
@@ -497,7 +499,7 @@ def generate_toml():
         'principal = ["unsupported_key", "golden"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 4: Multiple unsupported keys
@@ -507,7 +509,7 @@ def generate_toml():
         'principal = ["unsupported_key", "unsupported_key"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 5: Empty principal with setup -> NoGenesisKeys
