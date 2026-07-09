@@ -113,14 +113,6 @@ pub struct GoldenExpected {
     pub pr: Option<String>,
     /// Expected Commit Root digest (first variant), present once the
     /// principal has at least one checkpointed commit.
-    ///
-    /// None of the persisted fixtures under `tests/golden/` carry a `cr`
-    /// value yet (the generator populates it, but the on-disk corpus
-    /// predates this field) — so `verify_expected`'s `cr` equality
-    /// branch is exercised today only by `golden::tests`'
-    /// `test_generate_single_commit` round trip, not by the corpus.
-    /// Backfilling the corpus is legitimate follow-up work, not done
-    /// here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cr: Option<String>,
     /// Expected commit ID digest.
@@ -1732,10 +1724,8 @@ level = 3
 
         // Round trip: independently reconstruct a principal from the same
         // intent/pool data and confirm its own recomputed cr matches
-        // golden.expected.cr byte-for-byte. This proves the cr equality
-        // is genuinely exercised (not just present) even though the
-        // persisted fixture corpus under tests/golden/ carries no cr
-        // values yet — see GoldenExpected::cr's doc comment.
+        // golden.expected.cr byte-for-byte, as an independent check on top
+        // of golden_fixtures.rs's corpus-driven cr equality assertion.
         let generator = Generator::new(&pool);
         let mut principal2 = generator
             .create_principal(&intent.test[0].principal, &intent.test[0].name)
