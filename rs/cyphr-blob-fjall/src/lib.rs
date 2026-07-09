@@ -93,8 +93,9 @@ pub fn open_eml_storage(
 /// `prefix` need not already satisfy `with_database_scoped`'s keyspace-name
 /// charset (alphanumeric, `_`, `-`, `.`, `#`, `$`): a Cyphr `principal_id`
 /// (e.g. `"SHA-256:U5XUZ..."`) always contains a `:` separator, which is
-/// outside it. Any character outside that charset is replaced with `_`
-/// before opening, so callers can pass a `principal_id` directly.
+/// outside it. Any byte outside that charset is escaped, injectively (see
+/// [`sanitize_fjall_prefix`]), before opening, so callers can pass a
+/// `principal_id` directly.
 pub fn open_eml_storage_scoped(
     db: Database,
     prefix: &str,
@@ -103,26 +104,55 @@ pub fn open_eml_storage_scoped(
     storage_fjall::FjallStorage::with_database_scoped(db, &sanitized)
 }
 
-/// Replace every character outside fjall's keyspace-name charset
-/// (alphanumeric, `_`, `-`, `.`, `#`, `$`) with `_`.
+/// Escape marker [`sanitize_fjall_prefix`] uses for its reversible
+/// encoding — reserved out of the passthrough set (see that function) so
+/// it can never appear un-escaped in the output.
+const FJALL_PREFIX_ESCAPE: char = '$';
+
+/// Map arbitrary bytes into fjall's keyspace-name charset (alphanumeric,
+/// `_`, `-`, `.`, `#`, `$`), injectively: distinct inputs always produce
+/// distinct output.
 ///
-/// Not collision-free for arbitrary input (two different inputs could map
-/// to the same sanitized output), but is collision-free for this module's
-/// actual input shape: a Cyphr `principal_id` is always `"{alg}:{digest}"`
-/// where `alg` is alphanumeric/hyphen and `digest` is unpadded base64url
-/// (`A-Za-z0-9-_`) — both already within the allowed charset — joined by
-/// exactly one `:`, the sole character this replaces.
+/// # Why not blind substitution
+///
+/// An earlier version replaced every disallowed byte with a fixed `_`,
+/// which is lossy: e.g. `"a:b"` (colon) and `"a_b"` (literal underscore)
+/// both sanitized to `"a_b"`, a genuine same-length collision no length
+/// prefix can fix (length-prefixing — the pattern `commit_key` in
+/// `cyphr-index-fjall` uses — only disambiguates *variable-length* field
+/// boundaries; it does nothing for a same-length, information-losing
+/// character map like this one). A Cyphr `principal_id` is always
+/// `"{alg}:{digest}"` and so never triggers this in practice, but
+/// `principal_id` is caller-supplied and not otherwise validated —
+/// multitenancy correctness (root AGENTS.md I2) must not depend on that
+/// shape holding.
+///
+/// # Encoding
+///
+/// Every allowed byte passes through unchanged, *except* the escape
+/// marker `$` itself, which (like every other disallowed byte) is
+/// replaced with `$` followed by its two-hex-digit value. Because `$`
+/// therefore never appears un-escaped in the output, a `$` encountered
+/// left-to-right always starts exactly one two-hex-digit escape unit —
+/// the encoding is uniquely decodable (hence injective) with no length
+/// prefix needed: two distinct inputs can only produce the same output if
+/// some output position is simultaneously a passthrough byte and part of
+/// an escape unit, which the reserved marker rules out by construction.
+/// See `injectivity` tests below for the adversarial cases this rules out.
 fn sanitize_fjall_prefix(prefix: &str) -> String {
-    prefix
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#' | '$') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut out = String::with_capacity(prefix.len());
+    for b in prefix.bytes() {
+        let c = b as char;
+        if c != FJALL_PREFIX_ESCAPE
+            && (c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#'))
+        {
+            out.push(c);
+        } else {
+            out.push(FJALL_PREFIX_ESCAPE);
+            out.push_str(&format!("{b:02x}"));
+        }
+    }
+    out
 }
 
 impl BlobStore for FjallBlobStore {
