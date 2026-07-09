@@ -78,9 +78,6 @@ All active development happens here.
   czd computation are hand-rolled in ~4/10 places (engine, reindex,
   import, CLI) with silent defaults. Don't add a fifth — the campaign
   consolidates these into canonical `cyphr` primitives.
-- Conformance suites exist for `Indexer`/`BlobStore`/engine but currently
-  run only against memory backends (forge #35 and siblings) — new backend
-  work must wire them, not hand-roll subsets.
 
 ## Unknowns
 

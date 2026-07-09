@@ -30,7 +30,7 @@ jobs:
           workspaces: rs
       - run: cargo build --verbose
       - run: cargo test --verbose
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
 
   fuzz:
     runs-on: ubuntu-latest
