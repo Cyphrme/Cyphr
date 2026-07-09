@@ -372,6 +372,33 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// **Note:** This method does NOT validate protocol-level
     /// signatures or state transitions. That responsibility belongs
     /// to the protocol validation layer (Phase 3b).
+    ///
+    /// # Locking
+    ///
+    /// This method holds no lock of its own: the read-then-write sequence
+    /// it performs (resolving `commit.sequence` against the indexer's
+    /// current tip, then writing) is only safe against concurrent writers
+    /// for the same `principal_id` because [`Self::submit_commit`] -- its
+    /// sole caller -- already holds that principal's serialization lock
+    /// across its whole critical section, including this call.
+    /// `pub(crate)` rather than `pub` so a caller outside this module
+    /// cannot reach it without also reaching (and being reminded of) that
+    /// invariant; call [`Self::submit_commit`] instead.
+    ///
+    /// ```compile_fail
+    /// # async fn f(
+    /// #     engine: &cyphr_storage::engine::StorageEngine<
+    /// #         cyphr_storage::blob::MemoryBlobStore,
+    /// #         cyphr_storage::index::MemoryIndexer,
+    /// #     >,
+    /// #     blobs: &[&[u8]],
+    /// #     commit: cyphr_storage::index::IndexableCommit,
+    /// # ) {
+    /// // ingest_commit is pub(crate): unreachable from outside this crate,
+    /// // so a caller cannot bypass submit_commit's serialization lock.
+    /// let _ = engine.ingest_commit(blobs, commit).await;
+    /// # }
+    /// ```
     #[tracing::instrument(
         skip(self, blobs),
         fields(
@@ -379,7 +406,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             blob_count = blobs.len()
         )
     )]
-    pub async fn ingest_commit(
+    pub(crate) async fn ingest_commit(
         &self,
         blobs: &[&[u8]],
         commit: IndexableCommit,
