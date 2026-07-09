@@ -12,6 +12,8 @@
 //! - [`FjallBlobStore`] — LSM-tree backend (production)
 //! - [`MemoryBlobStore`] — `HashMap`-backed (testing)
 
+#[cfg(any(test, feature = "conformance-tests"))]
+pub mod conformance;
 mod memory;
 
 use std::fmt;

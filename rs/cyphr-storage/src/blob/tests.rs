@@ -1,69 +1,43 @@
+//! `MemoryBlobStore` conformance wrappers.
+//!
+//! Each test delegates to a shared, generic behavior function in
+//! [`super::conformance`] -- the same functions any other `BlobStore`
+//! implementation's own test suite calls, so `MemoryBlobStore` and every
+//! durable backend are held to one behavioral bar, not independently
+//! hand-duplicated ones.
+
+use super::conformance;
 use super::*;
 
-/// Run a test suite against the MemoryBlobStore implementation.
-async fn test_blob_store<S: BlobStore>(store: &S) {
-    // put + get round-trip
-    let data = b"hello cyphr protocol";
-    let hash = store.put(data).await.expect("put failed");
-    let retrieved = store
-        .get(&hash)
-        .await
-        .expect("get failed")
-        .expect("missing blob");
-    assert_eq!(retrieved, data, "round-trip content mismatch");
-
-    // get nonexistent returns None
-    let bogus = Blake3Hash::from_bytes([0xAB; 32]);
-    let result = store.get(&bogus).await.expect("get failed");
-    assert!(result.is_none(), "nonexistent hash should return None");
-
-    // exists true/false
-    assert!(
-        store.exists(&hash).await.expect("exists failed"),
-        "stored blob should exist"
-    );
-    assert!(
-        !store.exists(&bogus).await.expect("exists failed"),
-        "absent blob should not exist"
-    );
-
-    // put is idempotent: same content → same hash, no error
-    let hash2 = store.put(data).await.expect("idempotent put failed");
-    assert_eq!(hash, hash2, "idempotent put should return same hash");
-
-    // iter returns all stored entries
-    let data2 = b"second blob";
-    let hash3 = store.put(data2).await.expect("put failed");
-
-    let iter = store.iter().await.expect("iter failed");
-    let all: Vec<Blake3Hash> = iter
-        .collect::<Result<Vec<_>, _>>()
-        .expect("iter item failed");
-
-    assert!(
-        all.len() >= 2,
-        "iter should return at least 2 entries, got {}",
-        all.len()
-    );
-    assert!(all.contains(&hash), "iter should contain first blob");
-    assert!(all.contains(&hash3), "iter should contain second blob");
+#[tokio::test]
+async fn put_get_roundtrip() {
+    conformance::put_get_roundtrip(&MemoryBlobStore::new()).await;
 }
 
 #[tokio::test]
-async fn memory_blob_store() {
-    let store = MemoryBlobStore::new();
-    test_blob_store(&store).await;
+async fn get_missing_returns_none() {
+    conformance::get_missing_returns_none(&MemoryBlobStore::new()).await;
 }
 
 #[tokio::test]
-async fn memory_blob_store_limits() {
+async fn exists_reflects_presence() {
+    conformance::exists_reflects_presence(&MemoryBlobStore::new()).await;
+}
+
+#[tokio::test]
+async fn put_is_idempotent() {
+    conformance::put_is_idempotent(&MemoryBlobStore::new()).await;
+}
+
+#[tokio::test]
+async fn iter_returns_all_stored() {
+    conformance::iter_returns_all_stored(&MemoryBlobStore::new()).await;
+}
+
+#[tokio::test]
+async fn max_blob_size_enforced() {
     let store = MemoryBlobStore::new().with_max_blob_size(10);
-    assert!(store.put(b"short").await.is_ok());
-    let err = store.put(b"this is way too long").await.unwrap_err();
-    assert!(matches!(
-        err,
-        BlobStoreError::BlobTooLarge { size: 20, max: 10 }
-    ));
+    conformance::max_blob_size_enforced(&store, 10).await;
 }
 
 // -- Blake3Hash unit tests --
