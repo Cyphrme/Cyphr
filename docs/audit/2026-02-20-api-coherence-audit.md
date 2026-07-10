@@ -812,7 +812,7 @@ These gaps are addressed in Appendix B (Behavioral Correctness Audit).
 21. [ ] **[Rust `cyphr-cli`]** De-duplicate key generation match arms (~320 lines across `init.rs`/`key.rs`). Use `coz::Alg` runtime dispatch or a macro. — _C.3_
 22. [ ] **[Go `state.go`]** Evaluate `DataState` inner type — Go uses `coz.B64` (raw bytes), Rust uses `coz::Cad`. Determine if Go should wrap a typed digest. — _D.3_
 23. [ ] **[Go/Rust]** Decide Go commit-based storage path. If needed, port `CommitEntry`, `load_principal_from_commits`, `Checkpoint`, `load_from_checkpoint` from Rust. — _D.6, DEV-1, DEV-2_
-24. [ ] **[Go/Rust]** Hoist `pre` verification to occur once before transaction dispatch (with self-revoke opt-out) to prevent silent invariant drops. — _C.3_
+24. [x] ~~**[Go/Rust]** Hoist `pre` verification to occur once before transaction dispatch (with self-revoke opt-out) to prevent silent invariant drops. — _C.3_~~ MOOT (2026-07-08): per-mutation `pre` was removed from the wire format and implementation entirely — see `docs/specs/transactions.md` [transaction-classification]. There is no `pre` field left to hoist verification of.
 25. [ ] **[Go/Rust]** Add missing negative tests (e.g., revoked key re-add BUG-12, genesis zero keys BUG-3/5, timestamp regression C.6). — _E.4_
 26. [ ] **[Go/Rust]** Add language-independent hand-computed reference vectors for state verification (JSON/TOML format). — _C.4, E.5_
 27. [ ] **[Go/Rust]** Settle Data Action pipeline design (shared vs separate) before storage refactoring to avoid double work. — _B.6, C.7_

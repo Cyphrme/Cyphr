@@ -17,8 +17,11 @@
 determine capability, the lifecycle states a principal can occupy, and the
 principal-level operations (close, merge, fork) that alter identity.
 
-**Target System:** `SPEC.md` §3 (Feature Levels), §11 (Principal Lifecycle
-States), §19 (Close, Merge, Fork).
+**Target System:** `SPEC.md` §3.0 (Feature Levels), §11 (Principal
+Lifecycle States), §11.4-11.5 (Close, Merge, Fork). Citation corrected
+2026-07-08 — §19 is now Error Conditions, not Close/Merge/Fork, which
+SPEC.md places within §11 itself; this document's own per-constraint
+Verification table below has not yet been re-audited line-by-line.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -31,6 +34,30 @@ out of their identities.
 — transaction semantics that produce lifecycle transitions.
 [`state-tree.md`](./state-tree.md)
 — state computation underlying level-dependent structures.
+
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
+"implemented."** The Verification table's uniform 25/25 `pass` is
+misleading — confirmed by direct search of `rs/`:
+
+- **No lifecycle state machine exists.** There is no `LifecycleState` enum,
+  no `IsFrozen`/`Zombie` tracking, and no `freeze/create`, `principal/merge`,
+  or `principal/fork/create` transaction `typ` anywhere in `rs/`. All of
+  [errored-orthogonal] through [dead-terminal]'s Close/Merge/Fork/Freeze
+  transitions (matching `docs/protocol/constraint_coverage.md`'s own
+  19-constraint OOS count for this section) are unimplemented.
+- **`Principal::level()` cannot return `Level::L2`.** Its own comment says
+  so: "Level 2 if any key/replace occurred... For now, single key with no
+  commits = Level 1" (`rs/cyphr/src/principal.rs`). [level-2-single-key] is
+  therefore not fully implemented, despite this document's `pass`.
+- **What IS implemented**: Level 1/3/4 composition (single static key,
+  multi-key, Data Tree actions) and the no-active-keys terminal state
+  ([dead-terminal], [no-level-1-recovery]) reachable via ordinary
+  `key/revoke`. The `principal/delete`, `principal/merge`,
+  `principal/fork/create`, and `freeze/create` transactions themselves do
+  not exist as distinct mechanisms — only the revoke-driven dead-end is
+  real.
 
 ## Constraints
 
@@ -280,6 +307,10 @@ keys once all are revoked/deleted and no recovery path exists.
 <!-- Tier 2+ formalization is structured for but not populated in this pass. -->
 
 ## Verification
+
+> See "Implementation Status" above: `pass` below means SPEC-internal
+> consistency, not implementation. No lifecycle state machine, freeze,
+> merge, or fork exists; `level()` cannot return `L2`.
 
 | Constraint                      | Method      | Result | Detail                               |
 | :------------------------------ | :---------- | :----- | :----------------------------------- |

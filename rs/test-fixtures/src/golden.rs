@@ -13,7 +13,7 @@
 //! 2. For each coz, captures `pre` from current state root
 //! 3. Builds and signs the Coz message
 //! 4. Applies the coz to the Principal
-//! 5. Extracts final state digests (ks, as, sr, ps, commit_id)
+//! 5. Extracts final state digests (ks, as, sr, pr, commit_id)
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::StateDigest;
@@ -45,7 +45,7 @@ pub struct Golden {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis_keys: Option<Vec<GoldenKey>>,
     /// Commit bundles in application order (one commit per line in JSONL).
-    /// Each commit contains: cozies (cozies), ts, as, ps digests.
+    /// Each commit contains: cozies (cozies), ts, as, pr digests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<CommitEntry>>,
     /// Coz digests (czd) parallel to all cozies across commits.
@@ -113,14 +113,6 @@ pub struct GoldenExpected {
     pub pr: Option<String>,
     /// Expected Commit Root digest (first variant), present once the
     /// principal has at least one checkpointed commit.
-    ///
-    /// None of the persisted fixtures under `tests/golden/` carry a `cr`
-    /// value yet (the generator populates it, but the on-disk corpus
-    /// predates this field) — so `verify_expected`'s `cr` equality
-    /// branch is exercised today only by `golden::tests`'
-    /// `test_generate_single_commit` round trip, not by the corpus.
-    /// Backfilling the corpus is legitimate follow-up work, not done
-    /// here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cr: Option<String>,
     /// Expected commit ID digest.
@@ -156,6 +148,27 @@ pub struct GoldenExpected {
 // Generator
 // ============================================================================
 
+/// Canonical name for a genesis-time protocol error, matching the
+/// vocabulary test intents declare in their `expected.error` field (see
+/// `error_name` in `rs/cyphr/tests/golden_fixtures.rs`, which independently
+/// maintains the same mapping for the consumer side).
+fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
+    use cyphr::error::Error;
+    match e {
+        Error::UnknownKey => "UnknownKey",
+        Error::UnknownAlg => "UnknownAlg",
+        Error::KeyRevoked => "KeyRevoked",
+        Error::NoActiveKeys => "NoActiveKeys",
+        Error::DuplicateKey => "DuplicateKey",
+        Error::TimestampPast => "TimestampPast",
+        Error::TimestampFuture => "TimestampFuture",
+        Error::InvalidSignature => "InvalidSignature",
+        Error::MalformedPayload => "MalformedPayload",
+        Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+        _ => "UnknownError",
+    }
+}
+
 /// Generates golden test cases from intent definitions.
 ///
 /// The generator transforms human-readable intent files into
@@ -176,7 +189,7 @@ impl<'a> Generator<'a> {
 
     /// Format principal state as tagged digest string (alg:digest format).
     ///
-    /// Delegates to Principal::pr_tagged() — the canonical `pre` format.
+    /// Delegates to `Principal::pr_tagged()`.
     fn format_pr_tagged(principal: &cyphr::Principal) -> Result<String, Error> {
         principal.pr_tagged().map_err(|e| Error::Generation {
             name: String::new(),
@@ -211,8 +224,23 @@ impl<'a> Generator<'a> {
         let mut principal = match principal_result {
             Ok(p) => p,
             Err(e) => {
-                // If we expected an error and got one during genesis, generate error golden
-                if expected_error.is_some() {
+                // If we expected an error and got one during genesis, generate
+                // error golden -- but only once the declared string is
+                // confirmed to match the error genesis actually raised, so a
+                // wrong declared expectation fails generation loudly instead
+                // of silently shipping a fixture that encodes it.
+                if let Some(declared) = expected_error {
+                    if let Error::GenesisFailed { source, .. } = e {
+                        let actual = cyphr_error_name(&source);
+                        if declared != actual {
+                            return Err(Error::DeclaredErrorMismatch {
+                                name: test.name.clone(),
+                                declared,
+                                actual,
+                                source,
+                            });
+                        }
+                    }
                     return Ok(Golden {
                         name: test.name.clone(),
                         principal: test.principal.clone(),
@@ -221,7 +249,7 @@ impl<'a> Generator<'a> {
                         commits: None,
                         digests: None,
                         expected: GoldenExpected {
-                            error: expected_error,
+                            error: Some(declared),
                             ..Default::default()
                         },
                     });
@@ -418,7 +446,7 @@ impl<'a> Generator<'a> {
             String::new(), // commit_id placeholder for error tests
             String::new(), // as placeholder for error tests
             String::new(), // sr placeholder for error tests
-            String::new(), // ps placeholder for error tests
+            String::new(), // pr placeholder for error tests
         )
     }
 
@@ -446,16 +474,16 @@ impl<'a> Generator<'a> {
 
         // Auto-promotion: 1 key = implicit, >1 = explicit
         if keys.len() == 1 {
-            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|e| {
-                Error::Generation {
+            cyphr::Principal::implicit(keys.into_iter().next().unwrap()).map_err(|source| {
+                Error::GenesisFailed {
                     name: test_name.to_string(),
-                    reason: format!("failed to create implicit principal: {}", e),
+                    source,
                 }
             })
         } else {
-            cyphr::Principal::explicit(keys).map_err(|e| Error::Generation {
+            cyphr::Principal::explicit(keys).map_err(|source| Error::GenesisFailed {
                 name: test_name.to_string(),
-                reason: format!("failed to create explicit principal: {}", e),
+                source,
             })
         }
     }
@@ -479,6 +507,165 @@ impl<'a> Generator<'a> {
             revocation: None,
             tag: pool_key.tag.clone(),
         })
+    }
+
+    /// Build a `CozSignerInfo` (alg, prv, pub, tmb_b64, now) for `name`, for
+    /// use as a candidate signer of a commit's terminal `commit/create` coz.
+    fn signer_info_for(&self, name: &str, now: i64) -> Result<CozSignerInfo, Error> {
+        let key = self.resolve_key(name)?;
+        let tmb_b64 = key.compute_tmb_b64()?;
+        let prv_b64 = key.prv.as_ref().ok_or_else(|| Error::MissingPrivateKey {
+            name: key.name.clone(),
+        })?;
+        let prv_bytes =
+            Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid prv base64: {}", name, e),
+            })?;
+        let pub_bytes =
+            Base64UrlUnpadded::decode_vec(&key.pub_key).map_err(|e| Error::PoolValidation {
+                message: format!("key '{}': invalid pub base64: {}", name, e),
+            })?;
+        Ok((key.alg.clone(), prv_bytes, pub_bytes, tmb_b64, now))
+    }
+
+    /// Choose which candidate should sign a commit's terminal `commit/create`
+    /// coz: the commit's first coz signer, unless that signer's key was
+    /// itself retired by a later mutation in the same commit (e.g. a
+    /// `key/replace` or self-revoke of the commit's own first signer) — in
+    /// which case the most-recently-introduced new key (guaranteed active)
+    /// is used instead. Falls back to the first signer if no later key was
+    /// introduced, unchanged from previous behavior.
+    fn choose_commit_signer(
+        scope: &cyphr::CommitScope<'_>,
+        first_coz_signer: Option<CozSignerInfo>,
+        last_new_key_signer: Option<CozSignerInfo>,
+    ) -> Option<CozSignerInfo> {
+        let first_still_active = first_coz_signer
+            .as_ref()
+            .is_some_and(|(_, _, _, tmb_b64, _)| {
+                Base64UrlUnpadded::decode_vec(tmb_b64)
+                    .ok()
+                    .map(coz::Thumbprint::from_bytes)
+                    .is_some_and(|tmb| scope.is_key_active(&tmb))
+            });
+
+        if first_still_active {
+            first_coz_signer
+        } else {
+            last_new_key_signer.or(first_coz_signer)
+        }
+    }
+
+    /// Sign and apply every cozy in `commit_intent`'s transactions to a
+    /// freshly-opened `CommitScope` on `principal`, then finalize with the
+    /// terminal `commit/create` (Arrow) cozy per `choose_commit_signer`.
+    ///
+    /// `pre` is the Principal Root captured before this commit began (used
+    /// only for a `principal/create` cozy's `id` field).
+    ///
+    /// Returns the base64 czd of each applied cozy, in application order.
+    fn sign_and_apply_commit(
+        &self,
+        test_name: &str,
+        commit_intent: &CommitIntent,
+        principal: &mut cyphr::Principal,
+        pre: &str,
+    ) -> Result<Vec<String>, Error> {
+        let mut scope = principal.begin_commit();
+        let mut first_coz_signer: Option<CozSignerInfo> = None;
+        let mut last_new_key_signer: Option<CozSignerInfo> = None;
+        let mut czds = Vec::new();
+
+        for tx_group in &commit_intent.tx {
+            for tx_cz in tx_group {
+                let signer = self.resolve_key(&tx_cz.signer)?;
+                let signer_tmb = signer.compute_tmb_b64()?;
+                let prv_b64 = signer
+                    .prv
+                    .as_ref()
+                    .ok_or_else(|| Error::MissingPrivateKey {
+                        name: signer.name.clone(),
+                    })?;
+                let prv_bytes =
+                    Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::Generation {
+                        name: test_name.to_string(),
+                        reason: format!("invalid prv base64: {}", e),
+                    })?;
+                let pub_bytes = Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| {
+                    Error::Generation {
+                        name: test_name.to_string(),
+                        reason: format!("invalid pub base64: {}", e),
+                    }
+                })?;
+
+                // Build pay value for this cozy. `pre` only matters for a
+                // principal/create's `id` field; other cozy types ignore it.
+                let pay_value = self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
+                let pay_vec = serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
+                    name: test_name.to_string(),
+                    reason: e.to_string(),
+                })?;
+
+                let (sig_bytes, cad) =
+                    coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes).unwrap();
+                let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).unwrap();
+
+                let new_key = if (tx_cz.typ.ends_with("key/create")
+                    || tx_cz.typ.ends_with("key/replace"))
+                    && let Some(target_name) = tx_cz.target.as_ref()
+                {
+                    // The new key is only a fallback-signer candidate (see
+                    // choose_commit_signer) if the pool holds its private half;
+                    // a public-only pool key (simulating an externally-held key)
+                    // simply can't ever sign, so leave last_new_key_signer unset.
+                    match self.signer_info_for(target_name, tx_cz.now) {
+                        Ok(info) => last_new_key_signer = Some(info),
+                        Err(Error::MissingPrivateKey { .. }) => {},
+                        Err(e) => return Err(e),
+                    }
+                    Some(self.pool_key_to_cyphr_key(target_name)?)
+                } else {
+                    None
+                };
+
+                scope
+                    .verify_and_apply(&pay_vec, &sig_bytes, czd.clone(), new_key)
+                    .map_err(|e| Error::Generation {
+                        name: test_name.to_string(),
+                        reason: format!("failed to verify_and_apply cozy: {}", e),
+                    })?;
+
+                czds.push(czd.to_b64());
+
+                if first_coz_signer.is_none() {
+                    first_coz_signer = Some((
+                        signer.alg.clone(),
+                        prv_bytes,
+                        pub_bytes,
+                        signer_tmb,
+                        tx_cz.now,
+                    ));
+                }
+            }
+        }
+
+        // Finalize the commit scope using the first signer's credentials, unless that
+        // signer's key was itself retired within this commit (see choose_commit_signer).
+        let (alg, prv, pub_k, tmb_str, coz_now) =
+            Self::choose_commit_signer(&scope, first_coz_signer, last_new_key_signer).ok_or_else(
+                || Error::InvalidIntent {
+                    message: format!("test '{}': no cozies applied", test_name),
+                },
+            )?;
+        let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
+        scope
+            .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
+            .map_err(|e| Error::Generation {
+                name: test_name.to_string(),
+                reason: format!("failed to finalize commit: {}", e),
+            })?;
+
+        Ok(czds)
     }
 
     /// Generate a single-commit golden test case.
@@ -536,16 +723,8 @@ impl<'a> Generator<'a> {
             .and_then(|e| e.error.as_ref())
             .is_some();
 
-        // Capture pre (principal state before coz) in alg:digest format
-        // Use override.pre if specified (for InvalidPrior tests)
-        let computed_pre;
-        let pre: &str =
-            if let Some(override_pre) = test.override_.as_ref().and_then(|o| o.pre.as_deref()) {
-                override_pre
-            } else {
-                computed_pre = Self::format_pr_tagged(principal)?;
-                &computed_pre
-            };
+        // Capture the current PR (used only for principal/create's `id` field).
+        let current_pr = Self::format_pr_tagged(principal)?;
 
         // Apply override.now if specified (for TimestampPast tests)
         let cz_modified;
@@ -559,21 +738,11 @@ impl<'a> Generator<'a> {
             cz
         };
 
-        // Apply override.omit_pre if specified (for [transaction-pre-required] tests)
-        let pre_pass = if test
-            .override_
-            .as_ref()
-            .is_some_and(|o| o.omit_pre.unwrap_or(false))
-        {
-            None
-        } else {
-            Some(pre)
-        };
-
         let coz = if is_error_test {
-            // Error tests: sign manually — CommitScope would reject invalid payloads
-            // (e.g., wrong pre). We need valid signatures over intentionally bad data.
-            let (coz, _sig_bytes, _czd) = self.build_golden_coz(cz, &test.name, pre_pass)?;
+            // Error tests: sign manually — CommitScope would reject invalid payloads.
+            // We need valid signatures over intentionally bad data.
+            let (coz, _sig_bytes, _czd) =
+                self.build_golden_coz(cz, &test.name, Some(&current_pr))?;
             coz
         } else {
             let commit_intent = test.commit.first().ok_or_else(|| Error::InvalidIntent {
@@ -583,90 +752,7 @@ impl<'a> Generator<'a> {
                 ),
             })?;
 
-            let mut scope = principal.begin_commit();
-
-            // We need to keep track of the first signer to sign the final commit/create (Arrow)
-            // cozy
-            let mut first_coz_signer: Option<CozSignerInfo> = None;
-
-            for tx_group in &commit_intent.tx {
-                for tx_cz in tx_group {
-                    let signer = self.resolve_key(&tx_cz.signer)?;
-                    let signer_tmb = signer.compute_tmb_b64()?;
-                    let prv_b64 = signer
-                        .prv
-                        .as_ref()
-                        .ok_or_else(|| Error::MissingPrivateKey {
-                            name: signer.name.clone(),
-                        })?;
-                    let prv_bytes =
-                        Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| Error::Generation {
-                            name: test.name.clone(),
-                            reason: format!("invalid prv base64: {}", e),
-                        })?;
-                    let pub_bytes =
-                        Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| {
-                            Error::Generation {
-                                name: test.name.clone(),
-                                reason: format!("invalid pub base64: {}", e),
-                            }
-                        })?;
-
-                    // Build pay value for this cozy. The pre-state is the principal's state before
-                    // the commit began.
-                    let pay_value =
-                        self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(pre))?;
-                    let pay_vec =
-                        serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
-                            name: test.name.clone(),
-                            reason: e.to_string(),
-                        })?;
-
-                    let (sig_bytes, cad) =
-                        coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes).unwrap();
-                    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).unwrap();
-
-                    let new_key = if (tx_cz.typ.ends_with("key/create")
-                        || tx_cz.typ.ends_with("key/replace"))
-                        && let Some(target_name) = tx_cz.target.as_ref()
-                    {
-                        Some(self.pool_key_to_cyphr_key(target_name)?)
-                    } else {
-                        None
-                    };
-
-                    scope
-                        .verify_and_apply(&pay_vec, &sig_bytes, czd, new_key)
-                        .map_err(|e| Error::Generation {
-                            name: test.name.clone(),
-                            reason: format!("failed to verify_and_apply cozy: {}", e),
-                        })?;
-
-                    if first_coz_signer.is_none() {
-                        first_coz_signer = Some((
-                            signer.alg.clone(),
-                            prv_bytes,
-                            pub_bytes,
-                            signer_tmb,
-                            tx_cz.now,
-                        ));
-                    }
-                }
-            }
-
-            // Finalize the commit scope using the first signer's credentials (this generates the
-            // commit/create)
-            let (alg, prv, pub_k, tmb_str, coz_now) =
-                first_coz_signer.ok_or_else(|| Error::InvalidIntent {
-                    message: format!("test '{}': no cozies applied", test.name),
-                })?;
-            let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
-            let _commit = scope
-                .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
-                .map_err(|e| Error::Generation {
-                    name: test.name.clone(),
-                    reason: format!("failed to finalize commit: {}", e),
-                })?;
+            self.sign_and_apply_commit(&test.name, commit_intent, principal, &current_pr)?;
 
             // Return a placeholder GoldenCoz since it's not used in happy path (commits are
             // exported from principal directly)
@@ -742,94 +828,8 @@ impl<'a> Generator<'a> {
                     })?;
                 coz
             } else {
-                // Happy path: open a CommitScope and apply all cozies in all transactions of the
-                // commit
-                let mut scope = principal.begin_commit();
-
-                // We need to keep track of the first signer to sign the final commit/create (Arrow)
-                // cozy
-                let mut first_coz_signer: Option<CozSignerInfo> = None;
-
-                for tx_group in &commit.tx {
-                    for tx_cz in tx_group {
-                        let signer = self.resolve_key(&tx_cz.signer)?;
-                        let signer_tmb = signer.compute_tmb_b64()?;
-                        let prv_b64 =
-                            signer
-                                .prv
-                                .as_ref()
-                                .ok_or_else(|| Error::MissingPrivateKey {
-                                    name: signer.name.clone(),
-                                })?;
-                        let prv_bytes = Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| {
-                            Error::Generation {
-                                name: test.name.clone(),
-                                reason: format!("invalid prv base64: {}", e),
-                            }
-                        })?;
-                        let pub_bytes =
-                            Base64UrlUnpadded::decode_vec(&signer.pub_key).map_err(|e| {
-                                Error::Generation {
-                                    name: test.name.clone(),
-                                    reason: format!("invalid pub base64: {}", e),
-                                }
-                            })?;
-
-                        // Build pay value for this cozy. The pre-state is the principal's state
-                        // before the commit began.
-                        let pay_value =
-                            self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&pre))?;
-                        let pay_vec =
-                            serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
-                                name: test.name.clone(),
-                                reason: e.to_string(),
-                            })?;
-
-                        let (sig_bytes, cad) =
-                            coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes).unwrap();
-                        let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).unwrap();
-
-                        let new_key = if (tx_cz.typ.ends_with("key/create")
-                            || tx_cz.typ.ends_with("key/replace"))
-                            && let Some(target_name) = tx_cz.target.as_ref()
-                        {
-                            Some(self.pool_key_to_cyphr_key(target_name)?)
-                        } else {
-                            None
-                        };
-
-                        scope
-                            .verify_and_apply(&pay_vec, &sig_bytes, czd, new_key)
-                            .map_err(|e| Error::Generation {
-                                name: test.name.clone(),
-                                reason: format!("failed to verify_and_apply cozy: {}", e),
-                            })?;
-
-                        if first_coz_signer.is_none() {
-                            first_coz_signer = Some((
-                                signer.alg.clone(),
-                                prv_bytes,
-                                pub_bytes,
-                                signer_tmb,
-                                tx_cz.now,
-                            ));
-                        }
-                    }
-                }
-
-                // Finalize the commit scope using the first signer's credentials
-                let (alg, prv, pub_k, tmb_str, coz_now) =
-                    first_coz_signer.ok_or_else(|| Error::InvalidIntent {
-                        message: format!("test '{}': no cozies applied", test.name),
-                    })?;
-                let tmb =
-                    coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
-                let _commit = scope
-                    .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
-                    .map_err(|e| Error::Generation {
-                        name: test.name.clone(),
-                        reason: format!("failed to finalize commit: {}", e),
-                    })?;
+                // Happy path: apply all cozies in all transactions of the commit
+                self.sign_and_apply_commit(&test.name, commit, principal, &pre)?;
 
                 // Return a placeholder GoldenCoz since it's not used in happy path (commits are
                 // exported from principal directly)
@@ -893,14 +893,9 @@ impl<'a> Generator<'a> {
 
     /// Generate a combined commit + action test case.
     ///
-    /// The commit cozies are applied first, then the actions.
-    /// Generate a combined commit + action test case.
-    ///
-    /// The commit cozies and actions are executed sequentially in chronological order.
-    /// Generate a combined commit + action test case.
-    ///
-    /// The commits are executed first, followed by actions, to match the order
-    /// in the exported golden fixture.
+    /// Commits and actions are merged into one timeline and applied in
+    /// chronological order (by each event's first `now` timestamp), matching
+    /// the order in the exported golden fixture.
     fn generate_tx_and_action(
         &self,
         test: &TestIntent,
@@ -941,92 +936,11 @@ impl<'a> Generator<'a> {
         for event in timeline {
             match event {
                 TimelineEvent::Commit(commit_intent) => {
-                    // Open a CommitScope and apply all cozies in all transactions of the commit
+                    // Apply all cozies in all transactions of the commit
                     let pre = Self::format_pr_tagged(principal)?;
-                    let mut scope = principal.begin_commit();
-                    let mut first_coz_signer: Option<CozSignerInfo> = None;
-
-                    for tx_group in &commit_intent.tx {
-                        for tx_cz in tx_group {
-                            let signer = self.resolve_key(&tx_cz.signer)?;
-                            let signer_tmb = signer.compute_tmb_b64()?;
-                            let prv_b64 =
-                                signer
-                                    .prv
-                                    .as_ref()
-                                    .ok_or_else(|| Error::MissingPrivateKey {
-                                        name: signer.name.clone(),
-                                    })?;
-                            let prv_bytes =
-                                Base64UrlUnpadded::decode_vec(prv_b64).map_err(|e| {
-                                    Error::Generation {
-                                        name: test.name.clone(),
-                                        reason: format!("invalid prv base64: {}", e),
-                                    }
-                                })?;
-                            let pub_bytes = Base64UrlUnpadded::decode_vec(&signer.pub_key)
-                                .map_err(|e| Error::Generation {
-                                    name: test.name.clone(),
-                                    reason: format!("invalid pub base64: {}", e),
-                                })?;
-
-                            let pay_value =
-                                self.build_pay_value(tx_cz, &signer.alg, &signer_tmb, Some(&pre))?;
-                            let pay_vec =
-                                serde_json::to_vec(&pay_value).map_err(|e| Error::Generation {
-                                    name: test.name.clone(),
-                                    reason: e.to_string(),
-                                })?;
-
-                            let (sig_bytes, cad) =
-                                coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes)
-                                    .unwrap();
-                            let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).unwrap();
-
-                            let new_key = if (tx_cz.typ.ends_with("key/create")
-                                || tx_cz.typ.ends_with("key/replace"))
-                                && let Some(target_name) = tx_cz.target.as_ref()
-                            {
-                                Some(self.pool_key_to_cyphr_key(target_name)?)
-                            } else {
-                                None
-                            };
-
-                            scope
-                                .verify_and_apply(&pay_vec, &sig_bytes, czd.clone(), new_key)
-                                .map_err(|e| Error::Generation {
-                                    name: test.name.clone(),
-                                    reason: format!("failed to verify_and_apply cozy: {}", e),
-                                })?;
-
-                            digests.push(czd.to_b64());
-
-                            if first_coz_signer.is_none() {
-                                first_coz_signer = Some((
-                                    signer.alg.clone(),
-                                    prv_bytes,
-                                    pub_bytes,
-                                    signer_tmb,
-                                    tx_cz.now,
-                                ));
-                            }
-                        }
-                    }
-
-                    // Finalize the commit scope using the first signer's credentials
-                    let (alg, prv, pub_k, tmb_str, coz_now) =
-                        first_coz_signer.ok_or_else(|| Error::InvalidIntent {
-                            message: format!("test '{}': no cozies applied", test.name),
-                        })?;
-                    let tmb = coz::Thumbprint::from_bytes(
-                        Base64UrlUnpadded::decode_vec(&tmb_str).unwrap(),
-                    );
-                    let _commit = scope
-                        .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
-                        .map_err(|e| Error::Generation {
-                            name: test.name.clone(),
-                            reason: format!("failed to finalize commit: {}", e),
-                        })?;
+                    let czds =
+                        self.sign_and_apply_commit(&test.name, commit_intent, principal, &pre)?;
+                    digests.extend(czds);
                 },
                 TimelineEvent::Action(action_intent) => {
                     let action_pre = if test
@@ -1431,13 +1345,14 @@ impl<'a> Generator<'a> {
         &self,
         cz: &TxIntent,
         test_name: &str,
-        pre: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<(GoldenCoz, Vec<u8>, coz::Czd), Error> {
         // Resolve signer
         let signer = self.resolve_key(&cz.signer)?;
 
-        // Build pay JSON with derived fields (including pre)
-        let pay_json = self.build_pay_json(cz, &signer.alg, &signer.compute_tmb_b64()?, pre)?;
+        // Build pay JSON with derived fields
+        let pay_json =
+            self.build_pay_json(cz, &signer.alg, &signer.compute_tmb_b64()?, current_pr)?;
 
         // Sign the message
         let (sig_b64, sig_bytes, czd_b64, czd, embedded_key) =
@@ -1460,12 +1375,20 @@ impl<'a> Generator<'a> {
     ///
     /// Returns the pay without `commit` field — CommitScope injects that.
     /// Per Coz spec, standard fields appear in canonical (alphabetic) order.
+    ///
+    /// `current_pr` is the Principal Root immediately before this cozy — it
+    /// no longer appears on the wire as a `pre` field (only the closing
+    /// `commit/create`'s `arrow` carries chain data), but `principal/create`
+    /// still needs it to derive its `id` field (SPEC §5.1 step 3: `id` equals
+    /// the future SR, which — absent a CR at this pre-commit point — is the
+    /// same value as the current PR), since `principal/create` doesn't
+    /// mutate state, only freezes PG.
     fn build_pay_value(
         &self,
         cz: &TxIntent,
         alg: &str,
         tmb: &str,
-        pre: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<Value, Error> {
         let mut fields: IndexMap<String, Value> = IndexMap::new();
 
@@ -1475,14 +1398,11 @@ impl<'a> Generator<'a> {
         // id field handling depends on coz type
         let is_principal_create = cz.typ.contains("principal/create");
         if is_principal_create {
-            // For principal/create, id is the current PS (SPEC §5.1: "id: Final PS = PR").
-            // pre is the PS-tagged value, which equals PS at this point since
-            // principal/create doesn't mutate state — it only freezes PR.
-            let ps_val = pre.ok_or_else(|| Error::Generation {
+            let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
-                reason: "principal/create requires pre (PS) for id field".to_string(),
+                reason: "principal/create requires current PR for id field".to_string(),
             })?;
-            fields.insert("id".to_string(), Value::String(ps_val.to_string()));
+            fields.insert("id".to_string(), Value::String(pr_val.to_string()));
         } else if let Some(target_name) = &cz.target {
             // For key/create etc, id is the target key thumbprint
             let target = self.resolve_key(target_name)?;
@@ -1497,11 +1417,6 @@ impl<'a> Generator<'a> {
 
         // now (timestamp)
         fields.insert("now".to_string(), Value::Number(cz.now.into()));
-
-        // pre (prior auth state) - only for cozies, not genesis
-        if let Some(pre_val) = pre {
-            fields.insert("pre".to_string(), Value::String(pre_val.to_string()));
-        }
 
         // rvk if present
         if let Some(rvk) = cz.rvk {
@@ -1528,9 +1443,9 @@ impl<'a> Generator<'a> {
         cz: &TxIntent,
         alg: &str,
         tmb: &str,
-        pre: Option<&str>,
+        current_pr: Option<&str>,
     ) -> Result<Vec<u8>, Error> {
-        let value = self.build_pay_value(cz, alg, tmb, pre)?;
+        let value = self.build_pay_value(cz, alg, tmb, current_pr)?;
         serde_json::to_vec(&value).map_err(|e| Error::Signing {
             message: format!("failed to serialize pay: {}", e),
         })
@@ -1808,8 +1723,8 @@ level = 3
         assert_eq!(pay["typ"], "cyphr.me/cyphr/key/create");
         assert_eq!(pay["now"], 1700000000);
         assert!(
-            pay.get("pre").is_some(),
-            "pre should be populated on genesis mutation coz"
+            pay.get("pre").is_none(),
+            "mutation cozies must not carry a pre field — only commit/create's arrow does"
         );
 
         let cz2 = &commit.cozies[1];
@@ -1845,10 +1760,8 @@ level = 3
 
         // Round trip: independently reconstruct a principal from the same
         // intent/pool data and confirm its own recomputed cr matches
-        // golden.expected.cr byte-for-byte. This proves the cr equality
-        // is genuinely exercised (not just present) even though the
-        // persisted fixture corpus under tests/golden/ carries no cr
-        // values yet — see GoldenExpected::cr's doc comment.
+        // golden.expected.cr byte-for-byte, as an independent check on top
+        // of golden_fixtures.rs's corpus-driven cr equality assertion.
         let generator = Generator::new(&pool);
         let mut principal2 = generator
             .create_principal(&intent.test[0].principal, &intent.test[0].name)
@@ -1903,6 +1816,75 @@ tx = [
     }
 
     #[test]
+    fn test_declared_genesis_error_matching_actual_succeeds() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+
+        // "unsupported_key" (RS256) genuinely fails genesis with UnknownAlg.
+        let intent_str = r#"
+[[test]]
+name = "unsupported_algorithm_fails"
+principal = ["unsupported_key"]
+
+[test.expected]
+error = "UnknownAlg"
+"#;
+
+        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
+        let goldens = generate(&intent, &pool).expect("declared error matches actual");
+
+        assert_eq!(goldens[0].expected.error.as_deref(), Some("UnknownAlg"));
+    }
+
+    #[test]
+    fn test_declared_genesis_error_mismatch_fails_loudly() {
+        let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/keys/pool.toml");
+
+        let pool = Pool::load(&pool_path).expect("failed to load pool");
+
+        // "unsupported_key" (RS256) genuinely fails genesis with UnknownAlg,
+        // not UnsupportedAlgorithm -- this mirrors the exact drift F45
+        // describes (tests/intents/errors.toml once declared
+        // "UnsupportedAlgorithm" for this same case). The generator must
+        // reject the wrong declared string rather than shipping a fixture
+        // that silently encodes it.
+        let intent_str = r#"
+[[test]]
+name = "unsupported_algorithm_fails"
+principal = ["unsupported_key"]
+
+[test.expected]
+error = "UnsupportedAlgorithm"
+"#;
+
+        let intent = crate::Intent::from_str(intent_str).expect("failed to parse intent");
+        let result = generate(&intent, &pool);
+
+        let err = result.expect_err(
+            "generation must fail loudly when the declared error doesn't match the actual one",
+        );
+        assert!(
+            matches!(err, Error::DeclaredErrorMismatch { .. }),
+            "expected DeclaredErrorMismatch, got {:?}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("UnsupportedAlgorithm"), "{}", msg);
+        assert!(msg.contains("UnknownAlg"), "{}", msg);
+    }
+
+    #[test]
     fn test_genesis_state_computation() {
         // Test that genesis produces correct state (all promoted)
         let pool_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1931,7 +1913,7 @@ tx = [
 
         let golden = &goldens[0];
 
-        // For single-key implicit genesis, PR = PS = AS = KS = tmb
+        // For single-key implicit genesis, PR = SR = AR = KR = tmb
         // After adding alice, we should have 2 keys
         assert_eq!(golden.expected.key_count, Some(2));
 

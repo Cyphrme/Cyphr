@@ -2,19 +2,18 @@
 
 <!--
   SPEC document — abstract API requirements for the BlobStore layer.
-  Source: storage-engine.md (original), .sketches/2026-05-28-storage-object-model.md
+  Source: storage-engine.md (original), a 2026-05-28 storage-object-model
+  design sketch (no longer in the repository)
   Authority: SPEC.md (Zamicol and nrdxp)
 
   This document specifies the backend-agnostic contract for content-addressed
-  blob storage. Implementation-specific details (Fjall partitions, SQLite
-  schemas, etc.) belong in their respective implementation specs.
+  blob storage. Implementation-specific details (Fjall partitions, key
+  layouts, etc.) belong in their respective implementation specs.
 
   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
   document are to be interpreted as described in BCP 14 (RFC 2119, RFC 8174) when,
   and only when, they appear in all capitals, as shown here.
-
-  See: .agent/workflows/spec.md for the full protocol specification.
 -->
 
 ## Domain

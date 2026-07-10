@@ -3,10 +3,7 @@
 // This package supports the two-tiered test system:
 //
 //  1. Golden files (JSON): Pre-computed tests with real cryptographic values
-//  2. Intent files (TOML): Human-readable test definitions (future)
-//
-// For now, only golden file consumption is implemented. Intent parsing will be
-// added when E2E tests require it.
+//  2. Intent files (TOML): Human-readable test definitions
 //
 // # Usage
 //

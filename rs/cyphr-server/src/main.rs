@@ -23,7 +23,13 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Serve(_) => {
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("failed to create tokio runtime: {e}");
+                    return ExitCode::FAILURE;
+                },
+            };
             if let Err(e) = rt.block_on(cyphr_server::serve(config)) {
                 tracing::error!(error = %e, "server exited with error");
                 return ExitCode::FAILURE;
@@ -34,7 +40,13 @@ fn main() -> ExitCode {
             if let Some(dir) = data_dir {
                 resolved_config.data_dir = dir;
             }
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("failed to create tokio runtime: {e}");
+                    return ExitCode::FAILURE;
+                },
+            };
             if let Err(e) = rt.block_on(async {
                 let state = cyphr_server::AppState::new(resolved_config)?;
                 tracing::info!(
@@ -50,7 +62,12 @@ fn main() -> ExitCode {
             }
         },
         Command::Export { .. } => {
-            tracing::warn!("export not yet implemented");
+            // Not yet implemented: fail loudly with a non-zero exit code
+            // rather than logging a warning (easily missed, or filtered
+            // out entirely depending on log level) and then exiting 0 as
+            // if the export had actually happened.
+            eprintln!("error: export is not yet implemented");
+            return ExitCode::FAILURE;
         },
     }
 

@@ -18,8 +18,11 @@ resync, witness behavior, state jumping, and the complete error taxonomy.
 The consensus model is deliberately minimal, favoring simplicity and
 independent verifiability over global coordination.
 
-**Target System:** `SPEC.md` §17 (Consensus), §23 (State Jumping), §24 (Error
-Conditions).
+**Target System:** `SPEC.md` §15 (Consensus), §18 (State Jumping), §19
+(Error Conditions). Citation corrected 2026-07-08 — SPEC.md was renumbered
+and these topics previously sat at §17/§23/§24; this document's own
+per-constraint Verification table below still cites the old numbers and
+has not yet been re-audited line-by-line.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -32,6 +35,20 @@ history rewriting, or denial of service.
 — commit chain that consensus protects.
 [`principal-lifecycle.md`](./principal-lifecycle.md)
 — lifecycle state transitions triggered by consensus violations.
+
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` in this document means "explicit in or
+inferable from SPEC.md," not "implemented in `rs/` or `go/`.** Confirmed by
+direct search of `rs/`: there is no witness consensus-state machine, no
+fork detection or resync/patch protocol, no state-jump mechanism, and no
+proof-of-error retention anywhere in the codebase — zero matches for
+`resync`, `ConsensusState`, `state_jump`/`jump_to_ps`, or `ProofOfError` in
+any non-test `.rs` file. The entire witness/consensus protocol this
+document specifies is unimplemented; every row in the Verification table
+below reflects internal consistency with SPEC.md, not a working
+implementation. This is unchanged by any work landed elsewhere in the
+current campaign — no witness/consensus node has been dispatched.
 
 ## Constraints
 
@@ -260,6 +277,10 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 <!-- Tier 2+ formalization is structured for but not populated in this pass. -->
 
 ## Verification
+
+> See "Implementation Status" above: every `pass` below means SPEC-internal
+> consistency, not a working implementation. None of this document's
+> constraints have rs/go code behind them.
 
 | Constraint                     | Method      | Result | Detail                           |
 | :----------------------------- | :---------- | :----- | :------------------------------- |

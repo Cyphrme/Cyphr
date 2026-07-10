@@ -52,11 +52,7 @@ impl MultihashDigest {
             return Err(crate::error::Error::EmptyMultihash);
         }
         for (&alg, digest) in &variants {
-            let expected = match alg {
-                HashAlg::Sha256 => 32,
-                HashAlg::Sha384 => 48,
-                HashAlg::Sha512 => 64,
-            };
+            let expected = crate::state::TaggedDigest::expected_len(alg);
             if digest.len() != expected {
                 return Err(crate::error::Error::DigestLengthMismatch {
                     alg,
@@ -71,11 +67,7 @@ impl MultihashDigest {
     /// Create from a single-algorithm digest.
     pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> crate::error::Result<Self> {
         let digest_box = digest.into();
-        let expected = match alg {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        };
+        let expected = crate::state::TaggedDigest::expected_len(alg);
         if digest_box.len() != expected {
             return Err(crate::error::Error::DigestLengthMismatch {
                 alg,
@@ -129,20 +121,56 @@ impl MultihashDigest {
         self.variants
     }
 
-    /// Get digest for a specific algorithm, falling back to the first available variant.
+    /// Get the digest for a specific algorithm, or a clear error if this
+    /// multihash has no variant for it.
     ///
-    /// This is the fallible replacement for the common pattern:
-    /// ```ignore
-    /// mh.get(alg).or_else(|| mh.variants().values().next().map(AsRef::as_ref)).expect("...")
-    /// ```
+    /// Deliberately does **not** fall back to a different algorithm's bytes:
+    /// a caller asking for one algorithm's digest and silently receiving
+    /// another algorithm's bytes is a masked error, not a fallback worth
+    /// having at a trust boundary. Mirrors [`Self::tagged`]'s contract.
     ///
     /// # Errors
     ///
-    /// Returns `EmptyMultihash` if no variants exist.
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
     pub fn get_or_err(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
         self.get(alg)
-            .or_else(|| self.variants.values().next().map(AsRef::as_ref))
-            .ok_or(crate::error::Error::EmptyMultihash)
+            .ok_or(crate::error::Error::MissingVariant(alg))
+    }
+
+    /// Get the digest bytes for Arrow's algorithm-fallback rule, mirroring
+    /// `polydigest::root::combined_root`'s general fold: try `alg` first;
+    /// else, if this multihash has exactly one variant, promote it
+    /// regardless of `alg` (genesis promotion — a component with only one
+    /// active algorithm contributes that algorithm's digest regardless of
+    /// the signer's, rather than erroring just because the signer replaced
+    /// the sole active key with one of a different algorithm in this same
+    /// commit); else, with two or more variants and none matching `alg`,
+    /// fold ALL currently-available variants together — sort, concatenate,
+    /// and hash under `alg` — exactly mirroring
+    /// [`crate::state::hash_sorted_concat_bytes`].
+    ///
+    /// A no-op when this multihash already has `alg`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if this multihash has zero variants.
+    pub fn arrow_component_bytes(
+        &self,
+        alg: HashAlg,
+    ) -> crate::error::Result<std::borrow::Cow<'_, [u8]>> {
+        if let Some(bytes) = self.get(alg) {
+            return Ok(std::borrow::Cow::Borrowed(bytes));
+        }
+        if self.len() == 1 {
+            return self.first_variant().map(std::borrow::Cow::Borrowed);
+        }
+        if self.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        let all_variants: Vec<&[u8]> = self.variants.values().map(AsRef::as_ref).collect();
+        Ok(std::borrow::Cow::Owned(
+            crate::state::hash_sorted_concat_bytes(alg, &all_variants),
+        ))
     }
 
     /// Get the first available variant's bytes.
@@ -156,6 +184,33 @@ impl MultihashDigest {
             .next()
             .map(AsRef::as_ref)
             .ok_or(crate::error::Error::EmptyMultihash)
+    }
+
+    /// Build the tagged wire-format digest (`alg:base64digest`) for a
+    /// specific algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
+    pub fn tagged(&self, alg: HashAlg) -> crate::error::Result<crate::state::TaggedDigest> {
+        let bytes = self
+            .get(alg)
+            .ok_or(crate::error::Error::MissingVariant(alg))?;
+        crate::state::TaggedDigest::new(alg, bytes.to_vec())
+    }
+
+    /// Build the tagged wire-format digest (`alg:base64digest`) for the
+    /// first available algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if no variants exist.
+    pub fn tagged_first(&self) -> crate::error::Result<crate::state::TaggedDigest> {
+        let alg = self
+            .algorithms()
+            .next()
+            .ok_or(crate::error::Error::EmptyMultihash)?;
+        self.tagged(alg)
     }
 
     /// Check if this multihash matches another on all common algorithms.

@@ -26,7 +26,7 @@ pub enum Genesis {
     /// Implicit genesis: single key, no coz required.
     ///
     /// Per SPEC §5.1: "Identity emerges from first key possession"
-    /// - `PS = AS = KS = tmb` (PR is None at L1/L2)
+    /// - `PR = AR = KR = tmb` (PG is None at L1/L2)
     Implicit(Key),
 
     /// Explicit genesis: multiple keys established at creation.
@@ -85,10 +85,6 @@ pub enum LoadError {
     #[error("invalid signature at index {index}: {message}")]
     InvalidSignature { index: usize, message: String },
 
-    /// ParsedCoz pre field doesn't match expected AS.
-    #[error("broken chain at index {index}: pre mismatch")]
-    BrokenChain { index: usize },
-
     /// Unknown signer key.
     #[error("unknown signer at index {index}: {tmb}")]
     UnknownSigner { index: usize, tmb: String },
@@ -144,7 +140,6 @@ pub(crate) fn is_transaction_typ(typ: &str) -> bool {
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -187,10 +182,9 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///
 /// * `expected_pr` - The expected Principal Root (for security validation)
 /// * `checkpoint` - Trusted state to start from
-/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint
-///   carries MALT proof-generation state. `None` yields a principal with no
-///   CR, matching pre-checkpoint-CR behavior. When `Some` and
-///   `checkpoint.cr` is also `Some`, the CR computed from `trees` is
+/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint carries MALT
+///   proof-generation state. `None` yields a principal with no CR, matching pre-checkpoint-CR
+///   behavior. When `Some` and `checkpoint.cr` is also `Some`, the CR computed from `trees` is
 ///   verified against `checkpoint.cr` before it's trusted.
 /// * `entries` - Entries after the checkpoint to replay
 ///
@@ -249,7 +243,6 @@ pub fn load_from_checkpoint(
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -304,9 +297,9 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             .map_err(|_| LoadError::MissingTimestamp { index })?;
 
         // Determine if this is a coz or action by typ prefix
-        let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+        let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
 
-        if is_transaction_typ(typ) {
+        if is_transaction_typ(&header.typ) {
             // ParsedCoz: extract key material if present
             let new_key = extract_key_from_entry(&raw);
 
@@ -321,14 +314,9 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                         index,
                         message: "signature verification failed".into(),
                     },
-                    cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
@@ -345,11 +333,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                     },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
@@ -389,8 +373,8 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
             let pay = tx_value.get("pay").ok_or(LoadError::MissingTimestamp {
                 index: commit_idx * 1000 + tx_idx,
             })?;
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
-            if is_transaction_typ(typ) {
+            let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
+            if is_transaction_typ(&header.typ) {
                 first_tx_idx = Some(tx_idx);
                 break;
             }
@@ -468,10 +452,10 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                 let pay_json = serde_json::to_vec(&pay_val)
                     .map_err(|e| LoadError::Json { index, source: e })?;
 
-                let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+                let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
 
-                if is_transaction_typ(typ) {
-                    let new_key = if is_key_introducing_typ(typ) {
+                if is_transaction_typ(&header.typ) {
+                    let new_key = if is_key_introducing_typ(&header.typ) {
                         key_iter.next().map(key_entry_to_key).transpose()?
                     } else {
                         None
@@ -481,10 +465,8 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                         .get("alg")
                         .and_then(|a| a.as_str())
                         .ok_or(LoadError::UnsupportedAlgorithm)?;
-                    let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
+                    let czd = cyphr::compute_czd(&pay_json, &sig, alg)
                         .ok_or(LoadError::UnsupportedAlgorithm)?;
-                    let czd =
-                        coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
 
                     scope
                         .verify_and_apply(&pay_json, &sig, czd, new_key)
@@ -493,24 +475,15 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
                                 index,
                                 message: "signature verification failed".into(),
                             },
-                            cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
                             cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                                 index,
-                                tmb: pay
-                                    .get("tmb")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("?")
-                                    .into(),
+                                tmb: header.tmb.to_b64(),
                             },
                             other => LoadError::Protocol(other),
                         })?;
                     applied_tx_count += 1;
                 } else {
-                    let tmb = pay
-                        .get("tmb")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("?")
-                        .to_string();
+                    let tmb = header.tmb.to_b64();
                     deferred_actions.push((index, pay_json, sig, tmb));
                 }
             }
@@ -589,9 +562,10 @@ pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
 }
 
 /// Returns true if a coz type introduces new key material.
-pub(crate) fn is_key_introducing_typ(typ: &str) -> bool {
-    typ.contains("/key/create") || typ.contains("/key/replace")
-}
+///
+/// Canonical implementation lives in `cyphr::parsed_coz::typ` -- this is a
+/// thin re-export so existing call sites don't need to change.
+pub(crate) use cyphr::parsed_coz::typ::is_key_introducing as is_key_introducing_typ;
 
 /// Convert a commit-level KeyEntry to a Principal Key.
 pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
@@ -649,8 +623,8 @@ pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 
 /// Compute Coz digest for an entry.
 ///
-/// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
-/// consistent hash computation matching the signing path.
+/// Delegates to `cyphr::compute_czd` to ensure consistent hash computation
+/// matching the signing path.
 pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadError> {
     let pay: serde_json::Value = serde_json::from_slice(pay_json).map_err(|e| LoadError::Json {
         index: 0,
@@ -661,14 +635,7 @@ pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadE
         .and_then(|a| a.as_str())
         .ok_or(LoadError::UnsupportedAlgorithm)?;
 
-    // Compute cad using canonical hash (compacts JSON first)
-    let cad =
-        coz::canonical_hash_for_alg(pay_json, alg, None).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    // Compute czd using canonical {"cad":"...","sig":"..."} format
-    let czd = coz::czd_for_alg(&cad, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    Ok(czd)
+    cyphr::compute_czd(pay_json, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)
 }
 
 // ============================================================================
@@ -698,8 +665,8 @@ mod tests {
 
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
-        // Implicit genesis: PR is None at L1
-        assert!(principal.pg().is_none(), "PR should be None at L1");
+        // Implicit genesis: PG is None at L1
+        assert!(principal.pg().is_none(), "PG should be None at L1");
         assert_eq!(principal.active_key_count(), 1);
     }
 
@@ -711,10 +678,10 @@ mod tests {
         let principal =
             load_principal(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[]).unwrap();
 
-        // Explicit genesis: PR is None (needs principal/create)
+        // Explicit genesis: PG is None (needs principal/create)
         assert!(
             principal.pg().is_none(),
-            "PR should be None before principal/create"
+            "PG should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
         assert!(principal.is_key_active(&key1.tmb));
@@ -727,12 +694,52 @@ mod tests {
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 
+    /// F29: an entry whose pay is missing `typ` must be rejected outright
+    /// during replay, not silently misclassified. Before the fix,
+    /// replay_entries's hand-rolled extraction defaulted a missing `typ`
+    /// to `""`, and `is_transaction_typ("")` is false -- so a malformed
+    /// coz could be silently routed to `verify_and_record_action` instead
+    /// of being rejected. `now` must still be present here: `Entry`
+    /// construction itself already validates that field independently, so
+    /// this test isolates the `typ` gap `CozHeader::parse` closes.
+    #[test]
+    fn load_principal_rejects_entry_missing_typ() {
+        let key = make_test_key(0xAA);
+        let tmb_b64 = key.tmb.to_b64();
+
+        let malformed = serde_json::json!({
+            "pay": {
+                "alg": "ES256",
+                "tmb": tmb_b64,
+                "now": 1000
+                // "typ" deliberately omitted
+            },
+            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        });
+        let entry = crate::Entry::from_value(&malformed).expect("entry construction");
+
+        let result = load_principal(Genesis::Implicit(key), &[entry]);
+        assert!(
+            matches!(result, Err(LoadError::Protocol(cyphr::Error::MalformedPayload))),
+            "an entry missing 'typ' must be rejected as malformed, not silently \
+             misclassified as an action, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn is_key_introducing_typ_delegates_to_canonical_predicate() {
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/create"));
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/replace"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/key/delete"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/commit/create"));
+    }
+
     #[test]
     fn checkpoint_empty_keys_fails() {
         use cyphr::multihash::MultihashDigest;
         use cyphr::state::HashAlg;
 
-        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]);
+        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]).unwrap();
         let checkpoint = Checkpoint {
             auth_root: AuthRoot(
                 MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap(),

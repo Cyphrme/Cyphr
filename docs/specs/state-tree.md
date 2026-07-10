@@ -9,8 +9,6 @@
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
   document are to be interpreted as described in BCP 14 (RFC 2119, RFC 8174) when,
   and only when, they appear in all capitals, as shown here.
-
-  See: .agent/workflows/spec.md for the full protocol specification.
 -->
 
 ## Domain
@@ -163,17 +161,44 @@ chain or a PG.
   component digests.
   `VERIFIED: agent-check`
 
-**[conversion]**: When a child node uses a different hash algorithm than the
-target algorithm H being computed, the child's digest value MUST be converted:
-the child's raw digest bytes are fed into H to produce an H-length digest. This
-conversion happens at the node level; the parent node is NOT REQUIRED to know
-the child's original algorithm.
+**[conversion]**: SUPERSEDED 2026-07-08 — see resolution note below. No
+per-child re-hashing step exists. A component's H-variant is produced by
+exactly one of two mechanisms:
 
-- **PRE**: Child digest exists, computed under some algorithm H_child where
-  H_child ≠ H.
-- **POST**: Converted digest = H(child_digest_bytes). The converted digest
-  participates in the parent's Merkle root computation under H.
-  `VERIFIED: agent-check`
+1. **Exact match**: if a native H-variant of the component already exists,
+   it is used directly, unconverted.
+2. **Fold**: otherwise, ALL existing variants of the component (regardless of
+   their native algorithm) have their raw digest bytes concatenated in a
+   defined sort order, and the concatenation is hashed **once**, under H.
+   Mismatched-algorithm children are never individually re-hashed into a
+   pretend-native H digest before folding — their raw bytes simply
+   participate as one of potentially several inputs to the single fold hash.
+
+A **degenerate case** of the fold (not a separate conversion step): if the
+component has exactly one existing variant total (of any algorithm), that
+variant's raw bytes are returned as-is for any requested H — genesis
+promotion, no hashing at all.
+
+- **PRE**: A component's H-variant is requested; the component has one or
+  more existing variants, possibly under algorithms other than H.
+- **POST**: The H-variant is either the existing native H digest (exact
+  match), the single existing variant's raw bytes (genesis promotion, len==1),
+  or `H(concat(sorted raw variant bytes))` (general fold, len>1). No
+  intermediate per-child re-hash under H ever occurs.
+  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+
+> [!NOTE]
+> **Resolution (2026-07-08, settled)**: This constraint previously required
+> re-hashing a mismatched-algorithm child under the target algorithm before
+> folding it into a parent digest. That is superseded: confirmed directly
+> against the `eml` sibling repo's `polydigest::root::combined_root` /
+> `nary_mr` (commit `2bde639`) and the spec author's ruling on forge issue
+> #51, the actual rule folds each component's raw, un-converted variant
+> bytes together under whichever algorithm is requested — there is no
+> standalone per-child conversion sub-step, and no requirement that the
+> target algorithm match any existing variant. `rs/cyphr/src/multihash.rs`'s
+> `arrow_component_bytes` (landed via PRs #52 and #56) implements this
+> general fold, not merely the single-variant degenerate case.
 
 **[mhmr-computation]**: For each supported hash algorithm H at a given commit,
 implementations MUST compute an MHMR variant for every state node:
@@ -248,12 +273,19 @@ AR → {KR, RR}), promotion recurses at most through the tree height.
   `VERIFIED: agent-check`
 
 **[mhmr-no-rehash-children]**: When computing an MHMR, inner child digests MUST
-be fed directly into the parent hash function as raw bytes, without re-hashing
-under the target algorithm, UNLESS the child requires conversion (per
-[conversion]), in which case the child's digest is hashed once under the target H.
+be fed directly into the parent hash function as raw bytes, without any
+per-child pre-hashing step — including children whose native algorithm
+differs from the target H. The one and only hash operation is the single
+fold hash over the concatenated raw bytes of all children (per [conversion]);
+there is no separate "convert this one mismatched child first" step.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
+  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+
+> [!NOTE]
+> **Resolution (2026-07-08)**: Previously phrased as an exception carve-out
+> for converted children (implying a distinct per-child re-hash sub-step).
+> Superseded alongside [conversion] — see that constraint's resolution note.
 
 ## State Formulas
 
@@ -330,15 +362,15 @@ governance is delegated to Coz").
 | [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2          |
 | [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)                      |
 | [state-computation]               | agent-check | pass   | Explicit in SPEC.md §9.1 (four-step algorithm)                 |
-| [conversion]                      | agent-check | pass   | Explicit in SPEC.md §20.2                                      |
-| [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                                      |
-| [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                                      |
+| [conversion]                      | agent-check | superseded | Citation was stale (§20.2 is now "Golden Message" post-renumbering); corrected rule verified against SPEC.md §12.2.1 (MHMR, "Important Properties") and `rs/cyphr/src/multihash.rs` — see resolution note above |
+| [mhmr-computation]                | agent-check | pass   | SPEC.md §12.2.1 (citation corrected; §20.5 no longer exists)   |
+| [alg-set-evolution]               | agent-check | pass   | SPEC.md §12.2 (citation corrected; §20.6 no longer exists)     |
 | [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)               |
 | [no-circular-state]               | agent-check | pass   | Follows from §4.2 CR/PR definitions                            |
 | [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical")         |
 | [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules                       |
 | [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                                 |
-| [mhmr-no-rehash-children]         | agent-check | pass   | Explicit in SPEC.md §20.5 step 3, Important Properties         |
+| [mhmr-no-rehash-children]         | agent-check | superseded | Citation was stale (§20.5 no longer exists); corrected rule verified against SPEC.md §12.2.1 step 3 and `rs/cyphr/src/multihash.rs` — see resolution note above |
 
 ## Implications
 
@@ -350,9 +382,12 @@ governance is delegated to Coz").
 - **Implicit promotion**: Implementations MUST handle the single-child case
   before computing any Merkle root. This is a common source of bugs — the
   single-key Level 1/2 case where `tmb` promotes all the way to PG.
-- **Conversion order**: [conversion] specifies H(child_bytes), not
-  H(H(child_bytes)). Double-hashing during conversion is a specification
-  violation.
+- **No per-child conversion step**: [conversion] does not re-hash individual
+  mismatched-algorithm children before folding. A component with 2+ existing
+  variants folds ALL of their raw bytes together in one single hash operation
+  under the target H; a component with exactly one existing variant (any
+  algorithm) promotes its raw bytes directly for any requested H. There is no
+  intermediate H(child_bytes) step performed on a single child in isolation.
 - **MHMR variants per commit**: At each commit, the implementation must
   enumerate the active algorithm set and compute all variants. The algorithm
   set is determined post-mutation (after the commit's key changes are applied).

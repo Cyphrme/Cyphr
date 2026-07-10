@@ -356,7 +356,7 @@ pub fn commit_root_from_trees<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root(alg_id)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
     let md = MultihashDigest::new(variants)?;
@@ -379,33 +379,9 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
         let alg_id = hash_alg_to_u64(alg);
         let root = log
             .root_at(alg_id, size)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| crate::error::Error::Storage(e.to_string()))?;
         variants.insert(alg, root.into_boxed_slice());
     }
     let md = MultihashDigest::new(variants)?;
     Ok(CommitRoot(md))
-}
-
-/// Compute the CR incrementally over a list of TRs.
-pub fn compute_cr(trs: &[&MultihashDigest], algs: &[HashAlg]) -> crate::error::Result<CommitRoot> {
-    let log = CommitTrees::new(eml::MemoryStorage::new());
-    for &alg in algs {
-        let alg_id = hash_alg_to_u64(alg);
-        let hasher = Box::new(MaltHasher::new(alg));
-        log.add_algorithm(alg_id, hasher)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
-    }
-
-    for tr in trs {
-        let mut map = BTreeMap::new();
-        for (&alg, digest) in tr.variants() {
-            map.insert(hash_alg_to_u64(alg), digest.clone());
-        }
-        let serialized =
-            serde_json::to_vec(&map).map_err(|_| crate::error::Error::MalformedPayload)?;
-        log.append(&serialized)
-            .map_err(|e| crate::error::Error::UnsupportedAlgorithm(e.to_string()))?;
-    }
-
-    commit_root_from_trees(&log, algs)
 }

@@ -73,10 +73,6 @@ impl CyphrHasher for HashAlg {
     }
 
     fn output_size(&self) -> usize {
-        match self {
-            HashAlg::Sha256 => 32,
-            HashAlg::Sha384 => 48,
-            HashAlg::Sha512 => 64,
-        }
+        crate::state::TaggedDigest::expected_len(*self)
     }
 }

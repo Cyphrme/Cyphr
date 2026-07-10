@@ -2,8 +2,8 @@
 
 <!--
   Produced from /plan COMMIT phase.
-  Source sketch: .sketches/2026-05-01-cyphrme-protocol-transition.md
-  Challenge and scope findings are recorded in the sketch lifecycle journal.
+  Source sketch: archived (no longer available).
+  This document is legacy and superseded by the campaign workflow.
 -->
 
 ## Goal
@@ -332,7 +332,5 @@ Protocol as a deployable network service.
 
 ## References
 
-- Sketch: [`.sketches/2026-05-01-cyphrme-protocol-transition.md`](../../.sketches/2026-05-01-cyphrme-protocol-transition.md)
 - Charter: [`docs/charters/spec-alignment.md`](../charters/spec-alignment.md)
 - Specification: [`SPEC.md`](../../SPEC.md) (§13.4 MSS API, §16.3.2 Storage Architecture, §17 Authentication)
-- Pre-implementation audit: [sketch §Pre-Implementation Readiness Audit](../../.sketches/2026-05-01-cyphrme-protocol-transition.md)

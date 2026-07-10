@@ -5,7 +5,7 @@ def generate_toml():
     toml_lines = [
         "# E2E Features Matrix Tests",
         "# Generated automatically by generate_e2e_features.py",
-        "# Covers 16 features across 4 tiers with a minimum of 184 cases.",
+        "# Covers 16 features across 4 tiers with a minimum of 179 cases.",
         ""
     ]
 
@@ -480,14 +480,16 @@ def generate_toml():
         'error     = "NoGenesisKeys"',
         ""
     ])
-    # Case 2: Unsupported algorithm (RS256) -> UnsupportedAlgorithm
+    # Case 2: Unsupported algorithm (RS256) -> UnknownAlg (genesis-time
+    # construction rejects the algorithm itself; UnsupportedAlgorithm is a
+    # distinct error raised only at signing time, not genesis)
     toml_lines.extend([
         "[[test]]",
         'name      = "t2_f01_case2"',
         'principal = ["unsupported_key"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 3: Mixed genesis with unsupported key
@@ -497,7 +499,7 @@ def generate_toml():
         'principal = ["unsupported_key", "golden"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 4: Multiple unsupported keys
@@ -507,7 +509,7 @@ def generate_toml():
         'principal = ["unsupported_key", "unsupported_key"]',
         "",
         "[test.expected]",
-        'error     = "UnsupportedAlgorithm"',
+        'error     = "UnknownAlg"',
         ""
     ])
     # Case 5: Empty principal with setup -> NoGenesisKeys
@@ -755,29 +757,6 @@ def generate_toml():
             ""
         ])
 
-    # F-12: Commit Finality Arrow (Errors)
-    # Case 1..5: Broken chain pre mismatch -> [commit-pre-chain]
-    for i in range(5):
-        toml_lines.extend([
-            "[[test]]",
-            f'name      = "t2_f12_case{i+1}"',
-            'principal = ["golden"]',
-            "",
-            "[[test.commit]]",
-            "tx = [",
-            "  [",
-            f'    {{ now = {base_time}, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" }},',
-            "  ],",
-            "]",
-            "",
-            "[test.override]",
-            'pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"',
-            "",
-            "[test.expected]",
-            'error     = "[commit-pre-chain]"',
-            ""
-        ])
-
     # F-13: MALT Logs & Proofs (Errors)
     # Case 1..5: Out of order timestamps -> [verification-timestamp-order]
     for i in range(5):
@@ -806,7 +785,7 @@ def generate_toml():
         ])
 
     # F-14: Multihash Coherence (Errors)
-    # Case 1..5: Try to add unsupported algorithm key -> UnsupportedAlgorithm
+    # Case 1..5: Try to add unsupported algorithm key -> UnknownAlg
     for i in range(5):
         toml_lines.extend([
             "[[test]]",
@@ -821,7 +800,7 @@ def generate_toml():
             "]",
             "",
             "[test.expected]",
-            'error     = "UnsupportedAlgorithm"',
+            'error     = "UnknownAlg"',
             ""
         ])
 

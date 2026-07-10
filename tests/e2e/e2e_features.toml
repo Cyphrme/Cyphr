@@ -1328,21 +1328,21 @@ name      = "t2_f01_case2"
 principal = ["unsupported_key"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case3"
 principal = ["unsupported_key", "golden"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case4"
 principal = ["unsupported_key", "unsupported_key"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case5"
@@ -2210,91 +2210,6 @@ empty_commit = true
 error = "[commit-one-or-more]"
 
 [[test]]
-name      = "t2_f12_case1"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "[commit-pre-chain]"
-
-[[test]]
-name      = "t2_f12_case2"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "[commit-pre-chain]"
-
-[[test]]
-name      = "t2_f12_case3"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "[commit-pre-chain]"
-
-[[test]]
-name      = "t2_f12_case4"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "[commit-pre-chain]"
-
-[[test]]
-name      = "t2_f12_case5"
-principal = ["golden"]
-
-[[test.commit]]
-tx = [
-  [
-    { now = 1700000000, signer = "golden", target = "alice", typ = "cyphr.me/cyphr/key/create" },
-  ],
-]
-
-[test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-[test.expected]
-error = "[commit-pre-chain]"
-
-[[test]]
 name      = "t2_f13_case1"
 principal = ["golden"]
 
@@ -2411,7 +2326,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case2"
@@ -2425,7 +2340,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case3"
@@ -2439,7 +2354,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case4"
@@ -2453,7 +2368,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f14_case5"
@@ -2467,7 +2382,7 @@ tx = [
 ]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f15_case1"

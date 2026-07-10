@@ -17,12 +17,11 @@
           "pay": {
             "alg": "ES256",
             "now": 1700000000,
-            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "rvk": 1700000000,
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/cyphr/key/revoke"
           },
-          "sig": "EP2YfkfBKCffNNwTS8JVP5hbFdEfDHN8AjGTvopo1jUROI-3PJ1zqtaYHZVNEv2ySKquPR78763PeUOjC4UOgQ"
+          "sig": "aXjzybN1t7NGiygGBlvDBz9nfxC7CvTg2atw8PXCxPszXVlHD6jQVYg76G-N9EafmI3KJD-O4FqiNKzgUnNwMw"
         }
       ],
       "keys": [],
@@ -33,7 +32,7 @@
     }
   ],
   "digests": [
-    "dfgcPRtTrNe3295XcA-XLz2dajZ8u6FrOHbvhBGJSsY"
+    "kuipFn-QtK1M6F1KLivfGdiSliRptSRvxF8afDwLky4"
   ],
   "expected": {
     "key_count": 1,

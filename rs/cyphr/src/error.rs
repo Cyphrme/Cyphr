@@ -18,11 +18,7 @@ pub enum Error {
     #[error("unknown algorithm")]
     UnknownAlg,
 
-    /// `pre` does not match current AS.
-    #[error("invalid prior state")]
-    InvalidPrior,
-
-    /// `now` < latest known PS timestamp.
+    /// `now` < the principal's latest known timestamp.
     #[error("timestamp in past")]
     TimestampPast,
 
@@ -42,44 +38,18 @@ pub enum Error {
     #[error("duplicate key")]
     DuplicateKey,
 
-    /// Signing keys do not meet required weight (Level 5+).
-    #[error("threshold not met")]
-    ThresholdNotMet,
-
-    // === Recovery errors (§17.2) ===
-    /// Agent not registered via `recovery/designate`.
-    #[error("recovery not designated")]
-    RecoveryNotDesignated,
-
-    /// Recovery attempted while regular keys are active.
-    #[error("account recoverable")]
-    AccountRecoverable,
-
-    /// No active keys AND no designated recovery agents.
-    #[error("unrecoverable principal")]
-    UnrecoverablePrincipal,
-
     // === State errors (§17.3) ===
-    /// Computed PS does not match claimed PS.
+    /// Computed PR does not match claimed PR.
     #[error("state mismatch")]
     StateMismatch,
-
-    /// `pre` references do not form valid chain to known state.
-    #[error("chain broken")]
-    ChainBroken,
-
-    /// Multihash variant computed with wrong algorithm.
-    #[error("hash algorithm mismatch")]
-    HashAlgMismatch,
 
     /// MultihashDigest contains no variants (internal invariant violation).
     #[error("empty multihash digest")]
     EmptyMultihash,
 
-    // === Action errors (§17.4) ===
-    /// Action `typ` not permitted for this key (Level 5+).
-    #[error("unauthorized action")]
-    UnauthorizedAction,
+    /// Requested algorithm has no variant in this multihash.
+    #[error("multihash has no variant for {0}")]
+    MissingVariant(crate::state::HashAlg),
 
     // === Internal ===
     /// No active keys remain in principal.
@@ -89,6 +59,14 @@ pub enum Error {
     /// Algorithm not supported.
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),
+
+    /// A backing storage/IO failure surfaced through the protocol layer
+    /// (e.g. an `eml::Storage` backend error while reading or writing a
+    /// commit tree root) — distinct from [`Error::UnsupportedAlgorithm`],
+    /// which signals an algorithm-support question, not an infrastructure
+    /// failure.
+    #[error("storage failure: {0}")]
+    Storage(String),
 
     /// A collection node (e.g. KT) was asked to hold more items than its
     /// 256-child collection-node arity boundary allows.
@@ -120,13 +98,6 @@ pub enum Error {
     /// Per SPEC §4.4, the `commit` value must equal `MR(AS, DS?)`.
     #[error("state root mismatch")]
     CommitMismatch,
-
-    /// External reference to transitory (unfinalized) state root.
-    ///
-    /// Per SPEC §4.2.1, transitory state during a pending commit cannot
-    /// be referenced by external cozies until the commit is finalized.
-    #[error("transitory state reference")]
-    TransitoryStateReference,
 
     /// The leaf durably stored at a commit's position does not match the
     /// TR just computed for that commit.

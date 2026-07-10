@@ -73,7 +73,7 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 /// - `commit_id`: Commit ID (Merkle root of coz czds, base64url)
 /// - `as`: Auth State (base64url)
 /// - `sr`: State Root (base64url)
-/// - `ps`: Principal State (base64url)
+/// - `pr`: Principal Root (base64url)
 ///
 /// **Note**: Actions are not included in commits; they are stored separately
 /// or handled by the caller.
@@ -120,44 +120,16 @@ pub fn export_commits<S: eml::Storage>(
         }
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
-        // Use first_variant() for deterministic, fallible access
-        let tr_bytes = commit.tr().0.first_variant()?;
-        let tr_alg = commit
-            .tr()
-            .0
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let commit_id = format!("{}:{}", tr_alg, Base64UrlUnpadded::encode_string(tr_bytes));
-
-        let as_bytes = commit.auth_root().as_multihash().first_variant()?;
-        let as_alg = commit
+        let commit_id = commit.tr().0.tagged_first()?.to_string();
+        let auth_root = commit
             .auth_root()
             .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let auth_root = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
+            .tagged_first()?
+            .to_string();
+        let sr = commit.sr().as_multihash().tagged_first()?.to_string();
+        let pr = commit.pr().as_multihash().tagged_first()?.to_string();
 
-        let sr_bytes = commit.sr().as_multihash().first_variant()?;
-        let sr_alg = commit
-            .sr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let sr = format!("{}:{}", sr_alg, Base64UrlUnpadded::encode_string(sr_bytes));
-
-        let ps_bytes = commit.pr().as_multihash().first_variant()?;
-        let ps_alg = commit
-            .pr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
-
-        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, ps));
+        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr));
     }
 
     Ok(commit_entries)

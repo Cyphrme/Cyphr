@@ -10,7 +10,6 @@ use std::path::Path;
 
 use cyphr_storage::blob::{Blake3Hash, BlobStore, BlobStoreError};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
-
 /// Re-exported so a caller wiring up a shared-database
 /// [`StorageEngine`](cyphr_storage::engine::StorageEngine) (via
 /// [`open_eml_storage`]) can name `storage_fjall::FjallStorage` without
@@ -31,6 +30,15 @@ impl FjallBlobStore {
             .open()
             .map_err(|e| BlobStoreError::Backend(format!("fjall database open: {e}")))?;
         Self::from_database(db)
+    }
+
+    /// Create a fresh disk-backed blob store in a temp dir, for tests.
+    #[cfg(test)]
+    pub fn temp() -> Result<(Self, tempfile::TempDir), BlobStoreError> {
+        let dir =
+            tempfile::tempdir().map_err(|e| BlobStoreError::Backend(format!("tempdir: {e}")))?;
+        let store = Self::open(dir.path())?;
+        Ok((store, dir))
     }
 
     /// Create a blob store from an existing database (supporting shared-database cooperation).
@@ -85,8 +93,9 @@ pub fn open_eml_storage(
 /// `prefix` need not already satisfy `with_database_scoped`'s keyspace-name
 /// charset (alphanumeric, `_`, `-`, `.`, `#`, `$`): a Cyphr `principal_id`
 /// (e.g. `"SHA-256:U5XUZ..."`) always contains a `:` separator, which is
-/// outside it. Any character outside that charset is replaced with `_`
-/// before opening, so callers can pass a `principal_id` directly.
+/// outside it. Any byte outside that charset is escaped, injectively (see
+/// [`sanitize_fjall_prefix`]), before opening, so callers can pass a
+/// `principal_id` directly.
 pub fn open_eml_storage_scoped(
     db: Database,
     prefix: &str,
@@ -95,26 +104,55 @@ pub fn open_eml_storage_scoped(
     storage_fjall::FjallStorage::with_database_scoped(db, &sanitized)
 }
 
-/// Replace every character outside fjall's keyspace-name charset
-/// (alphanumeric, `_`, `-`, `.`, `#`, `$`) with `_`.
+/// Escape marker [`sanitize_fjall_prefix`] uses for its reversible
+/// encoding — reserved out of the passthrough set (see that function) so
+/// it can never appear un-escaped in the output.
+const FJALL_PREFIX_ESCAPE: char = '$';
+
+/// Map arbitrary bytes into fjall's keyspace-name charset (alphanumeric,
+/// `_`, `-`, `.`, `#`, `$`), injectively: distinct inputs always produce
+/// distinct output.
 ///
-/// Not collision-free for arbitrary input (two different inputs could map
-/// to the same sanitized output), but is collision-free for this module's
-/// actual input shape: a Cyphr `principal_id` is always `"{alg}:{digest}"`
-/// where `alg` is alphanumeric/hyphen and `digest` is unpadded base64url
-/// (`A-Za-z0-9-_`) — both already within the allowed charset — joined by
-/// exactly one `:`, the sole character this replaces.
+/// # Why not blind substitution
+///
+/// An earlier version replaced every disallowed byte with a fixed `_`,
+/// which is lossy: e.g. `"a:b"` (colon) and `"a_b"` (literal underscore)
+/// both sanitized to `"a_b"`, a genuine same-length collision no length
+/// prefix can fix (length-prefixing — the pattern `commit_key` in
+/// `cyphr-index-fjall` uses — only disambiguates *variable-length* field
+/// boundaries; it does nothing for a same-length, information-losing
+/// character map like this one). A Cyphr `principal_id` is always
+/// `"{alg}:{digest}"` and so never triggers this in practice, but
+/// `principal_id` is caller-supplied and not otherwise validated —
+/// multitenancy correctness (root AGENTS.md I2) must not depend on that
+/// shape holding.
+///
+/// # Encoding
+///
+/// Every allowed byte passes through unchanged, *except* the escape
+/// marker `$` itself, which (like every other disallowed byte) is
+/// replaced with `$` followed by its two-hex-digit value. Because `$`
+/// therefore never appears un-escaped in the output, a `$` encountered
+/// left-to-right always starts exactly one two-hex-digit escape unit —
+/// the encoding is uniquely decodable (hence injective) with no length
+/// prefix needed: two distinct inputs can only produce the same output if
+/// some output position is simultaneously a passthrough byte and part of
+/// an escape unit, which the reserved marker rules out by construction.
+/// See `injectivity` tests below for the adversarial cases this rules out.
 fn sanitize_fjall_prefix(prefix: &str) -> String {
-    prefix
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#' | '$') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut out = String::with_capacity(prefix.len());
+    for b in prefix.bytes() {
+        let c = b as char;
+        if c != FJALL_PREFIX_ESCAPE
+            && (c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '#'))
+        {
+            out.push(c);
+        } else {
+            out.push(FJALL_PREFIX_ESCAPE);
+            out.push_str(&format!("{b:02x}"));
+        }
+    }
+    out
 }
 
 impl BlobStore for FjallBlobStore {
@@ -217,207 +255,4 @@ impl BlobStore for FjallBlobStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use eml::Storage as _;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_fjall_blob_store() {
-        let dir = tempfile::tempdir().expect("failed to create temp dir");
-        let store = FjallBlobStore::open(dir.path()).expect("failed to open store");
-
-        let data = b"hello fjall store content-addressed";
-        let hash = store.put(data).await.expect("put");
-
-        let exists = store.exists(&hash).await.expect("exists");
-        assert!(exists);
-
-        let retrieved = store.get(&hash).await.expect("get").expect("found");
-        assert_eq!(retrieved, data);
-
-        // test limit
-        let limited = store.with_max_blob_size(10);
-        let err = limited.put(b"too long payload").await.unwrap_err();
-        assert!(matches!(err, BlobStoreError::BlobTooLarge { .. }));
-    }
-
-    /// Trivial fixed-width hasher for exercising generic EML log storage in
-    /// these tests — unrelated to cyphr's own MALT hashing, which lives in
-    /// the `cyphr` crate this storage-layer crate deliberately does not
-    /// depend on.
-    #[derive(Debug)]
-    struct Blake3Hasher;
-
-    impl eml::Hasher for Blake3Hasher {
-        fn leaf(&self, data: &[u8]) -> Vec<u8> {
-            blake3::hash(data).as_bytes().to_vec()
-        }
-
-        fn node(&self, children: &[&[u8]]) -> Vec<u8> {
-            let mut hasher = blake3::Hasher::new();
-            for child in children {
-                hasher.update(child);
-            }
-            hasher.finalize().as_bytes().to_vec()
-        }
-
-        fn empty(&self) -> Vec<u8> {
-            blake3::hash(b"").as_bytes().to_vec()
-        }
-
-        fn hash(&self, data: &[u8]) -> Vec<u8> {
-            blake3::hash(data).as_bytes().to_vec()
-        }
-
-        fn clone_box(&self) -> Box<dyn eml::Hasher> {
-            Box::new(Blake3Hasher)
-        }
-    }
-
-    /// The Commit Tree (EML log) must survive a disk write/reload cycle,
-    /// genuinely sharing one fjall database with the blob store rather than
-    /// opening a second, uncoordinated one.
-    #[tokio::test]
-    async fn eml_log_survives_disk_reload_sharing_blob_database() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let leaves: [&[u8]; 3] = [b"commit-0", b"commit-1", b"commit-2"];
-
-        let (original_root, original_size, blob_hash) = {
-            let db = Database::builder(dir.path()).open().expect("open db");
-            let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-            let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
-
-            let blob_hash = blob_store.put(b"a blob living beside the log").await.unwrap();
-
-            let mut log = eml::new(eml_storage, Box::new(Blake3Hasher))
-                .await
-                .expect("new log");
-            for leaf in leaves {
-                log.append_leaf(leaf).await.expect("append leaf");
-            }
-
-            (log.root_for(0).expect("root"), log.size(), blob_hash)
-            // `db`, `blob_store`, and `log` all drop here, releasing the
-            // on-disk database before it's reopened below.
-        };
-
-        // Reopen from scratch at the same path — a fresh `Database`, not a
-        // clone of the one above — to prove the state is genuinely durable.
-        let db = Database::builder(dir.path()).open().expect("reopen db");
-        let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
-
-        let reconstructed = eml::from_storage(eml_storage, vec![(0, Box::new(Blake3Hasher))])
-            .await
-            .expect("reconstruct log from disk");
-
-        assert_eq!(reconstructed.size(), original_size, "leaf count must survive reload");
-        assert_eq!(
-            reconstructed.root_for(0).expect("root"),
-            original_root,
-            "root must survive reload byte-for-byte"
-        );
-
-        // The blob written in the first session must also still be there,
-        // proving the blob and EML partitions truly share one database
-        // rather than each independently persisting to its own file.
-        let retrieved = blob_store.get(&blob_hash).await.unwrap();
-        assert!(retrieved.is_some(), "blob must survive reload in the shared database");
-    }
-
-    /// Writes to the blob partition and writes to the EML partitions must
-    /// never be observable through each other, even though both live in one
-    /// physical fjall database.
-    #[tokio::test]
-    async fn blob_and_eml_partitions_are_isolated() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Database::builder(dir.path()).open().expect("open db");
-        let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
-        let eml_storage = open_eml_storage(db.clone()).expect("eml storage");
-
-        let blob_a = blob_store.put(b"blob-partition-marker-a").await.unwrap();
-        let blob_b = blob_store.put(b"blob-partition-marker-b").await.unwrap();
-
-        let mut log = eml::new(eml_storage, Box::new(Blake3Hasher))
-            .await
-            .expect("new log");
-        log.append_leaf(b"eml-partition-marker-0").await.unwrap();
-        log.append_leaf(b"eml-partition-marker-1").await.unwrap();
-        log.append_leaf(b"eml-partition-marker-2").await.unwrap();
-
-        // The blob partition sees exactly the blobs it was given — no EML
-        // leaves leaked in.
-        let blob_hashes: Vec<Blake3Hash> = blob_store
-            .iter()
-            .await
-            .expect("iter")
-            .collect::<Result<_, _>>()
-            .expect("iter items");
-        assert_eq!(blob_hashes.len(), 2);
-        assert!(blob_hashes.contains(&blob_a));
-        assert!(blob_hashes.contains(&blob_b));
-
-        // The EML partition sees exactly its own three leaves — unaffected
-        // by the two unrelated blob writes.
-        assert_eq!(log.size(), 3);
-        assert_eq!(
-            log.storage().get_leaf(0).await.unwrap(),
-            b"eml-partition-marker-0"
-        );
-    }
-
-    /// Two principals' EML logs, opened via [`open_eml_storage_scoped`] with
-    /// distinct prefixes on the same physical database, must not observe
-    /// each other's leaves — the multitenancy counterpart to
-    /// `blob_and_eml_partitions_are_isolated` above.
-    #[tokio::test]
-    async fn scoped_eml_opens_on_one_database_do_not_collide() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Database::builder(dir.path()).open().expect("open db");
-
-        let storage_a =
-            open_eml_storage_scoped(db.clone(), "principal-a").expect("scoped storage a");
-        let storage_b =
-            open_eml_storage_scoped(db.clone(), "principal-b").expect("scoped storage b");
-
-        let mut log_a = eml::new(storage_a, Box::new(Blake3Hasher))
-            .await
-            .expect("new log a");
-        let mut log_b = eml::new(storage_b, Box::new(Blake3Hasher))
-            .await
-            .expect("new log b");
-
-        log_a.append_leaf(b"a-leaf-0").await.unwrap();
-        log_b.append_leaf(b"b-leaf-0").await.unwrap();
-        log_b.append_leaf(b"b-leaf-1").await.unwrap();
-
-        assert_eq!(log_a.size(), 1, "tenant a's log must see only its own leaf");
-        assert_eq!(log_b.size(), 2, "tenant b's log must see only its own leaves");
-        assert_eq!(log_a.storage().get_leaf(0).await.unwrap(), b"a-leaf-0");
-        assert_eq!(log_b.storage().get_leaf(0).await.unwrap(), b"b-leaf-0");
-        assert_eq!(log_b.storage().get_leaf(1).await.unwrap(), b"b-leaf-1");
-    }
-
-    /// A Cyphr `principal_id` (the intended real-world scoping identifier,
-    /// e.g. `"SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"`) always
-    /// contains a `:` separator, which is outside
-    /// `storage_fjall::FjallStorage::with_database_scoped`'s allowed
-    /// keyspace-name charset. `open_eml_storage_scoped` must still accept it
-    /// — the caller should not need to know or work around fjall's naming
-    /// constraints.
-    #[tokio::test]
-    async fn scoped_eml_open_accepts_a_principal_id_shaped_prefix() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Database::builder(dir.path()).open().expect("open db");
-
-        let principal_id = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
-        let mut storage = open_eml_storage_scoped(db, principal_id)
-            .expect("scoped open must accept a principal_id-shaped prefix");
-
-        // Exercise it like a real Commit Tree would, proving the returned
-        // storage is genuinely usable, not just successfully constructed.
-        storage.store_leaf(0, b"leaf-0").await.unwrap();
-        assert_eq!(storage.get_leaf(0).await.unwrap(), b"leaf-0");
-    }
-}
+mod tests;

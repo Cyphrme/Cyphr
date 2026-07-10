@@ -86,6 +86,37 @@ pub enum Error {
         reason: String,
     },
 
+    /// Genesis-time principal construction failed, with the underlying
+    /// protocol error preserved so a genesis-error test intent's declared
+    /// `expected.error` can be validated against what genesis actually
+    /// raised, rather than trusted verbatim.
+    #[error("failed to create principal for test '{name}': {source}")]
+    GenesisFailed {
+        /// Test name.
+        name: String,
+        /// The underlying protocol error genesis construction raised.
+        #[source]
+        source: cyphr::error::Error,
+    },
+
+    /// A test intent's declared `expected.error` does not match the error
+    /// genesis construction actually raised.
+    #[error(
+        "test '{name}': declared expected.error '{declared}' does not \
+         match actual genesis error '{actual}' ({source})"
+    )]
+    DeclaredErrorMismatch {
+        /// Test name.
+        name: String,
+        /// The `expected.error` string declared in the test intent.
+        declared: String,
+        /// The canonical name of the error genesis actually raised.
+        actual: &'static str,
+        /// The underlying protocol error genesis construction raised.
+        #[source]
+        source: cyphr::error::Error,
+    },
+
     /// Invalid intent structure.
     #[error("invalid intent: {message}")]
     InvalidIntent {

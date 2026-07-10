@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use coz::{Cad, Czd};
 // `Thumbprint` is only referenced by test-support-only oracle functions
 // (compute_kr, derive_auth_state) and unit tests below.
 #[cfg(test)]
 use coz::Thumbprint;
+use coz::{Cad, Czd};
 
 use crate::multihash::MultihashDigest;
 
@@ -127,22 +127,29 @@ impl StateDigest for PrincipalRoot {
     }
 }
 
-/// Principal Root (PR) - SPEC §7.7
+/// Principal Genesis (PG) - SPEC §3.7.1
 ///
-/// The first PS ever computed. Permanent, never changes.
+/// The first PR ever computed. Permanent, never changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrincipalGenesis(pub MultihashDigest);
 
 impl PrincipalGenesis {
     /// Create a PrincipalGenesis from raw bytes (e.g., for testing).
     /// Assumes SHA-256 algorithm for single-variant construction.
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        Self(MultihashDigest::from_single(HashAlg::Sha256, bytes).unwrap())
+    ///
+    /// # Errors
+    ///
+    /// Returns `DigestLengthMismatch` if `bytes` is not exactly 32 bytes —
+    /// reachable from untrusted input (e.g. a CLI-supplied genesis string,
+    /// or an implicit genesis whose thumbprint algorithm hashes to a
+    /// different width than SHA-256).
+    pub fn from_bytes(bytes: Vec<u8>) -> crate::error::Result<Self> {
+        Ok(Self(MultihashDigest::from_single(HashAlg::Sha256, bytes)?))
     }
 
-    /// Create PR from the initial principal state (at genesis).
-    pub fn from_initial(ps: &PrincipalRoot) -> Self {
-        Self(ps.0.clone())
+    /// Create PG from the initial PR (at genesis).
+    pub fn from_initial(pr: &PrincipalRoot) -> Self {
+        Self(pr.0.clone())
     }
 }
 
@@ -177,6 +184,24 @@ pub struct TaggedDigest {
 }
 
 impl TaggedDigest {
+    /// Construct a tagged digest from an algorithm and raw digest bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DigestLengthMismatch` if `digest`'s length doesn't match
+    /// `alg`'s expected output size.
+    pub fn new(alg: HashAlg, digest: Vec<u8>) -> crate::error::Result<Self> {
+        let expected = Self::expected_len(alg);
+        if digest.len() != expected {
+            return Err(crate::error::Error::DigestLengthMismatch {
+                alg,
+                expected,
+                actual: digest.len(),
+            });
+        }
+        Ok(Self { alg, digest })
+    }
+
     /// Returns the hash algorithm of this digest.
     #[must_use]
     pub fn alg(&self) -> HashAlg {
@@ -284,11 +309,14 @@ impl<'de> serde::Deserialize<'de> for TaggedDigest {
 ///
 /// # Errors
 ///
-/// Returns `UnsupportedAlgorithm` if the algorithm is not recognized.
+/// Returns `UnknownAlg` if the client's signing algorithm is not one this
+/// implementation recognizes or supports — a client-facing protocol
+/// question, distinct from `UnsupportedAlgorithm`'s internal algorithm-ID
+/// bookkeeping.
 pub fn hash_alg_from_str(alg: &str) -> crate::error::Result<HashAlg> {
     coz::Alg::from_str(alg)
         .map(coz::Alg::hash_alg)
-        .ok_or_else(|| crate::error::Error::UnsupportedAlgorithm(alg.to_string()))
+        .ok_or(crate::error::Error::UnknownAlg)
 }
 
 /// Derive the set of hash algorithms from a keyset (SPEC §14).
@@ -877,6 +905,28 @@ mod tests {
         assert_ne!(digest, tmb.as_bytes());
     }
 
+    /// F46 regression: malformed (non-32-byte) input must be rejected with
+    /// `DigestLengthMismatch`, not panic — reachable from untrusted CLI
+    /// input via `parse_principal_genesis`.
+    #[test]
+    fn principal_genesis_from_bytes_rejects_wrong_length() {
+        let result = PrincipalGenesis::from_bytes(vec![0xAA; 31]);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::DigestLengthMismatch {
+                alg: HashAlg::Sha256,
+                expected: 32,
+                actual: 31,
+            })
+        ));
+    }
+
+    #[test]
+    fn principal_genesis_from_bytes_accepts_correct_length() {
+        let pg = PrincipalGenesis::from_bytes(vec![0xAA; 32]).expect("32 bytes should succeed");
+        assert_eq!(pg.0.get(HashAlg::Sha256).unwrap(), &[0xAA; 32][..]);
+    }
+
     #[test]
     fn commit_id_empty_is_none() {
         let cid = compute_commit_id(&[], None, &[HashAlg::Sha256]);
@@ -980,16 +1030,16 @@ mod tests {
     }
 
     #[test]
-    fn ps_promotion_from_sr() {
+    fn pr_promotion_from_sr() {
         // Only SR, no CR: PR = SR (implicit promotion)
         let tmb = Thumbprint::from_bytes(vec![1; 32]);
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
+        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
 
         assert_eq!(
-            ps.get(HashAlg::Sha256).unwrap(),
+            pr.get(HashAlg::Sha256).unwrap(),
             auth_root.get(HashAlg::Sha256).unwrap()
         );
     }
@@ -1001,16 +1051,16 @@ mod tests {
         let ks = compute_kr(&[&tmb], None, &[HashAlg::Sha256]).unwrap();
         let auth_root = compute_ar(&ks, None, None, &[HashAlg::Sha256]).unwrap();
         let sr = compute_sr(&auth_root, None, None, &[HashAlg::Sha256]).unwrap();
-        let ps = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
-        let pr = PrincipalGenesis::from_initial(&ps);
+        let pr = compute_pr(&sr, None, &[HashAlg::Sha256]).unwrap();
+        let pg = PrincipalGenesis::from_initial(&pr);
 
         // All should be identical to tmb
         let ks_bytes = ks.get(HashAlg::Sha256).unwrap();
         let as_bytes = auth_root.get(HashAlg::Sha256).unwrap();
         assert_eq!(ks_bytes, tmb.as_bytes());
         assert_eq!(as_bytes, tmb.as_bytes());
-        assert_eq!(ps.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
         assert_eq!(pr.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
+        assert_eq!(pg.get(HashAlg::Sha256).unwrap(), tmb.as_bytes());
     }
 
     /// SPEC §14.2 Cross-Algorithm Conversion Test

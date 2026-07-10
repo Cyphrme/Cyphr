@@ -12,6 +12,14 @@ repository.workspace   = true
 rust-version.workspace = true
 version                = "0.1.0"
 
+[features]
+# Exposes `index::conformance` and `blob::conformance`, the shared Indexer
+# and BlobStore behavioral test suites, outside `#[cfg(test)]` so another
+# crate's Indexer/BlobStore implementation can add this crate as a
+# dev-dependency with this feature enabled and hold its own backend to the
+# same conformance functions MemoryIndexer's/MemoryBlobStore's tests use.
+conformance-tests = []
+
 [dependencies]
 blake3     = { workspace = true }
 coz        = { workspace = true }
@@ -19,13 +27,13 @@ cyphr      = { path = "../cyphr", version = "0.1.0" }
 serde      = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror  = { workspace = true }
-tokio      = { workspace = true, features = ["io-util"] }
+tokio      = { workspace = true, features = ["io-util", "sync"] }
 tracing    = { workspace = true }
 
 [dev-dependencies]
 cyphr              = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
 cyphr-blob-fjall   = { path = "../cyphr-blob-fjall", version = "0.1.0" }
-cyphr-index-sqlite = { path = "../cyphr-index-sqlite", version = "0.1.0" }
+cyphr-index-fjall  = { path = "../cyphr-index-fjall", version = "0.1.0" }
 fjall              = { workspace = true }
 proptest           = { workspace = true }
 serde              = { workspace = true }

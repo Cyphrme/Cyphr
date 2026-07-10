@@ -31,7 +31,12 @@ pub struct IndexableCoz {
 /// Constructed by the engine from a validated `cyphr::Commit`.
 /// All digest fields are pre-serialized (base64url or tagged digest
 /// strings) — the indexer stores them verbatim.
-#[derive(Debug, Clone)]
+///
+/// Serializable so the engine can embed a full copy of it inside a
+/// durable, content-addressed commit-manifest blob (see
+/// `engine::CommitManifest`) — the index-rebuild signal that keeps the
+/// blob store the sole source of truth for a commit's ingest order.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexableCommit {
     /// Principal genesis identifier (tagged digest string).
     pub principal_id: String,

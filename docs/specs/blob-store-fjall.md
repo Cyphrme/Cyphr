@@ -2,7 +2,8 @@
 
 <!--
   SPEC document — Fjall-specific implementation of the BlobStore trait.
-  Source: storage-engine.md, .sketches/2026-05-28-storage-object-model.md
+  Source: storage-engine.md, a 2026-05-28 storage-object-model design
+  sketch (no longer in the repository)
   Crate:  rs/cyphr-blob-fjall/ (see storage-engine.md [crate-isolation])
   Authority: SPEC.md (Zamicol and nrdxp)
 

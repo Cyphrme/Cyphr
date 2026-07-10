@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 
 use coz::Thumbprint;
-use eml::Hasher as _;
 use indexmap::IndexMap;
 
 use crate::action::Action;
@@ -172,17 +171,17 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
     }
 }
 
-/// Internal variant: tracks whether PR has been established.
+/// Internal variant: tracks whether PG has been established.
 ///
-/// - **Nascent**: L1/L2 — no PR exists. Cannot fabricate one.
-/// - **Established**: L3+ — PR is frozen from initial PS. Cannot remove it.
+/// - **Nascent**: L1/L2 — no PG exists. Cannot fabricate one.
+/// - **Established**: L3+ — PG is frozen from the initial PR. Cannot remove it.
 enum PrincipalKind<S: eml::Storage = eml::MemoryStorage> {
-    /// Pre-genesis-finalization: no PR field at all.
+    /// Pre-genesis-finalization: no PG field at all.
     Nascent(PrincipalCore<S>),
-    /// Post-principal/create: PR is structurally required.
+    /// Post-principal/create: PG is structurally required.
     Established {
         core: PrincipalCore<S>,
-        pr: PrincipalGenesis,
+        pg: PrincipalGenesis,
     },
 }
 
@@ -190,9 +189,9 @@ impl<S: eml::Storage> Clone for PrincipalKind<S> {
     fn clone(&self) -> Self {
         match self {
             Self::Nascent(core) => Self::Nascent(core.clone()),
-            Self::Established { core, pr } => Self::Established {
+            Self::Established { core, pg } => Self::Established {
                 core: core.clone(),
-                pr: pr.clone(),
+                pg: pg.clone(),
             },
         }
     }
@@ -202,10 +201,10 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Nascent(core) => f.debug_tuple("Nascent").field(core).finish(),
-            Self::Established { core, pr } => f
+            Self::Established { core, pg } => f
                 .debug_struct("Established")
                 .field("core", core)
-                .field("pr", pr)
+                .field("pg", pg)
                 .finish(),
         }
     }
@@ -219,9 +218,9 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
 ///
 /// # Type Safety
 ///
-/// PR is represented via an internal enum:
-/// - **Nascent** (L1/L2): PR does not exist — cannot be forged.
-/// - **Established** (L3+): PR is frozen — cannot be removed.
+/// PG is represented via an internal enum:
+/// - **Nascent** (L1/L2): PG does not exist — cannot be forged.
+/// - **Established** (L3+): PG is frozen — cannot be removed.
 ///
 /// All shared state is accessed via `Deref<Target = PrincipalCore<S>>`, so
 /// `self.pr`, `self.kr`, etc. work transparently in all code paths.
@@ -334,7 +333,7 @@ impl<S: eml::Storage> Principal<S> {
 #[derive(Debug, Clone)]
 pub(crate) struct NodePathHop {
     /// The leaf proof for this hop.
-    pub(crate) proof: eml::LeafProof,
+    pub(crate) proof: polydigest::LeafProof,
 }
 
 /// A top-down chain of inclusion hops used internally by
@@ -353,10 +352,11 @@ pub(crate) struct NodePathHop {
 /// ([`Principal::verify_key_inclusion`]) that's the right shape: generation
 /// is keyed on the target thumbprint and the roots come from the
 /// principal's own trusted cache, so it functions correctly as an
-/// internal proof/cache cross-check. A genuinely portable proof — one a
-/// remote verifier holding only a published PR and a thumbprint could
-/// check unassisted — is separate design work for whichever future node
-/// needs cross-crate verification, not a widening of this type now.
+/// internal proof/cache cross-check. The genuinely portable proof — one a
+/// remote verifier holding only a published PR and a thumbprint can check
+/// unassisted — is [`crate::inclusion::verify_key_inclusion`], which adds
+/// the missing thumbprint-to-leaf binding this type's `verify` alone does
+/// not provide, rather than widening this type itself.
 #[derive(Debug, Clone)]
 pub(crate) struct NodePath {
     /// Hops in leaf-to-root order.
@@ -382,9 +382,11 @@ impl NodePath {
             return false;
         }
         for (hop, &root) in self.hops.iter().zip(roots.iter()) {
-            let Some(skeleton) =
-                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
-            else {
+            let Some(skeleton) = polydigest::rebalanced_skeleton(
+                hop.proof.tree_size,
+                hop.proof.arity,
+                hop.proof.index,
+            ) else {
                 return false;
             };
             if !hop.proof.verify(hasher, &skeleton, root) {
@@ -415,8 +417,8 @@ impl Principal<eml::MemoryStorage> {
     /// Create a principal with implicit genesis (single key).
     ///
     /// Per SPEC §3.2: "Identity emerges from first key possession"
-    /// - `PS = AS = KS = tmb` (fully promoted)
-    /// - PR is absent (L1/L2 have no PR per SPEC §5.1)
+    /// - `PR = AR = KR = tmb` (fully promoted)
+    /// - PG is absent (L1/L2 have no PG per SPEC §5.1)
     ///
     /// This is the Level 1/2 genesis path.
     ///
@@ -450,7 +452,7 @@ impl Principal<eml::MemoryStorage> {
     /// # Security
     ///
     /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
     ///
     /// # Errors
     ///
@@ -527,7 +529,7 @@ impl Principal<eml::MemoryStorage> {
         };
 
         Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
             None => Self(Some(PrincipalKind::Nascent(core))),
         })
     }
@@ -538,7 +540,7 @@ impl<S: eml::Storage> Principal<S> {
     // Internal helpers
     // ========================================================================
 
-    /// Transition from Nascent to Established by freezing PR.
+    /// Transition from Nascent to Established by freezing PG.
     ///
     /// This is the only code path that can create an Established principal.
     /// Called exclusively from the PrincipalCreate coz handler.
@@ -555,14 +557,14 @@ impl<S: eml::Storage> Principal<S> {
     /// "empty" instance to hand back on the swap-out. Wrapping `Principal`'s
     /// inner kind in `Option` sidesteps this entirely: `Option::take` swaps
     /// in `None`, which needs no bound on `S` at all.
-    fn establish_pg(&mut self, pr: PrincipalGenesis) -> Result<()> {
+    fn establish_pg(&mut self, pg: PrincipalGenesis) -> Result<()> {
         let old = self
             .0
             .take()
             .expect("Principal's inner kind is only None transiently inside establish_pg");
         match old {
             PrincipalKind::Nascent(core) => {
-                self.0 = Some(PrincipalKind::Established { core, pr });
+                self.0 = Some(PrincipalKind::Established { core, pg });
                 Ok(())
             },
             est @ PrincipalKind::Established { .. } => {
@@ -693,7 +695,7 @@ impl<S: eml::Storage> Principal<S> {
     /// # Security
     ///
     /// The caller must establish trust in the checkpoint before calling this.
-    /// The `pr` is accepted as-is (cannot be computed from checkpoint alone).
+    /// The `pg` is accepted as-is (cannot be computed from checkpoint alone).
     ///
     /// # Errors
     ///
@@ -772,7 +774,7 @@ impl<S: eml::Storage> Principal<S> {
         };
 
         Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pr: pg })),
+            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
             None => Self(Some(PrincipalKind::Nascent(core))),
         })
     }
@@ -781,18 +783,18 @@ impl<S: eml::Storage> Principal<S> {
     // Accessors
     // ========================================================================
 
-    /// Get the Principal Root, or None if not yet established (L1/L2).
+    /// Get the Principal Genesis, or None if not yet established (L1/L2).
     ///
-    /// PR is only set when principal/create is processed (Level 3+, SPEC §5.1).
+    /// PG is only set when principal/create is processed (Level 3+, SPEC §5.1).
     /// For Established principals, this always returns `Some`.
     pub fn pg(&self) -> Option<&PrincipalGenesis> {
         match self.kind() {
-            PrincipalKind::Established { pr, .. } => Some(pr),
+            PrincipalKind::Established { pg, .. } => Some(pg),
             PrincipalKind::Nascent(_) => None,
         }
     }
 
-    /// Get the current Principal State.
+    /// Get the current Principal Root.
     pub fn pr(&self) -> &PrincipalRoot {
         &self.pr
     }
@@ -805,7 +807,8 @@ impl<S: eml::Storage> Principal<S> {
     /// Get the current Principal State as a tagged digest string (alg:digest format).
     ///
     /// Uses the lexicographically first algorithm from active_algs for deterministic output.
-    /// This is the canonical format for the `pre` field in cozies (SPEC §4.3).
+    /// This is the canonical tagged-digest format used e.g. for `principal/create`'s
+    /// `id` field (SPEC §4.3, §5.1).
     ///
     /// # Errors
     ///
@@ -1011,7 +1014,7 @@ impl<S: eml::Storage> Principal<S> {
     ///    ([`Self::inclusion_proof`], verified with [`crate::verify_inclusion`]).
     /// 2. **Hop 2** — CR, as PT cell 1's payload, included in PR: the Principal Tree's own
     ///    inclusion proof ([`PrincipalTree::cr_inclusion_proof`], verified with
-    ///    [`eml::LeafProof::verify`]).
+    ///    [`polydigest::LeafProof::verify`]).
     ///
     /// The hops are bridged explicitly: hop 2's proven leaf value must equal
     /// hop 1's proven CR root. Without that check the two hops would each
@@ -1032,9 +1035,8 @@ impl<S: eml::Storage> Principal<S> {
         tr: &MultihashDigest,
     ) -> Result<bool> {
         let alg_id = crate::commit_root::hash_alg_to_u64(alg);
-        let hasher = crate::commit_root::MaltHasher::new(alg);
 
-        // Hop 1: tr included in CR.
+        // Hop 1 material: tr's claimed inclusion in CR.
         let hop1_proof = self.inclusion_proof(alg, index)?;
         let tree_size = self
             .commit_trees
@@ -1049,17 +1051,7 @@ impl<S: eml::Storage> Principal<S> {
             .get(alg)
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
 
-        let mut mapped = BTreeMap::new();
-        for (&a, digest) in tr.variants() {
-            mapped.insert(crate::commit_root::hash_alg_to_u64(a), digest.clone());
-        }
-        let serialized = serde_json::to_vec(&mapped).map_err(|_| Error::MalformedPayload)?;
-        let leaf_hash = hasher.leaf(&serialized);
-
-        let hop1_ok =
-            crate::verify_inclusion(&hasher, &leaf_hash, index, tree_size, &hop1_proof, cr_bytes);
-
-        // Hop 2: CR (PT cell 1) included in PR.
+        // Hop 2 material: CR's (PT cell 1) claimed inclusion in PR.
         let hop2_proof = self
             .pt
             .cr_inclusion_proof(alg_id)
@@ -1069,15 +1061,21 @@ impl<S: eml::Storage> Principal<S> {
             .0
             .get(alg)
             .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        let hop2_skeleton =
-            eml::rebalanced_skeleton(hop2_proof.tree_size, hop2_proof.arity, hop2_proof.index)
-                .ok_or_else(|| Error::UnsupportedAlgorithm(alg.to_string()))?;
-        let hop2_ok = hop2_proof.verify(&hasher, &hop2_skeleton, pr_bytes);
 
-        // Bridge: hop 2's proven leaf is exactly hop 1's proven CR root.
-        let bridge_ok = hop2_proof.leaf_hash == cr_bytes;
-
-        Ok(hop1_ok && hop2_ok && bridge_ok)
+        Ok(crate::inclusion::verify_transaction_inclusion(
+            alg,
+            tr,
+            &crate::inclusion::TransactionHop1 {
+                index,
+                tree_size,
+                proof: &hop1_proof,
+                cr_root: cr_bytes,
+            },
+            &crate::inclusion::TransactionHop2 {
+                proof: &hop2_proof,
+                pr_root: pr_bytes,
+            },
+        ))
     }
 
     /// Prove that the currently active key with thumbprint `tmb` is
@@ -1174,8 +1172,12 @@ impl<S: eml::Storage> Principal<S> {
             .get_or_err(alg)?;
         let pr_bytes = self.pr.0.get_or_err(alg)?;
 
-        let hasher = crate::commit_root::MaltHasher::new(alg);
-        Ok(path.verify(&hasher, &[kr_bytes, ar_bytes, sr_bytes, pr_bytes]))
+        let hops: Vec<polydigest::LeafProof> = path.hops.iter().map(|h| h.proof.clone()).collect();
+        let roots: [&[u8]; 4] = [kr_bytes, ar_bytes, sr_bytes, pr_bytes];
+
+        Ok(crate::inclusion::verify_key_inclusion(
+            alg, tmb, &hops, &roots,
+        ))
     }
 
     /// Begin a new commit scope.
@@ -1211,7 +1213,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
@@ -1421,7 +1422,6 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// - `TimestampPast`: ParsedCoz timestamp is older than latest seen
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
-    /// - `InvalidPrior`: ParsedCoz's `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
     pub(crate) fn apply_verified_internal(
@@ -1469,7 +1469,18 @@ impl<S: eml::Storage> Principal<S> {
         let dr = compute_dr(&action_refs, None, &active_algs)?;
         let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
 
-        let tx_alg = cz.hash_alg;
+        // Prefer the signer's own algorithm for the arrow, but a self-revoke
+        // of the last key of that algorithm retires it from active_algs —
+        // `sr` (rebuilt just above from the post-mutation key set) then has
+        // no variant for it. Fall back to a surviving algorithm so the
+        // arrow's three components (pre, sr, tmr) always share one that
+        // `sr` actually has, rather than hitting `get_or_err`'s
+        // `MissingVariant` on an algorithm this commit just retired.
+        let tx_alg = if active_algs.contains(&cz.hash_alg) {
+            cz.hash_alg
+        } else {
+            active_algs.first().copied().unwrap_or(cz.hash_alg)
+        };
 
         // Compute TMR from pending transactions
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
@@ -1544,8 +1555,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         match &cz.kind {
-            CozKind::KeyCreate { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyCreate { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
@@ -1558,12 +1568,10 @@ impl<S: eml::Storage> Principal<S> {
                 }
                 self.add_key(key, cz.now);
             },
-            CozKind::KeyDelete { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyDelete { id } => {
                 self.remove_key(id)?;
             },
-            CozKind::KeyReplace { pre, id } => {
-                self.verify_pre(pre)?;
+            CozKind::KeyReplace { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
@@ -1577,26 +1585,25 @@ impl<S: eml::Storage> Principal<S> {
                 // (we just added a key, so this is safe)
                 self.core_mut().auth.keys.shift_remove(&cz.signer.to_b64());
             },
-            CozKind::SelfRevoke { pre, rvk } => {
-                // Per protocol simplification, revoke requires pre like all other coz
-                self.verify_pre(pre)?;
+            CozKind::SelfRevoke { rvk } => {
                 self.revoke_key(&cz.signer, *rvk, None)?;
             },
-            CozKind::PrincipalCreate { pre, id } => {
+            CozKind::PrincipalCreate { id } => {
                 // Genesis finalization (SPEC §5.1)
                 // Verify signer is a genesis key
                 let signer_b64 = cz.signer.to_b64();
                 if !self.genesis_keys.contains(&signer_b64) {
                     return Err(Error::UnknownKey);
                 }
-                // Verify that `pre` matches the current PS (chain continuity)
-                self.verify_pre(pre)?;
-                // Verify that `id` matches the computed PS (SPEC §5.1:609 — "id: Final PS = PR")
+                // Verify that `id` matches the computed PR (SPEC §5.1 step 3:
+                // `id` equals the future SR, which equals the current PR here
+                // since no CR exists yet)
                 if !id.0.matches(&self.pr.0) {
                     return Err(Error::StateMismatch);
                 }
-                // Freeze PR at current PS (SPEC §5.1:600 — "principal/create establishes PR")
-                // establish_pg() is the ONLY code path that transitions Nascent → Established.
+                // Freeze PG at the current PR (SPEC §5.1 step 3: "principal/create ... establishes
+                // PG") establish_pg() is the ONLY code path that transitions
+                // Nascent → Established.
                 self.establish_pg(PrincipalGenesis::from_initial(&self.pr))?;
             },
             CozKind::CommitCreate { .. } => {
@@ -1669,11 +1676,10 @@ impl<S: eml::Storage> Principal<S> {
         // before folding it into SR-node. DR was cached by record_action
         // under whatever active_algs were live at the time; a key of a NEW
         // algorithm added since then would otherwise leave DR missing that
-        // algorithm's variant, and StateTree::build's cell payload would
-        // silently borrow the wrong-width first-available variant via
-        // MultihashDigest::get_or_err — exactly the width mismatch the
-        // tree's fold correctly refuses to fold (unlike the old flat
-        // formula, which had no width invariant to catch it).
+        // algorithm's variant, and StateTree::build's cell payload would hit
+        // MultihashDigest::get_or_err's `MissingVariant` error for the new
+        // algorithm (unlike the old flat formula, which had no per-algorithm
+        // variant to be missing in the first place).
         let actions: Vec<&Action> = core.data.actions.iter().collect();
         core.dr = compute_dr(&actions, None, &active_algs)?;
 
@@ -1700,12 +1706,14 @@ impl<S: eml::Storage> Principal<S> {
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let pre_bytes = core.pr.0.get_or_err(tx_alg)?;
-            let sr_bytes = sr.0.get_or_err(tx_alg)?;
+            let pre_bytes = core.pr.0.arrow_component_bytes(tx_alg)?;
+            let sr_bytes = sr.0.arrow_component_bytes(tx_alg)?;
             let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
 
-            let computed_digest =
-                crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+            let computed_digest = crate::state::hash_sorted_concat_bytes(
+                tx_alg,
+                &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes],
+            );
 
             let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
             if claimed_digest != computed_digest.as_slice() {
@@ -1812,7 +1820,6 @@ impl<S: eml::Storage> Principal<S> {
     /// - `InvalidSignature`: Signature doesn't verify
     /// - `UnknownKey`: Signer not in active key set
     /// - `MalformedPayload`: Missing required fields
-    /// - `InvalidPrior`: `pre` doesn't match current CS
     /// - `NoActiveKeys`: Would leave principal with no keys
     #[must_use = "coz application may fail; handle the Result"]
     pub fn verify_and_apply_transaction(
@@ -1846,21 +1853,6 @@ impl<S: eml::Storage> Principal<S> {
 
         // Apply as single-cz atomic commit
         self.apply_transaction(vtx)
-    }
-
-    /// Verify that `pre` matches the expected prior Principal State.
-    ///
-    /// Per SPEC §4, the `pre` field references the previous PS.
-    /// At genesis (no prior commits), PS is implicitly promoted from AS,
-    /// so `pre` is compared against the promoted auth_root.
-    fn verify_pre(&self, pre: &PrincipalRoot) -> Result<()> {
-        let alg = pre.0.algorithms().next().ok_or(Error::EmptyMultihash)?;
-        let current = self.pr.0.get_or_err(alg)?;
-        let expected = pre.0.get_or_err(alg)?;
-        if current != expected {
-            return Err(Error::InvalidPrior);
-        }
-        Ok(())
     }
 
     /// Add a key to the active key set.
@@ -2032,51 +2024,35 @@ mod tests {
     }
 
     #[test]
-    fn pr_is_none_at_level1() {
+    fn pg_is_none_at_level1() {
         let key = make_test_key(0xCC);
         let principal = Principal::implicit(key).unwrap();
 
-        // PR is None at Level 1 (no principal/create)
-        assert!(principal.pg().is_none(), "PR should be None at Level 1");
+        // PG is None at Level 1 (no principal/create)
+        assert!(principal.pg().is_none(), "PG should be None at Level 1");
 
-        // PS still exists and is stable
-        let ps_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        assert!(!ps_bytes.is_empty());
+        // PR still exists and is stable
+        let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        assert!(!pr_bytes.is_empty());
     }
 
     // ========================================================================
     // ParsedCoz application tests
     // ========================================================================
 
-    fn make_key_add_tx(
-        pre: &PrincipalRoot,
-        new_key: &Key,
-        signer: &Thumbprint,
-    ) -> crate::parsed_coz::ParsedCoz {
+    fn make_key_add_tx(new_key: &Key, signer: &Thumbprint) -> crate::parsed_coz::ParsedCoz {
         use coz::Czd;
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
         use crate::parsed_coz::{CozKind, ParsedCoz};
 
         // Create dummy raw CozJson for test cozies
-        let ps_bytes = pre
-            .get(HashAlg::Sha256)
-            .or_else(|| {
-                pre.as_multihash()
-                    .variants()
-                    .values()
-                    .next()
-                    .map(AsRef::as_ref)
-            })
-            .expect("PrincipalRoot must have at least one variant");
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
                 "id": new_key.tmb.to_b64()
             }),
             sig: vec![0; 64],
@@ -2084,7 +2060,6 @@ mod tests {
 
         ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre: pre.clone(),
                 id: new_key.tmb.clone(),
             },
             signer: signer.clone(),
@@ -2101,9 +2076,8 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal
             .apply_transaction_test(cz, Some(key2.clone()))
@@ -2124,9 +2098,8 @@ mod tests {
             .get(principal.hash_alg())
             .unwrap()
             .to_vec();
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
         // apply_transaction_test auto-finalizes the commit
@@ -2141,23 +2114,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_key_add_pre_mismatch_fails() {
-        use crate::multihash::MultihashDigest;
-
-        let key1 = make_test_key(0x11);
-        let mut principal = Principal::implicit(key1.clone()).unwrap();
-
-        // Wrong pre value
-        let wrong_pre =
-            PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xFF; 32]).unwrap());
-        let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&wrong_pre, &key2, &key1.tmb);
-
-        let result = principal.apply_transaction_test(cz, Some(key2));
-        assert!(matches!(result, Err(Error::InvalidPrior)));
-    }
-
-    #[test]
     fn pr_still_none_after_transaction() {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
@@ -2168,9 +2124,8 @@ mod tests {
             "PR should be None before principal/create"
         );
 
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
@@ -2226,14 +2181,14 @@ mod tests {
         let key = make_test_key(0xBB);
         let mut principal = Principal::implicit(key.clone()).unwrap();
 
-        let ps_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
 
         let action = make_test_action(&key.tmb);
         principal.record_action(action).unwrap();
 
-        let ps_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
-        // PS changes when DS is added
-        assert_ne!(ps_before, ps_after);
+        let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
+        // PR changes when DS is added
+        assert_ne!(pr_before, pr_after);
     }
 
     #[test]
@@ -2265,10 +2220,8 @@ mod tests {
         // Level 1: single key, self-revoke should fail
         assert_eq!(principal.level(), Level::L1);
 
-        let pre = principal.pr().clone();
-
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
@@ -2298,10 +2251,8 @@ mod tests {
 
         use crate::parsed_coz::{CozKind, ParsedCoz};
 
-        let pre = principal.pr().clone();
-
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key2.tmb.clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
@@ -2326,12 +2277,11 @@ mod tests {
         let key1 = make_test_key(0x11);
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
-        let pre = principal.pr().clone();
         let mut key2 = make_test_key(0x22);
         key2.first_seen = 0; // Caller may not set this
 
         // ParsedCoz has now=2000
-        let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, &key1.tmb);
         assert_eq!(cz.now, 2000);
 
         principal
@@ -2357,11 +2307,9 @@ mod tests {
         let key2 = make_test_key(0x22);
         let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
 
-        let pre = principal.pr().clone();
-
         // Revoke key2 (self-revoke)
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 1500 },
+            kind: CozKind::SelfRevoke { rvk: 1500 },
             signer: key2.tmb.clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
@@ -2392,7 +2340,6 @@ mod tests {
         assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
 
         // Apply a key/create coz with now=5000
-        let pre = principal.pr().clone();
         let key2 = make_test_key(0x22);
 
         use coz::Czd;
@@ -2400,7 +2347,6 @@ mod tests {
         use crate::parsed_coz::{CozKind, ParsedCoz};
         let cz = ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre,
                 id: key2.tmb.clone(),
             },
             signer: key1.tmb.clone(),
@@ -2448,12 +2394,10 @@ mod tests {
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 2) as u8);
-            let pre = principal.pr().clone();
             let signer = keys.last().unwrap().tmb.clone();
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    pre,
                     id: new_key.tmb.clone(),
                 },
                 signer: signer.clone(),
@@ -2522,11 +2466,9 @@ mod tests {
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 3) as u8);
-            let pre = principal.pr().clone();
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    pre,
                     id: new_key.tmb.clone(),
                 },
                 signer: signer.clone(),
@@ -2632,7 +2574,7 @@ mod tests {
                 for idx in 0..size {
                     assert_eq!(
                         eml::mountain_skeleton(k, size, idx),
-                        eml::rebalanced_skeleton(size, k, idx),
+                        polydigest::rebalanced_skeleton(size, k, idx),
                         "k={k} size={size} idx={idx}: mountain_skeleton and rebalanced_skeleton \
                          diverged — if this fires, the wrong-topology negative test PLAN.md \
                          mandates is constructible again and should be added"
@@ -2784,9 +2726,12 @@ mod tests {
         // The hop-verify loop alone accepts every spliced hop: each proof
         // is genuine and matched against its own originating root here.
         for (hop, &root) in spliced.hops.iter().zip(roots.iter()) {
-            let skeleton =
-                eml::rebalanced_skeleton(hop.proof.tree_size, hop.proof.arity, hop.proof.index)
-                    .unwrap();
+            let skeleton = polydigest::rebalanced_skeleton(
+                hop.proof.tree_size,
+                hop.proof.arity,
+                hop.proof.index,
+            )
+            .unwrap();
             assert!(
                 hop.proof.verify(&hasher, &skeleton, root),
                 "each spliced hop must verify in isolation against its own root"
@@ -3033,10 +2978,9 @@ mod tests {
             vec![HashAlg::Sha256, HashAlg::Sha512]
         );
 
-        let pre = principal.pr().clone();
         let id = principal.auth_root().clone();
         let cz = ParsedCoz {
-            kind: CozKind::PrincipalCreate { pre, id },
+            kind: CozKind::PrincipalCreate { id },
             signer: key_es256.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x33; 32]),
@@ -3077,9 +3021,8 @@ mod tests {
 
         {
             let mut scope = principal.begin_commit();
-            let pre = pr_before.clone();
             let key2 = make_test_key(0x22);
-            let cz = make_key_add_tx(&pre, &key2, &key1.tmb);
+            let cz = make_key_add_tx(&key2, &key1.tmb);
             let vtx = crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz, Some(key2));
             scope.apply(vtx).unwrap();
             // Deliberately dropped here without calling finalize().
@@ -3132,9 +3075,8 @@ mod tests {
 
         // Ed25519 key self-revokes; ES256 remains, so this is not a
         // last-active-key revoke (which would be rejected).
-        let pre = principal.pr().clone();
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key_ed25519.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
@@ -3187,9 +3129,8 @@ mod tests {
         assert!(principal.auth_root().get(HashAlg::Sha512).is_some());
         assert!(principal.sr().unwrap().get(HashAlg::Sha512).is_some());
 
-        let pre = principal.pr().clone();
         let cz = ParsedCoz {
-            kind: CozKind::SelfRevoke { pre, rvk: 2000 },
+            kind: CozKind::SelfRevoke { rvk: 2000 },
             signer: key_ed25519.tmb.clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
@@ -3230,7 +3171,6 @@ mod tests {
     #[test]
     fn adding_new_algorithm_key_after_action_recorded_does_not_panic() {
         use coz::Czd;
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
         use crate::parsed_coz::CozKind;
@@ -3245,23 +3185,19 @@ mod tests {
         // A key/create tx timestamped after the action (make_test_action
         // uses now=3000; make_key_add_tx's fixed now=2000 would fail
         // timestamp ordering, so this is constructed inline instead).
-        let pre = principal.pr().clone();
         let key2 = make_test_key_ed25519(0x22);
-        let ps_bytes = pre.get(HashAlg::Sha256).unwrap();
         let raw = coz::CozJson {
             pay: json!({
                 "typ": "cyphr.me/key/create",
                 "alg": "Ed25519",
                 "now": 4000,
                 "tmb": key.tmb.to_b64(),
-                "pre": Base64UrlUnpadded::encode_string(ps_bytes),
                 "id": key2.tmb.to_b64()
             }),
             sig: vec![0; 64],
         };
         let cz = crate::parsed_coz::ParsedCoz {
             kind: CozKind::KeyCreate {
-                pre: pre.clone(),
                 id: key2.tmb.clone(),
             },
             signer: key.tmb.clone(),
@@ -3314,9 +3250,8 @@ mod tests {
     // ========================================================================
 
     /// Build an explicit-genesis `principal/create` coz for `key`, signed
-    /// against `pre`/`id` taken from the given principal — the minimal
-    /// mutation that drives `establish_pg`'s Nascent → Established
-    /// transition.
+    /// against `id` taken from the given principal — the minimal mutation
+    /// that drives `establish_pg`'s Nascent → Established transition.
     fn make_principal_create_tx<S: eml::Storage>(
         principal: &Principal<S>,
         key: &Key,
@@ -3328,7 +3263,6 @@ mod tests {
 
         ParsedCoz {
             kind: CozKind::PrincipalCreate {
-                pre: principal.pr().clone(),
                 id: principal.auth_root().clone(),
             },
             signer: key.tmb.clone(),

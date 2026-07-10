@@ -3,14 +3,15 @@
 <!--
   SPEC document — coordination layer between protocol engine and persistent
   backends. Updated 2026-06-01 to reflect four-document split and research
-  conclusions from .sketches/2026-05-28-storage-object-model.md.
+  conclusions from a 2026-05-28 storage-object-model design sketch (no
+  longer in the repository).
 
   This document governs the StorageEngine coordination layer. Backend-specific
   contracts are defined in their respective specs:
   - blob-store.md      — abstract BlobStore API
   - blob-store-fjall.md — Fjall BlobStore implementation
-  - indexer.md          — abstract Indexer API
-  - indexer-sqlite.md   — SQLite Indexer implementation
+  - indexer.md          — abstract Indexer API (Fjall-backed `cyphr-index-fjall`
+    is production; SQLite was retired 2026-07-08, see indexer.md)
 
   Source: SPEC.md §16, rs/cyphr-storage/, eml-storage-fjall.
   Authority: SPEC.md (Zamicol and nrdxp)
@@ -19,8 +20,6 @@
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
   document are to be interpreted as described in BCP 14 (RFC 2119, RFC 8174) when,
   and only when, they appear in all capitals, as shown here.
-
-  See: .agent/workflows/spec.md for the full protocol specification.
 -->
 
 ## Domain
@@ -43,7 +42,14 @@ responses. The engine is the layer that the HTTP server programs against.
 | [`blob-store.md`](blob-store.md)             | Abstract BlobStore API (backend-agnostic)                      |
 | [`blob-store-fjall.md`](blob-store-fjall.md) | Fjall BlobStore implementation                                 |
 | [`indexer.md`](indexer.md)                   | Abstract Indexer API (backend-agnostic)                        |
-| [`indexer-sqlite.md`](indexer-sqlite.md)     | SQLite Indexer implementation                                  |
+
+`cyphr-index-fjall` is the production Indexer implementation (see
+[`indexer.md`](indexer.md) § Implementations); it has no separate
+implementation-level spec document yet (unlike `blob-store-fjall.md`'s
+split for the BlobStore side). `docs/specs/indexer-sqlite.md`, which
+specified the prior SQLite-backed Indexer, is archived to
+`docs/plans/archive/` — that implementation was retired 2026-07-08
+by the KV-index migration in favor of Fjall.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md) (§4 AS/DS
@@ -54,8 +60,8 @@ architectural description and proofs.
 **Cross-references:**
 [`state-tree.md`](state-tree.md) (MHMR computation, sort order, promotion),
 [`transactions.md`](transactions.md) (commit atomicity, finality, arrow),
-[`multihash-simplification.md`](multihash-simplification.md) (Hasher trait,
-DataRoot fix, EML-for-CT migration).
+[`../plans/archive/multihash-simplification.md`](../plans/archive/multihash-simplification.md)
+(historical — Hasher trait, DataRoot fix, EML-for-CT migration, now complete).
 
 **Criticality Tier:** High — storage failures directly compromise principal
 state integrity, cryptographic history, and recovery capability.
@@ -77,7 +83,7 @@ The two layers are:
 | Layer                      | Responsibility                                         | Backend                                | Spec                             |
 | :------------------------- | :----------------------------------------------------- | :------------------------------------- | :------------------------------- |
 | **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)  | [`blob-store.md`](blob-store.md) |
-| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | SQLite (production), HashMap (testing) | [`indexer.md`](indexer.md)       |
+| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | Fjall (production), HashMap (testing)  | [`indexer.md`](indexer.md)       |
 
 **[separate-durability]**: Content store and index are **separate databases**
 with independent durability. The content store is the durable source of
@@ -85,7 +91,7 @@ truth; the index is a derived, rebuildable projection. If the index is lost,
 it is reconstructed from the content store via re-indexing. Cross-store
 atomicity is not a correctness requirement — the engine's recovery semantics
 handle partial failures.
-`VERIFIED: SQLite migration complete; FjallIndexer removed (cyphr-index-sqlite)`
+`VERIFIED: cyphr-index-fjall is the production Indexer; cyphr-index-sqlite was retired 2026-07-08 in the KV-index migration — see indexer.md`
 
 **[crate-isolation]**: Implementation backends MUST be isolated in their
 own crates, separate from the trait definitions. The trait crate defines
@@ -105,7 +111,7 @@ rs/
 │
 ├── cyphr-blob-fjall/       # BlobStore impl → depends on: cyphr-storage, fjall
 │
-└── cyphr-index-sqlite/     # Indexer impl → depends on: cyphr-storage, rusqlite, tokio
+└── cyphr-index-fjall/      # Indexer impl → depends on: cyphr-storage, fjall
 ```
 
 In-memory implementations (`MemoryBlobStore`, `MemoryIndexer`) remain
@@ -316,9 +322,9 @@ commit.
 │ CAS, truth  │ │ node hash  │ │                        │
 └─────────────┘ └────────────┘ └────────────────────────┘
        │                              │
-       │ (Fjall)                      │ (SQLite — separate DB)
+       │ (Fjall)                      │ (Fjall — separate DB)
        ▼                              ▼
-   blob-store-fjall.md           indexer-sqlite.md
+   blob-store-fjall.md           cyphr-index-fjall (no spec doc yet)
 ```
 
 ## Behavioral Properties
@@ -335,7 +341,7 @@ same principal MUST reflect the ingested commit's state.
 | Constraint               | Method      | Result | Detail                                             |
 | :----------------------- | :---------- | :----- | :------------------------------------------------- |
 | [two-tier-separation]    | agent-check | pass   | `StorageEngine<B, I>` generic over distinct traits |
-| [separate-durability]    | agent-check | pass   | SQLite migration complete; FjallIndexer removed    |
+| [separate-durability]    | agent-check | pass   | cyphr-index-fjall (Layer 1) + cyphr-blob-fjall (Layer 0) are separate Fjall keyspaces/DBs |
 | [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist       |
 | [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                 |
 | [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                    |
@@ -367,9 +373,14 @@ in their respective sub-specifications. They are NOT duplicated here.
 [fjall-single-keyspace], [fjall-partition-isolation], [no-partial-commit],
 [fjall-put-mapping], [fjall-compaction], [fjall-iter-consistency].
 
-**Indexer implementation** (see [`indexer-sqlite.md`](indexer-sqlite.md)):
-[sqlite-write-transaction], schema design, async actor model, migration
-strategy.
+**Indexer implementation**: `cyphr-index-fjall` is the production Indexer
+(Fjall-backed). It has no dedicated implementation-level spec document yet
+(unlike the BlobStore side's `blob-store-fjall.md` split) — schema/key-layout
+design lives in the crate itself (`rs/cyphr-index-fjall/src/lib.rs`).
+`docs/specs/indexer-sqlite.md` (the prior SQLite implementation's spec,
+including its own now-inapplicable `[sqlite-write-transaction]` constraint)
+is archived to `docs/plans/archive/` — that implementation was retired
+2026-07-08 by the KV-index migration.
 
 ### For Testing
 
@@ -409,10 +420,14 @@ strategy.
    distributed primitives) were evaluated and rejected. Chain replay
    provides trustless completeness for per-principal queries.
 
-5. **Index backend** — **RESOLVED: SQLite (2026-06-01).** SQLite replaces
-   Fjall for the index layer. B-trees match the read-heavy workload; schema
-   flexibility is critical for a pre-alpha protocol. See
-   [`indexer-sqlite.md`](indexer-sqlite.md).
+5. **Index backend** — **SUPERSEDED 2026-07-08 (KV-index migration).** The
+   2026-06-01 SQLite decision below was reversed: `cyphr-index-sqlite` was
+   retired and Fjall (`cyphr-index-fjall`) is the production Indexer. See
+   [`indexer.md`](indexer.md) § Implementations. Original entry, kept for
+   decision history: ~~SQLite replaces Fjall for the index layer. B-trees
+   match the read-heavy workload; schema flexibility is critical for a
+   pre-alpha protocol. See `indexer-sqlite.md` (2026-06-01, now archived to
+   `docs/plans/archive/`).~~
 
 6. **Separate durability** — **RESOLVED: yes (2026-06-01).** Content store
    and index are separate databases. Cross-store atomicity is not a

@@ -302,9 +302,7 @@ async fn ingest_fixture(
             // If this is a key-introducing transaction, embed the key
             // material from the commit-level keys[] into the blob.
             let typ = coz["pay"]["typ"].as_str().unwrap_or("").to_string();
-            let is_key_introducing = typ.contains("/key/create")
-                || typ.contains("/key/replace")
-                || typ.contains("/key/add");
+            let is_key_introducing = crate::import::is_key_introducing_typ(&typ);
 
             if is_key_introducing {
                 if let Some(ks) = keys_json {
@@ -524,9 +522,8 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
         let mut coz = coz_value.clone();
 
         let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-        let is_key_introducing = typ.contains("/key/create") || typ.contains("/key/replace");
 
-        if is_key_introducing {
+        if crate::import::is_key_introducing_typ(typ) {
             if let Some(ks) = keys {
                 if key_idx < ks.len() {
                     coz.as_object_mut()
@@ -591,6 +588,78 @@ async fn submit_commit_valid_fixture() {
     if let Some(level) = expected["level"].as_u64() {
         assert_eq!(principal.level() as u64, level, "level mismatch");
     }
+}
+
+/// F36: `submit_commit`'s action-only branch (a bundle with no
+/// transaction-typed cozy, only actions) must report `manifest_hash: None`
+/// -- no commit was formed, so there is genuinely no manifest to name, not
+/// a zero-hash sentinel in a field whose type otherwise implies a real
+/// content address.
+#[tokio::test]
+async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
+    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 1, "fixture must be a single action-only bundle");
+
+    let engine = test_engine();
+    let principal_id = "action-only-test";
+    let genesis = make_genesis(genesis_keys);
+
+    let blobs = build_raw_blobs(&commits[0]);
+    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+
+    let result = engine
+        .submit_commit(principal_id, Some(genesis), &blob_slices)
+        .await
+        .expect("submit_commit failed for action-only bundle");
+
+    assert_eq!(
+        result.manifest_hash, None,
+        "action-only bundle forms no commit, so it must report no manifest hash"
+    );
+    assert_eq!(result.blob_hashes.len(), 1);
+
+    // No commit was indexed -- an action-only bundle never advances tip.
+    assert!(
+        engine.get_tip(principal_id).await.unwrap().is_none(),
+        "action-only bundle must not create an indexed commit"
+    );
+}
+
+/// F29: a submitted blob whose pay is missing `typ` must be rejected
+/// outright, not silently misclassified. Before the fix, engine/mod.rs's
+/// hand-rolled extraction defaulted a missing `typ` to `""`, and
+/// `is_transaction_typ("")` is false -- so a coz that was actually a
+/// mutation (e.g. a corrupted `key/create`) could be silently routed down
+/// the action-only path instead of being rejected as malformed.
+#[tokio::test]
+async fn submit_commit_rejects_blob_missing_typ() {
+    let fixture = load_golden("actions", "single_action_promotes_ds");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+
+    let malformed = serde_json::json!({
+        "pay": {
+            "alg": "ES256",
+            "tmb": genesis_keys[0]["tmb"],
+            "now": 1000
+            // "typ" deliberately omitted
+        },
+        "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    });
+    let bytes = serde_json::to_vec(&malformed).unwrap();
+
+    let engine = test_engine();
+    let result = engine
+        .submit_commit("f29-missing-typ", Some(genesis), &[&bytes])
+        .await;
+
+    assert!(
+        matches!(result, Err(EngineError::MalformedBlob(_))),
+        "a blob missing 'typ' must be rejected as malformed, not silently \
+         misclassified as an action, got {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -689,6 +758,178 @@ async fn submit_then_load_round_trip() {
         .expect("get_tip failed")
         .expect("tip should exist");
     assert_eq!(tip.commit_count, commits.len() as u64);
+}
+
+// ========================================================================
+// Durable ingest: crash-window closure + order retention
+// ========================================================================
+
+/// Crash simulated between `store_blobs_and_manifest`'s manifest write and
+/// `ingest_commit`'s subsequent index write: the blobs and the durable
+/// commit-manifest are stored, but the index was never written -- exactly
+/// what a process crash after `ingest_commit`'s manifest `put` but before
+/// its `indexer.index_commit` call would leave behind.
+///
+/// The commit must not be silently lost: `rebuild_index_from_manifests`
+/// (called here in place of "the next engine open") must recover it in
+/// full from the manifest alone, with no index entry ever pointing at a
+/// missing blob in the meantime.
+#[tokio::test]
+async fn crash_between_manifest_and_index_write_is_recoverable() {
+    let engine = test_engine();
+    let blob = b"{\"pay\":{\"now\":1000}}";
+    let meta = make_meta("alice", 0, 1000);
+
+    let (commit, manifest_hash) = engine
+        .store_blobs_and_manifest(&[blob.as_slice()], meta)
+        .await
+        .expect("store_blobs_and_manifest failed");
+
+    // Before recovery: no index entry exists at all -- not a partial one,
+    // not one pointing at a missing blob. Full absence.
+    assert!(
+        engine.get_tip("alice").await.unwrap().is_none(),
+        "index must not have been written yet"
+    );
+
+    // The manifest itself is durably present in the blob store.
+    assert!(
+        engine
+            .blob_store()
+            .get(&manifest_hash)
+            .await
+            .unwrap()
+            .is_some(),
+        "commit manifest must be durably stored before the index write"
+    );
+
+    // "Reopen": scan the blob store for manifests and complete indexing.
+    let recovered = engine
+        .rebuild_index_from_manifests()
+        .await
+        .expect("rebuild_index_from_manifests failed");
+    assert_eq!(recovered, 1, "exactly one manifest should be found");
+
+    // After recovery: full presence, matching what a normal ingest_commit
+    // call would have produced.
+    let tip = engine
+        .get_tip("alice")
+        .await
+        .unwrap()
+        .expect("tip must exist after manifest-based recovery");
+    assert_eq!(tip.commit_count, 1);
+    assert_eq!(tip.pr, commit.prs[0]);
+
+    // Idempotent: calling recovery again must not double-index.
+    let recovered_again = engine.rebuild_index_from_manifests().await.unwrap();
+    assert_eq!(
+        recovered_again, 1,
+        "manifest is still found, but re-indexing is a no-op"
+    );
+    let tip_again = engine.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(
+        tip_again.commit_count, 1,
+        "re-running recovery must not duplicate the commit"
+    );
+}
+
+/// Crash simulated mid coz-blob loop, before the manifest itself is ever
+/// written: a coz blob lands in the blob store directly (bypassing
+/// `ingest_commit` entirely), with no manifest tying it to any commit.
+///
+/// This must resolve to full absence -- the orphaned blob is harmless,
+/// content-addressed leftover data (never surfaced through the index),
+/// not a half-formed commit.
+#[tokio::test]
+async fn crash_before_manifest_write_leaves_commit_fully_absent() {
+    let engine = test_engine();
+
+    let orphan_hash = engine.blob_store().put(b"orphan-coz-blob").await.unwrap();
+
+    let recovered = engine
+        .rebuild_index_from_manifests()
+        .await
+        .expect("rebuild_index_from_manifests failed");
+    assert_eq!(
+        recovered, 0,
+        "no manifest exists, so nothing should be indexed"
+    );
+
+    assert!(engine.get_tip("alice").await.unwrap().is_none());
+    // The orphan blob is still retrievable (harmless leftover content) but
+    // never claims to be part of any indexed commit.
+    assert!(
+        engine
+            .blob_store()
+            .get(&orphan_hash)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The commit's intra-commit transaction order must be readable directly
+/// from its durable manifest -- not via `reindex`'s permutation search --
+/// and must match the exact order `ingest_commit` was called with.
+#[tokio::test]
+async fn manifest_retains_ingest_order_without_search() {
+    let engine = test_engine();
+    let blob_a = b"tx-a-first";
+    let blob_b = b"tx-b-second";
+    let blob_c = b"tx-c-third";
+
+    let mut meta = make_meta("alice", 0, 1000);
+    // Three cozies, matching the three blobs positionally (make_meta only
+    // seeds one; extend to match blobs.len()).
+    meta.cozies = vec![
+        meta.cozies[0].clone(),
+        meta.cozies[0].clone(),
+        meta.cozies[0].clone(),
+    ];
+
+    let result = engine
+        .ingest_commit(
+            &[blob_a.as_slice(), blob_b.as_slice(), blob_c.as_slice()],
+            meta,
+        )
+        .await
+        .expect("ingest failed");
+
+    let expected_order = vec![
+        blake3::hash(blob_a).as_bytes().to_vec(),
+        blake3::hash(blob_b).as_bytes().to_vec(),
+        blake3::hash(blob_c).as_bytes().to_vec(),
+    ];
+
+    // Read the manifest back directly from the blob store -- the same
+    // mechanism `rebuild_index_from_manifests` uses -- rather than via
+    // `reindex`'s permutation search.
+    let manifest_bytes = engine
+        .blob_store()
+        .get(&result.manifest_hash.expect("ingest_commit always forms a manifest"))
+        .await
+        .unwrap()
+        .expect("manifest must be present in the blob store");
+    let manifest: super::CommitManifest =
+        serde_json::from_slice(&manifest_bytes).expect("manifest must deserialize");
+
+    assert_eq!(manifest.kind, super::COMMIT_MANIFEST_KIND);
+    let retained_order: Vec<Vec<u8>> = manifest
+        .commit
+        .blob_hashes
+        .iter()
+        .map(|h| h.as_bytes().to_vec())
+        .collect();
+    assert_eq!(
+        retained_order, expected_order,
+        "retained manifest order must match the exact ingest-time transaction sequence"
+    );
+
+    // The manifest also carries the commit's derived Auth Root -- the
+    // arrow the retained order is verified against -- so a reader never
+    // needs to re-derive it via search.
+    let tip = engine.get_tip("alice").await.unwrap().unwrap();
+    assert_eq!(manifest.commit.ars, vec![tip.ar]);
 }
 
 #[tokio::test]
@@ -992,4 +1233,215 @@ async fn checkpoint_without_trees_still_has_no_cr() {
         restored.commit_trees().is_empty(),
         "load_from_checkpoint without trees must have empty commit_trees"
     );
+}
+
+// ========================================================================
+// F40: multi-key genesis + second commit (StorageEngine::submit_commit's
+// real replay-based reload path)
+// ========================================================================
+
+/// Load the shared test key pool (`tests/keys/pool.toml`).
+fn load_pool() -> test_fixtures::Pool {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/keys/pool.toml");
+    test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
+}
+
+fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
+    let tmb = pk.compute_tmb().expect("pool tmb");
+    cyphr::Key {
+        alg: pk.alg.clone(),
+        tmb,
+        pub_key: pub_bytes,
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    }
+}
+
+/// The `"key"` JSON object a raw blob embeds for a key-introducing coz,
+/// matching `key_value_to_entry`'s expected shape.
+fn pool_key_json(pk: &test_fixtures::PoolKey) -> serde_json::Value {
+    serde_json::json!({
+        "alg": pk.alg,
+        "pub": pk.pub_key,
+        "tmb": pk.compute_tmb_b64().expect("pool tmb b64"),
+    })
+}
+
+/// Sign an arbitrary (already-complete-except-for-signature) pay object
+/// under `pk`, returning the canonical pay bytes and raw signature.
+fn sign_pay(pk: &test_fixtures::PoolKey, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let mut pay = pay;
+    pay.as_object_mut().expect("pay object").sort_keys();
+    let pay_vec = serde_json::to_vec(&pay).expect("serialize pay");
+
+    let prv_bytes = Base64UrlUnpadded::decode_vec(
+        pk.prv
+            .as_ref()
+            .unwrap_or_else(|| panic!("pool key '{}' has no private key material", pk.name)),
+    )
+    .expect("pool prv base64");
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
+
+    let (sig, _cad) =
+        coz::sign_json(&pay_vec, &pk.alg, &prv_bytes, &pub_bytes).expect("sign_json");
+    (pay_vec, sig)
+}
+
+/// Build a raw `{pay, sig}` blob (optionally embedding `"key"`) from
+/// already-signed pay bytes and a raw signature.
+fn raw_blob(pay_bytes: &[u8], sig: &[u8], key: Option<serde_json::Value>) -> Vec<u8> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pay_val: serde_json::Value = serde_json::from_slice(pay_bytes).expect("pay json");
+    let mut obj = serde_json::Map::new();
+    obj.insert("pay".to_string(), pay_val);
+    obj.insert(
+        "sig".to_string(),
+        serde_json::json!(Base64UrlUnpadded::encode_string(sig)),
+    );
+    if let Some(k) = key {
+        obj.insert("key".to_string(), k);
+    }
+    serde_json::to_vec(&serde_json::Value::Object(obj)).expect("serialize blob")
+}
+
+/// Extract the raw `{pay, sig}` bytes `submit_commit` expects for the
+/// `n`th coz of `commit`'s commit-tx (the transaction half — mutations
+/// plus the terminal `commit/create`), as actually signed.
+fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
+    let vtx = &commit.commit_tx().0[n];
+    let raw = vtx.raw();
+    serde_json::to_vec(raw).expect("serialize raw coz json")
+}
+
+/// F40 regression: a genuinely fresh explicit multi-key genesis (2+ keys,
+/// zero prior commits) must accept a second, ordinary commit signed on top
+/// of it, through the real production path — `StorageEngine::submit_commit`,
+/// which reconstructs the principal via a full replay (`load_principal`) on
+/// *every* call rather than reusing one live in-memory instance. Every raw
+/// blob submitted here is produced by a correctly-computing client
+/// (`CommitScope::finalize_with_arrow` on its own independently-maintained
+/// principal), so any failure below is a genuine server-side asymmetry, not
+/// a malformed test fixture. No existing golden fixture or test exercises
+/// an *established* (`principal/create`-finalized) multi-key genesis
+/// through `submit_commit` a second time.
+#[tokio::test]
+async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
+    let pool = load_pool();
+    let key_a = pool.get("golden").expect("pool key golden");
+    let key_b = pool.get("alice").expect("pool key alice");
+    let key_c = pool.get("bob").expect("pool key bob");
+
+    let now = 1_700_000_000i64;
+    let a_tmb_b64 = key_a.compute_tmb_b64().expect("golden tmb b64");
+    let tmb_a = key_a.compute_tmb().expect("golden tmb");
+
+    let genesis_domain_keys = vec![pool_key_to_domain(key_a), pool_key_to_domain(key_b)];
+    let genesis = crate::Genesis::Explicit(genesis_domain_keys.clone());
+
+    // Client-side principal: the sole source of truth for what a correctly
+    // behaving signer computes as `pre`/arrow at each step. Never reloaded
+    // via replay — mirrors a long-lived client session.
+    let mut client = cyphr::Principal::explicit(genesis_domain_keys).expect("client genesis");
+    let id_tagged = client
+        .pr_tagged()
+        .expect("pr_tagged should succeed for a fresh genesis");
+
+    // ---- Commit #1: principal/create + commit/create, establishing PG. ----
+    let pc_pay = serde_json::json!({
+        "alg": key_a.alg,
+        "id": id_tagged,
+        "now": now,
+        "tmb": a_tmb_b64,
+        "typ": "cyphr.me/cyphr/principal/create",
+    });
+    let (pc_pay_bytes, pc_sig) = sign_pay(key_a, pc_pay);
+    let pc_blob = raw_blob(&pc_pay_bytes, &pc_sig, None);
+
+    let mut scope1 = client.begin_commit();
+    let pc_czd = {
+        let cad = coz::canonical_hash_for_alg(&pc_pay_bytes, &key_a.alg, None).expect("cad");
+        coz::czd_for_alg(&cad, &pc_sig, &key_a.alg).expect("czd")
+    };
+    scope1
+        .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
+        .expect("principal/create should apply to a fresh multi-key genesis (client side)");
+
+    let prv_a = {
+        use coz::base64ct::Encoding;
+        coz::base64ct::Base64UrlUnpadded::decode_vec(key_a.prv.as_ref().expect("golden has prv"))
+            .expect("golden prv base64")
+    };
+    let pub_a = {
+        use coz::base64ct::Encoding;
+        coz::base64ct::Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64")
+    };
+
+    let commit1 = scope1
+        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .expect("genesis commit should finalize (client side)");
+    assert_eq!(commit1.len(), 2, "principal/create + commit/create");
+    let cc1_blob = commit_tx_raw_blob(commit1, 0);
+
+    assert!(
+        client.pg().is_some(),
+        "PG must be established after the genesis commit (client side)"
+    );
+
+    let engine = test_engine();
+    let principal_id = "f40-multi-key-genesis";
+
+    engine
+        .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
+        .await
+        .expect("genesis commit should submit through the real StorageEngine write path");
+
+    // ---- Commit #2: an ordinary mutation signed on top of the Established genesis. ----
+    let kc_pay = serde_json::json!({
+        "alg": key_a.alg,
+        "id": key_c.compute_tmb_b64().expect("bob tmb b64"),
+        "now": now + 2,
+        "tmb": a_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let (kc_pay_bytes, kc_sig) = sign_pay(key_a, kc_pay);
+    let kc_blob = raw_blob(&kc_pay_bytes, &kc_sig, Some(pool_key_json(key_c)));
+    let kc_czd = {
+        let cad = coz::canonical_hash_for_alg(&kc_pay_bytes, &key_a.alg, None).expect("cad");
+        coz::czd_for_alg(&cad, &kc_sig, &key_a.alg).expect("czd")
+    };
+
+    let mut scope2 = client.begin_commit();
+    scope2
+        .verify_and_apply(
+            &kc_pay_bytes,
+            &kc_sig,
+            kc_czd,
+            Some(pool_key_to_domain(key_c)),
+        )
+        .expect("key/create mutation should apply to the second commit (client side)");
+    let commit2 = scope2
+        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .expect("second commit should finalize (client side)");
+    let cc2_blob = commit_tx_raw_blob(commit2, 0);
+
+    engine
+        .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
+        .await
+        .expect(
+            "a second commit signed on top of a fresh multi-key established genesis must \
+             submit without a state-root mismatch (F40)",
+        );
 }

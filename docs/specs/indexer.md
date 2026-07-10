@@ -1,13 +1,14 @@
-# SPEC: Relational Index
+# SPEC: Query Index
 
 <!--
   SPEC document — abstract API requirements for the Indexer layer.
-  Source: storage-engine.md (original), .sketches/2026-05-28-storage-object-model.md
+  Source: storage-engine.md (original), a 2026-05-28 storage-object-model
+  design sketch (no longer in the repository)
   Authority: SPEC.md (Zamicol and nrdxp)
 
-  This document specifies the backend-agnostic contract for the relational
-  index. Implementation-specific details (SQLite schemas, Fjall key layouts,
-  etc.) belong in their respective implementation specs.
+  This document specifies the backend-agnostic contract for the query
+  index. Implementation-specific details (Fjall key layouts, etc.) belong in
+  their respective implementation specs.
 
   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
@@ -17,7 +18,7 @@
 
 ## Domain
 
-**Problem Domain:** Relational indexing of Cyphr commits, transactions, and
+**Problem Domain:** Secondary-index lookups over Cyphr commits, transactions, and
 public keys. Accelerates queries that the content-addressed BlobStore cannot
 serve efficiently: tip lookups, commit chain traversal, digest resolution,
 key metadata retrieval.
@@ -40,7 +41,8 @@ design record.
 **Cross-references:**
 [`storage-engine.md`](storage-engine.md) (engine coordination),
 [`blob-store.md`](blob-store.md) (content store),
-[`indexer-sqlite.md`](indexer-sqlite.md) (SQLite implementation).
+`cyphr-index-fjall` (Fjall implementation; no dedicated implementation-level
+spec doc yet — see `rs/cyphr-index-fjall/src/lib.rs`).
 
 ## Type Declarations
 
@@ -106,7 +108,7 @@ TYPE PrincipalSummary = { principal_id, pr, commit_count, created, last_updated 
 
 -- NOTE: `public_key` bytes are sourced from the unsigned `keys` auxiliary
 -- field of the commit wire format, NOT from chain-committed state. Only
--- `thumbprint` is in KT. See indexer-sqlite.md for full rationale.
+-- `thumbprint` is in KT.
 TYPE PublicKeyInfo  = { thumbprint, algorithm, public_key }
 
 ```
@@ -124,7 +126,7 @@ content.
 **[index-idempotent]**: `index_commit()` MUST be idempotent. Re-indexing a
 commit that is already indexed (identified by `commit_id`) MUST be a no-op
 and MUST NOT produce an error.
-`VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — INSERT OR IGNORE; rs/cyphr-storage/src/index/memory.rs — dedup check`
+`VERIFIED: rs/cyphr-index-fjall/src/lib.rs — db_index_commit's contains_key(commit_key) early-return; rs/cyphr-storage/src/index/memory.rs — dedup check`
 
 ### Digest Resolution
 
@@ -160,16 +162,22 @@ preclude cross-principal queries. At minimum, operators need to query
 across all principals for database management and observability (e.g.,
 "show recent activity," "find all key revocations").
 
-The implementation schema achieves this by indexing universal Coz metadata
-(`typ`, `tmb`, `now`, `alg`, `czd`) in a single table — see
-[`indexer-sqlite.md`](indexer-sqlite.md) for the canonical schema design.
+The retired `cyphr-index-sqlite` backend achieved this by indexing universal
+Coz metadata (`typ`, `tmb`, `now`, `alg`, `czd`) in a single `cozies` table
+(see the archived `docs/plans/archive/indexer-sqlite.md`), though no
+`Indexer` trait method ever exposed a query over it. `cyphr-index-fjall`
+does not currently maintain per-coz metadata at all — its own source
+documents this as deliberate, since no live trait method reads it. This
+constraint's schema-level requirement is presently unenforced by either
+production backend's actual exposed surface; it constrains schema design
+if/when a cross-principal query method is added to the trait.
 
 ### Tip Consistency
 
 **[no-stale-tip]**: The TipState returned by `get_tip()` MUST reflect the
 most recently indexed commit for that principal. A TipState that lags behind
 the indexed commit chain is a consistency violation.
-`VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — INSERT OR REPLACE in transaction`
+`VERIFIED: rs/cyphr-index-fjall/src/lib.rs — db_index_commit's tips batch.insert runs in the same atomic batch as commits/principals`
 
 ### Async
 
@@ -181,8 +189,9 @@ RPITIT (`impl Future<Output = ...> + Send`). See `blob-store.md`
 
 **[runtime-agnostic-index]**: The `Indexer` trait MUST NOT depend on any
 specific async runtime in its signature. See `blob-store.md`
-[runtime-agnostic]. Runtime-specific types (e.g., `tokio::sync::mpsc`
-for the SQLite actor model) belong in implementation crates.
+[runtime-agnostic]. Runtime-specific types (e.g., `cyphr-index-fjall`'s use
+of `tokio::task::spawn_blocking` to bridge Fjall's synchronous API) belong
+in implementation crates.
 
 ### Thread Safety
 
@@ -259,7 +268,7 @@ a commit with sequence `n` already exists for that principal (unless
 idempotent re-indexing of the same commit).
 
 - **Type**: Safety
-  `VERIFIED: rs/cyphr-index-sqlite/src/lib.rs — PRIMARY KEY (principal_id, sequence)`
+  `VERIFIED: rs/cyphr-index-fjall/src/lib.rs — commit_key(principal_id, sequence) composite key`
 
 **[commit-chain-integrity]**: The commit chain returned by
 `get_commit_chain()` MUST be contiguous — no gaps in the sequence. If
@@ -288,8 +297,8 @@ No index can shortcut this.
 
 ## Implementations
 
-| Backend           | Crate           | Status                    | Notes                                            |
-| :---------------- | :-------------- | :------------------------ | :----------------------------------------------- |
-| SQLite (B-tree)   | `cyphr-index-sqlite` | Implemented (production)  | See [`indexer-sqlite.md`](indexer-sqlite.md)     |
-| Fjall (LSM-tree)  | `cyphr-storage`      | Removed                   | Replaced by SQLite (2026-06-01)                  |
-| In-memory HashMap | `cyphr-storage` | Testing                   | `MemoryIndexer`                                  |
+| Backend           | Crate                | Status                    | Notes                                                |
+| :---------------- | :------------------- | :------------------------ | :---------------------------------------------------- |
+| Fjall (LSM-tree)  | `cyphr-index-fjall`  | Implemented (production)  | No dedicated spec doc yet; see crate source          |
+| SQLite (B-tree)   | `cyphr-index-sqlite` | Retired (2026-07-08)      | Replaced by Fjall in the KV-index migration; spec archived to `docs/plans/archive/indexer-sqlite.md` |
+| In-memory HashMap | `cyphr-storage`      | Testing                   | `MemoryIndexer`                                      |

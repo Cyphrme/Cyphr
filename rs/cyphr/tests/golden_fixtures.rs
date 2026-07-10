@@ -67,17 +67,11 @@ fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
     })
 }
 
-#[allow(dead_code)]
-fn cad_to_b64(cad: &coz::Cad) -> String {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    Base64UrlUnpadded::encode_string(cad.as_bytes())
-}
-
 fn error_name(e: &cyphr::error::Error) -> &'static str {
     use cyphr::error::Error;
     match e {
-        Error::InvalidPrior => "InvalidPrior",
         Error::UnknownKey => "UnknownKey",
+        Error::UnknownAlg => "UnknownAlg",
         Error::KeyRevoked => "KeyRevoked",
         Error::NoActiveKeys => "NoActiveKeys",
         Error::DuplicateKey => "DuplicateKey",
@@ -141,27 +135,21 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         assert_eq!(actual_as, expected_digest, "{}: as mismatch", test_name);
     }
 
-    if let Some(ref ps) = expected.pr {
+    if let Some(ref pr) = expected.pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format
-        let (alg, expected_digest) = parse_alg_digest(ps)
-            .unwrap_or_else(|| panic!("{}: invalid ps format (expected alg:digest)", test_name));
+        let (alg, expected_digest) = parse_alg_digest(pr)
+            .unwrap_or_else(|| panic!("{}: invalid pr format (expected alg:digest)", test_name));
         let hash_alg = parse_hash_alg(&alg)
             .unwrap_or_else(|| panic!("{}: unknown hash algorithm {}", test_name, alg));
-        let actual_ps = principal
+        let actual_pr = principal
             .pr()
             .get(hash_alg)
             .map(Base64UrlUnpadded::encode_string)
             .unwrap_or_default();
-        assert_eq!(actual_ps, expected_digest, "{}: ps mismatch", test_name);
+        assert_eq!(actual_pr, expected_digest, "{}: pr mismatch", test_name);
     }
 
-    // NOTE: none of the persisted fixtures under tests/golden/ currently
-    // carry a `cr` value (see GoldenExpected::cr's doc comment), so this
-    // branch is dormant against the on-disk corpus today — it does not
-    // mean the corpus already covers CR. See
-    // test_fixtures::golden::tests::test_generate_single_commit for the
-    // round-trip check that does exercise this equality.
     if let Some(ref cr) = expected.cr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         // Parse alg:digest format
@@ -259,9 +247,9 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
         }
     }
 
-    if let Some(ref mh_ps) = expected.multihash_pr {
+    if let Some(ref mh_pr) = expected.multihash_pr {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        for (alg_name, expected_digest) in mh_ps {
+        for (alg_name, expected_digest) in mh_pr {
             let hash_alg = parse_hash_alg(alg_name)
                 .unwrap_or_else(|| panic!("{}: invalid hash algorithm {}", test_name, alg_name));
             let actual = principal
@@ -271,7 +259,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
                 .unwrap_or_default();
             assert_eq!(
                 actual, *expected_digest,
-                "{}: multihash_ps[{}] mismatch",
+                "{}: multihash_pr[{}] mismatch",
                 test_name, alg_name
             );
         }
@@ -285,10 +273,7 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
 fn resolve_constraint_tag(expected: &str) -> &str {
     match expected {
         // Transactions
-        "[transaction-pre-required]" => "MalformedPayload",
         "[data-action-no-pre]" => "MalformedPayload",
-        "[commit-pre-chain]" => "InvalidPrior",
-        "[no-orphan-pre]" => "InvalidPrior",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",

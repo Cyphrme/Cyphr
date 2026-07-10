@@ -2,36 +2,52 @@
 
 Storage backends for the [Cyphr](https://cyphr.me) self-sovereign identity protocol.
 
-This crate complements the core [`cyphr`](https://crates.io/crates/cyphr) protocol library by providing:
+This crate provides a modern, backend-agnostic storage engine that coordinates:
 
-- **`FileStore`**: A persistent filesystem-backed storage implementation for managing Principal state.
+- **`StorageEngine<B, I, S>`**: A coordinated storage engine joining blob stores and indexers.
+- **Blob Store (`BlobStore` trait)**: Stores immutable cryptographic payloads (cozies) with BLAKE3 hashing.
+- **Indexer (`Indexer` trait)**: Maintains queryable metadata about principals, cozies, and commit structure.
 - **Export/Import**: Standardized logic for archiving and restoring Principals using cryptographic export formats.
+
+Included implementations:
+- **`cyphr-blob-fjall`**: BLOB storage backed by the Fjall LSM-tree database.
+- **`cyphr-index-fjall`**: Indexing backed by the Fjall LSM-tree database (KV, not relational).
+- **Memory implementations** (for testing): In-memory blob stores and indexers.
 
 ## Quick Start
 
+Load a principal from genesis:
+
 ```rust
-use cyphr_storage::FileStore;
-use cyphr::{Principal, Key};
-use coz::Algorithm;
+use cyphr_storage::{Genesis, load_principal};
+use cyphr::Key;
+use coz::Thumbprint;
 
-fn main() -> cyphr::error::Result<()> {
-    // Initialize a file store in a directory
-    let mut store = FileStore::new("./cyphr-data")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a key
+    let key = Key {
+        alg: "ES256".to_string(),
+        tmb: Thumbprint::from_bytes(vec![0u8; 32]),
+        pub_key: vec![0u8; 64],
+        first_seen: 1000,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
 
-    // Generate a new key and principal
-    let key = Key::generate(Algorithm::ES256)?;
-    let principal = Principal::implicit(key)?;
+    // Implicit genesis: single key, no entries needed for basic case
+    let genesis = Genesis::Implicit(key);
+    let entries = [];
 
-    // Save the principal to disk
-    store.save_principal(&principal)?;
+    // Load principal from genesis and entries
+    let principal = load_principal(genesis, &entries)?;
 
-    // Load the principal back from disk
-    let loaded_principal = store.load_principal(principal.pr())?;
-
-    assert_eq!(principal.pr(), loaded_principal.pr());
+    println!("Created principal: {:?}", principal.pr());
     Ok(())
 }
 ```
+
+For persistent blob/index storage, the `StorageEngine<B, I, S>` coordinates real `BlobStore` and `Indexer` implementations (see [`cyphr-blob-fjall`](https://docs.rs/cyphr-blob-fjall) and [`cyphr-index-fjall`](https://docs.rs/cyphr-index-fjall) for production backends). For a complete working example integrating storage with the CLI, see the [`cyphr-cli`](https://crates.io/crates/cyphr-cli) crate.
 
 ## Documentation
 

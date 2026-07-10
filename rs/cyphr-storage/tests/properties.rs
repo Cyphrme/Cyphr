@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use coz::base64ct::Encoding;
 use cyphr::StateDigest;
 use cyphr_blob_fjall::FjallBlobStore;
-use cyphr_index_sqlite::SqliteIndexer;
+use cyphr_index_fjall::FjallIndexer;
 use cyphr_storage::blob::MemoryBlobStore;
 use cyphr_storage::engine::StorageEngine;
 use cyphr_storage::index::MemoryIndexer;
@@ -334,8 +334,7 @@ fn run_engine_recovery_test<B, I>(
                     .and_then(|p| p.get("typ"))
                     .and_then(|t| t.as_str())
                 {
-                    let is_key_introducing =
-                        typ.contains("/key/create") || typ.contains("/key/replace");
+                    let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
                     if is_key_introducing && key_idx < commit.keys.len() {
                         let key_entry = &commit.keys[key_idx];
                         let key_val = serde_json::to_value(key_entry).unwrap();
@@ -381,8 +380,7 @@ fn run_engine_recovery_test<B, I>(
                 .and_then(|p| p.get("typ"))
                 .and_then(|t| t.as_str())
             {
-                let is_key_introducing =
-                    typ.contains("/key/create") || typ.contains("/key/replace");
+                let is_key_introducing = cyphr::parsed_coz::typ::is_key_introducing(typ);
                 if is_key_introducing && key_idx < last_commit.keys.len() {
                     let key_entry = &last_commit.keys[key_idx];
                     let key_val = serde_json::to_value(key_entry).unwrap();
@@ -478,7 +476,7 @@ proptest! {
         let temp_dir_blob = tempfile::tempdir().unwrap();
         let temp_dir_index = tempfile::tempdir().unwrap();
         let blob_store = FjallBlobStore::open(temp_dir_blob.path()).unwrap();
-        let indexer = SqliteIndexer::open(&temp_dir_index.path().join("index.db")).unwrap();
+        let indexer = FjallIndexer::open(&temp_dir_index.path().join("index")).unwrap();
         let engine = StorageEngine::new(blob_store, indexer);
         run_engine_recovery_test(&pool, intent, engine);
     }
