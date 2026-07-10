@@ -785,7 +785,7 @@ def generate_toml():
         ])
 
     # F-14: Multihash Coherence (Errors)
-    # Case 1..5: Try to add unsupported algorithm key -> UnsupportedAlgorithm
+    # Case 1..5: Try to add unsupported algorithm key -> UnknownAlg
     for i in range(5):
         toml_lines.extend([
             "[[test]]",
@@ -800,7 +800,7 @@ def generate_toml():
             "]",
             "",
             "[test.expected]",
-            'error     = "UnsupportedAlgorithm"',
+            'error     = "UnknownAlg"',
             ""
         ])
 
