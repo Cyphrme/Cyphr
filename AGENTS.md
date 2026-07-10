@@ -14,9 +14,13 @@ blob store + rebuildable index + eml commit log), and the `cyphr-server`
 HTTP authority — hardened to the point that the server can be implemented
 cleanly, with all protocol behavior pinned by the shared golden corpus.
 
-**Status: WIP.** A server-readiness campaign is being scoped; the durable
-record lives in `.ledger/log/` and forge issues #16/#23. The server crate
-is a working scaffold, not the finished authority.
+**Status: WIP.** The server-readiness campaign CLOSEd 2026-07-10 (25 DAG
+nodes, meta-PR #43 merged); the durable record lives in `.ledger/log/` and
+forge issues #16/#23/#41. Deferred scope for what's next (per I6, live in
+`.scratch/server-readiness/PLAN.md`'s "Deferred" list, not `docs/plans/`):
+auth (SPEC §17), replay-cost caching (F25/U2/U3), the cross-process
+per-principal lease (#27's full scope), EMT→EML conversion (#40), and go/
+revival.
 
 ## Structure
 
