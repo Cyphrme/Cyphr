@@ -1328,21 +1328,21 @@ name      = "t2_f01_case2"
 principal = ["unsupported_key"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case3"
 principal = ["unsupported_key", "golden"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case4"
 principal = ["unsupported_key", "unsupported_key"]
 
 [test.expected]
-error = "UnsupportedAlgorithm"
+error = "UnknownAlg"
 
 [[test]]
 name      = "t2_f01_case5"
