@@ -164,25 +164,26 @@ content, and/or ensure uniqueness. See section [Nonce](#102-nonce).
 
 #### 2.2.9 Merkle Tree
 
-A **Merkle tree** (MT) is a hash tree where each leaf is a hash and each
-non-leaf node is the hash of its children, culminating in a single **Merkle
-root** (MR). More specifically, Cyphr uses a specific n-ary, arbitrarily
-structured Merkle tree (**NMT**). See section [Commit](#4-commit)
+A **Merkle tree** (MT), also known as a hash tree, is a tree where the leaves
+are digests of data and non-leaf nodes is are the digest of its children,
+culminating in a single **Merkle root** (MR).  MTs allowing efficient and secure
+verification of large datasets through a single root digest.
+
+Principals use a **semantic Merkle tree**, which supports n-arity and defined
+internal structure. For more, see the paper, "Semantic Merkle Trees" and sections
+[Commit](#4-commit), Multi-Hash Merkle Root (MHMR), and appendix EML.
 
 #### 2.2.10 Singleton Promotion and Collapse
 
 **Singleton promotion** is the elevation of a Merkle tree node digest to a
-parent slot without additional hashing when a tree component has only one node
-value.
+parent slot, without rehashing, when a tree component has only one node value.
 
-**Collapse** When children are of equal value, the parent assumes the value of
-the children without re-hashing.
+**Collapse** is the elevation of a child node's digest, without rehashing, to
+the parent when children are of equal value.
 
 Promotion an collapse are recursive; items deep in a tree can be promoted to the
 root level. For example, when a principal has only a single key, the key's `tmb`
 is promoted to KR without additional hashing.
-
-See also Multi-Hash Merkle Root (MHMR) and appendix section EML.
 
 #### 2.2.11 Commit
 
@@ -1788,14 +1789,13 @@ To sign/act as a primary principal, an embedded principal must produce a valid
 signature according to its own rules (its own AR). Authorization involving an
 embedded principal is conjunctive:
 
-- Transaction must be valid according to the embedded principal’s own rules (its
-  KR/RR), and
-- The act of using that embedded principal must be authorized by the primary
-  principal’s rules.
+- The action must be valid according to the embedded principal’s own rules (its
+  KR/RR/AR), and
+- The embedded principal's action must be authorized by the primary principal’s
+  rules.
 
-Example: when a Principal(B) or AR(B) is embedded into a KR(A), embedded
-principal is treated as one logical key (with a default weight of 1), but the
-internal authorization depends on Principal(B)
+Example: When a Principal(B) or AR(B) is embedded into a KR(A), the embedding
+has a default weight of 1. 
 
 ### 10.6 Meaningful Embeddings
 
@@ -2094,12 +2094,13 @@ in KT, its MHMR variant is no longer generated for new commits.
 Given an ordered list of child digests (each child is a binary digest value
 computed under some hash algorithm):
 
-1. **Sort** the child digests in lexical byte order unless order is otherwise given.
+1. **Sort** the child digests in lexical byte order unless order is otherwise
+   given.
 2. **Singleton promotion**:  
-   If there is exactly one child digest, the MHMR_H for any target H is simply
-   the bytes of that child digest (no hashing occurs). Promotion is recursive.
-3. **Binary Hashing of Children**:
-   Concatenate the sorted child digest bytes in order.  
+   If there is one child digest, the MHMR_H for any target H is simply the bytes
+   of that child digest (no hashing occurs). Promotion is recursive.
+3. **Binary Hashing of Children**: Concatenate the sorted child digest bytes in
+   order.  
    Compute MHMR_H = H( concatenated bytes ).
 
 **MHMR Examples**
@@ -2112,9 +2113,10 @@ computed under some hash algorithm):
 
 
 Although outside the scope of this document, security is bounded by weakest
-link.  The strength of any MHMR_hash variant is limited by the weakest hash algorithm appearing anywhere in the subtree below it.
+hash.  The strength of any MHMR is limited by the weakest hash algorithm
+appearing anywhere in the subtree below it.
 
-- **No re-hashing of children**: Inner digests are fed directly into the parent
+- **No rehashing of children**: Inner digests are fed directly into the parent
   hash function as raw bytes (unless being converted, where the value is hashed
   first).
 - **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
@@ -2248,7 +2250,8 @@ The minimal light weight client is pointed to an oracle and depends on the oracl
 
 An audit is a full replay from genesis.
 
-Mindful, for each supported hashing algorithm, the whole datastructure must be re-hashed. 
+Mindful, for each supported hashing algorithm, the whole datastructure must be
+rehashed. 
 
 
 
@@ -3605,9 +3608,10 @@ source principal. The fork may declare new keys or reuse existing keys.
 Cyphr does a few novel and/or technical things with Merkle Trees, so it's
 important to define our terms and describe the history:
 
-- Multihash Merkle Trees, 
-- N-ary, 
-- RFC 9162 Merkle Append only Log (MAL) and 
+- Semantic Merkle Trees
+- Multihash Merkle Trees
+- N-ary
+- RFC 9162 Merkle Append only Log (MAL)
 - Epoch Merkle Log (EML)
 
 A **MAL** (Merkle Append only Log) as defined by RFC 9162 is an ordered, append
