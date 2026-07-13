@@ -581,8 +581,12 @@ async fn login_rejects_invalid_signature() {
 // Unknown principal
 // ========================================================================
 
-/// Login for a principal the server has never seen is rejected (and does not
-/// distinguish nonexistence from other auth failures).
+/// Login for a principal the server has never seen is rejected with the same
+/// 401 status as any other auth failure. The response body's message text
+/// does currently differ by cause (unknown vs. known-but-inactive key) --
+/// this test only asserts on status code, not message equality, and does not
+/// claim the message text is generic; see ledger finding F28 for whether
+/// existence-disclosure across the public route surface needs closing.
 #[tokio::test]
 async fn login_rejects_unknown_principal() {
     let state = login_state();

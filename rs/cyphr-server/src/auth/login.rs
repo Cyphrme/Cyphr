@@ -233,9 +233,12 @@ pub fn authorize_login<S: eml::Storage>(
 }
 
 /// Whether a client timestamp is within `window_secs` of server time, in
-/// either direction (SPEC 17.2 Option B).
+/// either direction (SPEC 17.2 Option B). `client_now` is attacker-controlled
+/// (the raw `now` field of a signed-but-unverified-at-call-time payload), so
+/// the distance is computed with `abs_diff` rather than a subtract-then-abs,
+/// which would overflow on an i64::MIN/MAX client value.
 pub fn within_window(client_now: i64, server_now: i64, window_secs: i64) -> bool {
-    (server_now - client_now).abs() <= window_secs
+    server_now.abs_diff(client_now) <= window_secs as u64
 }
 
 /// In-memory single-use challenge store for the challenge-response flow.
@@ -633,6 +636,15 @@ mod tests {
         assert!(within_window(server + TIMESTAMP_WINDOW_SECS, server, TIMESTAMP_WINDOW_SECS));
         assert!(!within_window(server - TIMESTAMP_WINDOW_SECS - 1, server, TIMESTAMP_WINDOW_SECS));
         assert!(!within_window(server + TIMESTAMP_WINDOW_SECS + 1, server, TIMESTAMP_WINDOW_SECS));
+    }
+
+    #[test]
+    fn window_rejects_extreme_client_now_without_overflow() {
+        // client_now is attacker-controlled; a subtract-then-abs would
+        // overflow on these boundary values instead of just failing closed.
+        assert!(!within_window(i64::MIN, 1_000_000, TIMESTAMP_WINDOW_SECS));
+        assert!(!within_window(i64::MAX, 1_000_000, TIMESTAMP_WINDOW_SECS));
+        assert!(!within_window(i64::MIN, i64::MAX, TIMESTAMP_WINDOW_SECS));
     }
 
     // --- ChallengeStore ---
