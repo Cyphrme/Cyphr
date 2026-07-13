@@ -68,6 +68,8 @@
     "cr": "SHA-256:HT_9GzANfrmPUcWndt-Um9H2iUThTYa-O9nls0CpqyU",
     "tr": "SHA-256:HT_9GzANfrmPUcWndt-Um9H2iUThTYa-O9nls0CpqyU",
     "sr": "SHA-256:yB8E280tW8IWh3UtsE4--CYurMdXmF5NAiLZqz-QCHA",
-    "pg": ""
+    "pg": "",
+    "deleted": false,
+    "frozen": false
   }
 }

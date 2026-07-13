@@ -149,6 +149,12 @@ pub struct ExpectedAssertions {
     /// Expected error (for error tests).
     #[serde(default)]
     pub error: Option<String>,
+    /// Expected `Principal::is_deleted()` (SPEC.md §11.1 `Deleted`).
+    #[serde(default)]
+    pub deleted: Option<bool>,
+    /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
+    #[serde(default)]
+    pub frozen: Option<bool>,
 }
 
 impl Intent {

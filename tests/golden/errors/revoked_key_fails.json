@@ -58,6 +58,8 @@
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": "",
-    "error": "KeyRevoked"
+    "error": "KeyRevoked",
+    "deleted": false,
+    "frozen": false
   }
 }

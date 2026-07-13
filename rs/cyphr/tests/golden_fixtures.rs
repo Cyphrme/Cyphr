@@ -80,6 +80,9 @@ fn error_name(e: &cyphr::error::Error) -> &'static str {
         Error::InvalidSignature => "InvalidSignature",
         Error::MalformedPayload => "MalformedPayload",
         Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+        Error::AlreadyDeleted => "AlreadyDeleted",
+        Error::AlreadyFrozen => "AlreadyFrozen",
+        Error::NotFrozen => "NotFrozen",
         _ => "UnknownError",
     }
 }
@@ -99,6 +102,24 @@ fn verify_expected(principal: &Principal, expected: &GoldenExpected, test_name: 
             principal.level() as u8,
             level,
             "{}: level mismatch",
+            test_name
+        );
+    }
+
+    if let Some(deleted) = expected.deleted {
+        assert_eq!(
+            principal.is_deleted(),
+            deleted,
+            "{}: deleted mismatch",
+            test_name
+        );
+    }
+
+    if let Some(frozen) = expected.frozen {
+        assert_eq!(
+            principal.is_frozen(),
+            frozen,
+            "{}: frozen mismatch",
             test_name
         );
     }
@@ -442,6 +463,9 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                 let typ = pay.get("typ").and_then(|v| v.as_str()).unwrap_or("");
                 let is_transaction = typ.contains("/key/")
                     || typ.contains("/principal/create")
+                    || typ.contains("/principal/delete")
+                    || typ.contains("/freeze/create")
+                    || typ.contains("/freeze/delete")
                     || typ.contains("/commit/create");
 
                 if is_transaction {
@@ -655,4 +679,9 @@ fn test_golden_state_computation() {
 #[test]
 fn test_golden_errors() {
     run_golden_dir("errors");
+}
+
+#[test]
+fn test_golden_lifecycle() {
+    run_golden_dir("lifecycle");
 }

@@ -73,6 +73,8 @@
     "multihash_pr": {
       "SHA-256": "7Rk1P_H4RTX_L4JLxNTL00e6JNsjdEAGQIEZZzDCXQ4",
       "SHA-512": "h8MPO9pUW9L39jb-HJH5cmrvE5AD0JyjAHvK52flRZVpTD9Vc-rpbaCZSiYsH8JEaRiD9qIbivUB6CKoeWLqHw"
-    }
+    },
+    "deleted": false,
+    "frozen": false
   }
 }

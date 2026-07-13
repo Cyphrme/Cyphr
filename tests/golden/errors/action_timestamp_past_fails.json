@@ -63,6 +63,8 @@
     "sr": "SHA-256:dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg",
     "dr": "PRvGYsC5BcfyNwAEjIhSv50Qs3MD8z_XVhmb-Fya1iE",
     "pg": "",
-    "error": "TimestampPast"
+    "error": "TimestampPast",
+    "deleted": false,
+    "frozen": false
   }
 }

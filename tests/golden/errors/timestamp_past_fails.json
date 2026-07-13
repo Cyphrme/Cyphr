@@ -89,6 +89,8 @@
     "tr": "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": "",
-    "error": "TimestampPast"
+    "error": "TimestampPast",
+    "deleted": false,
+    "frozen": false
   }
 }
