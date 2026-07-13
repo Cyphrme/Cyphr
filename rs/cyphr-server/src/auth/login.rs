@@ -237,7 +237,14 @@ pub fn authorize_login<S: eml::Storage>(
 /// (the raw `now` field of a signed-but-unverified-at-call-time payload), so
 /// the distance is computed with `abs_diff` rather than a subtract-then-abs,
 /// which would overflow on an i64::MIN/MAX client value.
+///
+/// `window_secs` must be non-negative: `as u64` on a negative value wraps to
+/// a huge magnitude and fail-*opens* (accepts any client_now) instead of the
+/// fail-closed behavior a negative window implies. The only caller today
+/// passes the positive constant `TIMESTAMP_WINDOW_SECS`, but this is `pub`,
+/// so the precondition is asserted rather than left as an implicit contract.
 pub fn within_window(client_now: i64, server_now: i64, window_secs: i64) -> bool {
+    debug_assert!(window_secs >= 0, "within_window: window_secs must be non-negative");
     server_now.abs_diff(client_now) <= window_secs as u64
 }
 
