@@ -73,6 +73,11 @@ pub struct ServeArgs {
     /// Server operating mode.
     #[arg(long, env = "CYPHR_MODE")]
     pub mode: Option<ServerMode>,
+
+    /// Path to the server's signing key file (see `auth::ServerIdentity`).
+    /// When unset, the server holds no signing identity.
+    #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
+    pub signing_key_path: Option<PathBuf>,
 }
 
 // ========================================================================
@@ -93,6 +98,11 @@ pub struct ServerConfig {
 
     /// Operating mode.
     pub mode: ServerMode,
+
+    /// Path to the server's signing key file. `None` means the server
+    /// holds no signing identity (see `auth::ServerIdentity`).
+    #[serde(default)]
+    pub signing_key_path: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -102,6 +112,7 @@ impl Default for ServerConfig {
             data_dir: PathBuf::from("./data"),
             log_format: LogFormat::Pretty,
             mode: ServerMode::Authority,
+            signing_key_path: None,
         }
     }
 }
@@ -164,6 +175,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
         if let Some(mode) = args.mode {
             config.mode = mode;
+        }
+        if let Some(ref signing_key_path) = args.signing_key_path {
+            config.signing_key_path = Some(signing_key_path.clone());
         }
 
         // Witness mode is parsed but has no enforcement anywhere in the
@@ -232,6 +246,35 @@ mod tests {
         ]);
         let config = resolve_config(&cli).expect("authority mode must resolve successfully");
         assert_eq!(config.mode, ServerMode::Authority);
+    }
+
+    #[test]
+    fn serve_without_signing_key_flag_leaves_it_unset() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+        ]);
+        let config = resolve_config(&cli).expect("resolve succeeds");
+        assert_eq!(config.signing_key_path, None);
+    }
+
+    #[test]
+    fn serve_with_signing_key_flag_resolves_the_path() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--signing-key-path",
+            "/etc/cyphr/signing-key.json",
+        ]);
+        let config = resolve_config(&cli).expect("resolve succeeds");
+        assert_eq!(
+            config.signing_key_path,
+            Some(PathBuf::from("/etc/cyphr/signing-key.json"))
+        );
     }
 
     #[test]
