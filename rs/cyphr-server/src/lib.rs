@@ -56,6 +56,11 @@ pub struct AppState {
     /// require one (e.g. bearer-token issuance) must handle that case
     /// explicitly rather than assume presence.
     pub identity: Option<Arc<auth::ServerIdentity>>,
+
+    /// Single-use challenge store backing the challenge-response login
+    /// flow. In-memory and per-process (ruling R8's spirit: no durable
+    /// auth state beyond short expiry).
+    pub challenges: auth::login::ChallengeStore,
 }
 
 impl AppState {
@@ -83,6 +88,7 @@ impl AppState {
             config,
             engine,
             identity,
+            challenges: auth::login::ChallengeStore::new(),
         })
     }
 }
@@ -101,6 +107,11 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/e/{digest}", axum::routing::get(routes::entity))
+        .route(
+            "/auth/challenge",
+            axum::routing::post(auth::login::challenge),
+        )
+        .route("/auth/login", axum::routing::post(auth::login::login))
         .with_state(state)
         .layer(
             tower_http::trace::TraceLayer::new_for_http().make_span_with(

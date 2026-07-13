@@ -32,11 +32,18 @@
 //! validation, making a later rename a one-module edit.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use axum::Json;
+use axum::extract::State;
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_storage::engine::EngineError;
 use rand::RngCore;
+use serde::Serialize;
+
+use crate::AppState;
+use crate::error::AppError;
 
 /// Login-payload field names. The one home for the interim R6 binding
 /// fields (ruling R6a) -- neither handler reads these strings directly.
@@ -284,6 +291,137 @@ impl ChallengeStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+// ========================================================================
+// HTTP handlers
+// ========================================================================
+
+/// Response for `POST /auth/challenge`.
+#[derive(Debug, Serialize)]
+pub struct ChallengeResponse {
+    /// A single-use 256-bit nonce (b64ut) to sign in the
+    /// challenge-response flow.
+    pub challenge: String,
+}
+
+/// Response for a successful `POST /auth/login`.
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    /// The issued bearer token (an opaque signed Coz string).
+    pub token: String,
+}
+
+/// A login rejection is authentication failure (401); only a genuinely
+/// malformed request body is a 400. Every distinct [`LoginError`] keeps
+/// its own message so the specific reason is still observable, without
+/// conflating an audience or principal mismatch with a parse error.
+impl From<LoginError> for AppError {
+    fn from(err: LoginError) -> Self {
+        match err {
+            LoginError::Malformed(_) => AppError::bad_request(err.to_string()),
+            _ => AppError::unauthorized(err.to_string()),
+        }
+    }
+}
+
+/// Wall-clock server time in Unix seconds, used both for the timestamp
+/// window and for token/challenge expiry. A clock set before the Unix
+/// epoch yields 0, which fails every window check closed rather than
+/// panicking.
+fn server_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Permissions a successful login grants. There is no permissions model
+/// in v1 (route-level enforcement is a later concern), so a login
+/// authorizes the principal for the baseline read/write surface; a real
+/// policy will refine this.
+fn default_login_perms() -> Vec<String> {
+    vec!["read".to_string(), "write".to_string()]
+}
+
+/// Map a principal-load failure: an unknown principal is an
+/// authentication failure (401, and indistinguishable from a
+/// wrong-audience or inactive rejection, so principal existence is not an
+/// oracle), while a genuine storage fault surfaces as 500.
+fn map_load_error(err: EngineError) -> AppError {
+    match err {
+        EngineError::NotFound(_) => AppError::unauthorized("login: unknown principal"),
+        other => AppError::engine(other),
+    }
+}
+
+/// `POST /auth/challenge` — issue a single-use challenge for the
+/// challenge-response flow (SPEC 17.2 Option A).
+pub async fn challenge(State(state): State<Arc<AppState>>) -> Json<ChallengeResponse> {
+    let challenge = state.challenges.issue(server_now());
+    Json(ChallengeResponse { challenge })
+}
+
+/// `POST /auth/login` — verify a signed login payload (either flow) and
+/// issue a bearer token (SPEC 17.2).
+///
+/// One handler serves both flows: they share the whole pipeline (schema
+/// parse, audience binding, principal load, key-activity and lifecycle
+/// gate, token issuance) and diverge only at the replay check, selected
+/// by whether the payload carries a challenge.
+pub async fn login(
+    State(state): State<Arc<AppState>>,
+    Json(coz_json): Json<coz::CozJson>,
+) -> Result<Json<LoginResponse>, AppError> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or_else(|| AppError::internal("server has no signing identity for login"))?;
+    let audience = state
+        .config
+        .audience
+        .as_deref()
+        .ok_or_else(|| AppError::internal("server is not configured to accept logins"))?;
+
+    // One schema parse + audience binding for both flows (ruling R6a).
+    let parsed = parse_login(coz_json, audience)?;
+
+    // Load the *claimed* principal and gate on it: key active in it, and
+    // it is Active. Reconstructed from stored state via the same engine
+    // the write path uses.
+    let genesis = state
+        .engine
+        .resolve_genesis(&parsed.pr, &[])
+        .await
+        .map_err(map_load_error)?;
+    let principal = state
+        .engine
+        .load_principal(&parsed.pr, genesis)
+        .await
+        .map_err(map_load_error)?;
+    authorize_login(&parsed, &principal)?;
+
+    // Replay defense: the two flows diverge only here.
+    let now = server_now();
+    match &parsed.challenge {
+        Some(challenge) => state.challenges.consume(challenge, now)?,
+        None => {
+            if !within_window(parsed.now, now, TIMESTAMP_WINDOW_SECS) {
+                return Err(LoginError::TimestampOutOfWindow.into());
+            }
+        },
+    }
+
+    let token = identity
+        .issue_token(
+            parsed.pr.clone(),
+            default_login_perms(),
+            now,
+            super::token::DEFAULT_TTL_SECS,
+        )
+        .ok_or_else(|| AppError::internal("failed to issue bearer token"))?;
+
+    Ok(Json(LoginResponse { token }))
 }
 
 #[cfg(test)]
