@@ -22,6 +22,18 @@ use super::ServerIdentity;
 /// re-authenticating on every request.
 pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 
+/// The `typ` every bearer token this server issues is stamped with, and
+/// the only `typ` [`ServerIdentity::verify_token`] accepts.
+///
+/// A bearer token is just a Coz message the server signed; without a
+/// fixed, checked `typ` any *other* message the server key ever signs
+/// (a future signed notice, a different protocol message) whose payload
+/// happens to carry `pr`/`exp`/`perms`/`tmb` would verify as a bearer
+/// token. Stamping issuance and checking verification against this one
+/// constant makes the two symmetric, so a token's kind is bound into
+/// the signature, not merely assumed by the reader.
+pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
+
 /// Claims extracted from a verified bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
@@ -50,6 +62,12 @@ pub enum TokenError {
     #[error("bearer token signature is invalid")]
     InvalidSignature,
 
+    /// The payload verified against this identity's key but its `typ` is
+    /// not [`BEARER_TOKEN_TYP`] -- some other message the server signed,
+    /// presented as a bearer token (closes F22).
+    #[error("message is not a bearer token: wrong `typ`")]
+    TypMismatch,
+
     /// The token's `exp` claim is at or before the reference time.
     #[error("bearer token has expired")]
     Expired,
@@ -59,11 +77,14 @@ impl ServerIdentity {
     /// Issue a bearer token for `pr`, authorizing `perms`, expiring
     /// `ttl_secs` after `now`.
     ///
+    /// The token is always stamped with [`BEARER_TOKEN_TYP`]; the caller
+    /// cannot mint a token under any other `typ`, which is the issuance
+    /// half of the F22 binding (verification checks the same constant).
+    ///
     /// Returns `None` if coz rejects the payload or this identity's key
     /// (mirrors [`ServerIdentity::sign`]).
     pub fn issue_token(
         &self,
-        typ: impl Into<String>,
         pr: impl Into<String>,
         perms: Vec<String>,
         now: i64,
@@ -75,7 +96,7 @@ impl ServerIdentity {
         pay.alg = Some(self.alg().name().to_string());
         pay.now = Some(now);
         pay.tmb = Some(tmb);
-        pay.typ = Some(typ.into());
+        pay.typ = Some(BEARER_TOKEN_TYP.to_string());
         pay.extra.insert("pr".to_string(), Value::String(pr.into()));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
@@ -96,8 +117,10 @@ impl ServerIdentity {
     ///
     /// Rejects a malformed token, a signature that does not verify against
     /// this identity's key (including a genuine token from a foreign
-    /// service, or any tampering with the signed claims), and a token whose
-    /// `exp` is at or before `now`.
+    /// service, or any tampering with the signed claims), a validly-signed
+    /// message whose `typ` is not [`BEARER_TOKEN_TYP`] (so a different
+    /// message the server signed cannot pose as a token -- F22), and a
+    /// token whose `exp` is at or before `now`.
     pub fn verify_token(&self, token: &str, now: i64) -> Result<Claims, TokenError> {
         let coz_json: coz::CozJson = serde_json::from_str(token)?;
         let pay_json = serde_json::to_vec(&coz_json.pay)?;
@@ -107,6 +130,14 @@ impl ServerIdentity {
         }
 
         let pay: coz::Pay = serde_json::from_value(coz_json.pay)?;
+
+        // Bind the message kind into verification: the signature above
+        // only proves *this server* signed *these bytes*, not that it
+        // signed them *as a bearer token* (F22).
+        if pay.typ.as_deref() != Some(BEARER_TOKEN_TYP) {
+            return Err(TokenError::TypMismatch);
+        }
+
         let claims = claims_from_pay(&pay)?;
 
         if claims.exp <= now {
@@ -197,8 +228,38 @@ mod tests {
         (dir, path)
     }
 
-    const TYP: &str = "cyphr-server/auth/token";
     const PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+
+    /// Forge a Coz message signed by `identity` carrying an arbitrary
+    /// `typ` but otherwise-valid bearer-token claims. Used to exercise
+    /// F22: a message the server genuinely signed, presented as a bearer
+    /// token, must still be rejected when its `typ` is not
+    /// [`BEARER_TOKEN_TYP`].
+    fn forge_signed_message(identity: &ServerIdentity, typ: &str, now: i64, exp: i64) -> String {
+        let tmb = identity
+            .alg()
+            .compute_thumbprint(identity.pub_key())
+            .expect("thumbprint");
+
+        let mut pay = coz::Pay::new();
+        pay.alg = Some(identity.alg().name().to_string());
+        pay.now = Some(now);
+        pay.tmb = Some(tmb);
+        pay.typ = Some(typ.to_string());
+        pay.extra.insert("pr".to_string(), Value::String(PR.into()));
+        pay.extra.insert("exp".to_string(), Value::from(exp));
+        pay.extra
+            .insert("perms".to_string(), Value::from(vec!["read".to_string()]));
+
+        let pay_json = serde_json::to_vec(&pay).expect("serialize pay");
+        let (sig, _cad) = identity.sign(&pay_json).expect("sign");
+        let pay_value = serde_json::to_value(&pay).expect("pay to value");
+        serde_json::to_string(&coz::CozJson {
+            pay: pay_value,
+            sig,
+        })
+        .expect("serialize coz")
+    }
 
     #[test]
     fn issue_then_verify_genuine_unexpired_token_succeeds() {
@@ -206,13 +267,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(
-                TYP,
-                PR,
-                vec!["read".to_string(), "write".to_string()],
-                1_000,
-                300,
-            )
+            .issue_token(PR, vec!["read".to_string(), "write".to_string()], 1_000, 300)
             .expect("issue token");
 
         let claims = identity
@@ -238,7 +293,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(TYP, PR, vec!["read".to_string()], 1_000, 300)
+            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // Flip a claim without re-signing: "read" -> "admin".
@@ -264,7 +319,7 @@ mod tests {
         let foreign = ServerIdentity::load_from_path(&foreign_path).expect("load foreign key");
 
         let token = foreign
-            .issue_token(TYP, PR, vec!["read".to_string()], 1_000, 300)
+            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token from foreign identity");
 
         let result = identity.verify_token(&token, 1_100);
@@ -281,7 +336,7 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(TYP, PR, vec!["read".to_string()], 1_000, 300)
+            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
             .expect("issue token");
 
         // now == exp: expiry is inclusive of the boundary instant.
@@ -315,7 +370,6 @@ mod tests {
 
         let token = identity
             .issue_token(
-                TYP,
                 PR,
                 vec!["read".to_string(), "write".to_string()],
                 1_700_000_000,
@@ -339,5 +393,36 @@ mod tests {
             .verify_token(&token, 1_700_000_000)
             .expect("golden-vector token must verify");
         assert_eq!(claims.pr, PR);
+    }
+
+    /// F22: a message the server genuinely signed, with valid
+    /// `pr`/`exp`/`perms`/`tmb` claims and an unexpired `exp`, but whose
+    /// `typ` is not [`BEARER_TOKEN_TYP`], must be rejected -- otherwise
+    /// any other message the server key ever signs could be replayed as a
+    /// bearer token. The signature here is real (same identity), so only
+    /// the `typ` binding stands between it and acceptance.
+    #[test]
+    fn verify_rejects_valid_signature_with_wrong_typ() {
+        let (_dir, path) = write_random_key_file();
+        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
+
+        let forged = forge_signed_message(&identity, "cyphr-server/auth/not-a-token", 1_000, 1_300);
+
+        // Sanity: the forgery IS a genuine signature by this identity --
+        // it is the `typ` binding, not the signature, that must reject it.
+        let coz_json: coz::CozJson = serde_json::from_str(&forged).expect("forged parses");
+        let pay_json = serde_json::to_vec(&coz_json.pay).expect("pay bytes");
+        assert_eq!(
+            identity.verify(&pay_json, &coz_json.sig),
+            Some(true),
+            "test setup: the forged message must carry a genuine signature by this identity"
+        );
+
+        let result = identity.verify_token(&forged, 1_100);
+        assert!(
+            matches!(result, Err(TokenError::TypMismatch)),
+            "a validly-signed, unexpired message whose typ is not the bearer typ must be \
+             rejected as TypMismatch, got: {result:?}"
+        );
     }
 }
