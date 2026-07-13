@@ -47,7 +47,13 @@ pub enum AuthError {
 /// This is a server-local file format, not a shared dependency on
 /// `cyphr-cli`'s keystore -- see `rs/cyphr-cli/src/keystore.rs` for the
 /// (explicitly NOT SECURE) shape this was modeled after.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Deliberately does not derive `Debug`: it holds `prv_key` in the
+/// clear, and the whole point of `ServerIdentity`'s own hand-written,
+/// redacting `Debug` impl is that private key bytes never reach a
+/// `{:?}`/`tracing` line anywhere in this module -- a derived `Debug`
+/// on this type would silently reopen exactly that hole.
+#[derive(Serialize, Deserialize)]
 struct KeyFile {
     alg: String,
     #[serde(with = "base64url_bytes")]
