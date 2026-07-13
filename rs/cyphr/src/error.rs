@@ -56,6 +56,20 @@ pub enum Error {
     #[error("no active keys")]
     NoActiveKeys,
 
+    // === Lifecycle errors (SPEC §11.4 Close, §14.9 Freeze) ===
+    /// `principal/delete` or `freeze/create` signed against a principal that
+    /// has already signed `principal/delete` ([no-transactions-on-deleted]).
+    #[error("principal already deleted")]
+    AlreadyDeleted,
+
+    /// `freeze/create` signed against a principal that is already frozen.
+    #[error("principal already frozen")]
+    AlreadyFrozen,
+
+    /// `freeze/delete` (Thaw) signed against a principal that is not frozen.
+    #[error("principal not frozen")]
+    NotFrozen,
+
     /// Algorithm not supported.
     #[error("unsupported algorithm: {0}")]
     UnsupportedAlgorithm(String),

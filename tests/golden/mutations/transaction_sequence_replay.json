@@ -132,6 +132,8 @@
     "cr": "SHA-256:zLUEN0c5ZQ9PYmPKUOJsfWFBx-8vzPwWQsBnrhckCH0",
     "tr": "SHA-256:RuqLt2bWFszkiNf_GcPhGICWd8vU69YcgZMInSFsGso",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
-    "pg": ""
+    "pg": "",
+    "deleted": false,
+    "frozen": false
   }
 }

@@ -3,12 +3,7 @@
 # These declare the target PRE/POST scenarios for the three lifecycle
 # transactions RED-tested at the parse boundary
 # (rs/cyphr/tests/lifecycle_transactions.rs) and implemented by N03:
-# principal/delete, freeze/create, freeze/delete. None of the three typ
-# suffixes are recognized CozKind variants yet, so none of these
-# scenarios can be run through the golden-fixture generator today. N03
-# regenerates the corpus (and extends GoldenExpected with whatever field
-# the lifecycle state needs, e.g. a deleted/frozen flag) once the
-# transactions parse and apply.
+# principal/delete, freeze/create, freeze/delete.
 #
 # Unlike key/create, key/delete, etc., these transactions target the
 # signing principal's own PR rather than a distinct key, so `target`
@@ -29,8 +24,8 @@ tx = [
 [test.expected]
 key_count = 1
 level     = 3
-# target (not yet expressible in GoldenExpected): principal.is_deleted()
-# == true, principal.lifecycle_state() == LifecycleState::Deleted.
+deleted   = true
+frozen    = false
 
 # Test: freeze/create transitions Active -> Frozen (SPEC.md:2782-2801)
 [[test]]
@@ -47,8 +42,8 @@ tx = [
 [test.expected]
 key_count = 1
 level     = 3
-# target (not yet expressible in GoldenExpected): principal.is_frozen()
-# == true, principal.lifecycle_state() == LifecycleState::Frozen.
+deleted   = false
+frozen    = true
 
 # Test: freeze/delete (Thaw) transitions Frozen -> Active (SPEC.md:2803-2818)
 [[test]]
@@ -72,8 +67,8 @@ tx = [
 [test.expected]
 key_count = 1
 level     = 3
-# target (not yet expressible in GoldenExpected): principal.is_frozen()
-# == false, principal.lifecycle_state() == LifecycleState::Active.
+deleted   = false
+frozen    = false
 
 # Test: Deleted and Frozen are mutually exclusive (SPEC.md:1974-1978)
 # [no-both-deleted-and-frozen] — a principal that has signed
@@ -101,8 +96,8 @@ tx = [
 ]
 
 [test.expected]
-# target: the freeze/create commit above must fail (principal is already
-# Deleted); lifecycle_state() stays Deleted, never becomes Frozen. N03
-# decides the exact error variant when it implements
-# [no-transactions-on-deleted]; left unset here rather than guessed.
+# freeze/create's own PRE check rejects a signer against an
+# already-Deleted principal (SPEC.md §11.4/§14.9.1); lifecycle_state()
+# stays Deleted, never becomes Frozen.
+error     = "AlreadyDeleted"
 key_count = 1

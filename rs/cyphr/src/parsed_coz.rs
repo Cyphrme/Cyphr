@@ -7,7 +7,7 @@ use coz::{Czd, Pay, Thumbprint};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
-use crate::state::AuthRoot;
+use crate::state::{AuthRoot, PrincipalRoot};
 
 // ============================================================================
 // ParsedCoz Types (SPEC §4.2)
@@ -33,6 +33,12 @@ pub mod typ {
     pub const PRINCIPAL_CREATE: &str = "cyphr/principal/create";
     /// `<authority>/cyphr/commit/create` - Finalize a commit (Arrow finality)
     pub const COMMIT_CREATE: &str = "cyphr/commit/create";
+    /// `<authority>/cyphr/principal/delete` - Close a principal (Level 3+, SPEC §11.4)
+    pub const PRINCIPAL_DELETE: &str = "cyphr/principal/delete";
+    /// `<authority>/cyphr/freeze/create` - Self-freeze (SPEC §14.9.1)
+    pub const FREEZE_CREATE: &str = "cyphr/freeze/create";
+    /// `<authority>/cyphr/freeze/delete` - Thaw (SPEC §14.9.3)
+    pub const FREEZE_DELETE: &str = "cyphr/freeze/delete";
 
     /// Returns true if `typ` introduces new key material into the Auth State
     /// (`key/create` or `key/replace`).
@@ -81,6 +87,24 @@ pub enum CozKind {
         /// The arrow field = MR(pre, fwd_SR, TMR)
         arrow: crate::multihash::MultihashDigest,
     },
+
+    /// Close (Level 3+) - SPEC §11.4
+    PrincipalDelete {
+        /// Target Principal Root (the signer's own PR).
+        id: PrincipalRoot,
+    },
+
+    /// Self-freeze - SPEC §14.9.1
+    FreezeCreate {
+        /// Targeted Principal Root (the signer's own PR).
+        id: PrincipalRoot,
+    },
+
+    /// Thaw - SPEC §14.9.3
+    FreezeDelete {
+        /// Targeted Principal Root (the signer's own PR).
+        id: PrincipalRoot,
+    },
 }
 
 impl std::fmt::Display for CozKind {
@@ -92,6 +116,9 @@ impl std::fmt::Display for CozKind {
             CozKind::SelfRevoke { .. } => write!(f, "{}", typ::KEY_REVOKE),
             CozKind::PrincipalCreate { .. } => write!(f, "{}", typ::PRINCIPAL_CREATE),
             CozKind::CommitCreate { .. } => write!(f, "{}", typ::COMMIT_CREATE),
+            CozKind::PrincipalDelete { .. } => write!(f, "{}", typ::PRINCIPAL_DELETE),
+            CozKind::FreezeCreate { .. } => write!(f, "{}", typ::FREEZE_CREATE),
+            CozKind::FreezeDelete { .. } => write!(f, "{}", typ::FREEZE_DELETE),
         }
     }
 }
@@ -226,6 +253,15 @@ impl ParsedCoz {
         } else if typ.ends_with(typ::COMMIT_CREATE) {
             let arrow = Self::extract_arrow(pay)?.ok_or(Error::MalformedPayload)?;
             Ok(CozKind::CommitCreate { arrow })
+        } else if typ.ends_with(typ::PRINCIPAL_DELETE) {
+            let id = Self::extract_pr(pay)?;
+            Ok(CozKind::PrincipalDelete { id })
+        } else if typ.ends_with(typ::FREEZE_CREATE) {
+            let id = Self::extract_pr(pay)?;
+            Ok(CozKind::FreezeCreate { id })
+        } else if typ.ends_with(typ::FREEZE_DELETE) {
+            let id = Self::extract_pr(pay)?;
+            Ok(CozKind::FreezeDelete { id })
         } else {
             Err(Error::MalformedPayload)
         }
@@ -259,6 +295,30 @@ impl ParsedCoz {
         let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
 
         Ok(AuthRoot(
+            MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
+                .map_err(|_| Error::MalformedPayload)?,
+        ))
+    }
+
+    /// Extract `id` field as PrincipalRoot (for the lifecycle transactions:
+    /// `principal/delete`, `freeze/create`, `freeze/delete`).
+    ///
+    /// Per SPEC §11.4/§14.9, the `id` field on these three transactions is
+    /// the signer's own target/targeted PR, in the same `alg:digest` tagged
+    /// format as `principal/create`'s `id` -- this mirrors `extract_as`
+    /// exactly, differing only in the wrapper type returned (`PrincipalRoot`
+    /// rather than `AuthRoot`, matching what these transactions actually
+    /// reference).
+    fn extract_pr(pay: &Pay) -> Result<PrincipalRoot> {
+        use crate::multihash::MultihashDigest;
+        use crate::state::TaggedDigest;
+
+        let id_value = pay.extra.get("id").ok_or(Error::MalformedPayload)?;
+        let id_str = id_value.as_str().ok_or(Error::MalformedPayload)?;
+
+        let tagged: TaggedDigest = id_str.parse().map_err(|_| Error::MalformedPayload)?;
+
+        Ok(PrincipalRoot(
             MultihashDigest::from_single(tagged.alg(), tagged.as_bytes().to_vec())
                 .map_err(|_| Error::MalformedPayload)?,
         ))

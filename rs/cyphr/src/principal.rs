@@ -1676,6 +1676,48 @@ impl<S: eml::Storage> Principal<S> {
                 // Finalize commit marker does not mutate state other than marking completion
                 // State references are verified during commit finalization
             },
+            CozKind::PrincipalDelete { id } => {
+                // Close (SPEC §11.4, R1/F5 ruling): permitted from Active or
+                // Frozen, rejected if already Deleted
+                // ([no-transactions-on-deleted] applied to itself).
+                if self.deleted {
+                    return Err(Error::AlreadyDeleted);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                let core = self.core_mut();
+                core.deleted = true;
+                // Deleted subsumes Frozen (SPEC.md:1974-1978 mutual
+                // exclusivity; R1/F5): unconditionally clear frozen even if
+                // it was set going in.
+                core.frozen = false;
+            },
+            CozKind::FreezeCreate { id } => {
+                // Self-freeze (SPEC §14.9.1, R1/F5 ruling): rejected if
+                // already Deleted or already Frozen.
+                if self.deleted {
+                    return Err(Error::AlreadyDeleted);
+                }
+                if self.frozen {
+                    return Err(Error::AlreadyFrozen);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                self.core_mut().frozen = true;
+            },
+            CozKind::FreezeDelete { id } => {
+                // Thaw (SPEC §14.9.3, R1/F5 ruling): requires currently
+                // Frozen.
+                if !self.frozen {
+                    return Err(Error::NotFrozen);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                self.core_mut().frozen = false;
+            },
         }
 
         // Update signer's last_used timestamp
@@ -2196,6 +2238,195 @@ mod tests {
         assert_ne!(
             with_commits.lifecycle_state(),
             crate::lifecycle::LifecycleState::Zombie
+        );
+    }
+
+    // ========================================================================
+    // Lifecycle transactions (SPEC.md §11.4 Close, §14.9 Freeze)
+    // ========================================================================
+
+    /// Build a lifecycle-transaction `ParsedCoz` (`PrincipalDelete`,
+    /// `FreezeCreate`, or `FreezeDelete`) signed by `signer`. Bypasses
+    /// signature verification, matching every other mutator test in this
+    /// module (`self_revoke_last_key_prevented` et al.).
+    fn make_lifecycle_cz(
+        kind: crate::parsed_coz::CozKind,
+        signer: &Thumbprint,
+        now: i64,
+    ) -> crate::parsed_coz::ParsedCoz {
+        use coz::Czd;
+
+        use crate::parsed_coz::ParsedCoz;
+
+        ParsedCoz {
+            kind,
+            signer: signer.clone(),
+            now,
+            czd: Czd::from_bytes(vec![now as u8; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        }
+    }
+
+    #[test]
+    fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE1);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert!(principal.is_frozen());
+
+        let delete_cz = make_lifecycle_cz(
+            CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        principal.apply_transaction_test(delete_cz, None).unwrap();
+
+        assert!(principal.is_deleted());
+        assert!(
+            !principal.is_frozen(),
+            "delete must clear frozen (mutual exclusivity, SPEC.md:1974-1978)"
+        );
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Deleted
+        );
+    }
+
+    #[test]
+    fn freeze_create_on_deleted_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE2);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let delete_cz = make_lifecycle_cz(
+            CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(delete_cz, None).unwrap();
+        assert!(principal.is_deleted());
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        let result = principal.apply_transaction_test(freeze_cz, None);
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+        assert!(!principal.is_frozen());
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Deleted,
+            "[no-both-deleted-and-frozen]: a rejected freeze/create must \
+             not perturb the Deleted state"
+        );
+    }
+
+    #[test]
+    fn freeze_create_on_already_frozen_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE3);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert!(principal.is_frozen());
+
+        let freeze_again_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        let result = principal.apply_transaction_test(freeze_again_cz, None);
+        assert!(matches!(result, Err(Error::AlreadyFrozen)));
+    }
+
+    #[test]
+    fn freeze_delete_on_non_frozen_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE4);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        assert!(!principal.is_frozen());
+
+        let thaw_cz = make_lifecycle_cz(
+            CozKind::FreezeDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        let result = principal.apply_transaction_test(thaw_cz, None);
+        assert!(matches!(result, Err(Error::NotFrozen)));
+    }
+
+    #[test]
+    fn freeze_create_then_freeze_delete_thaws_to_active() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE5);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Frozen
+        );
+
+        let thaw_cz = make_lifecycle_cz(
+            CozKind::FreezeDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        principal.apply_transaction_test(thaw_cz, None).unwrap();
+
+        assert!(!principal.is_frozen());
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Active
         );
     }
 

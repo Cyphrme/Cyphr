@@ -142,6 +142,12 @@ pub struct GoldenExpected {
     /// Per-algorithm PR variants for multihash verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multihash_pr: Option<std::collections::BTreeMap<String, String>>,
+    /// Expected `Principal::is_deleted()` (SPEC.md §11.1 `Deleted`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<bool>,
+    /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<bool>,
 }
 
 // ============================================================================
@@ -165,6 +171,9 @@ fn cyphr_error_name(e: &cyphr::error::Error) -> &'static str {
         Error::InvalidSignature => "InvalidSignature",
         Error::MalformedPayload => "MalformedPayload",
         Error::UnsupportedAlgorithm(_) => "UnsupportedAlgorithm",
+        Error::AlreadyDeleted => "AlreadyDeleted",
+        Error::AlreadyFrozen => "AlreadyFrozen",
+        Error::NotFrozen => "NotFrozen",
         _ => "UnknownError",
     }
 }
@@ -1395,12 +1404,18 @@ impl<'a> Generator<'a> {
         // Standard fields in canonical order
         fields.insert("alg".to_string(), Value::String(alg.to_string()));
 
-        // id field handling depends on coz type
-        let is_principal_create = cz.typ.contains("principal/create");
-        if is_principal_create {
+        // id field handling depends on coz type. principal/create and the
+        // three lifecycle transactions (principal/delete, freeze/create,
+        // freeze/delete) all target the signer's own PR rather than a
+        // distinct key (SPEC §5.1, §11.4, §14.9).
+        let targets_own_pr = cz.typ.contains("principal/create")
+            || cz.typ.contains("principal/delete")
+            || cz.typ.contains("freeze/create")
+            || cz.typ.contains("freeze/delete");
+        if targets_own_pr {
             let pr_val = current_pr.ok_or_else(|| Error::Generation {
                 name: "build_pay_value".to_string(),
-                reason: "principal/create requires current PR for id field".to_string(),
+                reason: "this coz type requires current PR for id field".to_string(),
             })?;
             fields.insert("id".to_string(), Value::String(pr_val.to_string()));
         } else if let Some(target_name) = &cz.target {
@@ -1625,6 +1640,8 @@ impl<'a> Generator<'a> {
                 multihash_kr: multihash_kr.clone(),
                 multihash_ar: multihash_ar.clone(),
                 multihash_pr: multihash_pr.clone(),
+                deleted: e.deleted.or(Some(principal.is_deleted())),
+                frozen: e.frozen.or(Some(principal.is_frozen())),
             },
             None => GoldenExpected {
                 key_count: Some(key_count),
@@ -1641,6 +1658,8 @@ impl<'a> Generator<'a> {
                 multihash_kr,
                 multihash_ar,
                 multihash_pr,
+                deleted: Some(principal.is_deleted()),
+                frozen: Some(principal.is_frozen()),
             },
         }
     }

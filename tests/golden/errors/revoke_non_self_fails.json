@@ -55,6 +55,8 @@
     "pr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
     "sr": "SHA-256:2Q4DBjw_u0bfpCpSBJndG5gPY5ltWHrSDflpCC2CIlc",
     "pg": "",
-    "error": "[no-revoke-non-self]"
+    "error": "[no-revoke-non-self]",
+    "deleted": false,
+    "frozen": false
   }
 }

@@ -42,6 +42,8 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "UnknownKey"
+    "error": "UnknownKey",
+    "deleted": false,
+    "frozen": false
   }
 }
