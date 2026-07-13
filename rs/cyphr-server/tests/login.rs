@@ -4,15 +4,10 @@
 //! axum router (via `tower::ServiceExt::oneshot`, no TCP bind). Principals
 //! are built through the real write path so the login handler reconstructs
 //! them exactly as in production (genesis auto-detected from the stored
-//! commit's embedded key).
-//!
-//! The genuinely-Frozen/Deleted lifecycle cases are `#[ignore]`d: the
-//! storage layer does not yet recognize the lifecycle transactions
-//! (`freeze/create`, `freeze/delete`, `principal/delete`) as transactions
-//! (`cyphr-storage`'s `is_transaction_typ`), so such principals cannot be
-//! built through the real write path. The lifecycle gate against those
-//! states is covered at the unit level (`cyphr-server`'s `auth::login` and
-//! `cyphr`'s `principal`).
+//! commit's embedded key). The Frozen and Deleted cases drive real
+//! `freeze/create` and `principal/delete` transactions through the full
+//! storage path and assert the reconstructed lifecycle state before the
+//! login attempt.
 
 use std::sync::Arc;
 
@@ -600,28 +595,33 @@ async fn login_rejects_unknown_principal() {
 }
 
 // ========================================================================
-// Lifecycle gate (real states via real transactions) -- blocked
+// Lifecycle gate (real states via real transactions)
 // ========================================================================
 
 /// Login against a genuinely Frozen principal is rejected.
 ///
-/// Ignored pending a storage-layer fix: `cyphr-storage`'s `is_transaction_typ`
-/// does not recognize `freeze/create`, `freeze/delete`, or `principal/delete`
-/// as transactions, so those N03 transactions cannot be ingested
-/// (submit_commit yields EmptyCommit) or replayed as transactions. A
-/// genuinely Frozen/Deleted principal therefore cannot be built through the
-/// real write path yet. The lifecycle gate itself is verified against real
-/// states at the unit level; this end-to-end case unignores once the storage
-/// layer learns those typs.
-#[ignore = "blocked: cyphr-storage is_transaction_typ omits lifecycle transactions"]
+/// The principal is frozen by submitting a real `freeze/create` transaction
+/// through the full storage path, then reconstructed by the login handler
+/// from durable state -- its lifecycle state is asserted Frozen before the
+/// login attempt, so the 401 is the lifecycle gate firing, not an incidental
+/// failure.
 #[tokio::test]
 async fn login_rejects_frozen_principal() {
     let state = login_state();
     let pool = load_pool();
     let pid = "login-frozen";
     bootstrap_lifecycle(&state, pid, "freeze_create_transitions_to_frozen").await;
-    let app = build_router(state);
 
+    // The reconstructed principal is genuinely Frozen (real state, real path).
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
+    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    assert_eq!(
+        principal.lifecycle_state(),
+        cyphr::lifecycle::LifecycleState::Frozen,
+        "the bootstrapped principal must be genuinely Frozen via the real transaction path"
+    );
+
+    let app = build_router(state);
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "login against a Frozen principal must reject");
@@ -629,16 +629,24 @@ async fn login_rejects_frozen_principal() {
 
 /// Login against a genuinely Deleted principal is rejected.
 ///
-/// Ignored for the same reason as `login_rejects_frozen_principal`.
-#[ignore = "blocked: cyphr-storage is_transaction_typ omits lifecycle transactions"]
+/// Built the same way via a real `principal/delete` transaction, with the
+/// reconstructed lifecycle state asserted Deleted before the login attempt.
 #[tokio::test]
 async fn login_rejects_deleted_principal() {
     let state = login_state();
     let pool = load_pool();
     let pid = "login-deleted";
     bootstrap_lifecycle(&state, pid, "principal_delete_transitions_to_deleted").await;
-    let app = build_router(state);
 
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
+    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    assert_eq!(
+        principal.lifecycle_state(),
+        cyphr::lifecycle::LifecycleState::Deleted,
+        "the bootstrapped principal must be genuinely Deleted via the real transaction path"
+    );
+
+    let app = build_router(state);
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "login against a Deleted principal must reject");
