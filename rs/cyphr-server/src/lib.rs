@@ -7,6 +7,7 @@
 //! - Library (`lib.rs`) owns the application state, route wiring, and the `serve()` entry point.
 //! - Binary (`main.rs`) handles CLI parsing and process lifecycle.
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod logging;
@@ -49,10 +50,20 @@ pub struct AppState {
     /// Protocol-aware storage engine.
     pub engine:
         StorageEngine<FjallBlobStore, FjallIndexer, cyphr_blob_fjall::storage_fjall::FjallStorage>,
+
+    /// The server's own signing identity, if `config.signing_key_path` is
+    /// set. `None` means the server holds no signing key -- callers that
+    /// require one (e.g. bearer-token issuance) must handle that case
+    /// explicitly rather than assume presence.
+    pub identity: Option<Arc<auth::ServerIdentity>>,
 }
 
 impl AppState {
     /// Construct application state from resolved configuration.
+    ///
+    /// If `config.signing_key_path` is set, the signing key must load
+    /// successfully or construction fails -- a configured-but-broken key
+    /// is a startup error, not a silent fallback to no identity.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let db = fjall::Database::builder(config.data_dir.join("blobs")).open()?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
@@ -62,7 +73,17 @@ impl AppState {
                 cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
                     .map_err(|e| e.to_string())
             });
-        Ok(Self { config, engine })
+
+        let identity = match &config.signing_key_path {
+            Some(path) => Some(Arc::new(auth::ServerIdentity::load_from_path(path)?)),
+            None => None,
+        };
+
+        Ok(Self {
+            config,
+            engine,
+            identity,
+        })
     }
 }
 
@@ -133,4 +154,72 @@ async fn shutdown_signal() {
         .await
         .expect("failed to listen for shutdown signal");
     tracing::info!("shutdown signal received, draining connections");
+}
+
+#[cfg(test)]
+mod tests {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    use super::*;
+
+    fn write_signing_key_file(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("signing-key.json");
+        let kp = coz::Alg::Ed25519.generate_keypair();
+        let file = serde_json::json!({
+            "alg": kp.alg.name(),
+            "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+        });
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn app_state_with_configured_signing_key_loads_identity() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let key_path = write_signing_key_file(temp_dir.path());
+        let config = config::ServerConfig {
+            data_dir: temp_dir.path().join("data"),
+            signing_key_path: Some(key_path),
+            ..Default::default()
+        };
+
+        let state = AppState::new(config).expect("AppState::new with a valid key succeeds");
+        assert!(
+            state.identity.is_some(),
+            "a configured signing key must be loaded into AppState.identity"
+        );
+    }
+
+    #[test]
+    fn app_state_without_signing_key_has_no_identity() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = config::ServerConfig {
+            data_dir: temp_dir.path().join("data"),
+            ..Default::default()
+        };
+
+        let state = AppState::new(config).expect("AppState::new without a key still succeeds");
+        assert!(
+            state.identity.is_none(),
+            "no signing_key_path configured must leave identity unset"
+        );
+    }
+
+    #[test]
+    fn app_state_with_broken_signing_key_path_fails_clearly() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = config::ServerConfig {
+            data_dir: temp_dir.path().join("data"),
+            signing_key_path: Some(std::path::PathBuf::from("/nonexistent/signing-key.json")),
+            ..Default::default()
+        };
+
+        let result = AppState::new(config);
+        assert!(
+            result.is_err(),
+            "a configured-but-missing signing key must fail construction, not panic or \
+             silently disable the identity"
+        );
+    }
 }
