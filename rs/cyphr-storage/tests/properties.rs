@@ -101,7 +101,12 @@ fn golden_key_to_domain(gk: &test_fixtures::GoldenKey) -> cyphr::Key {
 }
 
 fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/") || typ.contains("/principal/create") || typ.contains("/commit/create")
+    typ.contains("/key/")
+        || typ.contains("/principal/create")
+        || typ.contains("/principal/delete")
+        || typ.contains("/freeze/create")
+        || typ.contains("/freeze/delete")
+        || typ.contains("/commit/create")
 }
 
 fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::intent::TestIntent {

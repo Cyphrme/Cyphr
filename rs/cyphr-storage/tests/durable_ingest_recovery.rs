@@ -77,6 +77,60 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     blobs
 }
 
+/// F25 — a `freeze/create` commit submitted through the real
+/// `submit_commit` path must be recognized as a transaction (not
+/// silently misfiled as a deferred action) and its effect must survive a
+/// full reload of the principal from the durable blob/index store, not
+/// just persist in the in-memory scope used during ingest.
+#[tokio::test]
+async fn freeze_create_commit_survives_reload() {
+    let fixture = load_golden("lifecycle", "freeze_create_transitions_to_frozen");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+
+    let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
+    assert_eq!(keys.len(), 1, "fixture uses implicit single-key genesis");
+    let genesis = Genesis::Implicit(keys[0].clone());
+    let principal_id = "freeze-create-roundtrip-test";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("db");
+    let index_path = dir.path().join("index");
+
+    let db = fjall::Database::builder(&db_path).open().expect("open db");
+    let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
+    let indexer = FjallIndexer::open(&index_path).expect("open indexer");
+    let engine = StorageEngine::with_storage_factory(blob_store, indexer, {
+        let db = db.clone();
+        move |_principal_id: &str| {
+            cyphr_blob_fjall::open_eml_storage(db.clone()).map_err(|e| e.to_string())
+        }
+    });
+
+    for commit in commits {
+        let blobs = build_raw_blobs(commit);
+        let blob_refs: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+        engine
+            .submit_commit(principal_id, Some(genesis.clone()), &blob_refs)
+            .await
+            .expect("submit_commit failed: freeze/create must be applied as a transaction");
+    }
+
+    // Reload the principal from durable storage (index + blob store), not
+    // the in-memory scope used during ingest -- this proves the freeze
+    // was actually persisted, not just applied transiently.
+    let reloaded = engine
+        .load_principal(principal_id, genesis)
+        .await
+        .expect("load_principal failed");
+
+    assert_eq!(
+        reloaded.lifecycle_state(),
+        cyphr::lifecycle::LifecycleState::Frozen,
+        "freeze/create must transition the reloaded principal to Frozen"
+    );
+}
+
 /// c4 — deleting the index entirely and rebuilding it from the blob store
 /// alone (via the durable manifests `ingest_commit` wrote) must recover
 /// the exact same tip state and per-commit blob order as the original

@@ -117,10 +117,16 @@ pub enum LoadError {
 
 /// Determine if a typ string represents a transaction (not an action).
 ///
-/// Transactions are: key/*, principal/create, commit/create
-/// Everything else is an action.
+/// Transactions are: key/*, principal/create, principal/delete,
+/// freeze/create, freeze/delete, commit/create. Everything else is an
+/// action.
 pub(crate) fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/") || typ.contains("/principal/create") || typ.contains("/commit/create")
+    typ.contains("/key/")
+        || typ.contains("/principal/create")
+        || typ.contains("/principal/delete")
+        || typ.contains("/freeze/create")
+        || typ.contains("/freeze/delete")
+        || typ.contains("/commit/create")
 }
 
 // ============================================================================
@@ -732,6 +738,17 @@ mod tests {
         assert!(is_key_introducing_typ("cyphr.me/cyphr/key/replace"));
         assert!(!is_key_introducing_typ("cyphr.me/cyphr/key/delete"));
         assert!(!is_key_introducing_typ("cyphr.me/cyphr/commit/create"));
+    }
+
+    /// F25: `is_transaction_typ` must recognize the three lifecycle
+    /// transaction typs N03 added to the core protocol crate, or a signed
+    /// lifecycle commit is silently misfiled as a deferred data action
+    /// instead of being applied through `verify_and_apply`.
+    #[test]
+    fn is_transaction_typ_recognizes_lifecycle_typs() {
+        assert!(is_transaction_typ("cyphr.me/cyphr/principal/delete"));
+        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/create"));
+        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/delete"));
     }
 
     #[test]
