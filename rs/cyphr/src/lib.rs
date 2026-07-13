@@ -29,6 +29,8 @@ pub mod hasher;
 /// dependency.
 pub mod inclusion;
 pub mod key;
+/// Principal lifecycle state derivation (SPEC.md §11).
+pub mod lifecycle;
 pub mod multihash;
 pub mod parsed_coz;
 pub mod principal;

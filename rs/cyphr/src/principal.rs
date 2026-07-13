@@ -127,6 +127,18 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) max_clock_skew: i64,
     /// Base64 thumbprints of the genesis keys (keys present at construction).
     pub(crate) genesis_keys: Vec<String>,
+    /// `principal/delete` has been signed (SPEC.md §11.1 `Deleted`). No
+    /// transaction sets this yet — the field exists for the derivation in
+    /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
+    pub(crate) deleted: bool,
+    /// `freeze/create` is active and `freeze/delete` has not yet been signed
+    /// (SPEC.md §11.1 `Frozen`). No transaction sets this yet — see `deleted`.
+    pub(crate) frozen: bool,
+    /// A fork or invalid chain has been detected (SPEC.md §11.1 `Errored`).
+    /// Orthogonal to the base lifecycle state. No detector sets this yet
+    /// (fork/chain-invalid detection is out of scope for this node); always
+    /// `false` at this node's tip.
+    pub(crate) errored: bool,
 }
 
 impl<S: eml::Storage> Clone for PrincipalCore<S> {
@@ -146,6 +158,9 @@ impl<S: eml::Storage> Clone for PrincipalCore<S> {
             latest_timestamp: self.latest_timestamp,
             max_clock_skew: self.max_clock_skew,
             genesis_keys: self.genesis_keys.clone(),
+            deleted: self.deleted,
+            frozen: self.frozen,
+            errored: self.errored,
         }
     }
 }
@@ -167,6 +182,9 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("latest_timestamp", &self.latest_timestamp)
             .field("max_clock_skew", &self.max_clock_skew)
             .field("genesis_keys", &self.genesis_keys)
+            .field("deleted", &self.deleted)
+            .field("frozen", &self.frozen)
+            .field("errored", &self.errored)
             .finish()
     }
 }
@@ -526,6 +544,9 @@ impl Principal<eml::MemoryStorage> {
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
+            deleted: false,
+            frozen: false,
+            errored: false,
         };
 
         Ok(match pg {
@@ -624,6 +645,9 @@ impl<S: eml::Storage> Principal<S> {
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys: vec![tmb_b64],
+            deleted: false,
+            frozen: false,
+            errored: false,
         }))))
     }
 
@@ -678,6 +702,9 @@ impl<S: eml::Storage> Principal<S> {
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
+            deleted: false,
+            frozen: false,
+            errored: false,
         }))))
     }
 
@@ -771,6 +798,9 @@ impl<S: eml::Storage> Principal<S> {
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,
+            deleted: false,
+            frozen: false,
+            errored: false,
         };
 
         Ok(match pg {
@@ -1239,6 +1269,42 @@ impl<S: eml::Storage> Principal<S> {
         // Level 2 if any key/replace occurred (detected by commit history)
         // For now, single key with no commits = Level 1
         Level::L1
+    }
+
+    /// Whether `principal/delete` has been signed (SPEC.md §11.1 `Deleted`).
+    pub fn is_deleted(&self) -> bool {
+        self.deleted
+    }
+
+    /// Whether `freeze/create` is active and not yet undone by
+    /// `freeze/delete` (SPEC.md §11.1 `Frozen`).
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Whether a fork or invalid chain has been detected (SPEC.md §11.1
+    /// `Errored`). Orthogonal to [`Principal::lifecycle_state`]: any base
+    /// state may be errored (SPEC.md §11.1).
+    pub fn is_errored(&self) -> bool {
+        self.errored
+    }
+
+    /// Derive the current lifecycle base state (SPEC.md §11.2).
+    ///
+    /// `CanDataAction` is wired as `level() >= L4 && HasActiveKeys` — the
+    /// active-keys conjunct is non-load-bearing for any state reachable
+    /// below Level 5 (see [`crate::lifecycle::derive_lifecycle_state`]'s doc
+    /// comment): `CanDataAction` only distinguishes Zombie from Dead, and
+    /// Zombie is unreachable below Level 5.
+    pub fn lifecycle_state(&self) -> crate::lifecycle::LifecycleState {
+        let has_active_keys = self.active_key_count() > 0;
+        let can_data_action = self.level() >= Level::L4 && has_active_keys;
+        crate::lifecycle::derive_lifecycle_state(
+            self.deleted,
+            self.frozen,
+            has_active_keys,
+            can_data_action,
+        )
     }
 
     /// Configure the maximum allowed clock skew for future timestamps.
@@ -2034,6 +2100,103 @@ mod tests {
         // PR still exists and is stable
         let pr_bytes = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
         assert!(!pr_bytes.is_empty());
+    }
+
+    // ========================================================================
+    // Lifecycle state (SPEC.md §11)
+    // ========================================================================
+
+    #[test]
+    fn fresh_implicit_principal_derives_active() {
+        let key = make_test_key(0xD0);
+        let principal = Principal::implicit(key).unwrap();
+
+        assert!(!principal.is_deleted());
+        assert!(!principal.is_frozen());
+        assert!(!principal.is_errored());
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Active
+        );
+    }
+
+    #[test]
+    fn checkpoint_restored_principal_derives_active() {
+        // ac-field-threading: a checkpoint-restored principal must not be
+        // spuriously Frozen/Deleted — the new fields must default cleanly
+        // through `from_checkpoint`, not just the constructors that build a
+        // principal directly.
+        let (principal, keys) = build_principal_with_commits(2);
+        let trees = principal.commit_trees().clone();
+
+        let restored = Principal::from_checkpoint(
+            principal.pg().cloned(),
+            principal.auth_root().clone(),
+            keys,
+            Some(trees),
+        )
+        .unwrap();
+
+        assert!(!restored.is_deleted());
+        assert!(!restored.is_frozen());
+        assert_eq!(
+            restored.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Active
+        );
+    }
+
+    #[test]
+    fn principal_with_no_active_keys_derives_dead() {
+        let key = make_test_key(0xD1);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        principal.pre_revoke_key(&tmb, 1000).unwrap();
+
+        assert_eq!(principal.active_key_count(), 0);
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Dead,
+            "a principal with zero active keys and Level < L4 must derive Dead"
+        );
+    }
+
+    /// c-zombie-unreachable (integration level): across every principal
+    /// shape this node can actually construct (varying key counts, with and
+    /// without revocation, with and without commits), `lifecycle_state()`
+    /// never returns Zombie. `CanMutateAR` is wired as `== HasActiveKeys`
+    /// below Level 5 (SPEC.md:1990-1992; this crate's `Level` enum has no
+    /// L5+ variant — see `rs/cyphr/src/principal.rs`'s `Level` definition),
+    /// so `¬CanMutateAR ∧ CanDataAction` can never hold and Zombie is
+    /// unreachable for any principal reachable through the public API.
+    #[test]
+    fn zombie_unreachable_across_constructed_principals() {
+        let single = Principal::implicit(make_test_key(0xD2)).unwrap();
+        assert_ne!(
+            single.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Zombie
+        );
+
+        let multi =
+            Principal::explicit(vec![make_test_key(0xD3), make_test_key(0xD4)]).unwrap();
+        assert_ne!(
+            multi.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Zombie
+        );
+
+        let mut revoked = Principal::implicit(make_test_key(0xD5)).unwrap();
+        let tmb = revoked.active_keys().next().unwrap().tmb.clone();
+        revoked.pre_revoke_key(&tmb, 2000).unwrap();
+        assert_ne!(
+            revoked.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Zombie
+        );
+
+        let (with_commits, _keys) = build_principal_with_commits(3);
+        assert_ne!(
+            with_commits.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Zombie
+        );
     }
 
     // ========================================================================
