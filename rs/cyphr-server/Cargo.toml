@@ -24,8 +24,10 @@ cyphr                        = { path = "../cyphr", version = "0.1.0" }
 cyphr-blob-fjall             = { path = "../cyphr-blob-fjall", version = "0.1.0" }
 cyphr-index-fjall            = { path = "../cyphr-index-fjall", version = "0.1.0" }
 cyphr-storage                = { path = "../cyphr-storage", version = "0.1.0" }
+eml.workspace                = true
 figment.workspace            = true
 fjall.workspace              = true
+rand                         = "0.8"
 serde.workspace              = true
 serde_json.workspace         = true
 thiserror.workspace          = true

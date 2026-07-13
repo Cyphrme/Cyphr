@@ -11,6 +11,7 @@
 //! rather than raw key bytes, so a later campaign can back the same
 //! abstraction with a full Cyphr principal without rewriting call sites.
 
+pub mod login;
 pub mod token;
 
 use std::path::Path;
