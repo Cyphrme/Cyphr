@@ -2242,6 +2242,195 @@ mod tests {
     }
 
     // ========================================================================
+    // Lifecycle transactions (SPEC.md §11.4 Close, §14.9 Freeze)
+    // ========================================================================
+
+    /// Build a lifecycle-transaction `ParsedCoz` (`PrincipalDelete`,
+    /// `FreezeCreate`, or `FreezeDelete`) signed by `signer`. Bypasses
+    /// signature verification, matching every other mutator test in this
+    /// module (`self_revoke_last_key_prevented` et al.).
+    fn make_lifecycle_cz(
+        kind: crate::parsed_coz::CozKind,
+        signer: &Thumbprint,
+        now: i64,
+    ) -> crate::parsed_coz::ParsedCoz {
+        use coz::Czd;
+
+        use crate::parsed_coz::ParsedCoz;
+
+        ParsedCoz {
+            kind,
+            signer: signer.clone(),
+            now,
+            czd: Czd::from_bytes(vec![now as u8; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        }
+    }
+
+    #[test]
+    fn principal_delete_from_frozen_succeeds_and_clears_frozen() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE1);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert!(principal.is_frozen());
+
+        let delete_cz = make_lifecycle_cz(
+            CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        principal.apply_transaction_test(delete_cz, None).unwrap();
+
+        assert!(principal.is_deleted());
+        assert!(
+            !principal.is_frozen(),
+            "delete must clear frozen (mutual exclusivity, SPEC.md:1974-1978)"
+        );
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Deleted
+        );
+    }
+
+    #[test]
+    fn freeze_create_on_deleted_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE2);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let delete_cz = make_lifecycle_cz(
+            CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(delete_cz, None).unwrap();
+        assert!(principal.is_deleted());
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        let result = principal.apply_transaction_test(freeze_cz, None);
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+        assert!(!principal.is_frozen());
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Deleted,
+            "[no-both-deleted-and-frozen]: a rejected freeze/create must \
+             not perturb the Deleted state"
+        );
+    }
+
+    #[test]
+    fn freeze_create_on_already_frozen_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE3);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert!(principal.is_frozen());
+
+        let freeze_again_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        let result = principal.apply_transaction_test(freeze_again_cz, None);
+        assert!(matches!(result, Err(Error::AlreadyFrozen)));
+    }
+
+    #[test]
+    fn freeze_delete_on_non_frozen_is_rejected() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE4);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        assert!(!principal.is_frozen());
+
+        let thaw_cz = make_lifecycle_cz(
+            CozKind::FreezeDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        let result = principal.apply_transaction_test(thaw_cz, None);
+        assert!(matches!(result, Err(Error::NotFrozen)));
+    }
+
+    #[test]
+    fn freeze_create_then_freeze_delete_thaws_to_active() {
+        use crate::parsed_coz::CozKind;
+
+        let key = make_test_key(0xE5);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let freeze_cz = make_lifecycle_cz(
+            CozKind::FreezeCreate {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2000,
+        );
+        principal.apply_transaction_test(freeze_cz, None).unwrap();
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Frozen
+        );
+
+        let thaw_cz = make_lifecycle_cz(
+            CozKind::FreezeDelete {
+                id: principal.pr().clone(),
+            },
+            &tmb,
+            2001,
+        );
+        principal.apply_transaction_test(thaw_cz, None).unwrap();
+
+        assert!(!principal.is_frozen());
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Active
+        );
+    }
+
+    // ========================================================================
     // ParsedCoz application tests
     // ========================================================================
 
