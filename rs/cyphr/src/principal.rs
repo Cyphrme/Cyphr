@@ -1676,6 +1676,48 @@ impl<S: eml::Storage> Principal<S> {
                 // Finalize commit marker does not mutate state other than marking completion
                 // State references are verified during commit finalization
             },
+            CozKind::PrincipalDelete { id } => {
+                // Close (SPEC §11.4, R1/F5 ruling): permitted from Active or
+                // Frozen, rejected if already Deleted
+                // ([no-transactions-on-deleted] applied to itself).
+                if self.deleted {
+                    return Err(Error::AlreadyDeleted);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                let core = self.core_mut();
+                core.deleted = true;
+                // Deleted subsumes Frozen (SPEC.md:1974-1978 mutual
+                // exclusivity; R1/F5): unconditionally clear frozen even if
+                // it was set going in.
+                core.frozen = false;
+            },
+            CozKind::FreezeCreate { id } => {
+                // Self-freeze (SPEC §14.9.1, R1/F5 ruling): rejected if
+                // already Deleted or already Frozen.
+                if self.deleted {
+                    return Err(Error::AlreadyDeleted);
+                }
+                if self.frozen {
+                    return Err(Error::AlreadyFrozen);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                self.core_mut().frozen = true;
+            },
+            CozKind::FreezeDelete { id } => {
+                // Thaw (SPEC §14.9.3, R1/F5 ruling): requires currently
+                // Frozen.
+                if !self.frozen {
+                    return Err(Error::NotFrozen);
+                }
+                if !id.0.matches(&self.pr.0) {
+                    return Err(Error::StateMismatch);
+                }
+                self.core_mut().frozen = false;
+            },
         }
 
         // Update signer's last_used timestamp
