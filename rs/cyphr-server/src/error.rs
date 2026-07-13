@@ -45,6 +45,20 @@ impl AppError {
             message: msg.into(),
         }
     }
+
+    /// 401 Unauthorized.
+    ///
+    /// For failed authentication: a rejected login (bad signature,
+    /// mismatched audience, inactive key, non-Active principal, replayed
+    /// or stale request). Route-level 401 enforcement on existing
+    /// endpoints is a later concern; this constructor gives the login
+    /// handlers a single, correctly-shaped rejection.
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {

@@ -78,6 +78,13 @@ pub struct ServeArgs {
     /// When unset, the server holds no signing identity.
     #[arg(long, env = "CYPHR_SIGNING_KEY_PATH")]
     pub signing_key_path: Option<PathBuf>,
+
+    /// The audience identity clients must name when logging in (the
+    /// authority segment of the login `typ`, e.g. a domain like
+    /// `cyphr.me`). When unset, the server accepts no logins. See
+    /// `auth::login`.
+    #[arg(long, env = "CYPHR_AUDIENCE")]
+    pub audience: Option<String>,
 }
 
 // ========================================================================
@@ -103,6 +110,12 @@ pub struct ServerConfig {
     /// holds no signing identity (see `auth::ServerIdentity`).
     #[serde(default)]
     pub signing_key_path: Option<PathBuf>,
+
+    /// The audience identity clients must name in a login payload's
+    /// `typ` authority segment, verified against this value (see
+    /// `auth::login`). `None` means logins are not accepted.
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -113,6 +126,7 @@ impl Default for ServerConfig {
             log_format: LogFormat::Pretty,
             mode: ServerMode::Authority,
             signing_key_path: None,
+            audience: None,
         }
     }
 }
@@ -178,6 +192,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
         if let Some(ref signing_key_path) = args.signing_key_path {
             config.signing_key_path = Some(signing_key_path.clone());
+        }
+        if let Some(ref audience) = args.audience {
+            config.audience = Some(audience.clone());
         }
 
         // Witness mode is parsed but has no enforcement anywhere in the
@@ -275,6 +292,32 @@ mod tests {
             config.signing_key_path,
             Some(PathBuf::from("/etc/cyphr/signing-key.json"))
         );
+    }
+
+    #[test]
+    fn serve_with_audience_flag_resolves_it() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--audience",
+            "cyphr.me",
+        ]);
+        let config = resolve_config(&cli).expect("resolve succeeds");
+        assert_eq!(config.audience, Some("cyphr.me".to_string()));
+    }
+
+    #[test]
+    fn serve_without_audience_flag_leaves_it_unset() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+        ]);
+        let config = resolve_config(&cli).expect("resolve succeeds");
+        assert_eq!(config.audience, None);
     }
 
     #[test]
