@@ -83,7 +83,7 @@ fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<
         let alg_id = hash_alg_to_u64(alg);
         inner
             .register_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
         seen.push(alg);
     }
     Ok(())
@@ -190,7 +190,7 @@ impl KeyTree {
             let payload = serialize_converted(tmb, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
 
         Ok(kt)
@@ -261,7 +261,7 @@ impl AuthTree {
         let payload = serialize_digest(&kr.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, payload, Vec::new())
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(node)
     }
@@ -322,12 +322,12 @@ impl StateTree {
         let ar_payload = serialize_digest(&ar.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, ar_payload, Vec::new())
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
         if let Some(dr) = dr {
             let dr_payload = serialize_digest(&dr.0, algs)?;
             node.inner
                 .set(OPTIONAL_CELL, dr_payload, Vec::new())
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
 
         Ok(node)
