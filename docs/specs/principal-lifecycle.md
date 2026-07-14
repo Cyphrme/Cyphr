@@ -38,26 +38,33 @@ out of their identities.
 **`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
 "implemented."** The Verification table's uniform 25/25 `pass` is
 misleading — confirmed by direct search of `rs/`:
+**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
+"implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
+consistency, not implementation status. The following revisions apply post-campaign:
 
-- **No lifecycle state machine exists.** There is no `LifecycleState` enum,
-  no `IsFrozen`/`Zombie` tracking, and no `freeze/create`, `principal/merge`,
-  or `principal/fork/create` transaction `typ` anywhere in `rs/`. All of
-  [errored-orthogonal] through [dead-terminal]'s Close/Merge/Fork/Freeze
-  transitions (matching `docs/protocol/constraint_coverage.md`'s own
-  19-constraint OOS count for this section) are unimplemented.
-- **`Principal::level()` cannot return `Level::L2`.** Its own comment says
-  so: "Level 2 if any key/replace occurred... For now, single key with no
-  commits = Level 1" (`rs/cyphr/src/principal.rs`). [level-2-single-key] is
-  therefore not fully implemented, despite this document's `pass`.
-- **What IS implemented**: Level 1/3/4 composition (single static key,
-  multi-key, Data Tree actions) and the no-active-keys terminal state
-  ([dead-terminal], [no-level-1-recovery]) reachable via ordinary
-  `key/revoke`. The `principal/delete`, `principal/merge`,
-  `principal/fork/create`, and `freeze/create` transactions themselves do
-  not exist as distinct mechanisms — only the revoke-driven dead-end is
-  real.
+**Implemented by N01 (lifecycle-state), N03 (lifecycle-transactions):**
+- LifecycleState enum with full derivation from five boolean conditions (Active,
+  Frozen, Deleted, Zombie, Dead, Nuked), orthogonal Errored flag — 
+  `rs/cyphr/src/lifecycle.rs:derive_lifecycle_state` with exhaustive property test
+- Three lifecycle transactions: principal/delete, freeze/create, freeze/delete,
+  all parsed, applied, and tested via `tests/intents/lifecycle.toml` (4 golden
+  scenarios with fixture-backed assertions), `tests/golden/lifecycle/*.json`
+- Frozen/Deleted/Zombie/Dead/Nuked states now reach real code paths; all lifecycle
+  gates enforced (mutual-exclusivity, no-mutations-on-frozen, Deleted subsumes
+  Frozen per F5 ruling)
 
-## Constraints
+**Still unimplemented (correctly out of campaign scope):**
+- principal/merge and principal/fork/create (no transactions, no tests)
+- Level 5+ weighted-key thresholds and CanMutateAR non-monotonicity
+- Errored state detection (flag always false in v1; CommitMismatch is candidate
+  future source per findings F8)
+
+**Partially implemented or with known limitations:**
+- `Principal::level()` still cannot return `Level::L2` — 
+  `rs/cyphr/src/principal.rs` comment: "For now, single key with no commits = Level 1"
+- Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
+  them in revoked set — both trace back to deletion state, making Nuked/Dead
+  separation not externally observable (findings F11, deferred refinement)
 
 ### Type Declarations
 
