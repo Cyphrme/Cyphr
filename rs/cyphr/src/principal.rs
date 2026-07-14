@@ -1433,6 +1433,14 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::MalformedPayload);
         }
 
+        // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
+        // actions are possible on a closed account". Data actions have no
+        // same-commit-finalizer exemption analogous to CommitCreate's, so
+        // this is an unconditional gate.
+        if self.deleted {
+            return Err(Error::AlreadyDeleted);
+        }
+
         // Signer must be an ACTIVE key
         if !self.is_key_active(&signer_tmb) {
             if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {
@@ -1618,6 +1626,27 @@ impl<S: eml::Storage> Principal<S> {
                 return Err(Error::KeyRevoked);
             }
             return Err(Error::UnknownKey);
+        }
+
+        // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
+        // actions are possible on a closed account". PrincipalDelete,
+        // FreezeCreate, and FreezeDelete manage their own deleted/frozen PRE
+        // checks in their match arms below (untouched by this gate).
+        // CommitCreate is exempted: CommitScope applies cozies sequentially
+        // to a projected principal within one commit (commit.rs:319-383), so
+        // a commit whose own earlier transaction is principal/delete has
+        // already set `self.deleted` by the time its own commit/create
+        // finalizer runs here -- rejecting it would make a principal
+        // impossible to ever actually close.
+        let skip_deleted_check = matches!(
+            &cz.kind,
+            CozKind::PrincipalDelete { .. }
+                | CozKind::FreezeCreate { .. }
+                | CozKind::FreezeDelete { .. }
+                | CozKind::CommitCreate { .. }
+        );
+        if self.deleted && !skip_deleted_check {
+            return Err(Error::AlreadyDeleted);
         }
 
         match &cz.kind {
@@ -2427,6 +2456,310 @@ mod tests {
         assert_eq!(
             principal.lifecycle_state(),
             crate::lifecycle::LifecycleState::Active
+        );
+    }
+
+    // ========================================================================
+    // Blanket deleted-principal gate (SPEC.md §11.4, F23, N11)
+    //
+    // [no-transactions-on-deleted] applied to the six non-lifecycle CozKind
+    // variants (KeyCreate, KeyDelete, KeyReplace, SelfRevoke,
+    // PrincipalCreate, CommitCreate) plus data actions. CommitCreate is
+    // exempted (its own commit's finalizer must complete even when an
+    // earlier transaction in the same commit was the delete itself, see
+    // `same_commit_delete_and_own_finalizer_succeeds` below).
+    // FreezeDelete is exempted from this gate too, but for a structural
+    // reason rather than a same-commit one: it requires `self.frozen`,
+    // and Deleted/Frozen are mutually exclusive (SPEC.md:1974-1978), so
+    // FreezeDelete can never be reachable on a Deleted principal in the
+    // first place -- `freeze_delete_on_deleted_still_rejected_as_not_frozen`
+    // confirms this rather than adding a redundant check.
+    // ========================================================================
+
+    /// Build a genuinely Deleted principal via a real `principal/delete`
+    /// transaction (not a mocked flag), with two active keys so KeyDelete/
+    /// SelfRevoke have a legal target/signer to attempt against it.
+    fn build_deleted_principal() -> (Principal, Key, Key) {
+        use crate::parsed_coz::CozKind;
+
+        let key1 = make_test_key(0xD1);
+        let key2 = make_test_key(0xD2);
+        let mut principal = Principal::explicit(vec![key1.clone(), key2.clone()]).unwrap();
+
+        let delete_cz = make_lifecycle_cz(
+            CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            &key1.tmb,
+            2000,
+        );
+        principal.apply_transaction_test(delete_cz, None).unwrap();
+        assert!(principal.is_deleted(), "setup: principal must be Deleted");
+
+        (principal, key1, key2)
+    }
+
+    #[test]
+    fn key_create_on_deleted_principal_is_rejected() {
+        let (mut principal, key1, _key2) = build_deleted_principal();
+
+        let new_key = make_test_key(0xD3);
+        let cz = make_key_add_tx(&new_key, &key1.tmb);
+
+        let result = principal.apply_transaction_test(cz, Some(new_key));
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+    }
+
+    #[test]
+    fn key_delete_on_deleted_principal_is_rejected() {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let (mut principal, key1, key2) = build_deleted_principal();
+
+        let cz = ParsedCoz {
+            kind: CozKind::KeyDelete {
+                id: key2.tmb.clone(),
+            },
+            signer: key1.tmb.clone(),
+            now: 2001,
+            czd: Czd::from_bytes(vec![0xD4; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+
+        let result = principal.apply_transaction_test(cz, None);
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+    }
+
+    #[test]
+    fn key_replace_on_deleted_principal_is_rejected() {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let (mut principal, key1, _key2) = build_deleted_principal();
+
+        let new_key = make_test_key(0xD5);
+        let cz = ParsedCoz {
+            kind: CozKind::KeyReplace {
+                id: new_key.tmb.clone(),
+            },
+            signer: key1.tmb.clone(),
+            now: 2001,
+            czd: Czd::from_bytes(vec![0xD6; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+
+        let result = principal.apply_transaction_test(cz, Some(new_key));
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+    }
+
+    /// SelfRevoke DOES mutate state (revokes the signer's own key) and has
+    /// no same-commit-completion necessity the way CommitCreate does, so
+    /// SPEC.md §11.4's "no further transactions" is not exempted here --
+    /// unlike CommitCreate, gating SelfRevoke does not reopen the ability
+    /// to ever close a principal.
+    #[test]
+    fn self_revoke_on_deleted_principal_is_rejected() {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let (mut principal, _key1, key2) = build_deleted_principal();
+
+        let cz = ParsedCoz {
+            kind: CozKind::SelfRevoke { rvk: 2001 },
+            signer: key2.tmb.clone(),
+            now: 2001,
+            czd: Czd::from_bytes(vec![0xD7; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+
+        let result = principal.apply_transaction_test(cz, None);
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+        assert!(
+            principal.is_key_active(&key2.tmb),
+            "rejected self-revoke must not mutate the key set"
+        );
+    }
+
+    #[test]
+    fn principal_create_on_deleted_principal_is_rejected() {
+        use coz::Czd;
+
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let (mut principal, key1, _key2) = build_deleted_principal();
+
+        let cz = ParsedCoz {
+            kind: CozKind::PrincipalCreate {
+                id: principal.auth_root().clone(),
+            },
+            signer: key1.tmb.clone(),
+            now: 2001,
+            czd: Czd::from_bytes(vec![0xD8; 32]),
+            hash_alg: crate::state::HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+
+        let result = principal.apply_transaction_test(cz, None);
+        assert!(
+            matches!(result, Err(Error::AlreadyDeleted)),
+            "the blanket gate must reject PrincipalCreate before genesis-key/id \
+             validation ever runs, since a Deleted principal is by definition \
+             already Established and genesis finalization can never legitimately \
+             be reachable here"
+        );
+    }
+
+    /// Confirms the reasoning in this node's non-goals: FreezeDelete
+    /// requires `self.frozen`, and Deleted/Frozen are mutually exclusive,
+    /// so FreezeDelete on a genuinely Deleted principal is already
+    /// unreachable via its own existing check (`NotFrozen`) -- no new gate
+    /// entry is needed, and the blanket gate must not shadow this error
+    /// with `AlreadyDeleted`.
+    #[test]
+    fn freeze_delete_on_deleted_still_rejected_as_not_frozen() {
+        let (mut principal, key1, _key2) = build_deleted_principal();
+        assert!(!principal.is_frozen());
+
+        let thaw_cz = make_lifecycle_cz(
+            crate::parsed_coz::CozKind::FreezeDelete {
+                id: principal.pr().clone(),
+            },
+            &key1.tmb,
+            2001,
+        );
+        let result = principal.apply_transaction_test(thaw_cz, None);
+        assert!(matches!(result, Err(Error::NotFrozen)));
+    }
+
+    #[test]
+    fn data_action_on_deleted_principal_is_rejected() {
+        let (mut principal, key1, _key2) = build_deleted_principal();
+
+        let pay = serde_json::json!({
+            "alg": key1.alg,
+            "now": 2001,
+            "tmb": key1.tmb.to_b64(),
+            "typ": "cyphr.me/comment",
+        });
+        let pay_json = serde_json::to_vec(&pay).unwrap();
+        let sig = vec![0u8; 64];
+        let czd = coz::Czd::from_bytes(vec![0xD9; 32]);
+
+        let result = principal.verify_and_record_action(&pay_json, &sig, czd);
+        assert!(matches!(result, Err(Error::AlreadyDeleted)));
+    }
+
+    /// c-same-commit-delete-still-finalizes: the load-bearing test for this
+    /// node. A commit whose own transaction is `principal/delete`, followed
+    /// by that SAME commit's `commit/create` finalizer, must still finalize
+    /// successfully -- the finalizer is applied through
+    /// `apply_transaction_internal` exactly as the real per-cozy commit
+    /// ingestion path does (see `CommitScope::verify_and_apply` ->
+    /// `CommitScope::apply` -> `apply_verified_internal`), at a point where
+    /// `self.deleted` is already `true` from the earlier delete in this
+    /// same commit. Get the exemption wrong (too narrow) and this test
+    /// fails with `AlreadyDeleted`, meaning a principal could never
+    /// actually be closed.
+    #[test]
+    fn same_commit_delete_and_own_finalizer_succeeds() {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let key = make_test_key(0xDA);
+        let tmb = key.tmb.clone();
+        let mut principal = Principal::implicit(key).unwrap();
+
+        let delete_cz = ParsedCoz {
+            kind: CozKind::PrincipalDelete {
+                id: principal.pr().clone(),
+            },
+            signer: tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0xDB; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: None,
+            raw: dummy_coz_json(),
+        };
+
+        // Apply principal/delete eagerly -- self.deleted is now true,
+        // exactly as it would be on CommitScope's projected principal
+        // mid-commit.
+        let delete_vtx = VerifiedCoz::from_transaction_unsafe(delete_cz.clone(), None);
+        principal.apply_verified_internal(delete_vtx).unwrap();
+        assert!(principal.is_deleted());
+
+        let mut pending = PendingCommit::new();
+        let delete_vtx2 = VerifiedCoz::from_transaction_unsafe(delete_cz.clone(), None);
+        pending.push_tx(crate::transaction::Transaction(vec![delete_vtx2]));
+
+        // Compute the correct arrow for the finalizer -- same technique as
+        // `apply_transaction_test`.
+        let key_refs: Vec<&Key> = principal.auth.keys.values().collect();
+        let active_algs = derive_hash_algs(&key_refs);
+        let thumbprints: Vec<&coz::Thumbprint> =
+            principal.auth.keys.values().map(|k| &k.tmb).collect();
+        let action_refs: Vec<&Action> = principal.data.actions.iter().collect();
+        let dr = compute_dr(&action_refs, None, &active_algs).unwrap();
+        let (_kr, _ar, sr) =
+            derive_state_roots(&thumbprints, dr.as_ref(), &active_algs).unwrap();
+
+        let tx_alg = delete_cz.hash_alg;
+        let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
+        let tmr = tmr_opt.unwrap();
+
+        let pre = &principal.pr;
+        let pre_bytes = pre.0.get_or_err(tx_alg).unwrap();
+        let sr_bytes = sr.0.get_or_err(tx_alg).unwrap();
+        let tmr_bytes = tmr.0.get(tx_alg).unwrap();
+
+        let arrow_digest =
+            crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest).unwrap();
+
+        let commit_coz = ParsedCoz {
+            kind: CozKind::CommitCreate {
+                arrow: arrow_md.clone(),
+            },
+            signer: tmb.clone(),
+            now: 2000,
+            czd: coz::Czd::from_bytes(vec![0xDC; 32]),
+            hash_alg: tx_alg,
+            arrow: Some(arrow_md),
+            raw: dummy_coz_json(),
+        };
+        let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
+
+        // The load-bearing assertion: this must NOT be rejected by
+        // [no-transactions-on-deleted] despite self.deleted already being
+        // true from the delete applied moments ago in this same commit.
+        principal
+            .apply_verified_internal(commit_vtx.clone())
+            .expect(
+                "commit/create finalizing its own commit's principal/delete \
+                 must not be rejected by the blanket deleted gate",
+            );
+
+        pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
+
+        principal.finalize_commit(pending).unwrap();
+
+        assert!(
+            principal.is_deleted(),
+            "principal must still be Deleted after its own delete-commit finalizes"
+        );
+        assert_eq!(
+            principal.lifecycle_state(),
+            crate::lifecycle::LifecycleState::Deleted
         );
     }
 
