@@ -1291,11 +1291,39 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         pool.extend(action_cozies);
 
         // Sort pool by timestamp to facilitate sequential application.
-        // For cozies with the same timestamp, ensure actions come first, then mutation
-        // transactions, then finalizer commit/create cozies last.
-        // If they are in the same category, use lexical byte order of their czd as the tie-breaker.
-        // This is the single, deterministic order applied to same-timestamp
-        // mutations below -- no search over alternate orderings.
+        // For cozies with the same timestamp, ensure mutation transactions
+        // come first, then actions, then finalizer commit/create cozies
+        // last. If they are in the same category, use lexical byte order
+        // of their czd as the tie-breaker. This is the single,
+        // deterministic order applied to same-timestamp mutations below
+        // -- no search over alternate orderings.
+        //
+        // SPEC is silent on this specific application order (its explicit
+        // ordering rules, e.g. SPEC.md §3.7's digest-child ordering and
+        // §4.8.1's DR tie-break, govern digest computation for a `txs`
+        // batch, not this raw-fallback engine heuristic for un-manifested
+        // content), so this is a deliberate implementation choice, not a
+        // normative one -- and the two orders are NOT interchangeable.
+        // Below, an action sorting *before* the first transaction in the
+        // pool is applied directly to `principal` as a "pre-action" (see
+        // step 1.1), which mutates `principal` -- and therefore the clone
+        // `test_principal` a same-timestamp commit's finalizer trial reads
+        // its `fwd` component from -- *before* that trial runs. A
+        // same-timestamp action sorted ahead of its sibling transaction
+        // would silently change the state a commit's already-signed
+        // `arrow` was computed against, so no candidate finalizer would
+        // ever verify and reindex would hard-fail for that principal
+        // (taking the whole server down, since this runs on every
+        // startup). Sorting the transaction first avoids that: the action
+        // instead falls into the "deferred" bucket (applied after the
+        // commit finalizes, onto `next_principal`), so it can never
+        // corrupt an in-flight arrow trial. The trade-off is narrower and
+        // strictly safer: if the same-timestamp transaction also
+        // deactivates the action's signer (e.g. `key/replace`,
+        // `key/revoke`), the deferred action fails its own key-liveness
+        // check and is dropped -- a best-effort raw-recovery heuristic
+        // losing one action in a rare same-timestamp coincidence, not a
+        // server that fails to boot.
         pool.sort_by(|a, b| match a.now.cmp(&b.now) {
             std::cmp::Ordering::Equal => {
                 let a_is_commit = a.typ.contains("/commit/create");
