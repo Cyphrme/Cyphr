@@ -183,26 +183,26 @@ did not sum to 24 — an independent staleness from the pre-removal issue).
 | `[lifecycle-state-matrix]`        | 🔵 RUNTIME    | State machine spec                               |
 | `[errored-orthogonal]`            | ⚪ OOS        | Not yet implemented                              |
 | `[zombie-state-bounds]`           | ⬜ STRUCTURAL | Derived in rs/cyphr/src/lifecycle.rs |
-| `[freeze-mutation-lockout]`       | ✅ TESTED     | tests/intents/lifecycle.toml + freeze/create in apply_transaction_internal |
+| `[freeze-mutation-lockout]`       | ⬜ STRUCTURAL | freeze/create gate, verified by `tests/golden/lifecycle/*.json` |
 | `[fork-pg-derivation]`            | ⚪ OOS        | Fork not implemented                             |
 | `[deleted-frozen-exclusive]`      | ⬜ STRUCTURAL | GADT structure + derive_lifecycle_state |
 | `[canmutate-non-monotonic]`       | ⚪ OOS        | Level 5+                                         |
-| `[principal-delete]`              | ✅ TESTED     | tests/intents/lifecycle.toml (4 scenarios) |
-| `[nuke-sequence]`                 | ✅ TESTED     | tests/intents/lifecycle.toml            |
+| `[principal-delete]`              | ⬜ STRUCTURAL | Verified by `tests/golden/lifecycle/*.json` (4 scenarios) |
+| `[nuke-sequence]`                 | ⬜ STRUCTURAL | Verified by `tests/golden/lifecycle/*.json` |
 | `[merge-requires-ack]`            | ⚪ OOS        | Not implemented                                  |
 | `[merge-implicit]`                | ⚪ OOS        | Not implemented                                  |
 | `[merge-key-transfer]`            | ⚪ OOS        | Not implemented                                  |
 | `[fork-creates-new-pg]`           | ⚪ OOS        | Not implemented                                  |
 | `[fork-equivalent-to-genesis]`    | ⚪ OOS        | Not implemented                                  |
 | `[key-sharing-across-principals]` | 🔵 RUNTIME    | Design guidance                                  |
-| `[freeze-blocks-mutations]`       | ✅ TESTED     | freeze/create gate + tests/intents/lifecycle.toml |
-| `[unfreeze]`                      | ✅ TESTED     | freeze/delete implementation + tests  |
+| `[freeze-blocks-mutations]`       | ⬜ STRUCTURAL | freeze/create gate, verified by golden fixtures |
+| `[unfreeze]`                      | ⬜ STRUCTURAL | freeze/delete, verified by golden fixtures |
 | `[no-deleted-and-frozen]`         | ⬜ STRUCTURAL | GADT unconstructible structure        |
-| `[no-transactions-on-deleted]`    | ✅ TESTED     | lifecycle.toml rejection scenarios    |
-| `[no-mutations-on-frozen]`        | ✅ TESTED     | freeze/create prevents mutations      |
+| `[no-transactions-on-deleted]`    | ⬜ STRUCTURAL | Verified by golden rejection scenarios |
+| `[no-mutations-on-frozen]`        | ⬜ STRUCTURAL | freeze/create gate, verified by golden fixtures |
 | `[no-level-1-recovery]`           | ✅ TESTED     | `errors.toml:last_key_revoke_fails` maps to this |
 | `[lifecycle-deterministic]`       | ⬜ STRUCTURAL | Verified by golden                               |
-| `[delete-irreversible]`           | ✅ TESTED     | principal/delete + GADT immutability  |
+| `[delete-irreversible]`           | ⬜ STRUCTURAL | principal/delete, verified by golden fixtures + GADT immutability |
 | `[dead-terminal]`                 | ✅ TESTED     | `errors.toml:last_key_revoke_fails`              |
 
 ### Lifecycle Summary
@@ -211,10 +211,14 @@ Recomputed after campaign: N01-lifecycle-state (LifecycleState enum,
 derive_lifecycle_state) merged cyphrme/cyphr#59; N03-lifecycle-transactions
 (principal/delete, freeze/create, freeze/delete) merged cyphrme/cyphr#64.
 All lifecycle state derivation and three closure transactions now have real,
-tested code.
+verified code. Classified STRUCTURAL rather than TESTED per this document's
+own legend (TESTED names specifically `errors.toml`/`error_conditions.toml`;
+these are verified via `tests/golden/lifecycle/*.json` state-computation
+fixtures instead, the same category as `[tx-root-computation]` elsewhere in
+this document).
 
-- ✅ TESTED: 10 (principal/delete, nuke-sequence, freeze-blocks-mutations, unfreeze, no-transactions-on-deleted, no-mutations-on-frozen, delete-irreversible, plus pre-campaign no-level-1-recovery, dead-terminal)
-- ⬜ STRUCTURAL: 8 (level constraints, lifecycle-deterministic, zombie-state-bounds, deleted-frozen-exclusive, no-deleted-and-frozen)
+- ✅ TESTED: 2 (pre-campaign: no-level-1-recovery, dead-terminal)
+- ⬜ STRUCTURAL: 16 (level constraints, lifecycle-deterministic, zombie-state-bounds, deleted-frozen-exclusive, no-deleted-and-frozen, plus 8 newly-landed: freeze-mutation-lockout, principal-delete, nuke-sequence, freeze-blocks-mutations, unfreeze, no-transactions-on-deleted, no-mutations-on-frozen, delete-irreversible)
 - 🔵 RUNTIME: 4 (design/architectural constraints, unchanged)
 - ⚪ OOS: 8 (errored-orthogonal v1-always-false, canmutate-non-monotonic L5+, merge-*/fork-* all unimplemented)
 
