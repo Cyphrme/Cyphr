@@ -3,8 +3,9 @@
 //! A bearer token is a signed Coz message *from the service*: the server
 //! signs the claims with its own [`ServerIdentity`], and a holder presents
 //! the resulting opaque string on subsequent requests instead of re-signing
-//! each one. This module only builds the issue/verify primitive -- it is not
-//! wired to any login flow or HTTP route yet.
+//! each one. `issue_token` is called from the login flow (`auth::login`);
+//! `verify_token` is called from `auth::middleware`'s bearer-verification
+//! helpers, wired into `/push`'s optional admission knob.
 //!
 //! There is no revocation list in v1 (ruling R8): a short `exp` is the sole
 //! invalidation mechanism, and the token carries the issuing key's `tmb` so
