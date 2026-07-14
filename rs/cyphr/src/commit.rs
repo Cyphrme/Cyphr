@@ -371,15 +371,38 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
     /// Finalize the commit scope, producing an immutable `Commit`.
     ///
-    /// Consumes this scope, copies the projected state back to the principal,
-    /// and returns a reference to the newly created `Commit` in the auth ledger.
+    /// Validates and durably records the batch on `projected` — the
+    /// independent clone `CommitScope::new` took at scope creation — and
+    /// only copies it into the live principal once that succeeds. A
+    /// `finalize_commit` failure therefore leaves the live principal
+    /// byte-identical to how it was before this call, `deleted_pending`
+    /// included: that flag is cleared inside `finalize_commit` itself,
+    /// after its durable writes, so folding the whole clone into the live
+    /// principal in one gated move carries that clear along with every
+    /// other `finalize_commit`-internal mutation (GitHub issue #77 and its
+    /// `deleted_pending` sibling — previously this assigned `*self.principal
+    /// = self.projected` *before* calling `finalize_commit`, so a failure
+    /// partway through left the live principal already mutated).
     ///
     /// # Errors
     ///
     /// Returns `EmptyCommit` if no cozies were applied.
-    pub fn finalize(self) -> crate::error::Result<&'a Commit> {
+    pub fn finalize(mut self) -> crate::error::Result<&'a Commit> {
+        self.projected.finalize_commit(self.pending)?;
         *self.principal = self.projected;
-        self.principal.finalize_commit(self.pending)
+
+        // `finalize_commit`'s returned reference borrowed `self.projected`,
+        // which the move above consumed, so it cannot be reused here. No
+        // second clone is needed to recover it: `finalize_commit` always
+        // pushes its result as the last entry of `auth.commits` immediately
+        // before returning it (`principal.rs`), so re-deriving the
+        // reference from the now-live principal yields the identical
+        // `Commit`.
+        self.principal
+            .auth
+            .commits
+            .last()
+            .ok_or(crate::error::Error::EmptyCommit)
     }
 
     /// Verify a coz signature and apply it within this commit scope.
