@@ -1298,12 +1298,21 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         // deterministic order applied to same-timestamp mutations below
         // -- no search over alternate orderings.
         //
-        // SPEC is silent on this specific application order (its explicit
-        // ordering rules, e.g. SPEC.md §3.7's digest-child ordering and
-        // §4.8.1's DR tie-break, govern digest computation for a `txs`
-        // batch, not this raw-fallback engine heuristic for un-manifested
-        // content), so this is a deliberate implementation choice, not a
-        // normative one -- and the two orders are NOT interchangeable.
+        // SPEC is silent on this specific application order. The governing
+        // clause is docs/specs/storage-engine.md's [recovery-reindex]
+        // (reindex MUST match a clean sequential ingest) and its "Recovery
+        // ordering" resolution (deterministic; no permutation search;
+        // ordering comes from the wire format's pre/txs_order for objects
+        // that ARE part of a commit) -- neither speaks to how a
+        // standalone data action interleaves with a same-timestamp
+        // commit, since a data action is not a commit member and carries
+        // no `pre`/`txs_order` linkage to one. Main-SPEC.md's own explicit
+        // ordering rules (§3.7's digest-child ordering, §4.8.1's DR
+        // tie-break) are a separate, narrower concern: digest computation
+        // for an already-assembled `txs` batch, not this raw-fallback
+        // engine heuristic for un-manifested content. So this tie-break is
+        // a deliberate implementation choice, not a normative one -- and
+        // the two orders are NOT interchangeable.
         // Below, an action sorting *before* the first transaction in the
         // pool is applied directly to `principal` as a "pre-action" (see
         // step 1.1), which mutates `principal` -- and therefore the clone
@@ -1618,6 +1627,19 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                         commit_blobs.push(coz.hash);
                         commit_cozies.push(coz.clone());
                         consumed_hashes.insert(coz.hash);
+                    } else {
+                        // Best-effort raw-recovery heuristic losing one
+                        // action: its signer was deactivated by a
+                        // same-timestamp transaction before this deferred
+                        // action could apply (see the tie-break comment
+                        // above `pool.sort_by`). Not silent -- surfaced so
+                        // an operator can notice a real, if rare, recovery
+                        // data-loss event.
+                        tracing::warn!(
+                            "reindex: dropping deferred action typ={} now={} (signer inactive at apply time)",
+                            coz.typ,
+                            coz.now
+                        );
                     }
                 }
 
