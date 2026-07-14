@@ -764,7 +764,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_finalize_succeeds_with_finalizer() {
+    fn pending_commit_finalize_rejects_finalizer_only() {
+        // A commit whose only content is its own commit/create finalizer
+        // (no mutation cozies at all) must be rejected -- ruling D1
+        // (GitHub issue #74): ambiguity between "reject" and "document as
+        // intentional no-op" resolves in favor of reject, aligning with
+        // [commit-one-or-more]'s evident intent.
         let mut pending = PendingCommit::new();
         let cz = make_test_tx(true, 0x01);
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
@@ -775,19 +780,12 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let commit = pending.finalize(
-            auth_root.clone(),
-            sr.clone(),
-            pr.clone(),
-            &[coz::HashAlg::Sha256],
+        let commit = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
+        assert!(
+            matches!(commit, Err(crate::error::Error::EmptyCommit)),
+            "a finalizer-only commit (no mutation cozies) must be rejected \
+             as empty, got {commit:?}"
         );
-        assert!(commit.is_ok());
-
-        let commit = commit.unwrap();
-        assert_eq!(commit.len(), 1);
-        assert_eq!(commit.auth_root(), &auth_root);
-        assert_eq!(commit.sr(), &sr);
-        assert_eq!(commit.pr(), &pr);
     }
 
     #[test]
