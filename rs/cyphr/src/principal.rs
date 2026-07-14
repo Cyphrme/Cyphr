@@ -1632,19 +1632,34 @@ impl<S: eml::Storage> Principal<S> {
         // actions are possible on a closed account". PrincipalDelete,
         // FreezeCreate, and FreezeDelete manage their own deleted/frozen PRE
         // checks in their match arms below (untouched by this gate).
-        // CommitCreate is exempted: CommitScope applies cozies sequentially
-        // to a projected principal within one commit (commit.rs:319-383), so
-        // a commit whose own earlier transaction is principal/delete has
-        // already set `self.deleted` by the time its own commit/create
-        // finalizer runs here -- rejecting it would make a principal
-        // impossible to ever actually close.
-        let skip_deleted_check = matches!(
-            &cz.kind,
+        // CommitCreate is exempted: it is the mandatory finalizer every
+        // commit must carry (finalize_commit rejects a commit whose last
+        // cozy lacks the arrow) and its own arm is a pure no-op that grants
+        // no mutation power (principal.rs, the CommitCreate match arm
+        // below). CommitScope applies cozies sequentially to a projected
+        // principal within one commit (commit.rs:319-383), so a commit
+        // whose own earlier transaction is principal/delete has already set
+        // `self.deleted` by the time its own commit/create finalizer runs
+        // here -- rejecting it would make a principal impossible to ever
+        // actually close. Every other variant has no such mandatory-
+        // finalizer property, so is gated by default.
+        //
+        // Exhaustive by construction, not `matches!` over an allow-list: a
+        // future 10th CozKind variant must be classified HERE explicitly
+        // (compile error otherwise) rather than silently inheriting
+        // "gated" from an unmatched wildcard on this security-critical
+        // check.
+        let skip_deleted_check = match &cz.kind {
             CozKind::PrincipalDelete { .. }
-                | CozKind::FreezeCreate { .. }
-                | CozKind::FreezeDelete { .. }
-                | CozKind::CommitCreate { .. }
-        );
+            | CozKind::FreezeCreate { .. }
+            | CozKind::FreezeDelete { .. }
+            | CozKind::CommitCreate { .. } => true,
+            CozKind::KeyCreate { .. }
+            | CozKind::KeyDelete { .. }
+            | CozKind::KeyReplace { .. }
+            | CozKind::SelfRevoke { .. }
+            | CozKind::PrincipalCreate { .. } => false,
+        };
         if self.deleted && !skip_deleted_check {
             return Err(Error::AlreadyDeleted);
         }
