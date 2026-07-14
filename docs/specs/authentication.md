@@ -239,11 +239,11 @@ keys are the sole authentication factor, verifiable by any party.
 | [bearer-token-fields]             | agent-check | pass   | Explicit in SPEC.md §17.4          |
 | [embedding-weight-default]        | agent-check | pass   | Explicit in SPEC.md §10            |
 | [embedding-cyclic-stop]           | agent-check | pass   | Explicit in SPEC.md §10            |
-| [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §10.2          |
-| [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §10.1          |
-| [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §10.4          |
-| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §17.5          |
-| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §17.5          |
+| [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §10.5          |
+| [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §10.7          |
+| [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §10.7          |
+| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §17.3          |
+| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §17.3          |
 | [checkpoint-self-contained]       | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-genesis-foundational] | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-declarative]          | agent-check | pass   | Explicit in SPEC.md §8.3           |
