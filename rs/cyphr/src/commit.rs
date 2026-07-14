@@ -156,9 +156,15 @@ impl PendingCommit {
         self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
 
-    /// Check if the pending commit is empty.
+    /// Check if the pending commit is empty of substance.
+    ///
+    /// A commit containing zero cozies is empty. So is a commit whose
+    /// only cozies are finalizers (carry an `arrow`, see
+    /// `Transaction::is_commit`) -- a commit/create with no mutation
+    /// cozies behind it has no substance to finalize, matching
+    /// [commit-one-or-more]'s evident intent (docs/specs/transactions.md).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.iter_all_cozies().all(|cz| cz.arrow().is_some())
     }
 
     /// Get the number of pending cozies.
@@ -242,7 +248,8 @@ impl PendingCommit {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if no cozies exist.
+    /// Returns `EmptyCommit` if no cozies exist, or if the only cozies
+    /// present are finalizers (no mutation content).
     pub fn finalize(
         self,
         ar: AuthRoot,
@@ -842,9 +849,17 @@ mod tests {
 
     #[test]
     fn commit_accessors_return_correct_values() {
+        // Needs a mutation cozy ahead of the finalizer: a finalizer-only
+        // PendingCommit is rejected by finalize() (see
+        // pending_commit_finalize_rejects_finalizer_only), so this
+        // accessor test -- which only cares about Commit's getters --
+        // must use a normal (mutation + finalizer) shape to reach them.
         let mut pending = PendingCommit::new();
         pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            true, 0x01,
+            false, 0x01,
+        )]));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            true, 0x02,
         )]));
 
         let auth_root =
@@ -863,9 +878,9 @@ mod tests {
             .unwrap();
 
         // Test all accessors
-        assert_eq!(commit.iter_all_cozies().count(), 1);
+        assert_eq!(commit.iter_all_cozies().count(), 2);
         assert!(!commit.is_empty());
-        assert_eq!(commit.len(), 1);
+        assert_eq!(commit.len(), 2);
         assert_eq!(commit.auth_root(), &auth_root);
         assert_eq!(commit.sr(), &sr);
         assert_eq!(commit.pr(), &pr);
