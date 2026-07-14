@@ -12,6 +12,7 @@
 //! abstraction with a full Cyphr principal without rewriting call sites.
 
 pub mod login;
+pub mod middleware;
 pub mod token;
 
 use std::path::Path;
@@ -139,6 +140,18 @@ impl ServerIdentity {
     pub fn verify(&self, pay_json: &[u8], sig: &[u8]) -> Option<bool> {
         coz::verify_json(pay_json, sig, self.alg.name(), &self.pub_bytes)
     }
+}
+
+/// Wall-clock server time in Unix seconds, shared by every auth surface
+/// that needs "now" for expiry/window checks (login's timestamp window
+/// and token expiry, and route-level bearer verification). A clock set
+/// before the Unix epoch yields 0, which fails every window check closed
+/// rather than panicking.
+pub(crate) fn server_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Serde helper for base64url encoding/decoding of byte vectors.

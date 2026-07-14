@@ -42,6 +42,7 @@ use cyphr_storage::engine::EngineError;
 use rand::RngCore;
 use serde::Serialize;
 
+use super::server_now;
 use crate::AppState;
 use crate::error::AppError;
 
@@ -333,17 +334,6 @@ impl From<LoginError> for AppError {
             _ => AppError::unauthorized(err.to_string()),
         }
     }
-}
-
-/// Wall-clock server time in Unix seconds, used both for the timestamp
-/// window and for token/challenge expiry. A clock set before the Unix
-/// epoch yields 0, which fails every window check closed rather than
-/// panicking.
-fn server_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Permissions a successful login grants. There is no permissions model

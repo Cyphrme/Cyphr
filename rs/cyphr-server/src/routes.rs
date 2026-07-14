@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
@@ -157,8 +157,14 @@ pub async fn patch(
 }
 
 /// `POST /push` — accept and validate a signed commit bundle.
+///
+/// Authorization is the payload's own signatures (ARCHITECT RULING R7):
+/// no bearer token is required, including for a brand-new principal's
+/// genesis (which cannot have logged in yet). A bearer token is an
+/// OPTIONAL admission/anti-abuse knob -- if one IS presented, it must
+/// name this same principal.
 #[tracing::instrument(
-    skip(state, request),
+    skip(state, headers, request),
     fields(
         principal_id = %request.principal_id,
         blob_count = request.blobs.len()
@@ -166,6 +172,7 @@ pub async fn patch(
 )]
 pub async fn push(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -173,6 +180,13 @@ pub async fn push(
     if request.blobs.is_empty() {
         return Err(AppError::bad_request("empty commit bundle"));
     }
+
+    crate::auth::middleware::check_push_admission(
+        &headers,
+        state.identity.as_deref(),
+        &request.principal_id,
+        crate::auth::server_now(),
+    )?;
 
     // Decode base64url blobs back to raw bytes.
     let raw_blobs: Vec<Vec<u8>> = request
