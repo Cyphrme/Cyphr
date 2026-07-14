@@ -37,26 +37,34 @@ verification and access control.
 ## Implementation Status (re-verified 2026-07-08)
 
 **`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
-"implemented."** The Verification table's uniform 24/24 `pass` is
-misleading — confirmed by direct search of `rs/`:
+"implemented."** The Verification table's uniform 24/24 `pass` reflects
+SPEC-internal consistency, not implementation status. The following
+revisions apply post-campaign:
 
-- **Unimplemented**: login (challenge-response and timestamp-based — zero
-  matches for `fn login` or `bearer` anywhere in non-test `.rs`), bearer
-  tokens, MSS push, and Principal Embedding — `rs/cyphr/src/state.rs`'s own
-  doc comments say embedding "is reserved for future use; pass `None`,"
-  confirming [embedding-weight-default] through [embedding-pinning] (5
-  constraints) have no working code behind them.
-- **Implemented**: signature-based PoP, checkpoint restore
-  (`Principal::from_checkpoint`/`from_checkpoint_with_trees` in
-  `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
-  [checkpoint-genesis-foundational]), and chain-replay verification. There
-  is no `checkpoint/create` declarative transaction `typ`, so
-  [checkpoint-declarative] specifically remains unimplemented.
+- **Implemented**: login, both challenge-response and timestamp-based
+  (`rs/cyphr-server/src/auth/login.rs`, real HTTP routes wired in
+  `build_router`), bearer token issuance/verification with a bound `typ`
+  (`rs/cyphr-server/src/auth/token.rs`), the audience+principal binding
+  and lifecycle gate (rejects Frozen/Deleted/unknown principals), replay
+  prevention (single-use challenge store, timestamp window) -- all tested
+  end to end with real signed HTTP requests in
+  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP,
+  checkpoint restore (`Principal::from_checkpoint`/`from_checkpoint_with_trees`
+  in `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
+  [checkpoint-genesis-foundational]), and chain-replay verification.
+- **Still unimplemented (correctly out of campaign scope)**: MSS push,
+  Principal Embedding -- `rs/cyphr/src/state.rs`'s own doc comments say
+  embedding "is reserved for future use; pass `None`," confirming
+  [embedding-weight-default] through [embedding-pinning] (5 constraints)
+  have no working code behind them. There is no `checkpoint/create`
+  declarative transaction `typ`, so [checkpoint-declarative] specifically
+  remains unimplemented.
 
 `docs/protocol/constraint_coverage.md`'s Authentication section (1 TESTED,
-4 STRUCTURAL, 18 OOS, 1 RUNTIME) already reflects this breakdown far more
-accurately than this document's own Verification table below, whose
-uniform `pass` result overclaims.
+12 STRUCTURAL, 10 OOS, 1 RUNTIME) reflects this breakdown; the login/bearer
+constraints moved from OOS to STRUCTURAL (verified by real integration
+tests, not the narrower `errors.toml`/`error_conditions.toml` TESTED
+category) once N05/N06/N07 landed.
 
 ## Constraints
 
@@ -242,8 +250,8 @@ keys are the sole authentication factor, verifiable by any party.
 | [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §10.5          |
 | [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §10.7          |
 | [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §10.7          |
-| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §17.3          |
-| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §17.3          |
+| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §13.2          |
+| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §13.2          |
 | [checkpoint-self-contained]       | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-genesis-foundational] | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-declarative]          | agent-check | pass   | Explicit in SPEC.md §8.3           |

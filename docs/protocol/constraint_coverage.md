@@ -99,12 +99,12 @@ issue).
 | :---------------------------------- | :------------ | :--------------------------------- |
 | `[pop-via-signature]`               | ⬜ STRUCTURAL | Implicit in all sig verification   |
 | `[pop-types]`                       | 🔵 RUNTIME    | Taxonomy, not testable             |
-| `[login-challenge-response]`        | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[login-timestamp-based]`           | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[login-lifecycle-gate]`            | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[replay-prevention]`               | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[bearer-token-service-signed]`     | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[bearer-token-fields]`             | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[login-challenge-response]`        | ⬜ STRUCTURAL | `rs/cyphr-server/tests/login.rs:login_challenge_flow_issues_valid_token` |
+| `[login-timestamp-based]`           | ⬜ STRUCTURAL | `rs/cyphr-server/tests/login.rs:login_timestamp_flow_issues_valid_token` |
+| `[login-lifecycle-gate]`            | ⬜ STRUCTURAL | `rs/cyphr-server/tests/login.rs:login_rejects_frozen_principal`/`login_rejects_deleted_principal` |
+| `[replay-prevention]`               | ⬜ STRUCTURAL | `rs/cyphr-server/tests/login.rs:login_rejects_replayed_challenge` |
+| `[bearer-token-service-signed]`     | ⬜ STRUCTURAL | `rs/cyphr-server/src/auth/token.rs` (ServerIdentity::issue_token/verify_token) |
+| `[bearer-token-fields]`             | ⬜ STRUCTURAL | `rs/cyphr-server/src/auth/token.rs` (Claims struct, typ-bound)   |
 | `[embedding-weight-default]`        | ⚪ OOS        | Level 5+                           |
 | `[embedding-cyclic-stop]`           | ⚪ OOS        | Level 5+                           |
 | `[embedding-conjunctive-auth]`      | ⚪ OOS        | Level 5+                           |
@@ -117,19 +117,26 @@ issue).
 | `[checkpoint-declarative]`          | ⚪ OOS        | Not implemented                    |
 | `[mss-bidirectional]`               | ⚪ OOS        | Architecture guidance              |
 | `[mss-push-on-mutation]`            | ⚪ OOS        | Service-side                       |
-| `[no-login-non-active]`             | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
-| `[no-unsigned-bearer]`              | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[no-login-non-active]`             | ⬜ STRUCTURAL | `rs/cyphr-server/tests/login.rs:login_rejects_frozen_principal`/`login_rejects_deleted_principal` |
+| `[no-unsigned-bearer]`              | ⬜ STRUCTURAL | `verify_token` rejects invalid signatures; `rs/cyphr-server/tests/login.rs:login_rejects_invalid_signature` |
 | `[aaa-over-bearer]`                 | ⚪ OOS        | Design guidance                    |
 | `[sso-without-centralization]`      | ⚪ OOS        | Design guidance                    |
 
 ### Authentication Summary
 
-Recomputed 2026-07-08 by direct count of the table above (the prior counts
-did not sum to 24 — an independent staleness from the pre-removal issue).
+Recomputed after campaign: N05-bearer-tokens (cyphrme/cyphr#63), N06-login-flows
+(cyphrme/cyphr#67), and N07-route-protection (cyphrme/cyphr#68) landed real,
+tested login and bearer-token code. The 8 login/bearer rows above move off
+`⚪ OOS` to `⬜ STRUCTURAL` (verified by `rs/cyphr-server/tests/login.rs`'s
+real HTTP integration tests, not the `errors.toml`/`error_conditions.toml`
+corpus `✅ TESTED` names specifically) -- the same classification this
+document already applies to the lifecycle rows above for the same reason.
 
 - ✅ TESTED: 1
-- ⬜ STRUCTURAL: 4
-- ⚪ OOS: 18 (mostly service-side, Level 5+, or genuinely unimplemented — see `docs/specs/authentication.md`'s "Implementation Status")
+- ⬜ STRUCTURAL: 12
+- ⚪ OOS: 10 (Level 5+ embedding constraints, checkpoint-declarative,
+  mss-bidirectional/push-on-mutation, aaa-over-bearer/sso-without-centralization
+  design-guidance rows)
 - 🔵 RUNTIME: 1
 
 ---
