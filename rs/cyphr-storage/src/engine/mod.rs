@@ -1492,7 +1492,17 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     // No completing finalizer at this timestamp: an
                     // incomplete/crashed commit, not an error -- its raw
                     // content stays harmlessly unindexed until a finalizer
-                    // arrives.
+                    // arrives. Not silent, though: this reindex runs on
+                    // every server startup, so a stalled principal needs
+                    // to be visible to an operator, matching the
+                    // dropped-deferred-action precedent above.
+                    tracing::warn!(
+                        "reindex: incomplete commit for principal {principal_id} at \
+                         timestamp {target_time} -- {} mutation cozy(ies) present but no \
+                         commit/create finalizer found; raw content stays unindexed until \
+                         a finalizer arrives",
+                        mutations.len()
+                    );
                     break;
                 }
 
