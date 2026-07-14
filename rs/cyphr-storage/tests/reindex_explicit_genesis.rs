@@ -71,6 +71,10 @@ impl tracing::field::Visit for MessageVisitor {
 /// what was logged instead of only on the return value. Span-related
 /// methods are no-ops: `reindex`'s `#[tracing::instrument]` opens a span,
 /// but this test only cares about event messages, not span structure.
+///
+/// Hand-rolled rather than `tracing_subscriber::fmt`'s `MakeWriter`
+/// pattern: that would need `tracing-subscriber` as a dev-dependency,
+/// outside this node's file surface (`Cargo.toml` isn't in it).
 #[derive(Clone, Default)]
 struct CapturingSubscriber {
     messages: Arc<Mutex<Vec<String>>>,
