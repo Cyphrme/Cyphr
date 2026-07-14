@@ -131,6 +131,15 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     /// transaction sets this yet — the field exists for the derivation in
     /// [`crate::lifecycle`] to read; it is always `false` at this node's tip.
     pub(crate) deleted: bool,
+    /// `true` from the moment a `principal/delete` cozy is applied until
+    /// the commit carrying it is successfully finalized (cleared at the
+    /// end of `finalize_commit`). Scopes the `CommitCreate` exemption
+    /// from [no-transactions-on-deleted] to same-commit finalization
+    /// only: a commit/create finalizing a delete applied earlier in this
+    /// same, still-open commit is exempt; a commit/create in a later,
+    /// separately-finalized commit against an already-deleted principal
+    /// is not.
+    pub(crate) deleted_pending: bool,
     /// `freeze/create` is active and `freeze/delete` has not yet been signed
     /// (SPEC.md §11.1 `Frozen`). No transaction sets this yet — see `deleted`.
     pub(crate) frozen: bool,
@@ -159,6 +168,7 @@ impl<S: eml::Storage> Clone for PrincipalCore<S> {
             max_clock_skew: self.max_clock_skew,
             genesis_keys: self.genesis_keys.clone(),
             deleted: self.deleted,
+            deleted_pending: self.deleted_pending,
             frozen: self.frozen,
             errored: self.errored,
         }
@@ -183,6 +193,7 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalCore<S> {
             .field("max_clock_skew", &self.max_clock_skew)
             .field("genesis_keys", &self.genesis_keys)
             .field("deleted", &self.deleted)
+            .field("deleted_pending", &self.deleted_pending)
             .field("frozen", &self.frozen)
             .field("errored", &self.errored)
             .finish()
@@ -545,6 +556,7 @@ impl Principal<eml::MemoryStorage> {
             max_clock_skew: 0,
             genesis_keys,
             deleted: false,
+            deleted_pending: false,
             frozen: false,
             errored: false,
         };
@@ -646,6 +658,7 @@ impl<S: eml::Storage> Principal<S> {
             max_clock_skew: 0,
             genesis_keys: vec![tmb_b64],
             deleted: false,
+            deleted_pending: false,
             frozen: false,
             errored: false,
         }))))
@@ -703,6 +716,7 @@ impl<S: eml::Storage> Principal<S> {
             max_clock_skew: 0,
             genesis_keys,
             deleted: false,
+            deleted_pending: false,
             frozen: false,
             errored: false,
         }))))
@@ -799,6 +813,7 @@ impl<S: eml::Storage> Principal<S> {
             max_clock_skew: 0,
             genesis_keys,
             deleted: false,
+            deleted_pending: false,
             frozen: false,
             errored: false,
         };
@@ -1632,16 +1647,23 @@ impl<S: eml::Storage> Principal<S> {
         // actions are possible on a closed account". PrincipalDelete,
         // FreezeCreate, and FreezeDelete manage their own deleted/frozen PRE
         // checks in their match arms below (untouched by this gate).
-        // CommitCreate is exempted: it is the mandatory finalizer every
-        // commit must carry (finalize_commit rejects a commit whose last
-        // cozy lacks the arrow) and its own arm is a pure no-op that grants
-        // no mutation power (principal.rs, the CommitCreate match arm
-        // below). CommitScope applies cozies sequentially to a projected
-        // principal within one commit (commit.rs:319-383), so a commit
-        // whose own earlier transaction is principal/delete has already set
-        // `self.deleted` by the time its own commit/create finalizer runs
-        // here -- rejecting it would make a principal impossible to ever
-        // actually close. Every other variant has no such mandatory-
+        // CommitCreate is conditionally exempted (F35 narrowing): it is the
+        // mandatory finalizer every commit must carry (finalize_commit
+        // rejects a commit whose last cozy lacks the arrow) and its own arm
+        // is a pure no-op that grants no mutation power (principal.rs, the
+        // CommitCreate match arm below). CommitScope applies cozies
+        // sequentially to a projected principal within one commit
+        // (commit.rs:319-383), so a commit whose own earlier transaction is
+        // principal/delete has already set `self.deleted` by the time its
+        // own commit/create finalizer runs here -- rejecting it would make
+        // a principal impossible to ever actually close. But that
+        // necessity holds only for THIS SAME, still-open commit:
+        // `deleted_pending` is true exactly while such a commit is open
+        // (set by the PrincipalDelete arm, cleared at the end of a
+        // successful `finalize_commit`), so a commit/create in a LATER,
+        // separately-finalized commit against an already-deleted principal
+        // -- where `deleted` is true but `deleted_pending` is false -- is
+        // not exempted. Every other variant has no such mandatory-
         // finalizer property, so is gated by default.
         //
         // Exhaustive by construction, not `matches!` over an allow-list: a
@@ -1652,8 +1674,8 @@ impl<S: eml::Storage> Principal<S> {
         let skip_deleted_check = match &cz.kind {
             CozKind::PrincipalDelete { .. }
             | CozKind::FreezeCreate { .. }
-            | CozKind::FreezeDelete { .. }
-            | CozKind::CommitCreate { .. } => true,
+            | CozKind::FreezeDelete { .. } => true,
+            CozKind::CommitCreate { .. } => self.deleted_pending,
             CozKind::KeyCreate { .. }
             | CozKind::KeyDelete { .. }
             | CozKind::KeyReplace { .. }
@@ -1732,6 +1754,7 @@ impl<S: eml::Storage> Principal<S> {
                 }
                 let core = self.core_mut();
                 core.deleted = true;
+                core.deleted_pending = true;
                 // Deleted subsumes Frozen (SPEC.md:1974-1978 mutual
                 // exclusivity; R1/F5): unconditionally clear frozen even if
                 // it was set going in.
@@ -1946,6 +1969,11 @@ impl<S: eml::Storage> Principal<S> {
         let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tx_algs)?;
 
         core.auth.commits.push(commit);
+
+        // This commit is now durably finalized: any principal/delete it
+        // carried is no longer "this commit's own pending delete" for a
+        // future commit's CommitCreate exemption (skip_deleted_check).
+        core.deleted_pending = false;
 
         // The borrow is safe: we just pushed, so last() is guaranteed Some.
         core.auth.commits.last().ok_or(Error::EmptyCommit)
@@ -2775,6 +2803,51 @@ mod tests {
         assert_eq!(
             principal.lifecycle_state(),
             crate::lifecycle::LifecycleState::Deleted
+        );
+    }
+
+    /// c-later-commit-now-rejected (F35 narrowing, this node): unlike
+    /// `same_commit_delete_and_own_finalizer_succeeds` above, this
+    /// principal was deleted in an EARLIER, separately-finalized commit
+    /// -- `self.deleted` is already `true` BEFORE this new commit/create
+    /// is applied, not made `true` by this commit's own transaction. A
+    /// bare `commit/create` (no other transaction in this commit) must
+    /// now be rejected by [no-transactions-on-deleted], not silently
+    /// exempted the way N11's original, unconditional exemption allowed.
+    #[test]
+    fn later_commit_bare_finalizer_on_already_deleted_is_rejected() {
+        use crate::parsed_coz::{CozKind, ParsedCoz};
+
+        let (mut principal, key1, _key2) = build_deleted_principal();
+        assert!(
+            principal.is_deleted(),
+            "setup: principal must already be Deleted"
+        );
+
+        // A brand-new commit/create finalizer with no other transaction
+        // in this commit. The arrow's exact bytes are irrelevant here --
+        // [no-transactions-on-deleted] is enforced in
+        // `apply_transaction_internal`, before any arrow is validated
+        // (arrow validation happens later, in `finalize_commit`).
+        let arrow_md = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]).unwrap();
+        let commit_coz = ParsedCoz {
+            kind: CozKind::CommitCreate {
+                arrow: arrow_md.clone(),
+            },
+            signer: key1.tmb.clone(),
+            now: 3000,
+            czd: coz::Czd::from_bytes(vec![0xE9; 32]),
+            hash_alg: HashAlg::Sha256,
+            arrow: Some(arrow_md),
+            raw: dummy_coz_json(),
+        };
+        let commit_vtx = VerifiedCoz::from_transaction_unsafe(commit_coz, None);
+
+        let result = principal.apply_verified_internal(commit_vtx);
+        assert!(
+            matches!(result, Err(Error::AlreadyDeleted)),
+            "a bare commit/create against a principal deleted in an earlier, \
+             separately-finalized commit must be rejected, got {result:?}"
         );
     }
 
