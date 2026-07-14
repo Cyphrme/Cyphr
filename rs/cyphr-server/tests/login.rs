@@ -373,6 +373,83 @@ async fn bootstrap_lifecycle(state: &AppState, principal_id: &str, fixture_name:
     }
 }
 
+/// Sign a fresh "self-revoke `signer_name`" commit onto `principal`. Mirrors
+/// [`sign_key_create_commit`]'s shape (see that function for the pattern),
+/// but for `key/revoke`: no new key is introduced, the signer revokes
+/// itself (`rvk`, no `id` -- SPEC's self-revoke shape), so the mechanism
+/// differs enough not to share a body with the create case.
+fn sign_key_revoke_commit<S: eml::Storage>(
+    mut principal: cyphr::Principal<S>,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    rvk: i64,
+) -> Vec<Vec<u8>> {
+    let signer = pool.get(signer_name).expect("signer key in pool");
+    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
+
+    let pay_value = serde_json::json!({
+        "alg": signer.alg,
+        "now": rvk,
+        "rvk": rvk,
+        "tmb": signer_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+
+    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("valid signer prv base64");
+    let signer_pub =
+        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
+    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
+        .expect("signing supported for this algorithm");
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, None)
+        .expect("key/revoke should verify against the starting principal state");
+
+    let signer_tmb = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
+    );
+    scope
+        .finalize_with_arrow(&signer.alg, &signer_prv, &signer_pub, &signer_tmb, rvk, "cyphr.me")
+        .expect("commit should finalize");
+
+    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
+    let new_commit = entries.last().expect("at least one commit after finalize");
+    new_commit
+        .cozies
+        .iter()
+        .map(|v| serde_json::to_vec(v).expect("cozy serializes"))
+        .collect()
+}
+
+/// Bootstrap a principal with two active keys (`golden` + `revoked_key`)
+/// through the real `/push` wire path, then genuinely revoke `revoked_key`
+/// via a real, separately-signed `key/revoke` commit submitted through the
+/// real storage path -- so the login attempt against it exercises a key
+/// that really was active in this exact principal and really was revoked,
+/// not a key that was merely never introduced.
+async fn bootstrap_active_then_revoke(
+    state: &Arc<AppState>,
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    revoked_key: &str,
+) {
+    bootstrap_active_with_key(build_router(state.clone()), pool, principal_id, revoked_key).await;
+
+    let genesis = state.engine.resolve_genesis(principal_id, &[]).await.expect("resolve genesis");
+    let principal = state.engine.load_principal(principal_id, genesis).await.expect("load principal");
+    let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100);
+    let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    state
+        .engine
+        .submit_commit(principal_id, None, &slices)
+        .await
+        .expect("submit the revoke commit");
+}
+
 // ========================================================================
 // Happy paths
 // ========================================================================
@@ -654,4 +731,41 @@ async fn login_rejects_deleted_principal() {
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "login against a Deleted principal must reject");
+}
+
+// ========================================================================
+// Revoked key (distinct from a key unknown to the claimed principal: this
+// key WAS active in this exact principal and was genuinely revoked from it)
+// ========================================================================
+
+/// Login with a key that was genuinely revoked *from the claimed principal*
+/// is rejected -- distinct from `login_binds_key_to_claimed_principal_not_thumbprint`,
+/// which tests a key active in a *different* principal. The principal here
+/// keeps one other active key (`golden`, so it stays Active, not Dead),
+/// built via a real implicit genesis, a real `key/create` for `key_a`, and
+/// a real, separately-signed `key/revoke` self-revoking `key_a` -- all
+/// through the full storage path.
+#[tokio::test]
+async fn login_rejects_key_revoked_in_claimed_principal() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid = "login-revoked-key";
+    bootstrap_active_then_revoke(&state, &pool, pid, "key_a").await;
+
+    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
+    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    assert!(
+        !principal.is_key_active(&pool.get("key_a").unwrap().compute_tmb().unwrap()),
+        "key_a must be genuinely revoked (not merely absent) in the bootstrapped principal"
+    );
+
+    let app = build_router(state);
+    // key_a is the key that was revoked; golden remains active.
+    let body = login_body(&pool, "key_a", AUDIENCE, Some(pid), None, now_secs());
+    let (status, json) = post_json(app, "/auth/login", body).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a key genuinely revoked from the claimed principal must be rejected: {json:?}"
+    );
 }
