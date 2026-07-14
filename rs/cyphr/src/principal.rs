@@ -643,7 +643,7 @@ impl<S: eml::Storage> Principal<S> {
             kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::open(storage)
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?,
+                .map_err(|e| Error::Storage(e.to_string()))?,
             pt,
             cr: None,
             sr: Some(sr),
@@ -701,7 +701,7 @@ impl<S: eml::Storage> Principal<S> {
             kr,
             tr: None,
             commit_trees: crate::commit_root::CommitTrees::open(storage)
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?,
+                .map_err(|e| Error::Storage(e.to_string()))?,
             pt,
             cr: None,
             sr: Some(sr),
@@ -1022,7 +1022,7 @@ impl<S: eml::Storage> Principal<S> {
         }
         self.commit_trees
             .inclusion_proof(alg_id, index)
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
+            .map_err(|e| Error::Storage(e.to_string()))
     }
 
     /// Generate a consistency proof from `old_size` to the current tree
@@ -1047,7 +1047,7 @@ impl<S: eml::Storage> Principal<S> {
         }
         self.commit_trees
             .consistency_proof(alg_id, old_size)
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))
+            .map_err(|e| Error::Storage(e.to_string()))
     }
 
     /// Verify that transaction `tr`, claimed at commit `index`, is really
@@ -1086,7 +1086,7 @@ impl<S: eml::Storage> Principal<S> {
         let tree_size = self
             .commit_trees
             .tree_size(alg_id)
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
         let cr = self
             .cr
             .as_ref()
@@ -1904,7 +1904,7 @@ impl<S: eml::Storage> Principal<S> {
                 let hasher = Box::new(crate::commit_root::MaltHasher::new(alg));
                 core.commit_trees
                     .add_algorithm(alg_id, hasher)
-                    .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                    .map_err(|e| Error::Storage(e.to_string()))?;
             }
         }
 
@@ -1940,7 +1940,7 @@ impl<S: eml::Storage> Principal<S> {
             let stored = core
                 .commit_trees
                 .get_leaf(leaf_index)
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
             if stored != serialized {
                 return Err(Error::DurableLeafMismatch(leaf_index));
             }
@@ -1955,7 +1955,7 @@ impl<S: eml::Storage> Principal<S> {
             // Append current TR once to the unified EML Log.
             core.commit_trees
                 .append(&serialized)
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
 
             // Assemble CR from the EML Log for all active algorithms.
             crate::commit_root::commit_root_from_trees(&core.commit_trees, &algs)?

@@ -74,6 +74,18 @@ const OPTIONAL_CELL: u64 = 1;
 /// The single fan-out call site every node type's constructor below uses —
 /// c-liveness-centralized-registration: registration cannot drift between
 /// node types because there is exactly one place that performs it.
+///
+/// # Error mapping
+///
+/// `EpochTree` wraps `canonical-mt`'s `Cmt`, which has no `Storage`-generic
+/// backend anywhere in its type — it is pure in-memory. Its errors
+/// (`DuplicateAlgorithm` here; `IndexGap` from this file's `set()` call
+/// sites below) are dense-tree invariant violations, never I/O. They still
+/// map to `Error::Storage`: that is the closest existing variant for an
+/// "this should be unreachable against crate-internal alg IDs" condition,
+/// not a genuine storage diagnosis — contrast `crate::principal`'s
+/// `CommitTrees`-backed sites, which wrap `eml::Storage` and fail on real
+/// backend I/O.
 fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<()> {
     let mut seen: Vec<HashAlg> = Vec::new();
     for &alg in algs {
@@ -83,7 +95,7 @@ fn register_algs(inner: &mut polydigest::EpochTree, algs: &[HashAlg]) -> Result<
         let alg_id = hash_alg_to_u64(alg);
         inner
             .register_algorithm(alg_id, Box::new(MaltHasher::new(alg)))
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
         seen.push(alg);
     }
     Ok(())
@@ -190,7 +202,7 @@ impl KeyTree {
             let payload = serialize_converted(tmb, algs)?;
             kt.inner
                 .set(index as u64, payload, Vec::new())
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
 
         Ok(kt)
@@ -261,7 +273,7 @@ impl AuthTree {
         let payload = serialize_digest(&kr.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, payload, Vec::new())
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(node)
     }
@@ -322,12 +334,12 @@ impl StateTree {
         let ar_payload = serialize_digest(&ar.0, algs)?;
         node.inner
             .set(PRIMARY_CELL, ar_payload, Vec::new())
-            .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+            .map_err(|e| Error::Storage(e.to_string()))?;
         if let Some(dr) = dr {
             let dr_payload = serialize_digest(&dr.0, algs)?;
             node.inner
                 .set(OPTIONAL_CELL, dr_payload, Vec::new())
-                .map_err(|e| Error::UnsupportedAlgorithm(e.to_string()))?;
+                .map_err(|e| Error::Storage(e.to_string()))?;
         }
 
         Ok(node)
