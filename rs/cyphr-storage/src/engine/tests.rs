@@ -786,9 +786,15 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
         .expect("store_blobs_and_manifest failed");
 
     // Before recovery: no index entry exists at all -- not a partial one,
-    // not one pointing at a missing blob. Full absence.
+    // not one pointing at a missing blob. Full absence. Probed via the
+    // raw indexer accessor, not `engine.get_tip()`: since this node
+    // (S3-ingest-crash-recovery) wired an automatic heal into every
+    // index-touching public method, `get_tip()` itself would now heal
+    // this exact manifest on first call -- the raw accessor is the
+    // documented escape hatch outside that guarantee, letting this test
+    // still observe the genuinely pre-heal state.
     assert!(
-        engine.get_tip("alice").await.unwrap().is_none(),
+        engine.indexer().get_tip("alice").await.unwrap().is_none(),
         "index must not have been written yet"
     );
 

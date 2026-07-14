@@ -16,6 +16,7 @@ use cyphr_index_fjall::FjallIndexer;
 use cyphr::StateDigest;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::BlobStore;
+use cyphr_storage::index::Indexer;
 use cyphr_storage::engine::StorageEngine;
 
 fn load_golden(category: &str, name: &str) -> serde_json::Value {
@@ -201,9 +202,15 @@ async fn rebuild_index_from_manifests_survives_index_deletion() {
         }
     });
 
-    // Confirm the index is genuinely gone before rebuilding.
+    // Confirm the index is genuinely gone before rebuilding. Probed via
+    // the raw indexer accessor: `recovery_engine.get_tip()` itself would
+    // now auto-heal from the manifests still present in the shared blob
+    // store on its first call (S3-ingest-crash-recovery's heal-at-open
+    // wiring) -- the raw accessor is the documented escape hatch outside
+    // that guarantee, needed here to observe the genuinely fresh state.
     assert!(
         recovery_engine
+            .indexer()
             .get_tip(principal_id)
             .await
             .unwrap()
