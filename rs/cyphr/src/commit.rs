@@ -371,15 +371,38 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
     /// Finalize the commit scope, producing an immutable `Commit`.
     ///
-    /// Consumes this scope, copies the projected state back to the principal,
-    /// and returns a reference to the newly created `Commit` in the auth ledger.
+    /// Validates and durably records the batch on `projected` — the
+    /// independent clone `CommitScope::new` took at scope creation — and
+    /// only copies it into the live principal once that succeeds. A
+    /// `finalize_commit` failure therefore leaves the live principal
+    /// byte-identical to how it was before this call, `deleted_pending`
+    /// included: that flag is cleared inside `finalize_commit` itself,
+    /// after its durable writes, so folding the whole clone into the live
+    /// principal in one gated move carries that clear along with every
+    /// other `finalize_commit`-internal mutation (GitHub issue #77 and its
+    /// `deleted_pending` sibling — previously this assigned `*self.principal
+    /// = self.projected` *before* calling `finalize_commit`, so a failure
+    /// partway through left the live principal already mutated).
     ///
     /// # Errors
     ///
     /// Returns `EmptyCommit` if no cozies were applied.
-    pub fn finalize(self) -> crate::error::Result<&'a Commit> {
+    pub fn finalize(mut self) -> crate::error::Result<&'a Commit> {
+        self.projected.finalize_commit(self.pending)?;
         *self.principal = self.projected;
-        self.principal.finalize_commit(self.pending)
+
+        // `finalize_commit`'s returned reference borrowed `self.projected`,
+        // which the move above consumed, so it cannot be reused here. No
+        // second clone is needed to recover it: `finalize_commit` always
+        // pushes its result as the last entry of `auth.commits` immediately
+        // before returning it (`principal.rs`), so re-deriving the
+        // reference from the now-live principal yields the identical
+        // `Commit`.
+        self.principal
+            .auth
+            .commits
+            .last()
+            .ok_or(crate::error::Error::EmptyCommit)
     }
 
     /// Verify a coz signature and apply it within this commit scope.
@@ -1089,6 +1112,249 @@ mod tests {
         assert!(
             scope_b.matches_arrow(&genuine_arrow),
             "matches_arrow must accept a genuinely fallback-constructed (multi-variant fold) arrow"
+        );
+    }
+
+    // ========================================================================
+    // finalize() state-ordering (GitHub issue #77 and its deleted_pending
+    // sibling): a finalize_commit failure must never leave the live
+    // principal reflecting projected mutations that were never durably
+    // recorded.
+    // ========================================================================
+
+    /// Storage double that delegates to a real in-memory backend until
+    /// armed, then fails every operation. Genesis setup (and any mutation
+    /// apply, which never touches storage) succeeds normally; arming right
+    /// before `finalize`/`finalize_with_arrow` isolates the injected
+    /// failure to `finalize_commit`'s own durable-write path.
+    #[derive(Debug)]
+    struct ToggledFailureStorage {
+        inner: eml::MemoryStorage,
+        armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[derive(Debug)]
+    struct InjectedFinalizeFailure;
+
+    impl std::fmt::Display for InjectedFinalizeFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "injected finalize_commit failure")
+        }
+    }
+
+    impl std::error::Error for InjectedFinalizeFailure {}
+
+    impl ToggledFailureStorage {
+        fn new() -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            (
+                Self {
+                    inner: eml::MemoryStorage::new(),
+                    armed: armed.clone(),
+                },
+                armed,
+            )
+        }
+
+        fn check(&self) -> Result<(), InjectedFinalizeFailure> {
+            if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(InjectedFinalizeFailure)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl eml::Storage for ToggledFailureStorage {
+        type Error = InjectedFinalizeFailure;
+
+        async fn store_leaf(&mut self, index: u64, data: &[u8]) -> Result<(), Self::Error> {
+            self.check()?;
+            self.inner
+                .store_leaf(index, data)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn get_leaf(&self, index: u64) -> Result<Vec<u8>, Self::Error> {
+            self.check()?;
+            self.inner
+                .get_leaf(index)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn len(&self) -> Result<u64, Self::Error> {
+            self.check()?;
+            self.inner.len().await.map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn store_node(
+            &mut self,
+            alg_id: u64,
+            left: u64,
+            height: u32,
+            hash: &[u8],
+        ) -> Result<(), Self::Error> {
+            self.check()?;
+            self.inner
+                .store_node(alg_id, left, height, hash)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn get_node(
+            &self,
+            alg_id: u64,
+            left: u64,
+            height: u32,
+        ) -> Result<Option<Vec<u8>>, Self::Error> {
+            self.check()?;
+            self.inner
+                .get_node(alg_id, left, height)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn store_algorithm_meta(
+            &mut self,
+            alg_id: u64,
+            epochs: &[(u64, u64)],
+        ) -> Result<(), Self::Error> {
+            self.check()?;
+            self.inner
+                .store_algorithm_meta(alg_id, epochs)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn load_algorithm_metas(&self) -> Result<eml::AlgorithmMetas, Self::Error> {
+            self.check()?;
+            self.inner
+                .load_algorithm_metas()
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn load_log_meta(&self) -> Result<Option<(u64, u8)>, Self::Error> {
+            self.check()?;
+            self.inner
+                .load_log_meta()
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn load_checkpoint_roots(&self) -> Result<Vec<(u64, Vec<u8>)>, Self::Error> {
+            self.check()?;
+            self.inner
+                .load_checkpoint_roots()
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+
+        async fn write_batch(
+            &mut self,
+            leaves: &[(u64, &[u8])],
+            nodes: &[(u64, u64, u32, &[u8])],
+            algorithm_metas: &[(u64, &[(u64, u64)])],
+            log_meta: Option<(u64, u8)>,
+            checkpoint_roots: &[(u64, &[u8])],
+        ) -> Result<(), Self::Error> {
+            self.check()?;
+            self.inner
+                .write_batch(leaves, nodes, algorithm_metas, log_meta, checkpoint_roots)
+                .await
+                .map_err(|_| InjectedFinalizeFailure)
+        }
+    }
+
+    /// RED-first regression test for GitHub issue #77 (and its
+    /// `deleted_pending` sibling, same seam): a `finalize_commit` failure
+    /// must never leave the live principal reflecting projected mutations
+    /// that were never durably recorded.
+    #[test]
+    fn finalize_failure_leaves_principal_unmutated() {
+        let pool = fold_pool();
+        let genesis = fold_pool_key(&pool, "golden");
+        let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb b64");
+        let genesis_tmb = genesis.compute_tmb().expect("genesis tmb");
+        let now = 1_700_000_000i64;
+
+        let (storage, armed) = ToggledFailureStorage::new();
+        let mut principal =
+            crate::principal::Principal::implicit_with_storage(fold_domain_key(genesis), storage)
+                .expect("genesis principal");
+
+        // Snapshot observable pre-commit state to compare against after the
+        // injected failure.
+        let pr_before = principal.pr().clone();
+        assert!(!principal.is_deleted(), "fresh principal must not be deleted");
+        assert!(
+            !principal.deleted_pending,
+            "fresh principal must not have a pending delete"
+        );
+
+        // Sign a real principal/delete targeting the genesis PR.
+        let id_tagged = pr_before
+            .0
+            .tagged_first()
+            .expect("pr should have at least one variant")
+            .to_string();
+        let mut pay = serde_json::Map::new();
+        pay.insert("alg".to_string(), json!(genesis.alg));
+        pay.insert("id".to_string(), json!(id_tagged));
+        pay.insert("now".to_string(), json!(now));
+        pay.insert("tmb".to_string(), json!(genesis_tmb_b64));
+        pay.insert("typ".to_string(), json!("cyphr.me/cyphr/principal/delete"));
+        let mut pay_obj = serde_json::Value::Object(pay);
+        pay_obj.as_object_mut().expect("object").sort_keys();
+        let pay_vec = serde_json::to_vec(&pay_obj).expect("serialize principal/delete pay");
+
+        let prv_bytes = fold_prv_bytes(genesis);
+        let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&genesis.pub_key)
+            .expect("genesis pub base64");
+        let (sig, cad) = coz::sign_json(&pay_vec, &genesis.alg, &prv_bytes, &pub_bytes)
+            .expect("sign_json should support pool algorithm");
+        let czd = coz::czd_for_alg(&cad, &sig, &genesis.alg)
+            .expect("czd_for_alg should support pool algorithm");
+
+        let mut scope = principal.begin_commit();
+        scope
+            .verify_and_apply(&pay_vec, &sig, czd, None)
+            .expect("principal/delete should apply");
+
+        // Arm the storage failure only now: genesis setup and the mutation
+        // apply above never touch storage, so this isolates the injected
+        // failure to finalize_commit's own durable-write path.
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let result = scope.finalize_with_arrow(
+            &genesis.alg,
+            &prv_bytes,
+            &pub_bytes,
+            &genesis_tmb,
+            now + 1,
+            "cyphr.me",
+        );
+
+        assert!(
+            result.is_err(),
+            "finalize_with_arrow must surface the injected storage failure"
+        );
+        assert_eq!(
+            principal.pr(),
+            &pr_before,
+            "a failed finalize must not advance the live principal's PR"
+        );
+        assert!(
+            !principal.is_deleted(),
+            "a failed finalize must not leave `deleted` set on the live \
+             principal (GitHub issue #77)"
+        );
+        assert!(
+            !principal.deleted_pending,
+            "a failed finalize must not leave `deleted_pending` set on \
+             the live principal — its own sibling of GitHub issue #77"
         );
     }
 }
