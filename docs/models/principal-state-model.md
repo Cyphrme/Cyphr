@@ -322,6 +322,18 @@ is insufficient to reconstruct internal state.
 
 ### 2. Session Type Protocols
 
+> [!NOTE]
+> **Login Error Taxonomy:** The error cases in the login session types below
+> (§2.1, §2.2) represent a design-phase proposal, not SPEC.md normative text.
+> SPEC.md §17.2 specifies only prose verification steps and §19 (Error Conditions)
+> does not enumerate login-specific errors. The actual implementation in
+> `rs/cyphr-server/src/auth/login.rs` uses a different taxonomy with distinct
+> variant names (Malformed, MissingField, NotALogin, AudienceMissing,
+> AudienceMismatch, InvalidSignature, KeyNotActive, PrincipalNotActive,
+> TimestampOutOfWindow, ChallengeInvalid), reflecting design choices made
+> during implementation. For authoritative error semantics, refer to the
+> implementation's `LoginError` enum.
+
 #### 2.1 Login (Challenge-Response)
 
 ```
