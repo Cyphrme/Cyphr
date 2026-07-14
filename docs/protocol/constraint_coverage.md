@@ -99,12 +99,12 @@ issue).
 | :---------------------------------- | :------------ | :--------------------------------- |
 | `[pop-via-signature]`               | ⬜ STRUCTURAL | Implicit in all sig verification   |
 | `[pop-types]`                       | 🔵 RUNTIME    | Taxonomy, not testable             |
-| `[login-challenge-response]`        | ⚪ OOS        | Service-side, not in core          |
-| `[login-timestamp-based]`           | ⚪ OOS        | Service-side                       |
-| `[login-lifecycle-gate]`            | ⚪ OOS        | Service-side                       |
-| `[replay-prevention]`               | ⚪ OOS        | Service-side                       |
-| `[bearer-token-service-signed]`     | ⚪ OOS        | Service-side                       |
-| `[bearer-token-fields]`             | ⚪ OOS        | Service-side                       |
+| `[login-challenge-response]`        | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[login-timestamp-based]`           | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[login-lifecycle-gate]`            | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[replay-prevention]`               | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[bearer-token-service-signed]`     | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[bearer-token-fields]`             | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
 | `[embedding-weight-default]`        | ⚪ OOS        | Level 5+                           |
 | `[embedding-cyclic-stop]`           | ⚪ OOS        | Level 5+                           |
 | `[embedding-conjunctive-auth]`      | ⚪ OOS        | Level 5+                           |
@@ -117,8 +117,8 @@ issue).
 | `[checkpoint-declarative]`          | ⚪ OOS        | Not implemented                    |
 | `[mss-bidirectional]`               | ⚪ OOS        | Architecture guidance              |
 | `[mss-push-on-mutation]`            | ⚪ OOS        | Service-side                       |
-| `[no-login-non-active]`             | ⚪ OOS        | Service-side                       |
-| `[no-unsigned-bearer]`              | ⚪ OOS        | Service-side                       |
+| `[no-login-non-active]`             | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
+| `[no-unsigned-bearer]`              | ⚪ OOS        | Tested in rs/cyphr-server/tests/login.rs         |
 | `[aaa-over-bearer]`                 | ⚪ OOS        | Design guidance                    |
 | `[sso-without-centralization]`      | ⚪ OOS        | Design guidance                    |
 
