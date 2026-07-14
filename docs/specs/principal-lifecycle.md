@@ -36,9 +36,6 @@ out of their identities.
 ## Implementation Status (re-verified 2026-07-08)
 
 **`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
-"implemented."** The Verification table's uniform 25/25 `pass` is
-misleading — confirmed by direct search of `rs/`:
-**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
 "implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
 consistency, not implementation status. The following revisions apply post-campaign:
 
@@ -65,6 +62,8 @@ consistency, not implementation status. The following revisions apply post-campa
 - Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
   them in revoked set — both trace back to deletion state, making Nuked/Dead
   separation not externally observable (findings F11, deferred refinement)
+
+## Constraints
 
 ### Type Declarations
 
