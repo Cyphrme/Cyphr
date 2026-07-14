@@ -178,6 +178,10 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// `AGENTS.md` I2); bounding it is future work alongside the
     /// cross-process write serialization this node explicitly defers.
     principal_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Set once [`Self::ensure_healed`] has run [`Self::rebuild_index_from_manifests`]
+    /// successfully for this engine instance. See `ensure_healed`'s docs for
+    /// why this is scoped per-instance rather than per-backend.
+    healed: tokio::sync::OnceCell<()>,
 }
 
 impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -194,6 +198,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
             indexer,
             storage_factory: Box::new(|_principal_id: &str| Ok(cyphr::eml::MemoryStorage::new())),
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            healed: tokio::sync::OnceCell::new(),
         }
     }
 }
@@ -215,6 +220,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             indexer,
             storage_factory: Box::new(storage_factory),
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            healed: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -250,6 +256,54 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     }
 
     // ========================================================================
+    // Index heal gate
+    // ========================================================================
+
+    /// Ensure this engine's index has no pending crash-window recovery
+    /// before any of its own methods read or write against it.
+    ///
+    /// Implements [recovery-reindex] (docs/specs/storage-engine.md:236-241)
+    /// for the "no explicit call" case: a crash between
+    /// [`Self::store_blobs_and_manifest`]'s manifest write and
+    /// [`Self::ingest_commit`]'s subsequent index write (see the
+    /// crash-window doc on [`Self::rebuild_index_from_manifests`] below)
+    /// must heal automatically the next time the engine is opened,
+    /// without any caller remembering to invoke
+    /// [`Self::rebuild_index_from_manifests`] itself. "Opened" here means
+    /// construct-plus-first-use (engine constructors are synchronous, so
+    /// there is no async open step to hook): this lazy once-per-instance
+    /// guard runs the full manifest scan on this engine's first call into
+    /// any of the methods below, and never again for the lifetime of this
+    /// instance.
+    ///
+    /// Cost strategy: always a full [`Self::rebuild_index_from_manifests`]
+    /// scan rather than a cheaper orphan-detection pre-check. Against this
+    /// crate's backends the scan is already the mechanism `reindex` and
+    /// the CLI rely on for full recovery, `index_commit` is idempotent so
+    /// a healthy store's scan is a pure read with no re-indexing writes,
+    /// and it runs at most once per instance -- an orphan pre-check would
+    /// only save a single redundant scan's read cost per process lifetime,
+    /// not a recurring cost, so the simpler always-scan is what ships.
+    ///
+    /// Scoped to this engine's own methods: [`Self::indexer`] and
+    /// [`Self::blob_store`] are raw accessors that bypass this gate by
+    /// design (see their docs) -- a caller reaching the backends directly
+    /// is outside the invariant this method closes.
+    ///
+    /// A heal failure surfaces as an `EngineError` from the caller's first
+    /// call, same as any other engine error -- not a swallowed or
+    /// reordered error, and not a public-error-contract change. The guard
+    /// is left uninitialized on error (`get_or_try_init` does not cache
+    /// failures), so the next call retries rather than wedging this
+    /// instance in a permanently-failed state.
+    async fn ensure_healed(&self) -> Result<(), EngineError> {
+        self.healed
+            .get_or_try_init(|| async { self.rebuild_index_from_manifests().await.map(|_| ()) })
+            .await?;
+        Ok(())
+    }
+
+    // ========================================================================
     // Read path
     // ========================================================================
 
@@ -258,6 +312,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Delegates directly to the indexer.
     #[tracing::instrument(skip(self))]
     pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
+        self.ensure_healed().await?;
         Ok(self.indexer.get_tip(principal_id).await?)
     }
 
@@ -273,6 +328,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         from: Option<u64>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
+        self.ensure_healed().await?;
         let chain = self
             .indexer
             .get_commit_chain(principal_id, from, to)
@@ -308,6 +364,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// fetch blob content (blob store).
     #[tracing::instrument(skip(self))]
     pub async fn get_entity(&self, digest: &TaggedDigest) -> Result<Option<Vec<u8>>, EngineError> {
+        self.ensure_healed().await?;
         let entity = match self.indexer.resolve_digest(digest).await? {
             Some(e) => e,
             None => return Ok(None),
@@ -520,6 +577,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         use crate::CommitEntry;
         use crate::import::replay_commits;
 
+        self.ensure_healed().await?;
+
         // 1. Construct the principal from genesis (no commits yet), backed
         // by a fresh storage instance from this engine's factory.
         let mut principal = match genesis {
@@ -637,6 +696,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
         use crate::import::{is_key_introducing_typ, is_transaction_typ};
+
+        self.ensure_healed().await?;
 
         if raw_blobs.is_empty() {
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
@@ -929,6 +990,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         principal_id: &str,
         raw_blobs: &[&[u8]],
     ) -> Result<crate::Genesis, EngineError> {
+        self.ensure_healed().await?;
+
         // Check if the principal already exists.
         let chain = self
             .indexer
