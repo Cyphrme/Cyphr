@@ -301,10 +301,21 @@ impl<S: eml::Storage> CloneableLog<S> {
         Ok(log.size())
     }
 
-    /// Check if the log has no algorithms registered.
+    /// Check if the log has no leaves appended yet.
+    ///
+    /// Keys off the global leaf count ([`Self::global_size`]'s own
+    /// `log.size()` read), not `committed_epochs_at`: the latter returns a
+    /// non-empty `Vec` for any *registered* algorithm even at zero leaves
+    /// (each contributes its own trivial epoch-at-zero entry), so it
+    /// reports `false` for an algorithm-registered zero-leaf log -- wrong
+    /// for every call site that means "no prior commits yet" (e.g.
+    /// `principal::from_checkpoint_with_trees`'s CR `None`/`Some` split).
+    /// Mirrors [`crate::principal::PrincipalCore::finalize_commit`]'s own
+    /// use of `global_size()` for the same "has anything actually been
+    /// appended" question.
     pub fn is_empty(&self) -> bool {
         let log = self.0.lock().expect("commit tree mutex poisoned");
-        log.committed_epochs_at(log.count()).is_empty()
+        log.size() == 0
     }
 
     /// The log's total append count (leaves for a flat log), independent of
@@ -384,4 +395,53 @@ pub fn commit_root_from_trees_at<S: eml::Storage>(
     }
     let md = MultihashDigest::new(variants)?;
     Ok(CommitRoot(md))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F4 -- `CloneableLog::is_empty()` must report empty for an
+    /// algorithm-registered zero-leaf log, not only for a log with no
+    /// algorithms registered at all. Before this fix,
+    /// `committed_epochs_at(count())` returns a non-empty `Vec` for any
+    /// registered algorithm even at `count() == 0` (each registered
+    /// algorithm contributes its own -- empty -- epoch-at-zero entry), so
+    /// `is_empty()` wrongly reported `false`.
+    #[test]
+    fn is_empty_true_for_registered_algorithm_zero_leaves() {
+        let log = CloneableLog::new(eml::MemoryStorage::new());
+        assert!(
+            log.is_empty(),
+            "a freshly constructed log with no algorithms must be empty"
+        );
+
+        log.add_algorithm(
+            hash_alg_to_u64(HashAlg::Sha256),
+            Box::new(MaltHasher::new(HashAlg::Sha256)),
+        )
+        .expect("add_algorithm failed");
+
+        assert!(
+            log.is_empty(),
+            "a log with a registered algorithm but zero leaves must still report empty"
+        );
+    }
+
+    #[test]
+    fn is_empty_false_once_a_leaf_is_appended() {
+        let log = CloneableLog::new(eml::MemoryStorage::new());
+        log.add_algorithm(
+            hash_alg_to_u64(HashAlg::Sha256),
+            Box::new(MaltHasher::new(HashAlg::Sha256)),
+        )
+        .expect("add_algorithm failed");
+
+        log.append(b"leaf-payload").expect("append failed");
+
+        assert!(
+            !log.is_empty(),
+            "a log with an appended leaf must not be empty"
+        );
+    }
 }
