@@ -54,6 +54,16 @@ impl PrincipalTree {
     }
 
     /// Register `alg` if it is not already registered.
+    ///
+    /// # Error mapping
+    ///
+    /// Like `crate::semantic_tree`'s `register_algs`, this wraps
+    /// `EpochTree`/`Cmt` — pure in-memory, no `Storage`-generic backend.
+    /// The mapped failure (`DuplicateAlgorithm`, and `IndexGap` from
+    /// `set_sr`/`set_cr` below) is a dense-tree invariant violation, not
+    /// I/O; `Error::Storage` is still the best-available existing variant
+    /// for it, distinct from `crate::principal`'s `CommitTrees`-backed
+    /// sites, which are genuine `eml::Storage` backend failures.
     fn ensure_algorithm(&mut self, alg: HashAlg) -> Result<()> {
         if self.algs.contains(&alg) {
             return Ok(());
