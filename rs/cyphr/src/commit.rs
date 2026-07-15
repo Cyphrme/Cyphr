@@ -156,9 +156,25 @@ impl PendingCommit {
         self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
 
-    /// Check if the pending commit is empty.
+    /// Check if the pending commit is empty (contains zero cozies).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Check if the pending commit has no mutation content to finalize.
+    ///
+    /// True when there are no cozies at all, or when every cozy present
+    /// is a finalizer (carries `arrow`, see `Transaction::is_commit`) --
+    /// a commit/create with no mutation cozies behind it has no
+    /// substance to finalize, matching [commit-one-or-more]'s evident
+    /// intent (docs/specs/transactions.md). Subsumes the zero-cozy case
+    /// via the same vacuous-truth property `is_empty()` relies on
+    /// (`.all()` over an empty iterator is `true`), so callers gating a
+    /// finalize on "is there anything to finalize" should use this, not
+    /// `is_empty()` -- `is_empty()` keeps the ordinary collection
+    /// meaning (`len() == 0`), distinct from "insubstantial."
+    pub fn is_finalizer_only(&self) -> bool {
+        self.iter_all_cozies().all(|cz| cz.arrow().is_some())
     }
 
     /// Get the number of pending cozies.
@@ -242,7 +258,8 @@ impl PendingCommit {
     ///
     /// # Errors
     ///
-    /// Returns `EmptyCommit` if no cozies exist.
+    /// Returns `EmptyCommit` if no cozies exist, or if the only cozies
+    /// present are finalizers (no mutation content).
     pub fn finalize(
         self,
         ar: AuthRoot,
@@ -250,7 +267,7 @@ impl PendingCommit {
         pr: PrincipalRoot,
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
-        if self.is_empty() {
+        if self.is_finalizer_only() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
@@ -764,7 +781,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_commit_finalize_succeeds_with_finalizer() {
+    fn pending_commit_finalize_rejects_finalizer_only() {
+        // A commit whose only content is its own commit/create finalizer
+        // (no mutation cozies at all) must be rejected -- ruling D1
+        // (GitHub issue #74): ambiguity between "reject" and "document as
+        // intentional no-op" resolves in favor of reject, aligning with
+        // [commit-one-or-more]'s evident intent.
         let mut pending = PendingCommit::new();
         let cz = make_test_tx(true, 0x01);
         pending.push_tx(crate::transaction::Transaction(vec![cz]));
@@ -775,19 +797,30 @@ mod tests {
         let pr =
             PrincipalRoot(MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap());
 
-        let commit = pending.finalize(
-            auth_root.clone(),
-            sr.clone(),
-            pr.clone(),
-            &[coz::HashAlg::Sha256],
+        let commit = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
+        assert!(
+            matches!(commit, Err(crate::error::Error::EmptyCommit)),
+            "a finalizer-only commit (no mutation cozies) must be rejected \
+             as empty, got {commit:?}"
         );
-        assert!(commit.is_ok());
+    }
 
-        let commit = commit.unwrap();
-        assert_eq!(commit.len(), 1);
-        assert_eq!(commit.auth_root(), &auth_root);
-        assert_eq!(commit.sr(), &sr);
-        assert_eq!(commit.pr(), &pr);
+    #[test]
+    fn pending_commit_is_empty_vs_is_finalizer_only() {
+        // is_empty() keeps its ordinary collection meaning (len() == 0):
+        // a one-cozy pending commit is not empty. is_finalizer_only()
+        // is the distinct, honestly-named predicate for "no mutation
+        // substance" -- true here because the only cozy present is the
+        // finalizer.
+        let mut pending = PendingCommit::new();
+        let cz = make_test_tx(true, 0x01);
+        pending.push_tx(crate::transaction::Transaction(vec![cz]));
+
+        assert!(!pending.is_empty(), "one cozy is present: len() == 1");
+        assert!(
+            pending.is_finalizer_only(),
+            "the only cozy present is a finalizer, not a mutation"
+        );
     }
 
     #[test]
@@ -844,9 +877,17 @@ mod tests {
 
     #[test]
     fn commit_accessors_return_correct_values() {
+        // Needs a mutation cozy ahead of the finalizer: a finalizer-only
+        // PendingCommit is rejected by finalize() (see
+        // pending_commit_finalize_rejects_finalizer_only), so this
+        // accessor test -- which only cares about Commit's getters --
+        // must use a normal (mutation + finalizer) shape to reach them.
         let mut pending = PendingCommit::new();
         pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
-            true, 0x01,
+            false, 0x01,
+        )]));
+        pending.push_tx(crate::transaction::Transaction(vec![make_test_tx(
+            true, 0x02,
         )]));
 
         let auth_root =
@@ -865,9 +906,9 @@ mod tests {
             .unwrap();
 
         // Test all accessors
-        assert_eq!(commit.iter_all_cozies().count(), 1);
+        assert_eq!(commit.iter_all_cozies().count(), 2);
         assert!(!commit.is_empty());
-        assert_eq!(commit.len(), 1);
+        assert_eq!(commit.len(), 2);
         assert_eq!(commit.auth_root(), &auth_root);
         assert_eq!(commit.sr(), &sr);
         assert_eq!(commit.pr(), &pr);
