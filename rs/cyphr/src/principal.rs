@@ -1805,7 +1805,7 @@ impl<S: eml::Storage> Principal<S> {
     /// `PendingCommit`. Recomputes all state digests and appends the
     /// finalized commit to the auth ledger.
     pub(crate) fn finalize_commit(&mut self, pending: PendingCommit) -> Result<&Commit> {
-        if pending.is_empty() {
+        if pending.is_finalizer_only() {
             return Err(Error::EmptyCommit);
         }
 

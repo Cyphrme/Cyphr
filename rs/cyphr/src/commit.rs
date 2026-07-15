@@ -156,14 +156,24 @@ impl PendingCommit {
         self.transactions.iter().flat_map(|tx| tx.0.iter())
     }
 
-    /// Check if the pending commit is empty of substance.
-    ///
-    /// A commit containing zero cozies is empty. So is a commit whose
-    /// only cozies are finalizers (carry an `arrow`, see
-    /// `Transaction::is_commit`) -- a commit/create with no mutation
-    /// cozies behind it has no substance to finalize, matching
-    /// [commit-one-or-more]'s evident intent (docs/specs/transactions.md).
+    /// Check if the pending commit is empty (contains zero cozies).
     pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Check if the pending commit has no mutation content to finalize.
+    ///
+    /// True when there are no cozies at all, or when every cozy present
+    /// is a finalizer (carries `arrow`, see `Transaction::is_commit`) --
+    /// a commit/create with no mutation cozies behind it has no
+    /// substance to finalize, matching [commit-one-or-more]'s evident
+    /// intent (docs/specs/transactions.md). Subsumes the zero-cozy case
+    /// via the same vacuous-truth property `is_empty()` relies on
+    /// (`.all()` over an empty iterator is `true`), so callers gating a
+    /// finalize on "is there anything to finalize" should use this, not
+    /// `is_empty()` -- `is_empty()` keeps the ordinary collection
+    /// meaning (`len() == 0`), distinct from "insubstantial."
+    pub fn is_finalizer_only(&self) -> bool {
         self.iter_all_cozies().all(|cz| cz.arrow().is_some())
     }
 
@@ -257,7 +267,7 @@ impl PendingCommit {
         pr: PrincipalRoot,
         tx_algs: &[coz::HashAlg],
     ) -> crate::error::Result<Commit> {
-        if self.is_empty() {
+        if self.is_finalizer_only() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
@@ -792,6 +802,24 @@ mod tests {
             matches!(commit, Err(crate::error::Error::EmptyCommit)),
             "a finalizer-only commit (no mutation cozies) must be rejected \
              as empty, got {commit:?}"
+        );
+    }
+
+    #[test]
+    fn pending_commit_is_empty_vs_is_finalizer_only() {
+        // is_empty() keeps its ordinary collection meaning (len() == 0):
+        // a one-cozy pending commit is not empty. is_finalizer_only()
+        // is the distinct, honestly-named predicate for "no mutation
+        // substance" -- true here because the only cozy present is the
+        // finalizer.
+        let mut pending = PendingCommit::new();
+        let cz = make_test_tx(true, 0x01);
+        pending.push_tx(crate::transaction::Transaction(vec![cz]));
+
+        assert!(!pending.is_empty(), "one cozy is present: len() == 1");
+        assert!(
+            pending.is_finalizer_only(),
+            "the only cozy present is a finalizer, not a mutation"
         );
     }
 
