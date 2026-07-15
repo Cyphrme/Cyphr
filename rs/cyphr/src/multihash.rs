@@ -137,17 +137,35 @@ impl MultihashDigest {
             .ok_or(crate::error::Error::MissingVariant(alg))
     }
 
-    /// Get the digest bytes for Arrow's algorithm-fallback rule, mirroring
-    /// `polydigest::root::combined_root`'s general fold: try `alg` first;
-    /// else, if this multihash has exactly one variant, promote it
-    /// regardless of `alg` (genesis promotion — a component with only one
-    /// active algorithm contributes that algorithm's digest regardless of
-    /// the signer's, rather than erroring just because the signer replaced
-    /// the sole active key with one of a different algorithm in this same
-    /// commit); else, with two or more variants and none matching `alg`,
-    /// fold ALL currently-available variants together — sort, concatenate,
-    /// and hash under `alg` — exactly mirroring
-    /// [`crate::state::hash_sorted_concat_bytes`].
+    /// Get the digest bytes for Arrow's algorithm-fallback rule.
+    ///
+    /// This is the component-conversion rule normatively fixed by SPEC.md
+    /// §2.2.10 (Singleton Promotion) and resolved in full by
+    /// `docs/specs/state-tree.md`'s `[conversion]` clause (settled
+    /// 2026-07-08), whose POST is marked
+    /// `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+    /// — i.e. this exact function. The requested-`alg` bytes come from
+    /// exactly one of three mechanisms:
+    ///
+    /// 1. **Exact match**: `alg` already has a native variant — return it
+    ///    directly, unconverted.
+    /// 2. **Genesis promotion** (`len == 1`): the degenerate, single-variant
+    ///    case of the fold, which `[conversion]` defines as "a degenerate
+    ///    case of the fold ... not a separate conversion step" and SPEC.md
+    ///    §2.2.10 defines as elevating a lone node value to its parent slot
+    ///    "without additional hashing". If this multihash has exactly one
+    ///    variant, its raw bytes are returned for any requested `alg`. A
+    ///    component with only one active algorithm thus contributes that
+    ///    algorithm's digest regardless of the signer's — e.g. a sole active
+    ///    key replaced by one of a different algorithm in the same commit,
+    ///    leaving pre/fwd with zero shared algorithms — rather than erroring.
+    /// 3. **Fold** (`len >= 2`, no match): with two or more variants and none
+    ///    matching `alg`, fold ALL currently-available variants together —
+    ///    sort, concatenate raw bytes, and hash once under `alg` — mirroring
+    ///    [`crate::state::hash_sorted_concat_bytes`] and
+    ///    `polydigest::root::combined_root`'s general fold. Mismatched-
+    ///    algorithm variants are never individually re-hashed under `alg`
+    ///    before folding; their raw bytes participate as fold inputs as-is.
     ///
     /// A no-op when this multihash already has `alg`.
     ///
