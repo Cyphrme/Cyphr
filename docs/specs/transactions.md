@@ -148,11 +148,11 @@ valid -- it forbids only the zero-cozy case, and SPEC.md defines no
 stronger constraint either. Cyphr's implementation resolves this
 silence by rejecting the finalizer-only case as empty of substance,
 aligning with this clause's evident intent rather than treating it as
-an intentional no-op (rs/cyphr/src/commit.rs `PendingCommit::is_empty`,
-GitHub issue #74). This is an implementation choice within what the
-spec permits, not a spec violation; routed to Zami for consideration
-of whether [commit-one-or-more] should be tightened to state this
-explicitly.
+an intentional no-op (rs/cyphr/src/commit.rs
+`PendingCommit::is_finalizer_only`, GitHub issue #74). This is an
+implementation choice within what the spec permits, not a spec
+violation; routed to Zami for consideration of whether
+[commit-one-or-more] should be tightened to state this explicitly.
 `VERIFIED: agent-check`
 
 Commit membership (which cozies belong to which commit, and which
