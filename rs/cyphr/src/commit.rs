@@ -1156,6 +1156,105 @@ mod tests {
         );
     }
 
+    fn fold_signed_key_replace(
+        signer: &test_fixtures::PoolKey,
+        signer_tmb_b64: &str,
+        target: &test_fixtures::PoolKey,
+        now: i64,
+    ) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+        let target_tmb_b64 = target.compute_tmb_b64().expect("target tmb b64");
+
+        let mut pay = serde_json::Map::new();
+        pay.insert("alg".to_string(), json!(signer.alg));
+        pay.insert("id".to_string(), json!(target_tmb_b64));
+        pay.insert("now".to_string(), json!(now));
+        pay.insert("tmb".to_string(), json!(signer_tmb_b64));
+        pay.insert("typ".to_string(), json!("cyphr.me/cyphr/key/replace"));
+        let mut pay_obj = serde_json::Value::Object(pay);
+        pay_obj.as_object_mut().expect("object").sort_keys();
+        let pay_vec = serde_json::to_vec(&pay_obj).expect("serialize key/replace pay");
+
+        let prv_bytes = fold_prv_bytes(signer);
+        let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&signer.pub_key)
+            .expect("signer pub base64");
+        let (sig, cad) = coz::sign_json(&pay_vec, &signer.alg, &prv_bytes, &pub_bytes)
+            .expect("sign_json should support pool algorithm");
+        let czd = coz::czd_for_alg(&cad, &sig, &signer.alg)
+            .expect("czd_for_alg should support pool algorithm");
+        (pay_vec, sig, czd)
+    }
+
+    /// Pinning test for `arrow_component_bytes`' single-variant genesis-
+    /// promotion branch -- the branch the multi-variant fold test above
+    /// never exercises. Behavior is normatively settled by SPEC.md §2.2.10
+    /// (Singleton Promotion) and docs/specs/state-tree.md's [conversion]
+    /// clause (a sole variant's raw bytes are returned for any requested
+    /// algorithm); this test pins it, it does not choose it.
+    ///
+    /// A sole-key principal (one active ES384 key => one SHA-384 variant)
+    /// does key/replace to an ES256 key (=> one SHA-256 variant), leaving
+    /// pre (state before, only SHA-384) and fwd SR (state after, only
+    /// SHA-256) with ZERO shared hash algorithms at arrow-computation time.
+    /// The fwd side has no SHA-384 variant and len==1, so genesis promotion
+    /// returns its lone SHA-256 variant for the requested SHA-384.
+    /// `finalize_with_arrow` (construction) and `matches_arrow` (independent
+    /// verification) MUST agree. This is the scenario behind forge issue #51.
+    #[test]
+    fn matches_arrow_accepts_sole_key_algorithm_change() {
+        let pool = fold_pool();
+        let old_key = fold_pool_key(&pool, "diana_es384"); // ES384 -> SHA-384
+        let new_key = fold_pool_key(&pool, "golden"); // ES256 -> SHA-256
+
+        let old_tmb_b64 = old_key.compute_tmb_b64().expect("old tmb b64");
+        let old_tmb = old_key.compute_tmb().expect("old tmb");
+        let now = 1_700_000_000i64;
+
+        // Sole-key genesis on the ES384 key.
+        let mut principal = crate::principal::Principal::implicit(fold_domain_key(old_key))
+            .expect("genesis principal");
+
+        // Sign the ES384 -> ES256 key/replace ONCE; replay the identical
+        // bytes onto a byte-identical clone so production (scope_a) and
+        // verification (scope_b) start from the same state (ECDSA signing
+        // is randomized per call).
+        let (pay, sig, czd) = fold_signed_key_replace(old_key, &old_tmb_b64, new_key, now);
+
+        let mut principal_b = principal.clone();
+
+        let mut scope_a = principal.begin_commit();
+        scope_a
+            .verify_and_apply(&pay, &sig, czd.clone(), Some(fold_domain_key(new_key)))
+            .expect("key/replace should apply to scope_a");
+        let mut scope_b = principal_b.begin_commit();
+        scope_b
+            .verify_and_apply(&pay, &sig, czd, Some(fold_domain_key(new_key)))
+            .expect("key/replace should apply to scope_b");
+
+        // The replaced (old ES384) key finalizes the commit it signed --
+        // CommitCreate skips the active-key check, so the just-removed
+        // signer may still carry the arrow (principal.rs key/replace arm).
+        let old_prv = fold_prv_bytes(old_key);
+        let old_pub = coz::base64ct::Base64UrlUnpadded::decode_vec(&old_key.pub_key)
+            .expect("old pub base64");
+        let commit = scope_a
+            .finalize_with_arrow(&old_key.alg, &old_prv, &old_pub, &old_tmb, now + 1, "cyphr.me")
+            .expect("sole-key algorithm-change commit should finalize via genesis promotion");
+        let genuine_arrow = commit
+            .commit_tx()
+            .0
+            .last()
+            .expect("commit tx should carry at least one coz")
+            .arrow()
+            .expect("commit/create coz should carry an arrow")
+            .clone();
+
+        assert!(
+            scope_b.matches_arrow(&genuine_arrow),
+            "matches_arrow must accept a sole-key algorithm-change arrow \
+             built via genesis promotion (zero shared algorithms)"
+        );
+    }
+
     // ========================================================================
     // finalize() state-ordering (GitHub issue #77 and its deleted_pending
     // sibling): a finalize_commit failure must never leave the live

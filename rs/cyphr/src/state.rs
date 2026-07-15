@@ -773,7 +773,12 @@ pub fn compute_dr(
         // Convert components to the target algorithm
         let mut converted_components = Vec::new();
         for comp in &components {
-            let source_alg = infer_alg_from_len(comp.bytes.len()).unwrap_or(HashAlg::Sha256);
+            let source_alg = infer_alg_from_len(comp.bytes.len()).ok_or_else(|| {
+                crate::error::Error::UnsupportedAlgorithm(format!(
+                    "invalid digest length: {}",
+                    comp.bytes.len()
+                ))
+            })?;
             if source_alg == alg {
                 converted_components.push(comp.bytes.to_vec());
             } else {
@@ -1208,6 +1213,24 @@ mod tests {
             ),
             "expected DigestLengthMismatch, got {:?}",
             err
+        );
+    }
+
+    #[test]
+    fn compute_dr_errors_on_ambiguous_component_length() {
+        // A 16-byte component maps to no known hash algorithm (32/48/64),
+        // so its source algorithm cannot be inferred. compute_dr's
+        // multi-component conversion path must surface an honest error
+        // rather than silently assuming SHA-256 (forge issue #15). A lone
+        // nonce is the minimal multi-component input: it skips the
+        // single-action implicit-promotion branch and reaches the
+        // per-component algorithm inference this fix hardens.
+        let nonce = [0u8; 16];
+        let result = compute_dr(&[], Some(&nonce), &[HashAlg::Sha256]);
+        assert!(
+            matches!(result, Err(crate::error::Error::UnsupportedAlgorithm(_))),
+            "ambiguous digest length must error, not default to SHA-256; got {:?}",
+            result
         );
     }
 }
