@@ -321,6 +321,28 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     assert!(!entity_bytes.is_empty(), "entity content must be non-empty");
 }
 
+/// `GET /server` on a keyless server declares `repository` honestly
+/// unsigned, as part of the repository-tier surface this matrix sweeps
+/// (`docs/specs/server-identity.md`).
+#[tokio::test]
+async fn keyless_discovery_declares_repository_tier() {
+    let state = keyless_state();
+    let app = build_router(state);
+
+    let (status, envelope) = get_json(app, "/server").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "discovery must succeed on a keyless server: {envelope:?}"
+    );
+    let payload = assert_unsigned_envelope(&envelope);
+    assert_eq!(payload["tier"], serde_json::json!("repository"));
+    assert!(
+        payload.get("pg").is_none(),
+        "a keyless server's discovery payload carries no pg: {payload:?}"
+    );
+}
+
 // ========================================================================
 // Auth surface: honest capability-absence degradation (finding F5)
 // ========================================================================
@@ -360,6 +382,10 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
         message.contains("signing identity"),
         "the rejection must name the keyless condition, got: {message:?}"
     );
+    assert!(
+        message.contains("/server"),
+        "the rejection must point a rejected client at the discovery route, got: {message:?}"
+    );
 }
 
 /// `POST /auth/login` on a keyless server returns the explicit
@@ -386,6 +412,10 @@ async fn keyless_login_returns_capability_absence_not_internal_error() {
     assert!(
         message.contains("signing identity"),
         "the rejection must name the keyless condition, got: {message:?}"
+    );
+    assert!(
+        message.contains("/server"),
+        "the rejection must point a rejected client at the discovery route, got: {message:?}"
     );
 }
 
