@@ -249,10 +249,15 @@ impl ServerPrincipal {
     /// subsequent rotation both act on the rotated-in key, never a retired
     /// one. The PG is frozen at genesis and is unaffected.
     ///
-    /// The chain is committed before the key file is rewritten: the chain
-    /// is the public truth, and a rare crash in the gap surfaces as a
-    /// loud load-time mismatch on the next boot rather than a silently
-    /// wrong signer.
+    /// The two media cannot be updated atomically, so the order is
+    /// deliberate: the chain (public truth) is committed first, then the key
+    /// file (private material). A crash in the gap leaves the new chain with
+    /// the old key file — which fails loudly at the next boot (load()'s
+    /// active-key check rejects the retired key) and an operator recovers by
+    /// rewriting the file to the rotated-in key. The reverse order — a new
+    /// key file over an unrotated chain — would be a quieter, more confusing
+    /// wreck, so it is avoided. This residual crash window is not closed
+    /// here; it is made loud rather than silent.
     pub async fn rotate(
         &self,
         engine: &ServerEngine,
