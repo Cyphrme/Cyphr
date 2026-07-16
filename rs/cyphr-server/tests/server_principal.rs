@@ -272,3 +272,83 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
         "rotation extends the chain beyond the genesis commit"
     );
 }
+
+/// A restart after a rotation must load the principal, not brick on a stale
+/// key. Rotation retires the old key on-chain, so the signing-key file must
+/// hold the NEW key for a fresh boot to pass load()'s active-key check.
+#[tokio::test]
+async fn reboot_after_rotation_loads_the_rotated_principal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (key_path, _kp) = write_signing_key(dir.path());
+    let state = keyed_state(&dir.path().join("data"), &key_path);
+    let identity = state.identity.clone().expect("identity");
+
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+        .await
+        .expect("bootstrap");
+    let pg = sp.pg().to_string();
+
+    let new_kp = coz::Alg::Ed25519.generate_keypair();
+    sp.rotate(&state.engine, &new_kp)
+        .await
+        .expect("rotation succeeds");
+
+    // Simulate a restart: the running process is gone. A fresh boot reads
+    // the signing-key file (which rotation must have updated to the new
+    // key) and bootstraps against the same store.
+    let rebooted = Arc::new(
+        cyphr_server::auth::ServerIdentity::load_from_path(&key_path)
+            .expect("reload the signing key file"),
+    );
+    let sp2 = ServerPrincipal::bootstrap(&state.engine, rebooted, &state.config.data_dir)
+        .await
+        .expect("a reboot after rotation must load the principal, not fail on a stale key");
+
+    assert_eq!(sp2.pg(), pg, "reboot resolves the same PG");
+}
+
+/// The principal must be able to rotate again after a rotation: the second
+/// rotation has to sign with the rotated-in key, not the retired one.
+#[tokio::test]
+async fn principal_can_rotate_again_after_rotation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (key_path, _kp) = write_signing_key(dir.path());
+    let state = keyed_state(&dir.path().join("data"), &key_path);
+    let identity = state.identity.clone().expect("identity");
+
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+        .await
+        .expect("bootstrap");
+    let pg = sp.pg().to_string();
+
+    let kp1 = coz::Alg::Ed25519.generate_keypair();
+    sp.rotate(&state.engine, &kp1)
+        .await
+        .expect("first rotation succeeds");
+    let kp2 = coz::Alg::Ed25519.generate_keypair();
+    sp.rotate(&state.engine, &kp2)
+        .await
+        .expect("a second rotation must sign with the rotated-in key, not a retired one");
+
+    assert_eq!(sp.pg(), pg, "PG is stable across two rotations");
+
+    let principal = state
+        .engine
+        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
+        .await
+        .expect("reload the twice-rotated chain");
+    assert!(
+        principal.is_key_active(&tmb_of(&kp2)),
+        "the twice-rotated-in key is active"
+    );
+    assert!(
+        !principal.is_key_active(&tmb_of(&kp1)),
+        "the intermediate key is retired"
+    );
+
+    let tip = state.engine.get_tip(sp.pg()).await.unwrap().unwrap();
+    assert!(
+        tip.commit_count >= 3,
+        "genesis plus two rotations extend the chain"
+    );
+}
