@@ -13,6 +13,7 @@
 
 pub mod login;
 pub mod middleware;
+pub mod principal;
 pub mod token;
 
 use std::path::Path;

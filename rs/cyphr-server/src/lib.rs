@@ -58,6 +58,13 @@ pub struct AppState {
     /// explicitly rather than assume presence.
     pub identity: Option<Arc<auth::ServerIdentity>>,
 
+    /// The server's own Cyphr principal, established on a keyed boot from
+    /// the same signing key as `identity`. `None` in keyless mode, and also
+    /// `None` until [`serve`] has bootstrapped it (construction via
+    /// [`AppState::new`] stays synchronous; the chain is created or loaded
+    /// in the async startup path).
+    pub principal: Option<Arc<auth::principal::ServerPrincipal>>,
+
     /// Single-use challenge store backing the challenge-response login
     /// flow. In-memory and per-process (ruling R8's spirit: no durable
     /// auth state beyond short expiry).
@@ -89,6 +96,7 @@ impl AppState {
             config,
             engine,
             identity,
+            principal: None,
             challenges: auth::login::ChallengeStore::new(),
         })
     }
@@ -135,11 +143,25 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
 /// SIGTERM/SIGINT.
 pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = config.listen.clone();
-    let state = Arc::new(AppState::new(config)?);
+    let mut state = AppState::new(config)?;
 
     // Run incremental reindexing on startup
     state.engine.reindex(&[], false).await?;
 
+    // On a keyed boot, establish (or load) the server's own principal so
+    // its genesis chain exists and is served like any other principal.
+    if let Some(identity) = state.identity.clone() {
+        let principal = auth::principal::ServerPrincipal::bootstrap(
+            &state.engine,
+            identity,
+            &state.config.data_dir,
+        )
+        .await?;
+        tracing::info!(pg = %principal.pg(), "server principal established");
+        state.principal = Some(Arc::new(principal));
+    }
+
+    let state = Arc::new(state);
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
