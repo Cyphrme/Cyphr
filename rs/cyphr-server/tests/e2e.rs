@@ -106,6 +106,20 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
     blobs
 }
 
+/// Assert `body` is a well-formed unsigned envelope
+/// (`docs/specs/http-envelope.md`) and return its `payload` for further
+/// field assertions -- migrated suites read `payload.*`, never top-level
+/// fields (`[envelope-r-migration]`).
+fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
+    assert_eq!(body["v"], serde_json::json!(1), "response must carry envelope v=1: {body:?}");
+    assert_eq!(
+        body["statement"]["kind"],
+        serde_json::json!("unsigned"),
+        "an unattested response must be explicitly unsigned, not merely missing a signature: {body:?}"
+    );
+    &body["payload"]
+}
+
 /// Build an `AppState` with a temporary database directory.
 fn test_state() -> Arc<AppState> {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -148,7 +162,7 @@ async fn tip_after_bootstrap() {
     let state = test_state();
     bootstrap_principal(&state, principal_id, &fixture).await;
 
-    let app = build_router(state);
+    let app = build_router(state.clone());
 
     let req = Request::builder()
         .uri(format!("/tip?pr={principal_id}"))
@@ -159,7 +173,8 @@ async fn tip_after_bootstrap() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let tip: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let tip = envelope_payload(&envelope);
 
     let commits = fixture["commits"].as_array().unwrap();
     assert_eq!(
@@ -168,6 +183,13 @@ async fn tip_after_bootstrap() {
         "tip commit_count should match number of submitted commits"
     );
     assert_eq!(tip["principal_id"], principal_id);
+
+    let engine_tip = state.engine.get_tip(principal_id).await.unwrap().expect("tip exists");
+    assert_eq!(
+        tip["cr"].as_str().expect("tip payload carries cr"),
+        engine_tip.cr,
+        "tip payload's cr must match the engine's TipState.cr exactly ([envelope-r-cr])"
+    );
 }
 
 /// GET /patch for a bootstrapped principal → 200 with correct entries.
@@ -190,7 +212,8 @@ async fn patch_after_bootstrap() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let patch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let patch = envelope_payload(&envelope);
 
     assert_eq!(patch["principal_id"], principal_id);
     let entries = patch["entries"].as_array().unwrap();
@@ -235,7 +258,8 @@ async fn patch_with_range() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let patch: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let patch = envelope_payload(&envelope);
 
     let entries = patch["entries"].as_array().unwrap();
     assert_eq!(
@@ -768,7 +792,8 @@ async fn push_new_principal_happy_path() {
     let push_resp = app.clone().oneshot(push_req).await.unwrap();
     assert_eq!(push_resp.status(), StatusCode::CREATED);
     let push_body = push_resp.into_body().collect().await.unwrap().to_bytes();
-    let push_json: serde_json::Value = serde_json::from_slice(&push_body).unwrap();
+    let push_envelope: serde_json::Value = serde_json::from_slice(&push_body).unwrap();
+    let push_json = envelope_payload(&push_envelope);
     assert_eq!(
         push_json["blob_hashes"].as_array().unwrap().len(),
         blobs.len(),
@@ -782,7 +807,8 @@ async fn push_new_principal_happy_path() {
     let tip_resp = app.clone().oneshot(tip_req).await.unwrap();
     assert_eq!(tip_resp.status(), StatusCode::OK);
     let tip_body = tip_resp.into_body().collect().await.unwrap().to_bytes();
-    let tip: serde_json::Value = serde_json::from_slice(&tip_body).unwrap();
+    let tip_envelope: serde_json::Value = serde_json::from_slice(&tip_body).unwrap();
+    let tip = envelope_payload(&tip_envelope);
     assert_eq!(tip["principal_id"], principal_id);
     assert_eq!(tip["commit_count"].as_u64().unwrap(), 1);
 
@@ -793,7 +819,8 @@ async fn push_new_principal_happy_path() {
     let patch_resp = app.oneshot(patch_req).await.unwrap();
     assert_eq!(patch_resp.status(), StatusCode::OK);
     let patch_body = patch_resp.into_body().collect().await.unwrap().to_bytes();
-    let patch: serde_json::Value = serde_json::from_slice(&patch_body).unwrap();
+    let patch_envelope: serde_json::Value = serde_json::from_slice(&patch_body).unwrap();
+    let patch = envelope_payload(&patch_envelope);
     let entries = patch["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1, "one commit was pushed");
     assert_eq!(

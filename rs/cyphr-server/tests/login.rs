@@ -195,6 +195,21 @@ fn sign_key_create_commit(
         .collect()
 }
 
+/// Assert `body` is a well-formed unsigned envelope
+/// (`docs/specs/http-envelope.md`) and return its `payload` for further
+/// field assertions -- migrated suites read `payload.*`, never top-level
+/// fields (`[envelope-r-migration]`). Error bodies (`{"error": ...}`) are
+/// NOT enveloped (`[envelope-r-error]`) and must never be passed here.
+fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
+    assert_eq!(body["v"], serde_json::json!(1), "response must carry envelope v=1: {body:?}");
+    assert_eq!(
+        body["statement"]["kind"],
+        serde_json::json!("unsigned"),
+        "an unattested response must be explicitly unsigned, not merely missing a signature: {body:?}"
+    );
+    &body["payload"]
+}
+
 // ========================================================================
 // Login-specific helpers
 // ========================================================================
@@ -468,7 +483,8 @@ async fn login_timestamp_flow_issues_valid_token() {
     let (status, json) = post_json(app, "/auth/login", body).await;
 
     assert_eq!(status, StatusCode::OK, "valid timestamp login must succeed: {json:?}");
-    let token = json["token"].as_str().expect("token in response");
+    let payload = envelope_payload(&json);
+    let token = payload["token"].as_str().expect("token in response");
 
     let claims = state
         .identity
@@ -490,12 +506,14 @@ async fn login_challenge_flow_issues_valid_token() {
 
     let (cs, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
     assert_eq!(cs, StatusCode::OK);
-    let challenge = cj["challenge"].as_str().expect("challenge issued").to_string();
+    let challenge_payload = envelope_payload(&cj);
+    let challenge = challenge_payload["challenge"].as_str().expect("challenge issued").to_string();
 
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), Some(&challenge), now_secs());
     let (status, json) = post_json(app, "/auth/login", body).await;
     assert_eq!(status, StatusCode::OK, "valid challenge login must succeed: {json:?}");
-    assert!(json["token"].as_str().is_some(), "a token must be issued");
+    let payload = envelope_payload(&json);
+    assert!(payload["token"].as_str().is_some(), "a token must be issued");
 }
 
 // ========================================================================
@@ -512,7 +530,7 @@ async fn login_rejects_replayed_challenge() {
     let app = build_router(state.clone());
 
     let (_, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
-    let challenge = cj["challenge"].as_str().unwrap().to_string();
+    let challenge = envelope_payload(&cj)["challenge"].as_str().unwrap().to_string();
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), Some(&challenge), now_secs());
 
     let (first, _) = post_json(app.clone(), "/auth/login", body.clone()).await;
