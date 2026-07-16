@@ -59,6 +59,20 @@ impl AppError {
             message: msg.into(),
         }
     }
+
+    /// 501 Not Implemented.
+    ///
+    /// For a capability the server genuinely does not offer under its
+    /// current configuration (e.g. login/challenge on a server with no
+    /// signing identity) -- distinct from 500, which implies a fault the
+    /// server should not have hit. A declared capability absence must
+    /// never read as a transient server fault.
+    pub fn not_implemented(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            message: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {

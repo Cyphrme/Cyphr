@@ -44,6 +44,7 @@ use serde::Serialize;
 
 use super::server_now;
 use crate::AppState;
+use crate::envelope::Envelope;
 use crate::error::AppError;
 
 /// Login-payload field names. The one home for the interim R6 binding
@@ -344,6 +345,16 @@ fn default_login_perms() -> Vec<String> {
     vec!["read".to_string(), "write".to_string()]
 }
 
+/// The explicit, honest rejection a keyless server (no configured signing
+/// identity) gives both login and challenge -- the SAME condition, the
+/// SAME error, never `AppError::internal` (F5). A keyless server cannot
+/// issue a bearer token, so login is a declared capability absence, not
+/// a fault; a challenge nobody can ever redeem would be a silent trap,
+/// so challenge shares the same rejection rather than issuing one.
+fn keyless_identity_rejection() -> AppError {
+    AppError::not_implemented("this server runs without a signing identity; login is not offered")
+}
+
 /// Map a principal-load failure: an unknown principal is an
 /// authentication failure (401, and indistinguishable from a
 /// wrong-audience or inactive rejection, so principal existence is not an
@@ -357,9 +368,20 @@ fn map_load_error(err: EngineError) -> AppError {
 
 /// `POST /auth/challenge` — issue a single-use challenge for the
 /// challenge-response flow (SPEC 17.2 Option A).
-pub async fn challenge(State(state): State<Arc<AppState>>) -> Json<ChallengeResponse> {
+///
+/// A keyless server (no configured signing identity) never issues a
+/// challenge at all: a nonce that can never be redeemed by a login that
+/// can never succeed is a silent trap, not a service worth offering, so
+/// this fails the same honest way `login` does rather than succeeding
+/// here and only failing later.
+pub async fn challenge(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Envelope<ChallengeResponse>>, AppError> {
+    if state.identity.is_none() {
+        return Err(keyless_identity_rejection());
+    }
     let challenge = state.challenges.issue(server_now());
-    Json(ChallengeResponse { challenge })
+    Ok(Json(Envelope::unsigned(ChallengeResponse { challenge })))
 }
 
 /// `POST /auth/login` — verify a signed login payload (either flow) and
@@ -372,11 +394,8 @@ pub async fn challenge(State(state): State<Arc<AppState>>) -> Json<ChallengeResp
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(coz_json): Json<coz::CozJson>,
-) -> Result<Json<LoginResponse>, AppError> {
-    let identity = state
-        .identity
-        .as_ref()
-        .ok_or_else(|| AppError::internal("server has no signing identity for login"))?;
+) -> Result<Json<Envelope<LoginResponse>>, AppError> {
+    let identity = state.identity.as_ref().ok_or_else(keyless_identity_rejection)?;
     let audience = state
         .config
         .audience
@@ -421,7 +440,7 @@ pub async fn login(
         )
         .ok_or_else(|| AppError::internal("failed to issue bearer token"))?;
 
-    Ok(Json(LoginResponse { token }))
+    Ok(Json(Envelope::unsigned(LoginResponse { token })))
 }
 
 #[cfg(test)]
