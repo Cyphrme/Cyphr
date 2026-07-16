@@ -12,19 +12,16 @@
 //! signer believes they are authenticating to) nor the *claimed
 //! principal*. Both omissions are exploitable:
 //!
-//! - **Audience.** Without it, a malicious service M can relay a login a
-//!   user signed for M to a victim service S and collect a token for the
-//!   user at S -- the adversary-in-the-middle relay WebAuthn closes by
-//!   binding the origin inside the signed `clientData`. Here the audience
-//!   is the authority segment of the login `typ` (SPEC 7.3), asserted by
-//!   the client based on where it believes it is connecting and verified
-//!   by the server against its own configured identity. It is never taken
-//!   from an unsigned transport detail the counterparty controls.
-//! - **Principal.** SPEC permits one key across many principals (Appendix
-//!   "Sharing Keys"), so a `tmb`-only lookup is ambiguous by
-//!   construction. The signer names the principal it claims; the server
-//!   verifies the `tmb` is an active key of *that* principal, never
-//!   inferring the principal from the `tmb`.
+//! - **Audience.** Without it, a malicious service M can relay a login a user signed for M to a
+//!   victim service S and collect a token for the user at S -- the adversary-in-the-middle relay
+//!   WebAuthn closes by binding the origin inside the signed `clientData`. Here the audience is the
+//!   authority segment of the login `typ` (SPEC 7.3), asserted by the client based on where it
+//!   believes it is connecting and verified by the server against its own configured identity. It
+//!   is never taken from an unsigned transport detail the counterparty controls.
+//! - **Principal.** SPEC permits one key across many principals (Appendix "Sharing Keys"), so a
+//!   `tmb`-only lookup is ambiguous by construction. The signer names the principal it claims; the
+//!   server verifies the `tmb` is an active key of *that* principal, never inferring the principal
+//!   from the `tmb`.
 //!
 //! These interim field choices are pending the spec author's review, so
 //! this module is the single place they live (ruling R6a): field names
@@ -44,6 +41,7 @@ use serde::Serialize;
 
 use super::server_now;
 use crate::AppState;
+use crate::envelope::Envelope;
 use crate::error::AppError;
 
 /// Login-payload field names. The one home for the interim R6 binding
@@ -163,7 +161,9 @@ pub fn parse_login(
     let pay: coz::Pay = serde_json::from_value(coz_json.pay)?;
 
     let typ = pay.typ.as_deref().ok_or(LoginError::NotALogin)?;
-    let audience = typ.strip_suffix(LOGIN_TYP_SUFFIX).ok_or(LoginError::NotALogin)?;
+    let audience = typ
+        .strip_suffix(LOGIN_TYP_SUFFIX)
+        .ok_or(LoginError::NotALogin)?;
     if audience.is_empty() {
         return Err(LoginError::AudienceMissing);
     }
@@ -245,7 +245,10 @@ pub fn authorize_login<S: eml::Storage>(
 /// passes the positive constant `TIMESTAMP_WINDOW_SECS`, but this is `pub`,
 /// so the precondition is asserted rather than left as an implicit contract.
 pub fn within_window(client_now: i64, server_now: i64, window_secs: i64) -> bool {
-    debug_assert!(window_secs >= 0, "within_window: window_secs must be non-negative");
+    debug_assert!(
+        window_secs >= 0,
+        "within_window: window_secs must be non-negative"
+    );
     server_now.abs_diff(client_now) <= window_secs as u64
 }
 
@@ -344,6 +347,16 @@ fn default_login_perms() -> Vec<String> {
     vec!["read".to_string(), "write".to_string()]
 }
 
+/// The explicit, honest rejection a keyless server (no configured signing
+/// identity) gives both login and challenge -- the SAME condition, the
+/// SAME error, never `AppError::internal` (F5). A keyless server cannot
+/// issue a bearer token, so login is a declared capability absence, not
+/// a fault; a challenge nobody can ever redeem would be a silent trap,
+/// so challenge shares the same rejection rather than issuing one.
+fn keyless_identity_rejection() -> AppError {
+    AppError::not_implemented("this server runs without a signing identity; login is not offered")
+}
+
 /// Map a principal-load failure: an unknown principal is an
 /// authentication failure (401, and indistinguishable from a
 /// wrong-audience or inactive rejection, so principal existence is not an
@@ -357,9 +370,20 @@ fn map_load_error(err: EngineError) -> AppError {
 
 /// `POST /auth/challenge` — issue a single-use challenge for the
 /// challenge-response flow (SPEC 17.2 Option A).
-pub async fn challenge(State(state): State<Arc<AppState>>) -> Json<ChallengeResponse> {
+///
+/// A keyless server (no configured signing identity) never issues a
+/// challenge at all: a nonce that can never be redeemed by a login that
+/// can never succeed is a silent trap, not a service worth offering, so
+/// this fails the same honest way `login` does rather than succeeding
+/// here and only failing later.
+pub async fn challenge(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Envelope<ChallengeResponse>>, AppError> {
+    if state.identity.is_none() {
+        return Err(keyless_identity_rejection());
+    }
     let challenge = state.challenges.issue(server_now());
-    Json(ChallengeResponse { challenge })
+    Ok(Json(Envelope::unsigned(ChallengeResponse { challenge })))
 }
 
 /// `POST /auth/login` — verify a signed login payload (either flow) and
@@ -372,11 +396,11 @@ pub async fn challenge(State(state): State<Arc<AppState>>) -> Json<ChallengeResp
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(coz_json): Json<coz::CozJson>,
-) -> Result<Json<LoginResponse>, AppError> {
+) -> Result<Json<Envelope<LoginResponse>>, AppError> {
     let identity = state
         .identity
         .as_ref()
-        .ok_or_else(|| AppError::internal("server has no signing identity for login"))?;
+        .ok_or_else(keyless_identity_rejection)?;
     let audience = state
         .config
         .audience
@@ -421,7 +445,7 @@ pub async fn login(
         )
         .ok_or_else(|| AppError::internal("failed to issue bearer token"))?;
 
-    Ok(Json(LoginResponse { token }))
+    Ok(Json(Envelope::unsigned(LoginResponse { token })))
 }
 
 #[cfg(test)]
@@ -483,8 +507,10 @@ mod tests {
         pay.extra
             .insert(field::PR.to_string(), serde_json::Value::String(pr.into()));
         if let Some(c) = challenge {
-            pay.extra
-                .insert(field::CHALLENGE.to_string(), serde_json::Value::String(c.into()));
+            pay.extra.insert(
+                field::CHALLENGE.to_string(),
+                serde_json::Value::String(c.into()),
+            );
         }
 
         let pay_bytes = serde_json::to_vec(&pay).unwrap();
@@ -629,10 +655,26 @@ mod tests {
     fn window_accepts_edges_and_rejects_just_beyond() {
         let server = 1_000_000;
         assert!(within_window(server, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(server - TIMESTAMP_WINDOW_SECS, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(server + TIMESTAMP_WINDOW_SECS, server, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(server - TIMESTAMP_WINDOW_SECS - 1, server, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(server + TIMESTAMP_WINDOW_SECS + 1, server, TIMESTAMP_WINDOW_SECS));
+        assert!(within_window(
+            server - TIMESTAMP_WINDOW_SECS,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(within_window(
+            server + TIMESTAMP_WINDOW_SECS,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(!within_window(
+            server - TIMESTAMP_WINDOW_SECS - 1,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(!within_window(
+            server + TIMESTAMP_WINDOW_SECS + 1,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
     }
 
     #[test]
