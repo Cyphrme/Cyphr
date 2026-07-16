@@ -102,7 +102,14 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create applies to single-key explicit genesis");
     let commit = scope
-        .finalize_with_arrow(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb, now + 1, "cyphr.me")
+        .finalize_with_arrow(
+            &alg,
+            &kp.prv_bytes,
+            &kp.pub_bytes,
+            &tmb,
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit finalizes");
 
     // The commit/create finalizer comes off the finalized commit; the
@@ -246,10 +253,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
     // Reload the chain and inspect its key state.
     let principal = state
         .engine
-        .load_principal(
-            sp.pg(),
-            Genesis::Explicit(vec![sp.genesis_key().clone()]),
-        )
+        .load_principal(sp.pg(), Genesis::Explicit(vec![sp.genesis_key().clone()]))
         .await
         .expect("reload the rotated chain");
 
