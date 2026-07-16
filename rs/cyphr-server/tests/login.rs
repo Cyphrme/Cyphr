@@ -165,7 +165,14 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(&signer.alg, &signer_prv, &signer_pub, &signer_tmb, now, "cyphr.me")
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            now,
+            "cyphr.me",
+        )
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -201,11 +208,16 @@ fn sign_key_create_commit(
 /// fields (`[envelope-r-migration]`). Error bodies (`{"error": ...}`) are
 /// NOT enveloped (`[envelope-r-error]`) and must never be passed here.
 fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
-    assert_eq!(body["v"], serde_json::json!(1), "response must carry envelope v=1: {body:?}");
+    assert_eq!(
+        body["v"],
+        serde_json::json!(1),
+        "response must carry envelope v=1: {body:?}"
+    );
     assert_eq!(
         body["statement"]["kind"],
         serde_json::json!("unsigned"),
-        "an unattested response must be explicitly unsigned, not merely missing a signature: {body:?}"
+        "an unattested response must be explicitly unsigned, not merely missing a signature: \
+         {body:?}"
     );
     &body["payload"]
 }
@@ -352,7 +364,11 @@ async fn bootstrap_active_with_key(
     })
     .to_string();
     let (status, _) = post_json(app, "/push", body).await;
-    assert_eq!(status, StatusCode::CREATED, "bootstrap active principal push must succeed");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "bootstrap active principal push must succeed"
+    );
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:
@@ -428,7 +444,14 @@ fn sign_key_revoke_commit<S: eml::Storage>(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(&signer.alg, &signer_prv, &signer_pub, &signer_tmb, rvk, "cyphr.me")
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            rvk,
+            "cyphr.me",
+        )
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -454,8 +477,16 @@ async fn bootstrap_active_then_revoke(
 ) {
     bootstrap_active_with_key(build_router(state.clone()), pool, principal_id, revoked_key).await;
 
-    let genesis = state.engine.resolve_genesis(principal_id, &[]).await.expect("resolve genesis");
-    let principal = state.engine.load_principal(principal_id, genesis).await.expect("load principal");
+    let genesis = state
+        .engine
+        .resolve_genesis(principal_id, &[])
+        .await
+        .expect("resolve genesis");
+    let principal = state
+        .engine
+        .load_principal(principal_id, genesis)
+        .await
+        .expect("load principal");
     let blobs = sign_key_revoke_commit(principal, pool, revoked_key, 1_700_000_100);
     let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
     state
@@ -482,7 +513,11 @@ async fn login_timestamp_flow_issues_valid_token() {
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, json) = post_json(app, "/auth/login", body).await;
 
-    assert_eq!(status, StatusCode::OK, "valid timestamp login must succeed: {json:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "valid timestamp login must succeed: {json:?}"
+    );
     let payload = envelope_payload(&json);
     let token = payload["token"].as_str().expect("token in response");
 
@@ -507,13 +542,30 @@ async fn login_challenge_flow_issues_valid_token() {
     let (cs, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
     assert_eq!(cs, StatusCode::OK);
     let challenge_payload = envelope_payload(&cj);
-    let challenge = challenge_payload["challenge"].as_str().expect("challenge issued").to_string();
+    let challenge = challenge_payload["challenge"]
+        .as_str()
+        .expect("challenge issued")
+        .to_string();
 
-    let body = login_body(&pool, "golden", AUDIENCE, Some(pid), Some(&challenge), now_secs());
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(pid),
+        Some(&challenge),
+        now_secs(),
+    );
     let (status, json) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::OK, "valid challenge login must succeed: {json:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "valid challenge login must succeed: {json:?}"
+    );
     let payload = envelope_payload(&json);
-    assert!(payload["token"].as_str().is_some(), "a token must be issued");
+    assert!(
+        payload["token"].as_str().is_some(),
+        "a token must be issued"
+    );
 }
 
 // ========================================================================
@@ -530,14 +582,28 @@ async fn login_rejects_replayed_challenge() {
     let app = build_router(state.clone());
 
     let (_, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
-    let challenge = envelope_payload(&cj)["challenge"].as_str().unwrap().to_string();
-    let body = login_body(&pool, "golden", AUDIENCE, Some(pid), Some(&challenge), now_secs());
+    let challenge = envelope_payload(&cj)["challenge"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(pid),
+        Some(&challenge),
+        now_secs(),
+    );
 
     let (first, _) = post_json(app.clone(), "/auth/login", body.clone()).await;
     assert_eq!(first, StatusCode::OK, "first use of the challenge succeeds");
 
     let (second, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(second, StatusCode::UNAUTHORIZED, "a replayed challenge must be rejected");
+    assert_eq!(
+        second,
+        StatusCode::UNAUTHORIZED,
+        "a replayed challenge must be rejected"
+    );
 }
 
 /// A timestamp far outside the acceptance window is rejected.
@@ -552,7 +618,11 @@ async fn login_rejects_out_of_window_timestamp() {
     let stale = now_secs() - 3600;
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, stale);
     let (status, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "an out-of-window timestamp must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an out-of-window timestamp must be rejected"
+    );
 }
 
 // ========================================================================
@@ -570,7 +640,11 @@ async fn login_rejects_mismatched_audience() {
 
     let body = login_body(&pool, "golden", "evil.example", Some(pid), None, now_secs());
     let (status, json) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "a login for another audience must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a login for another audience must be rejected"
+    );
     assert!(
         json["error"].as_str().unwrap_or("").contains("audience"),
         "the rejection must be a distinct audience error, not a generic one: {json:?}"
@@ -588,7 +662,11 @@ async fn login_rejects_missing_audience() {
 
     let body = login_body(&pool, "golden", "", Some(pid), None, now_secs());
     let (status, json) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "a login naming no audience must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a login naming no audience must be rejected"
+    );
     assert!(
         json["error"].as_str().unwrap_or("").contains("audience"),
         "the rejection must name the audience gap: {json:?}"
@@ -610,7 +688,11 @@ async fn login_rejects_missing_principal_claim() {
 
     let body = login_body(&pool, "golden", AUDIENCE, None, None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "a login without a claimed principal must reject");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a login without a claimed principal must reject"
+    );
 }
 
 /// The key-sharing ambiguity: the same key+signature is accepted for the
@@ -631,7 +713,11 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     // key_a claiming P_other: accepted (key_a is active there).
     let ok_body = login_body(&pool, "key_a", AUDIENCE, Some(other), None, now_secs());
     let (ok_status, _) = post_json(build_router(state.clone()), "/auth/login", ok_body).await;
-    assert_eq!(ok_status, StatusCode::OK, "key_a is active in P_other, so login there succeeds");
+    assert_eq!(
+        ok_status,
+        StatusCode::OK,
+        "key_a is active in P_other, so login there succeeds"
+    );
 
     // The same key_a signature claiming P_claimed: rejected -- key_a is not
     // an active key of the claimed principal, even though it is a valid
@@ -669,7 +755,11 @@ async fn login_rejects_invalid_signature() {
     let tampered = serde_json::to_string(&value).unwrap();
 
     let (status, _) = post_json(app, "/auth/login", tampered).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "an invalid signature must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an invalid signature must be rejected"
+    );
 }
 
 // ========================================================================
@@ -688,9 +778,20 @@ async fn login_rejects_unknown_principal() {
     let pool = load_pool();
     let app = build_router(state);
 
-    let body = login_body(&pool, "golden", AUDIENCE, Some("no-such-principal"), None, now_secs());
+    let body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some("no-such-principal"),
+        None,
+        now_secs(),
+    );
     let (status, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "login for an unknown principal must reject");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "login for an unknown principal must reject"
+    );
 }
 
 // ========================================================================
@@ -712,8 +813,16 @@ async fn login_rejects_frozen_principal() {
     bootstrap_lifecycle(&state, pid, "freeze_create_transitions_to_frozen").await;
 
     // The reconstructed principal is genuinely Frozen (real state, real path).
-    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
-    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    let genesis = state
+        .engine
+        .resolve_genesis(pid, &[])
+        .await
+        .expect("resolve genesis");
+    let principal = state
+        .engine
+        .load_principal(pid, genesis)
+        .await
+        .expect("load principal");
     assert_eq!(
         principal.lifecycle_state(),
         cyphr::lifecycle::LifecycleState::Frozen,
@@ -723,7 +832,11 @@ async fn login_rejects_frozen_principal() {
     let app = build_router(state);
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "login against a Frozen principal must reject");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "login against a Frozen principal must reject"
+    );
 }
 
 /// Login against a genuinely Deleted principal is rejected.
@@ -737,8 +850,16 @@ async fn login_rejects_deleted_principal() {
     let pid = "login-deleted";
     bootstrap_lifecycle(&state, pid, "principal_delete_transitions_to_deleted").await;
 
-    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
-    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    let genesis = state
+        .engine
+        .resolve_genesis(pid, &[])
+        .await
+        .expect("resolve genesis");
+    let principal = state
+        .engine
+        .load_principal(pid, genesis)
+        .await
+        .expect("load principal");
     assert_eq!(
         principal.lifecycle_state(),
         cyphr::lifecycle::LifecycleState::Deleted,
@@ -748,7 +869,11 @@ async fn login_rejects_deleted_principal() {
     let app = build_router(state);
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
     let (status, _) = post_json(app, "/auth/login", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "login against a Deleted principal must reject");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "login against a Deleted principal must reject"
+    );
 }
 
 // ========================================================================
@@ -770,8 +895,16 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
     let pid = "login-revoked-key";
     bootstrap_active_then_revoke(&state, &pool, pid, "key_a").await;
 
-    let genesis = state.engine.resolve_genesis(pid, &[]).await.expect("resolve genesis");
-    let principal = state.engine.load_principal(pid, genesis).await.expect("load principal");
+    let genesis = state
+        .engine
+        .resolve_genesis(pid, &[])
+        .await
+        .expect("resolve genesis");
+    let principal = state
+        .engine
+        .load_principal(pid, genesis)
+        .await
+        .expect("load principal");
     assert!(
         !principal.is_key_active(&pool.get("key_a").unwrap().compute_tmb().unwrap()),
         "key_a must be genuinely revoked (not merely absent) in the bootstrapped principal"

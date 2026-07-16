@@ -111,11 +111,16 @@ fn build_raw_blobs(commit: &serde_json::Value) -> Vec<Vec<u8>> {
 /// field assertions -- migrated suites read `payload.*`, never top-level
 /// fields (`[envelope-r-migration]`).
 fn envelope_payload(body: &serde_json::Value) -> &serde_json::Value {
-    assert_eq!(body["v"], serde_json::json!(1), "response must carry envelope v=1: {body:?}");
+    assert_eq!(
+        body["v"],
+        serde_json::json!(1),
+        "response must carry envelope v=1: {body:?}"
+    );
     assert_eq!(
         body["statement"]["kind"],
         serde_json::json!("unsigned"),
-        "an unattested response must be explicitly unsigned, not merely missing a signature: {body:?}"
+        "an unattested response must be explicitly unsigned, not merely missing a signature: \
+         {body:?}"
     );
     &body["payload"]
 }
@@ -184,7 +189,12 @@ async fn tip_after_bootstrap() {
     );
     assert_eq!(tip["principal_id"], principal_id);
 
-    let engine_tip = state.engine.get_tip(principal_id).await.unwrap().expect("tip exists");
+    let engine_tip = state
+        .engine
+        .get_tip(principal_id)
+        .await
+        .unwrap()
+        .expect("tip exists");
     assert_eq!(
         tip["cr"].as_str().expect("tip payload carries cr"),
         engine_tip.cr,

@@ -95,7 +95,14 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(&signer.alg, &signer_prv, &signer_pub, &signer_tmb, now, "cyphr.me")
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            now,
+            "cyphr.me",
+        )
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -142,7 +149,11 @@ fn keyless_state() -> Arc<AppState> {
 /// matrix's core honesty check: a keyless server must never emit a
 /// response a client could misread as attested.
 fn assert_unsigned_envelope(body: &serde_json::Value) -> &serde_json::Value {
-    assert_eq!(body["v"], serde_json::json!(1), "response must carry envelope v=1: {body:?}");
+    assert_eq!(
+        body["v"],
+        serde_json::json!(1),
+        "response must carry envelope v=1: {body:?}"
+    );
     assert_eq!(
         body["statement"]["kind"],
         serde_json::json!("unsigned"),
@@ -245,7 +256,11 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
 
     // --- push ---
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
-    assert_eq!(push_status, StatusCode::CREATED, "push must succeed on a keyless server: {push_envelope:?}");
+    assert_eq!(
+        push_status,
+        StatusCode::CREATED,
+        "push must succeed on a keyless server: {push_envelope:?}"
+    );
     let push_payload = assert_unsigned_envelope(&push_envelope);
     assert_eq!(
         push_payload["blob_hashes"].as_array().unwrap().len(),
@@ -254,21 +269,36 @@ async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     );
 
     // --- tip ---
-    let (tip_status, tip_envelope) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
-    assert_eq!(tip_status, StatusCode::OK, "tip must succeed on a keyless server: {tip_envelope:?}");
+    let (tip_status, tip_envelope) =
+        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    assert_eq!(
+        tip_status,
+        StatusCode::OK,
+        "tip must succeed on a keyless server: {tip_envelope:?}"
+    );
     let tip_payload = assert_unsigned_envelope(&tip_envelope);
     assert_eq!(tip_payload["principal_id"], principal_id);
     assert_eq!(tip_payload["commit_count"].as_u64().unwrap(), 1);
-    let pr_digest = tip_payload["pr"].as_str().expect("tip payload carries pr").to_string();
+    let pr_digest = tip_payload["pr"]
+        .as_str()
+        .expect("tip payload carries pr")
+        .to_string();
     assert!(
-        !tip_payload["cr"].as_str().expect("tip payload carries cr").is_empty(),
+        !tip_payload["cr"]
+            .as_str()
+            .expect("tip payload carries cr")
+            .is_empty(),
         "cr must be populated once a commit has landed: {tip_payload:?}"
     );
 
     // --- patch ---
     let (patch_status, patch_envelope) =
         get_json(app.clone(), &format!("/patch?pr={principal_id}")).await;
-    assert_eq!(patch_status, StatusCode::OK, "patch must succeed on a keyless server: {patch_envelope:?}");
+    assert_eq!(
+        patch_status,
+        StatusCode::OK,
+        "patch must succeed on a keyless server: {patch_envelope:?}"
+    );
     let patch_payload = assert_unsigned_envelope(&patch_envelope);
     assert_eq!(patch_payload["entries"].as_array().unwrap().len(), 1);
 
@@ -320,9 +350,12 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
     );
     assert!(
         status.is_client_error() || status == StatusCode::NOT_IMPLEMENTED,
-        "a keyless capability absence must not read as a transient server fault, got {status}: {json:?}"
+        "a keyless capability absence must not read as a transient server fault, got {status}: \
+         {json:?}"
     );
-    let message = json["error"].as_str().expect("error body names the condition");
+    let message = json["error"]
+        .as_str()
+        .expect("error body names the condition");
     assert!(
         message.contains("signing identity"),
         "the rejection must name the keyless condition, got: {message:?}"
@@ -344,9 +377,12 @@ async fn keyless_login_returns_capability_absence_not_internal_error() {
     );
     assert!(
         status.is_client_error() || status == StatusCode::NOT_IMPLEMENTED,
-        "a keyless capability absence must not read as a transient server fault, got {status}: {json:?}"
+        "a keyless capability absence must not read as a transient server fault, got {status}: \
+         {json:?}"
     );
-    let message = json["error"].as_str().expect("error body names the condition");
+    let message = json["error"]
+        .as_str()
+        .expect("error body names the condition");
     assert!(
         message.contains("signing identity"),
         "the rejection must name the keyless condition, got: {message:?}"

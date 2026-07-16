@@ -12,19 +12,16 @@
 //! signer believes they are authenticating to) nor the *claimed
 //! principal*. Both omissions are exploitable:
 //!
-//! - **Audience.** Without it, a malicious service M can relay a login a
-//!   user signed for M to a victim service S and collect a token for the
-//!   user at S -- the adversary-in-the-middle relay WebAuthn closes by
-//!   binding the origin inside the signed `clientData`. Here the audience
-//!   is the authority segment of the login `typ` (SPEC 7.3), asserted by
-//!   the client based on where it believes it is connecting and verified
-//!   by the server against its own configured identity. It is never taken
-//!   from an unsigned transport detail the counterparty controls.
-//! - **Principal.** SPEC permits one key across many principals (Appendix
-//!   "Sharing Keys"), so a `tmb`-only lookup is ambiguous by
-//!   construction. The signer names the principal it claims; the server
-//!   verifies the `tmb` is an active key of *that* principal, never
-//!   inferring the principal from the `tmb`.
+//! - **Audience.** Without it, a malicious service M can relay a login a user signed for M to a
+//!   victim service S and collect a token for the user at S -- the adversary-in-the-middle relay
+//!   WebAuthn closes by binding the origin inside the signed `clientData`. Here the audience is the
+//!   authority segment of the login `typ` (SPEC 7.3), asserted by the client based on where it
+//!   believes it is connecting and verified by the server against its own configured identity. It
+//!   is never taken from an unsigned transport detail the counterparty controls.
+//! - **Principal.** SPEC permits one key across many principals (Appendix "Sharing Keys"), so a
+//!   `tmb`-only lookup is ambiguous by construction. The signer names the principal it claims; the
+//!   server verifies the `tmb` is an active key of *that* principal, never inferring the principal
+//!   from the `tmb`.
 //!
 //! These interim field choices are pending the spec author's review, so
 //! this module is the single place they live (ruling R6a): field names
@@ -164,7 +161,9 @@ pub fn parse_login(
     let pay: coz::Pay = serde_json::from_value(coz_json.pay)?;
 
     let typ = pay.typ.as_deref().ok_or(LoginError::NotALogin)?;
-    let audience = typ.strip_suffix(LOGIN_TYP_SUFFIX).ok_or(LoginError::NotALogin)?;
+    let audience = typ
+        .strip_suffix(LOGIN_TYP_SUFFIX)
+        .ok_or(LoginError::NotALogin)?;
     if audience.is_empty() {
         return Err(LoginError::AudienceMissing);
     }
@@ -246,7 +245,10 @@ pub fn authorize_login<S: eml::Storage>(
 /// passes the positive constant `TIMESTAMP_WINDOW_SECS`, but this is `pub`,
 /// so the precondition is asserted rather than left as an implicit contract.
 pub fn within_window(client_now: i64, server_now: i64, window_secs: i64) -> bool {
-    debug_assert!(window_secs >= 0, "within_window: window_secs must be non-negative");
+    debug_assert!(
+        window_secs >= 0,
+        "within_window: window_secs must be non-negative"
+    );
     server_now.abs_diff(client_now) <= window_secs as u64
 }
 
@@ -395,7 +397,10 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(coz_json): Json<coz::CozJson>,
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
-    let identity = state.identity.as_ref().ok_or_else(keyless_identity_rejection)?;
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or_else(keyless_identity_rejection)?;
     let audience = state
         .config
         .audience
@@ -502,8 +507,10 @@ mod tests {
         pay.extra
             .insert(field::PR.to_string(), serde_json::Value::String(pr.into()));
         if let Some(c) = challenge {
-            pay.extra
-                .insert(field::CHALLENGE.to_string(), serde_json::Value::String(c.into()));
+            pay.extra.insert(
+                field::CHALLENGE.to_string(),
+                serde_json::Value::String(c.into()),
+            );
         }
 
         let pay_bytes = serde_json::to_vec(&pay).unwrap();
@@ -648,10 +655,26 @@ mod tests {
     fn window_accepts_edges_and_rejects_just_beyond() {
         let server = 1_000_000;
         assert!(within_window(server, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(server - TIMESTAMP_WINDOW_SECS, server, TIMESTAMP_WINDOW_SECS));
-        assert!(within_window(server + TIMESTAMP_WINDOW_SECS, server, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(server - TIMESTAMP_WINDOW_SECS - 1, server, TIMESTAMP_WINDOW_SECS));
-        assert!(!within_window(server + TIMESTAMP_WINDOW_SECS + 1, server, TIMESTAMP_WINDOW_SECS));
+        assert!(within_window(
+            server - TIMESTAMP_WINDOW_SECS,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(within_window(
+            server + TIMESTAMP_WINDOW_SECS,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(!within_window(
+            server - TIMESTAMP_WINDOW_SECS - 1,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
+        assert!(!within_window(
+            server + TIMESTAMP_WINDOW_SECS + 1,
+            server,
+            TIMESTAMP_WINDOW_SECS
+        ));
     }
 
     #[test]
