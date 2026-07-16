@@ -151,6 +151,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/e/{digest}", axum::routing::get(routes::entity))
+        .route("/server", axum::routing::get(routes::identity))
         .route(
             "/auth/challenge",
             axum::routing::post(auth::login::challenge),

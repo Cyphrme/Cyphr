@@ -92,6 +92,31 @@ pub struct PushResponse {
     pub blob_hashes: Vec<String>,
 }
 
+/// Response for `GET /server` — the server's identity/capability
+/// discovery payload (`docs/specs/server-identity.md`).
+///
+/// Internally tagged by `tier` so a client reads capability level
+/// structurally, the same discipline the envelope's `statement.kind`
+/// uses: `repository` carries no identity-shaped fields at all rather
+/// than empty strings a client could mis-parse as attestation.
+#[derive(Debug, Serialize)]
+#[serde(tag = "tier", rename_all = "lowercase")]
+pub enum IdentityResponse {
+    /// A keyed, bootstrapped server: the stable Principal Genesis and the
+    /// CURRENT signing key's algorithm, public key, and thumbprint (all
+    /// base64url except `alg`).
+    Attestor {
+        pg: String,
+        alg: String,
+        #[serde(rename = "pub")]
+        pub_key: String,
+        tmb: String,
+    },
+    /// No established, servable chain to pin: no signing key configured,
+    /// or a keyed process whose principal has not been bootstrapped.
+    Repository,
+}
+
 // ========================================================================
 // Handlers
 // ========================================================================
@@ -220,6 +245,38 @@ pub async fn push(
             blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
         })),
     ))
+}
+
+/// `GET /server` — the server's identity/capability discovery endpoint
+/// (`docs/specs/server-identity.md`).
+///
+/// Declares `attestor` if and only if a bootstrapped principal AND a live
+/// signing identity are both present, publishing the PG from the former
+/// and the CURRENT key material from the latter -- never the on-disk
+/// genesis record or key file, so there is exactly one source of truth
+/// per fact. Any other combination declares `repository`: no established
+/// chain means nothing honest to pin.
+#[tracing::instrument(skip(state))]
+pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, AppError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let payload = match (&state.principal, &state.identity) {
+        (Some(principal), Some(identity)) => {
+            let tmb = identity
+                .alg()
+                .compute_thumbprint(identity.pub_key())
+                .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
+            IdentityResponse::Attestor {
+                pg: principal.pg().to_string(),
+                alg: identity.alg().name().to_string(),
+                pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
+                tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+            }
+        },
+        _ => IdentityResponse::Repository,
+    };
+
+    Ok(Json(Envelope::unsigned(payload)))
 }
 
 /// `GET /e/{digest}` — content-addressed entity lookup.

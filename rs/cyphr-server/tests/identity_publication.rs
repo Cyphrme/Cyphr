@@ -101,20 +101,30 @@ async fn keyed_bootstrapped_server_publishes_attestor_identity() {
     let mut state = keyed_appstate(&dir.path().join("data"), &key_path);
     let identity = state.identity.clone().expect("keyed state has identity");
 
-    let sp = ServerPrincipal::bootstrap(&state.engine, identity.clone(), &key_path, &state.config.data_dir)
-        .await
-        .expect("bootstrap the server principal");
+    let sp = ServerPrincipal::bootstrap(
+        &state.engine,
+        identity.clone(),
+        &key_path,
+        &state.config.data_dir,
+    )
+    .await
+    .expect("bootstrap the server principal");
     let pg = sp.pg().to_string();
     state.principal = Some(Arc::new(sp));
 
     let app = build_router(Arc::new(state));
     let (status, envelope) = get_json(app, "/server").await;
-    assert_eq!(status, StatusCode::OK, "discovery must succeed: {envelope:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "discovery must succeed: {envelope:?}"
+    );
 
     let payload = assert_unsigned_envelope(&envelope);
     assert_eq!(payload["tier"], serde_json::json!("attestor"));
     assert_eq!(
-        payload["pg"], serde_json::json!(pg),
+        payload["pg"],
+        serde_json::json!(pg),
         "published pg must equal the bootstrap PG"
     );
     assert_eq!(payload["alg"], serde_json::json!(identity.alg().name()));
@@ -143,9 +153,14 @@ async fn published_pg_is_stable_across_a_reboot() {
 
     let mut state1 = keyed_appstate(&data_dir, &key_path);
     let identity1 = state1.identity.clone().expect("identity");
-    let sp1 = ServerPrincipal::bootstrap(&state1.engine, identity1, &key_path, &state1.config.data_dir)
-        .await
-        .expect("first boot bootstraps");
+    let sp1 = ServerPrincipal::bootstrap(
+        &state1.engine,
+        identity1,
+        &key_path,
+        &state1.config.data_dir,
+    )
+    .await
+    .expect("first boot bootstraps");
     state1.principal = Some(Arc::new(sp1));
     let app1 = build_router(Arc::new(state1));
     let (_, envelope1) = get_json(app1, "/server").await;
@@ -153,9 +168,14 @@ async fn published_pg_is_stable_across_a_reboot() {
 
     let mut state2 = keyed_appstate(&data_dir, &key_path);
     let identity2 = state2.identity.clone().expect("identity");
-    let sp2 = ServerPrincipal::bootstrap(&state2.engine, identity2, &key_path, &state2.config.data_dir)
-        .await
-        .expect("second boot loads the existing principal");
+    let sp2 = ServerPrincipal::bootstrap(
+        &state2.engine,
+        identity2,
+        &key_path,
+        &state2.config.data_dir,
+    )
+    .await
+    .expect("second boot loads the existing principal");
     state2.principal = Some(Arc::new(sp2));
     let app2 = build_router(Arc::new(state2));
     let (_, envelope2) = get_json(app2, "/server").await;
@@ -174,14 +194,30 @@ async fn published_pg_is_stable_across_a_reboot() {
 async fn keyless_server_declares_repository_with_no_identity_fields() {
     let app = build_router(keyless_state());
     let (status, envelope) = get_json(app, "/server").await;
-    assert_eq!(status, StatusCode::OK, "discovery must succeed: {envelope:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "discovery must succeed: {envelope:?}"
+    );
 
     let payload = assert_unsigned_envelope(&envelope);
     assert_eq!(payload["tier"], serde_json::json!("repository"));
-    assert!(payload.get("pg").is_none(), "repository carries no pg: {payload:?}");
-    assert!(payload.get("alg").is_none(), "repository carries no alg: {payload:?}");
-    assert!(payload.get("pub").is_none(), "repository carries no pub: {payload:?}");
-    assert!(payload.get("tmb").is_none(), "repository carries no tmb: {payload:?}");
+    assert!(
+        payload.get("pg").is_none(),
+        "repository carries no pg: {payload:?}"
+    );
+    assert!(
+        payload.get("alg").is_none(),
+        "repository carries no alg: {payload:?}"
+    );
+    assert!(
+        payload.get("pub").is_none(),
+        "repository carries no pub: {payload:?}"
+    );
+    assert!(
+        payload.get("tmb").is_none(),
+        "repository carries no tmb: {payload:?}"
+    );
 }
 
 // ========================================================================
@@ -199,13 +235,23 @@ async fn keyed_but_unbootstrapped_principal_declares_repository() {
     let key_path = write_signing_key(dir.path());
     let state = keyed_appstate(&dir.path().join("data"), &key_path);
     assert!(state.identity.is_some(), "state is keyed");
-    assert!(state.principal.is_none(), "principal was never bootstrapped");
+    assert!(
+        state.principal.is_none(),
+        "principal was never bootstrapped"
+    );
 
     let app = build_router(Arc::new(state));
     let (status, envelope) = get_json(app, "/server").await;
-    assert_eq!(status, StatusCode::OK, "discovery must succeed: {envelope:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "discovery must succeed: {envelope:?}"
+    );
 
     let payload = assert_unsigned_envelope(&envelope);
     assert_eq!(payload["tier"], serde_json::json!("repository"));
-    assert!(payload.get("pg").is_none(), "repository carries no pg: {payload:?}");
+    assert!(
+        payload.get("pg").is_none(),
+        "repository carries no pg: {payload:?}"
+    );
 }
