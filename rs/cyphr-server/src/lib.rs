@@ -58,6 +58,13 @@ pub struct AppState {
     /// explicitly rather than assume presence.
     pub identity: Option<Arc<auth::ServerIdentity>>,
 
+    /// The server's own Cyphr principal, established on a keyed boot from
+    /// the same signing key as `identity`. `None` in keyless mode, and also
+    /// `None` until [`serve`] has bootstrapped it (construction via
+    /// [`AppState::new`] stays synchronous; the chain is created or loaded
+    /// in the async startup path).
+    pub principal: Option<Arc<auth::principal::ServerPrincipal>>,
+
     /// Single-use challenge store backing the challenge-response login
     /// flow. In-memory and per-process (ruling R8's spirit: no durable
     /// auth state beyond short expiry).
@@ -89,8 +96,44 @@ impl AppState {
             config,
             engine,
             identity,
+            principal: None,
             challenges: auth::login::ChallengeStore::new(),
         })
+    }
+
+    /// Rotate the server's signing key.
+    ///
+    /// Extends the server principal's own chain and rewrites its key file
+    /// (via [`auth::principal::ServerPrincipal::rotate`]), then refreshes the
+    /// live signing identity so token issuance, login, and push admission —
+    /// which read `AppState.identity` — sign and verify with the rotated-in
+    /// key rather than the retired one. Requires the principal to have been
+    /// bootstrapped (a keyed boot) and a configured key path.
+    ///
+    /// Taking `&mut self` is deliberate: the swap must be visible to the
+    /// identity's consumers, so rotation is only possible where the identity
+    /// can actually be updated, never on a shared `Arc<AppState>` behind the
+    /// running router.
+    pub async fn rotate_signing_key(
+        &mut self,
+        new_keypair: &coz::KeyPair,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let principal = self
+            .principal
+            .clone()
+            .ok_or("server has no principal to rotate (keyless or not yet bootstrapped)")?;
+        principal.rotate(&self.engine, new_keypair).await?;
+
+        // Refresh the live signing identity from the rewritten key file, so
+        // the token/login/push-admission consumers of `AppState.identity`
+        // pick up the new key instead of signing with the retired one.
+        let key_path = self
+            .config
+            .signing_key_path
+            .clone()
+            .ok_or("server has no signing key path to rewrite")?;
+        self.identity = Some(Arc::new(auth::ServerIdentity::load_from_path(&key_path)?));
+        Ok(())
     }
 }
 
@@ -135,11 +178,31 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
 /// SIGTERM/SIGINT.
 pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = config.listen.clone();
-    let state = Arc::new(AppState::new(config)?);
+    let mut state = AppState::new(config)?;
 
     // Run incremental reindexing on startup
     state.engine.reindex(&[], false).await?;
 
+    // On a keyed boot, establish (or load) the server's own principal so
+    // its genesis chain exists and is served like any other principal. The
+    // key path is retained so a later rotation can rewrite the key file;
+    // an identity is present exactly when a signing key path is configured.
+    if let (Some(identity), Some(key_path)) = (
+        state.identity.clone(),
+        state.config.signing_key_path.clone(),
+    ) {
+        let principal = auth::principal::ServerPrincipal::bootstrap(
+            &state.engine,
+            identity,
+            &key_path,
+            &state.config.data_dir,
+        )
+        .await?;
+        tracing::info!(pg = %principal.pg(), "server principal established");
+        state.principal = Some(Arc::new(principal));
+    }
+
+    let state = Arc::new(state);
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;

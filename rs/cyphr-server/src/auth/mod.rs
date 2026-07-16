@@ -13,6 +13,7 @@
 
 pub mod login;
 pub mod middleware;
+pub mod principal;
 pub mod token;
 
 use std::path::Path;
@@ -127,6 +128,17 @@ impl ServerIdentity {
         &self.pub_bytes
     }
 
+    /// The raw private key bytes, for constructing and finalizing the
+    /// server's own chain cozies (see [`principal`]).
+    ///
+    /// Crate-private on purpose: this reopens no logging hole (the
+    /// redacting `Debug` impl still governs every `{:?}` path), it only
+    /// lets the sibling `principal` module sign genesis and rotation
+    /// commits with the same key `sign`/`verify` already use.
+    pub(crate) fn prv_key(&self) -> &[u8] {
+        &self.prv_bytes
+    }
+
     /// Sign a Coz `pay` payload with this identity's key.
     ///
     /// Returns `None` if coz rejects the payload or key (e.g. a key whose
@@ -140,6 +152,22 @@ impl ServerIdentity {
     pub fn verify(&self, pay_json: &[u8], sig: &[u8]) -> Option<bool> {
         coz::verify_json(pay_json, sig, self.alg.name(), &self.pub_bytes)
     }
+}
+
+/// Write a keypair to a signing-key file in the on-disk [`KeyFile`] format
+/// that [`ServerIdentity::load_from_path`] reads back.
+///
+/// Used by the server principal's key rotation to persist the freshly
+/// activated key, so a later boot loads the new key rather than the retired
+/// one (see [`principal`]).
+pub(crate) fn write_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
+    let file = KeyFile {
+        alg: kp.alg.name().to_string(),
+        pub_key: kp.pub_bytes.clone(),
+        prv_key: kp.prv_bytes.clone(),
+    };
+    std::fs::write(path, serde_json::to_vec(&file)?)?;
+    Ok(())
 }
 
 /// Wall-clock server time in Unix seconds, shared by every auth surface
