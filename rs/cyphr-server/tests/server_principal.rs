@@ -170,7 +170,7 @@ async fn first_keyed_boot_creates_and_serves_the_principal() {
     let state = keyed_state(&dir.path().join("data"), &key_path);
     let identity = state.identity.clone().expect("keyed state has identity");
 
-    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("first keyed boot bootstraps the principal");
 
@@ -197,9 +197,14 @@ async fn second_boot_loads_without_duplicating_the_chain() {
     let state = keyed_state(&data_dir, &key_path);
     let identity = state.identity.clone().expect("identity");
 
-    let sp1 = ServerPrincipal::bootstrap(&state.engine, identity.clone(), &state.config.data_dir)
-        .await
-        .expect("first boot");
+    let sp1 = ServerPrincipal::bootstrap(
+        &state.engine,
+        identity.clone(),
+        &key_path,
+        &state.config.data_dir,
+    )
+    .await
+    .expect("first boot");
     let pg1 = sp1.pg().to_string();
     let count1 = state
         .engine
@@ -209,9 +214,10 @@ async fn second_boot_loads_without_duplicating_the_chain() {
         .unwrap()
         .commit_count;
 
-    let sp2 = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
-        .await
-        .expect("second boot loads the existing principal");
+    let sp2 =
+        ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+            .await
+            .expect("second boot loads the existing principal");
 
     assert_eq!(sp2.pg(), pg1, "second boot resolves the same PG");
     let count2 = state
@@ -235,7 +241,7 @@ async fn rotation_preserves_pg_and_swaps_active_key() {
     let state = keyed_state(&dir.path().join("data"), &key_path);
     let identity = state.identity.clone().expect("identity");
 
-    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
     let pg_before = sp.pg().to_string();
@@ -283,7 +289,7 @@ async fn reboot_after_rotation_loads_the_rotated_principal() {
     let state = keyed_state(&dir.path().join("data"), &key_path);
     let identity = state.identity.clone().expect("identity");
 
-    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
     let pg = sp.pg().to_string();
@@ -300,9 +306,10 @@ async fn reboot_after_rotation_loads_the_rotated_principal() {
         cyphr_server::auth::ServerIdentity::load_from_path(&key_path)
             .expect("reload the signing key file"),
     );
-    let sp2 = ServerPrincipal::bootstrap(&state.engine, rebooted, &state.config.data_dir)
-        .await
-        .expect("a reboot after rotation must load the principal, not fail on a stale key");
+    let sp2 =
+        ServerPrincipal::bootstrap(&state.engine, rebooted, &key_path, &state.config.data_dir)
+            .await
+            .expect("a reboot after rotation must load the principal, not fail on a stale key");
 
     assert_eq!(sp2.pg(), pg, "reboot resolves the same PG");
 }
@@ -316,7 +323,7 @@ async fn principal_can_rotate_again_after_rotation() {
     let state = keyed_state(&dir.path().join("data"), &key_path);
     let identity = state.identity.clone().expect("identity");
 
-    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &state.config.data_dir)
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
         .await
         .expect("bootstrap");
     let pg = sp.pg().to_string();

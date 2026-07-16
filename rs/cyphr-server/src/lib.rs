@@ -149,11 +149,17 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     state.engine.reindex(&[], false).await?;
 
     // On a keyed boot, establish (or load) the server's own principal so
-    // its genesis chain exists and is served like any other principal.
-    if let Some(identity) = state.identity.clone() {
+    // its genesis chain exists and is served like any other principal. The
+    // key path is retained so a later rotation can rewrite the key file;
+    // an identity is present exactly when a signing key path is configured.
+    if let (Some(identity), Some(key_path)) = (
+        state.identity.clone(),
+        state.config.signing_key_path.clone(),
+    ) {
         let principal = auth::principal::ServerPrincipal::bootstrap(
             &state.engine,
             identity,
+            &key_path,
             &state.config.data_dir,
         )
         .await?;

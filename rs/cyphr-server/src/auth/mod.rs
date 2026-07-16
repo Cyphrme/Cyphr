@@ -154,6 +154,22 @@ impl ServerIdentity {
     }
 }
 
+/// Write a keypair to a signing-key file in the on-disk [`KeyFile`] format
+/// that [`ServerIdentity::load_from_path`] reads back.
+///
+/// Used by the server principal's key rotation to persist the freshly
+/// activated key, so a later boot loads the new key rather than the retired
+/// one (see [`principal`]).
+pub(crate) fn write_key_file(path: &Path, kp: &coz::KeyPair) -> Result<(), AuthError> {
+    let file = KeyFile {
+        alg: kp.alg.name().to_string(),
+        pub_key: kp.pub_bytes.clone(),
+        prv_key: kp.prv_bytes.clone(),
+    };
+    std::fs::write(path, serde_json::to_vec(&file)?)?;
+    Ok(())
+}
+
 /// Wall-clock server time in Unix seconds, shared by every auth surface
 /// that needs "now" for expiry/window checks (login's timestamp window
 /// and token expiry, and route-level bearer verification). A clock set

@@ -11,7 +11,7 @@
 //! Keyless operation is unaffected: with no signing key there is no
 //! principal and nothing here runs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -59,6 +59,10 @@ pub enum ServerPrincipalError {
     /// Reading or writing the on-disk genesis record failed.
     #[error("server principal genesis record io: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Loading or writing the signing-key file failed.
+    #[error("server principal signing key: {0}")]
+    KeyFile(#[from] super::AuthError),
 
     /// The genesis record was not valid JSON in the expected shape.
     #[error("server principal genesis record malformed: {0}")]
@@ -130,26 +134,33 @@ impl GenesisKeyRecord {
 ///
 /// Holds the stable PG (the engine `principal_id` under which the chain is
 /// served) and the material needed to reload and extend that chain. The
-/// private signing key stays inside [`ServerIdentity`].
+/// current signing key is not held in memory: the signing-key file at
+/// `signing_key_path` is the single source of truth, so a rotation that
+/// rewrites that file (and the fresh boot that reads it) can never act on a
+/// stale key.
 pub struct ServerPrincipal {
-    identity: Arc<ServerIdentity>,
     pg: String,
     genesis_key: cyphr::Key,
+    signing_key_path: PathBuf,
 }
 
 impl ServerPrincipal {
     /// Create the server's principal on first keyed boot, or load it on a
     /// later boot. Idempotent: a second boot with the same key finds the
     /// existing chain and creates no duplicate.
+    ///
+    /// `identity` is the key currently on disk at `signing_key_path`; the
+    /// path is retained so [`rotate`](Self::rotate) can rewrite the file.
     pub async fn bootstrap(
         engine: &ServerEngine,
         identity: Arc<ServerIdentity>,
+        signing_key_path: &Path,
         data_dir: &Path,
     ) -> Result<Self, ServerPrincipalError> {
         let state_path = data_dir.join(STATE_FILE);
 
         if state_path.exists() {
-            return Self::load(engine, identity, &state_path).await;
+            return Self::load(engine, &identity, signing_key_path, &state_path).await;
         }
 
         // First keyed boot: the signing key is the sole genesis key.
@@ -171,9 +182,9 @@ impl ServerPrincipal {
         std::fs::write(&state_path, serde_json::to_vec_pretty(&record)?)?;
 
         Ok(Self {
-            identity,
             pg,
             genesis_key,
+            signing_key_path: signing_key_path.to_path_buf(),
         })
     }
 
@@ -186,7 +197,8 @@ impl ServerPrincipal {
     /// loudly rather than silently signing against the wrong chain.
     async fn load(
         engine: &ServerEngine,
-        identity: Arc<ServerIdentity>,
+        identity: &ServerIdentity,
+        signing_key_path: &Path,
         state_path: &Path,
     ) -> Result<Self, ServerPrincipalError> {
         let record: GenesisRecord = serde_json::from_slice(&std::fs::read(state_path)?)?;
@@ -203,15 +215,15 @@ impl ServerPrincipal {
             .load_principal(&record.pg, Genesis::Explicit(vec![genesis_key.clone()]))
             .await?;
 
-        let current_tmb = identity_thumbprint(&identity)?;
+        let current_tmb = identity_thumbprint(identity)?;
         if !principal.is_key_active(&current_tmb) {
             return Err(ServerPrincipalError::RecordMismatch);
         }
 
         Ok(Self {
-            identity,
             pg: record.pg,
             genesis_key,
+            signing_key_path: signing_key_path.to_path_buf(),
         })
     }
 
@@ -230,16 +242,27 @@ impl ServerPrincipal {
     /// Rotate the server's signing key on its own chain: activate
     /// `new_keypair`, retire the current key, leave the PG unchanged.
     ///
-    /// The current signing key authorizes the swap (a `key/replace`), so it
-    /// must still be the chain's active key when this is called. The PG is
-    /// frozen at genesis and is unaffected; only the active key state and
-    /// the chain length advance.
+    /// Both halves of the swap are persisted. The chain is extended with a
+    /// `key/replace` (the public truth), then `new_keypair` is written to
+    /// the signing-key file (the private material). Because the current key
+    /// is read fresh from that file each time, a later boot and a
+    /// subsequent rotation both act on the rotated-in key, never a retired
+    /// one. The PG is frozen at genesis and is unaffected.
+    ///
+    /// The chain is committed before the key file is rewritten: the chain
+    /// is the public truth, and a rare crash in the gap surfaces as a
+    /// loud load-time mismatch on the next boot rather than a silently
+    /// wrong signer.
     pub async fn rotate(
         &self,
         engine: &ServerEngine,
         new_keypair: &coz::KeyPair,
     ) -> Result<(), ServerPrincipalError> {
-        let alg = self.identity.alg().name();
+        // The current active key is whatever the signing-key file holds now
+        // — the genesis key on the first rotation, the previously rotated-in
+        // key on later ones.
+        let current = ServerIdentity::load_from_path(&self.signing_key_path)?;
+        let alg = current.alg().name();
 
         let mut principal = engine
             .load_principal(&self.pg, Genesis::Explicit(vec![self.genesis_key.clone()]))
@@ -254,7 +277,7 @@ impl ServerPrincipal {
             .ok_or(ServerPrincipalError::RecordMismatch)?;
         let now = super::server_now().max(tip.last_updated + 1);
 
-        let signer_tmb = identity_thumbprint(&self.identity)?;
+        let signer_tmb = identity_thumbprint(&current)?;
         let signer_tmb_b64 = Base64UrlUnpadded::encode_string(signer_tmb.as_bytes());
 
         let new_tmb = new_keypair
@@ -279,14 +302,14 @@ impl ServerPrincipal {
             "tmb": signer_tmb_b64,
             "typ": format!("{CHAIN_AUTHORITY}/{}", cyphr::parsed_coz::typ::KEY_REPLACE),
         }));
-        let (sig, czd) = self.sign_pay(&pay)?;
+        let (sig, czd) = sign_pay(&current, &pay)?;
 
         let mut scope = principal.begin_commit();
         scope.verify_and_apply(&pay, &sig, czd, Some(new_key))?;
         let commit = scope.finalize_with_arrow(
             alg,
-            self.identity.prv_key(),
-            self.identity.pub_key(),
+            current.prv_key(),
+            current.pub_key(),
             &signer_tmb,
             now + 1,
             CHAIN_AUTHORITY,
@@ -310,21 +333,27 @@ impl ServerPrincipal {
             )
             .await?;
 
+        // Persist the private half: the retired key must not remain on disk,
+        // or a later boot would load an inactive key and refuse to start.
+        super::write_key_file(&self.signing_key_path, new_keypair)?;
+
         Ok(())
     }
+}
 
-    /// Sign a canonical pay with the server's identity key, returning the
-    /// signature and its coz digest.
-    fn sign_pay(&self, pay: &[u8]) -> Result<(Vec<u8>, coz::Czd), ServerPrincipalError> {
-        let alg = self.identity.alg().name();
-        let (sig, cad) = self
-            .identity
-            .sign(pay)
-            .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
-        let czd = coz::czd_for_alg(&cad, &sig, alg)
-            .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
-        Ok((sig, czd))
-    }
+/// Sign a canonical pay with `identity`, returning the signature and its
+/// coz digest.
+fn sign_pay(
+    identity: &ServerIdentity,
+    pay: &[u8],
+) -> Result<(Vec<u8>, coz::Czd), ServerPrincipalError> {
+    let alg = identity.alg().name();
+    let (sig, cad) = identity
+        .sign(pay)
+        .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+    let czd = coz::czd_for_alg(&cad, &sig, alg)
+        .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+    Ok((sig, czd))
 }
 
 /// The thumbprint of the server's current signing key.
