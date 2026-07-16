@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod envelope;
 pub mod error;
 pub mod logging;
 pub mod routes;
