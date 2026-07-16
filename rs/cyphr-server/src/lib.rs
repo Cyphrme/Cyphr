@@ -100,6 +100,24 @@ impl AppState {
             challenges: auth::login::ChallengeStore::new(),
         })
     }
+
+    /// Rotate the server's signing key.
+    ///
+    /// Extends the server principal's own chain and rewrites its key file
+    /// (via [`auth::principal::ServerPrincipal::rotate`]). Requires the
+    /// principal to have been bootstrapped (a keyed boot) and a configured
+    /// key path.
+    pub async fn rotate_signing_key(
+        &mut self,
+        new_keypair: &coz::KeyPair,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let principal = self
+            .principal
+            .clone()
+            .ok_or("server has no principal to rotate (keyless or not yet bootstrapped)")?;
+        principal.rotate(&self.engine, new_keypair).await?;
+        Ok(())
+    }
 }
 
 // ========================================================================

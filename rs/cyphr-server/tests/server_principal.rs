@@ -39,13 +39,18 @@ fn write_signing_key(dir: &std::path::Path) -> (std::path::PathBuf, coz::KeyPair
 /// Build a keyed `AppState` whose storage lives under `data_dir` and whose
 /// signing key is `key_path`. Mirrors what `serve` constructs before it
 /// bootstraps the principal (which these tests drive directly).
-fn keyed_state(data_dir: &std::path::Path, key_path: &std::path::Path) -> Arc<AppState> {
+fn keyed_appstate(data_dir: &std::path::Path, key_path: &std::path::Path) -> AppState {
     let config = ServerConfig {
         data_dir: data_dir.to_path_buf(),
         signing_key_path: Some(key_path.to_path_buf()),
         ..Default::default()
     };
-    Arc::new(AppState::new(config).expect("keyed AppState opens"))
+    AppState::new(config).expect("keyed AppState opens")
+}
+
+/// `Arc`-wrapped keyed state for tests that only read it.
+fn keyed_state(data_dir: &std::path::Path, key_path: &std::path::Path) -> Arc<AppState> {
+    Arc::new(keyed_appstate(data_dir, key_path))
 }
 
 /// The tmb of a keypair, as the domain `Thumbprint`.
@@ -357,5 +362,52 @@ async fn principal_can_rotate_again_after_rotation() {
     assert!(
         tip.commit_count >= 3,
         "genesis plus two rotations extend the chain"
+    );
+}
+
+/// After a rotation, the live signing identity that token issuance and login
+/// read (`AppState.identity`) must be the rotated-in key: a token issued now
+/// is signed by the new key, not the retired one. This catches a rotation
+/// that updates the chain and key file but leaves the in-memory identity
+/// (the token/login consumer) stale.
+#[tokio::test]
+async fn token_after_rotation_is_signed_by_the_new_key() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (key_path, _kp) = write_signing_key(dir.path());
+    let mut state = keyed_appstate(&dir.path().join("data"), &key_path);
+    let identity = state.identity.clone().expect("identity");
+
+    let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+        .await
+        .expect("bootstrap");
+    state.principal = Some(Arc::new(sp));
+
+    let new_kp = coz::Alg::Ed25519.generate_keypair();
+    state
+        .rotate_signing_key(&new_kp)
+        .await
+        .expect("rotate the signing key through AppState");
+
+    // Issue a token through the same handle login and token verification use.
+    let now = 1_800_000_000i64;
+    let token = state
+        .identity
+        .as_ref()
+        .expect("identity present after rotation")
+        .issue_token("some-principal", vec!["read".to_string()], now, 900)
+        .expect("issue token");
+
+    // The token carries the issuing key's thumbprint; after rotation it must
+    // be the new key's, proving the token was signed by the rotated-in key.
+    let claims = state
+        .identity
+        .as_ref()
+        .unwrap()
+        .verify_token(&token, now)
+        .expect("the current identity verifies its own token");
+    let new_tmb_b64 = Base64UrlUnpadded::encode_string(tmb_of(&new_kp).as_bytes());
+    assert_eq!(
+        claims.tmb, new_tmb_b64,
+        "a token issued after rotation must be signed by the rotated-in key"
     );
 }
