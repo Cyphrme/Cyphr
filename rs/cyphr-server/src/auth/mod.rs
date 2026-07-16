@@ -128,6 +128,17 @@ impl ServerIdentity {
         &self.pub_bytes
     }
 
+    /// The raw private key bytes, for constructing and finalizing the
+    /// server's own chain cozies (see [`principal`]).
+    ///
+    /// Crate-private on purpose: this reopens no logging hole (the
+    /// redacting `Debug` impl still governs every `{:?}` path), it only
+    /// lets the sibling `principal` module sign genesis and rotation
+    /// commits with the same key `sign`/`verify` already use.
+    pub(crate) fn prv_key(&self) -> &[u8] {
+        &self.prv_bytes
+    }
+
     /// Sign a Coz `pay` payload with this identity's key.
     ///
     /// Returns `None` if coz rejects the payload or key (e.g. a key whose

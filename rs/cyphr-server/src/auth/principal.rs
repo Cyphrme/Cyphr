@@ -14,12 +14,29 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_storage::Genesis;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
 use super::ServerIdentity;
 
 /// `first_seen` stamped on the server's genesis key. Fixed (not wall-clock)
 /// so the genesis key — and therefore the PG derived from it — is
 /// reproducible: the same signing key always yields the same principal.
 pub const GENESIS_FIRST_SEEN: i64 = 0;
+
+/// The `typ` authority segment of the server's own chain cozies (SPEC
+/// §7.2). Unlike a login audience, this segment is never matched against an
+/// external value — it is only formatted into the `typ` and signed over
+/// consistently (see `cyphr::commit`'s `finalize_with_arrow`), so a fixed
+/// value is sufficient. It matches the authority the rest of the corpus
+/// uses for constructed chains.
+const CHAIN_AUTHORITY: &str = "cyphr.me";
+
+/// File under the data directory that records where the server's own chain
+/// lives, so a later boot loads it instead of creating a second one.
+const STATE_FILE: &str = "server-principal.json";
 
 /// The concrete storage engine the server runs on.
 type ServerEngine = cyphr_storage::engine::StorageEngine<
@@ -47,15 +64,66 @@ pub enum ServerPrincipalError {
     #[error("server principal genesis record malformed: {0}")]
     Malformed(#[from] serde_json::Error),
 
-    /// coz rejected the server key while signing a chain coz.
+    /// coz rejected the server key while signing a chain coz, or a stored
+    /// key record could not be decoded.
     #[error("server key cannot sign chain cozies for algorithm {0}")]
     Signing(String),
 
-    /// A persisted genesis record does not match the configured key, or
-    /// its chain is missing from storage — the data directory and key file
-    /// have drifted apart.
+    /// A persisted genesis record points at a chain that is missing from
+    /// storage, or the configured key file is not an active key of that
+    /// chain — the data directory and key file have drifted apart.
     #[error("server principal genesis record does not match the configured key or its chain")]
     RecordMismatch,
+}
+
+/// On-disk record locating the server's own chain between boots.
+///
+/// Holds only public material: the stable PG (the engine `principal_id`)
+/// and the sole genesis key needed to reconstruct the chain via
+/// `Genesis::Explicit`. The private signing key stays in the separate key
+/// file, and this record survives a key rotation unchanged — after a
+/// rotation the key file holds a different key, but the *genesis* key
+/// recorded here does not change, so the chain remains loadable.
+#[derive(Serialize, Deserialize)]
+struct GenesisRecord {
+    pg: String,
+    genesis_key: GenesisKeyRecord,
+}
+
+/// The public fields of the genesis key, base64url-encoded.
+#[derive(Serialize, Deserialize)]
+struct GenesisKeyRecord {
+    alg: String,
+    pub_key: String,
+    tmb: String,
+    first_seen: i64,
+}
+
+impl GenesisKeyRecord {
+    fn from_key(key: &cyphr::Key) -> Self {
+        Self {
+            alg: key.alg.clone(),
+            pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
+            tmb: Base64UrlUnpadded::encode_string(key.tmb.as_bytes()),
+            first_seen: key.first_seen,
+        }
+    }
+
+    fn to_key(&self) -> Result<cyphr::Key, ServerPrincipalError> {
+        let pub_key = Base64UrlUnpadded::decode_vec(&self.pub_key)
+            .map_err(|_| ServerPrincipalError::RecordMismatch)?;
+        let tmb = Base64UrlUnpadded::decode_vec(&self.tmb)
+            .map_err(|_| ServerPrincipalError::RecordMismatch)?;
+        Ok(cyphr::Key {
+            alg: self.alg.clone(),
+            tmb: coz::Thumbprint::from_bytes(tmb),
+            pub_key,
+            first_seen: self.first_seen,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        })
+    }
 }
 
 /// The server acting as its own Cyphr principal.
@@ -74,23 +142,76 @@ impl ServerPrincipal {
     /// later boot. Idempotent: a second boot with the same key finds the
     /// existing chain and creates no duplicate.
     pub async fn bootstrap(
-        _engine: &ServerEngine,
+        engine: &ServerEngine,
         identity: Arc<ServerIdentity>,
-        _data_dir: &Path,
+        data_dir: &Path,
     ) -> Result<Self, ServerPrincipalError> {
-        // STUB: real bootstrap not yet implemented.
+        let state_path = data_dir.join(STATE_FILE);
+
+        if state_path.exists() {
+            return Self::load(engine, identity, &state_path).await;
+        }
+
+        // First keyed boot: the signing key is the sole genesis key.
+        let genesis_key = genesis_key_from_identity(&identity)?;
+        let (pg, blobs) = build_genesis(&identity, &genesis_key)?;
+        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(
+                &pg,
+                Some(Genesis::Explicit(vec![genesis_key.clone()])),
+                &blob_refs,
+            )
+            .await?;
+
+        let record = GenesisRecord {
+            pg: pg.clone(),
+            genesis_key: GenesisKeyRecord::from_key(&genesis_key),
+        };
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&record)?)?;
+
         Ok(Self {
             identity,
-            pg: String::new(),
-            genesis_key: cyphr::Key {
-                alg: String::new(),
-                tmb: coz::Thumbprint::from_bytes(Vec::new()),
-                pub_key: Vec::new(),
-                first_seen: 0,
-                last_used: None,
-                revocation: None,
-                tag: None,
-            },
+            pg,
+            genesis_key,
+        })
+    }
+
+    /// Load an already-established principal recorded at `state_path`.
+    ///
+    /// The genesis key comes from the record (not the current key file):
+    /// after a rotation the two differ, and only the genesis key can
+    /// reconstruct the chain. The current key file is verified to still be
+    /// an active key of that chain, so a key/data-directory mismatch fails
+    /// loudly rather than silently signing against the wrong chain.
+    async fn load(
+        engine: &ServerEngine,
+        identity: Arc<ServerIdentity>,
+        state_path: &Path,
+    ) -> Result<Self, ServerPrincipalError> {
+        let record: GenesisRecord = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        let genesis_key = record.genesis_key.to_key()?;
+
+        // A record with no served chain (e.g. the index was wiped out from
+        // under it) must fail loudly, not silently "load" the nascent
+        // principal `load_principal` would reconstruct from genesis alone.
+        if engine.get_tip(&record.pg).await?.is_none() {
+            return Err(ServerPrincipalError::RecordMismatch);
+        }
+
+        let principal = engine
+            .load_principal(&record.pg, Genesis::Explicit(vec![genesis_key.clone()]))
+            .await?;
+
+        let current_tmb = identity_thumbprint(&identity)?;
+        if !principal.is_key_active(&current_tmb) {
+            return Err(ServerPrincipalError::RecordMismatch);
+        }
+
+        Ok(Self {
+            identity,
+            pg: record.pg,
+            genesis_key,
         })
     }
 
@@ -108,14 +229,198 @@ impl ServerPrincipal {
 
     /// Rotate the server's signing key on its own chain: activate
     /// `new_keypair`, retire the current key, leave the PG unchanged.
+    ///
+    /// The current signing key authorizes the swap (a `key/replace`), so it
+    /// must still be the chain's active key when this is called. The PG is
+    /// frozen at genesis and is unaffected; only the active key state and
+    /// the chain length advance.
     pub async fn rotate(
         &self,
-        _engine: &ServerEngine,
-        _new_keypair: &coz::KeyPair,
+        engine: &ServerEngine,
+        new_keypair: &coz::KeyPair,
     ) -> Result<(), ServerPrincipalError> {
-        // STUB: real rotation not yet implemented.
-        let _ = &self.identity;
-        let _ = &self.genesis_key;
-        Err(ServerPrincipalError::RecordMismatch)
+        let alg = self.identity.alg().name();
+
+        let mut principal = engine
+            .load_principal(&self.pg, Genesis::Explicit(vec![self.genesis_key.clone()]))
+            .await?;
+
+        // Keep the new coz strictly monotonic over the chain's latest
+        // timestamp even when rotation lands in the same wall-clock second
+        // as an earlier commit (chain `now` is caller-set i64 seconds).
+        let tip = engine
+            .get_tip(&self.pg)
+            .await?
+            .ok_or(ServerPrincipalError::RecordMismatch)?;
+        let now = super::server_now().max(tip.last_updated + 1);
+
+        let signer_tmb = identity_thumbprint(&self.identity)?;
+        let signer_tmb_b64 = Base64UrlUnpadded::encode_string(signer_tmb.as_bytes());
+
+        let new_tmb = new_keypair
+            .alg
+            .compute_thumbprint(&new_keypair.pub_bytes)
+            .ok_or_else(|| ServerPrincipalError::Signing(new_keypair.alg.name().to_string()))?;
+        let new_tmb_b64 = Base64UrlUnpadded::encode_string(new_tmb.as_bytes());
+        let new_key = cyphr::Key {
+            alg: new_keypair.alg.name().to_string(),
+            tmb: new_tmb,
+            pub_key: new_keypair.pub_bytes.clone(),
+            first_seen: now,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        };
+
+        let pay = canonical_pay(json!({
+            "alg": alg,
+            "id": new_tmb_b64,
+            "now": now,
+            "tmb": signer_tmb_b64,
+            "typ": format!("{CHAIN_AUTHORITY}/{}", cyphr::parsed_coz::typ::KEY_REPLACE),
+        }));
+        let (sig, czd) = self.sign_pay(&pay)?;
+
+        let mut scope = principal.begin_commit();
+        scope.verify_and_apply(&pay, &sig, czd, Some(new_key))?;
+        let commit = scope.finalize_with_arrow(
+            alg,
+            self.identity.prv_key(),
+            self.identity.pub_key(),
+            &signer_tmb,
+            now + 1,
+            CHAIN_AUTHORITY,
+        )?;
+        let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw())?;
+        let kr_blob = raw_blob(
+            &pay,
+            &sig,
+            Some(json!({
+                "alg": new_keypair.alg.name(),
+                "pub": Base64UrlUnpadded::encode_string(&new_keypair.pub_bytes),
+                "tmb": new_tmb_b64,
+            })),
+        )?;
+
+        engine
+            .submit_commit(
+                &self.pg,
+                Some(Genesis::Explicit(vec![self.genesis_key.clone()])),
+                &[&kr_blob, &cc_blob],
+            )
+            .await?;
+
+        Ok(())
     }
+
+    /// Sign a canonical pay with the server's identity key, returning the
+    /// signature and its coz digest.
+    fn sign_pay(&self, pay: &[u8]) -> Result<(Vec<u8>, coz::Czd), ServerPrincipalError> {
+        let alg = self.identity.alg().name();
+        let (sig, cad) = self
+            .identity
+            .sign(pay)
+            .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+        let czd = coz::czd_for_alg(&cad, &sig, alg)
+            .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+        Ok((sig, czd))
+    }
+}
+
+/// The thumbprint of the server's current signing key.
+fn identity_thumbprint(identity: &ServerIdentity) -> Result<coz::Thumbprint, ServerPrincipalError> {
+    identity
+        .alg()
+        .compute_thumbprint(identity.pub_key())
+        .ok_or_else(|| ServerPrincipalError::Signing(identity.alg().name().to_string()))
+}
+
+/// Build the sole genesis key from the server's signing identity.
+fn genesis_key_from_identity(
+    identity: &ServerIdentity,
+) -> Result<cyphr::Key, ServerPrincipalError> {
+    Ok(cyphr::Key {
+        alg: identity.alg().name().to_string(),
+        tmb: identity_thumbprint(identity)?,
+        pub_key: identity.pub_key().to_vec(),
+        first_seen: GENESIS_FIRST_SEEN,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    })
+}
+
+/// Construct and sign the two-coz genesis commit (principal/create +
+/// commit/create) for a single-key explicit genesis, returning the PG and
+/// the wire blobs ready for `submit_commit`.
+fn build_genesis(
+    identity: &ServerIdentity,
+    genesis_key: &cyphr::Key,
+) -> Result<(String, Vec<Vec<u8>>), ServerPrincipalError> {
+    let alg = identity.alg().name();
+    let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes());
+
+    // The PG is the nascent PR of the fresh explicit genesis — computed
+    // before any commit and independent of timestamps, so it is the same
+    // every time this key bootstraps.
+    let mut client = cyphr::Principal::explicit(vec![genesis_key.clone()])?;
+    let pg = client.pr_tagged()?;
+
+    let now = super::server_now();
+    let pc_pay = canonical_pay(json!({
+        "alg": alg,
+        "id": pg,
+        "now": now,
+        "tmb": tmb_b64,
+        "typ": format!("{CHAIN_AUTHORITY}/{}", cyphr::parsed_coz::typ::PRINCIPAL_CREATE),
+    }));
+    let (pc_sig, pc_cad) = identity
+        .sign(&pc_pay)
+        .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+    let pc_czd = coz::czd_for_alg(&pc_cad, &pc_sig, alg)
+        .ok_or_else(|| ServerPrincipalError::Signing(alg.to_string()))?;
+
+    let mut scope = client.begin_commit();
+    scope.verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)?;
+    let commit = scope.finalize_with_arrow(
+        alg,
+        identity.prv_key(),
+        identity.pub_key(),
+        &genesis_key.tmb,
+        now + 1,
+        CHAIN_AUTHORITY,
+    )?;
+
+    let cc_blob = serde_json::to_vec(commit.commit_tx().0[0].raw())?;
+    let pc_blob = raw_blob(&pc_pay, &pc_sig, None)?;
+    Ok((pg, vec![pc_blob, cc_blob]))
+}
+
+/// Serialize a pay object with keys sorted, matching the server's
+/// re-canonicalization so the signature verifies against re-derived bytes.
+fn canonical_pay(mut pay: serde_json::Value) -> Vec<u8> {
+    pay.as_object_mut()
+        .expect("pay is a JSON object")
+        .sort_keys();
+    serde_json::to_vec(&pay).expect("a serde_json::Value re-serializes")
+}
+
+/// Assemble a wire coz blob (`{pay, sig, key?}`) as `submit_commit` parses
+/// it, embedding key material for a key-introducing coz.
+fn raw_blob(
+    pay_bytes: &[u8],
+    sig: &[u8],
+    embedded_key: Option<serde_json::Value>,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let pay: serde_json::Value = serde_json::from_slice(pay_bytes)?;
+    let mut obj = serde_json::Map::new();
+    obj.insert("pay".to_string(), pay);
+    obj.insert(
+        "sig".to_string(),
+        json!(Base64UrlUnpadded::encode_string(sig)),
+    );
+    if let Some(key) = embedded_key {
+        obj.insert("key".to_string(), key);
+    }
+    serde_json::to_vec(&serde_json::Value::Object(obj))
 }
