@@ -104,9 +104,16 @@ impl AppState {
     /// Rotate the server's signing key.
     ///
     /// Extends the server principal's own chain and rewrites its key file
-    /// (via [`auth::principal::ServerPrincipal::rotate`]). Requires the
-    /// principal to have been bootstrapped (a keyed boot) and a configured
-    /// key path.
+    /// (via [`auth::principal::ServerPrincipal::rotate`]), then refreshes the
+    /// live signing identity so token issuance, login, and push admission —
+    /// which read `AppState.identity` — sign and verify with the rotated-in
+    /// key rather than the retired one. Requires the principal to have been
+    /// bootstrapped (a keyed boot) and a configured key path.
+    ///
+    /// Taking `&mut self` is deliberate: the swap must be visible to the
+    /// identity's consumers, so rotation is only possible where the identity
+    /// can actually be updated, never on a shared `Arc<AppState>` behind the
+    /// running router.
     pub async fn rotate_signing_key(
         &mut self,
         new_keypair: &coz::KeyPair,
@@ -116,6 +123,16 @@ impl AppState {
             .clone()
             .ok_or("server has no principal to rotate (keyless or not yet bootstrapped)")?;
         principal.rotate(&self.engine, new_keypair).await?;
+
+        // Refresh the live signing identity from the rewritten key file, so
+        // the token/login/push-admission consumers of `AppState.identity`
+        // pick up the new key instead of signing with the retired one.
+        let key_path = self
+            .config
+            .signing_key_path
+            .clone()
+            .ok_or("server has no signing key path to rewrite")?;
+        self.identity = Some(Arc::new(auth::ServerIdentity::load_from_path(&key_path)?));
         Ok(())
     }
 }
