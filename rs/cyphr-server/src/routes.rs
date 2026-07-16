@@ -12,6 +12,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::envelope::Envelope;
 use crate::error::AppError;
 
 // ========================================================================
@@ -59,6 +60,9 @@ pub struct TipResponse {
     pub pr: String,
     pub sr: String,
     pub ar: String,
+    /// Current Commit Root (empty string if no commit has populated the
+    /// EML log yet). `docs/specs/http-envelope.md` `[envelope-r-cr]`.
+    pub cr: String,
     pub commit_id: String,
     pub commit_count: u64,
     pub last_updated: i64,
@@ -105,15 +109,16 @@ pub async fn tip(
         .map_err(AppError::engine)?;
 
     match tip {
-        Some(t) => Ok(Json(TipResponse {
+        Some(t) => Ok(Json(Envelope::unsigned(TipResponse {
             principal_id: t.principal_id,
             pr: t.pr,
             sr: t.sr,
             ar: t.ar,
+            cr: t.cr,
             commit_id: t.commit_id,
             commit_count: t.commit_count,
             last_updated: t.last_updated,
-        })),
+        }))),
         None => Err(AppError::not_found(format!(
             "principal {} not found",
             query.pr
@@ -150,10 +155,10 @@ pub async fn patch(
         })
         .collect();
 
-    Ok(Json(PatchResponseBody {
+    Ok(Json(Envelope::unsigned(PatchResponseBody {
         principal_id: response.principal_id,
         entries,
-    }))
+    })))
 }
 
 /// `POST /push` — accept and validate a signed commit bundle.
@@ -211,9 +216,9 @@ pub async fn push(
 
     Ok((
         StatusCode::CREATED,
-        Json(PushResponse {
+        Json(Envelope::unsigned(PushResponse {
             blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
-        }),
+        })),
     ))
 }
 
