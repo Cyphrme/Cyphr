@@ -146,4 +146,83 @@ mod tests {
         assert_eq!(nested["pay"], coz.pay);
         assert!(nested["sig"].is_string(), "coz sig serializes as base64url");
     }
+
+    // ====================================================================
+    // Round-trip properties (proptest)
+    // ====================================================================
+
+    use proptest::prelude::*;
+    use serde::{Deserialize, Serialize};
+
+    /// A stand-in payload for round-trip coverage. The envelope is generic
+    /// over its payload; a small concrete type exercises the container
+    /// without coupling these tests to any route's response struct.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct DemoPayload {
+        principal_id: String,
+        commit_count: u64,
+    }
+
+    prop_compose! {
+        /// An arbitrary coz `{pay, sig}`: a small object payload and
+        /// arbitrary signature bytes (base64url on the wire).
+        fn arb_coz()(
+            typ in ".*",
+            now in any::<i64>(),
+            sig in prop::collection::vec(any::<u8>(), 0..80),
+        ) -> coz::CozJson {
+            coz::CozJson {
+                pay: serde_json::json!({ "typ": typ, "now": now }),
+                sig,
+            }
+        }
+    }
+
+    fn arb_statement() -> impl Strategy<Value = Statement> {
+        prop_oneof![
+            Just(Statement::Unsigned),
+            arb_coz().prop_map(Statement::Signed)
+        ]
+    }
+
+    prop_compose! {
+        fn arb_envelope()(
+            v in any::<u32>(),
+            principal_id in ".*",
+            commit_count in any::<u64>(),
+            statement in arb_statement(),
+        ) -> Envelope<DemoPayload> {
+            Envelope {
+                v,
+                payload: DemoPayload { principal_id, commit_count },
+                statement,
+            }
+        }
+    }
+
+    proptest! {
+        /// Serializing then parsing then re-serializing is the identity on
+        /// the wire, for both forms. Wire idempotence is the meaningful
+        /// property (coz carries no `PartialEq`, so value equality is not
+        /// available); it catches any asymmetry between the serialize and
+        /// deserialize paths.
+        #[test]
+        fn envelope_round_trips_on_the_wire(env in arb_envelope()) {
+            let wire = serde_json::to_string(&env).unwrap();
+            let parsed: Envelope<DemoPayload> = serde_json::from_str(&wire).unwrap();
+            let rewire = serde_json::to_string(&parsed).unwrap();
+            prop_assert_eq!(wire, rewire);
+        }
+
+        /// The load-bearing fields -- the version and the signed/unsigned
+        /// discriminant -- survive a round trip unchanged.
+        #[test]
+        fn version_and_signed_flag_survive_round_trip(env in arb_envelope()) {
+            let wire = serde_json::to_string(&env).unwrap();
+            let parsed: Envelope<DemoPayload> = serde_json::from_str(&wire).unwrap();
+            prop_assert_eq!(parsed.v, env.v);
+            prop_assert_eq!(parsed.is_signed(), env.is_signed());
+            prop_assert_eq!(parsed.payload, env.payload);
+        }
+    }
 }
