@@ -258,6 +258,17 @@ impl ServerPrincipal {
     /// key file over an unrotated chain — would be a quieter, more confusing
     /// wreck, so it is avoided. This residual crash window is not closed
     /// here; it is made loud rather than silent.
+    ///
+    /// This persists the chain and key file only. It does NOT refresh the
+    /// running process's live signing identity — the in-memory
+    /// `AppState.identity` that login and token issuance read — which stays
+    /// on the retired key until the process reloads it from the file (on a
+    /// fresh boot, or via [`AppState::rotate_signing_key`](crate::AppState::rotate_signing_key)
+    /// on an owned `AppState`). Nothing in the shipped code invokes a
+    /// rotation on a live server today. Whoever later wires a live rotation
+    /// trigger MUST also refresh the running process's identity view, not
+    /// just the file and chain, or authenticated flows will keep signing
+    /// with the retired key until the next restart.
     pub async fn rotate(
         &self,
         engine: &ServerEngine,
