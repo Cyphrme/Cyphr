@@ -31,11 +31,11 @@ signs it (`src/receipt.rs`), and the genesis-key extension to `GET
 /server`'s attestor payload (`src/routes.rs`'s `IdentityResponse`).
 
 **Scope boundary:** This document covers exactly what an attestor signs
-into `/push` and `/tip`, and the offline verification procedure those
-signatures enable. It does not cover equivocation detection (comparing
-two receipts for the same principal and sequence) or third-party
-key-inclusion proofs -- both are later, separate designs built on top of
-the claim schema this document pins.
+into `/push` and `/tip`, the offline verification procedure those
+signatures enable, and tip-vs-tip equivocation evidence built on top of
+that claim schema (below). It does not cover cross-kind equivocation
+(commit receipt vs. tip report) or third-party key-inclusion proofs --
+both are later, separate designs.
 
 ## The attestor condition
 
@@ -211,10 +211,77 @@ step trusts a bare assertion from the server under scrutiny.
 
 `VERIFIED: rs/cyphr-server/tests/receipts.rs -- offline_verification_replays_chain_and_verifies_commit_receipt`
 
+## Equivocation evidence
+
+Two conflicting signed tip reports about the same principal state are
+portable, self-contained proof of server misbehavior: a verifier
+holding both raw receipts needs nothing further to demonstrate the
+server signed two different, mutually exclusive claims about the
+identical chain position -- the same shape of evidence Certificate
+Transparency's split-view detection and KERI's duplicity model both
+rest on. Detection is verifier-side and stateless: the server neither
+detects nor stores anything toward this; the check is a pure function
+a verifier runs on bytes it already retained.
+
+### The pinned predicate
+
+Two cozies are a proven equivocation if and only if:
+
+1. Both pays carry `typ == TIP_REPORT_TYP` -- a commit receipt
+   smuggled in as either side is rejected outright, not diagnosed
+   further.
+2. EACH signature verifies under its own caller-supplied key. The
+   helper takes TWO keys, one per receipt -- possibly identical (the
+   same-key case is the degenerate form of a cross-key-rotation
+   pair). The caller MUST have already verified both keys as active
+   keys of the SAME server principal's chain at each receipt's `now`,
+   via the offline verification procedure above; the helper never
+   resolves or chain-checks keys itself, which is what keeps it pure
+   while still covering the cross-rotation case -- the server's
+   identity is its CHAIN, not any single key.
+3. Both claim the same `pr` AND the same `sequence`.
+4. They differ in `commit_id` OR in any `roots` field.
+
+Anything else is a diagnosed non-equivocation, distinguished by
+outcome: wrong `typ`, an unverifiable signature, a different
+principal, a different sequence, or claim-identical reports (no
+conflict at all).
+
+`VERIFIED: rs/cyphr-server/src/receipt.rs -- EquivocationVerdict, check_equivocation; rs/cyphr-server/tests/equivocation.rs -- all seven arms`
+
+### What a verifier retains
+
+Exactly two things, nothing else: the two raw receipt cozies (`pay`
+and `sig` together, byte-exact) and the server-chain segment that
+binds BOTH signing keys as active for the attested principal at each
+receipt's `now` (the segment may span a rotation, so the two keys can
+differ). No server cooperation, no additional server-side record, and
+no timestamp beyond what the receipts themselves carry is needed to
+reconstruct or re-check the proof later.
+
+### What the server cannot deny
+
+Both statements carry the server's own signature over conflicting
+facts about the same chain position. A signature the server's key
+produced is not repudiable by the server after the fact -- the same
+non-repudiation property the claim schema above gives every receipt --
+so a verifier holding both cozies holds proof the server made two
+irreconcilable claims about one commit sequence, independent of
+whether the server admits, explains, or disputes it.
+
+### Deferred: cross-kind conflict
+
+This predicate pins tip-vs-tip only. A commit receipt (`/push`) and a
+tip report (`/tip`) making conflicting claims about the same
+`pr`/`sequence` is a distinct, later extension: comparing across the
+two `typ` constants requires deciding which claims are even
+comparable between the two schemas (a tip report carries
+`commit_count`/`last_updated`; a commit receipt does not), which this
+document does not settle. `check_equivocation` rejects a mixed-`typ`
+pair outright rather than attempting a partial comparison.
+
 ## Roadmap: not built here
 
-Equivocation detection -- comparing two receipts sharing the same `pr`
-and `sequence` but differing `commit_id`/`roots` -- and third-party
-key-inclusion proofs are both later designs. The claim schema above is
-what makes that comparison well-defined; building the comparison itself
-is out of scope for this document.
+Third-party key-inclusion proofs, and cross-kind equivocation (commit
+receipt vs. tip report, "Deferred: cross-kind conflict" above), are
+both later designs, out of scope for this document.
