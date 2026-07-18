@@ -1050,6 +1050,23 @@ impl<S: eml::Storage> Principal<S> {
             .map_err(|e| Error::Storage(e.to_string()))
     }
 
+    /// Generate an inclusion proof for this principal's current State Root
+    /// (SR), as PT cell 0's payload, in the Principal Root (PR), for hash
+    /// algorithm `alg` — hop 4 of [`Self::key_inclusion_proof`]'s 4-hop
+    /// KT -> AR-node -> SR-node -> PT chain, exposed standalone because
+    /// [`Self::pt`](#structfield.pt) is crate-internal: a portable verifier
+    /// ([`crate::inclusion::verify_key_inclusion`]) that never owns this
+    /// `Principal` still needs hop 4's material to assemble the chain
+    /// itself (issue #19).
+    ///
+    /// Returns `None` if `alg` has no PT registration, mirroring
+    /// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`].
+    #[must_use]
+    pub fn sr_inclusion_proof(&self, alg: HashAlg) -> Option<polydigest::LeafProof> {
+        let alg_id = crate::commit_root::hash_alg_to_u64(alg);
+        self.pt.sr_inclusion_proof(alg_id)
+    }
+
     /// Verify that transaction `tr`, claimed at commit `index`, is really
     /// included under this principal's *current* Principal Root (PR), for
     /// hash algorithm `alg` — by chaining two independent, already-existing
@@ -3485,6 +3502,48 @@ mod tests {
         assert_eq!(principal.pr().get(alg), Some(tmb.as_bytes()));
 
         assert!(principal.verify_key_inclusion(alg, &tmb).unwrap());
+    }
+
+    /// N7 (issue #19) — [`Principal::sr_inclusion_proof`] is the public
+    /// accessor a portable, third-party verifier needs for hop 4 (SR-in-PT)
+    /// of the chained key-inclusion proof, since [`Principal::pt`] itself is
+    /// crate-internal. It must return exactly the same leaf proof
+    /// [`Principal::key_inclusion_proof`] already generates internally, and
+    /// that proof must verify standalone against the current PR.
+    #[test]
+    fn sr_inclusion_proof_matches_hop_four() {
+        let (principal, keys) = build_multi_alg_principal_with_commits(3);
+        let alg = HashAlg::Sha256;
+        let tmb = keys[0].tmb.clone();
+
+        let path = principal.key_inclusion_proof(alg, &tmb).unwrap();
+        let hop4 = principal
+            .sr_inclusion_proof(alg)
+            .expect("alg is registered on this principal's PT");
+
+        assert_eq!(
+            hop4.leaf_hash, path.hops[3].proof.leaf_hash,
+            "the accessor must return the exact hop 4 key_inclusion_proof already generates"
+        );
+
+        let hasher = MaltHasher::new(alg);
+        let pr_bytes = principal.pr().get(alg).unwrap();
+        let skeleton = polydigest::rebalanced_skeleton(hop4.tree_size, hop4.arity, hop4.index)
+            .expect("valid skeleton");
+        assert!(
+            hop4.verify(&hasher, &skeleton, pr_bytes),
+            "sr_inclusion_proof must verify standalone against the current PR"
+        );
+    }
+
+    /// N7 (issue #19) — an algorithm never registered on the principal's PT
+    /// has no hop 4 to give; the accessor must mirror
+    /// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`]'s own
+    /// `None` behavior rather than panicking.
+    #[test]
+    fn sr_inclusion_proof_none_for_unregistered_algorithm() {
+        let (principal, _keys) = build_principal_with_commits(1);
+        assert!(principal.sr_inclusion_proof(HashAlg::Sha512).is_none());
     }
 
     /// c3/a3 — the bridge loop itself, isolated from the hop-verify loop.
