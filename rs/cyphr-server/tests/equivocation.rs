@@ -387,6 +387,45 @@ async fn cross_key_pair_proves_equivocation() {
     );
 }
 
+/// A same-key pair sharing `commit_id` but differing only in `roots` --
+/// isolating the disjunction's two halves. Both arms above differ in
+/// BOTH `commit_id` AND `roots` simultaneously, so neither would catch
+/// a regression that turned the `IdenticalClaims` check's `&&` into
+/// `||`: a roots-only conflict (the same reported commit outcome, a
+/// different reported chain state) would then be misdiagnosed as
+/// identical and silently dropped.
+#[test]
+fn same_commit_id_differing_roots_still_proves_equivocation() {
+    let (_dir, identity) = identity_with_seed(0x11);
+    let a = receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        "principal-x",
+        3,
+        "commit-a",
+        &roots_a(),
+        4,
+        1_700_000_000,
+    )
+    .expect("compose report a");
+    let b = receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        "principal-x",
+        3,
+        "commit-a",
+        &roots_b(),
+        4,
+        1_700_000_000,
+    )
+    .expect("compose report b");
+
+    assert_eq!(
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        EquivocationVerdict::Proven
+    );
+}
+
 // ========================================================================
 // Diagnosed non-equivocation arms -- constructed directly, no real
 // endpoint required (the helper is pure; input provenance does not
