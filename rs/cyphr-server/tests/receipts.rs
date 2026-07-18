@@ -333,28 +333,22 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
-    let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
+    let (push_status, push_envelope) = post_json(app, "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
 
-    let (_, claims) =
+    let (payload, claims) =
         assert_signed_envelope_claims(&push_envelope, "cyphr-server/receipt/commit", &identity);
 
-    // Cross-check the claims against the accepted commit's actual
-    // resulting state, read back via the ordinary tip surface (itself
-    // signed in attestor mode -- only the payload is compared here).
-    let (_, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
-    let tip = &tip_envelope["payload"];
-
+    // Cross-check the claims against the push response's OWN payload,
+    // claim-by-claim -- the payload now carries the accepted commit's
+    // facts directly, so no follow-up read is needed to verify them.
     assert_eq!(claims["pr"], serde_json::json!(principal_id));
-    assert_eq!(
-        claims["sequence"],
-        serde_json::json!(tip["commit_count"].as_u64().unwrap() - 1)
-    );
-    assert_eq!(claims["commit_id"], tip["commit_id"]);
-    assert_eq!(claims["roots"]["pr"], tip["pr"]);
-    assert_eq!(claims["roots"]["sr"], tip["sr"]);
-    assert_eq!(claims["roots"]["ar"], tip["ar"]);
-    assert_eq!(claims["roots"]["cr"], tip["cr"]);
+    assert_eq!(claims["sequence"], payload["sequence"]);
+    assert_eq!(claims["commit_id"], payload["commit_id"]);
+    assert_eq!(claims["roots"]["pr"], payload["roots"]["pr"]);
+    assert_eq!(claims["roots"]["sr"], payload["roots"]["sr"]);
+    assert_eq!(claims["roots"]["ar"], payload["roots"]["ar"]);
+    assert_eq!(claims["roots"]["cr"], payload["roots"]["cr"]);
 }
 
 /// An attestor's tip response carries a signed tip report whose claims

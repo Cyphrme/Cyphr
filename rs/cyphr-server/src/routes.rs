@@ -90,6 +90,27 @@ pub struct PatchResponseBody {
 pub struct PushResponse {
     /// BLAKE3 hashes of stored blobs (hex-encoded).
     pub blob_hashes: Vec<String>,
+    /// The accepted commit's id -- a push client previously had no way to
+    /// learn this without a follow-up `/tip` read.
+    pub commit_id: String,
+    /// The accepted commit's 0-indexed position (post-state
+    /// `commit_count - 1`).
+    pub sequence: u64,
+    /// The post-state roots, nested to mirror the same shape a signed
+    /// commit receipt's `roots` claim carries (`docs/specs/receipts.md`),
+    /// so an attestor's push claims can be compared against this payload
+    /// claim-by-claim.
+    pub roots: PushRoots,
+}
+
+/// Post-commit roots on a push response, mirroring
+/// [`crate::receipt::Roots`]'s wire shape.
+#[derive(Debug, Serialize)]
+pub struct PushRoots {
+    pub pr: String,
+    pub sr: String,
+    pub ar: String,
+    pub cr: String,
 }
 
 /// The server's genesis key, published as a trustless HINT for offline
@@ -278,21 +299,31 @@ pub async fn push(
         .await
         .map_err(AppError::engine)?;
 
+    // The response attests the state that RESULTED from this accepted
+    // commit -- read back via the same post-submit tip any other client
+    // would see. A push client previously had no way to learn the
+    // accepted commit_id/sequence/roots without a follow-up /tip read.
+    let t = state
+        .engine
+        .get_tip(&request.principal_id)
+        .await
+        .map_err(AppError::engine)?
+        .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
+
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
+        commit_id: t.commit_id.clone(),
+        sequence: t.commit_count - 1,
+        roots: PushRoots {
+            pr: t.pr.clone(),
+            sr: t.sr.clone(),
+            ar: t.ar.clone(),
+            cr: t.cr.clone(),
+        },
     };
 
     match (&state.principal, &state.identity) {
         (Some(_), Some(identity)) => {
-            // The receipt attests the state that RESULTED from this
-            // accepted commit -- read back via the same post-submit tip
-            // any other client would see.
-            let t = state
-                .engine
-                .get_tip(&request.principal_id)
-                .await
-                .map_err(AppError::engine)?
-                .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
             let roots = receipt::Roots {
                 pr: t.pr,
                 sr: t.sr,
