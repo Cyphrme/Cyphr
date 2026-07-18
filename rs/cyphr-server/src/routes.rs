@@ -11,9 +11,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
 use crate::envelope::Envelope;
 use crate::error::AppError;
+use crate::{AppState, receipt};
 
 // ========================================================================
 // Request types
@@ -90,6 +90,44 @@ pub struct PatchResponseBody {
 pub struct PushResponse {
     /// BLAKE3 hashes of stored blobs (hex-encoded).
     pub blob_hashes: Vec<String>,
+    /// The accepted commit's id -- a push client previously had no way to
+    /// learn this without a follow-up `/tip` read.
+    pub commit_id: String,
+    /// The accepted commit's 0-indexed position (post-state
+    /// `commit_count - 1`).
+    pub sequence: u64,
+    /// The post-state roots, nested to mirror the same shape a signed
+    /// commit receipt's `roots` claim carries (`docs/specs/receipts.md`),
+    /// so an attestor's push claims can be compared against this payload
+    /// claim-by-claim.
+    pub roots: PushRoots,
+}
+
+/// Post-commit roots on a push response, mirroring
+/// [`crate::receipt::Roots`]'s wire shape.
+#[derive(Debug, Serialize)]
+pub struct PushRoots {
+    pub pr: String,
+    pub sr: String,
+    pub ar: String,
+    pub cr: String,
+}
+
+/// The server's genesis key, published as a trustless HINT for offline
+/// verification (`docs/specs/server-identity.md`'s TOFU story): a client
+/// reconstructs `Genesis::Explicit` from it and re-derives the PG,
+/// trusting the hint only once that derivation matches the pinned `pg` --
+/// never on discovery's say-so alone. Nested under `genesis` so these
+/// fields are unambiguously distinct from [`IdentityResponse::Attestor`]'s
+/// CURRENT-key fields, which describe whichever key is active right now
+/// and may differ from the genesis key after a rotation.
+#[derive(Debug, Serialize)]
+pub struct GenesisKeyInfo {
+    pub alg: String,
+    #[serde(rename = "pub")]
+    pub pub_key: String,
+    pub tmb: String,
+    pub first_seen: i64,
 }
 
 /// Response for `GET /server` — the server's identity/capability
@@ -102,15 +140,17 @@ pub struct PushResponse {
 #[derive(Debug, Serialize)]
 #[serde(tag = "tier", rename_all = "lowercase")]
 pub enum IdentityResponse {
-    /// A keyed, bootstrapped server: the stable Principal Genesis and the
+    /// A keyed, bootstrapped server: the stable Principal Genesis, the
     /// CURRENT signing key's algorithm, public key, and thumbprint (all
-    /// base64url except `alg`).
+    /// base64url except `alg`), and the GENESIS key hint offline
+    /// verification replays the chain from.
     Attestor {
         pg: String,
         alg: String,
         #[serde(rename = "pub")]
         pub_key: String,
         tmb: String,
+        genesis: GenesisKeyInfo,
     },
     /// No established, servable chain to pin: no signing key configured,
     /// or a keyed process whose principal has not been bootstrapped.
@@ -133,21 +173,41 @@ pub async fn tip(
         .await
         .map_err(AppError::engine)?;
 
-    match tip {
-        Some(t) => Ok(Json(Envelope::unsigned(TipResponse {
-            principal_id: t.principal_id,
-            pr: t.pr,
-            sr: t.sr,
-            ar: t.ar,
-            cr: t.cr,
-            commit_id: t.commit_id,
-            commit_count: t.commit_count,
-            last_updated: t.last_updated,
-        }))),
-        None => Err(AppError::not_found(format!(
-            "principal {} not found",
-            query.pr
-        ))),
+    let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
+
+    let payload = TipResponse {
+        principal_id: t.principal_id.clone(),
+        pr: t.pr.clone(),
+        sr: t.sr.clone(),
+        ar: t.ar.clone(),
+        cr: t.cr.clone(),
+        commit_id: t.commit_id.clone(),
+        commit_count: t.commit_count,
+        last_updated: t.last_updated,
+    };
+
+    match (&state.principal, &state.identity) {
+        (Some(_), Some(identity)) => {
+            let roots = receipt::Roots {
+                pr: t.pr,
+                sr: t.sr,
+                ar: t.ar,
+                cr: t.cr,
+            };
+            let coz = receipt::tip_report(
+                identity,
+                crate::auth::server_now(),
+                t.principal_id,
+                t.commit_count - 1,
+                t.commit_id,
+                &roots,
+                t.commit_count,
+                t.last_updated,
+            )
+            .ok_or_else(|| AppError::internal("tip report signing unavailable"))?;
+            Ok(Json(Envelope::signed(payload, coz)))
+        },
+        _ => Ok(Json(Envelope::unsigned(payload))),
     }
 }
 
@@ -239,12 +299,50 @@ pub async fn push(
         .await
         .map_err(AppError::engine)?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(Envelope::unsigned(PushResponse {
-            blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
-        })),
-    ))
+    // The response attests the state that RESULTED from this accepted
+    // commit -- read back via the same post-submit tip any other client
+    // would see. A push client previously had no way to learn the
+    // accepted commit_id/sequence/roots without a follow-up /tip read.
+    let t = state
+        .engine
+        .get_tip(&request.principal_id)
+        .await
+        .map_err(AppError::engine)?
+        .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
+
+    let payload = PushResponse {
+        blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
+        commit_id: t.commit_id.clone(),
+        sequence: t.commit_count - 1,
+        roots: PushRoots {
+            pr: t.pr.clone(),
+            sr: t.sr.clone(),
+            ar: t.ar.clone(),
+            cr: t.cr.clone(),
+        },
+    };
+
+    match (&state.principal, &state.identity) {
+        (Some(_), Some(identity)) => {
+            let roots = receipt::Roots {
+                pr: t.pr,
+                sr: t.sr,
+                ar: t.ar,
+                cr: t.cr,
+            };
+            let coz = receipt::commit_receipt(
+                identity,
+                crate::auth::server_now(),
+                t.principal_id,
+                t.commit_count - 1,
+                t.commit_id,
+                &roots,
+            )
+            .ok_or_else(|| AppError::internal("commit receipt signing unavailable"))?;
+            Ok((StatusCode::CREATED, Json(Envelope::signed(payload, coz))))
+        },
+        _ => Ok((StatusCode::CREATED, Json(Envelope::unsigned(payload)))),
+    }
 }
 
 /// `GET /server` — the server's identity/capability discovery endpoint
@@ -266,11 +364,18 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                 .alg()
                 .compute_thumbprint(identity.pub_key())
                 .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
+            let genesis_key = principal.genesis_key();
             IdentityResponse::Attestor {
                 pg: principal.pg().to_string(),
                 alg: identity.alg().name().to_string(),
                 pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
                 tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+                genesis: GenesisKeyInfo {
+                    alg: genesis_key.alg.clone(),
+                    pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
+                    tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
+                    first_seen: genesis_key.first_seen,
+                },
             }
         },
         _ => IdentityResponse::Repository,
