@@ -12,6 +12,7 @@ pub mod config;
 pub mod envelope;
 pub mod error;
 pub mod logging;
+pub mod receipt;
 pub mod routes;
 
 use std::sync::Arc;

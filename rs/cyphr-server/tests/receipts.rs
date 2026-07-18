@@ -336,11 +336,8 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
 
-    let (_, claims) = assert_signed_envelope_claims(
-        &push_envelope,
-        "cyphr-server/receipt/commit",
-        &identity,
-    );
+    let (_, claims) =
+        assert_signed_envelope_claims(&push_envelope, "cyphr-server/receipt/commit", &identity);
 
     // Cross-check the claims against the accepted commit's actual
     // resulting state, read back via the ordinary tip surface.
@@ -414,8 +411,7 @@ async fn keyless_push_and_tip_responses_stay_unsigned() {
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     assert_unsigned_envelope(&push_envelope);
 
-    let (tip_status, tip_envelope) =
-        get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_unsigned_envelope(&tip_envelope);
 }
@@ -430,7 +426,10 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     let key_path = write_signing_key(dir.path());
     let state = keyed_appstate(&dir.path().join("data"), &key_path);
     assert!(state.identity.is_some(), "state is keyed");
-    assert!(state.principal.is_none(), "principal was never bootstrapped");
+    assert!(
+        state.principal.is_none(),
+        "principal was never bootstrapped"
+    );
 
     let pool = load_pool();
     let principal_id = "receipt-unbootstrapped-principal";
@@ -442,8 +441,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
     assert_unsigned_envelope(&push_envelope);
 
-    let (tip_status, tip_envelope) =
-        get_json(app, &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_unsigned_envelope(&tip_envelope);
 }
@@ -597,10 +595,9 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 
     // Step 5: the receipt's signing key must be active in the
     // INDEPENDENTLY REPLAYED chain -- not merely asserted by discovery.
-    let receipt_tmb_bytes = Base64UrlUnpadded::decode_vec(
-        receipt_coz["pay"]["tmb"].as_str().expect("receipt tmb"),
-    )
-    .expect("valid receipt tmb base64");
+    let receipt_tmb_bytes =
+        Base64UrlUnpadded::decode_vec(receipt_coz["pay"]["tmb"].as_str().expect("receipt tmb"))
+            .expect("valid receipt tmb base64");
     let receipt_tmb = coz::Thumbprint::from_bytes(receipt_tmb_bytes);
     assert!(
         replayed.is_key_active(&receipt_tmb),
@@ -614,14 +611,116 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     // using ONLY the replay-derived key -- never discovery's current-key
     // claim, and no bespoke crypto.
     let receipt_alg = receipt_coz["pay"]["alg"].as_str().expect("receipt alg");
-    let receipt_sig = Base64UrlUnpadded::decode_vec(
-        receipt_coz["sig"].as_str().expect("receipt sig"),
-    )
-    .expect("valid receipt sig base64");
+    let receipt_sig =
+        Base64UrlUnpadded::decode_vec(receipt_coz["sig"].as_str().expect("receipt sig"))
+            .expect("valid receipt sig base64");
     let pay_json = serde_json::to_vec(&receipt_coz["pay"]).expect("pay re-serializes");
     assert_eq!(
         coz::verify_json(&pay_json, &receipt_sig, receipt_alg, &active_key.pub_key),
         Some(true),
         "the receipt signature must verify against the replay-derived active key"
+    );
+}
+
+// ========================================================================
+// Golden vectors: byte-exact receipt payloads (ac-vectors)
+// ========================================================================
+
+/// A fixed principal genesis id, reused from the token/envelope vectors
+/// for a stable, recognizable payload.
+const VECTOR_PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
+
+const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao";
+
+fn vector_roots() -> cyphr_server::receipt::Roots {
+    cyphr_server::receipt::Roots {
+        pr: "SHA-256:GOJBQfC618_bQh9QHQ5ZCWwH1I6tbtDx9-RP1i6Rcjc".to_string(),
+        sr: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
+        ar: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
+        cr: "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string(),
+    }
+}
+
+/// Load a deterministic Ed25519 identity from a fixed seed, mirroring the
+/// token and envelope golden-vector fixtures.
+fn fixed_identity() -> (tempfile::TempDir, ServerIdentity) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("signing-key.json");
+
+    let prv_key = [0x11u8; 32];
+    let pub_key = coz::Alg::Ed25519
+        .derive_public_key(&prv_key)
+        .expect("derive public key from fixed seed");
+
+    let file = serde_json::json!({
+        "alg": coz::Alg::Ed25519.name(),
+        "pub_key": Base64UrlUnpadded::encode_string(&pub_key),
+        "prv_key": Base64UrlUnpadded::encode_string(&prv_key),
+    });
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
+    (dir, identity)
+}
+
+/// Read a committed golden vector, trimming a trailing newline so the
+/// file can end in one.
+fn golden(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .trim_end()
+        .to_string()
+}
+
+#[test]
+fn commit_receipt_matches_golden_vector() {
+    let (_dir, identity) = fixed_identity();
+    let coz = cyphr_server::receipt::commit_receipt(
+        &identity,
+        1_700_000_000,
+        VECTOR_PR,
+        0,
+        VECTOR_COMMIT_ID,
+        &vector_roots(),
+    )
+    .expect("compose and sign commit receipt");
+
+    let wire = serde_json::to_string(&coz).unwrap();
+    assert_eq!(wire, golden("receipt_commit.json"));
+
+    let pay_json = serde_json::to_vec(&coz.pay).unwrap();
+    assert_eq!(
+        identity.verify(&pay_json, &coz.sig),
+        Some(true),
+        "the golden commit receipt must itself verify against its fixed key"
+    );
+}
+
+#[test]
+fn tip_report_matches_golden_vector() {
+    let (_dir, identity) = fixed_identity();
+    let coz = cyphr_server::receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        VECTOR_PR,
+        0,
+        VECTOR_COMMIT_ID,
+        &vector_roots(),
+        1,
+        1_700_000_000,
+    )
+    .expect("compose and sign tip report");
+
+    let wire = serde_json::to_string(&coz).unwrap();
+    assert_eq!(wire, golden("receipt_tip.json"));
+
+    let pay_json = serde_json::to_vec(&coz.pay).unwrap();
+    assert_eq!(
+        identity.verify(&pay_json, &coz.sig),
+        Some(true),
+        "the golden tip report must itself verify against its fixed key"
     );
 }
