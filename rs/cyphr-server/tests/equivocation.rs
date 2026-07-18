@@ -291,7 +291,8 @@ async fn same_key_pair_proves_equivocation() {
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
-    let (tip_status, tip_envelope) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) =
+        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     assert_eq!(
         tip_envelope["statement"]["kind"],
@@ -303,8 +304,12 @@ async fn same_key_pair_proves_equivocation() {
 
     let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
-    let real_commit_count = real.pay["commit_count"].as_u64().expect("real commit_count");
-    let real_last_updated = real.pay["last_updated"].as_i64().expect("real last_updated");
+    let real_commit_count = real.pay["commit_count"]
+        .as_u64()
+        .expect("real commit_count");
+    let real_last_updated = real.pay["last_updated"]
+        .as_i64()
+        .expect("real last_updated");
 
     let conflicting = receipt::tip_report(
         &identity,
@@ -343,15 +348,20 @@ async fn cross_key_pair_proves_equivocation() {
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED);
 
-    let (tip_status, tip_envelope) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
+    let (tip_status, tip_envelope) =
+        get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
     let real: coz::CozJson = serde_json::from_value(tip_envelope["statement"]["coz"].clone())
         .expect("real tip cozy deserializes");
 
     let real_pr = real.pay["pr"].as_str().expect("real pr").to_string();
     let real_sequence = real.pay["sequence"].as_u64().expect("real sequence");
-    let real_commit_count = real.pay["commit_count"].as_u64().expect("real commit_count");
-    let real_last_updated = real.pay["last_updated"].as_i64().expect("real last_updated");
+    let real_commit_count = real.pay["commit_count"]
+        .as_u64()
+        .expect("real commit_count");
+    let real_last_updated = real.pay["last_updated"]
+        .as_i64()
+        .expect("real last_updated");
 
     let (_dir2, rotated_identity) = identity_with_seed(0x22);
     let conflicting = receipt::tip_report(
