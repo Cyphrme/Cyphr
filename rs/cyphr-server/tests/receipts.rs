@@ -340,9 +340,10 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
         assert_signed_envelope_claims(&push_envelope, "cyphr-server/receipt/commit", &identity);
 
     // Cross-check the claims against the accepted commit's actual
-    // resulting state, read back via the ordinary tip surface.
+    // resulting state, read back via the ordinary tip surface (itself
+    // signed in attestor mode -- only the payload is compared here).
     let (_, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
-    let tip = assert_unsigned_envelope(&tip_envelope);
+    let tip = &tip_envelope["payload"];
 
     assert_eq!(claims["pr"], serde_json::json!(principal_id));
     assert_eq!(
