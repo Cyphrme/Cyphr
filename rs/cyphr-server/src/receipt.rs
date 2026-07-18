@@ -150,3 +150,86 @@ fn sign_receipt(
         sig,
     })
 }
+
+/// The outcome of checking two signed tip reports for equivocation
+/// (`docs/specs/receipts.md`'s equivocation section).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquivocationVerdict {
+    /// Both reports carry a valid signature under their own
+    /// caller-supplied key, share `pr` and `sequence`, and differ in
+    /// `commit_id` or `roots` -- proven equivocation.
+    Proven,
+    /// One or both cozies are not stamped `typ == TIP_REPORT_TYP`.
+    WrongTyp,
+    /// One or both signatures fail to verify under the caller-supplied
+    /// key.
+    InvalidSignature,
+    /// The two reports attest different principals (`pr`).
+    DifferentPrincipal,
+    /// The two reports attest different sequence positions.
+    DifferentSequence,
+    /// The two reports are claim-identical -- not a conflict.
+    IdenticalClaims,
+}
+
+/// Check whether two signed tip reports constitute proven equivocation.
+///
+/// Pure: a function over the two raw coz values plus caller-supplied key
+/// material only -- no engine, no `AppState`, no I/O, no clock, so a
+/// verifier anywhere can run it on retained bytes. `a_pub_key` verifies
+/// `a`'s signature and `b_pub_key` verifies `b`'s -- they may be
+/// identical (the degenerate same-key case) or different (a
+/// cross-key-rotation pair), since the server's identity is its chain,
+/// not any single key.
+///
+/// The caller MUST have already established that both keys are active
+/// keys of the SAME server principal's chain at each receipt's `now`
+/// (`docs/specs/receipts.md`'s offline verification procedure) -- this
+/// helper never resolves or chain-checks keys itself, which is what
+/// keeps it pure while still covering the cross-rotation case.
+///
+/// The pinned predicate, checked in order: (1) both pays carry `typ ==
+/// TIP_REPORT_TYP`; (2) each signature verifies under its own
+/// caller-supplied key; (3) both claim the same `pr` and the same
+/// `sequence`; (4) they differ in `commit_id` or in any `roots` field.
+/// Anything else is a diagnosed non-equivocation.
+pub fn check_equivocation(
+    a: &coz::CozJson,
+    a_pub_key: &[u8],
+    b: &coz::CozJson,
+    b_pub_key: &[u8],
+) -> EquivocationVerdict {
+    let tip_typ = Value::String(TIP_REPORT_TYP.to_string());
+    if a.pay["typ"] != tip_typ || b.pay["typ"] != tip_typ {
+        return EquivocationVerdict::WrongTyp;
+    }
+
+    if !receipt_signature_verifies(a, a_pub_key) || !receipt_signature_verifies(b, b_pub_key) {
+        return EquivocationVerdict::InvalidSignature;
+    }
+
+    if a.pay["pr"] != b.pay["pr"] {
+        return EquivocationVerdict::DifferentPrincipal;
+    }
+    if a.pay["sequence"] != b.pay["sequence"] {
+        return EquivocationVerdict::DifferentSequence;
+    }
+    if a.pay["commit_id"] == b.pay["commit_id"] && a.pay["roots"] == b.pay["roots"] {
+        return EquivocationVerdict::IdenticalClaims;
+    }
+
+    EquivocationVerdict::Proven
+}
+
+/// Verify one receipt cozy's signature against a caller-supplied key,
+/// using only the `alg` the pay itself claims -- plain `coz::verify_json`,
+/// no bespoke crypto.
+fn receipt_signature_verifies(coz: &coz::CozJson, pub_key: &[u8]) -> bool {
+    let Some(alg) = coz.pay["alg"].as_str() else {
+        return false;
+    };
+    let Ok(pay_json) = serde_json::to_vec(&coz.pay) else {
+        return false;
+    };
+    coz::verify_json(&pay_json, &coz.sig, alg, pub_key) == Some(true)
+}
