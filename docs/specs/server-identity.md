@@ -65,7 +65,13 @@ A keyed, bootstrapped server:
     "pg": "cGdA...tagged-digest",
     "alg": "Ed25519",
     "pub": "…base64url…",
-    "tmb": "…base64url…"
+    "tmb": "…base64url…",
+    "genesis": {
+      "alg": "Ed25519",
+      "pub": "…base64url…",
+      "tmb": "…base64url…",
+      "first_seen": 0
+    }
   },
   "statement": { "kind": "unsigned" }
 }
@@ -83,22 +89,30 @@ bootstrapped:
 ```
 
 - `tier` -- `"attestor"` or `"repository"`, lowercase, always present.
-- `pg`, `alg`, `pub`, `tmb` -- present ONLY on `attestor`. `pg` is the
-  server's stable Principal Genesis (a tagged digest, the same identifier
-  `GET /tip?pr=<pg>` and `GET /patch?pr=<pg>` serve the chain under).
-  `alg`, `pub`, `tmb` describe the server's CURRENT signing key: `pub` and
-  `tmb` are base64url, matching the encoding every other coz-adjacent
-  field on the wire uses.
+- `pg`, `alg`, `pub`, `tmb`, `genesis` -- present ONLY on `attestor`.
+  `pg` is the server's stable Principal Genesis (a tagged digest, the
+  same identifier `GET /tip?pr=<pg>` and `GET /patch?pr=<pg>` serve the
+  chain under). `alg`, `pub`, `tmb` describe the server's CURRENT
+  signing key: `pub` and `tmb` are base64url, matching the encoding
+  every other coz-adjacent field on the wire uses. `genesis` is a
+  nested object (`alg`, `pub`, `tmb`, `first_seen`) describing the
+  ORIGINAL genesis key instead -- unambiguously distinct from the
+  current-key fields above it, since the two differ after any
+  rotation. `genesis` is a trustless HINT
+  (`docs/specs/receipts.md` `[receipts-r-genesis-hint]`): a client
+  MUST independently re-derive the PG from it before relying on it for
+  anything, never trust it on discovery's say-so alone.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:104-118 -- IdentityResponse, #[serde(tag = "tier", rename_all = "lowercase")]`
+`VERIFIED: rs/cyphr-server/src/routes.rs:104-137 -- GenesisKeyInfo, IdentityResponse, #[serde(tag = "tier", rename_all = "lowercase")]`
 
 ### `[identity-r-absence]` Repository carries no identity-shaped fields
 
-A `repository` payload MUST NOT carry `pg`, `alg`, `pub`, or `tmb` --
-neither as empty strings nor as `null`. The internally tagged enum makes
-this structural rather than a convention a handler could violate by
-accident: the `Repository` variant has no fields to populate, so there is
-nothing for a hasty edit to leave as a placeholder. A client that finds
+A `repository` payload MUST NOT carry `pg`, `alg`, `pub`, `tmb`, or
+`genesis` -- neither as empty strings nor as `null`. The internally
+tagged enum makes this structural rather than a convention a handler
+could violate by accident: the `Repository` variant has no fields to
+populate, so there is nothing for a hasty edit to leave as a
+placeholder. A client that finds
 `payload.tier == "repository"` therefore never needs to also check
 whether the identity fields are empty -- their absence from the object is
 the whole signal.
@@ -118,7 +132,7 @@ integration test in this crate does exactly that). The handler matches
 the pair explicitly; it never assumes one field's presence implies the
 other's.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:260-278 -- identity() matches (&state.principal, &state.identity)`
+`VERIFIED: rs/cyphr-server/src/routes.rs:327-352 -- identity() matches (&state.principal, &state.identity)`
 
 ### `[identity-r-principal-not-key]` Tier tracks the principal, not the key file
 
@@ -139,14 +153,17 @@ loaded?), not `AppState.identity` (is a key file configured?).
 `alg`, `pub`, and `tmb` are read exclusively from `AppState.identity` --
 the same live, rotation-refreshed handle `auth::login` and
 `auth::middleware` sign and verify with
-(`AppState::rotate_signing_key` refreshes it after a rotation). `pg` is
-read exclusively from `AppState.principal`. The handler never reads the
+(`AppState::rotate_signing_key` refreshes it after a rotation). `pg` and
+`genesis` are read exclusively from `AppState.principal`, via
+`ServerPrincipal::pg()` and `ServerPrincipal::genesis_key()`
+respectively -- the genesis key never changes across a rotation, so it
+needs no rotation-refresh path of its own. The handler never reads the
 on-disk genesis record (`server-principal.json`) or the signing-key file
 directly: each fact has exactly one source of truth in memory, and that
 source is already kept current by the rotation path this endpoint does
 not need to know about.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:260-278; rs/cyphr-server/src/lib.rs:104-137 (AppState::rotate_signing_key)`
+`VERIFIED: rs/cyphr-server/src/routes.rs:327-352; rs/cyphr-server/src/lib.rs:104-137 (AppState::rotate_signing_key)`
 
 ### `[identity-r-501-pointer]` The keyless auth rejection points here
 
@@ -193,6 +210,17 @@ out-of-band trust anchor:
    rules. A key is trusted only once it is reached by replaying from the
    pinned genesis, never because the discovery endpoint merely asserted
    it.
+
+   Replaying requires the genesis key itself, which is not
+   reconstructible from served blobs alone (the server's
+   `principal/create` cozy carries no embedded key material). This
+   endpoint's `genesis` field supplies it as a HINT
+   (`docs/specs/receipts.md` `[receipts-r-genesis-hint]`): the client
+   independently re-derives the PG from it before trusting it for
+   anything, so a forged `genesis` hint is caught by that
+   re-derivation, never silently accepted. `docs/specs/receipts.md`
+   names the full six-step verification procedure this pinning story
+   is the prose form of.
 5. **A changed PG means a different principal -- refuse loudly.** If a
    later `GET /server` against the same host returns a `pg` that does not
    match the pinned value, the client is not talking to the server it
