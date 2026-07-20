@@ -4,12 +4,11 @@
 //! observation *here*, deliberately not on the principal's chain and not in
 //! the rebuildable index:
 //!
-//! - A naked revoke mutates no PR (SPEC §6.4): the principal's chain is
-//!   untouched, so the chain is the wrong home.
-//! - The index is a derived projection a reindex rebuilds from blobs (root
-//!   `AGENTS.md` I1): an observation kept there would be silently wiped by
-//!   the next reindex, which is exactly the durability the acceptance suite
-//!   pins against.
+//! - A naked revoke mutates no PR (SPEC §6.4): the principal's chain is untouched, so the chain is
+//!   the wrong home.
+//! - The index is a derived projection a reindex rebuilds from blobs (root `AGENTS.md` I1): an
+//!   observation kept there would be silently wiped by the next reindex, which is exactly the
+//!   durability the acceptance suite pins against.
 //!
 //! So this is independent, durable, server-local truth: its own fjall
 //! database, opened beside the blob store and the index, keyed by
@@ -149,8 +148,8 @@ impl ObservationStore {
             coz,
         };
         let key = observation_key(principal_id, tmb.as_bytes(), kind);
-        let value = serde_json::to_vec(&record)
-            .map_err(|e| ObservationError::Serialize(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&record).map_err(|e| ObservationError::Serialize(e.to_string()))?;
         let observations = self.observations.clone();
         tokio::task::spawn_blocking(move || observations.insert(key, value).map_err(backend))
             .await

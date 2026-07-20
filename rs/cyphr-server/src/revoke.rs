@@ -89,8 +89,8 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// 1. the payload parses and its `typ` is a `key/revoke`;
 /// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`);
 /// 3. the revoked `tmb` is a key *this* named principal holds;
-/// 4. the signature verifies -- under the revoked key itself (self-signed)
-///    or, failing that, under an embedded outsider key (third-party).
+/// 4. the signature verifies -- under the revoked key itself (self-signed) or, failing that, under
+///    an embedded outsider key (third-party).
 ///
 /// A malformed payload, bad `rvk`, wrong `typ`, or a `tmb` the principal
 /// does not hold is a 400; a signature that verifies under no available

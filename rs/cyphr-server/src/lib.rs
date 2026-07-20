@@ -337,8 +337,8 @@ mod tests {
         let result = AppState::new(config);
         assert!(
             result.is_err(),
-            "a configured-but-missing signing key must fail construction, not panic or \
-             silently disable the identity"
+            "a configured-but-missing signing key must fail construction, not panic or silently \
+             disable the identity"
         );
     }
 

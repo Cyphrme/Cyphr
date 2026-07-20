@@ -442,7 +442,9 @@ pub async fn revoke(
 fn map_revoke_load_error(err: cyphr_storage::engine::EngineError) -> AppError {
     use cyphr_storage::engine::EngineError;
     match err {
-        EngineError::NotFound(_) => AppError::bad_request("naked revoke names an unknown principal"),
+        EngineError::NotFound(_) => {
+            AppError::bad_request("naked revoke names an unknown principal")
+        },
         other => AppError::engine(other),
     }
 }
