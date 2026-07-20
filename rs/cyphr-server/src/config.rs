@@ -116,6 +116,14 @@ pub struct ServerConfig {
     /// `auth::login`). `None` means logins are not accepted.
     #[serde(default)]
     pub audience: Option<String>,
+
+    /// How this witness treats a *third-party* naked revoke (an outsider
+    /// declaring a principal's key compromised, SPEC §6.4). Self-signed
+    /// revokes are always accepted and always block the key at login; only
+    /// the third-party disposition is a policy choice. Defaults to
+    /// [`ThirdPartyRevokePolicy::RecordOnly`].
+    #[serde(default)]
+    pub third_party_naked_revoke: ThirdPartyRevokePolicy,
 }
 
 impl Default for ServerConfig {
@@ -127,8 +135,28 @@ impl Default for ServerConfig {
             mode: ServerMode::Authority,
             signing_key_path: None,
             audience: None,
+            third_party_naked_revoke: ThirdPartyRevokePolicy::default(),
         }
     }
+}
+
+/// A witness's disposition toward a *third-party* naked revoke (SPEC §6.4).
+///
+/// The literal §6.4 reading -- any naked revoke freezes the principal -- is
+/// an unauthenticated griefing vector for the third-party case, so a
+/// witness never auto-freezes on an outsider's claim (spec clarification
+/// pending forge issue #106). The only choice is whether to retain the
+/// claim or decline it; freezing is deliberately not an option here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThirdPartyRevokePolicy {
+    /// Record and surface the claim, but never block the key's login or
+    /// freeze the principal. The default, anti-griefing posture.
+    #[default]
+    RecordOnly,
+    /// Decline third-party naked revokes outright (4xx) -- for a deployment
+    /// that will not store unauthenticated outsider claims at all.
+    Reject,
 }
 
 /// Log output format.
