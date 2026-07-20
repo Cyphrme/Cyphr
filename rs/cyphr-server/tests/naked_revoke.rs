@@ -651,3 +651,42 @@ async fn third_party_revoke_recorded_but_does_not_block_login() {
         "a third-party naked revoke must not mutate PR either"
     );
 }
+
+/// Under `ThirdPartyRevokePolicy::Reject`, a third-party naked revoke is
+/// declined (4xx) rather than recorded -- and the policy is scoped to
+/// third-party claims only: a self-signed revoke is still accepted, since
+/// self-signed acceptance is unconditional (SPEC §6.4).
+#[tokio::test]
+async fn third_party_revoke_rejected_when_policy_is_reject() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = common::write_signing_key(dir.path());
+    let config = ServerConfig {
+        data_dir: dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: Some(AUDIENCE.to_string()),
+        third_party_naked_revoke: cyphr_server::config::ThirdPartyRevokePolicy::Reject,
+        ..Default::default()
+    };
+    let state = Arc::new(AppState::new(config).expect("open Reject-policy AppState"));
+    let pool = common::load_pool();
+    let pid = "nr-tp-reject";
+    bootstrap_golden_key_a(&state, &pool, pid).await;
+
+    let key_a_tmb = pool
+        .get("key_a")
+        .expect("key_a")
+        .compute_tmb_b64()
+        .expect("tmb");
+    let coz = third_party_revoke_coz(&pool, "alice", &key_a_tmb);
+    let (status, json) = post_revoke(&state, pid, coz).await;
+    assert_rejected(status, &json, "third-party revoke under Reject policy");
+
+    // The flag gates third-party claims only, never self-signed revokes.
+    let self_coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    let (self_status, self_json) = post_revoke(&state, pid, self_coz).await;
+    assert!(
+        self_status.is_success(),
+        "a self-signed revoke must still be accepted under the Reject policy, got {self_status}: \
+         {self_json:?}"
+    );
+}
