@@ -73,6 +73,15 @@ impl AppError {
             message: msg.into(),
         }
     }
+
+    /// Map an observation-store failure to a 500. The store is durable
+    /// server infrastructure, so a failure to read or write it is a server
+    /// fault, never a client error. The specific cause is logged, not
+    /// leaked to the client.
+    pub fn observation(err: crate::observation::ObservationError) -> Self {
+        tracing::error!(error = %err, "naked-revoke observation store error");
+        Self::internal("observation store error")
+    }
 }
 
 impl IntoResponse for AppError {

@@ -12,6 +12,7 @@ pub mod config;
 pub mod envelope;
 pub mod error;
 pub mod logging;
+pub mod observation;
 pub mod receipt;
 pub mod routes;
 
@@ -70,6 +71,12 @@ pub struct AppState {
     /// flow. In-memory and per-process (ruling R8's spirit: no durable
     /// auth state beyond short expiry).
     pub challenges: auth::login::ChallengeStore,
+
+    /// Durable, server-local naked-revoke observations (SPEC §6.4). Its
+    /// own store, distinct from the rebuildable index: a naked revoke
+    /// mutates no chain and must survive a reindex, so it cannot live in
+    /// the index that a reindex rebuilds.
+    pub observations: observation::ObservationStore,
 }
 
 impl AppState {
@@ -93,12 +100,16 @@ impl AppState {
             None => None,
         };
 
+        let observations =
+            observation::ObservationStore::open(&config.data_dir.join("observations"))?;
+
         Ok(Self {
             config,
             engine,
             identity,
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
+            observations,
         })
     }
 
