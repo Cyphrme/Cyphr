@@ -546,3 +546,32 @@ async fn third_party_rejects_tampered_hop() {
         &f.tip_active_key,
     ));
 }
+
+/// c-negative-case (tampered chain, interior hop): flipping a byte in hop
+/// 2's (AR-node) leaf value -- while hop 1 and the tmb under test stay
+/// byte-for-byte genuine -- must be rejected. Unlike
+/// `third_party_rejects_tampered_hop` above (which tampers hop 1 and is
+/// caught by `cyphr::verify_key_inclusion`'s identity-binding precheck,
+/// before the Merkle chain is ever walked), this test corrupts a hop the
+/// precheck never inspects, so rejection can only come from the chain
+/// itself: `roots[0]` (KR) is derived from hop 2's own leaf value (see
+/// `docs/specs/proof-portability.md`'s `[portability-r-kr-derivation]`
+/// ruling), so the corruption simultaneously breaks hop 1's Merkle proof
+/// against the now-forged derived KR *and* hop 2's Merkle proof against
+/// the tip-attested AR root -- exactly the two independent failure modes
+/// that ruling's soundness argument rests on.
+#[tokio::test]
+async fn third_party_rejects_tampered_ar_node_hop() {
+    let f = build_fixture().await;
+    let mut tampered_hops = f.hops.clone();
+    tampered_hops[1].leaf_hash[0] ^= 0xFF;
+
+    assert!(!third_party_verify_key_inclusion(
+        f.alg,
+        &f.tmb_a,
+        &tampered_hops,
+        &f.tip_pay,
+        &f.tip_sig,
+        &f.tip_active_key,
+    ));
+}
