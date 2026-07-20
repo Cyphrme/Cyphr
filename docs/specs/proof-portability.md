@@ -82,7 +82,7 @@ the hop that proves it sits under the next level up. AR, SR, and PR
 happen to also be available directly from the tip report's claims, so
 in practice only KR needs this derivation.
 
-`VERIFIED: rs/cyphr-server/tests/inclusion_portability.rs -- third_party_verify_key_inclusion, third_party_rejects_tampered_hop (flips hop 1's leaf and confirms rejection, exercising exactly this bridge check)`
+`VERIFIED: rs/cyphr-server/tests/inclusion_portability.rs -- third_party_verify_key_inclusion, third_party_rejects_tampered_ar_node_hop (flips hop 2's leaf, leaving hop 1's identity binding genuine, and confirms rejection -- exercising exactly this ruling's argument: hop 1's proof no longer matches the now-forged derived KR, and hop 2's own proof no longer matches the tip-attested AR)`
 
 ## `[portability-r-endpoint-deferred]` Ruling: no new HTTP endpoint ships in this node
 
