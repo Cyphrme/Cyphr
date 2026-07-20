@@ -112,6 +112,13 @@ pub enum LoginError {
     #[error("claimed principal is not in an active lifecycle state")]
     PrincipalNotActive,
 
+    /// The signing key carries a self-signed naked-revoke observation
+    /// (SPEC §6.4): refused at login even though it is still active
+    /// on-chain, since the key's own holder declared it compromised out of
+    /// band.
+    #[error("signing key was naked-revoked")]
+    KeyNakedRevoked,
+
     /// The timestamp-based `now` is outside the acceptance window.
     #[error("login timestamp is outside the acceptance window")]
     TimestampOutOfWindow,
@@ -430,6 +437,19 @@ pub async fn login(
         .await
         .map_err(map_load_error)?;
     authorize_login(&parsed, &principal)?;
+
+    // Naked-revoke gate (SPEC §6.4): a key its own holder self-revoked out
+    // of band is refused here even though `authorize_login` found it still
+    // active on-chain -- the observation store, not the chain, carries that
+    // fact.
+    if state
+        .observations
+        .is_self_revoked(&parsed.pr, &parsed.tmb)
+        .await
+        .map_err(AppError::observation)?
+    {
+        return Err(LoginError::KeyNakedRevoked.into());
+    }
 
     // Replay defense: the two flows diverge only here.
     let now = server_now();
