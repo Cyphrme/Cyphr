@@ -18,258 +18,17 @@
 
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::auth::ServerIdentity;
-use cyphr_server::auth::principal::ServerPrincipal;
-use cyphr_server::config::ServerConfig;
-use cyphr_server::{AppState, build_router};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
+use cyphr_server::build_router;
 
-// ========================================================================
-// Fixture helpers (mirrored from tests/e2e.rs, tests/keyless_matrix.rs, and
-// tests/identity_publication.rs, which are separate integration-test
-// crates and cannot be imported here)
-// ========================================================================
+mod common;
 
-/// Load the shared cryptographic key pool backing the golden fixtures.
-fn load_pool() -> test_fixtures::Pool {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tests/keys/pool.toml");
-    test_fixtures::Pool::load(&path).expect("failed to load pool.toml")
-}
-
-/// Sign a fresh "add `new_key_name`" commit onto `principal`, signed by
-/// `signer_name`. Returns the new commit's raw coz blob bytes, wire-ready
-/// for `submit_commit`. Mirrors the helper of the same name in
-/// `tests/e2e.rs` / `tests/keyless_matrix.rs`.
-fn sign_key_create_commit(
-    mut principal: cyphr::Principal,
-    pool: &test_fixtures::Pool,
-    signer_name: &str,
-    new_key_name: &str,
-    now: i64,
-) -> Vec<Vec<u8>> {
-    let signer = pool.get(signer_name).expect("signer key in pool");
-    let new_key = pool.get(new_key_name).expect("new key in pool");
-
-    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
-    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
-
-    let pay_value = serde_json::json!({
-        "alg": signer.alg,
-        "id": new_tmb_b64,
-        "now": now,
-        "tmb": signer_tmb_b64,
-        "typ": "cyphr.me/cyphr/key/create",
-    });
-    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
-
-    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
-        .expect("valid signer prv base64");
-    let signer_pub =
-        Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
-    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
-        .expect("signing supported for this algorithm");
-    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
-
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
-            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let mut scope = principal.begin_commit();
-    scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
-        .expect("key/create should verify against the starting principal state");
-
-    let signer_tmb = coz::Thumbprint::from_bytes(
-        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
-    );
-    scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
-            now,
-            "cyphr.me",
-        )
-        .expect("commit should finalize");
-
-    let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
-    let new_commit = entries.last().expect("at least one commit after finalize");
-
-    let mut key_idx = 0;
-    new_commit
-        .cozies
-        .iter()
-        .map(|v| {
-            let mut coz = v.clone();
-            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
-            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
-                let key = &new_commit.keys[key_idx];
-                coz.as_object_mut().unwrap().insert(
-                    "key".to_string(),
-                    serde_json::json!({
-                        "alg": key.alg,
-                        "pub": key.pub_key,
-                        "tmb": key.tmb,
-                    }),
-                );
-                key_idx += 1;
-            }
-            serde_json::to_vec(&coz).expect("cozy serializes")
-        })
-        .collect()
-}
-
-/// Build a brand-new principal's genesis push HTTP body: a `key/create`
-/// closed by `commit/create`, the genesis key embedded on the closing
-/// cozy. Mirrors `build_genesis_push_body` in `tests/keyless_matrix.rs`.
-fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
-    let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
-
-    let closing_idx = blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
-    closing.as_object_mut().unwrap().insert(
-        "key".to_string(),
-        serde_json::json!({
-            "alg": golden_key.alg,
-            "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
-        }),
-    );
-    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
-
-    serde_json::json!({
-        "principal_id": principal_id,
-        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
-/// Write a fresh Ed25519 signing key file and return its path.
-fn write_signing_key(dir: &std::path::Path) -> std::path::PathBuf {
-    let path = dir.join("signing-key.json");
-    let kp = coz::Alg::Ed25519.generate_keypair();
-    let file = serde_json::json!({
-        "alg": kp.alg.name(),
-        "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
-        "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
-    });
-    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    path
-}
-
-/// A keyed `AppState` whose signing key is `key_path`. Mirrors what
-/// `serve` constructs before it bootstraps the principal.
-fn keyed_appstate(data_dir: &std::path::Path, key_path: &std::path::Path) -> AppState {
-    let config = ServerConfig {
-        data_dir: data_dir.to_path_buf(),
-        signing_key_path: Some(key_path.to_path_buf()),
-        ..Default::default()
-    };
-    AppState::new(config).expect("keyed AppState opens")
-}
-
-/// A keyed, bootstrapped `AppState` -- the attestor condition -- plus the
-/// live identity handle used to check receipt claims against.
-async fn attestor_state(dir: &std::path::Path) -> (Arc<AppState>, Arc<ServerIdentity>) {
-    let key_path = write_signing_key(dir);
-    let mut state = keyed_appstate(&dir.join("data"), &key_path);
-    let identity = state.identity.clone().expect("keyed state has identity");
-
-    let sp = ServerPrincipal::bootstrap(
-        &state.engine,
-        identity.clone(),
-        &key_path,
-        &state.config.data_dir,
-    )
-    .await
-    .expect("bootstrap the server principal");
-    state.principal = Some(Arc::new(sp));
-
-    (Arc::new(state), identity)
-}
-
-/// An `AppState` with a temporary database and NO signing identity.
-fn keyless_state() -> Arc<AppState> {
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let config = ServerConfig {
-        data_dir: temp_dir.path().to_path_buf(),
-        ..Default::default()
-    };
-    std::mem::forget(temp_dir);
-    Arc::new(AppState::new(config).expect("failed to open keyless AppState"))
-}
-
-async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
-}
-
-async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
-}
-
-/// Assert `body` is an explicitly unsigned envelope and return its
-/// `payload`.
-fn assert_unsigned_envelope(body: &serde_json::Value) -> &serde_json::Value {
-    assert_eq!(body["v"], serde_json::json!(1), "envelope v=1: {body:?}");
-    assert_eq!(
-        body["statement"]["kind"],
-        serde_json::json!("unsigned"),
-        "expected an explicitly unsigned statement: {body:?}"
-    );
-    &body["payload"]
-}
+use common::{
+    attestor_server, build_genesis_push_body, envelope_payload, get_json, keyed_appstate,
+    keyless_server, load_pool, post_json, write_signing_key,
+};
 
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
 /// signature verifies against `identity`'s key. Returns `(payload,
@@ -324,8 +83,7 @@ fn assert_signed_envelope_claims<'a>(
 /// claim (ac-commit-receipt).
 #[tokio::test]
 async fn attestor_push_response_carries_signed_commit_receipt() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (state, identity) = attestor_state(dir.path()).await;
+    let (state, identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
     let pool = load_pool();
@@ -355,8 +113,7 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
 /// match the tip payload (ac-tip-report).
 #[tokio::test]
 async fn attestor_tip_response_carries_signed_tip_report() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (state, identity) = attestor_state(dir.path()).await;
+    let (state, identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
     let pool = load_pool();
@@ -401,14 +158,15 @@ async fn keyless_push_and_tip_responses_stay_unsigned() {
     let now = 1_700_000_200;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
-    let app = build_router(keyless_state());
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
-    assert_unsigned_envelope(&push_envelope);
+    envelope_payload(&push_envelope);
 
     let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
-    assert_unsigned_envelope(&tip_envelope);
+    envelope_payload(&tip_envelope);
 }
 
 /// A keyed-but-unbootstrapped server (only reachable when the router is
@@ -434,11 +192,11 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     let app = build_router(Arc::new(state));
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
     assert_eq!(push_status, StatusCode::CREATED, "{push_envelope:?}");
-    assert_unsigned_envelope(&push_envelope);
+    envelope_payload(&push_envelope);
 
     let (tip_status, tip_envelope) = get_json(app, &format!("/tip?pr={principal_id}")).await;
     assert_eq!(tip_status, StatusCode::OK, "{tip_envelope:?}");
-    assert_unsigned_envelope(&tip_envelope);
+    envelope_payload(&tip_envelope);
 }
 
 // ========================================================================
@@ -450,8 +208,7 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
 /// from the current-key fields already published.
 #[tokio::test]
 async fn attestor_discovery_payload_carries_genesis_key_fields() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (state, identity) = attestor_state(dir.path()).await;
+    let (state, identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
     let (status, envelope) = get_json(app, "/server").await;
@@ -492,8 +249,7 @@ async fn attestor_discovery_payload_carries_genesis_key_fields() {
 /// responses and local replay, never the server's own engine or state.
 #[tokio::test]
 async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (state, _identity) = attestor_state(dir.path()).await;
+    let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
     let pool = load_pool();
