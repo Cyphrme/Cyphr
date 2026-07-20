@@ -1,4 +1,5 @@
-//! The keyless full-surface matrix (campaign C1 evaluator).
+//! The keyless full-surface matrix: coverage of every route when the
+//! server has no signing identity configured.
 //!
 //! A server with no configured signing identity (`config.signing_key_path
 //! = None`, the compiled default -- `docs/specs/http-envelope.md`'s

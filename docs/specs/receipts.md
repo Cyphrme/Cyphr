@@ -65,8 +65,8 @@ against the enveloped payload's own fields.
 
 Each is a dedicated constant, distinct from the bearer token's
 `cyphr-server/auth/token`, so no signature the server key produces can
-be replayed across purposes (the F22 lesson bearer tokens already
-close).
+be replayed across purposes -- the same replay-across-purposes closure
+bearer tokens already apply.
 
 ### Standard fields (both kinds)
 

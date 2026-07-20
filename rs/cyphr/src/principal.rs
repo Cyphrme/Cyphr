@@ -3504,7 +3504,7 @@ mod tests {
         assert!(principal.verify_key_inclusion(alg, &tmb).unwrap());
     }
 
-    /// N7 (issue #19) — [`Principal::sr_inclusion_proof`] is the public
+    /// issue #19 — [`Principal::sr_inclusion_proof`] is the public
     /// accessor a portable, third-party verifier needs for hop 4 (SR-in-PT)
     /// of the chained key-inclusion proof, since [`Principal::pt`] itself is
     /// crate-internal. It must return exactly the same leaf proof
@@ -3536,7 +3536,7 @@ mod tests {
         );
     }
 
-    /// N7 (issue #19) — an algorithm never registered on the principal's PT
+    /// issue #19 — an algorithm never registered on the principal's PT
     /// has no hop 4 to give; the accessor must mirror
     /// [`crate::principal_tree::PrincipalTree::sr_inclusion_proof`]'s own
     /// `None` behavior rather than panicking.

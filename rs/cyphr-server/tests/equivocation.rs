@@ -1,7 +1,7 @@
 //! Equivocation evidence: a pure verification helper proving that two
 //! conflicting signed tip reports about the same principal state
 //! constitute portable, self-contained proof of server misbehavior
-//! (`docs/specs/receipts.md`'s equivocation section, campaign AC4/F9).
+//! (`docs/specs/receipts.md`'s equivocation section).
 //!
 //! Detection is verifier-side and stateless -- the server neither detects
 //! nor stores anything; these tests exercise

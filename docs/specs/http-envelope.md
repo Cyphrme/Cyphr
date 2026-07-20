@@ -29,8 +29,8 @@ format (`{pay, sig, key?}`), which is SPEC.md's and the `coz` crate's.
 **Scope boundary:** This document defines the container and records the
 rulings below. It does not wrap any handler's response (that is a later
 adoption step) and does not define what a signed statement's payload
-*claims* (that is the server-receipt design, later still). N1 pins only
-that the slot is a coz.
+*claims* (that is the server-receipt design, later still). This document
+pins only that the slot is a coz.
 
 ## Wire shape
 

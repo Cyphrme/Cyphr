@@ -8,7 +8,7 @@
 //! `Envelope::unsigned`, exactly as before this node.
 //!
 //! The spine test, `offline_verification_replays_chain_and_verifies_commit_receipt`,
-//! proves the C4 story end-to-end: a client pins the PG from `/server`,
+//! proves offline verification end-to-end: a client pins the PG from `/server`,
 //! reconstructs `Genesis::Explicit` from the published genesis-key hint,
 //! replays the server's own chain (fetched via the ordinary public
 //! `/patch` surface) into a second, independent local engine, and verifies
@@ -481,7 +481,7 @@ async fn attestor_discovery_payload_carries_genesis_key_fields() {
 }
 
 // ========================================================================
-// C4: offline verification -- the node's spine (ac-offline-verify)
+// Offline verification: this section's spine test
 // ========================================================================
 
 /// A client pins the PG from `/server`, reconstructs `Genesis::Explicit`

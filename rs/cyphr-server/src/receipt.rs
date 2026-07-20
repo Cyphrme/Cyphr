@@ -6,8 +6,8 @@
 //! [`ServerIdentity::issue_token`](super::auth::token) uses for bearer
 //! tokens: `coz::Pay::new()`, a dedicated `typ` constant, extra claims,
 //! serde to bytes, `identity.sign`, `coz::CozJson{pay, sig}`. Each kind
-//! gets its own `typ` so no signature can be replayed across purposes
-//! (the F22 lesson bearer tokens already close).
+//! gets its own `typ` so no signature can be replayed across purposes,
+//! the same replay-across-purposes closure bearer tokens already apply.
 //!
 //! Issuance is stateless (decision D2, `docs/specs/receipts.md`): nothing
 //! here persists a receipt or a received-at time. The recipient holds the

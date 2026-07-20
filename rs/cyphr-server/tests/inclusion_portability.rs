@@ -1,4 +1,4 @@
-//! Third-party key-inclusion portability (issue #19, N7,
+//! Third-party key-inclusion portability (issue #19,
 //! `docs/specs/proof-portability.md`).
 //!
 //! `Principal::verify_key_inclusion` only lets a caller who already owns and
