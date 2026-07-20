@@ -14,6 +14,7 @@ pub mod error;
 pub mod logging;
 pub mod observation;
 pub mod receipt;
+pub mod revoke;
 pub mod routes;
 
 use std::sync::Arc;
@@ -191,6 +192,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/tip", axum::routing::get(routes::tip))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
+        .route("/revoke", axum::routing::post(routes::revoke))
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route(
