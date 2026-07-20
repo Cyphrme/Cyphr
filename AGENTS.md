@@ -15,8 +15,11 @@ HTTP authority — hardened to the point that the server can be implemented
 cleanly, with all protocol behavior pinned by the shared golden corpus.
 
 **Status: WIP.** The server-readiness campaign CLOSEd 2026-07-10 (25 DAG
-nodes, meta-PR #43 merged); the durable record lives in `.ledger/log/` and
-forge issues #16/#23/#41. Deferred scope for what's next (per I6, live in
+nodes, meta-PR #43 merged); the server-receipts campaign CLOSEd 2026-07-20
+(response envelope, signed receipts, equivocation evidence; PR #90 merged
+into `server`, follow-ups tracked under issue #88). The durable record
+lives in `.ledger/log/` and forge issues #16/#23/#41; PR #23's Roadmap
+section is the unscoped candidate list for what's next. Deferred scope (per I6, live in
 `.scratch/server-readiness/PLAN.md`'s "Deferred" list, not `docs/plans/`):
 auth (SPEC §17), replay-cost caching (F25/U2/U3), the cross-process
 per-principal lease (#27's full scope), EMT→EML conversion (#40), and go/
