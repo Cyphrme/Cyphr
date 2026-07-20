@@ -136,6 +136,35 @@ impl AppState {
         self.identity = Some(Arc::new(auth::ServerIdentity::load_from_path(&key_path)?));
         Ok(())
     }
+
+    /// This server's attestor capability -- the principal and signing
+    /// identity together, present if and only if both a bootstrapped
+    /// principal AND a live signing identity are present.
+    ///
+    /// This is the single implementation of that spec-level rule (a
+    /// bootstrapped principal without a signing key, or vice versa, is not
+    /// an attestor); every call site that decides whether to sign a
+    /// response goes through this or [`AppState::attestor_identity`] rather
+    /// than re-matching the two fields, so the rule can never drift out of
+    /// sync between call sites.
+    pub fn attestor(
+        &self,
+    ) -> Option<(
+        &Arc<auth::principal::ServerPrincipal>,
+        &Arc<auth::ServerIdentity>,
+    )> {
+        match (&self.principal, &self.identity) {
+            (Some(principal), Some(identity)) => Some((principal, identity)),
+            _ => None,
+        }
+    }
+
+    /// The signing identity alone, for attestor-only callers that don't
+    /// need the principal itself. Delegates to [`AppState::attestor`] so
+    /// there remains exactly one place implementing the check.
+    pub fn attestor_identity(&self) -> Option<&Arc<auth::ServerIdentity>> {
+        self.attestor().map(|(_, identity)| identity)
+    }
 }
 
 // ========================================================================
@@ -298,5 +327,68 @@ mod tests {
             "a configured-but-missing signing key must fail construction, not panic or \
              silently disable the identity"
         );
+    }
+
+    #[tokio::test]
+    async fn attestor_reflects_all_four_principal_identity_combinations() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let key_path = write_signing_key_file(temp_dir.path());
+        let config = config::ServerConfig {
+            data_dir: temp_dir.path().join("data"),
+            signing_key_path: Some(key_path),
+            ..Default::default()
+        };
+        let mut state = AppState::new(config).expect("AppState::new with a valid key");
+        state.engine.reindex(&[], false).await.expect("reindex");
+
+        let identity = state
+            .identity
+            .clone()
+            .expect("configured signing key loads identity");
+        let principal = Arc::new(
+            auth::principal::ServerPrincipal::bootstrap(
+                &state.engine,
+                identity.clone(),
+                state
+                    .config
+                    .signing_key_path
+                    .as_ref()
+                    .expect("key path set"),
+                &state.config.data_dir,
+            )
+            .await
+            .expect("bootstrap succeeds"),
+        );
+
+        // (None, None) -- keyless, unbootstrapped.
+        state.identity = None;
+        state.principal = None;
+        assert!(state.attestor().is_none());
+        assert!(state.attestor_identity().is_none());
+
+        // (None, Some) -- keyed but not yet bootstrapped.
+        state.identity = Some(identity.clone());
+        state.principal = None;
+        assert!(state.attestor().is_none());
+        assert!(state.attestor_identity().is_none());
+
+        // (Some, None) -- would not arise from real startup (bootstrap
+        // itself requires an identity), but the predicate must still
+        // require both fields rather than being satisfiable by either alone.
+        state.identity = None;
+        state.principal = Some(principal.clone());
+        assert!(state.attestor().is_none());
+        assert!(state.attestor_identity().is_none());
+
+        // (Some, Some) -- attestor.
+        state.identity = Some(identity.clone());
+        state.principal = Some(principal.clone());
+        let (p, i) = state.attestor().expect("both present -> attestor");
+        assert!(Arc::ptr_eq(p, &principal));
+        assert!(Arc::ptr_eq(i, &identity));
+        assert!(Arc::ptr_eq(
+            state.attestor_identity().expect("both present -> attestor"),
+            &identity
+        ));
     }
 }

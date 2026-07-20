@@ -186,8 +186,8 @@ pub async fn tip(
         last_updated: t.last_updated,
     };
 
-    match (&state.principal, &state.identity) {
-        (Some(_), Some(identity)) => {
+    match state.attestor_identity() {
+        Some(identity) => {
             let roots = receipt::Roots {
                 pr: t.pr,
                 sr: t.sr,
@@ -207,7 +207,7 @@ pub async fn tip(
             .ok_or_else(|| AppError::internal("tip report signing unavailable"))?;
             Ok(Json(Envelope::signed(payload, coz)))
         },
-        _ => Ok(Json(Envelope::unsigned(payload))),
+        None => Ok(Json(Envelope::unsigned(payload))),
     }
 }
 
@@ -322,8 +322,8 @@ pub async fn push(
         },
     };
 
-    match (&state.principal, &state.identity) {
-        (Some(_), Some(identity)) => {
+    match state.attestor_identity() {
+        Some(identity) => {
             let roots = receipt::Roots {
                 pr: t.pr,
                 sr: t.sr,
@@ -341,7 +341,7 @@ pub async fn push(
             .ok_or_else(|| AppError::internal("commit receipt signing unavailable"))?;
             Ok((StatusCode::CREATED, Json(Envelope::signed(payload, coz))))
         },
-        _ => Ok((StatusCode::CREATED, Json(Envelope::unsigned(payload)))),
+        None => Ok((StatusCode::CREATED, Json(Envelope::unsigned(payload)))),
     }
 }
 
@@ -358,8 +358,8 @@ pub async fn push(
 pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let payload = match (&state.principal, &state.identity) {
-        (Some(principal), Some(identity)) => {
+    let payload = match state.attestor() {
+        Some((principal, identity)) => {
             let tmb = identity
                 .alg()
                 .compute_thumbprint(identity.pub_key())
@@ -378,7 +378,7 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                 },
             }
         },
-        _ => IdentityResponse::Repository,
+        None => IdentityResponse::Repository,
     };
 
     Ok(Json(Envelope::unsigned(payload)))
