@@ -2,15 +2,15 @@
 //! server has no signing identity configured.
 //!
 //! A server with no configured signing identity (`config.signing_key_path
-//! = None`, the compiled default -- `docs/specs/http-envelope.md`'s
-//! adoption node) still MUST serve its repository-tier surface honestly:
+//! = None`, the compiled default -- see `docs/specs/http-envelope.md`)
+//! still MUST serve its repository-tier surface honestly:
 //! every JSON success response is an explicitly-unsigned envelope, never a
 //! bare body a client could misread as attested, and the identity-gated
 //! auth surface (`/auth/login`, `/auth/challenge`) fails loudly and
 //! explicitly rather than masquerading a declared capability absence as a
-//! transient server fault (finding F5).
+//! transient server fault.
 //!
-//! Later nodes cite this module by name as the keyless conformance
+//! Other test suites cite this module by name as the keyless conformance
 //! evaluator; it is not itself the origin of the enveloping or
 //! degradation behavior it tests (that is `src/routes.rs` and
 //! `src/auth/login.rs`).
@@ -345,7 +345,7 @@ async fn keyless_discovery_declares_repository_tier() {
 }
 
 // ========================================================================
-// Auth surface: honest capability-absence degradation (finding F5)
+// Auth surface: honest capability-absence degradation
 // ========================================================================
 
 /// A minimal, syntactically valid (but unsigned-for-this-purpose) coz JSON
@@ -357,7 +357,7 @@ fn empty_coz_body() -> String {
 }
 
 /// `POST /auth/challenge` on a keyless server returns the explicit
-/// capability-absence error -- never a 500 (F5): issuing a nonce that can
+/// capability-absence error -- never a 500: issuing a nonce that can
 /// never be redeemed (no identity to issue the resulting token) would be
 /// a silent trap, not a service worth offering.
 #[tokio::test]
@@ -390,7 +390,7 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
 }
 
 /// `POST /auth/login` on a keyless server returns the explicit
-/// capability-absence error -- never a 500 (F5).
+/// capability-absence error -- never a 500.
 #[tokio::test]
 async fn keyless_login_returns_capability_absence_not_internal_error() {
     let state = keyless_state();

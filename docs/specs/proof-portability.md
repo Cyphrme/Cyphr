@@ -58,7 +58,10 @@ feed `KeyTree`/`AuthTree`/`StateTree::build_tree` for hops 1-3 (all
 4 without requiring the crate-internal `Principal.pt` field or the
 non-portable `NodePath` type.
 
-`VERIFIED: rs/cyphr/src/principal.rs -- sr_inclusion_proof, key_inclusion_proof; rs/cyphr/src/inclusion.rs -- verify_key_inclusion; rs/cyphr-server/tests/inclusion_portability.rs`
+Implemented by `sr_inclusion_proof` and `key_inclusion_proof` in
+`rs/cyphr/src/principal.rs`, `verify_key_inclusion` in
+`rs/cyphr/src/inclusion.rs`, and exercised by
+`rs/cyphr-server/tests/inclusion_portability.rs`.
 
 ## `[portability-r-kr-derivation]` Ruling: KR is derived, not trusted directly
 
@@ -82,9 +85,15 @@ the hop that proves it sits under the next level up. AR, SR, and PR
 happen to also be available directly from the tip report's claims, so
 in practice only KR needs this derivation.
 
-`VERIFIED: rs/cyphr-server/tests/inclusion_portability.rs -- third_party_verify_key_inclusion, third_party_rejects_tampered_ar_node_hop (flips hop 2's leaf, leaving hop 1's identity binding genuine, and confirms rejection -- exercising exactly this ruling's argument: hop 1's proof no longer matches the now-forged derived KR, and hop 2's own proof no longer matches the tip-attested AR)`
+Exercised by `rs/cyphr-server/tests/inclusion_portability.rs`'s
+`third_party_verify_key_inclusion` and
+`third_party_rejects_tampered_ar_node_hop` (flips hop 2's leaf, leaving
+hop 1's identity binding genuine, and confirms rejection -- exercising
+exactly this ruling's argument: hop 1's proof no longer matches the
+now-forged derived KR, and hop 2's own proof no longer matches the
+tip-attested AR).
 
-## `[portability-r-endpoint-deferred]` Ruling: no new HTTP endpoint ships in this node
+## `[portability-r-endpoint-deferred]` Ruling: no new HTTP endpoint ships here
 
 A server-side proof-serving read handler (e.g. `GET
 /proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>`, returning an
@@ -100,7 +109,7 @@ unsigned envelope carrying the 4 hops) was considered and is
    determine for an arbitrary `pr` -- unlike `/patch`, which serves raw
    chain data without needing to replay it. Wiring that lookup is new
    production surface, not a one-line addition to `routes.rs`.
-2. **Out of this node's declared floor.** The IBC's non-goals
+2. **Out of this design's declared floor.** Its non-goals
    explicitly bar "proof caching, batching, or any performance
    machinery -- one proof, one verification, demonstrated." A
    production endpoint invites exactly those follow-on concerns
@@ -124,9 +133,9 @@ needed -- the hops are self-verifying against a tip report the caller
 fetches separately) carrying `{hops: [LeafProof; 4], tmb, alg}`. It
 needs a way to resolve `Genesis` for an arbitrary `pr` first (the real
 missing piece per reason 1 above); the hop-generation logic itself is a
-direct lift of this node's prover phase.
-
-`VERIFIED: this document's ruling; rs/cyphr-server/tests/inclusion_portability.rs's prover phase demonstrates the alternative (no endpoint) path in full`
+direct lift of the prover phase in
+`rs/cyphr-server/tests/inclusion_portability.rs`, which demonstrates
+the alternative (no endpoint) path in full.
 
 ## Maintenance risk: prover-side hop 1-3 reconstruction duplicates internal ordering
 
@@ -153,12 +162,14 @@ alg, tmb) -> Result<[LeafProof; 4]>`, mirroring `key_inclusion_proof`'s
 body but returning the portable `Vec<LeafProof>` shape instead of the
 crate-internal `NodePath` -- would let a prover call one function
 instead of re-deriving the KT/AR-node/SR-node sequence, closing this
-risk without widening any other crate-internal surface. This node did
-not add that API because its own authorized surface was scoped to
+risk without widening any other crate-internal surface. This design did
+not add that API because the scoped work here was limited to
 exactly one accessor (`sr_inclusion_proof`, hop 4 only); a full-chain
 generator is a larger, separately-justified addition.
 
-`VERIFIED: rs/cyphr-server/tests/inclusion_portability.rs -- build_fixture's hop 1-3 reconstruction; rs/cyphr/src/principal.rs -- key_inclusion_proof's internal sequence this mirrors`
+Exercised by `build_fixture`'s hop 1-3 reconstruction in
+`rs/cyphr-server/tests/inclusion_portability.rs`, which mirrors
+`key_inclusion_proof`'s internal sequence in `rs/cyphr/src/principal.rs`.
 
 ## Roadmap: not built here
 

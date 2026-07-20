@@ -5,7 +5,7 @@
 //! statement slot and a tip report into `/tip`'s, following the bearer
 //! token's compose-and-sign pattern (`src/auth/token.rs`). Every other
 //! configuration (keyless, or keyed-but-unbootstrapped) stays honestly
-//! `Envelope::unsigned`, exactly as before this node.
+//! `Envelope::unsigned`, exactly as before this design.
 //!
 //! The spine test, `offline_verification_replays_chain_and_verifies_commit_receipt`,
 //! proves offline verification end-to-end: a client pins the PG from `/server`,

@@ -8,7 +8,7 @@
 //! change to field order, encoding, or the embedded coz slot breaks these
 //! tests loudly instead of drifting unnoticed.
 //!
-//! The signed `pay` here is illustrative: this node pins that the
+//! The signed `pay` here is illustrative: this suite pins that the
 //! statement slot carries a coz, not what a server statement claims (that
 //! is a later, receipt-design concern). See the design doc.
 

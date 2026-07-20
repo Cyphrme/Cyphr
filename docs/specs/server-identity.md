@@ -33,7 +33,7 @@ capability-declaration surface (supported algorithms, protocol levels,
 rate limits) -- that is a roadmap item, noted below. It does NOT sign the
 response; the payload rides in `Envelope::unsigned` like every other
 response today (`docs/specs/http-envelope.md`), and giving the server a
-statement over its own discovery payload is a later node's concern.
+statement over its own discovery payload is a later concern.
 
 ## Route choice
 
@@ -42,11 +42,12 @@ like `/v1/server` or `/meta`: the envelope's `v` field
 (`docs/specs/http-envelope.md` `[envelope-version]`) already versions the
 body, so a second version marker in the path would be redundant. `/meta`
 was considered and rejected as a name -- it invites exactly the wider
-capability surface this node explicitly does not build (see Roadmap
+capability surface this design explicitly does not build (see Roadmap
 below), and a route name should not promise more than its handler
 delivers.
 
-`VERIFIED: rs/cyphr-server/src/lib.rs:154 -- build_router registers GET /server`
+`build_router` registers `GET /server` in
+`rs/cyphr-server/src/lib.rs:154`.
 
 ## Wire shape
 
@@ -103,7 +104,9 @@ bootstrapped:
   MUST independently re-derive the PG from it before relying on it for
   anything, never trust it on discovery's say-so alone.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:104-137 -- GenesisKeyInfo, IdentityResponse, #[serde(tag = "tier", rename_all = "lowercase")]`
+Implemented by `GenesisKeyInfo` and `IdentityResponse` in
+`rs/cyphr-server/src/routes.rs:104-137`, tagged with
+`#[serde(tag = "tier", rename_all = "lowercase")]`.
 
 ### `[identity-r-absence]` Repository carries no identity-shaped fields
 
@@ -117,7 +120,12 @@ placeholder. A client that finds
 whether the identity fields are empty -- their absence from the object is
 the whole signal.
 
-`VERIFIED: rs/cyphr-server/tests/identity_publication.rs -- keyless_server_declares_repository_with_no_identity_fields, keyed_but_unbootstrapped_principal_declares_repository (payload.get("pg").is_none(), etc.); rs/cyphr-server/tests/keyless_matrix.rs -- keyless_discovery_declares_repository_tier`
+Covered by `rs/cyphr-server/tests/identity_publication.rs`'s
+`keyless_server_declares_repository_with_no_identity_fields` and
+`keyed_but_unbootstrapped_principal_declares_repository`
+(`payload.get("pg").is_none()`, etc.), and by
+`rs/cyphr-server/tests/keyless_matrix.rs`'s
+`keyless_discovery_declares_repository_tier`.
 
 ### `[identity-r-both-options]` Attestor requires both AppState options
 
@@ -132,7 +140,8 @@ integration test in this crate does exactly that). The handler matches
 the pair explicitly; it never assumes one field's presence implies the
 other's.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:327-352 -- identity() matches (&state.principal, &state.identity)`
+Implemented by `identity()` in `rs/cyphr-server/src/routes.rs:327-352`,
+via `AppState::attestor()`, the single accessor for this condition.
 
 ### `[identity-r-principal-not-key]` Tier tracks the principal, not the key file
 
@@ -146,7 +155,8 @@ never be reachable through `/tip`. The tier therefore tracks
 `AppState.principal` (has an established, servable chain been created or
 loaded?), not `AppState.identity` (is a key file configured?).
 
-`VERIFIED: rs/cyphr-server/tests/identity_publication.rs -- keyed_but_unbootstrapped_principal_declares_repository`
+Covered by `rs/cyphr-server/tests/identity_publication.rs`'s
+`keyed_but_unbootstrapped_principal_declares_repository`.
 
 ### `[identity-r-current-key]` Key material comes from the live identity, never the files
 
@@ -163,19 +173,23 @@ directly: each fact has exactly one source of truth in memory, and that
 source is already kept current by the rotation path this endpoint does
 not need to know about.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:327-352; rs/cyphr-server/src/lib.rs:104-137 (AppState::rotate_signing_key)`
+See `rs/cyphr-server/src/routes.rs:327-352` and
+`AppState::rotate_signing_key` in `rs/cyphr-server/src/lib.rs:104-137`.
 
 ### `[identity-r-501-pointer]` The keyless auth rejection points here
 
 `POST /auth/login` and `POST /auth/challenge` on a keyless server reject
 with the same 501 as before (`docs/specs/http-envelope.md`
-`[envelope-r-auth]`, finding F5), and the rejection text now also names
-`GET /server` as where the declared capability tier lives, byte-identical
-across both endpoints. A client that gets rejected has somewhere honest
-to look rather than being left to guess whether the server is keyless by
-design or genuinely broken.
+`[envelope-r-auth]`; the keyless-login capability-absence ruling), and
+the rejection text now also names `GET /server` as where the declared
+capability tier lives, byte-identical across both endpoints. A client
+that gets rejected has somewhere honest to look rather than being left
+to guess whether the server is keyless by design or genuinely broken.
 
-`VERIFIED: rs/cyphr-server/src/auth/login.rs:359-364 -- keyless_identity_rejection(); rs/cyphr-server/tests/keyless_matrix.rs -- capability-absence assertions check message.contains("/server")`
+Implemented by `keyless_identity_rejection()` in
+`rs/cyphr-server/src/auth/login.rs:359-364`; covered by
+`rs/cyphr-server/tests/keyless_matrix.rs`'s capability-absence
+assertions, which check `message.contains("/server")`.
 
 ## The TOFU pinning story
 
@@ -235,14 +249,14 @@ out-of-band trust anchor:
 A fuller capability-declaration surface -- which algorithms the server
 accepts, protocol level limits, rate limits, and similar operational
 metadata -- is a natural extension of this endpoint's shape but is
-explicitly out of scope for this node. This document records the tier
-and identity fields only; a later node that adds more fields extends
-`IdentityResponse` and this document rather than inventing a second
-endpoint.
+explicitly out of scope here. This document records the tier
+and identity fields only; a later extension that adds more fields
+extends `IdentityResponse` and this document rather than inventing a
+second endpoint.
 
 ## Statement payload -- deferred
 
-Whether a future node signs the discovery response (nesting a coz under
+Whether a future design signs the discovery response (nesting a coz under
 `statement` the way `docs/specs/http-envelope.md` describes for other
 endpoints) is not settled here. Today's payload is always
 `Envelope::unsigned`; the TOFU story above does not depend on a

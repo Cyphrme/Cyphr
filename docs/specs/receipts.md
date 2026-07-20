@@ -47,7 +47,10 @@ server, and a keyed-but-unbootstrapped process, emit `Envelope::unsigned`
 exactly as before this document -- byte-compatible with every prior
 release.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs -- push() and tip() match (&state.principal, &state.identity); rs/cyphr-server/tests/receipts.rs -- keyless_push_and_tip_responses_stay_unsigned, keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned`
+Enforced in `rs/cyphr-server/src/routes.rs`'s `push()` and `tip()`
+handlers, and covered by `rs/cyphr-server/tests/receipts.rs`'s
+`keyless_push_and_tip_responses_stay_unsigned` and
+`keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned`.
 
 ## Claim schema
 
@@ -99,7 +102,10 @@ bearer tokens already apply.
 
 No other claims are carried by either kind.
 
-`VERIFIED: rs/cyphr-server/src/receipt.rs -- COMMIT_RECEIPT_TYP, TIP_REPORT_TYP, sign_receipt; rs/cyphr-server/tests/golden/receipt_commit.json, receipt_tip.json -- byte-exact vectors`
+Implemented in `rs/cyphr-server/src/receipt.rs`'s
+`COMMIT_RECEIPT_TYP`, `TIP_REPORT_TYP`, and `sign_receipt`; pinned by
+the byte-exact golden vectors `rs/cyphr-server/tests/golden/receipt_commit.json`
+and `receipt_tip.json`.
 
 ## Rulings
 
@@ -126,7 +132,9 @@ not a ruling -- each is recorded explicitly:
   section: the TOFU story does not depend on a signature over discovery
   itself, since chain replay against the pinned PG is the verification.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs -- patch(), entity(), auth::login handlers, identity() all construct Envelope::unsigned unconditionally`
+Enforced in `rs/cyphr-server/src/routes.rs`: `patch()`, `entity()`,
+the `auth::login` handlers, and `identity()` all construct
+`Envelope::unsigned` unconditionally.
 
 ### `[receipts-r-attestor-only]` Only an attestor signs
 
@@ -135,7 +143,8 @@ governs receipts too: a keyless server and a keyed-but-unbootstrapped
 process both emit `Envelope::unsigned`, byte-compatible with every
 response those configurations produced before this document.
 
-`VERIFIED: rs/cyphr-server/tests/keyless_matrix.rs (unmodified); rs/cyphr-server/tests/receipts.rs`
+Covered by `rs/cyphr-server/tests/keyless_matrix.rs` and
+`rs/cyphr-server/tests/receipts.rs`.
 
 ### `[receipts-r-stateless]` Issuance is stateless (decision D2)
 
@@ -154,7 +163,8 @@ needs to be retained alongside it: the claims already carry everything
 the offline verification procedure below needs, given a pinned PG and
 the ability to fetch the server's chain.
 
-`VERIFIED: rs/cyphr-server/src/receipt.rs -- sign_receipt has no side effects beyond signing; no new persistence surface anywhere in this node's diff`
+`rs/cyphr-server/src/receipt.rs`'s `sign_receipt` has no side effects
+beyond signing, and this design introduces no new persistence surface.
 
 ### `[receipts-r-genesis-hint]` The genesis key is a trustless hint
 
@@ -175,7 +185,10 @@ pinned `pg`. Only after that derivation succeeds does the genesis key
 become useful -- as the seed for replaying the server's own chain, never
 as a trusted fact in itself.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs -- IdentityResponse::Attestor.genesis, GenesisKeyInfo; rs/cyphr-server/tests/receipts.rs -- offline_verification_replays_chain_and_verifies_commit_receipt`
+Implemented in `rs/cyphr-server/src/routes.rs`'s
+`IdentityResponse::Attestor.genesis` and `GenesisKeyInfo`; exercised by
+`rs/cyphr-server/tests/receipts.rs`'s
+`offline_verification_replays_chain_and_verifies_commit_receipt`.
 
 ## Offline verification procedure
 
@@ -209,7 +222,8 @@ A verifier that completes all six steps has established the receipt's
 authenticity using only material it fetched and validated itself: no
 step trusts a bare assertion from the server under scrutiny.
 
-`VERIFIED: rs/cyphr-server/tests/receipts.rs -- offline_verification_replays_chain_and_verifies_commit_receipt`
+Exercised end-to-end by `rs/cyphr-server/tests/receipts.rs`'s
+`offline_verification_replays_chain_and_verifies_commit_receipt`.
 
 ## Equivocation evidence
 
@@ -247,7 +261,9 @@ outcome: wrong `typ`, an unverifiable signature, a different
 principal, a different sequence, or claim-identical reports (no
 conflict at all).
 
-`VERIFIED: rs/cyphr-server/src/receipt.rs -- EquivocationVerdict, check_equivocation; rs/cyphr-server/tests/equivocation.rs -- all seven arms`
+Implemented in `rs/cyphr-server/src/receipt.rs`'s
+`EquivocationVerdict` and `check_equivocation`; all seven arms are
+covered by `rs/cyphr-server/tests/equivocation.rs`.
 
 ### What a verifier retains
 

@@ -71,7 +71,9 @@ The envelope MUST carry a `v` field present in both signed and unsigned
 forms. It is an integer (not a string): smaller on the wire, ordered, and
 trivially compared. The current version is `1`.
 
-`VERIFIED: rs/cyphr-server/src/envelope.rs — ENVELOPE_VERSION, Envelope::v; golden vectors show v in both forms`
+Implemented by `ENVELOPE_VERSION` and `Envelope::v` in
+`rs/cyphr-server/src/envelope.rs`; the golden vectors show `v` present
+in both forms.
 
 ### `[envelope-statement-structural]` Structural signed/unsigned distinction
 
@@ -84,7 +86,9 @@ not attest this", not a missing field. A client decides trust by reading
 pristine coz under `coz`, byte-identical to a standalone coz, so a verifier
 can lift `{pay, sig}` out unchanged.
 
-`VERIFIED: rs/cyphr-server/src/envelope.rs — Statement (serde tag="kind", content="coz"); structural-distinction unit test; the two golden vectors differ by kind, not by omission`
+Implemented by `rs/cyphr-server/src/envelope.rs`'s `Statement` (serde
+`tag="kind", content="coz"`); covered by a structural-distinction unit
+test, and the two golden vectors differ by `kind`, not by omission.
 
 ## Rulings
 
@@ -100,7 +104,8 @@ the entity is already tamper-evident without a server statement. Wrapping
 it would force a binary→base64 JSON re-encoding and add envelope bytes for
 no trust gain. The bytes stay raw.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:220-246 — entity() returns raw octet-stream keyed by the requested TaggedDigest`
+Implemented by `entity()` in `rs/cyphr-server/src/routes.rs:220-246`,
+returning a raw octet-stream keyed by the requested `TaggedDigest`.
 
 ### `[envelope-r-auth]` Challenge and login — INCLUDED
 
@@ -110,10 +115,11 @@ client parses carries `v` in the same place, so version detection is one
 mechanism, not a per-endpoint special case. The bearer token in a login
 response is itself already a signed coz, but that is the token's own
 signature over auth claims — orthogonal to the envelope's response-level
-statement slot, which stays `unsigned` for these endpoints until a later
-node signs responses.
+statement slot, which stays `unsigned` for these endpoints until a
+later adoption step signs responses.
 
-`VERIFIED: rs/cyphr-server/src/auth/login.rs:311-324 — ChallengeResponse, LoginResponse are bare JSON today`
+`ChallengeResponse` and `LoginResponse`
+(`rs/cyphr-server/src/auth/login.rs:311-324`) are bare JSON today.
 
 ### `[envelope-r-error]` Error bodies — NOT enveloped
 
@@ -124,7 +130,8 @@ the server would ever attest. Enveloping errors would add a version and an
 always-`unsigned` statement to bodies that gain nothing from either, and
 complicate the uniform `AppError::into_response` path. Errors stay as-is.
 
-`VERIFIED: rs/cyphr-server/src/error.rs:64-68 — AppError::into_response emits {"error": message}; status carries semantics`
+`AppError::into_response` (`rs/cyphr-server/src/error.rs:64-68`) emits
+`{"error": message}`; the status code carries the semantics.
 
 ### `[envelope-r-migration]` Migration — flag-day, version-gated
 
@@ -140,7 +147,8 @@ closed (refuses to interpret the body) rather than guessing. Because every
 future envelope change bumps `v`, a client never has to distinguish
 envelope revisions by probing individual fields.
 
-`VERIFIED: rs/cyphr-server/Cargo.toml — version 0.1.0 (pre-1.0); ENVELOPE_VERSION = 1 is the first version clients gate on`
+`rs/cyphr-server/Cargo.toml` is version `0.1.0` (pre-1.0);
+`ENVELOPE_VERSION = 1` is the first version clients gate on.
 
 ### `[envelope-r-status]` HTTP status codes — PRESERVED
 
@@ -151,7 +159,9 @@ keep their non-2xx codes and their bare error body. A client still branches
 on the HTTP status first; the envelope never becomes a `200`-wrapping-an-
 error anti-pattern.
 
-`VERIFIED: rs/cyphr-server/src/routes.rs:212-217 (201 CREATED on push) and error.rs:83-126 (status mapping) — unchanged by this node`
+`rs/cyphr-server/src/routes.rs:212-217` (201 CREATED on push) and
+`error.rs:83-126` (status mapping) are unchanged by the envelope
+adoption.
 
 ### `[envelope-r-cr]` Commit Root in the tip payload — INCLUDED
 
@@ -159,16 +169,19 @@ The tip payload SHOULD carry `cr` (Commit Root), which today's
 `TipResponse` omits even though the storage layer's `TipState` provides it.
 `cr` is a legitimate element of a principal's attestable state; a future
 signed statement over a tip could not attest the commit root if the payload
-never carried it. Adoption (the node that wraps `TipResponse`) adds the
-field; this node records the ruling that it belongs in the payload.
+never carried it. The envelope-adoption step (which wraps
+`TipResponse`) adds the field; this document records the ruling that
+it belongs in the payload.
 
-`VERIFIED: rs/cyphr-storage/src/index/types.rs:97 (TipState.cr present) vs rs/cyphr-server/src/routes.rs:57-65 (TipResponse omits cr)`
+`rs/cyphr-storage/src/index/types.rs:97` has `TipState.cr` present,
+while `rs/cyphr-server/src/routes.rs:57-65`'s `TipResponse` (before
+this ruling) omitted `cr`.
 
 ## Statement payload — deferred
 
 What a signed statement's `pay` *claims* (its `typ`, and whether it binds a
-digest of the payload, the tip, or something else) is NOT settled here. This
-node pins only that the slot is a coz `{pay, sig}`. The golden vector's
+digest of the payload, the tip, or something else) is NOT settled here.
+This document pins only that the slot is a coz `{pay, sig}`. The golden vector's
 signed `pay` is illustrative, not normative: it demonstrates a valid coz in
 the slot, not the claim schema a server-receipt design will define. The `v`
 field is the escape hatch — settling those semantics later bumps the

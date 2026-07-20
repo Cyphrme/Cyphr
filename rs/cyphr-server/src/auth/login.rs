@@ -349,7 +349,7 @@ fn default_login_perms() -> Vec<String> {
 
 /// The explicit, honest rejection a keyless server (no configured signing
 /// identity) gives both login and challenge -- the SAME condition, the
-/// SAME error, never `AppError::internal` (F5). A keyless server cannot
+/// SAME error, never `AppError::internal`. A keyless server cannot
 /// issue a bearer token, so login is a declared capability absence, not
 /// a fault; a challenge nobody can ever redeem would be a silent trap,
 /// so challenge shares the same rejection rather than issuing one. The
