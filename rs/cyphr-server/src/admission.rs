@@ -433,15 +433,19 @@ impl SpentSet {
 
     /// Release a reservation on a non-2xx so the token remains usable (a
     /// protocol-rejected genesis does not burn an invite).
+    ///
+    /// Deliberately NOT fsynced: unlike reserve/consume, the refund carries no
+    /// durability barrier. A refund lost to a crash only strands a token spent
+    /// -- the already-documented safe failure direction (single-use is never
+    /// violated, only under-counted). Fsyncing here would instead let one valid
+    /// token drive unbounded durable syncs on the refund path (a rejected push
+    /// costs a reserve fsync plus a refund fsync), so the barrier is pure
+    /// amplification with no integrity gain.
     async fn refund(&self, hash: [u8; 32]) -> Result<(), AdmissionError> {
         let tokens = self.tokens.clone();
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || {
-            tokens.remove(hash).map_err(backend)?;
-            db.persist(PersistMode::SyncAll).map_err(backend)
-        })
-        .await
-        .map_err(|e| AdmissionError::Join(e.to_string()))?
+        tokio::task::spawn_blocking(move || tokens.remove(hash).map_err(backend))
+            .await
+            .map_err(|e| AdmissionError::Join(e.to_string()))?
     }
 }
 
