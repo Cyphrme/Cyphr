@@ -1,80 +1,41 @@
 //! Witness ingest of an uncommitted `key/revoke` coz -- a "naked revoke"
-//! (SPEC.md §6.4).
+//! (SPEC.md §6.4, confirmed model).
 //!
-//! A naked revoke is a `key/revoke` coz signed *outside* any commit. A
-//! witness accepts one, verifies it against the *named* principal's own
-//! keys, and interprets it as either a self-signed revoke (the key revoked
-//! itself -- proof of possession by its holder) or a third-party claim (an
-//! outsider declaring the key compromised). This module is the pure
-//! parse-and-verify half; [`crate::routes::revoke`] does the I/O (loading
-//! the principal, recording the observation, responding).
+//! A naked revoke is a `key/revoke` coz signed *outside* any commit. Under
+//! the confirmed model a witness accepts one iff it is **self-signed**: the
+//! key named by the coz's `tmb` signs its own revoke. Verification is O(1)
+//! and replay-free -- resolve `tmb -> pubkey` through the engine's global key
+//! index and check the one signature -- with no principal load and no chain
+//! replay. A revoke signed by any key OTHER than the one it names fails the
+//! signature check; that single check IS the self-signed-only rule, so there
+//! is no third-party path.
 //!
-//! The design mirrors [`crate::auth::login`]'s split: extraction and
-//! verification against the *claimed/named* principal only -- never a
-//! global `tmb` index, which would reintroduce the key-sharing ambiguity
-//! `auth::login` closes.
+//! Resolving `tmb -> pubkey` here does NOT reintroduce the global `tmb` index
+//! `auth::login` forbids: that rule bans inferring a *principal* from a `tmb`
+//! during authentication. Here the lookup only recovers the public key to
+//! verify a self-signature (`tmb = H(pubkey)` is a cryptographic binding --
+//! one pubkey per `tmb`); no principal is inferred, and the result is an
+//! additive refusal, never an auth grant.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use serde::Deserialize;
+use cyphr_storage::index::Indexer;
 
 use crate::error::AppError;
-use crate::observation::ObservationKind;
 
-/// Request body for `POST /revoke`.
-///
-/// `principal_id` is the UNSIGNED target principal whose witness record is
-/// annotated (mirrors [`crate::routes::PushRequest`]); `coz` is the signed
-/// `key/revoke`. The target principal is named explicitly because the coz
-/// itself names only a key (`tmb`), and a key may be shared across
-/// principals (SPEC Appendix "Sharing Keys").
-#[derive(Debug, Deserialize)]
-pub struct RevokeRequest {
-    pub principal_id: String,
-    pub coz: RevokeCoz,
-}
-
-/// The signed naked-revoke coz: a `{pay, sig}` with an optional embedded
-/// `key`.
-#[derive(Debug, Deserialize)]
-pub struct RevokeCoz {
-    /// The signed payload, kept as the raw value so the exact bytes the
-    /// signature covers are recoverable (`coz::verify_json`
-    /// canonicalizes, so field order does not matter).
-    pub pay: serde_json::Value,
-    /// The detached signature, base64url.
-    pub sig: String,
-    /// A third party's own key, so a signature made by a key the named
-    /// principal does not hold can still be verified -- the only
-    /// self-describing way a witness can check such a signature. The exact
-    /// third-party mechanism is spec-pending (forge issue #106).
-    #[serde(default)]
-    pub key: Option<EmbeddedKey>,
-}
-
-/// An outsider's key embedded in a third-party revoke coz.
-#[derive(Debug, Deserialize)]
-pub struct EmbeddedKey {
-    pub alg: String,
-    #[serde(rename = "pub")]
-    pub pub_key: String,
-}
-
-/// A verified, interpreted naked revoke.
+/// A verified naked revoke: its self-signature checked out against the named
+/// key's own indexed public key.
 #[derive(Debug)]
-pub struct NakedRevoke {
-    /// Self-signed vs third-party -- decided by which key verified the
-    /// signature.
-    pub kind: ObservationKind,
-    /// The revoked key's thumbprint (the coz's `tmb`).
+pub struct VerifiedRevoke {
+    /// The revoked key's thumbprint (the coz's `tmb`), now dead globally.
     pub revoked_tmb: Thumbprint,
     /// The revocation timestamp the coz declared.
     pub rvk: i64,
 }
 
 /// Whether `typ` is a `key/revoke` under some authority segment, e.g.
-/// `cyphr.me/cyphr/key/revoke`. Reuses the core `KEY_REVOKE` constant so
-/// the accepted shape cannot drift from the protocol's.
+/// `cyphr.me/cyphr/key/revoke`. Reuses the core `KEY_REVOKE` constant so the
+/// accepted shape cannot drift from the protocol's.
 fn is_revoke_typ(typ: &str) -> bool {
     matches!(
         typ.strip_suffix(cyphr::parsed_coz::typ::KEY_REVOKE),
@@ -82,26 +43,28 @@ fn is_revoke_typ(typ: &str) -> bool {
     )
 }
 
-/// Parse, validate, and verify a naked-revoke request against the *named*
-/// `principal` (already loaded by the caller).
+/// Parse, validate, and verify a naked-revoke coz against the engine's global
+/// key index -- replay-free and self-signed-only.
 ///
 /// Verification order, each a distinct rejection:
 /// 1. the payload parses and its `typ` is a `key/revoke`;
-/// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`);
-/// 3. the revoked `tmb` is a key *this* named principal holds;
-/// 4. the signature verifies -- under the revoked key itself (self-signed) or, failing that, under
-///    an embedded outsider key (third-party).
+/// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the
+///    timestamp value itself is NOT checked, so a pre-signed `rvk`=1 is valid;
+/// 3. the revoked `tmb` resolves to a public key the engine has indexed --
+///    `None` (a key this server never saw) is a rejection;
+/// 4. the signature verifies against that public key. A revoke signed by any
+///    key OTHER than the one `tmb` names fails here, since the signature will
+///    not verify against `tmb`'s public key -- the entire self-signed-only rule.
 ///
-/// A malformed payload, bad `rvk`, wrong `typ`, or a `tmb` the principal
-/// does not hold is a 400; a signature that verifies under no available
-/// key is a 401.
-pub fn interpret<S: eml::Storage>(
-    request: &RevokeRequest,
-    principal: &cyphr::Principal<S>,
-) -> Result<NakedRevoke, AppError> {
-    let pay_bytes = serde_json::to_vec(&request.coz.pay)
+/// A malformed payload, bad `rvk`, wrong `typ`, or an unknown `tmb` is a 400;
+/// a signature that does not verify is a 401.
+pub async fn interpret<I: Indexer>(
+    coz: &coz::CozJson,
+    indexer: &I,
+) -> Result<VerifiedRevoke, AppError> {
+    let pay_bytes = serde_json::to_vec(&coz.pay)
         .map_err(|e| AppError::bad_request(format!("revoke payload not serializable: {e}")))?;
-    let pay: coz::Pay = serde_json::from_value(request.coz.pay.clone())
+    let pay: coz::Pay = serde_json::from_value(coz.pay.clone())
         .map_err(|e| AppError::bad_request(format!("malformed revoke payload: {e}")))?;
 
     let typ = pay.typ.as_deref().unwrap_or_default();
@@ -124,39 +87,32 @@ pub fn interpret<S: eml::Storage>(
         .tmb
         .clone()
         .ok_or_else(|| AppError::bad_request("revoke payload names no key (tmb)"))?;
+    let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
 
-    let sig = Base64UrlUnpadded::decode_vec(&request.coz.sig)
-        .map_err(|e| AppError::bad_request(format!("revoke signature is not base64url: {e}")))?;
+    // Resolve tmb -> pubkey through the engine's global key index (O(1), no
+    // principal load). A tmb this server never indexed cannot be verified.
+    let key = indexer
+        .get_key(&tmb_b64)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "naked-revoke key-index lookup failed");
+            AppError::internal("key index lookup failed")
+        })?
+        .ok_or_else(|| AppError::bad_request("revoke names a key this server has not indexed"))?;
 
-    // The revoked key must be one THIS named principal holds -- never a
-    // global tmb index (preserves the key-sharing rule auth::login keeps).
-    let key = principal
-        .get_key(&tmb)
-        .ok_or_else(|| AppError::bad_request("revoked key is not held by the named principal"))?;
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&key.public_key).map_err(|e| {
+        tracing::error!(error = %e, "indexed public key is not base64url");
+        AppError::internal("indexed public key is malformed")
+    })?;
 
-    // Self-signed iff the signature verifies under the revoked key itself.
-    if coz::verify_json(&pay_bytes, &sig, &key.alg, &key.pub_key) == Some(true) {
-        return Ok(NakedRevoke {
-            kind: ObservationKind::SelfRevoke,
-            revoked_tmb: tmb,
-            rvk,
-        });
+    // The signature must verify against the NAMED key's own public key: a
+    // revoke signed by any other key fails here -- self-signed-only.
+    if coz::verify_json(&pay_bytes, &coz.sig, &key.algorithm, &pub_bytes) != Some(true) {
+        return Err(AppError::unauthorized("revoke signature does not verify"));
     }
 
-    // Otherwise an outsider may be declaring the key compromised, proven by
-    // a signature under a key embedded in the coz (spec-pending, #106).
-    if let Some(embedded) = &request.coz.key {
-        let pub_bytes = Base64UrlUnpadded::decode_vec(&embedded.pub_key).map_err(|e| {
-            AppError::bad_request(format!("embedded key `pub` is not base64url: {e}"))
-        })?;
-        if coz::verify_json(&pay_bytes, &sig, &embedded.alg, &pub_bytes) == Some(true) {
-            return Ok(NakedRevoke {
-                kind: ObservationKind::ThirdParty,
-                revoked_tmb: tmb,
-                rvk,
-            });
-        }
-    }
-
-    Err(AppError::unauthorized("revoke signature does not verify"))
+    Ok(VerifiedRevoke {
+        revoked_tmb: tmb,
+        rvk,
+    })
 }

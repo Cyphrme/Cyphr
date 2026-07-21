@@ -112,8 +112,8 @@ pub enum LoginError {
     #[error("claimed principal is not in an active lifecycle state")]
     PrincipalNotActive,
 
-    /// The signing key carries a self-signed naked-revoke observation
-    /// (SPEC §6.4): refused at login even though it is still active
+    /// The signing key is naked-revoked (SPEC §6.4): recorded dead in the
+    /// global death-set and refused at login even though it is still active
     /// on-chain, since the key's own holder declared it compromised out of
     /// band.
     #[error("signing key was naked-revoked")]
@@ -438,13 +438,13 @@ pub async fn login(
         .map_err(map_load_error)?;
     authorize_login(&parsed, &principal)?;
 
-    // Naked-revoke gate (SPEC §6.4): a key its own holder self-revoked out
-    // of band is refused here even though `authorize_login` found it still
-    // active on-chain -- the observation store, not the chain, carries that
-    // fact.
+    // Naked-revoke gate (SPEC §6.4): a key its own holder self-revoked out of
+    // band is refused here even though `authorize_login` found it still active
+    // on-chain -- the death-set, not the chain, carries that fact. Death is
+    // global by thumbprint, so the check names only the key, never a principal.
     if state
         .observations
-        .is_self_revoked(&parsed.pr, &parsed.tmb)
+        .is_dead(&parsed.tmb)
         .await
         .map_err(AppError::observation)?
     {

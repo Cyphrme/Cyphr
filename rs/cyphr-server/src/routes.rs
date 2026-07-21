@@ -113,18 +113,16 @@ pub struct PushRoots {
     pub cr: String,
 }
 
-/// Response for `POST /revoke` -- acknowledgement that a naked revoke was
-/// accepted and recorded (SPEC §6.4). The observation is server-local
-/// truth, not a trust object a client replays, so the acknowledgement is
-/// unsigned regardless of attestor status (see the handler).
+/// Response for `POST /revoke` -- acknowledgement that a self-signed naked
+/// revoke was accepted and the key recorded dead (SPEC §6.4). The death
+/// record is server-local truth, not a trust object a client replays, so the
+/// acknowledgement is unsigned regardless of attestor status (see the
+/// handler).
 #[derive(Debug, Serialize)]
 pub struct RevokeResponse {
-    pub principal_id: String,
-    /// The revoked key's thumbprint, base64url.
+    /// The revoked key's thumbprint, base64url -- now dead globally.
     pub revoked_tmb: String,
-    /// Whether the revoke was self-signed or a third-party claim.
-    pub kind: crate::observation::ObservationKind,
-    /// Always true on a 2xx: the observation was durably recorded.
+    /// Always true on a 2xx: the revoked key was durably recorded dead.
     pub recorded: bool,
 }
 
@@ -360,93 +358,43 @@ pub async fn push(
     }
 }
 
-/// `POST /revoke` — accept, verify, and record a naked revoke (SPEC §6.4).
+/// `POST /revoke` — accept, verify, and record a self-signed naked revoke
+/// (SPEC §6.4).
 ///
-/// A naked revoke is an uncommitted `key/revoke` coz. This handler loads
-/// the *named* principal, verifies the coz against that principal's keys
-/// (via [`crate::revoke::interpret`]), and records a durable server-local
-/// observation. It never touches the principal's chain -- a naked revoke
-/// mutates no PR. A self-signed revoke thereafter refuses the key at login
-/// (see [`crate::auth::login`]); a third-party claim is recorded per the
-/// configured [`crate::config::ThirdPartyRevokePolicy`] but never blocks a
-/// login.
-#[tracing::instrument(skip(state, request), fields(principal_id = %request.principal_id))]
+/// A naked revoke is an uncommitted, self-signed `key/revoke` coz: the key
+/// named by the coz's `tmb` signs its own revoke. The request body IS the
+/// bare coz (mirroring `/auth/login`), naming no principal. This handler
+/// verifies it replay-free against the engine's global key index (via
+/// [`crate::revoke::interpret`]) -- no principal load, no chain replay -- and
+/// records the revoked thumbprint in the durable global death-set. It never
+/// touches any principal's chain (a naked revoke mutates no PR). Thereafter
+/// the key is refused GLOBALLY, for every capability and every principal that
+/// holds it (see [`crate::auth::login`] and [`push`]).
+#[tracing::instrument(skip(state, coz))]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<crate::revoke::RevokeRequest>,
+    Json(coz): Json<coz::CozJson>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    use crate::config::ThirdPartyRevokePolicy;
-    use crate::observation::ObservationKind;
-
-    // An anonymous revoke (no named principal) is unactionable by a witness:
-    // there is no principal tip to annotate. Reject it honestly rather than
-    // inventing a global freeze.
-    if request.principal_id.is_empty() {
-        return Err(AppError::bad_request("naked revoke names no principal"));
-    }
-
-    // Load the named principal exactly as the login path does.
-    let genesis = state
-        .engine
-        .resolve_genesis(&request.principal_id, &[])
-        .await
-        .map_err(map_revoke_load_error)?;
-    let principal = state
-        .engine
-        .load_principal(&request.principal_id, genesis)
-        .await
-        .map_err(map_revoke_load_error)?;
-
-    let interpreted = crate::revoke::interpret(&request, &principal)?;
-
-    if interpreted.kind == ObservationKind::ThirdParty
-        && state.config.third_party_naked_revoke == ThirdPartyRevokePolicy::Reject
-    {
-        return Err(AppError::bad_request(
-            "third-party naked revokes are not accepted by this server",
-        ));
-    }
+    let verified = crate::revoke::interpret(&coz, state.engine.indexer()).await?;
 
     // Retain the coz as received so the claim can be surfaced later.
     let observed_coz = serde_json::json!({
-        "pay": request.coz.pay,
-        "sig": request.coz.sig,
+        "pay": coz.pay,
+        "sig": Base64UrlUnpadded::encode_string(&coz.sig),
     });
     state
         .observations
-        .record(
-            &request.principal_id,
-            &interpreted.revoked_tmb,
-            interpreted.kind,
-            interpreted.rvk,
-            observed_coz,
-        )
+        .record(&verified.revoked_tmb, observed_coz)
         .await
         .map_err(AppError::observation)?;
 
     let payload = RevokeResponse {
-        principal_id: request.principal_id.clone(),
-        revoked_tmb: Base64UrlUnpadded::encode_string(interpreted.revoked_tmb.as_bytes()),
-        kind: interpreted.kind,
+        revoked_tmb: Base64UrlUnpadded::encode_string(verified.revoked_tmb.as_bytes()),
         recorded: true,
     };
     Ok((StatusCode::OK, Json(Envelope::unsigned(payload))))
-}
-
-/// Map a principal-load failure on the revoke path: an unknown principal is
-/// a client error (a witness cannot annotate a principal it has never
-/// seen), while a genuine storage fault surfaces as 500. A 400 rather than
-/// a 404 keeps it distinct from a route miss.
-fn map_revoke_load_error(err: cyphr_storage::engine::EngineError) -> AppError {
-    use cyphr_storage::engine::EngineError;
-    match err {
-        EngineError::NotFound(_) => {
-            AppError::bad_request("naked revoke names an unknown principal")
-        },
-        other => AppError::engine(other),
-    }
 }
 
 /// `GET /server` — the server's identity/capability discovery endpoint
