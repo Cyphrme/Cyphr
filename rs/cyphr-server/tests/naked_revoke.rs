@@ -775,7 +775,7 @@ async fn revoked_key_refused_at_push() {
          409 conflict, got {status}: {json:?}"
     );
     assert!(
-        json["error"].as_str().unwrap_or("").len() > 0,
+        !json["error"].as_str().unwrap_or("").is_empty(),
         "the push refusal must name its cause in an {{\"error\": …}} body, got {json:?}"
     );
 }
