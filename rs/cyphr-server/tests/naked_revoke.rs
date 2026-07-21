@@ -33,7 +33,9 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
+use cyphr_server::observation::ObservationStore;
 use cyphr_server::{AppState, build_router};
+use cyphr_storage::index::Indexer;
 use tempfile::TempDir;
 use test_fixtures::Pool;
 
@@ -1001,4 +1003,327 @@ fn golden(name: &str) -> String {
         .join("tests/golden")
         .join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+// ========================================================================
+// 11 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
+// ========================================================================
+
+/// Build a fresh ATTACKER principal's genesis push whose single added key is
+/// POISONED: the embedded key block declares `declared_tmb_b64` (the victim
+/// thumbprint to hijack) while carrying `attacker_key_name`'s REAL public key.
+///
+/// No key-introduction site enforces `tmb == H(pub)`, and the global key index
+/// trusts the client-declared `tmb`, overwriting on reuse -- so pushing this
+/// overwrites `index[declared_tmb_b64]` to point at the attacker's pubkey. The
+/// new-principal genesis push is unauthenticated (`genesis_name` self-authorizes
+/// it), so no existing credential is needed. The attacker holds
+/// `attacker_key_name`'s private key and will sign the forged revoke with it.
+///
+/// (The key-introduction `tmb == H(pub)` gap this exploits is broader than
+/// revoke and out of this node's scope; the point-of-use recompute in
+/// `interpret` is what closes the revoke exploit.)
+fn poison_genesis_push_body(
+    pool: &Pool,
+    attacker_pid: &str,
+    genesis_name: &str,
+    attacker_key_name: &str,
+    declared_tmb_b64: &str,
+    now: i64,
+) -> String {
+    let genesis = pool.get(genesis_name).expect("genesis key in pool");
+    let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+
+    let genesis_tmb_b64 = genesis.compute_tmb_b64().expect("genesis tmb");
+    let genesis_prv = Base64UrlUnpadded::decode_vec(genesis.prv.as_ref().expect("genesis prv"))
+        .expect("genesis prv b64");
+    let genesis_pub = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub b64");
+
+    // A key/create whose DECLARED new-key id is the victim's thumbprint.
+    let pay_value = serde_json::json!({
+        "alg": genesis.alg,
+        "id": declared_tmb_b64,
+        "now": now,
+        "tmb": genesis_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &genesis.alg, &genesis_prv, &genesis_pub)
+        .expect("signing supported");
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &genesis.alg).expect("czd for this algorithm");
+
+    // The POISONED key: declared thumbprint = the victim's V, but the actual
+    // public key is the attacker's own (whose private key signs the revoke).
+    let victim_tmb_bytes =
+        Base64UrlUnpadded::decode_vec(declared_tmb_b64).expect("victim tmb base64");
+    let attacker_pub =
+        Base64UrlUnpadded::decode_vec(&attacker.pub_key).expect("attacker pub base64");
+    let poisoned_key = cyphr::Key {
+        alg: attacker.alg.clone(),
+        tmb: coz::Thumbprint::from_bytes(victim_tmb_bytes),
+        pub_key: attacker_pub,
+        first_seen: now,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let genesis_key = cyphr::Key {
+        alg: genesis.alg.clone(),
+        tmb: genesis.compute_tmb().expect("genesis tmb"),
+        pub_key: genesis_pub.clone(),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+    let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(poisoned_key))
+        .expect("poison key/create must verify (no tmb==H(pub) gate at key introduction)");
+    let genesis_tmb = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
+    );
+    scope
+        .finalize_with_arrow(
+            &genesis.alg,
+            &genesis_prv,
+            &genesis_pub,
+            &genesis_tmb,
+            now,
+            "cyphr.me",
+        )
+        .expect("poison commit should finalize");
+
+    let entries = cyphr_storage::export_commits(&principal).expect("export the poison commit");
+    let new_commit = entries.last().expect("at least one commit after finalize");
+
+    // Embed the (poisoned) key block on the key-introducing cozy, then the
+    // genesis key on the closing cozy -- the never-before-seen-principal wire
+    // contract `resolve_genesis` requires.
+    let mut key_idx = 0;
+    let mut blobs: Vec<Vec<u8>> = new_commit
+        .cozies
+        .iter()
+        .map(|v| {
+            let mut coz = v.clone();
+            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
+                let key = &new_commit.keys[key_idx];
+                coz.as_object_mut().unwrap().insert(
+                    "key".to_string(),
+                    serde_json::json!({
+                        "alg": key.alg,
+                        "pub": key.pub_key,
+                        "tmb": key.tmb,
+                    }),
+                );
+                key_idx += 1;
+            }
+            serde_json::to_vec(&coz).expect("cozy serializes")
+        })
+        .collect();
+
+    let closing_idx = blobs.len() - 1;
+    let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
+    closing.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({
+            "alg": genesis_key.alg,
+            "pub": genesis.pub_key,
+            "tmb": genesis_tmb_b64,
+        }),
+    );
+    blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
+
+    push_body(attacker_pid, &blobs)
+}
+
+/// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker
+/// poisons the global key index so the victim's thumbprint V resolves to the
+/// ATTACKER's public key, then forges a naked revoke of V signed by the
+/// attacker's key. The forge MUST be rejected and the victim's real key MUST
+/// stay alive.
+///
+/// Red baseline (current impl -- `interpret` trusts the indexed pubkey with no
+/// recompute): `get_key(V)` returns the attacker pub, the attacker's signature
+/// verifies against it, the revoke is ACCEPTED, and V is recorded dead -- so
+/// the victim's real key is killed and can no longer log in. Both the
+/// "rejected" and the "still alive" assertions therefore fail against today's
+/// code, and they fail because the attack SUCCEEDED (V got killed), not because
+/// of any setup or compile error -- the poison-took precondition (push 201 +
+/// `index[V]` == attacker pub) is asserted first and holds on both the current
+/// and the fixed impl (key introduction is out of scope for the fix).
+///
+/// This is distinct from `rejects_revoke_signed_by_different_key`: that test
+/// never poisons the index, so its rejection rests on the honest `index[V]` =
+/// victim pub. Here `index[V]` is the attacker pub, so the signature DOES
+/// verify against the indexed key -- only a recompute of `H(pub) == tmb` at the
+/// point of use rejects it.
+#[tokio::test]
+async fn index_poisoning_naked_revoke_forge_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+
+    // Victim: a normal principal (golden genesis adds key_a). key_a's real
+    // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
+    let victim_pid = "nr-poison-victim";
+    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    let victim_tmb = tmb_b64(&pool, "key_a");
+
+    // Baseline: the victim key logs in before any attack.
+    assert_eq!(
+        login_status(&state, &pool, "key_a", victim_pid).await,
+        StatusCode::OK,
+        "the victim key must log in before the attack (empirical baseline)"
+    );
+
+    // Attack step 1: overwrite index[V] -> attacker (alice) pub via a fresh
+    // attacker principal's unauthenticated poison genesis push. `alice` is a
+    // distinct key whose private half the attacker holds (to sign the forge).
+    let body = poison_genesis_push_body(
+        &pool,
+        "nr-poison-attacker",
+        "bob",
+        "alice",
+        &victim_tmb,
+        RVK,
+    );
+    let (pstatus, pjson) = post_push(&state, body).await;
+    assert_eq!(
+        pstatus,
+        StatusCode::CREATED,
+        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
+         it exploits is out of this node's scope: {pjson:?}"
+    );
+
+    // Poison-took precondition: the global index now returns the ATTACKER pub
+    // for the victim's thumbprint. If this failed, the test would be vacuous
+    // (no real poisoning); asserting it makes the attack genuine.
+    let poisoned = state
+        .engine
+        .indexer()
+        .get_key(&victim_tmb)
+        .await
+        .expect("index lookup succeeds")
+        .expect("V is still indexed after the poison push");
+    assert_eq!(
+        poisoned.public_key,
+        pool.get("alice").expect("alice").pub_key,
+        "index[V] must now resolve to the attacker's pub -- the attack precondition"
+    );
+
+    // Attack step 2: forge a naked revoke of V, signed with the ATTACKER key.
+    let coz = revoke_coz_named(&pool, &victim_tmb, "alice", serde_json::json!(RVK));
+    let (rstatus, rjson) = post_revoke(&state, coz).await;
+
+    // The forged revoke must be rejected...
+    assert_rejected(
+        rstatus,
+        &rjson,
+        "index-poisoning revoke forge (signature verifies only against the poisoned index entry)",
+    );
+    // ...and the victim's real key must survive it -- still logs in.
+    assert_eq!(
+        login_status(&state, &pool, "key_a", victim_pid).await,
+        StatusCode::OK,
+        "the victim's real key must stay alive after the forged revoke is rejected"
+    );
+}
+
+// ========================================================================
+// 12 -- HARDENING R-size: bound the revoke coz to coz's RVK_MAX_SIZE
+// ========================================================================
+
+/// A self-signed naked revoke whose body exceeds coz's `RVK_MAX_SIZE` (2048
+/// bytes) is rejected. The oversize is real payload the signature covers (a
+/// large `pad` field), so it is a semantically valid revoke that only the size
+/// bound rejects -- never a parse or signature failure.
+///
+/// Red baseline (current impl -- no size bound at the route or in `interpret`):
+/// the padded revoke parses, its `typ`/`rvk` are valid, `tmb` resolves to
+/// key_a, and the self-signature verifies, so the revoke is ACCEPTED (2xx).
+/// `assert_rejected` therefore fails against today's code.
+#[tokio::test]
+async fn oversize_naked_revoke_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "nr-oversize";
+    bootstrap_golden_key_a(&state, &pool, pid).await;
+
+    let signer = pool.get("key_a").expect("key_a");
+    // Pad well past RVK_MAX_SIZE (but far under any default transport limit),
+    // so the body exceeds the bound at both the payload and the wire level.
+    let pad = "A".repeat(coz::RVK_MAX_SIZE * 2);
+    let pay = serde_json::json!({
+        "alg": signer.alg,
+        "now": RVK,
+        "pad": pad,
+        "rvk": RVK,
+        "tmb": tmb_b64(&pool, "key_a"),
+        "typ": "cyphr.me/cyphr/key/revoke",
+    });
+    let coz = sign_coz(&pool, "key_a", pay);
+    assert!(
+        coz.to_string().len() > coz::RVK_MAX_SIZE,
+        "the test body must exceed RVK_MAX_SIZE to exercise the bound"
+    );
+
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_rejected(
+        status,
+        &json,
+        "revoke body exceeding RVK_MAX_SIZE (2048 bytes)",
+    );
+}
+
+// ========================================================================
+// 13 -- HARDENING R2: the death record is durable across a store reopen
+// ========================================================================
+
+/// A recorded death survives a fresh `ObservationStore` opened over the same
+/// on-disk directory: after `record`, a brand-new store instance reading the
+/// same path still reports the key dead. This pins the durability barrier R2
+/// hardens -- an ack of `recorded: true` must not be a lie a crash can undo.
+///
+/// Baseline note: if fjall's configured durability already persists a `record`
+/// before this reopen sees it, this passes against the current impl and is kept
+/// as regression coverage. It cannot, in-process, simulate a true crash BEFORE
+/// fjall's WAL flush (the precise R2 window); the impl-worker must assess
+/// whether `record` needs an explicit synchronous `persist` before returning
+/// `recorded: true`.
+#[tokio::test]
+async fn death_record_durable_across_store_reopen() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store_path = dir.path().join("observations");
+    let pool = common::load_pool();
+    let dead_tmb = pool
+        .get("key_a")
+        .expect("key_a")
+        .compute_tmb()
+        .expect("tmb");
+
+    {
+        let store = ObservationStore::open(&store_path).expect("open death-set store");
+        store
+            .record(&dead_tmb, serde_json::json!({ "note": "naked revoke" }))
+            .await
+            .expect("record the death");
+        assert!(
+            store.is_dead(&dead_tmb).await.expect("is_dead"),
+            "the key must be dead in the recording store instance"
+        );
+    }
+
+    // A brand-new store over the same directory -- the death must persist.
+    let reopened = ObservationStore::open(&store_path).expect("reopen death-set store");
+    assert!(
+        reopened
+            .is_dead(&dead_tmb)
+            .await
+            .expect("is_dead after reopen"),
+        "the death record must survive a store reopen over the same data dir"
+    );
 }
