@@ -20,7 +20,7 @@ decentralized authentication layer for the Internet. Briefly, it enables:
 - Password-free and email-free authentication via public key cryptography
 - Authenticated Atomic Actions (AAA): individually signed, independently
   verifiable user actions
-- Cryptographic primitive agnosticism (via Coz and MultiHash Merkle Root)
+- Cryptographic primitive agnosticism (via Coz and Multihash Merkle Root)
 - Multi-device key management with revocation and recovery
 - Data provenance
 
@@ -530,6 +530,12 @@ finalization.
         "sig": "<b64ut>"
 }]]}
 ```
+
+For finality, when multiple cozies are required for the commit transaction, the
+field "seq" is required in the format `"seq": "0/1"`.  For example, for two
+cozies, one coz contains `"seq": "0/1"` and `"seq": "1/1"` in the appropriate
+cozies, communicating explicitly to clients the number of expected transaction
+cozies.
 
 To discourage client misbehavior, inconsistencies in finality may be used as a
 proof of error (see section [Proof of Error](#152-proof-of-error)).
@@ -1050,8 +1056,8 @@ single-key invariance for Level 2.
 #### 6.4 `key/revoke` - Revoke a Key (Level 1+)
 
 A revoke is a self-signed declaration that a key is compromised and should never
-be trusted again. The key signing the revoke message must be the key itself.
-Revoke is built into the Coz standard:
+be trusted again. Critically, the key signing a revoke message must be the key
+itself. Revoke is built into the Coz standard:
 
 > A revoke is a self-signed declaration that a key is compromised. A Coz key may
 > revoke itself by signing a coz containing the field `rvk` with an integer value
@@ -1063,7 +1069,11 @@ Revoke is built into the Coz standard:
 > IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or
 > larger than 2^53 - 1.
 
-A **naked revoke** is a revoke signed outside of a commit. Example Naked Revoke:
+Revokes addresses the concern of the private key leakage.  A **naked revoke** is
+a revoke signed outside of a commit. Third parties may sign a naked revoke,
+declaring a key compromised, without any other knowledge of the principal. A
+naked revoke does not mutate PR, but further use of the revoked key must be
+rejected. Example Naked Revoke:
 
 ```json
 {
@@ -1079,13 +1089,14 @@ A **naked revoke** is a revoke signed outside of a commit. Example Naked Revoke:
 }
 ```
 
-Note that a commit is not required for a naked revoke.  Third parties may sign a
-naked revoke, declaring a key compromised, without any other knowledge of the
-principal. Cyphr must appropriately interpret this event. A naked revoke puts the principal in an error state and an uncommitted naked
-revoke does not mutate PR. When a principal receives a naked revoke, it should
-sign a standard revoke, a subsequent `key/delete` to remove the key, and commit. A client
-may include `msg` detailing why the key was revoked. See section
-[Consensus](#15-consensus) and [Recovery](#14-recovery).
+When a principal receives a naked revoke, it should sign a standard revoke, a
+subsequent `key/delete` to remove the key, and commit. If the principal cannot
+sign a standard revoke, it should remove the key through a `delete`.  A client
+may include `msg` detailing why the key was revoked.
+
+In the catastrophic case, a revoke may cause the principal to be unable to
+perform further actions. See section [Consensus](#15-consensus) and
+[Recovery](#14-recovery) for more.
 
 #### 6.5 Key Timeline Table
 Although PT remains the the source of truth, without indexing lookups are not
@@ -1806,9 +1817,10 @@ enforceable due to opaqueness.
 
 ### 10.7 Pinning
 
-For PG and PR exclusively, embedded references trigger tip retrieval at the time
-of authentication. Pinned identifiers, SR, AR, KR, and RR, are static states
-that prohibit automatic updates, ensuring immutable authorization rules.
+For full embedded principals, PG and PR exclusively, references trigger tip
+retrieval at the time of authentication. Pinned identifiers, SR, AR, KR, and RR,
+are static states that prohibit automatic updates, ensuring immutable
+authorization rules.
 
 ---
 
@@ -2047,32 +2059,23 @@ Example principal fork, consisting of two transactions:
 
 ### 12.1 Multihash Identifier
 
-A **multihash identifier** is a set of digests that addresses content. Multihash
-identifiers are calculated on a per commit basis for each hash algorithm
-referenced by the principal in KT at the time of commit.  MultiHash Merkle Root
-(MHMR) is assumed, and in reference implementations is implemented as a Epoch
-Merkle Logs (EML, see appendix).
-
 Cyphr supports pluggable cryptographic algorithms; no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
-This abstraction enables flexibility in algorithm choice, security upgrades, and
-rapid removal of broken algorithms. No single algorithm is canonical. All
-variants in a multihash identifier are considered equivalent by Cyphr and
-security judgments are out-of-scope.
+This abstraction enables flexible algorithm choice, security upgrades, and
+rapid removal of broken algorithms. No single algorithm is canonical.
 
-In summary:
+**Multihash identifiers** is a group of digests that integrity protects and
+addresses specific content. All hash variants are considered equivalent by the
+protocol; relative algorithm strength judgements are out of scope.
 
-- PR, SR, AR, KR and nodes in the Merkle trees are referenced by multihash
-  identifiers, with one variant per hash algorithm.
-- Digests are computed for all hashing algorithms referenced in KT (keys,
-  embeddings).
-- When an algorithm primitive is removed, its hash is no longer computed. When a
-  primitive is added, its algorithm's variant begins computation.
-- Cyphr makes no relative security judgements. All variants are considered
-  equivalent.
+A **MultiHash Merkle Tree (MHMT)** is a Merkle tree that supports multiple
+concurrent hashing algorithms.  MHMT is an abstract property and may have
+various concrete implementation. In reference implementations **Multihash Merkle
+Root (MHMR)** is implemented as a Epoch Merkle Logs (EML), see appendix.
+
+Each key algorithm implies a hash algorithm, as defined by Coz.
 
 **Algorithm Mapping**:
-Each key algorithm implies a hash algorithm, as defined by Coz.
 
 | Key Algorithm | Hash Algorithm | Digest Size | Strength Category |
 | ------------- | -------------- | ----------- | ----------------- |
@@ -2081,105 +2084,28 @@ Each key algorithm implies a hash algorithm, as defined by Coz.
 | ES512         | SHA-512        | 64 bytes    | 512-bit           |
 | Ed25519       | SHA-512        | 64 bytes    | 512-bit           |
 
-### 12.2.1 MultiHash Merkle Root (MHMR)
 
-The **MultiHash Merkle Root (MHMR)** algorithm computes digests for all nodes in
-a state tree. Each MHMR variant is computed with respect to a **target hash** H.
-H is determined per commit where H is a hash algorithm associated with a current
-component in KT. When multiple hash algorithms are referenced, implementations
-compute a MHMR variant for each H. When an algorithm is removed from reference
-in KT, its MHMR variant is no longer generated for new commits.
+### 12.2 Multihash Merkle Root (MHMR)
 
-**MHMR Computation**
-Given an ordered list of child digests (each child is a binary digest value
-computed under some hash algorithm):
+A **Multihash Merkle Root (MHMR)** algorithm computes digests for nodes in a
+Merkle tree using multiple hashing algorithms.  Instead of stipulating a
+specific implementation of MHMR principals may choose specific MHMR
+implementation.
 
-1. **Sort** the child digests in lexical byte order unless order is otherwise
-   given.
-2. **Singleton promotion**:  
-   If there is one child digest, the MHMR_H for any target H is simply the bytes
-   of that child digest (no hashing occurs). Promotion is recursive.
-3. **Binary Hashing of Children**: Concatenate the sorted child digest bytes in
-   order.  
-   Compute MHMR_H = H( concatenated bytes ).
+A MHMR must prescribe how commits sign the MHMR. The reference implementation
+uses EML, where each hashing algorithm variant maintains a separate tree, and
+variant trees are combined using a binding root. A particular node is only
+populated in trees where the digest is calculated; in variant trees where a node
+value is not calculated the value remains null.
 
-**MHMR Examples**
-
-| Case       | Children                 | Target   | Computation    | Result   |
-| ---------- | ------------------------ | -------- | -------------- | -------- |
-| Single     | B (SHA-256)              | SHA-384  | (promotion)    | 32 bytes |
-| Same alg   | C, D (both SHA-256)      | SHA-256  | SHA-256(C||D)  | 32 bytes |
-| Diff. algs | A (SHA-384), B (SHA-256) | SHA-384  | SHA-384(A||B)  | 48 bytes |
+Commit signatures and hashing algorithm are bound to the signing key(s).
+Although primitive security judgements are out of scope, a principal may use
+rules to require multiple keys of different algorithms to sign commits.  For
+example, a commit may be required to be signed by a ES256 and ES512 key,
+ensuring MHMR coverage by two hashing algorithms, SHA-256 and SHA-512.
 
 
-Although outside the scope of this document, security is bounded by weakest
-hash.  The strength of any MHMR is limited by the weakest hash algorithm
-appearing anywhere in the subtree below it.
-
-- **No rehashing of children**: Inner digests are fed directly into the parent
-  hash function as raw bytes (unless being converted, where the value is hashed
-  first).
-- **Byte-order determinism**: Lexical byte sorting ensures consistent ordering
-  regardless of how children were labeled or enumerated.
-
-
-
-### 12.3 Conversion
-
-To support embedded nodes and upgrades, values from one digest
-algorithm may be **converted** as input to another. Conversion happens at the
-node level and the parent node isn't required to know of the child node's
-conversion.
-
-For example, in a Merkle tree with a SHA-384 node (A) and SHA-256 node (B), a
-SHA-384 root is: MR_SHA384(SHA384(A), B). B's value is fed into the hashing
-algorithm first before being inputted into the MR.
-
-As a consequence of this design, for each algorithm, every node may have an
-identifier for that hashing algorithm.
-
-```text
-                SHA-384 Root
-               ┌─────────────┐
-               │  MR_SHA384  │
-               └──────┬──────┘
-                      │
-              SHA-384( A || B )
-                      |
-          ┌───────────┼───────────┐
-          │                       │
-          │               SHA-384(Node B) <- Conversion step
-          │                       │
-   ┌─────────────┐         ┌─────────────┐
-   │   Node A    │         │   Node B    │
-   │  (SHA-384)  │         │  (SHA-256)  │
-   └─────────────┘         └─────────────┘
-```
-
-**Conversion Example**: For a SHA384 tree containing a node that is SHA256 only
-(for example, for an ES256 key, an opaque embedding, or any node with a
-different hashing algorithm), the node is converted into a SHA384 node.
-
-The ES256 Key node:
-
-```json
-{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{<key data>}}
-```
-
-The ES256 key node is converted to SHA384:
-
-```json
-{"SHA384:NLDDkOyBHNVG4H6yHwSf8AwvI82B-tRhleeuBhYR4LCdvP9Is2-HjXMbllTv0NJk":""}
-```
-
-**Conversion Security Considerations**
-Conversion is not ideal, but is unavoidable for pluggability, recursion, and
-embedding. Implementors must be aware that inner nodes may have different
-security levels than parent nodes. Algorithm diversity aids durability but
-risks misuse. For a particular node, security is bounded by the weakest link.
-For uniform security, keys from one strength category may be used.
-
-### 12.4 Algorithm Incompatibility
+### 12.3 Algorithm Incompatibility
 
 A multihash component is deemed **incompatible** if a client cannot support
 the specific algorithm (alg) used in a principal's message.
@@ -2187,10 +2113,8 @@ the specific algorithm (alg) used in a principal's message.
 However, due to Cyphr’s use of encapsulation, promotion, and other attributes, a
 clients do not always require full algorithm support. For example, if a service
 can process the top-level digests, it may remain compatible even if it cannot
-verify the underlying primitives of nested components.
-
-Compatibility is strictly required only for operations where the service must
-verify or interpret the cryptographic material. If such an operation is
+verify the underlying primitives of nested components. Compatibility is required
+only for operations where the service must interpret. If such an operation is
 attempted using an unsupported algorithm, the services are incompatible.
 
 
@@ -3605,11 +3529,11 @@ been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
 #### Merkle Trees
-Cyphr does a few novel and/or technical things with Merkle Trees, so it's
-important to define our terms and describe the history:
+Cyphr performs novel and technical operations with Merkle Trees. Define terms
+and describe the history:
 
 - Semantic Merkle Trees
-- Multihash Merkle Trees
+- Multihash Merkle Trees and Multihash Merkle Root (MHMT and MHMR)
 - N-ary
 - RFC 9162 Merkle Append only Log (MAL)
 - Epoch Merkle Log (EML)
@@ -3760,12 +3684,8 @@ an alternative interaction model:
 - Ownership.md
 - Define Opaque reveal authorization semantics better
 - ZAMI finish Login
-- In JSON, State is upper case, plural is lower case.
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
-- I think we can remove pinning
-- Historical Mode - past hashing algos that are no longer supported, the trust
-  of the payloads should not depend upon the hashes themselves. This property should likely be generic anyway, so 
 - DDOS and not providing Meta
 - Define bounded sizes (e.g. a node cannot be larger than 1 MB for clients,
   helps protect)
