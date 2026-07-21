@@ -6,7 +6,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use cyphr_server::config::{Cli, Command};
+use cyphr_server::config::{AdmissionConfig, Cli, Command, InviteAction};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -68,6 +68,33 @@ fn main() -> ExitCode {
             // if the export had actually happened.
             eprintln!("error: export is not yet implemented");
             return ExitCode::FAILURE;
+        },
+        Command::Invite { action } => {
+            let InviteAction::New { count } = action;
+            // The tokens file location is single-sourced from the configured
+            // admission policy, so issued hashes land where the running server
+            // reads them.
+            let tokens_path = match &config.admission {
+                AdmissionConfig::Invite { tokens_path } => tokens_path.clone(),
+                _ => {
+                    eprintln!(
+                        "error: `invite` requires [admission] policy = \"invite\" with a \
+                         tokens_path"
+                    );
+                    return ExitCode::FAILURE;
+                },
+            };
+            match cyphr_server::admission::issue_tokens(&tokens_path, count) {
+                Ok(tokens) => {
+                    for token in tokens {
+                        println!("{token}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("error issuing invite tokens: {e}");
+                    return ExitCode::FAILURE;
+                },
+            }
         },
     }
 

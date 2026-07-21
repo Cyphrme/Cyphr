@@ -49,6 +49,24 @@ pub enum Command {
         #[arg(long, env = "CYPHR_DATA_DIR")]
         data_dir: Option<PathBuf>,
     },
+
+    /// Manage invite tokens (admission policy `invite`).
+    Invite {
+        #[command(subcommand)]
+        action: InviteAction,
+    },
+}
+
+/// `invite` subcommands.
+#[derive(Subcommand, Debug)]
+pub enum InviteAction {
+    /// Issue fresh single-use tokens: append their `sha256` hashes to the
+    /// configured tokens file and print the plaintext tokens to distribute.
+    New {
+        /// Number of tokens to issue.
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+    },
 }
 
 /// Arguments for the `serve` subcommand.
