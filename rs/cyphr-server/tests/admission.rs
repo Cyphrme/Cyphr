@@ -1,4 +1,4 @@
-//! Acceptance suite for the server-side admission FENCE (N3).
+//! Acceptance suite for the server-side admission fence.
 //!
 //! Admission is composed only in `serve()`, never in `build_router` (the
 //! fence is orthogonal to the protocol; `build_router` stays admission-free
