@@ -48,13 +48,13 @@ fn is_revoke_typ(typ: &str) -> bool {
 ///
 /// Verification order, each a distinct rejection:
 /// 1. the payload parses and its `typ` is a `key/revoke`;
-/// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the
-///    timestamp value itself is NOT checked, so a pre-signed `rvk`=1 is valid;
-/// 3. the revoked `tmb` resolves to a public key the engine has indexed --
-///    `None` (a key this server never saw) is a rejection;
-/// 4. the signature verifies against that public key. A revoke signed by any
-///    key OTHER than the one `tmb` names fails here, since the signature will
-///    not verify against `tmb`'s public key -- the entire self-signed-only rule.
+/// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
+///    NOT checked, so a pre-signed `rvk`=1 is valid;
+/// 3. the revoked `tmb` resolves to a public key the engine has indexed -- `None` (a key this
+///    server never saw) is a rejection;
+/// 4. the signature verifies against that public key. A revoke signed by any key OTHER than the one
+///    `tmb` names fails here, since the signature will not verify against `tmb`'s public key -- the
+///    entire self-signed-only rule.
 ///
 /// A malformed payload, bad `rvk`, wrong `typ`, or an unknown `tmb` is a 400;
 /// a signature that does not verify is a 401.

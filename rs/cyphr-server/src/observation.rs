@@ -57,10 +57,7 @@ impl ObservationStore {
         let dead_keys = db
             .keyspace("observations", KeyspaceCreateOptions::default)
             .map_err(backend)?;
-        Ok(Self {
-            _db: db,
-            dead_keys,
-        })
+        Ok(Self { _db: db, dead_keys })
     }
 
     /// Record `tmb` as dead, retaining `coz` (the revoke as received) as the
