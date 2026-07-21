@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use coz::Thumbprint;
-use fjall::{Database, Keyspace, KeyspaceCreateOptions};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 
 /// Failures from the death-set store. A store failure is server
 /// infrastructure breaking, never a client error.
@@ -43,8 +43,10 @@ fn backend(e: fjall::Error) -> ObservationError {
 /// A durable server-local set of naked-revoked (dead) keys, backed by a
 /// dedicated fjall database and keyed by thumbprint.
 pub struct ObservationStore {
-    /// Held so the keyspace's backing database outlives it.
-    _db: Database,
+    /// The backing database. Held so the keyspace outlives it, and used to
+    /// force a synchronous journal fsync after a death is recorded (fjall's
+    /// per-insert durability is only `PersistMode::Buffer`).
+    db: Database,
     dead_keys: Keyspace,
 }
 
@@ -57,7 +59,7 @@ impl ObservationStore {
         let dead_keys = db
             .keyspace("observations", KeyspaceCreateOptions::default)
             .map_err(backend)?;
-        Ok(Self { _db: db, dead_keys })
+        Ok(Self { db, dead_keys })
     }
 
     /// Record `tmb` as dead, retaining `coz` (the revoke as received) as the
@@ -66,6 +68,14 @@ impl ObservationStore {
     /// Keyed on the thumbprint alone, so it is idempotent by construction: a
     /// re-revoke of an already-dead key overwrites its own slot and changes
     /// nothing observable.
+    ///
+    /// The insert is followed by a synchronous journal fsync
+    /// (`PersistMode::SyncAll`) before returning: fjall's default per-insert
+    /// durability is only `PersistMode::Buffer`, which leaves the write in OS
+    /// buffers, so a crash before the next flush could lose a death record the
+    /// caller was already told was recorded. Fsyncing here makes the `recorded`
+    /// acknowledgement honest under a power loss, at the cost of one fsync per
+    /// revoke -- acceptable for a rare security event.
     pub async fn record(
         &self,
         tmb: &Thumbprint,
@@ -75,9 +85,13 @@ impl ObservationStore {
         let value =
             serde_json::to_vec(&coz).map_err(|e| ObservationError::Serialize(e.to_string()))?;
         let dead_keys = self.dead_keys.clone();
-        tokio::task::spawn_blocking(move || dead_keys.insert(key, value).map_err(backend))
-            .await
-            .map_err(|e| ObservationError::Join(e.to_string()))?
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            dead_keys.insert(key, value).map_err(backend)?;
+            db.persist(PersistMode::SyncAll).map_err(backend)
+        })
+        .await
+        .map_err(|e| ObservationError::Join(e.to_string()))?
     }
 
     /// Whether `tmb` is dead (carries a naked-revoke record). A true here
