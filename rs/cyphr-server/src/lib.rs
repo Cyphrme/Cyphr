@@ -7,6 +7,7 @@
 //! - Library (`lib.rs`) owns the application state, route wiring, and the `serve()` entry point.
 //! - Binary (`main.rs`) handles CLI parsing and process lifecycle.
 
+pub mod admission;
 pub mod auth;
 pub mod config;
 pub mod envelope;
@@ -247,7 +248,32 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
 
     let state = Arc::new(state);
-    let app = build_router(state);
+
+    // Compose the orthogonal admission fence over the router (never inside
+    // `build_router`, which stays the standing strip test). The one protocol
+    // fact the fence needs -- whether a principal already has a resident tip
+    // -- crosses as a `bool` through this probe, so no engine type enters the
+    // admission module. A probe error resolves to "not resident", which only
+    // ever tightens the fence (never a bypass).
+    let admission_config = state.config.admission.clone();
+    let admission_data_dir = state.config.data_dir.clone();
+    let probe_state = state.clone();
+    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
+        let state = probe_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.is_some())
+                .unwrap_or(false)
+        })
+    });
+
+    let mut app = build_router(state);
+    if let Some(gate) = admission::layer(&admission_config, &admission_data_dir, resident)? {
+        app = app.layer(gate);
+    }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(listen = %listen_addr, "server started");

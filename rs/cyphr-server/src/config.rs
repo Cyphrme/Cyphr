@@ -116,6 +116,46 @@ pub struct ServerConfig {
     /// `auth::login`). `None` means logins are not accepted.
     #[serde(default)]
     pub audience: Option<String>,
+
+    /// Server-side admission policy (the `[admission]` TOML table). Gates
+    /// new-principal residency only; defaults to `Open` (permissionless).
+    #[serde(default)]
+    pub admission: AdmissionConfig,
+}
+
+/// Admission policy for new-principal residency (see `admission`).
+///
+/// Selected by the `policy` tag of the `[admission]` TOML table. `Open`
+/// (the default) installs no fence at all -- a bare server is permissionless.
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(tag = "policy", rename_all = "lowercase")]
+pub enum AdmissionConfig {
+    /// No admission fence. The layer is absent, not an always-pass
+    /// middleware; a new principal may take up residency without a token.
+    #[default]
+    Open,
+
+    /// Single-use invite tokens. `tokens_path` is a deployment-managed file
+    /// of `sha256(token)` hex lines; a new-principal genesis push must carry
+    /// an `X-Cyphr-Invite` token whose hash is in that file and unspent.
+    ///
+    /// Single-use only by design; multi-use and expiring tokens are a
+    /// deferred extension that fits this file+hash shape without a wire
+    /// change -- see issue #117.
+    Invite {
+        /// Path to the deployment's `sha256(token)` hex-line file.
+        tokens_path: PathBuf,
+    },
+
+    /// Proof-of-work admission -- a declared-but-unimplemented seam. The
+    /// variant keeps the config surface stable, but `resolve_config` rejects
+    /// it (see [`ConfigError::PowUnimplemented`]); it is filled in later.
+    Pow {
+        /// Target difficulty. Present so the surface is stable; unused until
+        /// proof-of-work is implemented.
+        #[serde(default)]
+        difficulty: u32,
+    },
 }
 
 impl Default for ServerConfig {
@@ -127,6 +167,7 @@ impl Default for ServerConfig {
             mode: ServerMode::Authority,
             signing_key_path: None,
             audience: None,
+            admission: AdmissionConfig::default(),
         }
     }
 }
@@ -205,6 +246,14 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if config.mode == ServerMode::Witness {
             return Err(ConfigError::WitnessModeUnimplemented);
         }
+
+        // Proof-of-work admission is a declared-but-unimplemented seam:
+        // reject it at resolution rather than silently install nothing (the
+        // exact `WitnessModeUnimplemented` precedent) so a deployer cannot
+        // believe they've configured a gate that does not yet exist.
+        if let AdmissionConfig::Pow { .. } = config.admission {
+            return Err(ConfigError::PowUnimplemented);
+        }
     }
 
     Ok(config)
@@ -224,6 +273,14 @@ pub enum ConfigError {
          read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
     )]
     WitnessModeUnimplemented,
+
+    /// `policy = "pow"` was configured for `serve`, but proof-of-work
+    /// admission has no implementation yet.
+    #[error(
+        "proof-of-work (pow) admission is not yet implemented -- no layer enforces it; use policy \
+         = \"open\" (the default) or \"invite\""
+    )]
+    PowUnimplemented,
 }
 
 #[cfg(test)]
