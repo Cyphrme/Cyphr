@@ -276,7 +276,15 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    tracing::info!(listen = %listen_addr, "server started");
+    let local_addr = listener.local_addr()?;
+
+    // Report the resolved bind address on stdout (all logs go to stderr) so a
+    // caller that requests an ephemeral port with `:0` learns the real port
+    // the OS assigned, without ever choosing a port itself. Flush explicitly:
+    // piped stdout is block-buffered, and a reader blocks until this lands.
+    println!("listening on {local_addr}");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    tracing::info!(listen = %local_addr, "server started");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

@@ -18,8 +18,8 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -67,11 +67,27 @@ fn server_binary() -> PathBuf {
         .join("cyphr-server")
 }
 
-/// Reserve an ephemeral port by binding and immediately releasing it. A tiny
-/// race window remains before the server re-binds, acceptable for tests.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local_addr").port()
+/// Read the server's resolved bind port from its stdout. The server binds the
+/// ephemeral port itself (config `:0`) and prints exactly one `listening on
+/// <addr>` line once bound -- all logs go to stderr, so stdout carries only
+/// that line. Reading the port from the REAL bound socket removes the
+/// free-then-rebind window a test-side port reservation would open.
+fn read_reported_port(child: &mut Child) -> u16 {
+    let stdout = child.stdout.take().expect("child stdout is piped");
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let read = reader.read_line(&mut line).expect("read server stdout");
+    assert_ne!(
+        read, 0,
+        "server stdout closed before reporting its bind address"
+    );
+    let addr = line
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first server stdout line: {line:?}"));
+    addr.rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("unparseable server bind address: {addr:?}"))
 }
 
 /// A running `cyphr-server` subprocess plus the temp dir backing its data and
@@ -112,23 +128,27 @@ impl TestServer {
     /// TOML snippet, or empty for the default Open policy), and wait until it
     /// accepts connections.
     fn boot(tmp: TempDir, admission_table: &str) -> TestServer {
-        let port = free_port();
         let data_dir = tmp.path().join("data");
         let config_path = tmp.path().join("cyphr-server.toml");
+        // Bind the ephemeral port at the SERVER (`:0`); it reports the port the
+        // OS assigned on stdout. The test never chooses a port, so there is no
+        // free-then-rebind race between reservation and the server's bind.
         let config = format!(
-            "listen = \"127.0.0.1:{port}\"\ndata_dir = {data:?}\n\n{admission_table}",
+            "listen = \"127.0.0.1:0\"\ndata_dir = {data:?}\n\n{admission_table}",
             data = data_dir,
         );
         std::fs::write(&config_path, config).expect("write config");
 
-        let child = Command::new(server_binary())
+        let mut child = Command::new(server_binary())
             .arg("--config")
             .arg(&config_path)
             .arg("serve")
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn cyphr-server");
+
+        let port = read_reported_port(&mut child);
 
         let server = TestServer {
             child,
