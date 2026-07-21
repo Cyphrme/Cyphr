@@ -87,6 +87,13 @@ pub async fn interpret<I: Indexer>(
         )));
     }
 
+    // Bound the revoke to the coz standard's `RVK_MAX_SIZE` (2048 bytes),
+    // measured over the serialized payload. An oversized revoke is a
+    // semantically valid payload the size limit alone rejects, so this is the
+    // authoritative semantic check (never a parse or signature failure).
+    coz::validate_revoke_size(&pay, pay_bytes.len())
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
+
     let tmb = pay
         .tmb
         .clone()
