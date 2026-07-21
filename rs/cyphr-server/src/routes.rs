@@ -304,6 +304,33 @@ pub async fn push(
 
     let blob_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
+    // Global key-death gate (SPEC §6.4): a naked-revoked key is refused for
+    // every capability, push included. Refuse the bundle if any signing key
+    // (`pay.tmb`) is dead. Runs before submit_commit so a dead key is an auth
+    // refusal, never a stale-predecessor 409. A blob whose shape submit_commit
+    // will itself reject (unparseable, no tmb, non-b64url tmb) is left for
+    // that authoritative validation rather than pre-judged here.
+    for raw in &raw_blobs {
+        let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
+            continue;
+        };
+        let Some(tmb_b64) = parsed["pay"]["tmb"].as_str() else {
+            continue;
+        };
+        let Ok(tmb_bytes) = Base64UrlUnpadded::decode_vec(tmb_b64) else {
+            continue;
+        };
+        let tmb = coz::Thumbprint::from_bytes(tmb_bytes);
+        if state
+            .observations
+            .is_dead(&tmb)
+            .await
+            .map_err(AppError::observation)?
+        {
+            return Err(AppError::unauthorized("push signing key was revoked"));
+        }
+    }
+
     // Genesis auto-detection: the engine resolves genesis from stored
     // state (existing principal) or from the submitted blobs (new principal).
     let result = state
