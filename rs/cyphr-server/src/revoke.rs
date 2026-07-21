@@ -52,12 +52,16 @@ fn is_revoke_typ(typ: &str) -> bool {
 ///    NOT checked, so a pre-signed `rvk`=1 is valid;
 /// 3. the revoked `tmb` resolves to a public key the engine has indexed -- `None` (a key this
 ///    server never saw) is a rejection;
-/// 4. the signature verifies against that public key. A revoke signed by any key OTHER than the one
+/// 4. the indexed public key hashes back to the named `tmb` (`tmb = H(pub)`): the global index
+///    trusts the client-declared `tmb`, so this point-of-use recheck rejects a poisoned entry
+///    (an attacker's pub stored under a victim's `tmb`) before the key is trusted;
+/// 5. the signature verifies against that public key. A revoke signed by any key OTHER than the one
 ///    `tmb` names fails here, since the signature will not verify against `tmb`'s public key -- the
 ///    entire self-signed-only rule.
 ///
-/// A malformed payload, bad `rvk`, wrong `typ`, or an unknown `tmb` is a 400;
-/// a signature that does not verify is a 401.
+/// A malformed payload, bad `rvk`, wrong `typ`, an unknown `tmb`, or an indexed
+/// key that does not hash to its `tmb` is a 400; a signature that does not
+/// verify is a 401.
 pub async fn interpret<I: Indexer>(
     coz: &coz::CozJson,
     indexer: &I,
@@ -104,6 +108,27 @@ pub async fn interpret<I: Indexer>(
         tracing::error!(error = %e, "indexed public key is not base64url");
         AppError::internal("indexed public key is malformed")
     })?;
+
+    // Re-establish `tmb = H(pub)` at the point of use, BEFORE trusting the key.
+    // The global index trusts the client-declared `tmb` and overwrites on
+    // reuse, so a poisoned entry -- an attacker's public key stored under a
+    // victim's thumbprint -- would otherwise let the attacker's signature
+    // verify against the indexed key and kill the victim's key. Requiring the
+    // indexed pub to hash back to the named `tmb` rejects any such entry: the
+    // only pub that satisfies it is the victim's real key, a preimage the
+    // attacker cannot forge. The index is a convenience; `tmb = H(pub)` is the
+    // authority.
+    let recomputed = coz::compute_thumbprint_for_alg(&key.algorithm, &pub_bytes).ok_or_else(|| {
+        AppError::bad_request(format!(
+            "revoke key algorithm `{}` is unsupported",
+            key.algorithm
+        ))
+    })?;
+    if recomputed != tmb {
+        return Err(AppError::bad_request(
+            "revoke key thumbprint does not match its public key",
+        ));
+    }
 
     // The signature must verify against the NAMED key's own public key: a
     // revoke signed by any other key fails here -- self-signed-only.
