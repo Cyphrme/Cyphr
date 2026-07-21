@@ -66,8 +66,8 @@ impl ObservationStore {
     /// value so the claim can be surfaced later.
     ///
     /// Keyed on the thumbprint alone, so it is idempotent by construction: a
-    /// re-revoke of an already-dead key overwrites its own slot and changes
-    /// nothing observable.
+    /// re-revoke of an already-dead key is a no-op (see the short-circuit
+    /// below) and changes nothing observable.
     ///
     /// The insert is followed by a synchronous journal fsync
     /// (`PersistMode::SyncAll`) before returning: fjall's default per-insert
@@ -75,7 +75,14 @@ impl ObservationStore {
     /// buffers, so a crash before the next flush could lose a death record the
     /// caller was already told was recorded. Fsyncing here makes the `recorded`
     /// acknowledgement honest under a power loss, at the cost of one fsync per
-    /// revoke -- acceptable for a rare security event.
+    /// *first* revoke of a key -- acceptable for a rare security event.
+    ///
+    /// A key already dead short-circuits to a read-only `contains_key` before
+    /// touching the write path: since a re-revoke changes nothing observable
+    /// (the key was already refused everywhere), the redundant insert and its
+    /// fsync would only be amplification for whoever calls this -- a revoke is
+    /// idempotent and pre-signed replays are accepted, so a cheap repeated
+    /// POST would otherwise force one synchronous disk fsync each time.
     pub async fn record(
         &self,
         tmb: &Thumbprint,
@@ -87,6 +94,9 @@ impl ObservationStore {
         let dead_keys = self.dead_keys.clone();
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
+            if dead_keys.contains_key(&key).map_err(backend)? {
+                return Ok(());
+            }
             dead_keys.insert(key, value).map_err(backend)?;
             db.persist(PersistMode::SyncAll).map_err(backend)
         })
