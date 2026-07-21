@@ -53,8 +53,8 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// 3. the revoked `tmb` resolves to a public key the engine has indexed -- `None` (a key this
 ///    server never saw) is a rejection;
 /// 4. the indexed public key hashes back to the named `tmb` (`tmb = H(pub)`): the global index
-///    trusts the client-declared `tmb`, so this point-of-use recheck rejects a poisoned entry
-///    (an attacker's pub stored under a victim's `tmb`) before the key is trusted;
+///    trusts the client-declared `tmb`, so this point-of-use recheck rejects a poisoned entry (an
+///    attacker's pub stored under a victim's `tmb`) before the key is trusted;
 /// 5. the signature verifies against that public key. A revoke signed by any key OTHER than the one
 ///    `tmb` names fails here, since the signature will not verify against `tmb`'s public key -- the
 ///    entire self-signed-only rule.
@@ -125,12 +125,13 @@ pub async fn interpret<I: Indexer>(
     // only pub that satisfies it is the victim's real key, a preimage the
     // attacker cannot forge. The index is a convenience; `tmb = H(pub)` is the
     // authority.
-    let recomputed = coz::compute_thumbprint_for_alg(&key.algorithm, &pub_bytes).ok_or_else(|| {
-        AppError::bad_request(format!(
-            "revoke key algorithm `{}` is unsupported",
-            key.algorithm
-        ))
-    })?;
+    let recomputed =
+        coz::compute_thumbprint_for_alg(&key.algorithm, &pub_bytes).ok_or_else(|| {
+            AppError::bad_request(format!(
+                "revoke key algorithm `{}` is unsupported",
+                key.algorithm
+            ))
+        })?;
     if recomputed != tmb {
         return Err(AppError::bad_request(
             "revoke key thumbprint does not match its public key",
