@@ -416,7 +416,7 @@ pub async fn revoke(
     let verified = crate::revoke::interpret(&envelope, state.engine.indexer()).await?;
 
     // Store the full `{pay, sig, key}` envelope: self-contained evidence any
-    // later reader can re-verify with no index (Zami #115 verification kit).
+    // later reader can re-verify with no index.
     state
         .observations
         .record(&verified.revoked_tmb, verified.evidence)
