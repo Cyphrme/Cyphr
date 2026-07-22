@@ -139,6 +139,93 @@ pub struct ServerConfig {
     /// new-principal residency only; defaults to `Open` (permissionless).
     #[serde(default)]
     pub admission: AdmissionConfig,
+
+    /// Server-side resource fences (the `[limits]` TOML table). Bounds
+    /// per-request resource use -- rate, body size, per-principal commit
+    /// count -- orthogonally to the protocol. Every field has a conservative,
+    /// overridable default, so a bare server (no `[limits]` table) is still
+    /// bounded rather than unlimited.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+/// Resource-fence limits (the `[limits]` TOML table). Additive to
+/// `[admission]` and mirroring its structured-config pattern; consumed only by
+/// the `rate_limit` fences composed in [`crate::serve`], never by a protocol
+/// handler.
+///
+/// `#[serde(default)]` makes every field independently omittable, so a partial
+/// `[limits]` table tunes one fence and inherits defaults for the rest.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Maximum request body in bytes; an over-cap body is refused `413` before
+    /// any handler work. Defaults to 2 MiB (the historical push-body bound).
+    pub max_body_bytes: u64,
+
+    /// Per-principal hard commit-count cap. A principal already at or over
+    /// this many commits is refused a further commit with a distinct quota
+    /// `4xx`. Generous by default so it bounds runaway growth without
+    /// impeding ordinary use.
+    pub count_quota: u64,
+
+    /// Rate bucket keyed on the connection peer address (per-IP fence).
+    pub per_ip: RateBucket,
+
+    /// Rate bucket keyed on the peeked `principal_id` of a `POST /push`
+    /// (per-principal write-path fence).
+    pub per_principal: RateBucket,
+
+    /// Per-operation bucket for reads (`GET` routes) -- generous.
+    pub read: RateBucket,
+
+    /// Per-operation bucket for `POST /push` -- the tightest, as the write
+    /// path is the costliest operation.
+    pub push: RateBucket,
+
+    /// Per-operation bucket for the login / challenge routes.
+    pub login: RateBucket,
+
+    /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
+    /// is not exempt from rate limiting.
+    pub revoke: RateBucket,
+}
+
+/// A token-bucket rate: `per_second` cells replenished each second, up to a
+/// `burst` capacity. Deserialized from a `{ per_second = N, burst = N }`
+/// inline TOML table.
+#[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
+pub struct RateBucket {
+    /// Sustained replenishment rate in requests per second.
+    pub per_second: u32,
+    /// Bucket capacity -- the largest instantaneous burst admitted.
+    pub burst: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        // Conservative but comfortably above any legitimate single-client
+        // burst: a real flood trips these, ordinary traffic never does. All
+        // overridable per deployment.
+        let reads = RateBucket {
+            per_second: 100,
+            burst: 200,
+        };
+        let writes = RateBucket {
+            per_second: 50,
+            burst: 100,
+        };
+        Self {
+            max_body_bytes: 2 * 1024 * 1024,
+            count_quota: 1_000_000,
+            per_ip: reads,
+            per_principal: writes,
+            read: reads,
+            push: writes,
+            login: writes,
+            revoke: writes,
+        }
+    }
 }
 
 /// Admission policy for new-principal residency (see `admission`).
@@ -187,6 +274,7 @@ impl Default for ServerConfig {
             signing_key_path: None,
             audience: None,
             admission: AdmissionConfig::default(),
+            limits: LimitsConfig::default(),
         }
     }
 }
