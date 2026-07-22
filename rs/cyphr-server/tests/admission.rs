@@ -503,3 +503,70 @@ fn serve_boots_with_admission_installed() {
         r.body
     );
 }
+
+// ========================================================================
+// Cross-cutting: admission's own body cap vs. the deployer's configured cap
+// ========================================================================
+
+/// RED: admission buffers every `/push` body through its own private,
+/// hardcoded 2 MiB constant BEFORE it ever consults the configured
+/// `[limits] max_body_bytes` or its resident short-circuit. A deployer who
+/// raises `max_body_bytes` above 2 MiB gets no relief on `/push` under any
+/// active (non-`Open`) admission policy: a body past 2 MiB but under the
+/// configured cap is still refused `413 {"error":"push body too large"}` by
+/// admission itself, silently defeating the config knob. This test boots an
+/// Invite server with `max_body_bytes` raised to 4 MiB and sends a ~3 MiB
+/// genesis push with a valid token -- a body that clears both the deployer's
+/// configured cap and admission's own invite policy -- and asserts admission's
+/// size refusal does NOT fire.
+#[test]
+fn configured_body_cap_governs_push_under_active_admission() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tokens_path = tmp.path().join("invite-tokens.txt");
+    std::fs::write(&tokens_path, format!("{VALID_TOKEN_SHA256}\n")).expect("write tokens file");
+    let table = format!(
+        "[admission]\npolicy = \"invite\"\ntokens_path = {tokens:?}\n\n[limits]\nmax_body_bytes = {cap}\n",
+        tokens = tokens_path,
+        cap = 4 * 1024 * 1024,
+    );
+    let server = TestServer::boot(tmp, &table);
+
+    // A real genesis push (valid principal_id + blobs), padded with an
+    // unknown, ignored field so the body crosses 2 MiB but stays under the
+    // configured 4 MiB cap. The padding never disturbs `principal_id` or
+    // `blobs`, so nothing about this request is rejectable by admission's
+    // invite policy or the handler's own parse for any reason OTHER than
+    // size.
+    let mut body: serde_json::Value = serde_json::from_str(&genesis_body("n-body-cap", NOW_BASE + 60))
+        .expect("genesis body parses as JSON");
+    body.as_object_mut()
+        .expect("genesis body is a JSON object")
+        .insert(
+            "padding".to_string(),
+            serde_json::Value::String("a".repeat(3 * 1024 * 1024)),
+        );
+    let body = serde_json::to_string(&body).expect("padded body serializes");
+    assert!(
+        body.len() > 2 * 1024 * 1024,
+        "test body must exceed admission's hardcoded 2 MiB cap to exercise the bug: {} bytes",
+        body.len()
+    );
+    assert!(
+        body.len() < 4 * 1024 * 1024,
+        "test body must stay under the configured 4 MiB cap: {} bytes",
+        body.len()
+    );
+
+    let r = server.post("/push", &body, &[(INVITE_HEADER, VALID_TOKEN)]);
+
+    let is_admission_size_refusal = r.status == 413 && r.body.contains("push body too large");
+    assert!(
+        !is_admission_size_refusal,
+        "a {}-byte push under a configured 4 MiB max_body_bytes must not be refused by \
+         admission's own 2 MiB size cap (413 \"push body too large\"); admission must defer to \
+         the deployer's configured limit, not its private hardcoded constant. Got {}: {}",
+        body.len(),
+        r.status,
+        r.body
+    );
+}
