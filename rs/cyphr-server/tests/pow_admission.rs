@@ -22,16 +22,24 @@
 //!
 //! # The PoW verification contract (PINNED HERE)
 //!
-//! The proof is defined abstractly as `blake3(principal_id || utc_hour ||
-//! nonce)` meeting `difficulty` leading zero **bits**, but the exact preimage
-//! byte-encoding is left open. This suite pins it in one place --
+//! The proof is `blake3(preimage)` meeting `difficulty` leading zero **bits**,
+//! where the preimage binds the target `principal_id` and the coarse UTC-hour
+//! window. This suite pins the exact byte-encoding in one place --
 //! [`pow_digest`] -- because a valid-nonce acceptance test cannot exist without
 //! a concrete preimage to solve against. The implementation MUST hash exactly
 //! the bytes [`pow_digest`] produces, or the acceptances below cannot go green.
-//! The construction is domain-tagged and `:`-delimited so the
-//! principal/window/nonce boundaries are unambiguous (the anti-amortization
-//! binding). If the security review prefers a different framing, change
-//! [`pow_digest`] alone and the implementation follows it.
+//!
+//! The encoding is INJECTIVE, not merely delimited. `principal_id` is arbitrary
+//! attacker-supplied bytes at the admission check point -- unvalidated, and a
+//! real principal id already carries a `:` (e.g. `SHA-256:U5XU...`) -- so a
+//! `:`-delimited *string* preimage would be non-injective: an attacker reframes
+//! the field boundaries so one solved hash satisfies several `(principal,
+//! window)` tuples, amortizing a single solve across many Sybil registrations.
+//! [`pow_digest`] instead uses a fixed-length domain tag, the `principal_id`
+//! LENGTH-PREFIXED, and `utc_hour`/`nonce` as fixed-width little-endian `u64`s,
+//! so no field's content can cross a boundary for ANY `principal_id`. The
+//! `X-Cyphr-Pow` header value parses to that `u64` nonce.
+//! `pow_colon_injection_cannot_reframe_a_solution` pins the property directly.
 
 mod common;
 
@@ -58,13 +66,23 @@ const NOW_BASE: i64 = 1_700_000_000;
 // byte-for-byte and bit-for-bit; they ARE the acceptance contract.
 // ========================================================================
 
-/// The pinned hashcash preimage: `blake3` over a domain-tagged, `:`-delimited
-/// concatenation of the target principal, the coarse UTC-hour window, and the
-/// client nonce. The delimiters make the field boundaries unambiguous so a
-/// solution provably binds to one `principal_id` and one window.
-fn pow_digest(principal_id: &str, utc_hour: i64, nonce: &str) -> [u8; 32] {
-    let preimage = format!("cyphr-pow:{principal_id}:{utc_hour}:{nonce}");
-    *blake3::hash(preimage.as_bytes()).as_bytes()
+/// The pinned hashcash preimage: `blake3` over an INJECTIVE byte encoding --
+/// a fixed-length domain tag, the `principal_id` length-prefixed, then the
+/// `utc_hour` and `nonce` as fixed-width little-endian `u64`s. The length
+/// prefix and fixed-width integers guarantee that distinct `(principal_id,
+/// utc_hour, nonce)` triples never share a preimage for ANY `principal_id`, so
+/// a solution provably binds to exactly one principal and one window -- the
+/// anti-amortization property. A naive `:`-delimited string preimage lacks
+/// this (see `pow_colon_injection_cannot_reframe_a_solution`).
+fn pow_digest(principal_id: &str, utc_hour: u64, nonce: u64) -> [u8; 32] {
+    let pid = principal_id.as_bytes();
+    let mut preimage = Vec::with_capacity(10 + 8 + pid.len() + 8 + 8);
+    preimage.extend_from_slice(b"cyphr-pow\x01");
+    preimage.extend_from_slice(&(pid.len() as u64).to_le_bytes());
+    preimage.extend_from_slice(pid);
+    preimage.extend_from_slice(&utc_hour.to_le_bytes());
+    preimage.extend_from_slice(&nonce.to_le_bytes());
+    *blake3::hash(&preimage).as_bytes()
 }
 
 /// Leading zero **bits** of a 32-byte digest read big-endian (byte 0 most
@@ -84,22 +102,21 @@ fn leading_zero_bits(digest: &[u8; 32]) -> u32 {
 }
 
 /// The current coarse time window: integer UTC hour since the epoch.
-fn current_utc_hour() -> i64 {
+fn current_utc_hour() -> u64 {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is after the unix epoch")
         .as_secs();
-    (secs / 3600) as i64
+    secs / 3600
 }
 
 /// Brute-force a nonce whose digest for `(principal_id, utc_hour)` has at least
 /// `min_bits` leading zero bits. Legitimate client-side work; kept to small
 /// difficulties so the suite solves in well under a second.
-fn solve_pow(principal_id: &str, utc_hour: i64, min_bits: u32) -> String {
+fn solve_pow(principal_id: &str, utc_hour: u64, min_bits: u32) -> u64 {
     for nonce in 0u64.. {
-        let candidate = nonce.to_string();
-        if leading_zero_bits(&pow_digest(principal_id, utc_hour, &candidate)) >= min_bits {
-            return candidate;
+        if leading_zero_bits(&pow_digest(principal_id, utc_hour, nonce)) >= min_bits {
+            return nonce;
         }
     }
     unreachable!("64-bit nonce space cannot be exhausted for a small difficulty");
@@ -108,12 +125,11 @@ fn solve_pow(principal_id: &str, utc_hour: i64, min_bits: u32) -> String {
 /// Brute-force a nonce whose digest lands in `[lo_bits, hi_bits)` leading zero
 /// bits -- used to pin the exact difficulty boundary (a nonce that clears N-1
 /// bits but not N).
-fn solve_pow_in_range(principal_id: &str, utc_hour: i64, lo_bits: u32, hi_bits: u32) -> String {
+fn solve_pow_in_range(principal_id: &str, utc_hour: u64, lo_bits: u32, hi_bits: u32) -> u64 {
     for nonce in 0u64.. {
-        let candidate = nonce.to_string();
-        let bits = leading_zero_bits(&pow_digest(principal_id, utc_hour, &candidate));
+        let bits = leading_zero_bits(&pow_digest(principal_id, utc_hour, nonce));
         if bits >= lo_bits && bits < hi_bits {
-            return candidate;
+            return nonce;
         }
     }
     unreachable!("64-bit nonce space cannot be exhausted for a small difficulty");
@@ -407,13 +423,13 @@ fn pow_insufficient_nonce_is_denied() {
     // A nonce that clears only a handful of bits -- provably below difficulty.
     let weak = solve_pow_in_range(pid, hour, 4, 8);
     assert!(
-        leading_zero_bits(&pow_digest(pid, hour, &weak)) < difficulty,
+        leading_zero_bits(&pow_digest(pid, hour, weak)) < difficulty,
         "test setup: the weak nonce must be below difficulty"
     );
     let r = server.post(
         "/push",
         &genesis_body(pid, NOW_BASE + 11),
-        &[(POW_HEADER, &weak)],
+        &[(POW_HEADER, &weak.to_string())],
     );
     assert_denied_pow(&r, difficulty as u64);
 }
@@ -431,7 +447,7 @@ fn pow_valid_nonce_admits_keyless() {
     let r = server.post(
         "/push",
         &genesis_body(pid, NOW_BASE + 12),
-        &[(POW_HEADER, &nonce)],
+        &[(POW_HEADER, &nonce.to_string())],
     );
     assert_eq!(
         r.status, 201,
@@ -460,20 +476,110 @@ fn pow_nonce_does_not_transfer_across_principals() {
 
     // The heart of the guard: A's solution is worthless for B.
     assert!(
-        leading_zero_bits(&pow_digest(principal_a, hour, &nonce_a)) >= difficulty,
+        leading_zero_bits(&pow_digest(principal_a, hour, nonce_a)) >= difficulty,
         "test setup: A's nonce must be valid for A"
     );
     assert!(
-        leading_zero_bits(&pow_digest(principal_b, hour, &nonce_a)) < difficulty,
+        leading_zero_bits(&pow_digest(principal_b, hour, nonce_a)) < difficulty,
         "test setup: A's nonce must NOT clear difficulty for B (the binding under test)"
     );
 
     let r = server.post(
         "/push",
         &genesis_body(principal_b, NOW_BASE + 20),
-        &[(POW_HEADER, &nonce_a)],
+        &[(POW_HEADER, &nonce_a.to_string())],
     );
     assert_denied_pow(&r, difficulty as u64);
+}
+
+/// The OLD, REJECTED `:`-delimited framing, reproduced here ONLY to witness the
+/// reframe it admits. Both `principal_id` and `nonce` are attacker-controlled
+/// strings that may contain the `:` delimiter, so distinct `(principal_id,
+/// utc_hour, nonce)` triples map to the SAME preimage -- the non-injectivity the
+/// injective [`pow_digest`] exists to defeat. Never used to drive the server;
+/// it exists so the reframe below is a proven premise, not an assumed one.
+fn naive_colon_preimage(principal_id: &str, utc_hour: u64, nonce: &str) -> String {
+    format!("cyphr-pow:{principal_id}:{utc_hour}:{nonce}")
+}
+
+/// RED today (server won't boot): an attacker who solves the PoW for one
+/// principal cannot reuse that work to admit a DIFFERENT, colon-bearing
+/// principal constructed to COLLIDE the old `:`-delimited framing. This pins
+/// that the preimage is injective, not merely delimited -- a property
+/// `pow_nonce_does_not_transfer_across_principals` cannot see, because its two
+/// principals share no delimiter structure to exploit.
+///
+/// The reframe is real, and this test proves it rather than assuming it: under
+/// the old `cyphr-pow:{pid}:{hour}:{nonce}` framing, principal `A` with the
+/// nonce string `"{hour}:{n}"` and the DISTINCT principal `"A:{hour}"` with the
+/// nonce string `"{n}"` produce byte-identical preimages -- so any hash that
+/// solves one solves the other, admitting two principals for a single unit of
+/// work (Sybil amortization). The length-prefixed injective encoding gives the
+/// two principals unrelated digests, so the nonce that admits `A` is refused
+/// for the reframed twin.
+#[test]
+fn pow_colon_injection_cannot_reframe_a_solution() {
+    let difficulty = 16;
+    let server = TestServer::start_pow(difficulty);
+    let hour = current_utc_hour();
+
+    let principal_a = "sybil";
+    // The colon-bearing reframe twin: a DISTINCT principal built from A's own
+    // identity and window -- exactly the shape the old delimiter framing folds
+    // together with A.
+    let principal_b = format!("{principal_a}:{hour}");
+
+    // Witness the old framing's non-injectivity directly. The shared preimage
+    // is independent of whether it clears difficulty: identical preimage bytes
+    // means identical digest, so ONE solved hash would admit BOTH principals.
+    // If this equality ever broke, the reframe would be imaginary.
+    let n = 7u64;
+    assert_eq!(
+        naive_colon_preimage(principal_a, hour, &format!("{hour}:{n}")),
+        naive_colon_preimage(&principal_b, hour, &n.to_string()),
+        "test premise: the old `:`-delimited framing IS non-injective across a colon-bearing \
+         principal -- one preimage, two distinct principals"
+    );
+
+    // The injective server, in contrast, binds a solution to exactly one
+    // principal. Solve A's genuine proof and prove in-process that it is
+    // worthless for the reframed twin across every window the server may check
+    // (the current hour, its in-grace predecessor, and a boundary-roll
+    // successor), so a 403 for B is the only correct outcome.
+    let nonce_a = solve_pow(principal_a, hour, difficulty);
+    assert!(
+        leading_zero_bits(&pow_digest(principal_a, hour, nonce_a)) >= difficulty,
+        "test setup: A's nonce must be valid for A under the injective encoding"
+    );
+    for h in [hour - 1, hour, hour + 1] {
+        assert!(
+            leading_zero_bits(&pow_digest(&principal_b, h, nonce_a)) < difficulty,
+            "test setup: A's nonce must NOT clear difficulty for the reframed twin in window {h} \
+             (the injective binding under test)"
+        );
+    }
+
+    // A's genuine nonce admits A ...
+    let admit_a = server.post(
+        "/push",
+        &genesis_body(principal_a, NOW_BASE + 60),
+        &[(POW_HEADER, &nonce_a.to_string())],
+    );
+    assert_eq!(
+        admit_a.status, 201,
+        "A's own valid nonce must admit A: {}",
+        admit_a.body
+    );
+
+    // ... but is refused for the colon-reframed twin: the injective encoding
+    // defeats the delimiter injection the naive framing above would have
+    // admitted for free.
+    let deny_b = server.post(
+        "/push",
+        &genesis_body(&principal_b, NOW_BASE + 61),
+        &[(POW_HEADER, &nonce_a.to_string())],
+    );
+    assert_denied_pow(&deny_b, difficulty as u64);
 }
 
 /// RED today: a nonce solved for a PAST window (well beyond the grace) is stale
@@ -491,22 +597,22 @@ fn pow_stale_window_nonce_is_rejected() {
     let nonce = solve_pow(pid, stale_hour, difficulty);
 
     assert!(
-        leading_zero_bits(&pow_digest(pid, stale_hour, &nonce)) >= difficulty,
+        leading_zero_bits(&pow_digest(pid, stale_hour, nonce)) >= difficulty,
         "test setup: the nonce must be valid for its own (stale) window"
     );
     assert!(
-        leading_zero_bits(&pow_digest(pid, now_hour, &nonce)) < difficulty,
+        leading_zero_bits(&pow_digest(pid, now_hour, nonce)) < difficulty,
         "test setup: the stale nonce must NOT clear difficulty for the current window"
     );
     assert!(
-        leading_zero_bits(&pow_digest(pid, now_hour - 1, &nonce)) < difficulty,
+        leading_zero_bits(&pow_digest(pid, now_hour - 1, nonce)) < difficulty,
         "test setup: the stale nonce must NOT clear difficulty for the previous (in-grace) window"
     );
 
     let r = server.post(
         "/push",
         &genesis_body(pid, NOW_BASE + 21),
-        &[(POW_HEADER, &nonce)],
+        &[(POW_HEADER, &nonce.to_string())],
     );
     assert_denied_pow(&r, difficulty as u64);
 }
@@ -530,14 +636,14 @@ fn pow_difficulty_is_bits_not_bytes() {
     let below_pid = "pow-bits-below";
     let below = solve_pow_in_range(below_pid, hour, difficulty - 1, difficulty); // exactly 9 bits
     assert_eq!(
-        leading_zero_bits(&pow_digest(below_pid, hour, &below)),
+        leading_zero_bits(&pow_digest(below_pid, hour, below)),
         difficulty - 1,
         "test setup: the below nonce must clear exactly difficulty-1 bits"
     );
     let rejected = server.post(
         "/push",
         &genesis_body(below_pid, NOW_BASE + 30),
-        &[(POW_HEADER, &below)],
+        &[(POW_HEADER, &below.to_string())],
     );
     assert_denied_pow(&rejected, difficulty as u64);
 
@@ -546,7 +652,7 @@ fn pow_difficulty_is_bits_not_bytes() {
     let admitted = server.post(
         "/push",
         &genesis_body(above_pid, NOW_BASE + 31),
-        &[(POW_HEADER, &above)],
+        &[(POW_HEADER, &above.to_string())],
     );
     assert_eq!(
         admitted.status, 201,
@@ -572,7 +678,7 @@ fn pow_resident_principal_bypasses_admission() {
     let nonce = solve_pow(pid, hour, difficulty);
     let body = genesis_body(pid, NOW_BASE + 40);
 
-    let seed = server.post("/push", &body, &[(POW_HEADER, &nonce)]);
+    let seed = server.post("/push", &body, &[(POW_HEADER, &nonce.to_string())]);
     assert_eq!(
         seed.status, 201,
         "seed the resident principal with a valid nonce: {}",
@@ -647,13 +753,13 @@ fn pow_previous_window_nonce_accepted_within_grace() {
     let previous_hour = current_utc_hour() - 1;
     let nonce = solve_pow(pid, previous_hour, difficulty);
     assert!(
-        leading_zero_bits(&pow_digest(pid, previous_hour, &nonce)) >= difficulty,
+        leading_zero_bits(&pow_digest(pid, previous_hour, nonce)) >= difficulty,
         "test setup: the nonce must be valid for the previous window"
     );
     let r = server.post(
         "/push",
         &genesis_body(pid, NOW_BASE + 50),
-        &[(POW_HEADER, &nonce)],
+        &[(POW_HEADER, &nonce.to_string())],
     );
     assert_eq!(
         r.status, 201,
