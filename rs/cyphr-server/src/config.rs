@@ -569,4 +569,54 @@ mod tests {
             config.admission
         );
     }
+
+    /// RED today, GREEN after F3 validates `[limits]` at resolution. A
+    /// `max_body_bytes` of 0 refuses every request body, silently bricking all
+    /// writes (and reads with a body). Like the pow-difficulty zero case, serde
+    /// happily deserializes it, so it must be rejected explicitly at
+    /// `resolve_config`. The specific `ConfigError` variant is the
+    /// implementation's to add (a new one, mirroring `PowDifficultyInvalid`);
+    /// this test pins only that resolution must fail, so it stays compilable
+    /// against today's code and turns green once the check lands.
+    #[test]
+    fn limits_max_body_bytes_zero_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(tmp.path(), "[limits]\nmax_body_bytes = 0\n");
+        let result = resolve_config(&cli);
+        assert!(
+            result.is_err(),
+            "a limits max_body_bytes of 0 (which refuses every body) must be rejected at \
+             resolution, got: {result:?}"
+        );
+    }
+
+    /// RED today, GREEN after F3. A `count_quota` of 0 refuses every principal's
+    /// first commit, silently bricking all writes; it must be rejected at
+    /// `resolve_config` exactly as the zero body cap is.
+    #[test]
+    fn limits_count_quota_zero_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(tmp.path(), "[limits]\ncount_quota = 0\n");
+        let result = resolve_config(&cli);
+        assert!(
+            result.is_err(),
+            "a limits count_quota of 0 (which refuses every principal's first commit) must be \
+             rejected at resolution, got: {result:?}"
+        );
+    }
+
+    /// GUARD (green today and after): a `[limits]` table with non-zero caps
+    /// resolves cleanly -- the zero-rejection must reject ONLY the degenerate
+    /// values, never a valid configuration.
+    #[test]
+    fn limits_valid_values_resolve_ok() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(
+            tmp.path(),
+            "[limits]\nmax_body_bytes = 1048576\ncount_quota = 500\n",
+        );
+        let config = resolve_config(&cli).expect("a valid [limits] table must resolve cleanly");
+        assert_eq!(config.limits.max_body_bytes, 1_048_576);
+        assert_eq!(config.limits.count_quota, 500);
+    }
 }
