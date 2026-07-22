@@ -310,6 +310,14 @@ pub async fn push(
     // refusal, never a stale-predecessor 409. A blob whose shape submit_commit
     // will itself reject (unparseable, no tmb, non-b64url tmb) is left for
     // that authoritative validation rather than pre-judged here.
+    //
+    // INVARIANT (refusal-only): this fence consults an UNVERIFIED,
+    // client-declared `pay.tmb` -- the signature is not checked until
+    // submit_commit below. It is compliant ONLY because its outcome is pure
+    // refusal: a forged `pay.tmb` naming a dead key can at worst refuse a push
+    // the forger was making anyway. It must NEVER be extended to admit,
+    // authorize, or otherwise act on this unverified `tmb`; any such use would
+    // trust a value the client fully controls.
     for raw in &raw_blobs {
         let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw) else {
             continue;
