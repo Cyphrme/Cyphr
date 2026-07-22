@@ -298,6 +298,22 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
     app = app.layer(rate_limit::layer(&limits, count_probe));
 
+    // The single authoritative body-size cap, over EVERY route (composed here,
+    // never in `build_router`, exactly like admission and the rate/size/quota
+    // fences above). `rate_limit`'s own fence only bounds `/push`'s actual
+    // buffered bytes; every other route otherwise falls back to axum's 2 MiB
+    // default. `DefaultBodyLimit` tags the request with `limits.max_body_bytes`
+    // for `Bytes`-based extractors (which `Json`, used by `/revoke` and
+    // `/auth/*`, is built on) to enforce while reading -- so it bounds the
+    // ACTUAL bytes read off the body, not merely a declared `Content-Length`,
+    // and a chunked over-cap body is refused `413` exactly like a
+    // `Content-Length`-declared one. It only inserts a request extension (no
+    // body-type change), so it composes with `build_router`'s `axum::Router`
+    // without touching it.
+    app = app.layer(axum::extract::DefaultBodyLimit::max(
+        limits.max_body_bytes as usize,
+    ));
+
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
 
