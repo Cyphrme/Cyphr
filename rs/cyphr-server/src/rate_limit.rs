@@ -25,10 +25,11 @@
 //! - **Size**: a body past `max_body_bytes` is refused `413` before handler work -- both on the
 //!   declared `Content-Length` and on the bytes actually buffered for the write path (so a chunked
 //!   over-cap push cannot slip the header check). Every OTHER route is capped the same way by a
-//!   `serve()`-composed body-limit layer (see [`crate::serve`]), so `max_body_bytes` is
-//!   authoritative for every non-push route. `/push` is ADDITIONALLY bounded by admission's own,
-//!   independent buffer limit -- a separate, lower cap on that one path. Reconciling the two caps
-//!   into one is deferred.
+//!   `serve()`-composed body-limit layer (see [`crate::serve`]), so `max_body_bytes` is the single
+//!   authoritative body cap across every route. `/push` under an active (non-`Open`) admission
+//!   policy is ADDITIONALLY buffered by admission itself (to peek `principal_id` before this fence
+//!   ever runs), but that buffer is bounded by the SAME configured `max_body_bytes` value (see
+//!   [`crate::admission::layer`]), never a separate constant.
 //! - **Count quota**: a principal already at or over `count_quota` commits is refused a further
 //!   commit with a distinct `402`, via the [`CountProbe`]. The check reads `commit_count` before
 //!   the handler's own increment, so concurrent same-principal pushes can overshoot the cap by up

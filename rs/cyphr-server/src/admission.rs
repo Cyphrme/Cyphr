@@ -48,12 +48,6 @@ const POW_HEADER: &str = "x-cyphr-pow";
 /// collide with a solution minted under this one.
 const POW_DOMAIN_TAG: &[u8] = b"cyphr-pow\x01";
 
-/// Upper bound on a buffered `POST /push` body, matching axum's default body
-/// limit. The layer must read the whole body to peek `principal_id`; a body
-/// past this bound is refused on a transport fact (the handler's own body
-/// limit would reject it too).
-const MAX_PUSH_BODY: usize = 2 * 1024 * 1024;
-
 /// Spent-set marker for a reserved (in-flight) token hash.
 const STATE_RESERVED: &[u8] = b"R";
 /// Spent-set marker for a consumed (observed-2xx) token hash.
@@ -102,10 +96,15 @@ fn backend(e: fjall::Error) -> AdmissionError {
 /// layer is *absent*, not an always-pass middleware).
 ///
 /// `resident` is the residency probe captured from `serve()`'s state.
+/// `max_body_bytes` is the deployer's configured `[limits] max_body_bytes` --
+/// the same single authoritative body cap enforced on every other route --
+/// so a genesis push is bounded by the deployer's own knob, never a private
+/// admission constant.
 pub fn layer(
     config: &AdmissionConfig,
     data_dir: &Path,
     resident: ResidentProbe,
+    max_body_bytes: usize,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
     let policy = match config {
         AdmissionConfig::Open => return Ok(None),
@@ -120,7 +119,11 @@ pub fn layer(
             Policy::Invite { hashes, spent }
         },
     };
-    let gate = Gate { resident, policy };
+    let gate = Gate {
+        resident,
+        policy,
+        max_body_bytes,
+    };
     Ok(Some(AdmissionLayer {
         gate: Arc::new(gate),
     }))
@@ -172,6 +175,9 @@ struct Gate {
     resident: ResidentProbe,
     /// The active policy and its per-policy state.
     policy: Policy,
+    /// The deployer's configured `[limits] max_body_bytes` -- the single
+    /// authoritative body cap, enforced here exactly as on every other route.
+    max_body_bytes: usize,
 }
 
 /// The active admission policy. `Open` installs no layer, so it never reaches
@@ -200,9 +206,12 @@ impl Gate {
             return call_inner(inner, req).await;
         }
 
-        // (2) Buffer the body to peek `principal_id`, then restore it.
+        // (2) Buffer the body to peek `principal_id`, then restore it. Bound
+        // by the deployer's configured `max_body_bytes`, not a private
+        // constant -- the handler's own body limit enforces the same cap, so
+        // this never refuses a body the rest of the stack would accept.
         let (parts, body) = req.into_parts();
-        let bytes = match axum::body::to_bytes(body, MAX_PUSH_BODY).await {
+        let bytes = match axum::body::to_bytes(body, self.max_body_bytes).await {
             Ok(bytes) => bytes,
             Err(_) => return refuse(StatusCode::PAYLOAD_TOO_LARGE, "push body too large"),
         };

@@ -798,10 +798,11 @@ fn per_principal_count_quota_refuses_over_cap() {
 /// still admission-denied 403 (green today) AND a read flood -- a route
 /// admission never gates -- 429s on the rate fence (RED today). Proves the two
 /// orthogonal fences compose in `serve()` and neither swallows the other. The
-/// flood targets reads deliberately: a push flood under invite would 403 at
-/// admission before ever reaching the rate layer, and valid-token pushes cannot
-/// repeat (single-use), so reads are the only route that isolates the rate
-/// fence while admission is armed.
+/// flood targets reads deliberately: `serve()` composes the rate fence OUTER
+/// and admission INNER, so a push flood under invite would 429 at the rate
+/// layer before ever reaching admission, and valid-token pushes cannot repeat
+/// (single-use), so reads are the only route that isolates the rate fence
+/// while admission is armed.
 #[test]
 fn both_fences_compose_in_serve() {
     let tmp = tempfile::tempdir().expect("tempdir");

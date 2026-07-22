@@ -293,7 +293,12 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     });
 
     let mut app = build_router(state);
-    if let Some(gate) = admission::layer(&admission_config, &admission_data_dir, resident)? {
+    if let Some(gate) = admission::layer(
+        &admission_config,
+        &admission_data_dir,
+        resident,
+        limits.max_body_bytes as usize,
+    )? {
         app = app.layer(gate);
     }
     app = app.layer(rate_limit::layer(&limits, count_probe));
