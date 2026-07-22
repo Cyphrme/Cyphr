@@ -606,34 +606,35 @@ fn revoke_takes_ordinary_limits_no_exemption() {
 }
 
 // ========================================================================
-// IBC test 3 (F1) -- anti-griefing: a dropped per-principal RATE limit cannot
-// be weaponized to throttle a victim by naming its principal_id
+// IBC test 3 -- anti-griefing: a dropped per-principal RATE limit cannot be
+// weaponized to throttle a victim by naming its principal_id
 // ========================================================================
 
-/// RED today, GREEN after F1 drops the per-principal RATE limit. The merged
-/// fence keyed a write-path rate bucket on the `principal_id` peeked from the
-/// raw `/push` body -- a value any unauthenticated client can name. So an
+/// GREEN once the server drops the per-principal RATE limit entirely. Keying
+/// a write-path rate bucket on the `principal_id` peeked from the raw `/push`
+/// body is unsafe -- that value is any unauthenticated client's to name. So an
 /// attacker, from a DISTINCT source IP, bursts garbage `/push` bodies naming a
-/// resident VICTIM's `principal_id`; because the rate key is the principal (not
+/// resident VICTIM's `principal_id`; if the rate key is the principal (not
 /// the peer IP), the attacker's flood drains the VICTIM's shared bucket across
 /// the IP boundary, and the victim's own next legitimate push is 429'd -- a
-/// zero-cost targeted DoS. Once F1 removes the per-principal rate limit the
-/// victim's push is no longer throttled by traffic it did not send: per-IP rate
-/// (keyed on the real, un-nameable peer) and the durable count quota cover the
-/// write path without this cross-principal coupling.
+/// zero-cost targeted DoS. With no per-principal rate limit the victim's push
+/// is no longer throttled by traffic it did not send: per-IP rate (keyed on
+/// the real, un-nameable peer) and the durable count quota cover the write
+/// path without this cross-principal coupling.
 ///
-/// Everything except the (soon-removed) per-principal bucket is generous, so
-/// the ONLY thing that can 429 the victim today is the per-principal rate fence
-/// drained by the attacker -- the RED is unambiguously that fence. After F1 the
-/// `per_principal` line is an unknown `[limits]` key the server ignores, so the
-/// victim's follow-on push reaches the handler and commits (2xx).
+/// Everything except the per-principal bucket configured below is generous,
+/// so the ONLY thing that can 429 the victim is a per-principal rate fence
+/// drained by the attacker -- the failure is unambiguously that fence. With
+/// the field dropped from `LimitsConfig`, the `per_principal` line below is
+/// an unknown `[limits]` key the server ignores, so the victim's follow-on
+/// push reaches the handler and commits (2xx).
 #[test]
 fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
-    // Generous everywhere, then append the (being-removed) per-principal rate
-    // bucket as raw `[limits]` TOML, tight enough that the attacker's burst
-    // drains it. This key exists only in the merged code; F1 removes the field
-    // and the server then ignores this line (LimitsConfig does not deny unknown
-    // fields), which is exactly what lets the victim through.
+    // Generous everywhere, then append a per-principal rate bucket as raw
+    // `[limits]` TOML, tight enough that the attacker's burst drains it. This
+    // key no longer exists in `LimitsConfig`, so the server ignores this line
+    // (it does not deny unknown fields), which is exactly what lets the
+    // victim through.
     let limits = Limits::generous();
     let extra = format!(
         "{}per_principal = {{ per_second = {}, burst = {} }}\n",
@@ -655,14 +656,14 @@ fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 
     // The attacker, from a DISTINCT IP, bursts garbage bodies naming the
     // VICTIM's principal_id. Garbage blobs never commit (the handler rejects
-    // them), so the victim's chain is untouched -- but the merged per-principal
-    // rate fence, keyed on the named principal, drains the victim's bucket.
+    // them), so the victim's chain is untouched -- but a per-principal rate
+    // fence keyed on the named principal would drain the victim's bucket.
     let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
     let _ = server.burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST);
 
     // The victim's OWN legitimate follow-on push, from its own IP, must NOT be
-    // throttled by the attacker's traffic. RED today (429, the victim's shared
-    // per-principal bucket was drained); GREEN after F1 (the follow-on commits).
+    // throttled by the attacker's traffic: with no per-principal rate limit,
+    // the follow-on commits.
     let f = server.request("POST", "/push", Some(&followon), "127.0.0.1");
     assert!(
         (200..300).contains(&f.status),
@@ -709,15 +710,16 @@ fn request_size_cap_rejects_oversized_body() {
     );
 }
 
-/// RED today, GREEN after R2/F4 makes `max_body_bytes` authoritative over ALL
-/// routes. The merged fence caps only the push path's actual bytes; every other
-/// route falls back to axum's 2 MiB default extractor limit. Its one all-routes
-/// check is on the declared `Content-Length`, which a chunked body carries no
-/// value for -- so a NON-push route (`/revoke`) fed a chunked body over
-/// `max_body_bytes` but under 2 MiB slips the header check and is processed by
-/// the handler (a non-413 rejection of the junk) instead of being 413'd. Once a
-/// `serve()`-composed body-limit layer applies `max_body_bytes` to every route,
-/// the oversized chunked body is refused 413 regardless of framing.
+/// GREEN once `max_body_bytes` is authoritative over ALL routes. The
+/// rate-limit fence alone caps only the push path's actual bytes; every other
+/// route would otherwise fall back to axum's 2 MiB default extractor limit.
+/// Its one all-routes check is on the declared `Content-Length`, which a
+/// chunked body carries no value for -- so a NON-push route (`/revoke`) fed a
+/// chunked body over `max_body_bytes` but under 2 MiB would slip the header
+/// check and be processed by the handler (a non-413 rejection of the junk)
+/// instead of being 413'd. A `serve()`-composed body-limit layer applying
+/// `max_body_bytes` to every route closes that gap: the oversized chunked
+/// body is refused 413 regardless of framing.
 #[test]
 fn non_push_route_size_cap_rejects_oversized_body() {
     let mut limits = Limits::generous();
@@ -846,7 +848,7 @@ fn both_fences_compose_in_serve() {
 /// sane defaults and self-bootstraps -- it boots, serves `/server`, and admits
 /// a genesis push. Green today (no fence) and green after (default fences let
 /// normal traffic through). Together with the whole in-process suite over
-/// `build_router` staying green (AC2), this is the standing strip test that the
+/// `build_router` staying green, this is the standing strip test that the
 /// fences never leak into `build_router`.
 #[test]
 fn bare_server_boots_and_self_bootstraps() {
@@ -868,14 +870,16 @@ fn bare_server_boots_and_self_bootstraps() {
 // ========================================================================
 // IBC test 6 -- bounded limiter state (self-DoS guard)
 //
-// A liveness guard, NOT a RED driver. The bounded-state guarantee (idle buckets
-// are evicted / the key map cannot grow without bound) is not observable as a
-// deterministic black-box HTTP behavior within a test's timescale; it is
-// verified at the source level by AC3 (the limiter uses tower_governor's
-// periodic cleanup / a bounded map). What IS black-box checkable is the
-// SYMPTOM's absence: driving many distinct limiter keys must not wedge or crash
-// the server. Green today and after -- it exists to catch a gross regression,
-// and the real bounded-state proof lives in AC3. (Flagged in the deposit.)
+// A liveness guard, NOT a RED driver. The bounded-state guarantee (idle
+// buckets are evicted / the key map cannot grow without bound) is not
+// observable as a deterministic black-box HTTP behavior within a test's
+// timescale; it is verified at the source level by
+// `rate_limit::tests::keyed_limiter_map_is_bounded_by_key_ceiling` (a
+// size-ceiling backstop over `governor`'s own time-based sweep -- see
+// `rate_limit`'s module doc). What IS black-box checkable here is the
+// SYMPTOM's absence: driving many distinct limiter keys must not wedge or
+// crash the server. Green today and after -- it exists to catch a gross
+// regression; the real bounded-state proof lives in the source-level test.
 // ========================================================================
 
 /// GUARD: many distinct per-IP / per-principal keys keep the server responsive.
