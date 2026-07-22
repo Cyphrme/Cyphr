@@ -22,9 +22,9 @@
 //!
 //! # The PoW verification contract (PINNED HERE)
 //!
-//! The IBC states the proof abstractly as `blake3(principal_id || utc_hour ||
-//! nonce)` meeting `difficulty` leading zero **bits**, but leaves the exact
-//! preimage byte-encoding open. This suite pins it in one place --
+//! The proof is defined abstractly as `blake3(principal_id || utc_hour ||
+//! nonce)` meeting `difficulty` leading zero **bits**, but the exact preimage
+//! byte-encoding is left open. This suite pins it in one place --
 //! [`pow_digest`] -- because a valid-nonce acceptance test cannot exist without
 //! a concrete preimage to solve against. The implementation MUST hash exactly
 //! the bytes [`pow_digest`] produces, or the acceptances below cannot go green.
@@ -340,7 +340,7 @@ fn assert_denied_pow(resp: &HttpResponse, expected_difficulty: u64) {
 }
 
 // ========================================================================
-// IBC test 6 -- pow resolves at config (the Err -> Ok flip)
+// pow resolves at config (the Err -> Ok flip)
 // ========================================================================
 
 /// RED today: `policy = "pow"` currently returns `Err(PowUnimplemented)` from
@@ -382,7 +382,7 @@ fn pow_policy_resolves_at_config() {
 }
 
 // ========================================================================
-// IBC test 1 -- pow required + admits
+// pow required + admits
 // ========================================================================
 
 /// RED today (server won't boot): under pow, a new-principal genesis push with
@@ -420,7 +420,7 @@ fn pow_insufficient_nonce_is_denied() {
 
 /// RED today: a valid nonce (meets difficulty, bound to this principal and the
 /// current window) ADMITS the genesis push. The server runs keyless (no signing
-/// identity), so this also pins R3 -- pow works with no server key.
+/// identity), so this also confirms pow works with no server signing key.
 #[test]
 fn pow_valid_nonce_admits_keyless() {
     let difficulty = 16;
@@ -441,7 +441,7 @@ fn pow_valid_nonce_admits_keyless() {
 }
 
 // ========================================================================
-// IBC test 2 -- anti-amortization (LOAD-BEARING)
+// anti-amortization (LOAD-BEARING)
 // ========================================================================
 
 /// RED today: a nonce solved for principal A does NOT admit principal B. The
@@ -512,7 +512,7 @@ fn pow_stale_window_nonce_is_rejected() {
 }
 
 // ========================================================================
-// IBC test 3 -- difficulty is BITS, not BYTES
+// difficulty is BITS, not BYTES
 // ========================================================================
 
 /// RED today: with difficulty = 10 (not a multiple of 8), a nonce clearing
@@ -556,7 +556,7 @@ fn pow_difficulty_is_bits_not_bytes() {
 }
 
 // ========================================================================
-// IBC test 4 -- existing-principal bypass
+// existing-principal bypass
 // ========================================================================
 
 /// RED today: once a principal is resident, admission never fires for it -- a
@@ -590,7 +590,7 @@ fn pow_resident_principal_bypasses_admission() {
 }
 
 // ========================================================================
-// IBC test 5 -- non-/push pass-through
+// non-/push pass-through
 // ========================================================================
 
 /// RED today: reads and other endpoints are never gated by pow admission.
@@ -612,14 +612,14 @@ fn pow_non_push_requests_are_never_gated() {
 }
 
 // ========================================================================
-// IBC test 8 -- orthogonality (runtime half; the source-import grep is AC3)
+// orthogonality (runtime half; the source-import guard is a source check)
 // ========================================================================
 
 /// RED today: `serve()` BOOTS with the pow arm installed and serves reads --
 /// not merely that `build_router` compiles. `start_pow` panics if the server
 /// never accepts connections, so a successful `/server` read proves the
 /// composed pow server is live. (The source-level guard -- `admission.rs`
-/// imports no `cyphr`/`coz` type -- is verified by AC3 at reconcile, not here.)
+/// imports no `cyphr`/`coz` type -- is verified by source review, not here.)
 #[test]
 fn pow_serve_boots_and_serves_reads() {
     let server = TestServer::start_pow(20);
@@ -632,7 +632,7 @@ fn pow_serve_boots_and_serves_reads() {
 }
 
 // ========================================================================
-// IBC test 9 -- time-window grace
+// time-window grace
 // ========================================================================
 
 /// RED today: a nonce solved for the immediately-previous UTC hour is accepted
