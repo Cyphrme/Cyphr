@@ -42,6 +42,7 @@ tracing-subscriber.workspace = true
 uuid.workspace               = true
 
 [dev-dependencies]
+blake3         = { workspace = true }
 coz            = { workspace = true }
 http-body-util = "0.1"
 proptest       = { workspace = true }
