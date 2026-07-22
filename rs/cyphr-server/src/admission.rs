@@ -37,12 +37,16 @@ use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
 
-/// The only policy name a denial ever reports (Open installs no layer; Pow is
-/// rejected at config resolution, so Invite is the sole runtime policy).
-const POLICY_NAME: &str = "invite";
-
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
+
+/// Header carrying the client's hashcash nonce (a base-10 `u64`).
+const POW_HEADER: &str = "x-cyphr-pow";
+
+/// Fixed-length domain-separation tag opening every hashcash preimage. The
+/// trailing byte versions the encoding so a future preimage change cannot
+/// collide with a solution minted under this one.
+const POW_DOMAIN_TAG: &[u8] = b"cyphr-pow\x01";
 
 /// Upper bound on a buffered `POST /push` body, matching axum's default body
 /// limit. The layer must read the whole body to peek `principal_id`; a body
@@ -98,32 +102,28 @@ fn backend(e: fjall::Error) -> AdmissionError {
 /// layer is *absent*, not an always-pass middleware).
 ///
 /// `resident` is the residency probe captured from `serve()`'s state.
-/// `Pow` is rejected upstream at `resolve_config`; reaching it here is a
-/// defensive backstop.
 pub fn layer(
     config: &AdmissionConfig,
     data_dir: &Path,
     resident: ResidentProbe,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
-    match config {
-        AdmissionConfig::Open => Ok(None),
-        AdmissionConfig::Pow { .. } => Err(AdmissionError::Backend(
-            "proof-of-work admission is unimplemented (should be rejected at config resolution)"
-                .to_string(),
-        )),
+    let policy = match config {
+        AdmissionConfig::Open => return Ok(None),
+        // Stateless hashcash: no durable store, no challenge endpoint. The
+        // difficulty is the only state the gate carries.
+        AdmissionConfig::Pow { difficulty } => Policy::Pow {
+            difficulty: *difficulty,
+        },
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
             let spent = SpentSet::open(&data_dir.join("admission"))?;
-            let gate = Gate {
-                hashes,
-                spent,
-                resident,
-            };
-            Ok(Some(AdmissionLayer {
-                gate: Arc::new(gate),
-            }))
+            Policy::Invite { hashes, spent }
         },
-    }
+    };
+    let gate = Gate { resident, policy };
+    Ok(Some(AdmissionLayer {
+        gate: Arc::new(gate),
+    }))
 }
 
 /// Generate `count` fresh invite tokens, append their `sha256` hashes to
@@ -168,26 +168,27 @@ pub fn issue_tokens(tokens_path: &Path, count: usize) -> Result<Vec<String>, Adm
 /// The admission decision state, shared behind an `Arc` across all cloned
 /// service instances.
 struct Gate {
-    /// `sha256(token)` for every deployment-issued token.
-    hashes: Vec<[u8; 32]>,
-    /// Durable single-use spent-set.
-    spent: SpentSet,
     /// Residency probe (a resident principal bypasses admission).
     resident: ResidentProbe,
+    /// The active policy and its per-policy state.
+    policy: Policy,
+}
+
+/// The active admission policy. `Open` installs no layer, so it never reaches
+/// here; only the enforcing policies carry runtime state.
+enum Policy {
+    /// Single-use invite tokens over a durable spent-set.
+    Invite {
+        /// `sha256(token)` for every deployment-issued token.
+        hashes: Vec<[u8; 32]>,
+        /// Durable single-use spent-set.
+        spent: SpentSet,
+    },
+    /// Stateless hashcash proof-of-work at `difficulty` leading zero bits.
+    Pow { difficulty: u32 },
 }
 
 impl Gate {
-    /// Whether `hash` matches any deployment token hash, in constant time
-    /// (data-independent over the secret: every entry is compared, no early
-    /// exit, no length branch).
-    fn is_known(&self, hash: &[u8; 32]) -> bool {
-        let mut found = subtle::Choice::from(0u8);
-        for known in &self.hashes {
-            found |= hash.as_slice().ct_eq(known.as_slice());
-        }
-        bool::from(found)
-    }
-
     /// Apply the fence to `req`, delegating to `inner` on a pass.
     async fn handle<S>(&self, req: Request, inner: &mut S) -> Response
     where
@@ -216,62 +217,109 @@ impl Gate {
 
         // (3) An already-resident principal is bound to its chain by the
         // protocol; admission never fires for it.
-        if (self.resident)(id).await {
+        if (self.resident)(id.clone()).await {
             return call_inner(inner, req).await;
         }
 
-        // (4) A new principal -- apply the invite policy.
-        self.admit_invite(req, inner).await
+        // (4) A new principal -- apply the active policy.
+        match &self.policy {
+            Policy::Invite { hashes, spent } => admit_invite(hashes, spent, req, inner).await,
+            Policy::Pow { difficulty } => admit_pow(&id, *difficulty, req, inner).await,
+        }
+    }
+}
+
+/// Whether `hash` matches any deployment token hash, in constant time
+/// (data-independent over the secret: every entry is compared, no early exit,
+/// no length branch).
+fn is_known(hashes: &[[u8; 32]], hash: &[u8; 32]) -> bool {
+    let mut found = subtle::Choice::from(0u8);
+    for known in hashes {
+        found |= hash.as_slice().ct_eq(known.as_slice());
+    }
+    bool::from(found)
+}
+
+/// Invite policy for a new principal: a valid, unspent token admits; anything
+/// else is a 403 naming the policy. Reserve on admit, consume on an observed
+/// 2xx, refund on a non-2xx.
+async fn admit_invite<S>(
+    hashes: &[[u8; 32]],
+    spent: &SpentSet,
+    req: Request,
+    inner: &mut S,
+) -> Response
+where
+    S: Service<Request, Response = Response, Error = Infallible>,
+    S::Future: Send,
+{
+    let token = req
+        .headers()
+        .get(INVITE_HEADER)
+        .and_then(|value| value.to_str().ok());
+    let Some(token) = token else {
+        return denied_invite();
+    };
+    let hash = sha256(token.as_bytes());
+    if !is_known(hashes, &hash) {
+        return denied_invite();
     }
 
-    /// Invite policy for a new principal: a valid, unspent token admits;
-    /// anything else is a 403 naming the policy. Reserve on admit, consume on
-    /// an observed 2xx, refund on a non-2xx.
-    async fn admit_invite<S>(&self, req: Request, inner: &mut S) -> Response
-    where
-        S: Service<Request, Response = Response, Error = Infallible>,
-        S::Future: Send,
-    {
-        let token = req
-            .headers()
-            .get(INVITE_HEADER)
-            .and_then(|value| value.to_str().ok());
-        let Some(token) = token else {
-            return denied();
-        };
-        let hash = sha256(token.as_bytes());
-        if !self.is_known(&hash) {
-            return denied();
-        }
+    match spent.reserve(hash).await {
+        Ok(true) => {},
+        // Already reserved or consumed: single-use is spent.
+        Ok(false) => return denied_invite(),
+        // A store failure must never admit; refuse honestly (infra fault,
+        // not a missing invite).
+        Err(e) => {
+            tracing::error!(error = %e, "admission spent-set reserve failed");
+            return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "admission store unavailable",
+            );
+        },
+    }
 
-        match self.spent.reserve(hash).await {
-            Ok(true) => {},
-            // Already reserved or consumed: single-use is spent.
-            Ok(false) => return denied(),
-            // A store failure must never admit; refuse honestly (infra fault,
-            // not a missing invite).
-            Err(e) => {
-                tracing::error!(error = %e, "admission spent-set reserve failed");
-                return refuse(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "admission store unavailable",
-                );
-            },
+    let response = call_inner(inner, req).await;
+    if response.status().is_success() {
+        if let Err(e) = spent.consume(hash).await {
+            // The token is already durably reserved, so it stays spent;
+            // only the audit refinement to `consumed` was lost.
+            tracing::error!(error = %e, "admission spent-set consume failed");
         }
+    } else if let Err(e) = spent.refund(hash).await {
+        // Refund failed: the token stays reserved (stranded spent). Safe
+        // direction -- it can never be double-spent, only lost.
+        tracing::error!(error = %e, "admission spent-set refund failed");
+    }
+    response
+}
 
-        let response = call_inner(inner, req).await;
-        if response.status().is_success() {
-            if let Err(e) = self.spent.consume(hash).await {
-                // The token is already durably reserved, so it stays spent;
-                // only the audit refinement to `consumed` was lost.
-                tracing::error!(error = %e, "admission spent-set consume failed");
-            }
-        } else if let Err(e) = self.spent.refund(hash).await {
-            // Refund failed: the token stays reserved (stranded spent). Safe
-            // direction -- it can never be double-spent, only lost.
-            tracing::error!(error = %e, "admission spent-set refund failed");
-        }
-        response
+/// Proof-of-work policy for a new principal: an `X-Cyphr-Pow` nonce whose
+/// hashcash, bound to this `principal_id` and a live UTC-hour window, clears
+/// `difficulty` leading zero bits admits; a missing, non-`u64`, or
+/// insufficient nonce is a 403 echoing the challenge parameters. Stateless --
+/// the gate does one hash per window and holds no per-request state.
+async fn admit_pow<S>(principal_id: &str, difficulty: u32, req: Request, inner: &mut S) -> Response
+where
+    S: Service<Request, Response = Response, Error = Infallible>,
+    S::Future: Send,
+{
+    // Parse strictly: an absent or non-`u64` header is not a challenge, so it
+    // is denied outright -- never treated as a bypass.
+    let nonce = req
+        .headers()
+        .get(POW_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let Some(nonce) = nonce else {
+        return denied_pow(difficulty);
+    };
+
+    if pow_admits(principal_id, nonce, difficulty) {
+        call_inner(inner, req).await
+    } else {
+        denied_pow(difficulty)
     }
 }
 
@@ -287,17 +335,91 @@ where
     }
 }
 
-/// The admission denial: 403 (never 401 -- this is not an authentication
-/// failure) whose JSON body names the active policy.
-fn denied() -> Response {
+/// An invite-policy denial: 403 (never 401 -- this is not an authentication
+/// failure) whose JSON body names the policy.
+fn denied_invite() -> Response {
     (
         StatusCode::FORBIDDEN,
         Json(serde_json::json!({
             "error": "admission required",
-            "policy": POLICY_NAME,
+            "policy": "invite",
         })),
     )
         .into_response()
+}
+
+/// A proof-of-work denial: 403 whose JSON body echoes the challenge parameters
+/// -- the difficulty and the window binding -- so a client can size and bind
+/// its work without an out-of-band challenge exchange.
+fn denied_pow(difficulty: u32) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": "admission required",
+            "policy": "pow",
+            "difficulty": difficulty,
+            "window": "utc-hour",
+        })),
+    )
+        .into_response()
+}
+
+/// The coarse current time window: whole UTC hours since the Unix epoch. A
+/// pre-epoch clock (absurd in practice) yields window 0, under which every
+/// nonce simply fails difficulty -- the safe, refusing direction.
+fn current_utc_hour() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() / 3600)
+        .unwrap_or(0)
+}
+
+/// The hashcash preimage digest over an INJECTIVE byte encoding: a
+/// fixed-length domain tag, the `principal_id` LENGTH-PREFIXED, then the
+/// `utc_hour` and `nonce` as fixed-width little-endian `u64`s. The length
+/// prefix and fixed-width integers guarantee distinct `(principal_id,
+/// utc_hour, nonce)` triples never share a preimage for ANY `principal_id`, so
+/// a solution provably binds to exactly one principal and one window -- the
+/// anti-amortization property. A `:`-delimited string preimage would be
+/// non-injective (a colon-bearing `principal_id` could reframe the field
+/// boundaries and amortize one solve across principals), which is why the
+/// encoding is length-prefixed rather than delimited.
+fn pow_digest(principal_id: &str, utc_hour: u64, nonce: u64) -> [u8; 32] {
+    let pid = principal_id.as_bytes();
+    let mut preimage = Vec::with_capacity(POW_DOMAIN_TAG.len() + 8 + pid.len() + 8 + 8);
+    preimage.extend_from_slice(POW_DOMAIN_TAG);
+    preimage.extend_from_slice(&(pid.len() as u64).to_le_bytes());
+    preimage.extend_from_slice(pid);
+    preimage.extend_from_slice(&utc_hour.to_le_bytes());
+    preimage.extend_from_slice(&nonce.to_le_bytes());
+    *blake3::hash(&preimage).as_bytes()
+}
+
+/// Leading zero *bits* of a 32-byte digest read big-endian (byte 0 most
+/// significant) -- the difficulty metric. Bits, not bytes: a difficulty need
+/// not be a multiple of 8.
+fn leading_zero_bits(digest: &[u8; 32]) -> u32 {
+    let mut bits = 0;
+    for &byte in digest {
+        if byte == 0 {
+            bits += 8;
+        } else {
+            bits += byte.leading_zeros();
+            break;
+        }
+    }
+    bits
+}
+
+/// Whether `nonce` clears `difficulty` leading zero bits for `principal_id` in
+/// a live window. The grace spans the current UTC hour AND the immediately
+/// previous one, so a solution found just before an hour boundary still
+/// verifies; anything older is stale and refused (no stockpiling).
+fn pow_admits(principal_id: &str, nonce: u64, difficulty: u32) -> bool {
+    let hour = current_utc_hour();
+    [hour, hour.saturating_sub(1)]
+        .into_iter()
+        .any(|window| leading_zero_bits(&pow_digest(principal_id, window, nonce)) >= difficulty)
 }
 
 /// A non-denial refusal on a transport/infrastructure fact.
@@ -530,13 +652,33 @@ mod tests {
 
     #[test]
     fn known_membership_is_exact() {
-        let gate = Gate {
-            hashes: vec![sha256(b"a"), sha256(b"b")],
-            spent: SpentSet::open(&tempfile::tempdir().unwrap().path().join("adm")).unwrap(),
-            resident: Arc::new(|_| Box::pin(async { false })),
-        };
-        assert!(gate.is_known(&sha256(b"a")));
-        assert!(gate.is_known(&sha256(b"b")));
-        assert!(!gate.is_known(&sha256(b"c")));
+        let hashes = vec![sha256(b"a"), sha256(b"b")];
+        assert!(is_known(&hashes, &sha256(b"a")));
+        assert!(is_known(&hashes, &sha256(b"b")));
+        assert!(!is_known(&hashes, &sha256(b"c")));
+    }
+
+    #[test]
+    fn pow_digest_is_injective_across_a_colon_bearing_reframe() {
+        // The old `:`-delimited framing folds `("sybil", "HH:7")` and the
+        // colon-bearing twin `("sybil:HH", "7")` onto one preimage; the
+        // length-prefixed encoding must give them unrelated digests.
+        let hour = 471_000u64;
+        let twin = format!("sybil:{hour}");
+        assert_ne!(
+            pow_digest("sybil", hour, 7),
+            pow_digest(&twin, hour, 7),
+            "length-prefixed preimage must not collide the colon reframe"
+        );
+    }
+
+    #[test]
+    fn leading_zero_bits_counts_bits_not_bytes() {
+        assert_eq!(leading_zero_bits(&[0u8; 32]), 256);
+        let mut d = [0u8; 32];
+        d[0] = 0b0000_0001;
+        assert_eq!(leading_zero_bits(&d), 7);
+        d[0] = 0b1000_0000;
+        assert_eq!(leading_zero_bits(&d), 0);
     }
 }
