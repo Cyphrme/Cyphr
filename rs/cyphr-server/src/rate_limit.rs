@@ -464,4 +464,45 @@ mod tests {
         assert_eq!(peek_principal_id(body).as_deref(), Some("abc"));
         assert!(peek_principal_id(b"not json").is_none());
     }
+
+    /// F2 bounded-state (WHITE-BOX). RED (uncompilable) today, GREEN after F2
+    /// gives every keyed limiter map a hard max-entry ceiling. The merged fence
+    /// bounds its maps only with governor's `retain_recent` -- a TIME sweep that
+    /// drops fully-replenished buckets, NOT a size cap. A distributed or
+    /// IPv6-rotation flood of distinct, never-replenished keys therefore grows
+    /// the per-IP and per-operation maps without bound: a memory self-DoS the
+    /// module doc today wrongly calls impossible. This pins the invariant a size
+    /// ceiling must hold -- after inserting more than `KEY_CEILING` distinct
+    /// keys and running the bounded-state maintenance, the map retains at most
+    /// `KEY_CEILING` entries (oldest evicted).
+    ///
+    /// `KEY_CEILING` and the eviction path are the implementation's to add (AC3
+    /// greps for the ceiling constant + eviction), so this test does not compile
+    /// against today's code -- that non-compilation IS its red signal, not a
+    /// harness fault. It pins the size-bound contract; the exact accessor and
+    /// eviction mechanism are the implementation's, and this test moves in
+    /// lockstep with what the impl-worker builds within the node.
+    #[test]
+    fn keyed_limiter_map_is_bounded_by_key_ceiling() {
+        use std::net::Ipv6Addr;
+
+        let fences = Fences::from_config(&LimitsConfig::default());
+
+        // Flood the per-IP map with distinct, never-seen keys -- the exact
+        // vector `retain_recent` cannot bound (none of these buckets ever
+        // replenishes within the loop, so a time sweep keeps them all).
+        for i in 0..(KEY_CEILING as u128 + 1_000) {
+            let ip = IpAddr::V6(Ipv6Addr::from(i));
+            let _ = fences.per_ip.check_key(&ip);
+            fences.maybe_sweep();
+        }
+
+        assert!(
+            fences.per_ip.len() <= KEY_CEILING,
+            "the per-IP limiter map must stay within KEY_CEILING ({}) entries under a flood of \
+             distinct keys, got {}",
+            KEY_CEILING,
+            fences.per_ip.len(),
+        );
+    }
 }
