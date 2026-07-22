@@ -883,12 +883,17 @@ fn bare_server_boots_and_self_bootstraps() {
 // regression; the real bounded-state proof lives in the source-level test.
 // ========================================================================
 
-/// GUARD: many distinct per-IP / per-principal keys keep the server responsive.
+/// GUARD: many distinct principals and many distinct per-IP keys keep the
+/// server responsive.
 #[test]
 fn many_distinct_keys_keep_server_responsive() {
     let server = TestServer::with_limits(&Limits::generous());
 
-    // Many distinct principals (distinct per-principal keys) ...
+    // Many distinct principals, all from the same source IP -- this loop
+    // exercises storage/count-quota state growth, not the rate limiter's key
+    // map: `rate_limit` is deliberately IP-keyed only (no per-principal RATE
+    // bucket; see the `rate_limit` module doc), so these pushes never grow a
+    // limiter key map by themselves ...
     for i in 0..64 {
         let _ = server.post(
             "/push",

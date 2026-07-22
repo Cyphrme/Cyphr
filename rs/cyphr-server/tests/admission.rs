@@ -287,11 +287,7 @@ fn assert_denied(resp: &HttpResponse, expected_policy: &str) {
 #[test]
 fn open_policy_admits_new_principal_without_token() {
     let server = TestServer::start_open();
-    let r = server.post(
-        "/push",
-        &genesis_body("n3-open-genesis", NOW_BASE + 10),
-        &[],
-    );
+    let r = server.post("/push", &genesis_body("open-genesis", NOW_BASE + 10), &[]);
     assert_eq!(r.status, 201, "open genesis push must succeed: {}", r.body);
 }
 
@@ -305,11 +301,7 @@ fn open_policy_admits_new_principal_without_token() {
 #[test]
 fn invite_missing_token_is_denied() {
     let server = TestServer::start_invite();
-    let r = server.post(
-        "/push",
-        &genesis_body("n3-invite-notoken", NOW_BASE + 20),
-        &[],
-    );
+    let r = server.post("/push", &genesis_body("invite-notoken", NOW_BASE + 20), &[]);
     assert_denied(&r, "invite");
 }
 
@@ -320,7 +312,7 @@ fn invite_wrong_token_is_denied() {
     let server = TestServer::start_invite();
     let r = server.post(
         "/push",
-        &genesis_body("n3-invite-wrong", NOW_BASE + 21),
+        &genesis_body("invite-wrong", NOW_BASE + 21),
         &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
     );
     assert_denied(&r, "invite");
@@ -332,7 +324,7 @@ fn invite_valid_token_admits_new_principal() {
     let server = TestServer::start_invite();
     let r = server.post(
         "/push",
-        &genesis_body("n3-invite-valid", NOW_BASE + 22),
+        &genesis_body("invite-valid", NOW_BASE + 22),
         &[(INVITE_HEADER, VALID_TOKEN)],
     );
     assert_eq!(
@@ -353,12 +345,12 @@ fn invite_wrong_tokens_are_denied_identically() {
     let server = TestServer::start_invite();
     let same_len = server.post(
         "/push",
-        &genesis_body("n3-ct-same", NOW_BASE + 23),
+        &genesis_body("ct-same", NOW_BASE + 23),
         &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
     );
     let diff_len = server.post(
         "/push",
-        &genesis_body("n3-ct-diff", NOW_BASE + 24),
+        &genesis_body("ct-diff", NOW_BASE + 24),
         &[(INVITE_HEADER, WRONG_TOKEN_DIFF_LEN)],
     );
     assert_denied(&same_len, "invite");
@@ -377,7 +369,7 @@ fn invite_token_is_single_use() {
     let server = TestServer::start_invite();
     let first = server.post(
         "/push",
-        &genesis_body("n3-single-p1", NOW_BASE + 30),
+        &genesis_body("single-p1", NOW_BASE + 30),
         &[(INVITE_HEADER, VALID_TOKEN)],
     );
     assert_eq!(
@@ -387,7 +379,7 @@ fn invite_token_is_single_use() {
     );
     let second = server.post(
         "/push",
-        &genesis_body("n3-single-p2", NOW_BASE + 31),
+        &genesis_body("single-p2", NOW_BASE + 31),
         &[(INVITE_HEADER, VALID_TOKEN)],
     );
     assert_denied(&second, "invite");
@@ -404,7 +396,7 @@ fn invite_token_not_consumed_on_protocol_rejection() {
     // but an empty commit bundle the handler rejects (400) -> non-2xx.
     let bad = server.post(
         "/push",
-        "{\"principal_id\":\"n3-refund-bad\",\"blobs\":[]}",
+        "{\"principal_id\":\"refund-bad\",\"blobs\":[]}",
         &[(INVITE_HEADER, VALID_TOKEN)],
     );
     assert!(
@@ -416,7 +408,7 @@ fn invite_token_not_consumed_on_protocol_rejection() {
     // The token must survive that rejection and admit a clean genesis.
     let good = server.post(
         "/push",
-        &genesis_body("n3-refund-good", NOW_BASE + 40),
+        &genesis_body("refund-good", NOW_BASE + 40),
         &[(INVITE_HEADER, VALID_TOKEN)],
     );
     assert_eq!(
@@ -432,7 +424,7 @@ fn invite_token_not_consumed_on_protocol_rejection() {
 #[test]
 fn invite_resident_principal_bypasses_admission() {
     let server = TestServer::start_invite();
-    let body = genesis_body("n3-resident", NOW_BASE + 50);
+    let body = genesis_body("resident", NOW_BASE + 50);
     let seed = server.post("/push", &body, &[(INVITE_HEADER, VALID_TOKEN)]);
     assert_eq!(
         seed.status, 201,

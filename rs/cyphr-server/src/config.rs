@@ -200,6 +200,14 @@ pub struct LimitsConfig {
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
 /// `burst` capacity. Deserialized from a `{ per_second = N, burst = N }`
 /// inline TOML table.
+///
+/// Unlike `max_body_bytes = 0` / `count_quota = 0` (rejected loudly at
+/// startup by `resolve_config` -- a zero there silently bricks every request
+/// or every principal's first commit), a `0` here is deliberately clamped to
+/// the tightest live bucket rather than rejected: see `rate_limit`'s
+/// `quota()` for the clamp and its rationale. A misconfigured rate stays
+/// functional (merely very strict) rather than bricking writes, so it is
+/// loosened, not refused.
 #[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
 pub struct RateBucket {
     /// Sustained replenishment rate in requests per second.

@@ -247,7 +247,11 @@ impl Fences {
 /// Translate a configured `{ per_second, burst }` bucket into a `governor`
 /// quota: one cell replenished every `1s / per_second`, up to `burst` capacity.
 /// Both fields are clamped to at least 1 so a misconfigured `0` becomes the
-/// tightest live bucket rather than a panic.
+/// tightest live bucket rather than a panic. Deliberately a silent LOOSENING,
+/// unlike `max_body_bytes == 0` / `count_quota == 0` (rejected loudly at
+/// startup -- see `config::resolve_config`): a clamped-tightest bucket still
+/// serves traffic, just very strictly, so it never bricks writes and is
+/// clamped rather than refused.
 fn quota(bucket: RateBucket) -> Quota {
     let per_second = bucket.per_second.max(1);
     let burst = NonZeroU32::new(bucket.burst.max(1)).expect("burst clamped to >= 1");
