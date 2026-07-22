@@ -48,6 +48,7 @@ coz            = { workspace = true }
 http-body-util = "0.1"
 proptest       = { workspace = true }
 serde_json     = { workspace = true }
+socket2        = "0.6"
 tempfile       = "3"
 test-fixtures  = { path = "../test-fixtures" }
 tokio          = { workspace = true }
