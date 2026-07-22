@@ -26,7 +26,9 @@
 //!   declared `Content-Length` and on the bytes actually buffered for the write path (so a chunked
 //!   over-cap push cannot slip the header check). Every OTHER route is capped the same way by a
 //!   `serve()`-composed body-limit layer (see [`crate::serve`]), so `max_body_bytes` is
-//!   authoritative over the whole API, not just `/push`.
+//!   authoritative for every non-push route. `/push` is ADDITIONALLY bounded by admission's own,
+//!   independent buffer limit -- a separate, lower cap on that one path. Reconciling the two caps
+//!   into one is deferred.
 //! - **Count quota**: a principal already at or over `count_quota` commits is refused a further
 //!   commit with a distinct `402`, via the [`CountProbe`]. The check reads `commit_count` before
 //!   the handler's own increment, so concurrent same-principal pushes can overshoot the cap by up
@@ -42,9 +44,22 @@
 //! IPv6-rotation flood of distinct, never-replenished keys never looks stale, so it grows the map
 //! without bound. `governor` exposes no per-key removal (only the global
 //! `retain_recent`/`len`/`is_empty`), so once a map still exceeds `KEY_CEILING` after the time
-//! sweep, [`BoundedLimiter`] resets it to fresh rather than leaving it to grow further -- the safe
-//! direction, since a reset only ever loosens (every bucket, legitimate or not, gets a fresh
-//! allowance) and never manufactures a spurious refusal.
+//! sweep, [`BoundedLimiter`] resets it to fresh rather than leaving it to grow further.
+//!
+//! That reset is an accepted, attacker-triggerable LOOSENING, not a free backstop: an adversary
+//! who can present more than `KEY_CEILING` distinct *real, routable* peer addresses (e.g. a routed
+//! IPv6 allocation) can deliberately drive a map over the ceiling to force a reset, which clears
+//! EVERY bucket in that map -- including a concurrently-throttled abuser's. This is accepted, not
+//! overlooked, for four reasons. First, the precondition is an adversary who by construction
+//! already defeats per-IP rate limiting at that scale; per-IP throttling exists to stop the cheap
+//! single-/few-address griefer, for whom the map never approaches `KEY_CEILING` and the reset never
+//! fires. Second, the reset only ever loosens -- every bucket, legitimate or not, gets a fresh
+//! allowance -- so it can never manufacture a spurious refusal against honest traffic. Third, it is
+//! strictly better on this same distributed-flood vector than the unbounded-memory exhaustion it
+//! replaces. Fourth, the durable per-principal count quota (see "The fences" above) -- the real
+//! bound on write volume -- is untouched by the reset. Finer, per-key eviction would close this gap
+//! but requires replacing `governor` (which exposes no per-key removal); that is follow-up work,
+//! not done here.
 
 use std::convert::Infallible;
 use std::future::Future;
