@@ -38,29 +38,26 @@
 //!
 //! ## Bounded state (no self-DoS)
 //!
-//! Every keyed limiter map is bounded two ways: a traffic-driven TIME sweep (see
-//! [`Fences::maybe_sweep`]) that runs `governor`'s `retain_recent` to drop keys whose buckets are
-//! fully replenished -- indistinguishable from absent -- and a hard SIZE ceiling ([`KEY_CEILING`])
-//! enforced in the same sweep. The time sweep alone does not bound the map: a distributed or
-//! IPv6-rotation flood of distinct, never-replenished keys never looks stale, so it grows the map
-//! without bound. `governor` exposes no per-key removal (only the global
-//! `retain_recent`/`len`/`is_empty`), so once a map still exceeds `KEY_CEILING` after the time
-//! sweep, [`BoundedLimiter`] resets it to fresh rather than leaving it to grow further.
+//! Each keyed limiter is a `moka` size-bounded concurrent cache
+//! (`moka::sync::Cache`) of one per-key `governor` DIRECT rate limiter per
+//! resident key, capped at [`KEY_CEILING`] entries. Eviction is continuous:
+//! every insert past the cap evicts the single COLDEST (least-recently/least-
+//! frequently used) entry, so the map never needs an external sweep to stay
+//! bounded -- unlike a bulk-only store (`governor`'s own keyed state store
+//! exposes no per-key removal, only a global `retain_recent`/`len`), which
+//! could only bound itself by periodically resetting the WHOLE map.
 //!
-//! That reset is an accepted, attacker-triggerable LOOSENING, not a free backstop: an adversary
-//! who can present more than `KEY_CEILING` distinct *real, routable* peer addresses (e.g. a routed
-//! IPv6 allocation) can deliberately drive a map over the ceiling to force a reset, which clears
-//! EVERY bucket in that map -- including a concurrently-throttled abuser's. This is accepted, not
-//! overlooked, for four reasons. First, the precondition is an adversary who by construction
-//! already defeats per-IP rate limiting at that scale; per-IP throttling exists to stop the cheap
-//! single-/few-address griefer, for whom the map never approaches `KEY_CEILING` and the reset never
-//! fires. Second, the reset only ever loosens -- every bucket, legitimate or not, gets a fresh
-//! allowance -- so it can never manufacture a spurious refusal against honest traffic. Third, it is
-//! strictly better on this same distributed-flood vector than the unbounded-memory exhaustion it
-//! replaces. Fourth, the durable per-principal count quota (see "The fences" above) -- the real
-//! bound on write volume -- is untouched by the reset. Finer, per-key eviction would close this gap
-//! but requires replacing `governor` (which exposes no per-key removal); that is follow-up work,
-//! not done here.
+//! Coldest-key eviction is consequence-free, not merely accepted: a re-
+//! entering evicted key simply gets a fresh full bucket on its next request --
+//! the same LOOSENING a whole-map reset produced, but now scoped to the one
+//! key that was actually cold, never to a key still being hammered. A HOT
+//! key -- one recently and repeatedly checked, as an abuser's key is by
+//! definition -- accrues a high recency/frequency signal and is therefore
+//! never the coldest resident entry, so it SURVIVES a flood of `> KEY_CEILING`
+//! distinct cold keys that would previously have forced a whole-map reset and
+//! cleared it too. Eviction still only ever loosens (a fresh bucket for
+//! whichever key was evicted), never manufactures a spurious refusal against
+//! any other key.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -68,8 +65,7 @@ use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -80,18 +76,18 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::future::BoxFuture;
-use governor::clock::DefaultClock;
-use governor::state::keyed::DefaultKeyedStateStore;
-use governor::{Quota, RateLimiter};
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
+use moka::sync::Cache;
 use serde::Deserialize;
 use tower::{Layer, Service};
 
 use crate::config::{LimitsConfig, RateBucket};
 
-/// Hard per-limiter entry ceiling (see the module doc's "Bounded state"
-/// section). Generous enough that no legitimate deployment's active-client
-/// count ever approaches it, tight enough that a flood of distinct keys
-/// cannot grow a limiter map past a bounded, predictable footprint.
+/// Hard per-limiter entry ceiling: the `moka` cache capacity backing each
+/// [`BoundedLimiter`] (see the module doc's "Bounded state" section).
+/// Generous enough that no legitimate deployment's active-client count ever
+/// approaches it, tight enough that a flood of distinct keys cannot grow a
+/// limiter's resident set past a bounded, predictable footprint.
 const KEY_CEILING: usize = 100_000;
 
 /// A commit-count probe: given a principal id, resolve how many commits it
@@ -102,77 +98,55 @@ const KEY_CEILING: usize = 100_000;
 /// over-cap count.
 pub type CountProbe = Arc<dyn Fn(String) -> BoxFuture<'static, u64> + Send + Sync>;
 
-/// A keyed `governor` limiter over key `K`, backed by the default (DashMap)
-/// keyed state store and default clock.
-type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
+/// A single-key `governor` DIRECT (un-keyed) rate limiter -- the per-key cell
+/// [`BoundedLimiter`] stores one of per resident key.
+type DirectLimiter = DefaultDirectRateLimiter;
 
-/// A [`KeyedLimiter`] wrapped with a hard SIZE ceiling ([`KEY_CEILING`]), on
-/// top of `governor`'s own TIME-based `retain_recent` sweep (see the module
-/// doc's "Bounded state" section for why the time sweep alone is
-/// insufficient). `governor` exposes no way to remove a single key from a
-/// keyed state store -- only the global `retain_recent` / `len` / `is_empty`
-/// trio -- so the only `&self`-compatible way to bound the map's size is to
-/// replace the whole inner limiter once it is still oversized after the time
-/// sweep. The inner limiter lives behind a `RwLock` so [`Fences::maybe_sweep`]
-/// (called from many concurrent request-handling tasks, all holding only a
-/// shared `&Fences`) can perform that replacement without `&mut self`.
-struct BoundedLimiter<K: Hash + Eq + Clone> {
-    inner: RwLock<KeyedLimiter<K>>,
+/// A size-bounded store of per-key `governor` DIRECT rate limiters, capped at
+/// [`KEY_CEILING`] resident keys (see the module doc's "Bounded state"
+/// section). Backed by `moka::sync::Cache`: a concurrent, lock-free hot path
+/// with continuous, per-insert eviction of the single coldest entry once at
+/// capacity -- unlike a plain `RwLock<LruCache>`, which would serialize
+/// `check_key` on one global lock (LRU recency mutates on every read).
+struct BoundedLimiter<K: Hash + Eq + Clone + Send + Sync + 'static> {
+    cache: Cache<K, Arc<DirectLimiter>>,
     quota: Quota,
 }
 
-impl<K: Hash + Eq + Clone> BoundedLimiter<K> {
+impl<K: Hash + Eq + Clone + Send + Sync + 'static> BoundedLimiter<K> {
     fn new(quota: Quota) -> Self {
         Self {
-            inner: RwLock::new(RateLimiter::keyed(quota)),
+            cache: Cache::builder().max_capacity(KEY_CEILING as u64).build(),
             quota,
         }
     }
 
-    /// Check one cell for `key`. `Err` means the bucket is exhausted; the
+    /// Check one cell for `key`, creating a fresh per-key direct limiter on
+    /// first sight (get-or-insert, atomic under concurrent same-key
+    /// callers -- `moka::sync::Cache::get_with` runs the init closure at
+    /// most once per key even under a concurrent stampede). Insertion past
+    /// [`KEY_CEILING`] evicts the coldest resident key; that eviction never
+    /// touches `key`'s own bucket. `Err` means the bucket is exhausted; the
     /// caller only distinguishes success from failure, so the specific
     /// `governor` outcome type stays internal to this wrapper.
     fn check_key(&self, key: &K) -> Result<(), ()> {
-        self.inner
-            .read()
-            .expect("limiter lock poisoned")
-            .check_key(key)
-            .map_err(|_| ())
+        let limiter = self
+            .cache
+            .get_with(key.clone(), || Arc::new(RateLimiter::direct(self.quota)));
+        limiter.check().map(|_| ()).map_err(|_| ())
     }
 
-    /// Drop keys whose buckets are fully replenished (the TIME sweep).
-    fn retain_recent(&self) {
-        self.inner
-            .read()
-            .expect("limiter lock poisoned")
-            .retain_recent();
-    }
-
-    /// The current live-key count.
+    /// The current resident-key count. Forces `moka`'s internal housekeeping
+    /// to run first: `entry_count` alone is an eventually-consistent
+    /// estimate (see `moka::sync::Cache::entry_count`'s own documentation)
+    /// that can lag behind concurrent inserts and evictions. Test-only: no
+    /// production call site needs the resident count.
+    #[cfg(test)]
     fn len(&self) -> usize {
-        self.inner.read().expect("limiter lock poisoned").len()
-    }
-
-    /// The SIZE-ceiling backstop: if the map still exceeds [`KEY_CEILING`]
-    /// after [`retain_recent`](Self::retain_recent), reset it to a fresh
-    /// limiter of the same quota. Re-checks under the write lock (a second
-    /// caller may have already reset the map between the read-locked
-    /// over-ceiling check and acquiring the write lock), so a benign race
-    /// never resets twice in a row for one overshoot.
-    fn evict_if_over_ceiling(&self) {
-        if self.len() > KEY_CEILING {
-            let mut guard = self.inner.write().expect("limiter lock poisoned");
-            if guard.len() > KEY_CEILING {
-                *guard = RateLimiter::keyed(self.quota);
-            }
-        }
+        self.cache.run_pending_tasks();
+        self.cache.entry_count() as usize
     }
 }
-
-/// Sweep the limiter maps once every this many requests (see
-/// [`Fences::maybe_sweep`]). Amortizes the bounded-state maintenance across
-/// traffic without a background timer.
-const SWEEP_INTERVAL: u64 = 512;
 
 // ========================================================================
 // The fences
@@ -192,8 +166,6 @@ struct Fences {
     max_body_bytes: u64,
     /// Per-principal hard commit-count cap.
     count_quota: u64,
-    /// Request counter driving the amortized bounded-state sweep.
-    sweeps: AtomicU64,
 }
 
 impl Fences {
@@ -206,7 +178,6 @@ impl Fences {
             revoke: BoundedLimiter::new(quota(limits.revoke)),
             max_body_bytes: limits.max_body_bytes,
             count_quota: limits.count_quota,
-            sweeps: AtomicU64::new(0),
         }
     }
 
@@ -219,27 +190,6 @@ impl Fences {
             Op::Login => Some(&self.login),
             Op::Revoke => Some(&self.revoke),
             Op::Other => None,
-        }
-    }
-
-    /// Amortized bounded-state maintenance: every [`SWEEP_INTERVAL`] requests,
-    /// drop keys whose buckets are fully replenished (indistinguishable from
-    /// absent), then reset any map still over [`KEY_CEILING`]. This is what
-    /// makes the key maps -- and thus the fences' memory -- bounded rather
-    /// than a self-DoS, against both an idle-client backlog (the time sweep)
-    /// and a flood of distinct, never-replenished keys (the size ceiling).
-    fn maybe_sweep(&self) {
-        if self.sweeps.fetch_add(1, Ordering::Relaxed) % SWEEP_INTERVAL == 0 {
-            for limiter in [
-                &self.per_ip,
-                &self.read,
-                &self.push,
-                &self.login,
-                &self.revoke,
-            ] {
-                limiter.retain_recent();
-                limiter.evict_if_over_ceiling();
-            }
         }
     }
 }
@@ -326,8 +276,6 @@ where
     S: Service<Request, Response = Response, Error = Infallible>,
     S::Future: Send,
 {
-    fences.maybe_sweep();
-
     // (1) Size cap on the declared length -- refuse before any keying or
     // buffering when the client announces an over-cap body.
     if let Some(len) = declared_len(&req) {
@@ -519,7 +467,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use governor::clock::DefaultClock;
+    use governor::state::keyed::DefaultKeyedStateStore;
+
     use super::*;
+
+    /// A keyed `governor` limiter over key `K`, backed by the default
+    /// (DashMap) keyed state store and default clock. Exercises `governor`'s
+    /// own keyed bucket behavior directly, in isolation from
+    /// [`BoundedLimiter`]'s `moka`-backed store.
+    type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
 
     /// A tight bucket trips within its burst; a fresh key starts full.
     #[test]
@@ -577,27 +534,24 @@ mod tests {
         assert!(peek_principal_id(b"not json").is_none());
     }
 
-    /// WHITE-BOX bounded-state invariant: every keyed limiter map carries a
-    /// hard max-entry ceiling (`KEY_CEILING`), not just `governor`'s
-    /// `retain_recent` TIME sweep (which drops fully-replenished buckets but
-    /// never bounds a flood of distinct, never-replenished keys -- e.g. a
-    /// distributed or IPv6-rotation attack). After inserting more than
-    /// `KEY_CEILING` distinct keys and running the bounded-state maintenance,
-    /// the map must retain at most `KEY_CEILING` entries (see
-    /// [`BoundedLimiter::evict_if_over_ceiling`]).
+    /// WHITE-BOX bounded-state invariant: every keyed limiter carries a hard
+    /// max-entry ceiling (`KEY_CEILING`) enforced continuously by `moka` on
+    /// every insert, not just an amortized sweep -- so even a flood of
+    /// distinct, never-repeated keys (e.g. a distributed or IPv6-rotation
+    /// attack, which no time-based staleness check alone can bound) never
+    /// grows the map past `KEY_CEILING` resident entries.
     #[test]
     fn keyed_limiter_map_is_bounded_by_key_ceiling() {
         use std::net::Ipv6Addr;
 
         let fences = Fences::from_config(&LimitsConfig::default());
 
-        // Flood the per-IP map with distinct, never-seen keys -- the exact
-        // vector `retain_recent` cannot bound (none of these buckets ever
-        // replenishes within the loop, so a time sweep keeps them all).
+        // Flood the per-IP map with distinct, never-seen keys. `moka` evicts
+        // the coldest resident key inline on each insert past capacity --
+        // no external sweep to drive.
         for i in 0..(KEY_CEILING as u128 + 1_000) {
             let ip = IpAddr::V6(Ipv6Addr::from(i));
             let _ = fences.per_ip.check_key(&ip);
-            fences.maybe_sweep();
         }
 
         assert!(
@@ -609,27 +563,26 @@ mod tests {
         );
     }
 
-    /// RED: a HOT key's accumulated throttle must SURVIVE a flood of distinct
-    /// COLD keys. `BoundedLimiter::evict_if_over_ceiling` (see its doc) resets
-    /// the WHOLE map once it is still over `KEY_CEILING` after the time
-    /// sweep -- that reset wipes every bucket, including a currently-
-    /// throttled hot key, so an attacker who floods `> KEY_CEILING` distinct
-    /// cold keys can force a reset that frees a concurrently-hammered hot
-    /// key. This test drives the exact sweep + ceiling-eviction path
-    /// production runs per request (`Fences::maybe_sweep` calls
-    /// `retain_recent` then `evict_if_over_ceiling` on each limiter every
-    /// `SWEEP_INTERVAL` requests) directly on a `BoundedLimiter`, so the
-    /// whole-map reset actually fires under the flood.
+    /// A HOT key's accumulated throttle must SURVIVE a flood of distinct
+    /// COLD keys. The prior whole-map ceiling reset (see git history) wiped
+    /// EVERY bucket -- including a currently-throttled hot key -- once the
+    /// map was still over `KEY_CEILING` after a time sweep, so an attacker
+    /// who floods `> KEY_CEILING` distinct cold keys could force a reset
+    /// that freed a concurrently-hammered hot key. Per-key eviction closes
+    /// that gap: `moka` evicts only the single coldest resident entry on
+    /// each insert past capacity, so a key that stays recently- and
+    /// repeatedly-touched is never the eviction victim. This test drives
+    /// the exact per-request path production runs (`check_key`, which
+    /// resolves and evicts inline) directly on a `BoundedLimiter`.
     #[test]
     fn hot_key_throttle_survives_cold_key_flood() {
         use std::net::Ipv6Addr;
 
         // Exhaustible quota so H trips fast, but with enough burst headroom
-        // that the periodic "keep H warm" touches below (at most a handful
-        // fire after the one ceiling-triggered reset near the flood's tail)
-        // can never by themselves re-exhaust a freshly reset bucket and mask
-        // the reset as a false throttle -- only an actual reset-survival (or
-        // lack thereof) may decide the final assertion.
+        // that the periodic "keep H warm" touches below can never by
+        // themselves re-exhaust a bucket that eviction reset to fresh and
+        // mask an eviction as a false throttle -- only an actual
+        // survives-eviction-or-not outcome may decide the final assertion.
         const HOT_BURST: u32 = 64;
         let lim = BoundedLimiter::new(quota(RateBucket {
             per_second: 1,
@@ -649,10 +602,10 @@ mod tests {
 
         // 2. Flood > KEY_CEILING distinct cold IPv6 keys, interleaving
         // periodic touches of H (models an attacker hammering H while
-        // flooding fillers, so H stays recently-used) and periodic sweeps
-        // (the same `retain_recent` + `evict_if_over_ceiling` pair
-        // `Fences::maybe_sweep` runs every `SWEEP_INTERVAL` requests), so the
-        // whole-map reset fires exactly as it would under `handle()`.
+        // flooding fillers, so H stays recently-used). `moka` evicts the
+        // coldest resident key inline on each `check_key` insert past
+        // capacity -- the exact per-request path production runs, no
+        // external sweep to drive.
         let flood = KEY_CEILING as u128 + 2_000;
         for i in 0..flood {
             let cold = IpAddr::V6(Ipv6Addr::from(
@@ -662,23 +615,17 @@ mod tests {
             if i % 256 == 0 {
                 let _ = lim.check_key(&hot); // keep H warm
             }
-            if (i as u64) % SWEEP_INTERVAL == 0 {
-                lim.retain_recent();
-                lim.evict_if_over_ceiling();
-            }
         }
-        // Final sweep so a ceiling breach in the flood's tail is not missed.
-        lim.retain_recent();
-        lim.evict_if_over_ceiling();
 
-        // 3. RED today: the whole-map reset clears H along with the cold
-        // keys, so `check_key(&hot)` comes back `Ok`. GREEN after per-key
-        // eviction: H was never the coldest/least-recently-used key, so it
-        // is never the eviction victim and stays throttled.
+        // 3. Before per-key eviction, a whole-map reset would have cleared H
+        // along with the cold keys, so `check_key(&hot)` would come back
+        // `Ok`. With per-key eviction, H was never the coldest/least-
+        // recently-used key, so it is never the eviction victim and stays
+        // throttled.
         assert!(
             lim.check_key(&hot).is_err(),
-            "H must STAY throttled across a cold-key flood -- a per-key store must not \
-             reset the hot key when evicting cold keys"
+            "H must STAY throttled across a cold-key flood -- a per-key store must not reset the \
+             hot key when evicting cold keys"
         );
 
         // AC1 -- bound holds. Must stay green before AND after this node:
