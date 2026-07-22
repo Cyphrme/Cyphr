@@ -1,31 +1,55 @@
 //! Acceptance suite for the witness naked-revoke ingest path (SPEC.md §6.4,
-//! confirmed model).
+//! confirmed model) under the **disclosed-key** verification model.
 //!
 //! A **naked revoke** is a `key/revoke` coz signed *outside* a commit. Under
 //! the confirmed §6.4 model a witness accepts one iff it is **self-signed** --
 //! the key named by the coz's `tmb` signs its own revoke -- and thereafter
 //! refuses that key GLOBALLY, by thumbprint, for every capability (login AND
 //! push) and every principal that holds it. There is no principal scoping, no
-//! third-party path, and no chain replay: verification resolves `tmb ->
-//! pubkey` through the engine's global key index and checks one signature.
+//! third-party path, and no chain replay.
 //!
-//! ## Endpoint contract (this suite is the source of truth)
+//! ## The disclosed-key model (this suite is the source of truth)
+//!
+//! Verification never dereferences the global index's CONTENT. The request
+//! DISCLOSES the public key; the server verifies by recomputing `tmb = H(pub)`
+//! over the disclosed key and checking the signature against that SAME disclosed
+//! key. The index collapses to a PRESENCE fence: `tmb` must be a key the server
+//! has indexed (`Some`), but the indexed value is never read. This removes the
+//! index from the truth path, closing an availability DoS: a poisoned index
+//! entry (an attacker's pub stored under a victim's `tmb`) can no longer block
+//! the victim's own emergency revoke, because the victim's revoke depends only
+//! on the material the victim discloses.
+//!
+//! ### Endpoint contract
 //!
 //! - `POST /revoke`
-//! - request body: the signed `key/revoke` coz ITSELF -- a bare `{ "pay": {..}, "sig": "<b64url>"
-//!   }`, mirroring `/auth/login`'s `Json<CozJson>`. There is NO `principal_id` field and NO
+//! - request body: the signed `key/revoke` coz PLUS its disclosed public key -- `{ "pay": {..},
+//!   "sig": "<b64url>", "key": { "alg": "..", "pub": "<b64url>" } }`. The `key` field is REQUIRED:
+//!   a body that discloses no key is rejected (400). There is NO `principal_id` field and NO
 //!   `RevokeRequest` wrapper: death is global-by-thumbprint, so no principal is named or loaded.
 //! - on acceptance: a 2xx whose payload names `revoked_tmb` (no `principal_id`, no `kind`).
+//!
+//! ### Verification order (each a distinct rejection)
+//!
+//! 1. the payload parses and its `typ` is a `key/revoke`;
+//! 2. `rvk` is a positive integer below 2^53-1; the timestamp value is NOT checked, so a pre-signed
+//!    `rvk`=1 is valid;
+//! 3. the body discloses a `key` (else 400) and the serialized revoke is within `RVK_MAX_SIZE`;
+//! 4. PRESENCE fence: `tmb` is a key this server has indexed (`Some`) -- the indexed CONTENT is
+//!    never read; an unknown `tmb` is refused (400);
+//! 5. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), else 400 -- this
+//!    welds the disclosed key to the named thumbprint;
+//! 6. VERIFY: the signature verifies against the DISCLOSED key, else 401. A revoke signed by any
+//!    key OTHER than the one `tmb` names fails here -- the entire self-signed-only rule.
 //!
 //! ## Why every test drives the live HTTP endpoint
 //!
 //! An integration-test file is one binary: a reference to a not-yet-existing
 //! symbol would fail the whole binary to compile, so no test could exhibit its
 //! semantic red baseline. Every test therefore goes through `build_router` + a
-//! real request. Against the current (superseded, principal-scoped) tip the
-//! reds are behavioral: the endpoint does not accept the bare-coz request
-//! shape, the global death-set / `is_dead` gate does not exist, and `/push`
-//! does not death-check a signing key -- never a missing symbol or file.
+//! real request, and every red baseline is behavioral (a rejected accept, an
+//! accepted forge, a victim's revoke blocked by a poisoned index) rather than a
+//! missing symbol or a compile error.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -92,37 +116,65 @@ async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool, pid: &str) {
 }
 
 // ========================================================================
-// Coz + request builders
+// Coz + request builders (disclosed-key shape)
 // ========================================================================
 
-/// Sign `pay` with pool key `signer_name` and wrap it as a `{pay, sig}` coz
-/// JSON value -- the bare-coz request body the confirmed model accepts. A
-/// naked revoke is signed outside any commit, so none of the `begin_commit` /
-/// `verify_and_apply` / `finalize_with_arrow` chain machinery runs (that would
-/// mutate PR and defeat the PR-unchanged property).
-fn sign_coz(pool: &Pool, signer_name: &str, pay: serde_json::Value) -> serde_json::Value {
+/// Sign `pay` with pool key `signer_name` and return the base64url signature.
+fn sign_pay(pool: &Pool, signer_name: &str, pay: &serde_json::Value) -> String {
     let signer = pool.get(signer_name).expect("signer in pool");
     let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
         .expect("signer prv b64");
     let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("signer pub b64");
-    let pay_vec = serde_json::to_vec(&pay).expect("serialize pay");
+    let pay_vec = serde_json::to_vec(pay).expect("serialize pay");
     let (sig, _cad) =
         coz::sign_json(&pay_vec, &signer.alg, &prv, &pub_key).expect("signing supported");
-    serde_json::json!({
-        "pay": pay,
-        "sig": Base64UrlUnpadded::encode_string(&sig),
-    })
+    Base64UrlUnpadded::encode_string(&sig)
 }
 
-/// A `key/revoke` coz naming `named_tmb_b64` as the revoked key but signed by
-/// `signer_name`. When `signer_name` IS the key named by `named_tmb_b64` this
-/// is a self-signed revoke (accepted); when it is any other key the signature
-/// will not verify against the named key and the revoke is rejected -- the
-/// single check that IS the self-signed-only rule.
-fn revoke_coz_named(
+/// The disclosed `{ "alg", "pub" }` key block for pool key `name` -- the
+/// REQUIRED `key` field of a disclosed-key naked revoke, in the wire shape the
+/// server parses (`pub` is the base64url public key).
+fn disclosed_key(pool: &Pool, name: &str) -> serde_json::Value {
+    let k = pool.get(name).expect("disclosed key in pool");
+    serde_json::json!({ "alg": k.alg, "pub": k.pub_key })
+}
+
+/// Wrap a custom `pay` signed by `signer_name` as a bare `{pay, sig}` body --
+/// the pre-disclosure shape that discloses NO key.
+fn sign_coz(pool: &Pool, signer_name: &str, pay: serde_json::Value) -> serde_json::Value {
+    let sig = sign_pay(pool, signer_name, &pay);
+    serde_json::json!({ "pay": pay, "sig": sig })
+}
+
+/// As [`sign_coz`], additionally disclosing `disclosed_name`'s `{alg, pub}` as
+/// the REQUIRED `key` field -- the disclosed-key request shape.
+fn sign_coz_disclosed(
+    pool: &Pool,
+    signer_name: &str,
+    pay: serde_json::Value,
+    disclosed_name: &str,
+) -> serde_json::Value {
+    let mut body = sign_coz(pool, signer_name, pay);
+    body.as_object_mut()
+        .unwrap()
+        .insert("key".to_string(), disclosed_key(pool, disclosed_name));
+    body
+}
+
+/// A `key/revoke` request naming `named_tmb_b64` as the revoked key, signed by
+/// `signer_name`. `disclosed` selects the `key` field: `Some(name)` discloses
+/// that pool key's `{alg, pub}` (the required disclosed-key shape); `None`
+/// omits `key` entirely (the bare shape the model must reject).
+///
+/// The three axes -- named `tmb`, signing key, disclosed key -- are independent
+/// so the forge and availability tests can drive each rejection path in
+/// isolation: bind fails when the disclosed key does not hash to the named
+/// `tmb`; the signature check fails when the signer is not the disclosed key.
+fn revoke_body(
     pool: &Pool,
     named_tmb_b64: &str,
     signer_name: &str,
+    disclosed: Option<&str>,
     rvk: serde_json::Value,
 ) -> serde_json::Value {
     let signer = pool.get(signer_name).expect("signer in pool");
@@ -133,23 +185,35 @@ fn revoke_coz_named(
         "tmb": named_tmb_b64,
         "typ": "cyphr.me/cyphr/key/revoke",
     });
-    sign_coz(pool, signer_name, pay)
+    match disclosed {
+        Some(name) => sign_coz_disclosed(pool, signer_name, pay, name),
+        None => sign_coz(pool, signer_name, pay),
+    }
 }
 
-/// A self-signed naked-revoke coz: `signer_name` revokes *itself* (`pay.tmb`
-/// is the signer's own thumbprint), the confirmed §6.4 self-revoke shape.
-/// `rvk` overridable to exercise the malformed-`rvk` matrix and the pre-signed
-/// `rvk`=1 case.
+/// A valid self-signed naked revoke: `signer_name` revokes *itself* (`pay.tmb`
+/// is the signer's own thumbprint) AND discloses its own key -- the confirmed
+/// §6.4 self-revoke shape. `rvk` overridable to exercise the malformed-`rvk`
+/// matrix and the pre-signed `rvk`=1 case.
 fn self_revoke_coz(pool: &Pool, signer_name: &str, rvk: serde_json::Value) -> serde_json::Value {
-    let tmb_b64 = pool
-        .get(signer_name)
-        .expect("signer in pool")
-        .compute_tmb_b64()
-        .expect("signer tmb");
-    revoke_coz_named(pool, &tmb_b64, signer_name, rvk)
+    let tmb = tmb_b64(pool, signer_name);
+    revoke_body(pool, &tmb, signer_name, Some(signer_name), rvk)
 }
 
-/// Flip one bit of a coz's detached signature, leaving the payload intact.
+/// A self-signed naked revoke that discloses NO key -- the pre-disclosure bare
+/// `{pay, sig}` shape. Otherwise valid (correct self-signature, valid `rvk`);
+/// the disclosed-key model must reject it for lacking the required `key`.
+fn self_revoke_coz_bare(
+    pool: &Pool,
+    signer_name: &str,
+    rvk: serde_json::Value,
+) -> serde_json::Value {
+    let tmb = tmb_b64(pool, signer_name);
+    revoke_body(pool, &tmb, signer_name, None, rvk)
+}
+
+/// Flip one bit of a coz's detached signature, leaving payload and disclosed
+/// key intact.
 fn corrupt_sig(mut coz: serde_json::Value) -> serde_json::Value {
     let sig_b64 = coz["sig"].as_str().expect("sig present");
     let mut sig = Base64UrlUnpadded::decode_vec(sig_b64).expect("sig b64");
@@ -166,8 +230,7 @@ fn tmb_b64(pool: &Pool, name: &str) -> String {
         .expect("tmb")
 }
 
-/// POST a bare naked-revoke coz to `/revoke` and return the status + parsed
-/// body. The body IS the coz (no wrapper): the confirmed request shape.
+/// POST a naked-revoke body to `/revoke` and return the status + parsed body.
 async fn post_revoke(
     state: &Arc<AppState>,
     coz: serde_json::Value,
@@ -436,13 +499,14 @@ async fn post_push(state: &Arc<AppState>, body: String) -> (StatusCode, serde_js
 // 1 -- Accept a valid self-signed naked revoke (self-signed-only accepts)
 // ========================================================================
 
-/// A well-formed self-signed `key/revoke` coz for an indexed key, with a valid
+/// A well-formed self-signed `key/revoke` disclosing its own key, with a valid
 /// `rvk`, is accepted (2xx). Its response names `revoked_tmb` and carries
 /// neither the deleted `principal_id` nor the deleted `kind`.
 ///
-/// Red baseline: the endpoint does not accept the bare-coz request shape (the
-/// current handler deserializes `{principal_id, coz}`), so the post is not a
-/// success and the response has no `revoked_tmb`.
+/// Behavior: preserved by the disclosed-key rework -- a valid self-signed
+/// revoke stays accepted (green on both the merged and reworked server), now
+/// carrying its disclosed key. The load-bearing behavioral change is exercised
+/// by the poisoned-index and keyless-body tests below.
 #[tokio::test]
 async fn accepts_valid_self_signed_naked_revoke() {
     let (state, _dir) = fresh_keyed_state();
@@ -474,14 +538,200 @@ async fn accepts_valid_self_signed_naked_revoke() {
 }
 
 // ========================================================================
-// 2 -- Reject malformed / mis-signed / unknown revokes, each a distinct 4xx
+// 2 -- The disclosed-key defenses: keyless body, forge paths, availability
+// ========================================================================
+
+/// A revoke body that discloses NO `key` is rejected (the disclosed key is
+/// REQUIRED under the reworked model): a bare `{pay, sig}`, otherwise a valid
+/// self-signed revoke, must be refused for lacking the disclosed key.
+///
+/// Red baseline (merged, index-based server): the bare `{pay, sig}` IS the shape
+/// the merged handler accepts -- it resolves `tmb -> pub` through the index and
+/// verifies the self-signature -- so this otherwise-valid revoke is ACCEPTED
+/// (2xx). `assert_rejected` therefore fails against the merged server: the
+/// requirement to disclose the key is the missing behavior.
+#[tokio::test]
+async fn keyless_revoke_body_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "nr-keyless-body";
+    bootstrap_golden_key_a(&state, &pool, pid).await;
+
+    let coz = self_revoke_coz_bare(&pool, "key_a", serde_json::json!(RVK));
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_rejected(
+        status,
+        &json,
+        "naked revoke body that discloses no public key",
+    );
+}
+
+/// FORGE STAYS CLOSED (bind path): a revoke naming the victim's `tmb` but
+/// disclosing a NON-victim key (`H(disclosed) != victim tmb`) is rejected, and
+/// the victim key stays alive. The attacker `alice` discloses her own key and
+/// signs with it, naming the victim `key_a`'s thumbprint.
+///
+/// Behavior: green on both servers, but by DIFFERENT paths -- the reworked
+/// server rejects at the BIND (`H(alice pub) != key_a tmb`, 400) before any
+/// signature check; the merged server ignores the disclosed key, resolves
+/// `key_a`'s real pub from the (unpoisoned) index, and rejects when alice's
+/// signature fails against it (401). This pins that the bind alone refuses a
+/// mismatched disclosed key.
+#[tokio::test]
+async fn forge_disclosing_non_victim_key_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "nr-forge-bind";
+    bootstrap_golden_key_a(&state, &pool, pid).await;
+
+    let coz = revoke_body(
+        &pool,
+        &tmb_b64(&pool, "key_a"),
+        "alice",
+        Some("alice"),
+        serde_json::json!(RVK),
+    );
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_rejected(
+        status,
+        &json,
+        "revoke naming the victim tmb but disclosing a non-victim key",
+    );
+
+    // The victim's real key is untouched.
+    assert_eq!(
+        login_status(&state, &pool, "key_a", pid).await,
+        StatusCode::OK,
+        "the victim key must stay alive after the mismatched-disclosure forge is rejected"
+    );
+}
+
+/// FORGE STAYS CLOSED (signature path): a revoke disclosing the victim's REAL
+/// key (public, so anyone can present it) but signed by an ATTACKER key is
+/// rejected, and the victim key stays alive. `golden` (a valid sibling key of
+/// the same principal) signs a revoke naming `key_a` and discloses `key_a`'s
+/// real pub -- the disclosure binds, but the signature does not verify against
+/// it. This single signature check IS the self-signed-only rule; even a sibling
+/// key cannot revoke another.
+///
+/// Behavior: green on both servers (the merged server rejects the non-self
+/// signature against the honest indexed pub; the reworked server rejects it
+/// against the disclosed pub, 401). Pins that binding the disclosure does not
+/// weaken the self-signed-only requirement.
+#[tokio::test]
+async fn forge_disclosing_victim_key_signed_by_other_is_rejected() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "nr-forge-sig";
+    bootstrap_golden_key_a(&state, &pool, pid).await;
+
+    let coz = revoke_body(
+        &pool,
+        &tmb_b64(&pool, "key_a"),
+        "golden",
+        Some("key_a"),
+        serde_json::json!(RVK),
+    );
+    let (status, json) = post_revoke(&state, coz).await;
+    assert_rejected(
+        status,
+        &json,
+        "revoke disclosing the victim key but signed by a different key",
+    );
+
+    assert_eq!(
+        login_status(&state, &pool, "key_a", pid).await,
+        StatusCode::OK,
+        "the victim key must stay alive after the wrong-signer forge is rejected"
+    );
+}
+
+/// AVAILABILITY (the load-bearing behavioral change): a poisoned index entry
+/// must NOT block the victim's own emergency revoke. An unauthenticated
+/// attacker poisons `index[victim tmb] -> attacker pub`; the victim then revokes
+/// their OWN key, disclosing their real key and self-signing. Because the
+/// reworked server verifies against the DISCLOSED key (never the index content),
+/// the victim's revoke depends only on material the victim controls and MUST
+/// SUCCEED.
+///
+/// Red baseline (merged, index-based server): the merged `interpret` resolves
+/// `tmb -> pub` from the poisoned index (attacker pub), recomputes
+/// `H(attacker pub) != victim tmb`, and REJECTS (400) -- the merged
+/// point-of-use recheck, fed poisoned content, blocks the victim's own
+/// legitimate revoke. So `assert!(rstatus.is_success())` fails against the
+/// merged server, and it fails precisely because the poisoned index entry
+/// blocks the victim (the poison-took precondition -- `index[victim] ==
+/// attacker pub` -- is asserted first and holds, so the block is genuine, not a
+/// setup miss). This is the §6.4 emergency-path DoS the rework closes.
+#[tokio::test]
+async fn poisoned_index_does_not_block_victims_own_revoke() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+
+    // Victim: a normal principal (golden genesis adds key_a). key_a's real
+    // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
+    let victim_pid = "nr-avail-victim";
+    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    let victim_tmb = tmb_b64(&pool, "key_a");
+
+    // Attack: overwrite index[V] -> attacker (alice) pub via a fresh attacker
+    // principal's unauthenticated poison genesis push. `alice` is a distinct
+    // key whose private half the attacker holds.
+    let body =
+        poison_genesis_push_body(&pool, "nr-avail-attacker", "bob", "alice", &victim_tmb, RVK);
+    let (pstatus, pjson) = post_push(&state, body).await;
+    assert_eq!(
+        pstatus,
+        StatusCode::CREATED,
+        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
+         it exploits is out of this node's scope: {pjson:?}"
+    );
+
+    // Poison-took precondition: the global index now returns the ATTACKER pub
+    // for the victim's thumbprint. Asserting it makes the DoS genuine (not a
+    // vacuous no-poison pass).
+    let poisoned = state
+        .engine
+        .indexer()
+        .get_key(&victim_tmb)
+        .await
+        .expect("index lookup succeeds")
+        .expect("V is still indexed after the poison push");
+    assert_eq!(
+        poisoned.public_key,
+        pool.get("alice").expect("alice").pub_key,
+        "index[V] must now resolve to the attacker's pub -- the DoS precondition"
+    );
+
+    // The victim's OWN emergency revoke: discloses key_a's REAL key, self-signed
+    // by key_a. It must succeed despite the poisoned index.
+    let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
+    let (rstatus, rjson) = post_revoke(&state, coz).await;
+    assert!(
+        rstatus.is_success(),
+        "the victim's own self-signed revoke (disclosing its real key) must SUCCEED despite the \
+         poisoned index entry -- a poisoned index must never block the §6.4 emergency path, got \
+         {rstatus}: {rjson:?}"
+    );
+
+    // The revoke was interpreted against the victim's own thumbprint.
+    let payload = common::envelope_payload(&rjson);
+    assert_eq!(
+        payload["revoked_tmb"].as_str(),
+        Some(victim_tmb.as_str()),
+        "the accepted revoke must name the victim's own thumbprint: {rjson:?}"
+    );
+}
+
+// ========================================================================
+// 3 -- Reject malformed / mis-signed / unknown revokes, each a distinct 4xx
 // ========================================================================
 
 /// Each out-of-range `rvk` (zero, negative, ≥ 2^53-1, non-integer) is a
 /// distinct rejection: `rvk` must be a positive integer below 2^53-1.
 ///
-/// Red baseline: the bare-coz shape is unsupported, so each case fails to
-/// route into the revoke logic that would distinctly reject it.
+/// Behavior: green on both servers (the `rvk` bound is unchanged); the revoke
+/// discloses its key so it reaches the `rvk` check.
 #[tokio::test]
 async fn rejects_malformed_rvk() {
     let (state, _dir) = fresh_keyed_state();
@@ -502,9 +752,13 @@ async fn rejects_malformed_rvk() {
     }
 }
 
-/// A revoke whose signature does not verify against its named key is rejected.
+/// A revoke whose signature does not verify against its disclosed key is
+/// rejected.
 ///
-/// Red baseline: the bare-coz shape is unsupported.
+/// Behavior: green on both servers -- the reworked server verifies the
+/// corrupted signature against the disclosed key (401); the merged server
+/// against the indexed key. The disclosed key is intact; only the signature is
+/// corrupted.
 #[tokio::test]
 async fn rejects_bad_signature() {
     let (state, _dir) = fresh_keyed_state();
@@ -517,9 +771,10 @@ async fn rejects_bad_signature() {
     assert_rejected(status, &json, "corrupted signature");
 }
 
-/// A coz whose `typ` is not `key/revoke` is not a naked revoke and is rejected.
+/// A coz whose `typ` is not `key/revoke` is not a naked revoke and is rejected,
+/// even when it discloses a valid key.
 ///
-/// Red baseline: the bare-coz shape is unsupported.
+/// Behavior: green on both servers (the `typ` gate is unchanged).
 #[tokio::test]
 async fn rejects_wrong_typ() {
     let (state, _dir) = fresh_keyed_state();
@@ -535,48 +790,20 @@ async fn rejects_wrong_typ() {
         "tmb": signer.compute_tmb_b64().expect("tmb"),
         "typ": "cyphr.me/cyphr/key/create",
     });
-    let coz = sign_coz(&pool, "key_a", pay);
+    let coz = sign_coz_disclosed(&pool, "key_a", pay, "key_a");
     let (status, json) = post_revoke(&state, coz).await;
     assert_rejected(status, &json, "typ is not key/revoke");
 }
 
-/// A revoke signed by a DIFFERENT key than it names is rejected: the signature
-/// does not verify against the named key's public key. This single check IS
-/// the self-signed-only rule -- there is no third-party "recorded" path. Here
-/// `golden` (a valid, indexed sibling key of the same principal) signs a
-/// revoke naming `key_a`; even a sibling key cannot revoke another.
+/// A revoke for a `tmb` this server never indexed is rejected by the PRESENCE
+/// fence: the global key index has no entry for it, so the revoke is refused
+/// even with a valid disclosed self-signed key (the head-ratified conservative
+/// bound -- unknown keys are refused). `alice` is a valid pool key never pushed
+/// to this server, self-signing and disclosing its own revoke.
 ///
-/// Red baseline: the bare-coz shape is unsupported. (Once the shape is
-/// accepted, the resolve-tmb-then-verify path rejects the non-self signature.)
-#[tokio::test]
-async fn rejects_revoke_signed_by_different_key() {
-    let (state, _dir) = fresh_keyed_state();
-    let pool = common::load_pool();
-    let pid = "nr-not-self";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
-
-    // `golden` signs, but the coz names `key_a`: the signature will not verify
-    // against key_a's public key.
-    let coz = revoke_coz_named(
-        &pool,
-        &tmb_b64(&pool, "key_a"),
-        "golden",
-        serde_json::json!(RVK),
-    );
-    let (status, json) = post_revoke(&state, coz).await;
-    assert_rejected(
-        status,
-        &json,
-        "revoke signed by a key other than the one it names",
-    );
-}
-
-/// A revoke for a `tmb` this server never indexed is rejected: the global key
-/// lookup returns nothing to verify against. `alice` is a valid pool key never
-/// pushed to this server, self-signing its own revoke.
-///
-/// Red baseline: the bare-coz shape is unsupported. (Once accepted, the global
-/// `get_key(alice)` miss rejects it.)
+/// Behavior: green on both servers (both refuse an unindexed `tmb`); the
+/// reworked server refuses at the presence fence, the merged server at the
+/// key-index miss.
 #[tokio::test]
 async fn rejects_unknown_tmb() {
     let (state, _dir) = fresh_keyed_state();
@@ -590,14 +817,14 @@ async fn rejects_unknown_tmb() {
 }
 
 // ========================================================================
-// 3 -- Pre-signed and idempotent acceptance (timestamp not validated)
+// 4 -- Pre-signed and idempotent acceptance (timestamp not validated)
 // ========================================================================
 
 /// A pre-signed revoke with `rvk`=1 is accepted: the confirmed model requires
 /// only that `rvk` be a positive integer below 2^53-1 and does NOT validate
 /// the timestamp value.
 ///
-/// Red baseline: the bare-coz shape is unsupported.
+/// Behavior: green on both servers (timestamp still unvalidated).
 #[tokio::test]
 async fn accepts_presigned_rvk_one() {
     let (state, _dir) = fresh_keyed_state();
@@ -617,8 +844,7 @@ async fn accepts_presigned_rvk_one() {
 /// Re-revoking an already-dead key is an accepted no-op: `record` is
 /// idempotent by thumbprint.
 ///
-/// Red baseline: the bare-coz shape is unsupported (the first revoke already
-/// fails, so the second cannot be a no-op over an existing record).
+/// Behavior: green on both servers (idempotent record is unchanged).
 #[tokio::test]
 async fn idempotent_re_revoke() {
     let (state, _dir) = fresh_keyed_state();
@@ -642,7 +868,7 @@ async fn idempotent_re_revoke() {
 }
 
 // ========================================================================
-// 4 -- Durability: the death record survives an AppState rebuild AND a reindex
+// 5 -- Durability: the death record survives an AppState rebuild AND a reindex
 // ========================================================================
 
 /// After a naked revoke, the resulting refusal survives BOTH a full `AppState`
@@ -651,9 +877,8 @@ async fn idempotent_re_revoke() {
 /// rebuildable index. Observed through the login gate: the revoked key stays
 /// refused across both.
 ///
-/// Red baseline: the revoke is not accepted (bare-coz shape unsupported), so
-/// after restart+reindex the key still logs in -- the record never existed to
-/// survive.
+/// Behavior: green on both servers (durability is unchanged); the accept
+/// precondition uses the disclosed-key shape.
 #[tokio::test]
 async fn death_record_survives_restart_and_reindex() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -698,15 +923,14 @@ async fn death_record_survives_restart_and_reindex() {
 }
 
 // ========================================================================
-// 5 -- Login refusal + key-scoping: the dead key is refused, siblings survive
+// 6 -- Login refusal + key-scoping: the dead key is refused, siblings survive
 // ========================================================================
 
 /// After a self-signed naked revoke of `key_a`, `key_a` is refused at login
 /// while `golden` (untouched, still active on-chain) still logs in -- the
 /// refusal is scoped to the revoked key, not the whole principal.
 ///
-/// Red baseline: the revoke is not accepted, so `key_a` still logs in (200) --
-/// exactly what the assertion says must become 401.
+/// Behavior: green on both servers (login refusal + key-scoping unchanged).
 #[tokio::test]
 async fn revoked_key_refused_at_login_sibling_survives() {
     let (state, _dir) = fresh_keyed_state();
@@ -741,7 +965,7 @@ async fn revoked_key_refused_at_login_sibling_survives() {
 }
 
 // ========================================================================
-// 6 -- Global death across capabilities: the dead key is refused at PUSH too
+// 7 -- Global death across capabilities: the dead key is refused at PUSH too
 // ========================================================================
 
 /// After revoking `key_a`, a `/push` whose follow-up commit is SIGNED BY
@@ -750,9 +974,8 @@ async fn revoked_key_refused_at_login_sibling_survives() {
 /// 2xx accept and never a 409 conflict (which would be a false green from a
 /// stale-predecessor collision rather than the death gate).
 ///
-/// Red baseline: `/push` has no death-check, so a commit signed by the
-/// (not-actually-revoked, bare-coz-unsupported) key_a is accepted (201) --
-/// exactly what must become a refusal.
+/// Behavior: green on both servers (the push death gate is unchanged); the
+/// accept precondition uses the disclosed-key shape.
 #[tokio::test]
 async fn revoked_key_refused_at_push() {
     let (state, _dir) = fresh_keyed_state();
@@ -787,10 +1010,7 @@ async fn revoked_key_refused_at_push() {
 /// normally. The push-side dual of the login key-scoping test; it pins that a
 /// push death-check must not over-reach past the revoked thumbprint.
 ///
-/// Red baseline: the revoke is not accepted (bare-coz shape unsupported), so
-/// the assertion that it must be accepted fails before the sibling push runs.
-/// Once the revoke path lands, an over-broad push death-check that refused the
-/// live `golden` would fail the final assertion.
+/// Behavior: green on both servers (push death-check is key-scoped, unchanged).
 #[tokio::test]
 async fn sibling_key_still_pushes_after_revoke() {
     let (state, _dir) = fresh_keyed_state();
@@ -817,7 +1037,7 @@ async fn sibling_key_still_pushes_after_revoke() {
 }
 
 // ========================================================================
-// 7 -- Global death across principals: one revoke kills the key everywhere
+// 8 -- Global death across principals: one revoke kills the key everywhere
 // ========================================================================
 
 /// A key is dead GLOBALLY by thumbprint: one naked revoke (which names no
@@ -830,8 +1050,7 @@ async fn sibling_key_still_pushes_after_revoke() {
 /// superseded principal-scoped one: a per-principal death-set would refuse
 /// `key_a` on only the (unnamed) principal, leaving the other's `key_a` live.
 ///
-/// Red baseline: the revoke is not accepted (bare-coz shape unsupported), so
-/// both principals' `key_a` still log in.
+/// Behavior: green on both servers (global-by-thumbprint death unchanged).
 #[tokio::test]
 async fn revoked_key_dead_globally_across_principals() {
     let (state, _dir) = fresh_keyed_state();
@@ -889,15 +1108,16 @@ async fn revoked_key_dead_globally_across_principals() {
 }
 
 // ========================================================================
-// 8 -- PR is unchanged: a naked revoke mutates no chain root (§6.4)
+// 9 -- PR is unchanged: a naked revoke mutates no chain root (§6.4)
 // ========================================================================
 
 /// The principal's tip roots (`pr`, `sr`, `ar`, `cr`, `commit_count`) are
 /// byte-identical before and after a naked revoke -- an uncommitted naked
 /// revoke does not mutate PR.
 ///
-/// Red baseline: the revoke is not accepted, so the accept assertion (bound to
-/// the PR-unchanged property so the property is not proven vacuously) fails.
+/// Behavior: green on both servers (a naked revoke still mutates no PR); the
+/// accept assertion (bound to the PR-unchanged property so the property is not
+/// proven vacuously) uses the disclosed-key shape.
 #[tokio::test]
 async fn naked_revoke_does_not_mutate_pr() {
     let (state, _dir) = fresh_keyed_state();
@@ -935,16 +1155,16 @@ async fn tip_roots(state: &Arc<AppState>, pid: &str) -> serde_json::Value {
 }
 
 // ========================================================================
-// 9 -- A keyless server accepts and interprets a naked revoke
+// 10 -- A keyless server accepts and interprets a naked revoke
 // ========================================================================
 
 /// A keyless server (no signing identity of its own) still accepts and
-/// interprets a naked revoke: verification is against the *engine's* global
-/// key index and the death-set, neither of which needs the server's signing
-/// identity. Observed directly at the endpoint (2xx), since a keyless server
-/// has no login route configured.
+/// interprets a naked revoke: verification is against the disclosed key, the
+/// engine's global key index (presence), and the death-set, none of which needs
+/// the server's signing identity. Observed directly at the endpoint (2xx),
+/// since a keyless server has no login route configured.
 ///
-/// Red baseline: the bare-coz shape is unsupported.
+/// Behavior: green on both servers (a keyless server still interprets a revoke).
 #[tokio::test]
 async fn keyless_server_accepts_naked_revoke() {
     let (state, _dir) = common::keyless_server();
@@ -961,16 +1181,19 @@ async fn keyless_server_accepts_naked_revoke() {
 }
 
 // ========================================================================
-// 10 -- The committed golden vector round-trips through the ingest path
+// 11 -- The committed golden vector round-trips through the ingest path
 // ========================================================================
 
-/// The pinned golden naked-revoke coz (self-signed by `key_a`, valid `rvk`) is
-/// accepted by the ingest path. A silent drift in the wire shape the server
-/// accepts breaks this loudly. The fixture is committed alongside this suite at
-/// `tests/golden/naked_revoke_valid.json`, already in the bare-coz request
-/// shape; its signature verifies against `key_a`.
+/// The pinned golden naked-revoke coz (self-signed by `key_a`, disclosing
+/// `key_a`'s key, valid `rvk`) is accepted by the ingest path. A silent drift in
+/// the wire shape the server accepts breaks this loudly. The fixture is
+/// committed alongside this suite at `tests/golden/naked_revoke_valid.json`, in
+/// the disclosed-key request shape; its signature verifies against `key_a` and
+/// its disclosed `pub` hashes to its `tmb`.
 ///
-/// Red baseline: the bare-coz shape is unsupported.
+/// Behavior: green on both servers -- the merged server ignores the disclosed
+/// `key` and resolves `key_a` from the index; the reworked server binds and
+/// verifies against the disclosed `key`.
 #[tokio::test]
 async fn golden_naked_revoke_vector_is_accepted() {
     let (state, _dir) = fresh_keyed_state();
@@ -980,12 +1203,18 @@ async fn golden_naked_revoke_vector_is_accepted() {
 
     let coz: serde_json::Value =
         serde_json::from_str(&golden("naked_revoke_valid.json")).expect("parse golden vector");
-    // The fixture is self-consistent: a self-signed key/revoke naming key_a.
+    // The fixture is self-consistent: a self-signed key/revoke naming key_a and
+    // disclosing key_a's key.
     assert_eq!(coz["pay"]["typ"], "cyphr.me/cyphr/key/revoke");
     assert_eq!(
         coz["pay"]["tmb"].as_str(),
         Some(tmb_b64(&pool, "key_a").as_str()),
         "the golden fixture must name key_a's thumbprint (self-signed)"
+    );
+    assert_eq!(
+        coz["key"]["pub"].as_str(),
+        Some(pool.get("key_a").expect("key_a").pub_key.as_str()),
+        "the golden fixture must disclose key_a's real public key"
     );
 
     let (status, json) = post_revoke(&state, coz).await;
@@ -1006,7 +1235,7 @@ fn golden(name: &str) -> String {
 }
 
 // ========================================================================
-// 11 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
+// 12 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
 // ========================================================================
 
 /// Build a fresh ATTACKER principal's genesis push whose single added key is
@@ -1021,7 +1250,7 @@ fn golden(name: &str) -> String {
 /// `attacker_key_name`'s private key and will sign the forged revoke with it.
 ///
 /// (The key-introduction `tmb == H(pub)` gap this exploits is broader than
-/// revoke and out of this node's scope; the point-of-use recompute in
+/// revoke and out of this node's scope; the disclosed-key verification in
 /// `interpret` is what closes the revoke exploit.)
 fn poison_genesis_push_body(
     pool: &Pool,
@@ -1143,25 +1372,20 @@ fn poison_genesis_push_body(
 
 /// The BLOCKING R1 exploit, mounted end-to-end: an unauthenticated attacker
 /// poisons the global key index so the victim's thumbprint V resolves to the
-/// ATTACKER's public key, then forges a naked revoke of V signed by the
-/// attacker's key. The forge MUST be rejected and the victim's real key MUST
-/// stay alive.
+/// ATTACKER's public key, then forges a naked revoke of V. Under the
+/// disclosed-key model the attacker must disclose a `key`; disclosing their own
+/// key fails the BIND (`H(attacker pub) != V`). The forge MUST be rejected and
+/// the victim's real key MUST stay alive.
 ///
-/// Red baseline (current impl -- `interpret` trusts the indexed pubkey with no
-/// recompute): `get_key(V)` returns the attacker pub, the attacker's signature
-/// verifies against it, the revoke is ACCEPTED, and V is recorded dead -- so
-/// the victim's real key is killed and can no longer log in. Both the
-/// "rejected" and the "still alive" assertions therefore fail against today's
-/// code, and they fail because the attack SUCCEEDED (V got killed), not because
-/// of any setup or compile error -- the poison-took precondition (push 201 +
-/// `index[V]` == attacker pub) is asserted first and holds on both the current
-/// and the fixed impl (key introduction is out of scope for the fix).
+/// Behavior: green on both servers -- the merged server rejects via its
+/// point-of-use recheck (`H(indexed attacker pub) != V`, 400); the reworked
+/// server rejects at the bind against the DISCLOSED key (400). The poison-took
+/// precondition (push 201 + `index[V]` == attacker pub) is asserted first and
+/// holds on both servers, so the rejection is genuine, not a setup miss.
 ///
-/// This is distinct from `rejects_revoke_signed_by_different_key`: that test
-/// never poisons the index, so its rejection rests on the honest `index[V]` =
-/// victim pub. Here `index[V]` is the attacker pub, so the signature DOES
-/// verify against the indexed key -- only a recompute of `H(pub) == tmb` at the
-/// point of use rejects it.
+/// This is distinct from `forge_disclosing_non_victim_key_is_rejected`: that
+/// test never poisons the index. Here `index[V]` is the attacker pub, proving
+/// that even a poisoned index cannot turn the forge into an accept.
 #[tokio::test]
 async fn index_poisoning_naked_revoke_forge_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
@@ -1215,15 +1439,23 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
         "index[V] must now resolve to the attacker's pub -- the attack precondition"
     );
 
-    // Attack step 2: forge a naked revoke of V, signed with the ATTACKER key.
-    let coz = revoke_coz_named(&pool, &victim_tmb, "alice", serde_json::json!(RVK));
+    // Attack step 2: forge a naked revoke of V, signed with and disclosing the
+    // ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
+    // rejects it.
+    let coz = revoke_body(
+        &pool,
+        &victim_tmb,
+        "alice",
+        Some("alice"),
+        serde_json::json!(RVK),
+    );
     let (rstatus, rjson) = post_revoke(&state, coz).await;
 
     // The forged revoke must be rejected...
     assert_rejected(
         rstatus,
         &rjson,
-        "index-poisoning revoke forge (signature verifies only against the poisoned index entry)",
+        "index-poisoning revoke forge (disclosed attacker key does not hash to the victim tmb)",
     );
     // ...and the victim's real key must survive it -- still logs in.
     assert_eq!(
@@ -1234,7 +1466,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 }
 
 // ========================================================================
-// 12 -- HARDENING R-size: bound the revoke coz to coz's RVK_MAX_SIZE
+// 13 -- HARDENING R-size: bound the revoke coz to coz's RVK_MAX_SIZE
 // ========================================================================
 
 /// A self-signed naked revoke whose body exceeds coz's `RVK_MAX_SIZE` (2048
@@ -1242,10 +1474,9 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 /// large `pad` field), so it is a semantically valid revoke that only the size
 /// bound rejects -- never a parse or signature failure.
 ///
-/// Red baseline (current impl -- no size bound at the route or in `interpret`):
-/// the padded revoke parses, its `typ`/`rvk` are valid, `tmb` resolves to
-/// key_a, and the self-signature verifies, so the revoke is ACCEPTED (2xx).
-/// `assert_rejected` therefore fails against today's code.
+/// Behavior: green on both servers (the `RVK_MAX_SIZE` bound over the serialized
+/// payload is unchanged); the revoke discloses key_a's key so it reaches the
+/// size check.
 #[tokio::test]
 async fn oversize_naked_revoke_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
@@ -1265,7 +1496,7 @@ async fn oversize_naked_revoke_is_rejected() {
         "tmb": tmb_b64(&pool, "key_a"),
         "typ": "cyphr.me/cyphr/key/revoke",
     });
-    let coz = sign_coz(&pool, "key_a", pay);
+    let coz = sign_coz_disclosed(&pool, "key_a", pay, "key_a");
     assert!(
         coz.to_string().len() > coz::RVK_MAX_SIZE,
         "the test body must exceed RVK_MAX_SIZE to exercise the bound"
@@ -1280,7 +1511,7 @@ async fn oversize_naked_revoke_is_rejected() {
 }
 
 // ========================================================================
-// 13 -- HARDENING R2: the death record is durable across a store reopen
+// 14 -- HARDENING R2: the death record is durable across a store reopen
 // ========================================================================
 
 /// A recorded death survives a fresh `ObservationStore` opened over the same

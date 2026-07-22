@@ -6,5 +6,9 @@
     "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
     "typ": "cyphr.me/cyphr/key/revoke"
   },
-  "sig": "R7CxRQfpRLbqDkHDKCN0gl_0y3DvvM3LtFJdIAOIr4BV5IaqTdWrR-yjXtqW7ahImaUH2-jgbczwPifDq6bpzg"
+  "sig": "R7CxRQfpRLbqDkHDKCN0gl_0y3DvvM3LtFJdIAOIr4BV5IaqTdWrR-yjXtqW7ahImaUH2-jgbczwPifDq6bpzg",
+  "key": {
+    "alg": "ES256",
+    "pub": "LgM8w00BEbGdNlbugzQYDaMuvq9PsJpY3bK8B9yTsxy01JwSKIt84A6whEx8ZVqtAoqQ1xrPAzFwPPbfecN_vQ"
+  }
 }
