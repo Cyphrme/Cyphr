@@ -389,31 +389,29 @@ pub async fn push(
 /// (SPEC §6.4).
 ///
 /// A naked revoke is an uncommitted, self-signed `key/revoke` coz: the key
-/// named by the coz's `tmb` signs its own revoke. The request body IS the
-/// bare coz (mirroring `/auth/login`), naming no principal. This handler
-/// verifies it replay-free against the engine's global key index (via
-/// [`crate::revoke::interpret`]) -- no principal load, no chain replay -- and
-/// records the revoked thumbprint in the durable global death-set. It never
-/// touches any principal's chain (a naked revoke mutates no PR). Thereafter
-/// the key is refused GLOBALLY, for every capability and every principal that
-/// holds it (see [`crate::auth::login`] and [`push`]).
-#[tracing::instrument(skip(state, coz))]
+/// named by the coz's `tmb` signs its own revoke. The request body is the
+/// signed coz PLUS its disclosed public key (`{pay, sig, key}`), naming no
+/// principal. This handler verifies it replay-free against the DISCLOSED key
+/// (via [`crate::revoke::interpret`]) -- no principal load, no chain replay,
+/// and never reading the index's content -- and records the full self-signing
+/// envelope in the durable global death-set as independently re-verifiable
+/// evidence. It never touches any principal's chain (a naked revoke mutates no
+/// PR). Thereafter the key is refused GLOBALLY, for every capability and every
+/// principal that holds it (see [`crate::auth::login`] and [`push`]).
+#[tracing::instrument(skip(state, envelope))]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
-    Json(coz): Json<coz::CozJson>,
+    Json(envelope): Json<crate::revoke::NakedRevokeEnvelope>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let verified = crate::revoke::interpret(&coz, state.engine.indexer()).await?;
+    let verified = crate::revoke::interpret(&envelope, state.engine.indexer()).await?;
 
-    // Retain the coz as received so the claim can be surfaced later.
-    let observed_coz = serde_json::json!({
-        "pay": coz.pay,
-        "sig": Base64UrlUnpadded::encode_string(&coz.sig),
-    });
+    // Store the full `{pay, sig, key}` envelope: self-contained evidence any
+    // later reader can re-verify with no index (Zami #115 verification kit).
     state
         .observations
-        .record(&verified.revoked_tmb, observed_coz)
+        .record(&verified.revoked_tmb, verified.evidence)
         .await
         .map_err(AppError::observation)?;
 

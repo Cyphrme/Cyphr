@@ -1,36 +1,71 @@
 //! Witness ingest of an uncommitted `key/revoke` coz -- a "naked revoke"
-//! (SPEC.md §6.4, confirmed model).
+//! (SPEC.md §6.4, confirmed model) under the **disclosed-key** model.
 //!
 //! A naked revoke is a `key/revoke` coz signed *outside* any commit. Under
 //! the confirmed model a witness accepts one iff it is **self-signed**: the
-//! key named by the coz's `tmb` signs its own revoke. Verification is O(1)
-//! and replay-free -- resolve `tmb -> pubkey` through the engine's global key
-//! index and check the one signature -- with no principal load and no chain
-//! replay. A revoke signed by any key OTHER than the one it names fails the
-//! signature check; that single check IS the self-signed-only rule, so there
-//! is no third-party path.
+//! key named by the coz's `tmb` signs its own revoke. The request DISCLOSES
+//! that public key; verification recomputes `tmb = H(disclosed pub)` and checks
+//! the signature against the SAME disclosed key. A revoke signed by any key
+//! OTHER than the one it names fails the signature check, and a disclosed key
+//! that does not hash to the named `tmb` fails the bind -- together they are the
+//! self-signed-only rule, so there is no third-party path.
 //!
-//! Resolving `tmb -> pubkey` here does NOT reintroduce the global `tmb` index
-//! `auth::login` forbids: that rule bans inferring a *principal* from a `tmb`
-//! during authentication. Here the lookup only recovers the public key to
-//! verify a self-signature (`tmb = H(pubkey)` is a cryptographic binding --
-//! one pubkey per `tmb`); no principal is inferred, and the result is an
-//! additive refusal, never an auth grant.
+//! The global key index is a CACHE, never an authority: its CONTENT is never
+//! dereferenced in this verification path. Its only remaining role is a
+//! **presence fence** -- the named `tmb` must be a key the server has indexed --
+//! which bounds the death-set to keys the server has seen (anti-spam) without
+//! ever reading the indexed value. Because verification depends only on the
+//! material the client discloses, a poisoned index entry (an attacker's pub
+//! stored under a victim's `tmb`) cannot block the victim's own emergency
+//! revoke -- the §6.4 availability property.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_storage::index::Indexer;
+use serde::Deserialize;
 
 use crate::error::AppError;
 
-/// A verified naked revoke: its self-signature checked out against the named
-/// key's own indexed public key.
+/// A naked-revoke request in the disclosed-key wire shape: the signed
+/// `key/revoke` coz PLUS the public key it names. `key` is REQUIRED; it is
+/// typed `Option` only so an absent key yields a controlled 400 through
+/// [`AppError`] rather than an axum extractor rejection whose body is not the
+/// `{"error": ..}` shape clients parse.
+#[derive(Debug, Deserialize)]
+pub struct NakedRevokeEnvelope {
+    /// The `key/revoke` payload, as raw JSON (signed verbatim).
+    pub pay: serde_json::Value,
+    /// The detached signature over `pay` (base64url in JSON).
+    #[serde(with = "coz::b64")]
+    pub sig: Vec<u8>,
+    /// The disclosed public key the revoke names. Absent => the request is
+    /// rejected (a naked revoke must disclose its key).
+    pub key: Option<DisclosedKey>,
+}
+
+/// The disclosed public key of a naked revoke, in the wire shape the rest of
+/// the protocol uses (`{ "alg", "pub" }`, `pub` base64url).
+#[derive(Debug, Deserialize)]
+pub struct DisclosedKey {
+    /// The key's algorithm (e.g. `ES256`).
+    pub alg: String,
+    /// The public key bytes (base64url in JSON, wire field `pub`).
+    #[serde(rename = "pub", with = "coz::b64")]
+    pub pub_key: Vec<u8>,
+}
+
+/// A verified naked revoke: its self-signature checked out against the
+/// disclosed key, which hashes back to the named `tmb`.
 #[derive(Debug)]
 pub struct VerifiedRevoke {
     /// The revoked key's thumbprint (the coz's `tmb`), now dead globally.
     pub revoked_tmb: Thumbprint,
     /// The revocation timestamp the coz declared.
     pub rvk: i64,
+    /// The full `{pay, sig, key}` envelope as verified -- self-contained,
+    /// independently re-verifiable evidence to store in the death-set (needs no
+    /// index to re-check).
+    pub evidence: serde_json::Value,
 }
 
 /// Whether `typ` is a `key/revoke` under some authority segment, e.g.
@@ -43,32 +78,39 @@ fn is_revoke_typ(typ: &str) -> bool {
     )
 }
 
-/// Parse, validate, and verify a naked-revoke coz against the engine's global
-/// key index -- replay-free and self-signed-only.
+/// Parse, validate, and verify a naked-revoke request against its DISCLOSED
+/// key -- replay-free, self-signed-only, and independent of the index's
+/// content.
 ///
 /// Verification order, each a distinct rejection:
-/// 1. the payload parses and its `typ` is a `key/revoke`;
-/// 2. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
+/// 1. the body discloses a `key` (else 400 -- a naked revoke must disclose it);
+/// 2. the payload parses and its `typ` is a `key/revoke`;
+/// 3. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
 ///    NOT checked, so a pre-signed `rvk`=1 is valid;
-/// 3. the revoked `tmb` resolves to a public key the engine has indexed -- `None` (a key this
-///    server never saw) is a rejection;
-/// 4. the indexed public key hashes back to the named `tmb` (`tmb = H(pub)`): the global index
-///    trusts the client-declared `tmb`, so this point-of-use recheck rejects a poisoned entry (an
-///    attacker's pub stored under a victim's `tmb`) before the key is trusted;
-/// 5. the signature verifies against that public key. A revoke signed by any key OTHER than the one
-///    `tmb` names fails here, since the signature will not verify against `tmb`'s public key -- the
-///    entire self-signed-only rule.
+/// 4. the serialized payload is within `RVK_MAX_SIZE`;
+/// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed value's
+///    CONTENT is never read; `None` (a key this server never saw) is a rejection that bounds the
+///    death-set to seen keys;
+/// 6. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the disclosed
+///    key to the thumbprint before it is trusted;
+/// 7. VERIFY: the signature verifies against the DISCLOSED key. A revoke signed by any key OTHER
+///    than the one `tmb` names fails here -- the entire self-signed-only rule.
 ///
-/// A malformed payload, bad `rvk`, wrong `typ`, an unknown `tmb`, or an indexed
-/// key that does not hash to its `tmb` is a 400; a signature that does not
-/// verify is a 401.
+/// A missing key, malformed payload, bad `rvk`, wrong `typ`, an unknown `tmb`,
+/// or a disclosed key that does not hash to its `tmb` is a 400; a signature that
+/// does not verify is a 401; an index infrastructure failure is a 500.
 pub async fn interpret<I: Indexer>(
-    coz: &coz::CozJson,
+    envelope: &NakedRevokeEnvelope,
     indexer: &I,
 ) -> Result<VerifiedRevoke, AppError> {
-    let pay_bytes = serde_json::to_vec(&coz.pay)
+    let key = envelope
+        .key
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("naked revoke must disclose its public key"))?;
+
+    let pay_bytes = serde_json::to_vec(&envelope.pay)
         .map_err(|e| AppError::bad_request(format!("revoke payload not serializable: {e}")))?;
-    let pay: coz::Pay = serde_json::from_value(coz.pay.clone())
+    let pay: coz::Pay = serde_json::from_value(envelope.pay.clone())
         .map_err(|e| AppError::bad_request(format!("malformed revoke payload: {e}")))?;
 
     let typ = pay.typ.as_deref().unwrap_or_default();
@@ -100,52 +142,57 @@ pub async fn interpret<I: Indexer>(
         .ok_or_else(|| AppError::bad_request("revoke payload names no key (tmb)"))?;
     let tmb_b64 = Base64UrlUnpadded::encode_string(tmb.as_bytes());
 
-    // Resolve tmb -> pubkey through the engine's global key index (O(1), no
-    // principal load). A tmb this server never indexed cannot be verified.
-    let key = indexer
-        .get_key(&tmb_b64)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "naked-revoke key-index lookup failed");
-            AppError::internal("key index lookup failed")
-        })?
-        .ok_or_else(|| AppError::bad_request("revoke names a key this server has not indexed"))?;
-
-    let pub_bytes = Base64UrlUnpadded::decode_vec(&key.public_key).map_err(|e| {
-        tracing::error!(error = %e, "indexed public key is not base64url");
-        AppError::internal("indexed public key is malformed")
+    // PRESENCE FENCE: the named `tmb` must be a key the engine has indexed. This
+    // is the index's ONLY remaining role -- presence, never content. The
+    // returned value is deliberately never read: verification below runs
+    // entirely off the DISCLOSED key, so a poisoned index entry (an attacker's
+    // pub under a victim's `tmb`) still passes this fence but cannot influence
+    // the outcome. `None` bounds the death-set to keys the server has seen.
+    let indexed = indexer.get_key(&tmb_b64).await.map_err(|e| {
+        tracing::error!(error = %e, "naked-revoke presence-fence lookup failed");
+        AppError::internal("key index lookup failed")
     })?;
-
-    // Re-establish `tmb = H(pub)` at the point of use, BEFORE trusting the key.
-    // The global index trusts the client-declared `tmb` and overwrites on
-    // reuse, so a poisoned entry -- an attacker's public key stored under a
-    // victim's thumbprint -- would otherwise let the attacker's signature
-    // verify against the indexed key and kill the victim's key. Requiring the
-    // indexed pub to hash back to the named `tmb` rejects any such entry: the
-    // only pub that satisfies it is the victim's real key, a preimage the
-    // attacker cannot forge. The index is a convenience; `tmb = H(pub)` is the
-    // authority.
-    let recomputed =
-        coz::compute_thumbprint_for_alg(&key.algorithm, &pub_bytes).ok_or_else(|| {
-            AppError::bad_request(format!(
-                "revoke key algorithm `{}` is unsupported",
-                key.algorithm
-            ))
-        })?;
-    if recomputed != tmb {
+    if indexed.is_none() {
         return Err(AppError::bad_request(
-            "revoke key thumbprint does not match its public key",
+            "revoke names a key this server has not indexed",
         ));
     }
 
-    // The signature must verify against the NAMED key's own public key: a
-    // revoke signed by any other key fails here -- self-signed-only.
-    if coz::verify_json(&pay_bytes, &coz.sig, &key.algorithm, &pub_bytes) != Some(true) {
+    // BIND: the disclosed key must hash back to the named `tmb` (`tmb = H(pub)`).
+    // This weld is what keeps the revoke self-signed-only and forge-proof: to
+    // kill `tmb` T an attacker must present a `pub` with `H(pub) = T`, a preimage
+    // only T's holder has. Without this bind the signature check below would be
+    // tautological -- any key could "revoke" any `tmb`.
+    let recomputed =
+        coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key).ok_or_else(|| {
+            AppError::bad_request(format!("revoke key algorithm `{}` is unsupported", key.alg))
+        })?;
+    if recomputed != tmb {
+        return Err(AppError::bad_request(
+            "disclosed key does not hash to the revoked thumbprint",
+        ));
+    }
+
+    // VERIFY: the signature must verify against the DISCLOSED key -- a revoke
+    // signed by any other key fails here (self-signed-only).
+    if coz::verify_json(&pay_bytes, &envelope.sig, &key.alg, &key.pub_key) != Some(true) {
         return Err(AppError::unauthorized("revoke signature does not verify"));
     }
+
+    // The full envelope is self-contained, independently re-verifiable evidence:
+    // storing it lets any later reader re-check the death with no index.
+    let evidence = serde_json::json!({
+        "pay": envelope.pay,
+        "sig": Base64UrlUnpadded::encode_string(&envelope.sig),
+        "key": {
+            "alg": key.alg,
+            "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
+        },
+    });
 
     Ok(VerifiedRevoke {
         revoked_tmb: tmb,
         rvk,
+        evidence,
     })
 }
