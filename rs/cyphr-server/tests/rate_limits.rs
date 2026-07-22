@@ -511,7 +511,7 @@ fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
 }
 
 // ========================================================================
-// IBC test 1 -- per-IP rate limit (keyed on peer address; ConnectInfo wired)
+// Per-IP rate limit: keyed on peer address (ConnectInfo wired)
 // ========================================================================
 
 /// RED today: with a small per-IP bucket (everything else generous) a burst
@@ -542,8 +542,8 @@ fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
 }
 
 // ========================================================================
-// IBC test 2 -- per-operation limits (independent buckets; reads survive a
-// push flood; /revoke takes ORDINARY limits, no exemption)
+// Per-operation limits: independent buckets; reads survive a
+// push flood; /revoke takes ORDINARY limits, no exemption
 // ========================================================================
 
 /// RED today: with a small PUSH bucket but a generous per-IP and READ bucket, a
@@ -606,7 +606,7 @@ fn revoke_takes_ordinary_limits_no_exemption() {
 }
 
 // ========================================================================
-// IBC test 3 -- anti-griefing: a dropped per-principal RATE limit cannot be
+// Anti-griefing: a dropped per-principal RATE limit cannot be
 // weaponized to throttle a victim by naming its principal_id
 // ========================================================================
 
@@ -675,7 +675,7 @@ fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 }
 
 // ========================================================================
-// IBC test 4 -- request-size cap
+// Request-size cap
 // ========================================================================
 
 /// GUARD (green today and after): on the PUSH path an over-cap body is refused
@@ -749,7 +749,7 @@ fn non_push_route_size_cap_rejects_oversized_body() {
 }
 
 // ========================================================================
-// IBC test 5 -- per-principal HARD count quota (refuse on exceed)
+// Per-principal HARD count quota (refuse on exceed)
 // ========================================================================
 
 /// RED today: a principal at the configured commit-count cap is REFUSED a
@@ -790,7 +790,7 @@ fn per_principal_count_quota_refuses_over_cap() {
 }
 
 // ========================================================================
-// IBC test 8 -- coexistence: both fences compose in serve() without interfering
+// Coexistence: both fences compose in serve() without interfering
 // ========================================================================
 
 /// RED today (limits half): with BOTH a `[limits]` table (small READ bucket)
@@ -842,7 +842,7 @@ fn both_fences_compose_in_serve() {
 }
 
 // ========================================================================
-// IBC test 7 -- strip test / bare-server defaults (guard: green today & after)
+// Strip test / bare-server defaults (guard: green today & after)
 // ========================================================================
 
 /// GUARD (not a RED driver): a server booted with NO `[limits]` table applies
@@ -869,7 +869,7 @@ fn bare_server_boots_and_self_bootstraps() {
 }
 
 // ========================================================================
-// IBC test 6 -- bounded limiter state (self-DoS guard)
+// Bounded limiter state (self-DoS guard)
 //
 // A liveness guard, NOT a RED driver. The bounded-state guarantee (idle
 // buckets are evicted / the key map cannot grow without bound) is not
