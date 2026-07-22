@@ -608,4 +608,94 @@ mod tests {
             fences.per_ip.len(),
         );
     }
+
+    /// RED: a HOT key's accumulated throttle must SURVIVE a flood of distinct
+    /// COLD keys. `BoundedLimiter::evict_if_over_ceiling` (see its doc) resets
+    /// the WHOLE map once it is still over `KEY_CEILING` after the time
+    /// sweep -- that reset wipes every bucket, including a currently-
+    /// throttled hot key, so an attacker who floods `> KEY_CEILING` distinct
+    /// cold keys can force a reset that frees a concurrently-hammered hot
+    /// key. This test drives the exact sweep + ceiling-eviction path
+    /// production runs per request (`Fences::maybe_sweep` calls
+    /// `retain_recent` then `evict_if_over_ceiling` on each limiter every
+    /// `SWEEP_INTERVAL` requests) directly on a `BoundedLimiter`, so the
+    /// whole-map reset actually fires under the flood.
+    #[test]
+    fn hot_key_throttle_survives_cold_key_flood() {
+        use std::net::Ipv6Addr;
+
+        // Exhaustible quota so H trips fast, but with enough burst headroom
+        // that the periodic "keep H warm" touches below (at most a handful
+        // fire after the one ceiling-triggered reset near the flood's tail)
+        // can never by themselves re-exhaust a freshly reset bucket and mask
+        // the reset as a false throttle -- only an actual reset-survival (or
+        // lack thereof) may decide the final assertion.
+        const HOT_BURST: u32 = 64;
+        let lim = BoundedLimiter::new(quota(RateBucket {
+            per_second: 1,
+            burst: HOT_BURST,
+        }));
+        let hot = IpAddr::from([10, 0, 0, 1]);
+
+        // 1. Exhaust H's bucket; confirm it is now throttled (guard
+        // assertion -- proves the premise before the flood).
+        for _ in 0..HOT_BURST {
+            let _ = lim.check_key(&hot);
+        }
+        assert!(
+            lim.check_key(&hot).is_err(),
+            "baseline: H must be throttled after exhausting its burst"
+        );
+
+        // 2. Flood > KEY_CEILING distinct cold IPv6 keys, interleaving
+        // periodic touches of H (models an attacker hammering H while
+        // flooding fillers, so H stays recently-used) and periodic sweeps
+        // (the same `retain_recent` + `evict_if_over_ceiling` pair
+        // `Fences::maybe_sweep` runs every `SWEEP_INTERVAL` requests), so the
+        // whole-map reset fires exactly as it would under `handle()`.
+        let flood = KEY_CEILING as u128 + 2_000;
+        for i in 0..flood {
+            let cold = IpAddr::V6(Ipv6Addr::from(
+                0xfd00_0000_0000_0000_0000_0000_0000_0000u128 + i,
+            ));
+            let _ = lim.check_key(&cold);
+            if i % 256 == 0 {
+                let _ = lim.check_key(&hot); // keep H warm
+            }
+            if (i as u64) % SWEEP_INTERVAL == 0 {
+                lim.retain_recent();
+                lim.evict_if_over_ceiling();
+            }
+        }
+        // Final sweep so a ceiling breach in the flood's tail is not missed.
+        lim.retain_recent();
+        lim.evict_if_over_ceiling();
+
+        // 3. RED today: the whole-map reset clears H along with the cold
+        // keys, so `check_key(&hot)` comes back `Ok`. GREEN after per-key
+        // eviction: H was never the coldest/least-recently-used key, so it
+        // is never the eviction victim and stays throttled.
+        assert!(
+            lim.check_key(&hot).is_err(),
+            "H must STAY throttled across a cold-key flood -- a per-key store must not \
+             reset the hot key when evicting cold keys"
+        );
+
+        // AC1 -- bound holds. Must stay green before AND after this node:
+        // guards the memory bound is never regressed.
+        assert!(
+            lim.len() <= KEY_CEILING,
+            "map stays size-bounded under the flood, got {}",
+            lim.len()
+        );
+
+        // AC3 -- only-loosens preserved. Must stay green before AND after:
+        // eviction/reset never manufactures a spurious refusal against a
+        // never-before-seen key.
+        let fresh = IpAddr::from([10, 0, 0, 2]);
+        assert!(
+            lim.check_key(&fresh).is_ok(),
+            "eviction never manufactures a spurious refusal against fresh traffic"
+        );
+    }
 }
