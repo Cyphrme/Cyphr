@@ -281,7 +281,7 @@ fn assert_denied(resp: &HttpResponse, expected_policy: &str) {
 // Open policy -- permissionless out of the box (strip-test parity guard)
 // ========================================================================
 
-/// IBC test 1. Default config (no `[admission]` table): a brand-new genesis
+/// Default config (no `[admission]` table): a brand-new genesis
 /// push succeeds with no token. A bare server is permissionless, and the
 /// Open policy is the *absence* of the layer, not an always-pass middleware.
 #[test]
@@ -295,7 +295,7 @@ fn open_policy_admits_new_principal_without_token() {
 // Invite policy -- gates new-principal residency
 // ========================================================================
 
-/// IBC test 2 (denial). RED today: under Invite, a new-principal genesis push
+/// Invite-policy denial. RED today: under Invite, a new-principal genesis push
 /// with NO invite header must be refused 403; today the ignored table admits
 /// it (201).
 #[test]
@@ -305,7 +305,7 @@ fn invite_missing_token_is_denied() {
     assert_denied(&r, "invite");
 }
 
-/// IBC test 2 (wrong token). RED today: a present-but-wrong token is refused
+/// Invite-policy denial (wrong token). RED today: a present-but-wrong token is refused
 /// exactly like a missing one.
 #[test]
 fn invite_wrong_token_is_denied() {
@@ -318,7 +318,7 @@ fn invite_wrong_token_is_denied() {
     assert_denied(&r, "invite");
 }
 
-/// IBC test 2 (positive) / guard: a valid token admits the new principal.
+/// Invite-policy admission: a valid token admits the new principal.
 #[test]
 fn invite_valid_token_admits_new_principal() {
     let server = TestServer::start_invite();
@@ -334,12 +334,13 @@ fn invite_valid_token_admits_new_principal() {
     );
 }
 
-/// IBC test 8 / probe-add-1 (constant-time intent). RED today: a wrong token
+/// Constant-time comparison intent. RED today: a wrong token
 /// of the SAME length as a valid one and a wrong token of a DIFFERENT length
 /// must both be refused with an identical 403 response -- so the
 /// implementation cannot branch on length or short-circuit a byte compare
-/// over the secret. (This pins behavioral intent; that the compare actually
-/// uses a constant-time primitive is verified at the source level by AC3.)
+/// over the secret. (This pins behavioral intent at the black-box level; the
+/// comparison itself is implemented with `subtle::ConstantTimeEq` in
+/// `rs/cyphr-server/src/admission.rs`.)
 #[test]
 fn invite_wrong_tokens_are_denied_identically() {
     let server = TestServer::start_invite();
@@ -362,7 +363,7 @@ fn invite_wrong_tokens_are_denied_identically() {
     );
 }
 
-/// IBC test 3 (single-use). RED today: a valid token admits ONCE; presenting
+/// Single-use token. RED today: a valid token admits ONCE; presenting
 /// the same token for a second, distinct new principal is refused as spent.
 #[test]
 fn invite_token_is_single_use() {
@@ -385,7 +386,7 @@ fn invite_token_is_single_use() {
     assert_denied(&second, "invite");
 }
 
-/// IBC test 3 (consume-on-2xx). Guard: a token presented on a genesis the
+/// Consume-on-2xx. Guard: a token presented on a genesis the
 /// PROTOCOL rejects (non-2xx) is NOT consumed, and remains usable for a later
 /// valid genesis. Guards against an implementation that spends on reservation
 /// rather than on an observed 2xx.
@@ -418,7 +419,7 @@ fn invite_token_not_consumed_on_protocol_rejection() {
     );
 }
 
-/// IBC test 4 (existing-principal bypass). Guard: once a principal is
+/// Existing-principal bypass. Guard: once a principal is
 /// resident, admission never fires for it -- a subsequent push with no token
 /// is never a 403 (residency is a protocol fact, not an admission event).
 #[test]
@@ -441,7 +442,7 @@ fn invite_resident_principal_bypasses_admission() {
     );
 }
 
-/// IBC test 5 (non-/push pass-through). Guard: reads and other endpoints are
+/// Non-/push pass-through. Guard: reads and other endpoints are
 /// never gated by admission.
 #[test]
 fn non_push_requests_are_never_gated() {
@@ -460,7 +461,7 @@ fn non_push_requests_are_never_gated() {
     );
 }
 
-/// IBC test 5 (malformed pass-through). Guard: a `POST /push` whose body has
+/// Malformed-body pass-through. Guard: a `POST /push` whose body has
 /// no parseable `principal_id` fails open -- admission cannot fire (nothing to
 /// gate), and the handler's own parse rejects it. Never a 403.
 #[test]
@@ -480,7 +481,7 @@ fn push_without_principal_id_passes_through_to_handler() {
     );
 }
 
-/// probe-add-2 (end-to-end orthogonality). Guard: `serve()` BOOTS with the
+/// End-to-end boot check. Guard: `serve()` BOOTS with the
 /// admission module present and installed -- not merely that `build_router`
 /// compiles. `TestServer::start` panics if the server never accepts
 /// connections, so a successful `/server` read proves the composed server is
