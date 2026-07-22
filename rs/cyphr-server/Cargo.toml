@@ -29,6 +29,7 @@ eml.workspace                = true
 figment.workspace            = true
 fjall.workspace              = true
 futures.workspace            = true
+governor                     = "0.10"
 rand                         = "0.8"
 serde.workspace              = true
 serde_json.workspace         = true
@@ -48,6 +49,7 @@ coz            = { workspace = true }
 http-body-util = "0.1"
 proptest       = { workspace = true }
 serde_json     = { workspace = true }
+socket2        = "0.6"
 tempfile       = "3"
 test-fixtures  = { path = "../test-fixtures" }
 tokio          = { workspace = true }

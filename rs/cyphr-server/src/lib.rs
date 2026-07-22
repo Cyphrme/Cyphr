@@ -14,6 +14,7 @@ pub mod envelope;
 pub mod error;
 pub mod logging;
 pub mod observation;
+pub mod rate_limit;
 pub mod receipt;
 pub mod revoke;
 pub mod routes;
@@ -270,10 +271,48 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
         })
     });
 
+    // Compose the orthogonal resource fences (rate / size / count-quota) over
+    // the router, outside admission so a throttle refuses before the costlier
+    // admission work. Like admission, they never touch `build_router`. The one
+    // storage fact the count quota needs -- a principal's commit count --
+    // crosses as a `u64` through this probe, so no engine type enters the
+    // `rate_limit` module. A probe error resolves to `0`, which never
+    // fabricates a quota refusal (it only ever refuses on a known over-cap).
+    let limits = state.config.limits.clone();
+    let count_state = state.clone();
+    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
+        let state = count_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.map(|t| t.commit_count).unwrap_or(0))
+                .unwrap_or(0)
+        })
+    });
+
     let mut app = build_router(state);
     if let Some(gate) = admission::layer(&admission_config, &admission_data_dir, resident)? {
         app = app.layer(gate);
     }
+    app = app.layer(rate_limit::layer(&limits, count_probe));
+
+    // The single authoritative body-size cap, over EVERY route (composed here,
+    // never in `build_router`, exactly like admission and the rate/size/quota
+    // fences above). `rate_limit`'s own fence only bounds `/push`'s actual
+    // buffered bytes; every other route otherwise falls back to axum's 2 MiB
+    // default. `DefaultBodyLimit` tags the request with `limits.max_body_bytes`
+    // for `Bytes`-based extractors (which `Json`, used by `/revoke` and
+    // `/auth/*`, is built on) to enforce while reading -- so it bounds the
+    // ACTUAL bytes read off the body, not merely a declared `Content-Length`,
+    // and a chunked over-cap body is refused `413` exactly like a
+    // `Content-Length`-declared one. It only inserts a request extension (no
+    // body-type change), so it composes with `build_router`'s `axum::Router`
+    // without touching it.
+    app = app.layer(axum::extract::DefaultBodyLimit::max(
+        limits.max_body_bytes as usize,
+    ));
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
@@ -286,9 +325,14 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     std::io::Write::flush(&mut std::io::stdout())?;
     tracing::info!(listen = %local_addr, "server started");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Serve with per-connection peer info so the per-IP fence can key on the
+    // real peer address the kernel reports.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     tracing::info!("server stopped");
     Ok(())

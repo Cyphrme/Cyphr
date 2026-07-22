@@ -139,6 +139,98 @@ pub struct ServerConfig {
     /// new-principal residency only; defaults to `Open` (permissionless).
     #[serde(default)]
     pub admission: AdmissionConfig,
+
+    /// Server-side resource fences (the `[limits]` TOML table). Bounds
+    /// per-request resource use -- rate, body size, per-principal commit
+    /// count -- orthogonally to the protocol. Every field has a conservative,
+    /// overridable default, so a bare server (no `[limits]` table) is still
+    /// bounded rather than unlimited.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+/// Resource-fence limits (the `[limits]` TOML table). Additive to
+/// `[admission]` and mirroring its structured-config pattern; consumed only by
+/// the `rate_limit` fences composed in [`crate::serve`], never by a protocol
+/// handler.
+///
+/// `#[serde(default)]` makes every field independently omittable, so a partial
+/// `[limits]` table tunes one fence and inherits defaults for the rest.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Maximum request body in bytes; an over-cap body is refused `413` before
+    /// any handler work. Defaults to 2 MiB (the historical push-body bound).
+    pub max_body_bytes: u64,
+
+    /// Per-principal hard commit-count cap. A principal already at or over
+    /// this many commits is refused a further commit with a distinct quota
+    /// `4xx`. Generous by default so it bounds runaway growth without
+    /// impeding ordinary use.
+    pub count_quota: u64,
+
+    /// Rate bucket keyed on the connection peer address (per-IP fence).
+    ///
+    /// There is deliberately no per-principal RATE bucket: keying a rate
+    /// fence on the `principal_id` peeked from a raw, unverified `/push`
+    /// body would let an unauthenticated attacker throttle a victim merely
+    /// by naming its principal in a garbage flood (the peeked field is never
+    /// authenticated before the fence would see it). The write path is
+    /// bounded instead by this per-IP fence (keyed on the real, un-nameable
+    /// TCP peer) and `count_quota` below (which reads durable, uninflatable
+    /// commit-count state, so garbage pushes -- which never commit -- cannot
+    /// inflate it).
+    pub per_ip: RateBucket,
+
+    /// Per-operation bucket for reads (`GET` routes) -- generous.
+    pub read: RateBucket,
+
+    /// Per-operation bucket for `POST /push` -- the tightest, as the write
+    /// path is the costliest operation.
+    pub push: RateBucket,
+
+    /// Per-operation bucket for the login / challenge routes.
+    pub login: RateBucket,
+
+    /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
+    /// is not exempt from rate limiting.
+    pub revoke: RateBucket,
+}
+
+/// A token-bucket rate: `per_second` cells replenished each second, up to a
+/// `burst` capacity. Deserialized from a `{ per_second = N, burst = N }`
+/// inline TOML table.
+#[derive(Debug, Clone, Copy, serde::Serialize, Deserialize)]
+pub struct RateBucket {
+    /// Sustained replenishment rate in requests per second.
+    pub per_second: u32,
+    /// Bucket capacity -- the largest instantaneous burst admitted.
+    pub burst: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        // Conservative but comfortably above any legitimate single-client
+        // burst: a real flood trips these, ordinary traffic never does. All
+        // overridable per deployment.
+        let reads = RateBucket {
+            per_second: 100,
+            burst: 200,
+        };
+        let writes = RateBucket {
+            per_second: 50,
+            burst: 100,
+        };
+        Self {
+            max_body_bytes: 2 * 1024 * 1024,
+            count_quota: 1_000_000,
+            per_ip: reads,
+            read: reads,
+            push: writes,
+            login: writes,
+            revoke: writes,
+        }
+    }
 }
 
 /// Admission policy for new-principal residency (see `admission`).
@@ -187,6 +279,7 @@ impl Default for ServerConfig {
             signing_key_path: None,
             audience: None,
             admission: AdmissionConfig::default(),
+            limits: LimitsConfig::default(),
         }
     }
 }
@@ -249,6 +342,19 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
     }
 
+    // The same silent-brick class as a zero pow difficulty: `#[serde(default)]`
+    // on every `[limits]` field means an operator who writes (or omits, then
+    // overrides with) `max_body_bytes = 0` gets a server that refuses every
+    // request body, and `count_quota = 0` gets a server that refuses every
+    // principal's first commit -- both with no deserialization error, so both
+    // must be checked explicitly here.
+    if config.limits.max_body_bytes == 0 {
+        return Err(ConfigError::LimitsMaxBodyBytesZero);
+    }
+    if config.limits.count_quota == 0 {
+        return Err(ConfigError::LimitsCountQuotaZero);
+    }
+
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
@@ -308,6 +414,22 @@ pub enum ConfigError {
          admits every nonce; blake3 digests are only 256 bits, so >256 admits none)"
     )]
     PowDifficultyInvalid(u32),
+
+    /// `[limits] max_body_bytes = 0` was configured, which refuses every
+    /// request body before any handler runs.
+    #[error(
+        "limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended \
+         cap in bytes (the default is 2 MiB)"
+    )]
+    LimitsMaxBodyBytesZero,
+
+    /// `[limits] count_quota = 0` was configured, which refuses every
+    /// principal's first commit.
+    #[error(
+        "limits.count_quota is 0 -- this refuses every principal's first commit; set it to the \
+         intended per-principal commit cap"
+    )]
+    LimitsCountQuotaZero,
 }
 
 #[cfg(test)]
@@ -480,5 +602,51 @@ mod tests {
             "must resolve to AdmissionConfig::Pow carrying the configured difficulty, got: {:?}",
             config.admission
         );
+    }
+
+    /// A `max_body_bytes` of 0 refuses every request body, silently bricking
+    /// all writes (and reads with a body). Like the pow-difficulty zero case,
+    /// serde happily deserializes it, so `resolve_config` must reject it
+    /// explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
+    #[test]
+    fn limits_max_body_bytes_zero_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(tmp.path(), "[limits]\nmax_body_bytes = 0\n");
+        let result = resolve_config(&cli);
+        assert!(
+            result.is_err(),
+            "a limits max_body_bytes of 0 (which refuses every body) must be rejected at \
+             resolution, got: {result:?}"
+        );
+    }
+
+    /// A `count_quota` of 0 refuses every principal's first commit, silently
+    /// bricking all writes; it must be rejected at `resolve_config` exactly as
+    /// the zero body cap is (see `ConfigError::LimitsCountQuotaZero`).
+    #[test]
+    fn limits_count_quota_zero_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(tmp.path(), "[limits]\ncount_quota = 0\n");
+        let result = resolve_config(&cli);
+        assert!(
+            result.is_err(),
+            "a limits count_quota of 0 (which refuses every principal's first commit) must be \
+             rejected at resolution, got: {result:?}"
+        );
+    }
+
+    /// GUARD (green today and after): a `[limits]` table with non-zero caps
+    /// resolves cleanly -- the zero-rejection must reject ONLY the degenerate
+    /// values, never a valid configuration.
+    #[test]
+    fn limits_valid_values_resolve_ok() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(
+            tmp.path(),
+            "[limits]\nmax_body_bytes = 1048576\ncount_quota = 500\n",
+        );
+        let config = resolve_config(&cli).expect("a valid [limits] table must resolve cleanly");
+        assert_eq!(config.limits.max_body_bytes, 1_048_576);
+        assert_eq!(config.limits.count_quota, 500);
     }
 }
