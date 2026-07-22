@@ -578,11 +578,13 @@ mod tests {
     fn hot_key_throttle_survives_cold_key_flood() {
         use std::net::Ipv6Addr;
 
-        // Exhaustible quota so H trips fast, but with enough burst headroom
-        // that the periodic "keep H warm" touches below can never by
-        // themselves re-exhaust a bucket that eviction reset to fresh and
-        // mask an eviction as a false throttle -- only an actual
-        // survives-eviction-or-not outcome may decide the final assertion.
+        // Exhaustible quota so H trips fast. The periodic "keep H warm"
+        // touches below run ~399 times over the flood -- far more than
+        // HOT_BURST -- so they would just as readily re-exhaust a bucket
+        // that eviction had reset to fresh. Burst size buys no protection
+        // against that; the assertion holds only because per-key eviction
+        // keeps H recently-touched and therefore never the eviction victim,
+        // so its exhausted bucket is the one that survives, never a reset one.
         const HOT_BURST: u32 = 64;
         let lim = BoundedLimiter::new(quota(RateBucket {
             per_second: 1,
@@ -628,17 +630,16 @@ mod tests {
              hot key when evicting cold keys"
         );
 
-        // AC1 -- bound holds. Must stay green before AND after this node:
-        // guards the memory bound is never regressed.
+        // The entry ceiling bounds memory: the live map size stays at or
+        // below the cap.
         assert!(
             lim.len() <= KEY_CEILING,
             "map stays size-bounded under the flood, got {}",
             lim.len()
         );
 
-        // AC3 -- only-loosens preserved. Must stay green before AND after:
-        // eviction/reset never manufactures a spurious refusal against a
-        // never-before-seen key.
+        // Eviction only ever loosens: a fresh, never-before-seen key is
+        // admitted, never spuriously refused.
         let fresh = IpAddr::from([10, 0, 0, 2]);
         assert!(
             lim.check_key(&fresh).is_ok(),
