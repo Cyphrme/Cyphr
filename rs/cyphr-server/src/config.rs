@@ -236,6 +236,19 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         .extract()
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
 
+    // A pow difficulty of 0 makes every well-formed nonce admit (the
+    // anti-Sybil fence is silently disabled); a difficulty above the
+    // blake3 digest's 256 bits is unsatisfiable by any nonce (new-principal
+    // onboarding is silently and permanently closed). `#[serde(default)]`
+    // on `difficulty` means an operator who omits it from the TOML table
+    // gets 0 with no error, so this must be checked explicitly rather than
+    // relying on deserialization to catch it.
+    if let AdmissionConfig::Pow { difficulty } = config.admission {
+        if difficulty == 0 || difficulty > 256 {
+            return Err(ConfigError::PowDifficultyInvalid(difficulty));
+        }
+    }
+
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
@@ -284,6 +297,17 @@ pub enum ConfigError {
          read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
     )]
     WitnessModeUnimplemented,
+
+    /// `[admission] policy = "pow"` was configured with a `difficulty` outside
+    /// the satisfiable range: 0 (every nonce admits -- the anti-Sybil fence is
+    /// silently off) or greater than 256 (no nonce can ever clear a blake3
+    /// digest's 256 bits -- new-principal onboarding is silently and
+    /// permanently closed).
+    #[error(
+        "admission pow difficulty {0} is invalid -- must be in 1..=256 leading zero bits (0 \
+         admits every nonce; blake3 digests are only 256 bits, so >256 admits none)"
+    )]
+    PowDifficultyInvalid(u32),
 }
 
 #[cfg(test)]
@@ -392,5 +416,69 @@ mod tests {
         ]);
         let config = resolve_config(&cli).expect("default mode must resolve successfully");
         assert_eq!(config.mode, ServerMode::Authority);
+    }
+
+    /// Build a `Cli` for `serve` pointing at a TOML file carrying the given
+    /// `[admission]` table body.
+    fn parse_with_admission_table(tmp: &std::path::Path, admission_table: &str) -> Cli {
+        let config_path = tmp.join("cyphr-server.toml");
+        std::fs::write(&config_path, admission_table).expect("write config");
+        Cli {
+            config: config_path,
+            command: Command::Serve(ServeArgs {
+                listen: None,
+                data_dir: None,
+                log_format: None,
+                mode: None,
+                signing_key_path: None,
+                audience: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn pow_difficulty_zero_is_rejected() {
+        // `#[serde(default)]` on `difficulty` means omitting it -- or writing
+        // it explicitly -- as 0 must not silently disable the anti-Sybil
+        // fence (leading_zero_bits(..) >= 0 is always true).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(tmp.path(), "[admission]\npolicy = \"pow\"\n");
+        let result = resolve_config(&cli);
+        assert!(
+            matches!(result, Err(ConfigError::PowDifficultyInvalid(0))),
+            "an omitted (default-0) pow difficulty must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn pow_difficulty_above_256_is_rejected() {
+        // blake3 digests are 256 bits; a difficulty above that is
+        // unsatisfiable by any nonce -- a silent, permanent onboarding outage.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(
+            tmp.path(),
+            "[admission]\npolicy = \"pow\"\ndifficulty = 300\n",
+        );
+        let result = resolve_config(&cli);
+        assert!(
+            matches!(result, Err(ConfigError::PowDifficultyInvalid(300))),
+            "a pow difficulty above 256 must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn pow_difficulty_in_valid_range_resolves() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli = parse_with_admission_table(
+            tmp.path(),
+            "[admission]\npolicy = \"pow\"\ndifficulty = 18\n",
+        );
+        let config =
+            resolve_config(&cli).expect("a pow difficulty within 1..=256 must resolve cleanly");
+        assert!(
+            matches!(config.admission, AdmissionConfig::Pow { difficulty } if difficulty == 18),
+            "must resolve to AdmissionConfig::Pow carrying the configured difficulty, got: {:?}",
+            config.admission
+        );
     }
 }
