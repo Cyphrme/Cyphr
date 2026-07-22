@@ -88,11 +88,11 @@ fn is_revoke_typ(typ: &str) -> bool {
 /// 3. `rvk` is a positive integer below 2^53-1 (`coz::is_valid_rvk`); the timestamp value itself is
 ///    NOT checked, so a pre-signed `rvk`=1 is valid;
 /// 4. the serialized payload is within `RVK_MAX_SIZE`;
-/// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed value's
-///    CONTENT is never read; `None` (a key this server never saw) is a rejection that bounds the
-///    death-set to seen keys;
-/// 6. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the disclosed
-///    key to the thumbprint before it is trusted;
+/// 5. PRESENCE FENCE: the named `tmb` is a key the engine has indexed (`Some`) -- the indexed
+///    value's CONTENT is never read; `None` (a key this server never saw) is a rejection that
+///    bounds the death-set to seen keys;
+/// 6. BIND: the disclosed key hashes back to the named `tmb` (`tmb = H(pub)`), welding the
+///    disclosed key to the thumbprint before it is trusted;
 /// 7. VERIFY: the signature verifies against the DISCLOSED key. A revoke signed by any key OTHER
 ///    than the one `tmb` names fails here -- the entire self-signed-only rule.
 ///
@@ -163,10 +163,9 @@ pub async fn interpret<I: Indexer>(
     // kill `tmb` T an attacker must present a `pub` with `H(pub) = T`, a preimage
     // only T's holder has. Without this bind the signature check below would be
     // tautological -- any key could "revoke" any `tmb`.
-    let recomputed =
-        coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key).ok_or_else(|| {
-            AppError::bad_request(format!("revoke key algorithm `{}` is unsupported", key.alg))
-        })?;
+    let recomputed = coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key).ok_or_else(|| {
+        AppError::bad_request(format!("revoke key algorithm `{}` is unsupported", key.alg))
+    })?;
     if recomputed != tmb {
         return Err(AppError::bad_request(
             "disclosed key does not hash to the revoked thumbprint",
