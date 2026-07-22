@@ -1,6 +1,12 @@
 //! Acceptance suite for the server-side resource fences: per-IP / per-operation
-//! / per-principal RATE limits, a request-SIZE cap, and a per-principal
-//! commit-COUNT quota.
+//! RATE limits, a request-SIZE cap over ALL routes, and a per-principal
+//! commit-COUNT quota. There is deliberately NO per-principal RATE limit: it
+//! keyed on the unverified, attacker-nameable `principal_id` peeked from a raw
+//! `/push` body, so an unauthenticated attacker could throttle a victim's own
+//! pushes merely by naming them (see `anti_griefing_...` below). The write path
+//! is bounded instead by the per-IP rate (the real, un-nameable TCP peer) and
+//! the durable per-principal count quota (which reads uninflatable stored
+//! state).
 //!
 //! Like the admission fence, these are composed ONLY in `serve()`, never in
 //! `build_router` (they are orthogonal to the protocol; `build_router` stays
@@ -15,24 +21,17 @@
 //! `oneshot` cannot supply.
 //!
 //! The fences are configured through a `[limits]` TOML table on `ServerConfig`
-//! (additive to `[admission]`, mirroring its structured-config pattern). The
-//! current (no-limits) server has no such field and `ServerConfig` does not
-//! deny unknown fields, so today the table is silently ignored and NOTHING is
-//! bounded -- which is exactly why the gating assertions below are RED for a
-//! *behavioral* reason: a burst never 429s, an over-cap body is never 413'd,
-//! and a principal past its quota is never refused. Once the fences exist the
-//! same assertions turn green.
+//! (additive to `[admission]`, mirroring its structured-config pattern).
 //!
-//! ## The `[limits]` schema this suite pins (the red-first contract)
+//! ## The `[limits]` schema this suite pins
 //!
 //! Each rate bucket is a `{ per_second, burst }` pair: `per_second` is the
 //! sustained replenish rate (requests/sec) and `burst` the bucket capacity.
 //! ```toml
 //! [limits]
-//! max_body_bytes = 2097152                       # request size cap (bytes)
+//! max_body_bytes = 2097152                       # request size cap (bytes), ALL routes
 //! count_quota    = 1000000                        # per-principal hard commit cap
 //! per_ip        = { per_second = N, burst = N }   # keyed on peer address
-//! per_principal = { per_second = N, burst = N }   # write path, keyed on principal
 //! read          = { per_second = N, burst = N }   # per-op: reads (generous)
 //! push          = { per_second = N, burst = N }   # per-op: push  (tightest)
 //! login         = { per_second = N, burst = N }   # per-op: login/challenge
@@ -81,7 +80,6 @@ struct Limits {
     max_body_bytes: u64,
     count_quota: u64,
     per_ip: (u64, u32),
-    per_principal: (u64, u32),
     read: (u64, u32),
     push: (u64, u32),
     login: (u64, u32),
@@ -95,7 +93,6 @@ impl Limits {
             max_body_bytes: 2 * 1024 * 1024,
             count_quota: 1_000_000,
             per_ip: wide,
-            per_principal: wide,
             read: wide,
             push: wide,
             login: wide,
@@ -106,12 +103,11 @@ impl Limits {
     fn render(&self) -> String {
         let bucket = |b: (u64, u32)| format!("{{ per_second = {}, burst = {} }}", b.0, b.1);
         format!(
-            "[limits]\nmax_body_bytes = {}\ncount_quota = {}\nper_ip = {}\nper_principal = \
-             {}\nread = {}\npush = {}\nlogin = {}\nrevoke = {}\n",
+            "[limits]\nmax_body_bytes = {}\ncount_quota = {}\nper_ip = {}\nread = {}\npush = \
+             {}\nlogin = {}\nrevoke = {}\n",
             self.max_body_bytes,
             self.count_quota,
             bucket(self.per_ip),
-            bucket(self.per_principal),
             bucket(self.read),
             bucket(self.push),
             bucket(self.login),
@@ -256,6 +252,32 @@ impl TestServer {
         stream
             .write_all(body.as_bytes())
             .expect("write request body");
+        stream.flush().expect("flush");
+
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).expect("read response");
+        HttpResponse::parse(&raw)
+    }
+
+    /// Issue one POST whose body is sent with `Transfer-Encoding: chunked` and
+    /// NO `Content-Length` header, so the request carries no declared length.
+    /// This is the case the merged size fence's `Content-Length` check cannot
+    /// see: a non-push route with a chunked over-cap body slips the header
+    /// check and falls back to axum's 2 MiB default extractor limit rather than
+    /// `max_body_bytes`. A single chunk carries the whole body.
+    fn post_chunked(&self, path: &str, body: &str) -> HttpResponse {
+        let mut stream = connect_from("127.0.0.1", self.port);
+        let mut req = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: \
+             application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
+        );
+        // One chunk: `<hex-len>\r\n<bytes>\r\n`, then the terminating `0` chunk.
+        req.push_str(&format!("{:x}\r\n", body.len()));
+        req.push_str(body);
+        req.push_str("\r\n0\r\n\r\n");
+        stream
+            .write_all(req.as_bytes())
+            .expect("write chunked request");
         stream.flush().expect("flush");
 
         let mut raw = Vec::new();
@@ -584,36 +606,70 @@ fn revoke_takes_ordinary_limits_no_exemption() {
 }
 
 // ========================================================================
-// IBC test 3 -- per-principal (per-key) rate on the write path
+// IBC test 3 (F1) -- anti-griefing: a dropped per-principal RATE limit cannot
+// be weaponized to throttle a victim by naming its principal_id
 // ========================================================================
 
-/// RED today: with a small per-principal bucket (per-op push and per-IP
-/// generous), a push flood for ONE principal 429s while a distinct principal
-/// buckets independently. The requests carry NO bearer token, so the fact that
-/// throttling happens at all proves the key is the peeked `principal_id`, not a
-/// bearer-token key (a token key would bound nothing with no token -- Q3).
-/// Today no per-principal fence exists, so the flood never 429s.
+/// RED today, GREEN after F1 drops the per-principal RATE limit. The merged
+/// fence keyed a write-path rate bucket on the `principal_id` peeked from the
+/// raw `/push` body -- a value any unauthenticated client can name. So an
+/// attacker, from a DISTINCT source IP, bursts garbage `/push` bodies naming a
+/// resident VICTIM's `principal_id`; because the rate key is the principal (not
+/// the peer IP), the attacker's flood drains the VICTIM's shared bucket across
+/// the IP boundary, and the victim's own next legitimate push is 429'd -- a
+/// zero-cost targeted DoS. Once F1 removes the per-principal rate limit the
+/// victim's push is no longer throttled by traffic it did not send: per-IP rate
+/// (keyed on the real, un-nameable peer) and the durable count quota cover the
+/// write path without this cross-principal coupling.
+///
+/// Everything except the (soon-removed) per-principal bucket is generous, so
+/// the ONLY thing that can 429 the victim today is the per-principal rate fence
+/// drained by the attacker -- the RED is unambiguously that fence. After F1 the
+/// `per_principal` line is an unknown `[limits]` key the server ignores, so the
+/// victim's follow-on push reaches the handler and commits (2xx).
 #[test]
-fn per_principal_write_rate_429s_and_isolates_by_principal() {
-    let mut limits = Limits::generous();
-    limits.per_principal = (TRIP_PER_SECOND, TRIP_BURST);
-    let server = TestServer::with_limits(&limits);
+fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
+    // Generous everywhere, then append the (being-removed) per-principal rate
+    // bucket as raw `[limits]` TOML, tight enough that the attacker's burst
+    // drains it. This key exists only in the merged code; F1 removes the field
+    // and the server then ignores this line (LimitsConfig does not deny unknown
+    // fields), which is exactly what lets the victim through.
+    let limits = Limits::generous();
+    let extra = format!(
+        "{}per_principal = {{ per_second = {}, burst = {} }}\n",
+        limits.render(),
+        TRIP_PER_SECOND,
+        TRIP_BURST,
+    );
+    let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), &extra);
 
-    // Same principal_id every time -> one shared per-principal bucket. Body
-    // reuse is fine: the rate fence is a layer that fires before the handler,
-    // so the protocol outcome of each push is irrelevant to the 429.
-    let body = genesis_body("perprincipal-one", NOW_BASE);
-    let flood = server.burst("POST", "/push", Some(&body), "127.0.0.1", BURST);
-    assert!(
-        some_429(&flood),
-        "a per-principal push flood past the bucket must yield at least one 429: {flood:?}"
+    // The victim establishes residency with an active key via its genesis push
+    // (from its own IP). Under generous per-op/per-IP limits this succeeds.
+    let (genesis, followon) = genesis_and_followon("griefing-victim", NOW_BASE + 700);
+    let g = server.request("POST", "/push", Some(&genesis), "127.0.0.1");
+    assert_eq!(
+        g.status, 201,
+        "the victim's genesis push must establish residency: {} {}",
+        g.status, g.body
     );
 
-    let other = genesis_body("perprincipal-two", NOW_BASE + 1000);
-    let modest = server.burst("POST", "/push", Some(&other), "127.0.0.1", MODEST);
+    // The attacker, from a DISTINCT IP, bursts garbage bodies naming the
+    // VICTIM's principal_id. Garbage blobs never commit (the handler rejects
+    // them), so the victim's chain is untouched -- but the merged per-principal
+    // rate fence, keyed on the named principal, drains the victim's bucket.
+    let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
+    let _ = server.burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST);
+
+    // The victim's OWN legitimate follow-on push, from its own IP, must NOT be
+    // throttled by the attacker's traffic. RED today (429, the victim's shared
+    // per-principal bucket was drained); GREEN after F1 (the follow-on commits).
+    let f = server.request("POST", "/push", Some(&followon), "127.0.0.1");
     assert!(
-        !some_429(&modest),
-        "a distinct principal must bucket independently: {modest:?}"
+        (200..300).contains(&f.status),
+        "a victim's own push must succeed despite an attacker naming its principal_id in a \
+         garbage flood -- it must not be 429'd by traffic it did not send: {} {}",
+        f.status,
+        f.body
     );
 }
 
@@ -621,12 +677,12 @@ fn per_principal_write_rate_429s_and_isolates_by_principal() {
 // IBC test 4 -- request-size cap
 // ========================================================================
 
-/// RED today: a body over the configured cap is refused 413 before handler
-/// work; an under-cap body passes. The cap here (64 KiB) is well below axum's
-/// 2 MiB default extractor limit, and the oversized body (256 KiB) sits between
-/// the two -- so today, with the `[limits]` cap ignored, the body reaches the
-/// handler (a non-413 rejection of the junk blob) instead of being 413'd at the
-/// size layer.
+/// GUARD (green today and after): on the PUSH path an over-cap body is refused
+/// 413 before handler work; an under-cap body passes. The cap here (64 KiB) is
+/// well below axum's 2 MiB default extractor limit, and the oversized body
+/// (256 KiB) sits between the two. The merged fence already caps the push path,
+/// so this stays green across the rework; the RED driver for the size fence is
+/// the NON-push case below, which the merged fence does not cover.
 #[test]
 fn request_size_cap_rejects_oversized_body() {
     let mut limits = Limits::generous();
@@ -649,6 +705,43 @@ fn request_size_cap_rejects_oversized_body() {
     assert_ne!(
         under.status, 413,
         "an under-cap body must not be size-refused: {} {}",
+        under.status, under.body
+    );
+}
+
+/// RED today, GREEN after R2/F4 makes `max_body_bytes` authoritative over ALL
+/// routes. The merged fence caps only the push path's actual bytes; every other
+/// route falls back to axum's 2 MiB default extractor limit. Its one all-routes
+/// check is on the declared `Content-Length`, which a chunked body carries no
+/// value for -- so a NON-push route (`/revoke`) fed a chunked body over
+/// `max_body_bytes` but under 2 MiB slips the header check and is processed by
+/// the handler (a non-413 rejection of the junk) instead of being 413'd. Once a
+/// `serve()`-composed body-limit layer applies `max_body_bytes` to every route,
+/// the oversized chunked body is refused 413 regardless of framing.
+#[test]
+fn non_push_route_size_cap_rejects_oversized_body() {
+    let mut limits = Limits::generous();
+    limits.max_body_bytes = 1024; // 1 KiB cap
+    let server = TestServer::with_limits(&limits);
+
+    // 100 KiB: over the 1 KiB cap, well under axum's 2 MiB default. Sent
+    // chunked (no Content-Length), so the fence's declared-length check -- its
+    // only all-routes size check today -- has nothing to test.
+    let oversized = "A".repeat(100 * 1024);
+    let over = server.post_chunked("/revoke", &oversized);
+    assert_eq!(
+        over.status, 413,
+        "an over-cap chunked body on a non-push route must be refused 413, not processed by the \
+         handler (max_body_bytes must bind every route, not just push): {} {}",
+        over.status, over.body
+    );
+
+    // A small body on the same route must still be served (413 is a size
+    // verdict, not a blanket refusal of the route).
+    let under = server.post_chunked("/revoke", "{}");
+    assert_ne!(
+        under.status, 413,
+        "an under-cap body on a non-push route must not be size-refused: {} {}",
         under.status, under.body
     );
 }
