@@ -342,6 +342,19 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
     }
 
+    // The same silent-brick class as a zero pow difficulty: `#[serde(default)]`
+    // on every `[limits]` field means an operator who writes (or omits, then
+    // overrides with) `max_body_bytes = 0` gets a server that refuses every
+    // request body, and `count_quota = 0` gets a server that refuses every
+    // principal's first commit -- both with no deserialization error, so both
+    // must be checked explicitly here.
+    if config.limits.max_body_bytes == 0 {
+        return Err(ConfigError::LimitsMaxBodyBytesZero);
+    }
+    if config.limits.count_quota == 0 {
+        return Err(ConfigError::LimitsCountQuotaZero);
+    }
+
     // Layers 3-4: env → CLI (clap resolves CLI > env internally).
     if let Command::Serve(ref args) = cli.command {
         if let Some(ref listen) = args.listen {
@@ -401,6 +414,22 @@ pub enum ConfigError {
          admits every nonce; blake3 digests are only 256 bits, so >256 admits none)"
     )]
     PowDifficultyInvalid(u32),
+
+    /// `[limits] max_body_bytes = 0` was configured, which refuses every
+    /// request body before any handler runs.
+    #[error(
+        "limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended \
+         cap in bytes (the default is 2 MiB)"
+    )]
+    LimitsMaxBodyBytesZero,
+
+    /// `[limits] count_quota = 0` was configured, which refuses every
+    /// principal's first commit.
+    #[error(
+        "limits.count_quota is 0 -- this refuses every principal's first commit; set it to the \
+         intended per-principal commit cap"
+    )]
+    LimitsCountQuotaZero,
 }
 
 #[cfg(test)]
@@ -575,14 +604,10 @@ mod tests {
         );
     }
 
-    /// RED today, GREEN after F3 validates `[limits]` at resolution. A
-    /// `max_body_bytes` of 0 refuses every request body, silently bricking all
-    /// writes (and reads with a body). Like the pow-difficulty zero case, serde
-    /// happily deserializes it, so it must be rejected explicitly at
-    /// `resolve_config`. The specific `ConfigError` variant is the
-    /// implementation's to add (a new one, mirroring `PowDifficultyInvalid`);
-    /// this test pins only that resolution must fail, so it stays compilable
-    /// against today's code and turns green once the check lands.
+    /// A `max_body_bytes` of 0 refuses every request body, silently bricking
+    /// all writes (and reads with a body). Like the pow-difficulty zero case,
+    /// serde happily deserializes it, so `resolve_config` must reject it
+    /// explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
     #[test]
     fn limits_max_body_bytes_zero_is_rejected() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -595,9 +620,9 @@ mod tests {
         );
     }
 
-    /// RED today, GREEN after F3. A `count_quota` of 0 refuses every principal's
-    /// first commit, silently bricking all writes; it must be rejected at
-    /// `resolve_config` exactly as the zero body cap is.
+    /// A `count_quota` of 0 refuses every principal's first commit, silently
+    /// bricking all writes; it must be rejected at `resolve_config` exactly as
+    /// the zero body cap is (see `ConfigError::LimitsCountQuotaZero`).
     #[test]
     fn limits_count_quota_zero_is_rejected() {
         let tmp = tempfile::tempdir().expect("tempdir");
