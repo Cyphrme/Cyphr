@@ -15,31 +15,45 @@
 //!
 //! ## The fences
 //!
-//! - **Rate** (via the `governor` token-bucket engine): a per-peer-IP bucket, a per-operation
-//!   bucket (reads / push / login / revoke, each keyed on peer IP), and a per-principal bucket on
-//!   the write path (keyed on the peeked `principal_id`, so it bounds writes even when no bearer
-//!   auth is configured). Independent buckets: a flood of one never drains another.
+//! - **Rate** (via the `governor` token-bucket engine): a per-peer-IP bucket and a per-operation
+//!   bucket (reads / push / login / revoke, each keyed on peer IP). Independent buckets: a flood of
+//!   one never drains another. There is deliberately no per-principal RATE bucket: keying a rate
+//!   fence on the `principal_id` peeked from a raw, unverified `/push` body would let an
+//!   unauthenticated attacker throttle a victim merely by naming its principal in a garbage flood.
+//!   The write path is bounded instead by the per-IP fence (keyed on the real, un-nameable TCP
+//!   peer) and the count quota below (which reads durable, uninflatable commit-count state).
 //! - **Size**: a body past `max_body_bytes` is refused `413` before handler work -- both on the
 //!   declared `Content-Length` and on the bytes actually buffered for the write path (so a chunked
-//!   over-cap push cannot slip the header check).
+//!   over-cap push cannot slip the header check). Every OTHER route is capped the same way by a
+//!   `serve()`-composed body-limit layer (see [`crate::serve`]), so `max_body_bytes` is
+//!   authoritative over the whole API, not just `/push`.
 //! - **Count quota**: a principal already at or over `count_quota` commits is refused a further
-//!   commit with a distinct `402`, via the [`CountProbe`].
+//!   commit with a distinct `402`, via the [`CountProbe`]. The check reads `commit_count` before
+//!   the handler's own increment, so concurrent same-principal pushes can overshoot the cap by up
+//!   to the in-flight burst -- a bounded soft overshoot; strict atomic enforcement belongs to the
+//!   storage engine, not this fence.
 //!
 //! ## Bounded state (no self-DoS)
 //!
-//! Every keyed limiter map is swept on a traffic-driven cadence (see
-//! [`Fences::maybe_sweep`]): `governor`'s `retain_recent` drops keys whose
-//! buckets are fully replenished -- indistinguishable from absent -- so the
-//! maps track only ACTIVE clients, never every client ever seen. The maps
-//! cannot grow without bound, so the fences cannot become a memory self-DoS.
+//! Every keyed limiter map is bounded two ways: a traffic-driven TIME sweep (see
+//! [`Fences::maybe_sweep`]) that runs `governor`'s `retain_recent` to drop keys whose buckets are
+//! fully replenished -- indistinguishable from absent -- and a hard SIZE ceiling ([`KEY_CEILING`])
+//! enforced in the same sweep. The time sweep alone does not bound the map: a distributed or
+//! IPv6-rotation flood of distinct, never-replenished keys never looks stale, so it grows the map
+//! without bound. `governor` exposes no per-key removal (only the global
+//! `retain_recent`/`len`/`is_empty`), so once a map still exceeds `KEY_CEILING` after the time
+//! sweep, [`BoundedLimiter`] resets it to fresh rather than leaving it to grow further -- the safe
+//! direction, since a reset only ever loosens (every bucket, legitimate or not, gets a fresh
+//! allowance) and never manufactures a spurious refusal.
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -58,6 +72,12 @@ use tower::{Layer, Service};
 
 use crate::config::{LimitsConfig, RateBucket};
 
+/// Hard per-limiter entry ceiling (see the module doc's "Bounded state"
+/// section). Generous enough that no legitimate deployment's active-client
+/// count ever approaches it, tight enough that a flood of distinct keys
+/// cannot grow a limiter map past a bounded, predictable footprint.
+const KEY_CEILING: usize = 100_000;
+
 /// A commit-count probe: given a principal id, resolve how many commits it
 /// currently has. The sole storage fact the quota fence reads, reduced to a
 /// `u64` so no protocol type crosses into this module. A probe failure
@@ -69,6 +89,69 @@ pub type CountProbe = Arc<dyn Fn(String) -> BoxFuture<'static, u64> + Send + Syn
 /// A keyed `governor` limiter over key `K`, backed by the default (DashMap)
 /// keyed state store and default clock.
 type KeyedLimiter<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
+
+/// A [`KeyedLimiter`] wrapped with a hard SIZE ceiling ([`KEY_CEILING`]), on
+/// top of `governor`'s own TIME-based `retain_recent` sweep (see the module
+/// doc's "Bounded state" section for why the time sweep alone is
+/// insufficient). `governor` exposes no way to remove a single key from a
+/// keyed state store -- only the global `retain_recent` / `len` / `is_empty`
+/// trio -- so the only `&self`-compatible way to bound the map's size is to
+/// replace the whole inner limiter once it is still oversized after the time
+/// sweep. The inner limiter lives behind a `RwLock` so [`Fences::maybe_sweep`]
+/// (called from many concurrent request-handling tasks, all holding only a
+/// shared `&Fences`) can perform that replacement without `&mut self`.
+struct BoundedLimiter<K: Hash + Eq + Clone> {
+    inner: RwLock<KeyedLimiter<K>>,
+    quota: Quota,
+}
+
+impl<K: Hash + Eq + Clone> BoundedLimiter<K> {
+    fn new(quota: Quota) -> Self {
+        Self {
+            inner: RwLock::new(RateLimiter::keyed(quota)),
+            quota,
+        }
+    }
+
+    /// Check one cell for `key`. `Err` means the bucket is exhausted; the
+    /// caller only distinguishes success from failure, so the specific
+    /// `governor` outcome type stays internal to this wrapper.
+    fn check_key(&self, key: &K) -> Result<(), ()> {
+        self.inner
+            .read()
+            .expect("limiter lock poisoned")
+            .check_key(key)
+            .map_err(|_| ())
+    }
+
+    /// Drop keys whose buckets are fully replenished (the TIME sweep).
+    fn retain_recent(&self) {
+        self.inner
+            .read()
+            .expect("limiter lock poisoned")
+            .retain_recent();
+    }
+
+    /// The current live-key count.
+    fn len(&self) -> usize {
+        self.inner.read().expect("limiter lock poisoned").len()
+    }
+
+    /// The SIZE-ceiling backstop: if the map still exceeds [`KEY_CEILING`]
+    /// after [`retain_recent`](Self::retain_recent), reset it to a fresh
+    /// limiter of the same quota. Re-checks under the write lock (a second
+    /// caller may have already reset the map between the read-locked
+    /// over-ceiling check and acquiring the write lock), so a benign race
+    /// never resets twice in a row for one overshoot.
+    fn evict_if_over_ceiling(&self) {
+        if self.len() > KEY_CEILING {
+            let mut guard = self.inner.write().expect("limiter lock poisoned");
+            if guard.len() > KEY_CEILING {
+                *guard = RateLimiter::keyed(self.quota);
+            }
+        }
+    }
+}
 
 /// Sweep the limiter maps once every this many requests (see
 /// [`Fences::maybe_sweep`]). Amortizes the bounded-state maintenance across
@@ -83,14 +166,12 @@ const SWEEP_INTERVAL: u64 = 512;
 /// service instances.
 struct Fences {
     /// Per-peer-IP bucket, over every request.
-    per_ip: KeyedLimiter<IpAddr>,
+    per_ip: BoundedLimiter<IpAddr>,
     /// Per-operation buckets, each keyed on peer IP.
-    read: KeyedLimiter<IpAddr>,
-    push: KeyedLimiter<IpAddr>,
-    login: KeyedLimiter<IpAddr>,
-    revoke: KeyedLimiter<IpAddr>,
-    /// Per-principal write-path bucket, keyed on the peeked `principal_id`.
-    per_principal: KeyedLimiter<String>,
+    read: BoundedLimiter<IpAddr>,
+    push: BoundedLimiter<IpAddr>,
+    login: BoundedLimiter<IpAddr>,
+    revoke: BoundedLimiter<IpAddr>,
     /// Maximum accepted request body in bytes.
     max_body_bytes: u64,
     /// Per-principal hard commit-count cap.
@@ -102,12 +183,11 @@ struct Fences {
 impl Fences {
     fn from_config(limits: &LimitsConfig) -> Self {
         Self {
-            per_ip: RateLimiter::keyed(quota(limits.per_ip)),
-            read: RateLimiter::keyed(quota(limits.read)),
-            push: RateLimiter::keyed(quota(limits.push)),
-            login: RateLimiter::keyed(quota(limits.login)),
-            revoke: RateLimiter::keyed(quota(limits.revoke)),
-            per_principal: RateLimiter::keyed(quota(limits.per_principal)),
+            per_ip: BoundedLimiter::new(quota(limits.per_ip)),
+            read: BoundedLimiter::new(quota(limits.read)),
+            push: BoundedLimiter::new(quota(limits.push)),
+            login: BoundedLimiter::new(quota(limits.login)),
+            revoke: BoundedLimiter::new(quota(limits.revoke)),
             max_body_bytes: limits.max_body_bytes,
             count_quota: limits.count_quota,
             sweeps: AtomicU64::new(0),
@@ -116,7 +196,7 @@ impl Fences {
 
     /// The per-operation limiter for `op`, or `None` for an unclassified route
     /// (still covered by the per-IP fence).
-    fn op_limiter(&self, op: Op) -> Option<&KeyedLimiter<IpAddr>> {
+    fn op_limiter(&self, op: Op) -> Option<&BoundedLimiter<IpAddr>> {
         match op {
             Op::Read => Some(&self.read),
             Op::Push => Some(&self.push),
@@ -128,17 +208,22 @@ impl Fences {
 
     /// Amortized bounded-state maintenance: every [`SWEEP_INTERVAL`] requests,
     /// drop keys whose buckets are fully replenished (indistinguishable from
-    /// absent) so each map tracks only ACTIVE clients. This is what makes the
-    /// key maps -- and thus the fences' memory -- bounded rather than a
-    /// self-DoS.
+    /// absent), then reset any map still over [`KEY_CEILING`]. This is what
+    /// makes the key maps -- and thus the fences' memory -- bounded rather
+    /// than a self-DoS, against both an idle-client backlog (the time sweep)
+    /// and a flood of distinct, never-replenished keys (the size ceiling).
     fn maybe_sweep(&self) {
         if self.sweeps.fetch_add(1, Ordering::Relaxed) % SWEEP_INTERVAL == 0 {
-            self.per_ip.retain_recent();
-            self.read.retain_recent();
-            self.push.retain_recent();
-            self.login.retain_recent();
-            self.revoke.retain_recent();
-            self.per_principal.retain_recent();
+            for limiter in [
+                &self.per_ip,
+                &self.read,
+                &self.push,
+                &self.login,
+                &self.revoke,
+            ] {
+                limiter.retain_recent();
+                limiter.evict_if_over_ceiling();
+            }
         }
     }
 }
@@ -246,8 +331,10 @@ where
     }
 
     // (4) Write path: buffer the body (enforcing the size cap on the actual
-    // bytes), peek the principal, then apply the per-principal rate fence and
-    // the hard count quota.
+    // bytes), peek the principal, then apply the hard count quota. No
+    // per-principal RATE fence here -- see the module doc's "The fences"
+    // section for why keying a rate bucket on the peeked, unverified
+    // `principal_id` would be attacker-nameable.
     if op == Op::Push {
         let (parts, body) = req.into_parts();
         let bytes = match axum::body::to_bytes(body, fences.max_body_bytes as usize).await {
@@ -263,10 +350,15 @@ where
             return call_inner(inner, req).await;
         };
 
-        if fences.per_principal.check_key(&id).is_err() {
-            return rate_limited();
-        }
-
+        // This reads `commit_count` BEFORE the handler's own increment (the
+        // commit that follows this check is what would push the count over),
+        // so N concurrent same-principal pushes can each observe the
+        // pre-increment count and all pass, overshooting `count_quota` by up
+        // to that burst -- a bounded soft overshoot, not an unbounded one.
+        // Closing it exactly (an atomic check-and-increment) is a
+        // storage-engine concern: it needs a transactional read-then-write
+        // over `commit_count`, which this fence -- reduced to a stateless
+        // `u64` probe by design (see the module doc) -- cannot provide.
         let count = (count_probe)(id).await;
         if count >= fences.count_quota {
             return quota_exceeded(fences.count_quota);
@@ -465,23 +557,14 @@ mod tests {
         assert!(peek_principal_id(b"not json").is_none());
     }
 
-    /// F2 bounded-state (WHITE-BOX). RED (uncompilable) today, GREEN after F2
-    /// gives every keyed limiter map a hard max-entry ceiling. The merged fence
-    /// bounds its maps only with governor's `retain_recent` -- a TIME sweep that
-    /// drops fully-replenished buckets, NOT a size cap. A distributed or
-    /// IPv6-rotation flood of distinct, never-replenished keys therefore grows
-    /// the per-IP and per-operation maps without bound: a memory self-DoS the
-    /// module doc today wrongly calls impossible. This pins the invariant a size
-    /// ceiling must hold -- after inserting more than `KEY_CEILING` distinct
-    /// keys and running the bounded-state maintenance, the map retains at most
-    /// `KEY_CEILING` entries (oldest evicted).
-    ///
-    /// `KEY_CEILING` and the eviction path are the implementation's to add (AC3
-    /// greps for the ceiling constant + eviction), so this test does not compile
-    /// against today's code -- that non-compilation IS its red signal, not a
-    /// harness fault. It pins the size-bound contract; the exact accessor and
-    /// eviction mechanism are the implementation's, and this test moves in
-    /// lockstep with what the impl-worker builds within the node.
+    /// WHITE-BOX bounded-state invariant: every keyed limiter map carries a
+    /// hard max-entry ceiling (`KEY_CEILING`), not just `governor`'s
+    /// `retain_recent` TIME sweep (which drops fully-replenished buckets but
+    /// never bounds a flood of distinct, never-replenished keys -- e.g. a
+    /// distributed or IPv6-rotation attack). After inserting more than
+    /// `KEY_CEILING` distinct keys and running the bounded-state maintenance,
+    /// the map must retain at most `KEY_CEILING` entries (see
+    /// [`BoundedLimiter::evict_if_over_ceiling`]).
     #[test]
     fn keyed_limiter_map_is_bounded_by_key_ceiling() {
         use std::net::Ipv6Addr;

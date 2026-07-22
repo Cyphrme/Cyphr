@@ -170,11 +170,17 @@ pub struct LimitsConfig {
     pub count_quota: u64,
 
     /// Rate bucket keyed on the connection peer address (per-IP fence).
+    ///
+    /// There is deliberately no per-principal RATE bucket: keying a rate
+    /// fence on the `principal_id` peeked from a raw, unverified `/push`
+    /// body would let an unauthenticated attacker throttle a victim merely
+    /// by naming its principal in a garbage flood (the peeked field is never
+    /// authenticated before the fence would see it). The write path is
+    /// bounded instead by this per-IP fence (keyed on the real, un-nameable
+    /// TCP peer) and `count_quota` below (which reads durable, uninflatable
+    /// commit-count state, so garbage pushes -- which never commit -- cannot
+    /// inflate it).
     pub per_ip: RateBucket,
-
-    /// Rate bucket keyed on the peeked `principal_id` of a `POST /push`
-    /// (per-principal write-path fence).
-    pub per_principal: RateBucket,
 
     /// Per-operation bucket for reads (`GET` routes) -- generous.
     pub read: RateBucket,
@@ -219,7 +225,6 @@ impl Default for LimitsConfig {
             max_body_bytes: 2 * 1024 * 1024,
             count_quota: 1_000_000,
             per_ip: reads,
-            per_principal: writes,
             read: reads,
             push: writes,
             login: writes,
