@@ -165,12 +165,13 @@ pub enum AdmissionConfig {
         tokens_path: PathBuf,
     },
 
-    /// Proof-of-work admission -- a declared-but-unimplemented seam. The
-    /// variant keeps the config surface stable, but `resolve_config` rejects
-    /// it (see [`ConfigError::PowUnimplemented`]); it is filled in later.
+    /// Stateless proof-of-work admission. A new-principal genesis push must
+    /// carry an `X-Cyphr-Pow` nonce whose `blake3` hashcash, bound to the
+    /// principal id and the current UTC-hour window, clears `difficulty`
+    /// leading zero bits (see `admission`). No server state, no challenge
+    /// endpoint -- the server verifies with a single hash.
     Pow {
-        /// Target difficulty. Present so the surface is stable; unused until
-        /// proof-of-work is implemented.
+        /// Target difficulty in leading zero *bits* of the hashcash digest.
         #[serde(default)]
         difficulty: u32,
     },
@@ -264,14 +265,6 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if config.mode == ServerMode::Witness {
             return Err(ConfigError::WitnessModeUnimplemented);
         }
-
-        // Proof-of-work admission is a declared-but-unimplemented seam:
-        // reject it at resolution rather than silently install nothing (the
-        // exact `WitnessModeUnimplemented` precedent) so a deployer cannot
-        // believe they've configured a gate that does not yet exist.
-        if let AdmissionConfig::Pow { .. } = config.admission {
-            return Err(ConfigError::PowUnimplemented);
-        }
     }
 
     Ok(config)
@@ -291,14 +284,6 @@ pub enum ConfigError {
          read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
     )]
     WitnessModeUnimplemented,
-
-    /// `policy = "pow"` was configured for `serve`, but proof-of-work
-    /// admission has no implementation yet.
-    #[error(
-        "proof-of-work (pow) admission is not yet implemented -- no layer enforces it; use policy \
-         = \"open\" (the default) or \"invite\""
-    )]
-    PowUnimplemented,
 }
 
 #[cfg(test)]
