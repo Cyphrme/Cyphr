@@ -1,0 +1,30 @@
+name = "TrichotomyComp"
+version = "0.1.0"
+keywords = ["math"]
+defaultTargets = ["TrichotomyComp"]
+
+[leanOptions]
+pp.unicode.fun = true # pretty-prints `fun a ↦ b`
+relaxedAutoImplicit = false
+
+# Probe P1 (Trust Trichotomy, COMP stratum) mirrors `../lean-trichotomy`'s DEC
+# biconditional at Turing-computability. Path require for EonEalm, mirroring
+# `lean-eml-bridge`'s and `lean-trichotomy`'s own convention (this package
+# lives beside `../lean` in this same repo). Git require for Mathlib, mirroring
+# `EMLProof`'s lakefile.toml (`docs/models/eml/proofs/lean` in the sibling
+# `Cyphrme/eml` checkout) verbatim -- same scope/rev pin -- since COMP's
+# `ComputablePred`/`Computable`/`Primcodable` vocabulary lives in
+# `Mathlib.Computability`. `EonEalm` itself stays Mathlib-free; only this
+# bridge package takes the dependency (the corpus's existing discipline, per
+# `Trichotomy.lean`'s own "Why no Mathlib" note).
+[[require]]
+name = "EonEalm"
+path = "../lean"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.29.1"
+
+[[lean_lib]]
+name = "TrichotomyComp"
