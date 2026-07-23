@@ -185,6 +185,65 @@ theorem trichotomy_DEC_iff {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
     obtain ⟨Witness, Chk, ⟨hChkDec⟩, hnp⟩ := hdec
     exact trichotomy_P1 Γ φ hd Witness Chk hnp hm hChkDec hVCDec
 
+/-! ## A contentful non-vacuity witness — the inclusion claim
+
+`trichotomy_P1_nonvacuous` above witnesses P1's antecedent with `trivialClaim`
+(`⊤`), determined and monotone for free precisely because it asserts nothing.
+The canonical **contentful** witness — surety's own worked example, and
+EON/EALM's Result-1 paradigm case — is the inclusion claim: "entry `e`
+appears in the record". It is determined (membership doesn't read the
+context), monotone (list-append never removes a membership witness), and its
+determined projection is `DecMembership` given `[DecidableEq Entry]` — so it
+satisfies `trichotomy_DEC_iff`'s antecedent with a genuine claim, not a
+degenerate one. -/
+
+/-- The inclusion claim: `e` appears in the record `w`. Ignores the ambient
+    context entirely. -/
+def inclusionClaim (e : Entry) : Claim := fun w _ => e ∈ w
+
+theorem inclusionClaim_determined (e : Entry) : Determined (inclusionClaim e) :=
+  fun _ _ _ => Iff.rfl
+
+/-- D4: list-append can only add entries, so a membership witness for `w`
+    survives to any `w'` extending it. -/
+theorem inclusionClaim_monotone (e : Entry) : Monotone (inclusionClaim e) := by
+  intro w w' _ hmem hext
+  obtain ⟨u, hu⟩ := hext
+  rw [hu]
+  exact List.mem_append_left u hmem
+
+theorem inclusionClaim_hnp (e : Entry) :
+    ∀ w, determinedProj (inclusionClaim e) (inclusionClaim_determined e) w ↔
+      ∃ _ : Unit, e ∈ w :=
+  fun _ => ⟨fun h => ⟨(), h⟩, fun ⟨_, h⟩ => h⟩
+
+section NonVacuityContentful
+
+variable [DecidableEq Entry]
+
+/-- `inclusionClaim`'s determined projection is `DecMembership`, witnessed by
+    the unit checker `Chk w _ := e ∈ w`. Decidability comes from
+    `[DecidableEq Entry]` feeding Lean core's `DecidableEq → BEq` /
+    `DecidableEq → LawfulBEq` instances (`Init.Prelude`/`Init.Core`), which in
+    turn feed `List.Basic`'s `Decidable (a ∈ as)` instance — no Mathlib
+    needed, consistent with this package's no-Mathlib discipline. -/
+theorem inclusionClaim_decMembership (e : Entry) :
+    DecMembership (determinedProj (inclusionClaim e) (inclusionClaim_determined e)) :=
+  ⟨Unit, fun w _ => e ∈ w, ⟨fun _ _ => inferInstance⟩, inclusionClaim_hnp e⟩
+
+/-- **The contentful non-vacuity witness.** The inclusion claim admits an
+    enduring-sound scheme with a decidable verifier over `idCommitmentComp` —
+    via `trichotomy_DEC_iff`'s ⟸ direction, so the DEC biconditional
+    genuinely bites on a claim with real content, not just `trivialClaim`. -/
+theorem trichotomy_DEC_nonvacuous_contentful (e : Entry) :
+    ∃ S : Scheme idCommitmentComp (inclusionClaim e),
+      EnduringSound S ∧ Nonempty (∀ h c, Decidable (S.V h c)) :=
+  (trichotomy_DEC_iff idCommitmentComp (inclusionClaim e)
+      (fun _ _ _ => inferInstance)).mpr
+    ⟨inclusionClaim_determined e, inclusionClaim_decMembership e, inclusionClaim_monotone e⟩
+
+end NonVacuityContentful
+
 /-! ## TT-snap(DEC) — the snapshot-sound biconditional (§3.4's cheapest gap)
 
 The snapshot analogue of `trichotomy_DEC_iff`: drop `EnduringSound`'s temporal
