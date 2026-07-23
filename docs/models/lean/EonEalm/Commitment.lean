@@ -49,4 +49,69 @@ noncomputable def idCommitment : Commitment Record where
     simp only [id] at h₀eq heq; rw [h₀eq, heq] at hvc; exact hvc
   completeness := fun w₀ w hext => ⟨(), by simpa using hext⟩
 
+/-! ## P1a — a computable commitment witness (Trust Trichotomy Probe P1)
+
+`idCommitment` above is `noncomputable` and the corpus carries zero `Decidable`
+instances, so it cannot witness the COMP stratum's "`VC` decidable" requirement
+(`.scratch/trichotomy/statement-draft.md` §3.3). `⊑` (`Ext`) is a bare `∃`, not
+decidable in general over an abstract `Entry`; under `[DecidableEq Entry]` a
+prefix check is a standard structural walk, so this section adds a genuinely
+computable decision procedure for `⊑` and a computable `Commitment` built on it —
+additive only, `idCommitment` itself is untouched. -/
+
+/-- Decision procedure for `⊑` given decidable equality on `Entry`: `w` is a
+    prefix of `w'` iff they agree element-wise up to `w`'s length. -/
+def extDec [DecidableEq Entry] : Record → Record → Bool
+  | [], _ => true
+  | _ :: _, [] => false
+  | a :: as, b :: bs => if a = b then extDec as bs else false
+
+theorem extDec_iff [DecidableEq Entry] :
+    ∀ w w' : Record, extDec w w' = true ↔ w ⊑ w'
+  | [], w' => by simp [extDec, Ext]
+  | _ :: _, [] => by
+      simp only [extDec, Bool.false_eq_true, false_iff]
+      rintro ⟨u, hu⟩
+      simp at hu
+  | a :: as, b :: bs => by
+      simp only [extDec]
+      split
+      · rename_i hab
+        subst hab
+        rw [extDec_iff as bs]
+        constructor
+        · rintro ⟨u, hu⟩
+          exact ⟨u, by simp [hu]⟩
+        · rintro ⟨u, hu⟩
+          exact ⟨u, by simpa using hu⟩
+      · rename_i hab
+        simp only [Bool.false_eq_true, false_iff]
+        rintro ⟨u, hu⟩
+        simp at hu
+        exact hab hu.1.symm
+
+/-- `⊑` is decidable given decidable equality on `Entry` — the computability
+    fact P1a needs. -/
+instance instDecidableExt [DecidableEq Entry] (w w' : Record) : Decidable (w ⊑ w') :=
+  decidable_of_iff (extDec w w' = true) (extDec_iff w w')
+
+/-- P1a's computable commitment witness: same F5 shape as `idCommitment`
+    (`C := id`, no compression) but under `[DecidableEq Entry]`, where `VC`
+    resolves through `instDecidableExt` rather than being merely propositional. -/
+def idCommitmentComp [DecidableEq Entry] : Commitment Record where
+  VCProof := Unit
+  C := id
+  binding := fun _ _ h => h
+  VC := fun h₀ h _ => h₀ ⊑ h
+  soundness := fun _w₀ _w _h₀ _h _π hvc h₀eq heq => by
+    simp only [id] at h₀eq heq; rw [h₀eq, heq] at hvc; exact hvc
+  completeness := fun w₀ w hext => ⟨(), by simpa using hext⟩
+
+/-- `idCommitmentComp`'s `VC` is decidable — the non-vacuity witness for P1's
+    COMP-stratum antecedent on `Γ`. -/
+instance instDecidableIdCommitmentCompVC [DecidableEq Entry]
+    (h₀ h : Record) (π : Unit) : Decidable (idCommitmentComp.VC h₀ h π) := by
+  show Decidable (h₀ ⊑ h)
+  infer_instance
+
 end EonEalm
