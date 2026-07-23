@@ -5,22 +5,22 @@ import EonEalm.Commitment
 # Schemes — D5
 
 A scheme `(C, V)` for a claim `φ`, plus **E1 stated as certificate existence, not an
-efficient prover** — the round-2-verified correction to statement-v0.2's D5/E1 (team
-correction, applied here; see below). `E3` (Offline / self-containedness) is not a
-separate hypothesis to discharge: `Scheme.V`'s type, `Comm → Proof → Prop`, already
-excludes record access, oracle access, interaction, a clock, and `ξ` — the signature
-*is* the offline constraint ("a dial, not a gerrymander", statement-v0.2 D5). Poly-time
-bounds (`V` poly-time, `|c| ≤ poly(|w|)`) are a Layer-C concern this Layer-L scaffold
-does not encode, mirroring `EMLProof.Foundations`'s abstraction of `H` (no computability
-constraint on the hash itself, only on where collision-resistance hypotheses are
-discharged).
+efficient prover** — the corrected D5/E1 (applied here; see below, and `../eon-ealm.md`'s
+completeness/E1 discussion for the reviewer-facing account). `E3` (Offline /
+self-containedness) is not a separate hypothesis to discharge: `Scheme.V`'s type,
+`Comm → Proof → Prop`, already excludes record access, oracle access, interaction, a
+clock, and `ξ` — the signature *is* the offline constraint ("a dial, not a gerrymander",
+D5). Poly-time bounds (`V` poly-time, `|c| ≤ poly(|w|)`) are a Layer-C concern this
+Layer-L package does not encode, mirroring `EMLProof.Foundations`'s abstraction of `H`
+(no computability constraint on the hash itself, only on where collision-resistance
+hypotheses are discharged).
 
 **Correction applied (P = NP defect).** The doc's original D5 bundled a poly-time
 *prover* `P : Record → Proof` as part of a scheme, with E1 completeness stated as
 `V(C(w), P(w)) = 1`. Composed with poly-time `C`/`V`, that prover function is itself a
 poly-time decider for `φ̂` — since Result 1 (⟸) is claimed for *every* determined NP
 `φ̂`, "a scheme exists" would force `φ̂ ∈ P` for arbitrary NP `φ̂`, i.e. an unconditional
-`P = NP` obligation. The fix (verified, round-2): drop the bundled prover; state E1 as
+`P = NP` obligation. The fix: drop the bundled prover; state E1 as
 bare **existence** of an accepting certificate,
 `∀ (w, ξ) ⊨ φ, ∃ c, |c| ≤ poly(|w|) ∧ V(C(w), c) = 1` — an accepting certificate exists;
 no efficient search procedure is asserted. The `snapshotScheme`/`enduringScheme`
@@ -59,7 +59,7 @@ def SnapshotSound {Comm : Type} {Γ : Commitment Comm} {φ : Claim} (S : Scheme 
 def EnduringSound {Comm : Type} {Γ : Commitment Comm} {φ : Claim} (S : Scheme Γ φ) : Prop :=
   ∀ w c, S.V (Γ.C w) c → ∀ w' ξ, w ⊑ w' → φ w' ξ
 
-/-- E2b ⟹ E2a via `w′ := w` (statement-v0.2 D5). STABLE, mechanical. -/
+/-- E2b ⟹ E2a via `w′ := w` (D5). STABLE, mechanical. -/
 theorem enduringSound_snapshotSound {Comm : Type} {Γ : Commitment Comm} {φ : Claim}
     {S : Scheme Γ φ} (h : EnduringSound S) : SnapshotSound S :=
   fun w c hacc ξ => h w c hacc w ξ (ext_refl w)

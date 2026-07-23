@@ -20,8 +20,8 @@ variable (k : Nat) (hk : 2 ≤ k) (leafDigest : Entry → Digest)
   (φ : Claim) (hd : Determined φ) (hnp : NPMembership (determinedProj φ hd))
 
 include hd hnp in
-/-- **EALM holds for eml's real entry-level log** (statement-v0.2 §3), conditional on
-    eml's own no-collision hypotheses and `leafDigest`'s injectivity. -/
+/-- **EALM holds for eml's real entry-level log** (see `../eon-ealm.md`'s Result 2),
+    conditional on eml's own no-collision hypotheses and `leafDigest`'s injectivity. -/
 theorem eml_endurance_iff_monotone :
     (∃ S : Scheme (emlCommitment k hk leafDigest hleaf hH hN) φ, EnduringSound S) ↔ Monotone φ :=
   endurance_iff_monotone (emlCommitment k hk leafDigest hleaf hH hN) φ hd hnp

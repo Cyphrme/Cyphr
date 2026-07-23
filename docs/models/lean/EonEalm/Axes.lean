@@ -3,15 +3,16 @@ import EonEalm.Model
 /-!
 # Axes — D3 (record-determined) and D4 (same-context monotone)
 
-The two orthogonal axes statement-v0.2 §2 builds Results 1–3 from. D4 is the
-**F2-corrected** version: `w ⊑ w'` lifts `φ(w,ξ)` to `φ(w',ξ)` holding the **same** `ξ`
-on both sides — v0.1's `∀ξ'` version implied D3 at `w' = w` and collapsed the axes.
+The two orthogonal axes `../eon-ealm.md`'s "The two axes (orthogonal)" table builds
+Results 1–3 from. D4 is the **F2-corrected** version: `w ⊑ w'` lifts `φ(w,ξ)` to
+`φ(w',ξ)` holding the **same** `ξ` on both sides — an earlier draft's `∀ξ'` version
+implied D3 at `w' = w` and collapsed the axes.
 
 Lemma 1 (orthogonality, the 2×2 table with concrete example claims per cell) is not
 mechanized here: it is an illustrative table over concrete instance claims, not a build
-target the §6 order lists, and instantiating each cell would add scope beyond D0–D6.
-D4′ (the syntactic ∃⁺ fragment / Łoś–Tarski) is likewise "Not mechanized" per the source
-spec (`statement-v0.2.md` §6).
+target, and instantiating each cell would add scope beyond D0–D6. D4′ (the syntactic ∃⁺
+fragment / Łoś–Tarski) is likewise not mechanized — see `../eon-ealm.md`'s "Not modeled,
+by design" section.
 -/
 
 namespace EonEalm
@@ -33,7 +34,7 @@ theorem determinedProj_iff {φ : Claim} (hd : Determined φ) (w : Record) (ξ : 
 def Monotone (φ : Claim) : Prop := ∀ w w' ξ, φ w ξ → w ⊑ w' → φ w' ξ
 
 /-- For a determined `φ`, monotonicity lifts along `⊑` on the record-only projection
-    `φ̂` (statement-v0.2 D4, "For determined φ: φ̂(w) ∧ w ⊑ w′ ⟹ φ̂(w′)"). -/
+    `φ̂` (D4: "For determined φ: φ̂(w) ∧ w ⊑ w′ ⟹ φ̂(w′)"). -/
 theorem determinedProj_monotone {φ : Claim} (hd : Determined φ) (hm : Monotone φ)
     (w w' : Record) (h : determinedProj φ hd w) (hext : w ⊑ w') :
     determinedProj φ hd w' :=

@@ -9,10 +9,10 @@ Instantiates `EonEalm.Commitment` (`docs/models/lean/EonEalm/Commitment.lean`) w
 `EonEalm.endurance_iff_monotone` (EALM) and `EonEalm.eon_trilemma_impossibility` (EON)
 — both universally quantified over *any* `Commitment Comm` — hold **for eml's real log**,
 conditional on eml's own no-collision hypotheses plus one named leaf-hash hypothesis.
-Ground truth for the decision this carries out: `.ledger/ealm/eml-bridge-impedance.md`
-(Option 1, entry-level bridge). Deliberately **not** wired into either corpus's own
-build — a separate package (see the sibling `lakefile.toml`) so `EonEalm` stays
-Mathlib-free and `EMLProof` stays untouched.
+This is the entry-level bridge design (rather than a full re-derivation inside
+`EMLProof` itself) — see "The two gaps this closes" below for the rationale.
+Deliberately **not** wired into either corpus's own build — a separate package (see the
+sibling `lakefile.toml`) so `EonEalm` stays Mathlib-free and `EMLProof` stays untouched.
 
 ## The two gaps this closes
 

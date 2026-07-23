@@ -6,7 +6,7 @@ import EonEalm.Result1
 Scoped inside Result 1's gate: for record-determined `φ` with `φ̂ ∈ NP`, `φ` admits an
 **enduring** scheme iff `φ̂` is monotone (D4). STABLE, both directions (A1′ retired).
 
-The (⟸) direction is the round-1-certified construction: `c := (w₀, t, π)` with
+The (⟸) direction is the verified construction: `c := (w₀, t, π)` with
 `w₀ := w` (E1's own witness point — "E1 with w₀ := w"), `t` an NP-witness for `φ̂(w₀)`,
 `π` a reflexive VC-completeness proof `VC(C(w₀), C(w₀), π)`. Binding + VC-soundness
 force `c.w₀ ⊑ w` for any *later* verification anchor `w`; monotonicity then lifts
@@ -17,7 +17,7 @@ performs *inside* the mechanization target (F5), via `Commitment.soundness`.
 
 namespace EonEalm
 
-/-- (⟸) The round-1-certified enduring-scheme construction. `E1` exhibits `c` directly
+/-- (⟸) The verified enduring-scheme construction. `E1` exhibits `c` directly
     from the NP witness and the reflexive `VC`-completeness proof — no prover function
     is bundled (D5/E1 correction, see `EonEalm.Schemes`). -/
 def enduringScheme {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
@@ -51,9 +51,9 @@ theorem endurance_construction {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
   exact ⟨enduringScheme Γ φ hd Witness Chk hchk,
     enduringScheme_enduringSound Γ φ hd hm Witness Chk hchk⟩
 
-/-- (⟹). Discharged post-round-2 (A1′ retired, `break-round-2-findings.md` CV-1/CV-4):
-    immediate from `E1` (`Scheme.completeness`) + `E2b` (`EnduringSound`) — exactly
-    statement-v0.2's own characterization of the direction as "near-definitional." `hφ`
+/-- (⟹). Discharged (A1′ retired): immediate from `E1` (`Scheme.completeness`) + `E2b`
+    (`EnduringSound`) — exactly the source statement's own characterization of the
+    direction as "near-definitional." `hφ`
     at `(w,ξ)` gives an accepting certificate `c` via completeness; `hsound` on that `c`
     lifts `φ` to every `w' ⊒ w` at the *same* `ξ`, which is `Monotone` verbatim (D4).
     Neither `hd` nor `hnp` is needed for this direction — they are carried only so the
@@ -66,8 +66,8 @@ theorem endurance_forces_monotone {Comm : Type} {Γ : Commitment Comm} {φ : Cla
   obtain ⟨c, hc⟩ := S.completeness w ξ hφ
   exact hsound w c hc w' ξ hww'
 
-/-- Result 2, packaged as a single iff (statement-v0.2 §3). STABLE, both directions,
-    `sorry`-free. -/
+/-- Result 2, packaged as a single iff (see `../eon-ealm.md`'s Result 2). STABLE, both
+    directions, `sorry`-free. -/
 theorem endurance_iff_monotone {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
     (hd : Determined φ) (hnp : NPMembership (determinedProj φ hd)) :
     (∃ S : Scheme Γ φ, EnduringSound S) ↔ Monotone φ := by

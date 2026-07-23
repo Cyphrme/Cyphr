@@ -2,21 +2,22 @@
 # Model — D0 (Records), D1 (Worlds), D2 (Claims)
 
 Layer L (logical, idealized-binding) only; see the root module `EonEalm` for the
-Layer L / Layer C split and the STABLE/⚠ partition this scaffold follows.
+Layer L / Layer C split and the STABLE/⚠ partition this package follows.
 
 No Mathlib dependency: the extension order `⊑` is the list-prefix relation, defined
 and proved reflexive/transitive/antisymmetric directly rather than borrowed from a
 `Preorder`/`List.IsPrefix` typeclass — keeping the trust base as small as
-`EMLProof.Foundations` keeps eml's (four structural axioms; see the Friction note in
-`EonEalm`'s root doc-comment for why this module does not import `EMLProof` directly).
+`EMLProof.Foundations` keeps eml's (four structural axioms; see the Scope and
+limitations note in `EonEalm`'s root doc-comment for why this module does not import
+`EMLProof` directly).
 -/
 
 namespace EonEalm
 
 /-- D0: the entry alphabet Σ, abstract (countable, poly-time-computable length measure
     |·| — the length measure itself is not modeled at Layer L; it is Layer C's proof-size
-    bound, `E1`'s `|P(w)| ≤ poly(|w|)` clause, and this scaffold does not encode
-    complexity bounds at all, per the root module's Friction note). -/
+    bound, `E1`'s `|P(w)| ≤ poly(|w|)` clause, and this package does not encode
+    complexity bounds at all, per the root module's Scope and limitations note). -/
 axiom Entry : Type
 
 /-- D0: record space R = Σ*, records are finite lists of entries; (R, ⊑) is a poset with
@@ -24,7 +25,7 @@ axiom Entry : Type
 abbrev Record := List Entry
 
 /-- D0 extension order ⊑ = prefix order (what a Merkle log realizes; the sub-multiset
-    CRDT variant is `[choice]`-deferred per the source spec, not modeled here). -/
+    CRDT variant is `[choice]`-deferred per the source statement, not modeled here). -/
 def Ext (w w' : Record) : Prop := ∃ u : List Entry, w' = w ++ u
 
 @[inherit_doc] scoped infix:50 " ⊑ " => Ext
