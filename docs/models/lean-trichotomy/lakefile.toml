@@ -1,0 +1,21 @@
+name = "Trichotomy"
+version = "0.1.0"
+keywords = ["math"]
+defaultTargets = ["Trichotomy"]
+
+[leanOptions]
+pp.unicode.fun = true # pretty-prints `fun a ↦ b`
+relaxedAutoImplicit = false
+
+# Probe P1 (Trust Trichotomy, COMP stratum) builds directly on the mechanized
+# EON/EALM corpus. Path require, not a git require: this package lives beside
+# `../lean` in this same repo, mirroring `lean-eml-bridge`'s convention. No
+# Mathlib: P1's local hypotheses (Entry-encodability, decidable Chk/VC) are
+# spelled out by hand rather than via Mathlib's `Countable`/`Decidable`
+# machinery — see `Trichotomy.lean`'s module doc-comment for why.
+[[require]]
+name = "EonEalm"
+path = "../lean"
+
+[[lean_lib]]
+name = "Trichotomy"
