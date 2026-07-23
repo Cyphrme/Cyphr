@@ -1,4 +1,5 @@
 import EonEalm.Model
+import EonEalm.Axes
 
 /-!
 # Transport — the R-conservation transport law (4.3-T), mechanized
@@ -326,5 +327,59 @@ theorem revokedClaim_not_pi_coherent (ξ : Context) :
   exact revokedClaim_not_monotone e ξ this
 
 end DestroysCase
+
+section EonEalmBridge
+
+/-! ## Closing the seam (§6.4): the parameterized copy IS EON/EALM's own
+
+The module doc-comment's fidelity claim — "same definitions, same proofs,
+generic over an abstract entry-type argument" — is checked here directly
+rather than asserted: at `E := EonEalm.Entry`, every parameterized notion
+above is **definitionally** (not merely propositionally) equal to the
+fixed-`Entry` original it copies, because substituting the one axiom for the
+parameter is the *only* difference the copy introduces. Each bridge is
+`rfl`: no unfolding lemma, no induction, nothing to diverge on. -/
+
+theorem recordOf_entry_eq : RecordOf EonEalm.Entry = EonEalm.Record := rfl
+
+theorem extOf_entry_eq : (ExtOf (E := EonEalm.Entry)) = EonEalm.Ext := rfl
+
+theorem claimOf_entry_eq : ClaimOf EonEalm.Entry = EonEalm.Claim := rfl
+
+theorem determinedOf_entry_eq :
+    (DeterminedOf (E := EonEalm.Entry)) = EonEalm.Determined := rfl
+
+theorem monotoneOf_entry_eq :
+    (MonotoneOf (E := EonEalm.Entry)) = EonEalm.Monotone := rfl
+
+end EonEalmBridge
+
+section GenuinePayoff
+
+/-! ## The genuine EON/EALM payoff (§6.4, closed)
+
+The bridge above means `EntryR := EonEalm.Entry` is not merely "a stand-in
+alphabet the same size as `Entry`" — it *is* `Entry`, so a hypothesis stated
+as `EonEalm.Determined`/`EonEalm.Monotone` (an actual claim over actual
+EON/EALM records) already has the type the transport theorems need, and
+their conclusions already read as actual `EonEalm.Determined`/`Monotone`
+statements. No restatement, no `▸`, no coercion: elaboration accepts
+`hd : EonEalm.Determined φ` where `DeterminedOf φ` is expected because the
+two are the same proposition. -/
+
+/-- **Transport applies to genuine EON/EALM claims**: for any real
+    `φ : EonEalm.Claim`, erasure-pullback along the coproduct extension
+    `Entry ⊕ New` both preserves and reflects `EonEalm.Determined` and
+    `EonEalm.Monotone` — the destroys-case (`revokedClaim_not_pi_coherent`)
+    is the demonstration that this is the tightest true statement: preserved
+    for π-coherent claims, and NOT provable for the wider ρ-coherent class
+    the destroys-case inhabits. -/
+theorem transport_applies_to_eonEalm (New : Type) {φ : EonEalm.Claim} :
+    (DeterminedOf (erasurePullback EonEalm.Entry New φ) ↔ EonEalm.Determined φ) ∧
+    (MonotoneOf (erasurePullback EonEalm.Entry New φ) ↔ EonEalm.Monotone φ) :=
+  ⟨erasurePullback_determined_iff EonEalm.Entry New,
+   erasurePullback_monotone_iff EonEalm.Entry New⟩
+
+end GenuinePayoff
 
 end Trichotomy.Transport
