@@ -1,0 +1,11 @@
+name = "EonEalm"
+version = "0.1.0"
+keywords = ["math"]
+defaultTargets = ["EonEalm"]
+
+[leanOptions]
+pp.unicode.fun = true # pretty-prints `fun a ↦ b`
+relaxedAutoImplicit = false
+
+[[lean_lib]]
+name = "EonEalm"
