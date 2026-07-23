@@ -185,4 +185,113 @@ theorem trichotomy_DEC_iff {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
     obtain ⟨Witness, Chk, ⟨hChkDec⟩, hnp⟩ := hdec
     exact trichotomy_P1 Γ φ hd Witness Chk hnp hm hChkDec hVCDec
 
+/-! ## TT-snap(DEC) — the snapshot-sound biconditional (§3.4's cheapest gap)
+
+The snapshot analogue of `trichotomy_DEC_iff`: drop `EnduringSound`'s temporal
+reach and the `Monotone` conjunct, since a snapshot-sound scheme need only
+certify the record it is checked against, not endure past it.
+
+**Obstruction found — reported, not silently absorbed.** The dispatch
+predicted this leg is `trichotomy_P1` minus endurance, provable from exactly
+`hChkDec`/`hVCDec`, no new hypothesis. That prediction does NOT survive
+unchanged. `trichotomy_P1`'s (⟸) construction, `enduringScheme`, proves
+`SnapshotSound` only by first proving `EnduringSound`
+(`enduringSound_snapshotSound`), and `enduringScheme_enduringSound` needs
+`Monotone` to bridge the certificate's record `c.1` to the record `w` actually
+being checked (`Γ.soundness` only yields `c.1 ⊑ w`, an extension, not
+`c.1 = w`) — so `enduringScheme` cannot supply a snapshot-only proof without
+`Monotone` after all, exactly the kind of obstruction flagged as STOP-worthy.
+
+The genuinely snapshot-only construction is `EonEalm.snapshotScheme`
+(Result 1) instead: its verifier checks the certificate's record against `h`
+by **raw equality** (`Γ.C c.1 = h`), never a `VC`-relation, precisely because
+a snapshot verifier commits to *this* record, not one reached from an earlier
+one by `Monotone`. But that equality check's decidability is
+`Decidable (Γ.C c.1 = h)` — decidable equality *on `Comm`* at those two
+points — which neither `hChkDec` (about `Chk`) nor `hVCDec` (about the
+abstract relation `Γ.VC`, not `=`) supplies; `VC`-decidability says nothing
+about deciding raw `Comm` equality. The honest fix adds exactly this one
+hypothesis (`hCommDec`), spelled out the same way the file already spells out
+`hChkDec`/`hVCDec` (a bare `Prop` hypothesis, resolved via `haveI`, per the
+module doc-comment's rationale) — not a weakening (no conjunct dropped, no
+`sorry`) and not `Monotone` returning, but a distinct, minimal, unavoidable
+requirement specific to the snapshot-only construction. -/
+
+/-- **TT-snap(DEC), ⟸ direction.** Given a determined claim `φ` whose Σ₁
+    witness-checker `Chk` is decidable, and decidable equality on the
+    commitment codomain `Comm` (`hCommDec` — the extra hypothesis this
+    direction needs beyond `trichotomy_P1`'s, see the section doc-comment),
+    `φ` admits a snapshot-sound scheme with a decidable verifier.
+    `EonEalm.snapshotScheme` verbatim; no `Monotone` hypothesis anywhere. -/
+theorem trichotomy_snap_P1
+    {Comm : Type} (Γ : Commitment Comm)
+    (φ : Claim) (hd : Determined φ)
+    (Witness : Type) (Chk : Record → Witness → Prop)
+    (hnp : ∀ w, determinedProj φ hd w ↔ ∃ t, Chk w t)
+    (hChkDec : ∀ w t, Decidable (Chk w t))
+    (hCommDec : ∀ a b : Comm, Decidable (a = b)) :
+    ∃ S : Scheme Γ φ, SnapshotSound S ∧ Nonempty (∀ h c, Decidable (S.V h c)) := by
+  refine ⟨snapshotScheme Γ φ hd Witness Chk hnp,
+    snapshotScheme_snapshotSound Γ φ hd Witness Chk hnp, ⟨fun h c => ?_⟩⟩
+  haveI := hChkDec c.1 c.2
+  haveI := hCommDec (Γ.C c.1) h
+  -- `snapshotScheme`'s `V h c := Γ.C c.1 = h ∧ Chk c.1 c.2` (certificate type
+  -- `Record × Witness`, so `c.2 : Witness` directly, unlike `enduringScheme`'s
+  -- right-associated triple). `show` unfolds the `def`-hidden `V`.
+  show Decidable (Γ.C c.1 = h ∧ Chk c.1 c.2)
+  infer_instance
+
+/-- **TT-snap(DEC), ⟹ direction.** Any snapshot-sound scheme with a decidable
+    verifier forces `φ` determined and `DecMembership` at its determined
+    projection — `trichotomy_P1_forward` minus the `Monotone` conjunct (that
+    conjunct's derivation there used `EnduringSound`'s reach past the
+    certificate's own record; nothing here needs it). -/
+theorem trichotomy_snap_P1_forward {Comm : Type} {Γ : Commitment Comm} {φ : Claim}
+    (S : Scheme Γ φ) (hssound : SnapshotSound S)
+    (hVDec : Nonempty (∀ h c, Decidable (S.V h c))) :
+    ∃ hd : Determined φ, DecMembership (determinedProj φ hd) := by
+  have hd : Determined φ := snapshot_characterization_determined S hssound
+  obtain ⟨hVDecFun⟩ := hVDec
+  have hiff : ∀ w, determinedProj φ hd w ↔ ∃ t, S.V (Γ.C w) t := by
+    intro w
+    constructor
+    · intro hφproj
+      have hφ : φ w default := (determinedProj_iff hd w default).mp hφproj
+      exact S.completeness w default hφ
+    · rintro ⟨t, ht⟩
+      exact (determinedProj_iff hd w default).mpr (hssound w t ht default)
+  exact ⟨hd, ⟨S.Proof, fun w t => S.V (Γ.C w) t, ⟨fun w t => hVDecFun (Γ.C w) t⟩, hiff⟩⟩
+
+/-- **The TT-snap(DEC) biconditional.** Fixing a commitment `Γ` with decidable
+    equality on `Comm` (the obstruction the section doc-comment reports), `φ`
+    admits a snapshot-sound scheme with a decidable verifier iff `φ` is
+    `Determined` and `DecMembership` at its determined projection — the
+    snapshot mirror of `trichotomy_DEC_iff`, with no `Monotone` conjunct on
+    either side. -/
+theorem trichotomy_snap_DEC_iff
+    {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
+    (hCommDec : ∀ a b : Comm, Decidable (a = b)) :
+    (∃ S : Scheme Γ φ, SnapshotSound S ∧ Nonempty (∀ h c, Decidable (S.V h c))) ↔
+      ∃ hd : Determined φ, DecMembership (determinedProj φ hd) := by
+  constructor
+  · rintro ⟨S, hssound, hVDec⟩
+    exact trichotomy_snap_P1_forward S hssound hVDec
+  · rintro ⟨hd, hdec⟩
+    obtain ⟨Witness, Chk, ⟨hChkDec⟩, hnp⟩ := hdec
+    exact trichotomy_snap_P1 Γ φ hd Witness Chk hnp hChkDec hCommDec
+
+/-! ## `npMembership_trivial` — the honesty lemma (§3.4's standing obligation)
+
+`EonEalm.NPMembership` (`Schemes.lean:40-41`) is vacuously satisfiable for
+*any* predicate — this is the in-code record of exactly why: it means the
+mechanized Results 1–3 (built on `NPMembership`) sit at the ALL stratum, not
+genuinely at NP, until a non-vacuous witness (the inclusion-claim strengthening
+named in the statement draft, still unlanded) replaces it. -/
+
+/-- **`NPMembership` is trivial**: every predicate `ψ` satisfies it, witnessed
+    by `Unit` and `Chk w _ := ψ w` — the same construction the statement
+    draft's honesty note names for `NPMembership` at `Schemes.lean:40-41`. -/
+theorem npMembership_trivial (ψ : Record → Prop) : NPMembership ψ :=
+  ⟨Unit, fun w _ => ψ w, fun _w => ⟨fun h => ⟨(), h⟩, fun ⟨_, h⟩ => h⟩⟩
+
 end Trichotomy
