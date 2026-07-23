@@ -1,0 +1,28 @@
+name = "EonEalmEml"
+version = "0.1.0"
+keywords = ["math"]
+defaultTargets = ["EonEalmEml"]
+
+[leanOptions]
+pp.unicode.fun = true # pretty-prints `fun a ↦ b`
+relaxedAutoImplicit = false
+
+# The entry-level bridge instantiates EonEalm.Commitment with eml's real
+# positional-Merkle commitment, so it needs both corpora. Path requires,
+# not git requires: this module lives beside `../lean` (EonEalm, no
+# Mathlib) in this repo, and cites `Cyphrme/eml`'s Lean package as a
+# sibling checkout (`../../../../eml/proofs/lean`, i.e.
+# `Cyphrme/eml/proofs/lean` next to this repo's own root) rather than
+# vendoring or pinning a rev — this is deliberately a local, unshipped
+# bridge (see EonEalmEml.lean's module doc-comment), not part of either
+# corpus's own build.
+[[require]]
+name = "EonEalm"
+path = "../lean"
+
+[[require]]
+name = "EMLProof"
+path = "../../../../eml/proofs/lean"
+
+[[lean_lib]]
+name = "EonEalmEml"
