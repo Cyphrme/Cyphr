@@ -19,6 +19,14 @@ variable (k : Nat) (hk : 2 ≤ k) (leafDigest : Entry → Digest)
   (hleaf : Function.Injective leafDigest) (hH : ¬ NodeHashCollision) (hN : ¬ CollapseAmbiguity)
   (φ : Claim) (hd : Determined φ) (hnp : NPMembership (determinedProj φ hd))
 
+/-- **Snapshot Characterization holds for eml's real entry-level log** (see
+    `../eon-ealm.md`'s Result 1): `φ` admits a snapshot-sound scheme over eml's
+    commitment iff it is record-determined and its determined projection is in NP. -/
+theorem eml_snapshot_characterization :
+    (∃ S : Scheme (emlCommitment k hk leafDigest hleaf hH hN) φ, SnapshotSound S) ↔
+      ∃ hd : Determined φ, NPMembership (determinedProj φ hd) :=
+  snapshot_characterization (emlCommitment k hk leafDigest hleaf hH hN) φ
+
 include hd hnp in
 /-- **EALM holds for eml's real entry-level log** (see `../eon-ealm.md`'s Result 2),
     conditional on eml's own no-collision hypotheses and `leafDigest`'s injectivity. -/

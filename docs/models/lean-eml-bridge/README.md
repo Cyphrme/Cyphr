@@ -10,13 +10,17 @@ for the core package this one depends on.
 
 ## What is proved
 
-`EonEalm.endurance_iff_monotone` and `EonEalm.eon_trilemma_impossibility`
-are universally quantified over *any* `EonEalm.Commitment Comm` — so
-once this package discharges that structure's three obligations
-(`binding`, `soundness`, `completeness`) for eml's log, the two results
-specialize immediately, with no new proof content beyond the concrete
-commitment:
+`EonEalm.snapshot_characterization`, `EonEalm.endurance_iff_monotone`, and
+`EonEalm.eon_trilemma_impossibility` are universally quantified over *any*
+`EonEalm.Commitment Comm` — so once this package discharges that structure's
+three obligations (`binding`, `soundness`, `completeness`) for eml's log, all
+three results specialize immediately, with no new proof content beyond the
+concrete commitment:
 
+- **`EonEalmEml.eml_snapshot_characterization`** — Snapshot Characterization
+  holds for eml's entry-level log: a claim admits a snapshot-sound scheme
+  over eml's commitment iff it is record-determined and its determined
+  projection is in NP.
 - **`EonEalmEml.eml_endurance_iff_monotone`** — EALM holds for eml's
   entry-level log: a record-determined, NP claim admits an
   enduring-sound scheme over eml's commitment iff it is monotone.
@@ -81,7 +85,7 @@ proves.
 | File | Contents |
 | :-- | :-- |
 | `EonEalmEml/Bridge.lean` | `emlCommitment`: the `EonEalm.Commitment (Digest × Nat)` instance over eml's k-ary root, discharging `binding`, `soundness`, and `completeness` against eml's `EMLProof.KaryConsistency` lemmas. |
-| `EonEalmEml.lean` | The two specialized headline theorems (`eml_endurance_iff_monotone`, `eml_eon_trilemma_impossibility`), each a direct application of the core theorem to `emlCommitment`. |
+| `EonEalmEml.lean` | The three specialized headline theorems (`eml_snapshot_characterization`, `eml_endurance_iff_monotone`, `eml_eon_trilemma_impossibility`), each a direct application of the core theorem to `emlCommitment`. |
 
 ## Build and verify
 
