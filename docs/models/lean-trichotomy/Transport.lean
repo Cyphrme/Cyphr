@@ -120,6 +120,14 @@ theorem pi_monotone_ext {w' w'' : RecordOf (EntryR' EntryR New)}
   obtain ⟨u', hu'⟩ := h
   exact ⟨pi EntryR New u', by rw [hu', pi_append]⟩
 
+/-- `ι̂` is `⊑`-order-preserving — the mirror of `pi_monotone_ext`, needed for
+    the reflection direction below: embedding a pure-R extension along `ι̂`
+    stays an extension after embedding. -/
+theorem iotaHat_monotone_ext {w w' : RecordOf EntryR}
+    (h : w ⊑ w') : iotaHat EntryR New w ⊑ iotaHat EntryR New w' := by
+  obtain ⟨u, hu⟩ := h
+  exact ⟨iotaHat EntryR New u, by rw [hu, iotaHat_append]⟩
+
 /-- **Reflection**: `π ∘ ι̂ = id` — erasing `New`-entries after embedding a
     pure-R record is the identity, since every embedded entry is `Sum.inl`. -/
 theorem pi_iotaHat (w : RecordOf EntryR) :
@@ -159,6 +167,73 @@ theorem erasurePullback_monotone {φ : ClaimOf EntryR} (hm : MonotoneOf φ) :
 theorem erasurePullback_determined {φ : ClaimOf EntryR} (hd : DeterminedOf φ) :
     DeterminedOf (erasurePullback EntryR New φ) :=
   fun w' ξ ξ' => hd (pi EntryR New w') ξ ξ'
+
+/-! ## Reflection — Neutral cures are uninhabited off the complexity axis
+(statement-draft §4.3-T's corollary, §4.3's "Neutral cures exist only on the
+complexity axis"). The section `π ∘ ι̂ = id` (`pi_iotaHat`) means
+erasure-pullback does not merely preserve `Determined`/`Monotone` — it
+*reflects* their failure too: pull a witness back along `ι̂`, run the
+preservation-direction argument on it, then erase along `π ∘ ι̂ = id` to land
+exactly where it started. -/
+
+/-- **Reflection, monotonicity half**: if the erasure-pullback of `φ` is
+    `Monotone`, so was `φ` — the converse of `erasurePullback_monotone`, via
+    `ι̂`'s order-preservation (`iotaHat_monotone_ext`) and the section
+    `π ∘ ι̂ = id` (`pi_iotaHat`). -/
+theorem erasurePullback_reflects_monotone {φ : ClaimOf EntryR}
+    (hrefl : MonotoneOf (erasurePullback EntryR New φ)) : MonotoneOf φ := by
+  intro w w' ξ hφ hext
+  -- The `have`'s type ascription unfolds `erasurePullback` by defeq
+  -- (delta+beta only — no induction, valid for a free variable); the
+  -- further reduction `pi (iotaHat _) = _` is `pi_iotaHat`, a proved
+  -- equality (by induction), not defeq, so it needs an explicit `rw`.
+  have h1 : erasurePullback EntryR New φ (iotaHat EntryR New w) ξ := by
+    show φ (pi EntryR New (iotaHat EntryR New w)) ξ
+    rwa [pi_iotaHat]
+  have h2 : φ (pi EntryR New (iotaHat EntryR New w')) ξ :=
+    hrefl (iotaHat EntryR New w) (iotaHat EntryR New w') ξ h1
+      (iotaHat_monotone_ext EntryR New hext)
+  rwa [pi_iotaHat] at h2
+
+/-- **Reflection, determination half**: if the erasure-pullback of `φ` is
+    `Determined`, so was `φ` — instantiate at `ι̂ w` and erase back via
+    `π ∘ ι̂ = id`. -/
+theorem erasurePullback_reflects_determined {φ : ClaimOf EntryR}
+    (hrefl : DeterminedOf (erasurePullback EntryR New φ)) : DeterminedOf φ := by
+  intro w ξ ξ'
+  -- Ascribed type unfolds `erasurePullback` by defeq (delta+beta); `at`
+  -- doesn't apply to `show`, so the unfold is done via the `have`'s type
+  -- annotation instead, then `pi_iotaHat` closes the rest by `rw`.
+  have h : φ (pi EntryR New (iotaHat EntryR New w)) ξ ↔
+      φ (pi EntryR New (iotaHat EntryR New w)) ξ' :=
+    hrefl (iotaHat EntryR New w) ξ ξ'
+  rwa [pi_iotaHat] at h
+
+/-- Erasure-pullback preserves AND reflects `Monotone` — a π-coherent claim's
+    monotonicity status is exactly its pre-image's, in both directions. -/
+theorem erasurePullback_monotone_iff {φ : ClaimOf EntryR} :
+    MonotoneOf (erasurePullback EntryR New φ) ↔ MonotoneOf φ :=
+  ⟨erasurePullback_reflects_monotone EntryR New, erasurePullback_monotone EntryR New⟩
+
+/-- Erasure-pullback preserves AND reflects `Determined` — a π-coherent
+    claim's determination status is exactly its pre-image's, in both
+    directions. -/
+theorem erasurePullback_determined_iff {φ : ClaimOf EntryR} :
+    DeterminedOf (erasurePullback EntryR New φ) ↔ DeterminedOf φ :=
+  ⟨erasurePullback_reflects_determined EntryR New, erasurePullback_determined EntryR New⟩
+
+/-- **Neutral cannot cure** (statement-draft §4.3's corollary from `π ∘ ι̂ =
+    id`): since erasure-pullback both preserves and reflects determination and
+    monotonicity, a Neutral (π-coherent) move cannot turn a `¬Determined` or
+    `¬Monotone` claim into a fixed one — a π-coherent `φ' = φ∘π` inherits
+    every determination and monotonicity failure of `φ` exactly, so a Neutral
+    "cure" is uninhabited for those two axes; every genuine T1/T3 cure is
+    entailment-shaped (4.3-E), never Neutral. -/
+theorem neutral_cannot_cure {φ : ClaimOf EntryR} :
+    (¬ DeterminedOf φ → ¬ DeterminedOf (erasurePullback EntryR New φ)) ∧
+    (¬ MonotoneOf φ → ¬ MonotoneOf (erasurePullback EntryR New φ)) :=
+  ⟨fun h hc => h ((erasurePullback_determined_iff EntryR New).mp hc),
+   fun h hc => h ((erasurePullback_monotone_iff EntryR New).mp hc)⟩
 
 end Transports
 
