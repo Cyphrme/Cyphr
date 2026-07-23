@@ -52,10 +52,10 @@ trilemma** (Result 3) is their composition's impossibility corner.
 * `EonEalm.Result1` — **Result 1, STABLE, both directions.**
 * `EonEalm.CollisionExtraction` — the collision-extraction reduction's general shape
   (build-order item 3), STABLE.
-* `EonEalm.Result2` — **Result 2, STABLE (⟸ construction), ⚠ (⟹, A1′ — one `sorry`).**
-* `EonEalm.Result3` — the EON trilemma's impossibility corner; its own proof body is
-  `sorry`-free but transitively inherits A1′'s `sorry` through `endurance_iff_monotone`
-  (`#print axioms EonEalm.eon_trilemma_impossibility` reports `sorryAx`).
+* `EonEalm.Result2` — **Result 2, STABLE, both directions.** A1′ retired: `⟹`
+  (`endurance_forces_monotone`) is a direct consequence of E1 + E2b, no separate
+  hypothesis needed.
+* `EonEalm.Result3` — the EON trilemma's impossibility corner, `sorry`-free.
 
 ## TCB
 Three axioms beyond Lean's built-ins (`propext`, `Classical.choice`, `Quot.sound`):

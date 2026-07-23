@@ -4,7 +4,7 @@ import EonEalm.Result1
 # Result 2 — EALM: Endurance As Logical Monotonicity
 
 Scoped inside Result 1's gate: for record-determined `φ` with `φ̂ ∈ NP`, `φ` admits an
-**enduring** scheme iff `φ̂` is monotone (D4). STABLE (⟸ construction); ⚠ (⟹, A1′).
+**enduring** scheme iff `φ̂` is monotone (D4). STABLE, both directions (A1′ retired).
 
 The (⟸) direction is the round-1-certified construction: `c := (w₀, t, π)` with
 `w₀ := w` (E1's own witness point — "E1 with w₀ := w"), `t` an NP-witness for `φ̂(w₀)`,
@@ -51,17 +51,23 @@ theorem endurance_construction {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
   exact ⟨enduringScheme Γ φ hd Witness Chk hchk,
     enduringScheme_enduringSound Γ φ hd hm Witness Chk hchk⟩
 
-/-- (⟹), ⚠ round-2 (A1′). Near-definitional per statement-v0.2 (E2b + E1) — but the
-    *force* of the claim (E2b's canonicity as "endurance", paired with Result 1's
-    characterization of what evidence additionally buys) is fresh, unattacked ground.
-    Do not discharge past this `sorry` until round 2 clears A1′. -/
+/-- (⟹). Discharged post-round-2 (A1′ retired, `break-round-2-findings.md` CV-1/CV-4):
+    immediate from `E1` (`Scheme.completeness`) + `E2b` (`EnduringSound`) — exactly
+    statement-v0.2's own characterization of the direction as "near-definitional." `hφ`
+    at `(w,ξ)` gives an accepting certificate `c` via completeness; `hsound` on that `c`
+    lifts `φ` to every `w' ⊒ w` at the *same* `ξ`, which is `Monotone` verbatim (D4).
+    Neither `hd` nor `hnp` is needed for this direction — they are carried only so the
+    signature matches `endurance_iff_monotone`'s other leg (Result 1's NP-membership
+    gate is load-bearing for the (⟸) construction, not for this one). -/
 theorem endurance_forces_monotone {Comm : Type} {Γ : Commitment Comm} {φ : Claim}
     (hd : Determined φ) (hnp : NPMembership (determinedProj φ hd)) {S : Scheme Γ φ}
     (hsound : EnduringSound S) : Monotone φ := by
-  sorry -- ⚠ round-2 (A1′): E2b canonicity + Result-1 pairing, fresh/unattacked
+  intro w w' ξ hφ hww'
+  obtain ⟨c, hc⟩ := S.completeness w ξ hφ
+  exact hsound w c hc w' ξ hww'
 
-/-- Result 2, packaged as a single iff (statement-v0.2 §3). STABLE ⟸, ⚠ ⟹ (A1′) —
-    the `sorry` lives entirely in `endurance_forces_monotone`. -/
+/-- Result 2, packaged as a single iff (statement-v0.2 §3). STABLE, both directions,
+    `sorry`-free. -/
 theorem endurance_iff_monotone {Comm : Type} (Γ : Commitment Comm) (φ : Claim)
     (hd : Determined φ) (hnp : NPMembership (determinedProj φ hd)) :
     (∃ S : Scheme Γ φ, EnduringSound S) ↔ Monotone φ := by
