@@ -1,7 +1,7 @@
 name = "Trichotomy"
 version = "0.1.0"
 keywords = ["math"]
-defaultTargets = ["Trichotomy"]
+defaultTargets = ["Trichotomy", "Transport"]
 
 [leanOptions]
 pp.unicode.fun = true # pretty-prints `fun a ↦ b`
@@ -19,3 +19,11 @@ path = "../lean"
 
 [[lean_lib]]
 name = "Trichotomy"
+
+# The 4.3-T transport-law mechanization (dispatch: mechanize R-conservation
+# transport law). Its own lib target so `Trichotomy.lean`'s landed P1
+# mechanization stays untouched -- see `Transport.lean`'s module doc-comment
+# for why this needs a parameterized copy of `EonEalm.Model`/`Axes` rather
+# than an import.
+[[lean_lib]]
+name = "Transport"
