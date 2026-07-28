@@ -19,6 +19,11 @@ use common::{
     attestor_server, build_genesis_push_body, get_json, load_pool, post_json,
 };
 
+const CORRUPT_PR: &str = "SHA-256:CORRUPTED_PR_9999999999999999999999999999999999999999";
+const CORRUPT_SR: &str = "SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999";
+const CORRUPT_AR: &str = "SHA-256:CORRUPTED_AR_9999999999999999999999999999999999999999";
+const CORRUPT_CR: &str = "SHA-256:CORRUPTED_CR_9999999999999999999999999999999999999999";
+
 /// Helper: Corrupt the indexer's tip state for `principal_id` by injecting a
 /// fake IndexableCommit with sequence 99 and corrupted root strings.
 async fn corrupt_indexer_tip(
@@ -31,10 +36,10 @@ async fn corrupt_indexer_tip(
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_ID_999999999999999999999999".to_string()],
         sequence: 99,
         pre: None,
-        prs: vec!["SHA-256:CORRUPTED_PR_9999999999999999999999999999999999999999".to_string()],
-        srs: vec!["SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999".to_string()],
-        ars: vec!["SHA-256:CORRUPTED_AR_9999999999999999999999999999999999999999".to_string()],
-        crs: vec!["SHA-256:CORRUPTED_CR_9999999999999999999999999999999999999999".to_string()],
+        prs: vec![CORRUPT_PR.to_string()],
+        srs: vec![CORRUPT_SR.to_string()],
+        ars: vec![CORRUPT_AR.to_string()],
+        crs: vec![CORRUPT_CR.to_string()],
         blob_hashes: vec![dummy_hash],
         cozies: vec![],
         timestamp: 1_700_000_000,
@@ -48,7 +53,7 @@ async fn corrupt_indexer_tip(
         .expect("corrupt index_commit");
 }
 
-/// N0b.1 & N0b.5: Every signing path (both /tip and /push) re-derives its
+/// N0b.1 & N0b.5: Every signing path (both GET /tip and POST /push) re-derives its
 /// roots from the blob store rather than using corrupted/stale index projections.
 #[tokio::test]
 async fn roots_derive_from_blobs() {
@@ -74,29 +79,69 @@ async fn roots_derive_from_blobs() {
         .await
         .unwrap()
         .expect("tip exists");
-    assert_eq!(index_tip.sr, "SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999");
+    assert_eq!(index_tip.pr, CORRUPT_PR);
+    assert_eq!(index_tip.sr, CORRUPT_SR);
+    assert_eq!(index_tip.ar, CORRUPT_AR);
+    assert_eq!(index_tip.cr, CORRUPT_CR);
 
-    // 3. GET /tip MUST NOT return a receipt signed over the corrupted index values.
+    // 3. GET /tip MUST NOT return a receipt signed over corrupted index values (all 4 root fields).
     let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
 
     if tip_status == StatusCode::OK {
-        // If it succeeded, its signed roots MUST NOT be the corrupted index roots!
+        // If it succeeded, its signed roots MUST NOT match any of the corrupted index roots!
         let coz_roots = &tip_body["statement"]["coz"]["pay"]["roots"];
         assert_ne!(
-            coz_roots["sr"],
-            "SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999",
-            "attestation MUST NOT sign corrupted index state: {tip_body:?}"
+            coz_roots["pr"], CORRUPT_PR,
+            "attestation MUST NOT sign corrupted index pr: {tip_body:?}"
         );
         assert_ne!(
-            coz_roots["pr"],
-            "SHA-256:CORRUPTED_PR_9999999999999999999999999999999999999999",
-            "attestation MUST NOT sign corrupted index state: {tip_body:?}"
+            coz_roots["sr"], CORRUPT_SR,
+            "attestation MUST NOT sign corrupted index sr: {tip_body:?}"
+        );
+        assert_ne!(
+            coz_roots["ar"], CORRUPT_AR,
+            "attestation MUST NOT sign corrupted index ar: {tip_body:?}"
+        );
+        assert_ne!(
+            coz_roots["cr"], CORRUPT_CR,
+            "attestation MUST NOT sign corrupted index cr: {tip_body:?}"
         );
     } else {
         // Failing due to corrupted index is also valid behavior under N0b.2/N0b.3.
         assert!(
             tip_status.is_client_error() || tip_status.is_server_error(),
             "expected error status when index is corrupted, got: {tip_status}"
+        );
+    }
+
+    // 4. POST /push under corrupted index MUST NOT return a commit receipt signed over corrupted index values.
+    let push_principal = "test-roots-derive-from-blobs-push";
+    corrupt_indexer_tip(&state, push_principal).await;
+    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+
+    let (push_status, push_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
+    if push_status == StatusCode::CREATED {
+        let coz_roots = &push_res["statement"]["coz"]["pay"]["roots"];
+        assert_ne!(
+            coz_roots["pr"], CORRUPT_PR,
+            "push attestation MUST NOT sign corrupted index pr: {push_res:?}"
+        );
+        assert_ne!(
+            coz_roots["sr"], CORRUPT_SR,
+            "push attestation MUST NOT sign corrupted index sr: {push_res:?}"
+        );
+        assert_ne!(
+            coz_roots["ar"], CORRUPT_AR,
+            "push attestation MUST NOT sign corrupted index ar: {push_res:?}"
+        );
+        assert_ne!(
+            coz_roots["cr"], CORRUPT_CR,
+            "push attestation MUST NOT sign corrupted index cr: {push_res:?}"
+        );
+    } else {
+        assert!(
+            push_status.is_client_error() || push_status.is_server_error(),
+            "expected error status for push when index is corrupted, got: {push_status}"
         );
     }
 }
@@ -122,18 +167,41 @@ async fn stale_index_fails_attestation() {
     // 3. GET /tip with stale/corrupted index MUST FAIL attestation.
     // Signing cache content is forbidden — it MUST NOT return 200 OK with a signed statement over corrupted cache data.
     let (tip_status, tip_body) = get_json(app.clone(), &format!("/tip?pr={principal_id}")).await;
-    let is_signed_corrupt = tip_status == StatusCode::OK
+    let is_signed_corrupt_tip = tip_status == StatusCode::OK
         && tip_body["statement"]["kind"] == "signed"
-        && tip_body["statement"]["coz"]["pay"]["roots"]["sr"]
-            == "SHA-256:CORRUPTED_SR_9999999999999999999999999999999999999999";
+        && (tip_body["statement"]["coz"]["pay"]["roots"]["pr"] == CORRUPT_PR
+            || tip_body["statement"]["coz"]["pay"]["roots"]["sr"] == CORRUPT_SR
+            || tip_body["statement"]["coz"]["pay"]["roots"]["ar"] == CORRUPT_AR
+            || tip_body["statement"]["coz"]["pay"]["roots"]["cr"] == CORRUPT_CR);
     assert!(
-        !is_signed_corrupt,
-        "attestation MUST FAIL when index is corrupted, but got 200 OK signing corrupted cache: {tip_body:?}"
+        !is_signed_corrupt_tip,
+        "GET /tip attestation MUST FAIL when index is corrupted, but got 200 OK signing corrupted cache: {tip_body:?}"
     );
     assert_ne!(
         tip_status,
         StatusCode::OK,
         "GET /tip MUST FAIL when index is corrupted/desynchronized"
+    );
+
+    // 4. POST /push with stale/corrupted index MUST FAIL attestation.
+    let push_principal = "test-stale-index-fails-push";
+    corrupt_indexer_tip(&state, push_principal).await;
+    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+    let (push_status, push_body_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
+
+    let is_signed_corrupt_push = push_status == StatusCode::CREATED
+        && push_body_res["statement"]["kind"] == "signed"
+        && (push_body_res["statement"]["coz"]["pay"]["roots"]["pr"] == CORRUPT_PR
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["sr"] == CORRUPT_SR
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["ar"] == CORRUPT_AR
+            || push_body_res["statement"]["coz"]["pay"]["roots"]["cr"] == CORRUPT_CR);
+    assert!(
+        !is_signed_corrupt_push,
+        "POST /push attestation MUST FAIL when index is corrupted, but got 201 Created signing corrupted cache: {push_body_res:?}"
+    );
+    assert!(
+        push_status.is_client_error() || push_status.is_server_error(),
+        "POST /push MUST FAIL when index is corrupted/desynchronized, got status: {push_status}"
     );
 }
 
@@ -164,14 +232,45 @@ async fn failure_is_typed_not_silent() {
         "attestation failure must return an error status, got {tip_status} with body: {tip_body:?}"
     );
 
-    // Body must be a typed AppError containing an explicit message about attestation / root / index failure.
+    // Body must be a typed AppError JSON object containing an explicit error message field ('error' or 'message').
+    assert!(
+        tip_body.is_object(),
+        "error response body must be a JSON object, got: {tip_body:?}"
+    );
     let err_msg = tip_body["error"]
         .as_str()
         .or_else(|| tip_body["message"].as_str())
-        .expect("response body must carry a typed error message field");
+        .expect("response body must carry a typed error message field ('error' or 'message')");
+
+    let lower_msg = err_msg.to_lowercase();
+    assert!(
+        lower_msg.contains("attestation") || lower_msg.contains("root") || lower_msg.contains("index"),
+        "typed error message must explicitly name attestation, root, or index failure, got: {err_msg:?}"
+    );
+
+    // 4. POST /push under corrupted index must also fail with a typed error message.
+    let push_principal = "test-failure-is-typed-push";
+    corrupt_indexer_tip(&state, push_principal).await;
+    let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
+    let (push_status, push_res_body) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     assert!(
-        !err_msg.is_empty(),
-        "error message must not be empty"
+        push_status.is_client_error() || push_status.is_server_error(),
+        "push attestation failure must return an error status, got {push_status} with body: {push_res_body:?}"
+    );
+    assert!(
+        push_res_body.is_object(),
+        "push error response body must be a JSON object, got: {push_res_body:?}"
+    );
+    let push_err_msg = push_res_body["error"]
+        .as_str()
+        .or_else(|| push_res_body["message"].as_str())
+        .expect("push response body must carry a typed error message field ('error' or 'message')");
+
+    let push_lower_msg = push_err_msg.to_lowercase();
+    assert!(
+        push_lower_msg.contains("attestation") || push_lower_msg.contains("root") || push_lower_msg.contains("index"),
+        "push typed error message must explicitly name attestation, root, or index failure, got: {push_err_msg:?}"
     );
 }
+
