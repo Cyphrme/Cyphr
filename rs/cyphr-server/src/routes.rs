@@ -38,7 +38,7 @@ pub struct PatchQuery {
 }
 
 /// Request body for `POST /push`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     /// Principal genesis identifier.
     pub principal_id: String,
@@ -395,6 +395,12 @@ pub async fn push(
         .await
         .map_err(AppError::engine)?
         .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
+
+    crate::fanout::spawn_fanout(
+        state.clone(),
+        request.principal_id.clone(),
+        request.blobs.clone(),
+    );
 
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
@@ -829,11 +835,13 @@ pub async fn witness_register_get(
     axum::extract::Query(query): axum::extract::Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let (active_witnesses, last_updated) = state.registration.get_witnesses(&query.pr);
+    let deliveries = state.fanout.get_deliveries(&query.pr, &active_witnesses);
 
     let payload = serde_json::json!({
         "principal_id": query.pr,
         "witnesses": active_witnesses,
         "last_updated": last_updated,
+        "deliveries": deliveries,
     });
 
     let env = crate::envelope::Envelope::unsigned(payload);
