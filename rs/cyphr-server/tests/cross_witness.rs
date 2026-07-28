@@ -1,14 +1,21 @@
 //! Acceptance test suite for Node N4: Cross-Witness Consistency.
 //!
 //! Evaluates criteria N4.1 – N4.6 & N4.7:
-//! - `conflicting_tips_yield_evidence` (N4.1): Conflicting tip reports from distinct witnesses yield portable equivocation evidence.
-//! - `evidence_verifies_offline` (N4.2): Equivocation evidence is self-contained and verifies offline without server cooperation.
-//! - `key_validity_interval` (N4.3): Witness key validity is strictly bounded by [first_seen, revocation) interval.
-//! - `key_validity_from_portable_proof` (N4.3a): Key validity is verified using portable key-inclusion proof, NOT in-memory Principal.
-//! - `fork_detection_ignores_self_assertion` (N4.4): Fork detection ignores unverified self-assertions and unauthenticated reports.
+//! - `conflicting_tips_yield_evidence` (N4.1): Conflicting tip reports from distinct witnesses
+//!   yield portable equivocation evidence.
+//! - `evidence_verifies_offline` (N4.2): Equivocation evidence is self-contained and verifies
+//!   offline without server cooperation.
+//! - `key_validity_interval` (N4.3): Witness key validity is strictly bounded by [first_seen,
+//!   revocation) interval.
+//! - `key_validity_from_portable_proof` (N4.3a): Key validity is verified using portable
+//!   key-inclusion proof, NOT in-memory Principal.
+//! - `fork_detection_ignores_self_assertion` (N4.4): Fork detection ignores unverified
+//!   self-assertions and unauthenticated reports.
 //! - `principal_settable_threshold` (N4.5): Principal can configure a settable witness threshold.
-//! - `agreement_produces_no_standing_claim` (N4.6): Agreement across queried witnesses produces no standing claim or alert.
-//! - `golden_disagreement_artifact_byte_stable` (N4.7): Disagreement evidence serializes deterministically matching golden vector.
+//! - `agreement_produces_no_standing_claim` (N4.6): Agreement across queried witnesses produces no
+//!   standing claim or alert.
+//! - `golden_disagreement_artifact_byte_stable` (N4.7): Disagreement evidence serializes
+//!   deterministically matching golden vector.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -74,12 +81,7 @@ fn roots_b() -> Roots {
 /// portable key inclusion testing (N4.3a).
 fn build_key_inclusion_material(
     alg: HashAlg,
-) -> (
-    Vec<cyphr::LeafProof>,
-    Vec<Vec<u8>>,
-    Thumbprint,
-    Thumbprint,
-) {
+) -> (Vec<cyphr::LeafProof>, Vec<Vec<u8>>, Thumbprint, Thumbprint) {
     let alg_id = hash_alg_to_u64(alg);
     let tmb_a = Thumbprint::from_bytes(vec![0x01; 32]);
     let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
@@ -157,17 +159,14 @@ async fn conflicting_tips_yield_evidence() {
     )
     .expect("compose tip B");
 
-    let verdict = receipt::check_equivocation(
-        &tip_a,
-        identity_a.pub_key(),
-        &tip_b,
-        identity_b.pub_key(),
-    );
+    let verdict =
+        receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
 
     assert_eq!(
         verdict,
         receipt::EquivocationVerdict::Proven,
-        "conflicting signed tip reports from distinct witnesses MUST yield proven equivocation evidence"
+        "conflicting signed tip reports from distinct witnesses MUST yield proven equivocation \
+         evidence"
     );
 
     // Call domain consistency module (cyphr_server::consistency)
@@ -177,6 +176,138 @@ async fn conflicting_tips_yield_evidence() {
     ])
     .expect("standing claim MUST be present on conflicting tips");
     assert_eq!(claim["kind"], "equivocation_evidence");
+}
+
+/// N4.1b: `three_plus_witness_array_scan`
+///
+/// Verifies that check_cross_witness_consistency scans all pairs in a 3+ witness slice
+/// and detects equivocation even when the conflicting pair is not at index 0 (e.g. index 1 vs index
+/// 2).
+#[tokio::test]
+async fn three_plus_witness_array_scan() {
+    let (_dir_w0, identity_w0) = identity_with_seed(0x11);
+    let (_dir_w1, identity_w1) = identity_with_seed(0x22);
+    let (_dir_w2, identity_w2) = identity_with_seed(0x33);
+
+    let pr_other = "n4-principal-other";
+    let pr_target = "n4-principal-target";
+    let seq = 5;
+    let now = 1_700_000_000;
+
+    let tip_w0 = receipt::tip_report(
+        &identity_w0,
+        now,
+        pr_other,
+        seq,
+        "SHA-256:commit_id_00000",
+        &roots_a(),
+        6,
+        now,
+    )
+    .expect("compose tip W0");
+
+    let tip_w1 = receipt::tip_report(
+        &identity_w1,
+        now,
+        pr_target,
+        seq,
+        "SHA-256:commit_id_11111",
+        &roots_a(),
+        6,
+        now,
+    )
+    .expect("compose tip W1");
+
+    let tip_w2 = receipt::tip_report(
+        &identity_w2,
+        now,
+        pr_target,
+        seq,
+        "SHA-256:commit_id_22222",
+        &roots_b(),
+        6,
+        now,
+    )
+    .expect("compose tip W2");
+
+    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&tip_w0, identity_w0.pub_key()),
+        (&tip_w1, identity_w1.pub_key()),
+        (&tip_w2, identity_w2.pub_key()),
+    ])
+    .expect(
+        "check_cross_witness_consistency MUST detect conflict between index 1 and index 2 in 3+ \
+         witness array",
+    );
+
+    assert_eq!(claim["kind"], "equivocation_evidence");
+    assert_eq!(claim["principal_id"], pr_target);
+    assert_eq!(claim["sequence"], seq);
+}
+
+/// N4.1c: `non_standard_json_types_surfaced_by_consistency_check`
+///
+/// Verifies that when tip reports carry non-string `pr` (e.g. integer) or non-u64 `sequence`
+/// (e.g. string), proven equivocations are NOT silently dropped by check_cross_witness_consistency.
+#[tokio::test]
+async fn non_standard_json_types_surfaced_by_consistency_check() {
+    let (_dir_a, identity_a) = identity_with_seed(0x11);
+    let (_dir_b, identity_b) = identity_with_seed(0x22);
+
+    let now = 1_700_000_000;
+
+    let mut tip_a = receipt::tip_report(
+        &identity_a,
+        now,
+        "dummy",
+        1,
+        "SHA-256:commit_id_aaaaa",
+        &roots_a(),
+        6,
+        now,
+    )
+    .expect("compose tip A");
+
+    let mut tip_b = receipt::tip_report(
+        &identity_b,
+        now,
+        "dummy",
+        1,
+        "SHA-256:commit_id_bbbbb",
+        &roots_b(),
+        6,
+        now,
+    )
+    .expect("compose tip B");
+
+    tip_a.pay["pr"] = serde_json::json!(9999);
+    tip_a.pay["sequence"] = serde_json::json!("42");
+    let pay_bytes_a = serde_json::to_vec(&tip_a.pay).unwrap();
+    let (sig_bytes_a, _cad) = identity_a.sign(&pay_bytes_a).unwrap();
+    tip_a.sig = sig_bytes_a;
+
+    tip_b.pay["pr"] = serde_json::json!(9999);
+    tip_b.pay["sequence"] = serde_json::json!("42");
+    let pay_bytes_b = serde_json::to_vec(&tip_b.pay).unwrap();
+    let (sig_bytes_b, _cad) = identity_b.sign(&pay_bytes_b).unwrap();
+    tip_b.sig = sig_bytes_b;
+
+    let verdict =
+        receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
+    assert_eq!(verdict, receipt::EquivocationVerdict::Proven);
+
+    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&tip_a, identity_a.pub_key()),
+        (&tip_b, identity_b.pub_key()),
+    ])
+    .expect(
+        "check_cross_witness_consistency MUST NOT drop proven equivocation with atypical JSON \
+         types",
+    );
+
+    assert_eq!(claim["kind"], "equivocation_evidence");
+    assert_eq!(claim["principal_id"], 9999);
+    assert_eq!(claim["sequence"], "42");
 }
 
 /// N4.2: `evidence_verifies_offline`
@@ -217,12 +348,8 @@ async fn evidence_verifies_offline() {
     )
     .expect("compose tip 2");
 
-    let verdict = receipt::check_equivocation(
-        &tip1,
-        identity_a.pub_key(),
-        &tip2,
-        identity_b.pub_key(),
-    );
+    let verdict =
+        receipt::check_equivocation(&tip1, identity_a.pub_key(), &tip2, identity_b.pub_key());
 
     assert_eq!(
         verdict,
@@ -266,47 +393,28 @@ async fn key_validity_interval() {
         tag: None,
     };
 
-    let is_key_valid_at = |k: &cyphr::Key, t: i64| -> bool {
-        if t < k.first_seen {
-            return false;
-        }
-        if let Some(rev) = &k.revocation {
-            if t >= rev.rvk {
-                return false;
-            }
-        }
-        true
-    };
-
     assert!(
-        !is_key_valid_at(&key, 1_700_099_999),
+        !cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_099_999),
         "key MUST NOT be valid before first_seen timestamp"
     );
 
     assert!(
-        is_key_valid_at(&key, 1_700_150_000),
+        cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_150_000),
         "key MUST be valid within [first_seen, revocation) interval"
     );
 
     assert!(
-        !is_key_valid_at(&key, 1_700_200_000),
+        !cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_200_000),
         "key MUST NOT be valid at or after revocation timestamp"
-    );
-
-    // Call domain consistency module (cyphr_server::consistency)
-    let evaluated_interval_validity =
-        cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_150_000);
-    assert!(
-        evaluated_interval_validity,
-        "key validity interval evaluation MUST pass for active key"
     );
 }
 
 /// N4.3a: `key_validity_from_portable_proof`
 ///
-/// Verifies key validity using a portable key-inclusion proof (`cyphr::inclusion::verify_key_inclusion`),
-/// NOT an in-memory `Principal` object. Ensures that offline cross-witness verification can establish
-/// key validity purely from self-contained proof material and a trusted Principal Root.
+/// Verifies key validity using a portable key-inclusion proof
+/// (`cyphr::inclusion::verify_key_inclusion`), NOT an in-memory `Principal` object. Ensures that
+/// offline cross-witness verification can establish key validity purely from self-contained proof
+/// material and a trusted Principal Root.
 #[tokio::test]
 async fn key_validity_from_portable_proof() {
     let alg = HashAlg::Sha256;
@@ -338,7 +446,8 @@ async fn key_validity_from_portable_proof() {
         cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs);
     assert!(
         portable_proof_result,
-        "portable key inclusion proof MUST verify witness key validity offline without in-memory Principal"
+        "portable key inclusion proof MUST verify witness key validity offline without in-memory \
+         Principal"
     );
 }
 
@@ -412,7 +521,8 @@ async fn fork_detection_ignores_self_assertion() {
     ]);
     assert!(
         claim_unverified.is_none(),
-        "unauthenticated/forged tip reports MUST NOT produce standing claim in check_cross_witness_consistency"
+        "unauthenticated/forged tip reports MUST NOT produce standing claim in \
+         check_cross_witness_consistency"
     );
 }
 
@@ -422,30 +532,20 @@ async fn fork_detection_ignores_self_assertion() {
 /// threshold for cross-witness confirmation).
 #[tokio::test]
 async fn principal_settable_threshold() {
-    let pr = "n4-principal-settable-threshold";
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct WitnessThresholdConfig {
-        principal_id: String,
-        required_witnesses: usize,
-        total_witnesses: usize,
-    }
-
-    let config = WitnessThresholdConfig {
-        principal_id: pr.to_string(),
-        required_witnesses: 2,
-        total_witnesses: 3,
-    };
-
-    assert_eq!(config.required_witnesses, 2);
-    assert_eq!(config.total_witnesses, 3);
-
     // Call domain consistency module (cyphr_server::consistency)
-    let threshold_satisfied =
-        cyphr_server::consistency::check_witness_threshold(config.required_witnesses, 2);
+    let threshold_unmet = cyphr_server::consistency::check_witness_threshold(3, 2);
+    assert!(!threshold_unmet, "actual < required MUST return false");
+
+    let threshold_boundary = cyphr_server::consistency::check_witness_threshold(2, 2);
     assert!(
-        threshold_satisfied,
-        "cross-witness agreement MUST satisfy principal settable witness threshold"
+        threshold_boundary,
+        "actual == required MUST satisfy threshold"
+    );
+
+    let threshold_exceeded = cyphr_server::consistency::check_witness_threshold(2, 3);
+    assert!(
+        threshold_exceeded,
+        "actual > required MUST satisfy threshold"
     );
 }
 
@@ -487,12 +587,8 @@ async fn agreement_produces_no_standing_claim() {
     )
     .expect("compose tip B");
 
-    let verdict = receipt::check_equivocation(
-        &tip_a,
-        identity_a.pub_key(),
-        &tip_b,
-        identity_b.pub_key(),
-    );
+    let verdict =
+        receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
 
     assert_eq!(
         verdict,
@@ -501,10 +597,11 @@ async fn agreement_produces_no_standing_claim() {
     );
 
     // Call domain consistency module (cyphr_server::consistency)
-    let standing_claim_on_agreement = cyphr_server::consistency::check_cross_witness_consistency(&[
-        (&tip_a, identity_a.pub_key()),
-        (&tip_b, identity_b.pub_key()),
-    ]);
+    let standing_claim_on_agreement =
+        cyphr_server::consistency::check_cross_witness_consistency(&[
+            (&tip_a, identity_a.pub_key()),
+            (&tip_b, identity_b.pub_key()),
+        ]);
     assert!(
         standing_claim_on_agreement.is_none(),
         "cross-witness agreement MUST produce NO standing claim"
@@ -555,13 +652,13 @@ async fn golden_disagreement_artifact_byte_stable() {
         "reports": [tip_a.clone(), tip_b.clone()],
     });
 
-    let wire = serde_json::to_string(&evidence_json).unwrap();
+    let wire = serde_json::to_string_pretty(&evidence_json).unwrap();
     assert_eq!(wire, golden("witness_disagreement.json"));
 
     // Call domain consistency module (cyphr_server::consistency)
     let formatted =
         cyphr_server::consistency::format_disagreement_evidence(pr, seq, &[tip_a, tip_b]);
-    let domain_wire = serde_json::to_string(&formatted).unwrap();
+    let domain_wire = serde_json::to_string_pretty(&formatted).unwrap();
     assert_eq!(domain_wire, golden("witness_disagreement.json"));
 }
 

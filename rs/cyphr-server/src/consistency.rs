@@ -6,9 +6,9 @@ use crate::receipt;
 /// Evaluates cross-witness consistency over a set of signed tip reports and their public keys.
 ///
 /// If any pair of signed tip reports for the same principal (`pr`) and sequence
-/// position (`sequence`) pass signature verification and contain conflicting tip state (`commit_id` or `roots`),
-/// a fork/equivocation is detected and disagreement evidence is formatted (N4.1). Unauthenticated
-/// or forged tip reports fail signature verification and are rejected upfront.
+/// position (`sequence`) pass signature verification and contain conflicting tip state (`commit_id`
+/// or `roots`), a fork/equivocation is detected and disagreement evidence is formatted (N4.1).
+/// Unauthenticated or forged tip reports fail signature verification and are rejected upfront.
 ///
 /// If all reports for matching principal/sequence agree (or no matching pair exists),
 /// no standing claim or alert is produced (N4.6), returning `None`.
@@ -22,10 +22,8 @@ pub fn check_cross_witness_consistency(
 
             let verdict = receipt::check_equivocation(a, a_pub_key, b, b_pub_key);
             if verdict == receipt::EquivocationVerdict::Proven {
-                let (Some(pr_a), Some(seq_a)) = (a.pay["pr"].as_str(), a.pay["sequence"].as_u64())
-                else {
-                    continue;
-                };
+                let pr_a = a.pay["pr"].clone();
+                let seq_a = a.pay["sequence"].clone();
                 let coz_reports: Vec<coz::CozJson> =
                     reports.iter().map(|(r, _)| (*r).clone()).collect();
                 let evidence = format_disagreement_evidence(pr_a, seq_a, &coz_reports);
@@ -103,14 +101,14 @@ pub fn check_witness_threshold(required_witnesses: usize, actual_witnesses: usiz
 /// The output matches the golden vector `witness_disagreement.json`.
 /// Note that monotone disagreement artifacts carry no `now`/expiry.
 pub fn format_disagreement_evidence(
-    principal_id: impl Into<String>,
-    sequence: u64,
+    principal_id: impl Into<serde_json::Value>,
+    sequence: impl Into<serde_json::Value>,
     reports: &[coz::CozJson],
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": "equivocation_evidence",
         "principal_id": principal_id.into(),
-        "sequence": sequence,
+        "sequence": sequence.into(),
         "reports": reports,
     })
 }
