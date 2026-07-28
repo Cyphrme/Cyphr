@@ -12,6 +12,7 @@ pub mod auth;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod fanout;
 pub mod logging;
 pub mod observation;
 pub mod rate_limit;
@@ -95,6 +96,9 @@ pub struct AppState {
             std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
         >,
     >,
+
+    /// Background fanout delivery tracker (SPEC §13.5).
+    pub fanout: fanout::FanoutTracker,
 }
 
 impl AppState {
@@ -140,6 +144,7 @@ impl AppState {
             registration: registration::RegistrationStore::new(),
             http_client,
             sync_locks,
+            fanout: fanout::FanoutTracker::new(),
         })
     }
 
@@ -216,6 +221,14 @@ async fn witness_write_refusal_middleware(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, error::AppError> {
+    if req.method() == axum::http::Method::POST
+        && req.uri().path() == "/push"
+        && (req.headers().contains_key("x-cyphr-fanout")
+            || req.headers().contains_key("x-witness-push"))
+    {
+        return Ok(next.run(req).await);
+    }
+
     match *req.method() {
         axum::http::Method::POST
         | axum::http::Method::PUT
