@@ -49,6 +49,15 @@ pub struct PatchResponse {
     pub entries: Vec<PatchEntry>,
 }
 
+/// Post-commit roots re-derived directly from the authoritative blob store.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DerivedRoots {
+    pub pr: String,
+    pub sr: String,
+    pub ar: String,
+    pub cr: String,
+}
+
 /// Metadata for ingesting a pre-validated commit.
 ///
 /// The engine does not validate protocol-level signatures or state
@@ -374,6 +383,46 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         Ok(data)
     }
 
+    /// Re-derive the current roots (`pr`, `sr`, `ar`, `cr`) for a principal
+    /// directly from the authoritative blob store by replaying stored commits.
+    ///
+    /// Fails if the principal cannot be loaded from the blob store or if any
+    /// referenced blob is missing or corrupt.
+    #[tracing::instrument(skip(self))]
+    pub async fn rederive_roots(&self, principal_id: &str) -> Result<DerivedRoots, EngineError> {
+        self.ensure_healed().await?;
+        let genesis = self.resolve_genesis(principal_id, &[]).await?;
+        let principal = self.load_principal(principal_id, genesis).await?;
+
+        let pr = format_multihash_all(principal.pr().as_multihash())?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))?;
+
+        let sr_obj = principal
+            .sr()
+            .ok_or_else(|| EngineError::InvalidInput("missing SR".into()))?;
+        let sr = format_multihash_all(sr_obj.as_multihash())?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::InvalidInput("empty SR".into()))?;
+
+        let ar = format_multihash_all(principal.auth_root().as_multihash())?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EngineError::InvalidInput("empty AR".into()))?;
+
+        let cr = match principal.cr() {
+            Some(cr_obj) => format_multihash_all(cr_obj.as_multihash())?
+                .into_iter()
+                .next()
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+
+        Ok(DerivedRoots { pr, sr, ar, cr })
+    }
+
     // ========================================================================
     // Write path
     // ========================================================================
@@ -615,7 +664,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             for hash in &commit_ref.blob_hashes {
                 let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
-                        "blob {hash} referenced by commit {} missing",
+                        "blob {hash} referenced by index commit {} missing",
                         commit_ref.commit_id
                     ))
                 })?;
@@ -1497,10 +1546,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     // to be visible to an operator, matching the
                     // dropped-deferred-action precedent above.
                     tracing::warn!(
-                        "reindex: incomplete commit for principal {principal_id} at \
-                         timestamp {target_time} -- {} mutation cozy(ies) present but no \
-                         commit/create finalizer found; raw content stays unindexed until \
-                         a finalizer arrives",
+                        "reindex: incomplete commit for principal {principal_id} at timestamp \
+                         {target_time} -- {} mutation cozy(ies) present but no commit/create \
+                         finalizer found; raw content stays unindexed until a finalizer arrives",
                         mutations.len()
                     );
                     break;
@@ -1709,7 +1757,8 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                         // an operator can notice a real, if rare, recovery
                         // data-loss event.
                         tracing::warn!(
-                            "reindex: dropping deferred action typ={} now={} (signer inactive at apply time)",
+                            "reindex: dropping deferred action typ={} now={} (signer inactive at \
+                             apply time)",
                             coz.typ,
                             coz.now
                         );
