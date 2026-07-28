@@ -255,24 +255,26 @@ pub async fn patch(
         let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
     }
 
-    let tip = state
-        .engine
-        .get_tip(&query.pr)
-        .await
-        .map_err(AppError::engine)?;
-
-    if tip.is_none() {
-        return Err(AppError::not_found(format!(
-            "principal {} not found",
-            query.pr
-        )));
-    }
-
     let response = state
         .engine
         .get_patch(&query.pr, query.from, query.to)
         .await
         .map_err(AppError::engine)?;
+
+    if response.entries.is_empty() {
+        let tip = state
+            .engine
+            .get_tip(&query.pr)
+            .await
+            .map_err(AppError::engine)?;
+
+        if tip.is_none() {
+            return Err(AppError::not_found(format!(
+                "principal {} not found",
+                query.pr
+            )));
+        }
+    }
 
     let entries = response
         .entries
@@ -712,13 +714,11 @@ async fn check_registration_authorization(
                 "unauthorized third-party witness registration",
             ));
         }
-    } else {
-        if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
-            if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
-                return Err(AppError::unauthorized(
-                    "unauthorized third-party witness registration",
-                ));
-            }
+    } else if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
+        if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
+            return Err(AppError::unauthorized(
+                "unauthorized third-party witness registration",
+            ));
         }
     }
 

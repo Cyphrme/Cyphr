@@ -18,7 +18,7 @@ use axum::http::{Request, StatusCode};
 use clap::Parser;
 use cyphr_server::config::{Cli, ServerConfig, ServerMode, resolve_config};
 use cyphr_server::{AppState, build_app_router};
-use cyphr_storage::blob::Blake3Hash;
+use cyphr_storage::blob::{Blake3Hash, BlobStore};
 use cyphr_storage::index::{IndexableCommit, Indexer};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -61,7 +61,7 @@ async fn delete_json(
 /// initialize AppState, and start successfully.
 #[tokio::test]
 async fn witness_mode_starts() {
-    let cli = Cli::try_parse_from(&["cyphr-server", "serve", "--mode", "witness"])
+    let cli = Cli::try_parse_from(["cyphr-server", "serve", "--mode", "witness"])
         .expect("CLI args for witness mode should parse");
 
     let config =
@@ -298,7 +298,15 @@ async fn rejects_unverifiable_delta() {
     assert_eq!(push_status, StatusCode::CREATED);
 
     // 2. Corrupt index/state on authority node so it presents an unverifiable state delta
-    let dummy_hash = Blake3Hash::from_bytes([7u8; 32]);
+    let dummy_bytes = vec![7u8; 32];
+    let dummy_hash = Blake3Hash::from_bytes(*blake3::hash(&dummy_bytes).as_bytes());
+    auth_state
+        .engine
+        .blob_store()
+        .put(&dummy_bytes)
+        .await
+        .expect("put dummy blob");
+
     let corrupt_commit = IndexableCommit {
         principal_id: principal_id.to_string(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_999999999999999999999999".to_string()],

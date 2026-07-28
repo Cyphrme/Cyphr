@@ -118,7 +118,19 @@ where
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::Json::<T>::from_request(req, state).await {
             Ok(value) => Ok(Self(value.0)),
-            Err(rejection) => Err(AppError::bad_request(rejection.body_text())),
+            Err(rejection) => {
+                let status = rejection.status();
+                let msg = rejection.body_text();
+                if status == StatusCode::PAYLOAD_TOO_LARGE || msg.contains("length limit exceeded")
+                {
+                    Err(AppError {
+                        status: StatusCode::PAYLOAD_TOO_LARGE,
+                        message: msg,
+                    })
+                } else {
+                    Err(AppError::bad_request(msg))
+                }
+            },
         }
     }
 }

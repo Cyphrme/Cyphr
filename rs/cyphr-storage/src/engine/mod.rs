@@ -346,30 +346,19 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
             let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
-            let mut missing = false;
             for hash in &commit_ref.blob_hashes {
-                let data = match self.blob_store.get(hash).await? {
-                    Some(d) => d,
-                    None => {
-                        missing = true;
-                        break;
-                    },
-                };
+                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!(
+                        "blob {hash} referenced by index commit {} missing",
+                        commit_ref.commit_id
+                    ))
+                })?;
                 blobs.push(data);
-            }
-            if missing {
-                break;
             }
             entries.push(PatchEntry {
                 commit: commit_ref,
                 blobs,
             });
-        }
-
-        if entries.is_empty() {
-            return Err(EngineError::NotFound(format!(
-                "no valid commit blobs found for principal {principal_id}"
-            )));
         }
 
         Ok(PatchResponse {
@@ -947,7 +936,6 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             Some((commit_ids, ar, sr, pr, cr))
         } else {
             // Action-only bundle.
-            let mut commit_ids = Vec::new();
             for (i, blob_bytes) in raw_blobs.iter().enumerate() {
                 let parsed = parse_coz(blob_bytes, i)?;
                 if let Some(info) = &parsed.key_info {
@@ -960,25 +948,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     &parsed.sig,
                     parsed.czd.clone(),
                 )?;
-                let czd_str = Base64UrlUnpadded::encode_string(parsed.czd.as_bytes());
-                commit_ids.push(czd_str);
                 parsed_cozies.push(parsed);
             }
-
-            let ar = format_multihash_all(principal.auth_root().as_multihash())?;
-            let sr = principal
-                .sr()
-                .map(|s| format_multihash_all(s.as_multihash()))
-                .transpose()?
-                .unwrap_or_default();
-            let pr = format_multihash_all(principal.pr().as_multihash())?;
-            let cr = principal
-                .cr()
-                .map(|c| format_multihash_all(c.as_multihash()))
-                .transpose()?
-                .unwrap_or_default();
-
-            Some((commit_ids, ar, sr, pr, cr))
+            None
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
