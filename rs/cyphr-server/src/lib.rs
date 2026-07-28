@@ -85,6 +85,16 @@ pub struct AppState {
 
     /// In-memory witness registration store (SPEC §13.5.1).
     pub registration: registration::RegistrationStore,
+
+    /// Reusable HTTP client for witness state sync and upstream calls.
+    pub http_client: reqwest::Client,
+
+    /// Per-principal locks for synchronizing witness state sync execution.
+    pub sync_locks: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    >,
 }
 
 impl AppState {
@@ -111,6 +121,15 @@ impl AppState {
         let observations =
             observation::ObservationStore::open(&config.data_dir.join("observations"))?;
 
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build http client");
+
+        let sync_locks =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
         Ok(Self {
             config,
             engine,
@@ -119,6 +138,8 @@ impl AppState {
             challenges: auth::login::ChallengeStore::new(),
             observations,
             registration: registration::RegistrationStore::new(),
+            http_client,
+            sync_locks,
         })
     }
 

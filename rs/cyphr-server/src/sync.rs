@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use serde_json::Value;
+use tracing::{error, warn};
 
 use crate::AppState;
 use crate::error::AppError;
@@ -25,6 +26,14 @@ pub async fn sync_from_authority(
         return Ok(());
     };
 
+    let principal_lock = {
+        let mut map = state.sync_locks.lock().await;
+        map.entry(principal_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _guard = principal_lock.lock().await;
+
     let base_url = authority_url.trim_end_matches('/');
 
     let from_seq = state
@@ -37,20 +46,43 @@ pub async fn sync_from_authority(
 
     let patch_url = format!("{base_url}/patch?pr={principal_id}&from={from_seq}");
 
-    let client = reqwest::Client::new();
-    let resp = match client
+    let res = match state
+        .http_client
         .get(&patch_url)
         .header("accept", "application/json")
         .send()
         .await
     {
-        Ok(res) if res.status().is_success() => res,
-        _ => return Ok(()),
+        Ok(res) => res,
+        Err(err) => {
+            error!(
+                principal = %principal_id,
+                error = %err,
+                "witness sync HTTP request failed"
+            );
+            return Ok(());
+        },
     };
 
-    let body: Value = match resp.json().await {
+    if !res.status().is_success() {
+        warn!(
+            principal = %principal_id,
+            status = %res.status(),
+            "witness sync upstream non-success status"
+        );
+        return Ok(());
+    }
+
+    let body: Value = match res.json().await {
         Ok(v) => v,
-        Err(_) => return Ok(()),
+        Err(err) => {
+            warn!(
+                principal = %principal_id,
+                error = %err,
+                "witness sync payload decode failed"
+            );
+            return Ok(());
+        },
     };
 
     let entries = match body
@@ -88,7 +120,7 @@ pub async fn sync_from_authority(
         }
 
         if decode_error || raw_blobs.is_empty() {
-            tracing::warn!(principal_id = %principal_id, "patch entry blob decode failed");
+            warn!(principal_id = %principal_id, "patch entry blob decode failed");
             break;
         }
 
@@ -102,7 +134,7 @@ pub async fn sync_from_authority(
             .submit_commit(principal_id, None, &blob_refs)
             .await
         {
-            tracing::warn!(
+            warn!(
                 principal_id = %principal_id,
                 error = %err,
                 "witness node rejected unverifiable delta from authority"

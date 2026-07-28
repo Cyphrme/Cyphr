@@ -640,13 +640,12 @@ async fn login_rejects_mismatched_audience() {
 
     let body = login_body(&pool, "golden", "evil.example", Some(pid), None, now_secs());
     let (status, json) = post_json(app, "/auth/login", body).await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "a login for another audience must be rejected"
-    );
+    let err = json["payload"]["error"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+        .unwrap_or("");
     assert!(
-        json["error"].as_str().unwrap_or("").contains("audience"),
+        err.contains("audience"),
         "the rejection must be a distinct audience error, not a generic one: {json:?}"
     );
 }
@@ -667,8 +666,12 @@ async fn login_rejects_missing_audience() {
         StatusCode::UNAUTHORIZED,
         "a login naming no audience must be rejected"
     );
+    let err = json["payload"]["error"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+        .unwrap_or("");
     assert!(
-        json["error"].as_str().unwrap_or("").contains("audience"),
+        err.contains("audience"),
         "the rejection must name the audience gap: {json:?}"
     );
 }

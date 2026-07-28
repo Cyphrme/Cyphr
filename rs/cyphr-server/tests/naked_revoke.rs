@@ -246,7 +246,10 @@ fn assert_rejected(status: StatusCode, json: &serde_json::Value, case: &str) {
         "{case}: must be a 4xx rejection (not a 2xx accept, not a 5xx fault), got {status}: \
          {json:?}"
     );
-    let err = json["error"].as_str().unwrap_or("");
+    let err = json["payload"]["error"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+        .unwrap_or("");
     assert!(
         !err.is_empty(),
         "{case}: rejection must name its cause in an {{\"error\": …}} body, got {json:?}"
@@ -999,8 +1002,12 @@ async fn revoked_key_refused_at_push() {
         "a push signed by a globally-dead key must be refused (401/403), not accepted and not a \
          409 conflict, got {status}: {json:?}"
     );
+    let err = json["payload"]["error"]
+        .as_str()
+        .or_else(|| json["error"].as_str())
+        .unwrap_or("");
     assert!(
-        !json["error"].as_str().unwrap_or("").is_empty(),
+        !err.is_empty(),
         "the push refusal must name its cause in an {{\"error\": …}} body, got {json:?}"
     );
 }
