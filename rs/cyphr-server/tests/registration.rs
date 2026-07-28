@@ -301,6 +301,93 @@ async fn third_party_cannot_register_url_witness_for_principal() {
     }
 }
 
+/// Adversarial check on `check_registration_authorization`
+/// (`src/routes.rs:723-724`): the third-party guard for a not-yet-resident
+/// principal is gated on `target_tmb.len() == 43` in addition to the
+/// `SHA-256:` prefix succeeding. A `SHA-256:`-prefixed `witness_id` whose
+/// suffix is NOT exactly 43 base64url characters (a malformed or truncated
+/// thumbprint) also falls through the `if` unchecked, the same as the
+/// URL-shaped case in `third_party_cannot_register_url_witness_for_principal`
+/// but isolating the length-guard condition instead of the prefix-strip
+/// condition.
+#[tokio::test]
+async fn third_party_cannot_register_malformed_thumbprint_witness_for_principal() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "n1-malformed-thumbprint-target";
+    // `SHA-256:` prefix present, but the suffix is far short of the 43
+    // base64url characters a real thumbprint requires.
+    let witness_malformed = "SHA-256:short-tmb";
+
+    // Attacker 'alice' (not an authorized key for principal pid) attempts to
+    // register a malformed-thumbprint witness for a principal that has no
+    // tip and no authorized keys yet.
+    let attacker_coz =
+        build_witness_register_coz(&pool, "alice", pid, witness_malformed, "create", NOW);
+    let (status, json) = post_witness_register(&state, attacker_coz).await;
+
+    assert!(
+        status.is_client_error(),
+        "third-party malformed-thumbprint registration attempt must be rejected with 4xx \
+         status, got {status}: {json:?}"
+    );
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthorized third-party malformed-thumbprint registration must return 401 \
+         Unauthorized: {json:?}"
+    );
+
+    // Verify witness list remains empty for principal pid
+    let (list_status, list_json) = get_witness_list(&state, pid).await;
+    if list_status.is_success() {
+        let payload = common::envelope_payload(&list_json);
+        let witnesses = payload["witnesses"].as_array();
+        assert!(
+            witnesses.is_none_or(|w| w.is_empty()),
+            "no witnesses should be registered after third-party malformed-thumbprint attempt: \
+             {list_json:?}"
+        );
+    }
+}
+
+/// Adversarial check on `check_registration_authorization`
+/// (`src/routes.rs:681-726`): the guard is shared verbatim between
+/// `POST /witness/register` (create) and `DELETE /witness/register`
+/// (revoke), but every existing adversarial registration test in this file
+/// exercises the `create` verb only. A third party exploiting the same
+/// not-yet-resident-principal bypass (URL-shaped `witness_id`, see
+/// `third_party_cannot_register_url_witness_for_principal`) against the
+/// `delete` verb is entirely untested, even though `revoke_witness`
+/// (`src/registration.rs:93-108`) unconditionally creates a state entry and
+/// updates `last_updated` for ANY `principal_id`, authorized or not.
+#[tokio::test]
+async fn third_party_cannot_delete_url_witness_for_principal() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "n1-url-witness-delete-target";
+    let witness_url = "http://attacker.example";
+
+    // Attacker 'alice' (not an authorized key for principal pid) attempts to
+    // delete/revoke a URL-shaped witness for a principal that has no tip and
+    // no authorized keys yet -- there is nothing legitimately registered to
+    // delete, but the authorization guard must still refuse the request
+    // before reaching `revoke_witness`.
+    let attacker_coz = build_witness_register_coz(&pool, "alice", pid, witness_url, "delete", NOW);
+    let (status, json) = delete_witness_register(&state, attacker_coz).await;
+
+    assert!(
+        status.is_client_error(),
+        "third-party URL-witness delete attempt must be rejected with 4xx status, got {status}: \
+         {json:?}"
+    );
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthorized third-party URL-witness delete must return 401 Unauthorized: {json:?}"
+    );
+}
+
 /// N1.3: `unauthenticated_registration_refused`
 ///
 /// Registration requests that are unauthenticated or carry invalid signatures MUST be refused.
