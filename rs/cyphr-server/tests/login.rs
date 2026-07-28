@@ -639,7 +639,7 @@ async fn login_rejects_mismatched_audience() {
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", "evil.example", Some(pid), None, now_secs());
-    let (status, json) = post_json(app, "/auth/login", body).await;
+    let (_status, json) = post_json(app, "/auth/login", body).await;
     let err = json["payload"]["error"]
         .as_str()
         .or_else(|| json["error"].as_str())
