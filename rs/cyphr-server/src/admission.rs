@@ -36,6 +36,7 @@ use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
 use crate::config::AdmissionConfig;
+use crate::envelope::Envelope;
 
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
@@ -349,10 +350,10 @@ where
 fn denied_invite() -> Response {
     (
         StatusCode::FORBIDDEN,
-        Json(serde_json::json!({
+        Json(Envelope::unsigned(serde_json::json!({
             "error": "admission required",
             "policy": "invite",
-        })),
+        }))),
     )
         .into_response()
 }
@@ -363,12 +364,12 @@ fn denied_invite() -> Response {
 fn denied_pow(difficulty: u32) -> Response {
     (
         StatusCode::FORBIDDEN,
-        Json(serde_json::json!({
+        Json(Envelope::unsigned(serde_json::json!({
             "error": "admission required",
             "policy": "pow",
             "difficulty": difficulty,
             "window": "utc-hour",
-        })),
+        }))),
     )
         .into_response()
 }
@@ -433,7 +434,11 @@ fn pow_admits(principal_id: &str, nonce: u64, difficulty: u32) -> bool {
 
 /// A non-denial refusal on a transport/infrastructure fact.
 fn refuse(status: StatusCode, error: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": error }))).into_response()
+    (
+        status,
+        Json(Envelope::unsigned(serde_json::json!({ "error": error }))),
+    )
+        .into_response()
 }
 
 /// One-field peek at the wire `PushRequest` shape, using the same serde

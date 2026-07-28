@@ -408,7 +408,7 @@ pub async fn challenge(
 /// by whether the payload carries a challenge.
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    Json(coz_json): Json<coz::CozJson>,
+    body: String,
 ) -> Result<Json<Envelope<LoginResponse>>, AppError> {
     let identity = state
         .identity
@@ -419,6 +419,9 @@ pub async fn login(
         .audience
         .as_deref()
         .ok_or_else(|| AppError::internal("server is not configured to accept logins"))?;
+
+    let coz_json: coz::CozJson = serde_json::from_str(&body)
+        .map_err(|e| AppError::bad_request(format!("failed to parse login body as JSON: {e}")))?;
 
     // One schema parse + audience binding for both flows (ruling R6a).
     let parsed = parse_login(coz_json, audience)?;

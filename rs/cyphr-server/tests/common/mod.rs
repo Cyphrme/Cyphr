@@ -12,6 +12,8 @@
 //! item by item.
 #![allow(dead_code)]
 
+pub mod multi;
+
 use std::path::Path;
 use std::sync::Arc;
 

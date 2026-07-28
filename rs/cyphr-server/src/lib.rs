@@ -202,6 +202,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
             axum::routing::post(auth::login::challenge),
         )
         .route("/auth/login", axum::routing::post(auth::login::login))
+        .fallback(async || error::AppError::not_found("route not found"))
         .with_state(state)
         .layer(
             tower_http::trace::TraceLayer::new_for_http().make_span_with(
@@ -216,6 +217,55 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
                 },
             ),
         )
+}
+
+/// Build the full application router with all routes, admission layer, rate-limiting layer, and
+/// body limit layer.
+pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn std::error::Error>> {
+    let admission_config = state.config.admission.clone();
+    let admission_data_dir = state.config.data_dir.clone();
+    let probe_state = state.clone();
+    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
+        let state = probe_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.is_some())
+                .unwrap_or(false)
+        })
+    });
+
+    let limits = state.config.limits.clone();
+    let count_state = state.clone();
+    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
+        let state = count_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.map(|t| t.commit_count).unwrap_or(0))
+                .unwrap_or(0)
+        })
+    });
+
+    let mut app = build_router(state);
+    if let Some(gate) = admission::layer(
+        &admission_config,
+        &admission_data_dir,
+        resident,
+        limits.max_body_bytes as usize,
+    )? {
+        app = app.layer(gate);
+    }
+    app = app.layer(rate_limit::layer(&limits, count_probe));
+    app = app.layer(axum::extract::DefaultBodyLimit::max(
+        limits.max_body_bytes as usize,
+    ));
+
+    Ok(app)
 }
 
 /// Start the HTTP server with graceful shutdown.
@@ -249,75 +299,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
 
     let state = Arc::new(state);
-
-    // Compose the orthogonal admission fence over the router (never inside
-    // `build_router`, which stays the standing strip test). The one protocol
-    // fact the fence needs -- whether a principal already has a resident tip
-    // -- crosses as a `bool` through this probe, so no engine type enters the
-    // admission module. A probe error resolves to "not resident", which only
-    // ever tightens the fence (never a bypass).
-    let admission_config = state.config.admission.clone();
-    let admission_data_dir = state.config.data_dir.clone();
-    let probe_state = state.clone();
-    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
-        let state = probe_state.clone();
-        Box::pin(async move {
-            state
-                .engine
-                .get_tip(&id)
-                .await
-                .map(|tip| tip.is_some())
-                .unwrap_or(false)
-        })
-    });
-
-    // Compose the orthogonal resource fences (rate / size / count-quota) over
-    // the router, outside admission so a throttle refuses before the costlier
-    // admission work. Like admission, they never touch `build_router`. The one
-    // storage fact the count quota needs -- a principal's commit count --
-    // crosses as a `u64` through this probe, so no engine type enters the
-    // `rate_limit` module. A probe error resolves to `0`, which never
-    // fabricates a quota refusal (it only ever refuses on a known over-cap).
-    let limits = state.config.limits.clone();
-    let count_state = state.clone();
-    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
-        let state = count_state.clone();
-        Box::pin(async move {
-            state
-                .engine
-                .get_tip(&id)
-                .await
-                .map(|tip| tip.map(|t| t.commit_count).unwrap_or(0))
-                .unwrap_or(0)
-        })
-    });
-
-    let mut app = build_router(state);
-    if let Some(gate) = admission::layer(
-        &admission_config,
-        &admission_data_dir,
-        resident,
-        limits.max_body_bytes as usize,
-    )? {
-        app = app.layer(gate);
-    }
-    app = app.layer(rate_limit::layer(&limits, count_probe));
-
-    // The single authoritative body-size cap, over EVERY route (composed here,
-    // never in `build_router`, exactly like admission and the rate/size/quota
-    // fences above). `rate_limit`'s own fence only bounds `/push`'s actual
-    // buffered bytes; every other route otherwise falls back to axum's 2 MiB
-    // default. `DefaultBodyLimit` tags the request with `limits.max_body_bytes`
-    // for `Bytes`-based extractors (which `Json`, used by `/revoke` and
-    // `/auth/*`, is built on) to enforce while reading -- so it bounds the
-    // ACTUAL bytes read off the body, not merely a declared `Content-Length`,
-    // and a chunked over-cap body is refused `413` exactly like a
-    // `Content-Length`-declared one. It only inserts a request extension (no
-    // body-type change), so it composes with `build_router`'s `axum::Router`
-    // without touching it.
-    app = app.layer(axum::extract::DefaultBodyLimit::max(
-        limits.max_body_bytes as usize,
-    ));
+    let app = build_app_router(state)?;
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;
