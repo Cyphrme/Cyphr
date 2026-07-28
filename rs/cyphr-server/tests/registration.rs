@@ -1,12 +1,18 @@
 //! Acceptance test suite for Node N1: Witness Registration Endpoint.
 //!
 //! Evaluates criteria N1.1 – N1.6:
-//! - `register_list_revoke_roundtrip` (N1.1): Witness registration, listing, and revocation roundtrip.
-//! - `third_party_cannot_register_for_principal` (N1.2): Adversarial check ensuring third parties cannot register witnesses for a principal.
-//! - `unauthenticated_registration_refused` (N1.3): Unauthenticated or improperly signed registrations are refused.
-//! - `responses_carry_freshness` (N1.4): Responses from registration endpoints carry required protocol freshness fields.
-//! - `revocation_retains_record` (N1.5): Revocation/deletion of a witness retains historical records in append-only storage.
-//! - `bound_refuses_rather_than_evicts` (N1.6): Enforcing capacity bounds by refusing new registrations rather than evicting existing ones.
+//! - `register_list_revoke_roundtrip` (N1.1): Witness registration, listing, and revocation
+//!   roundtrip.
+//! - `third_party_cannot_register_for_principal` (N1.2): Adversarial check ensuring third parties
+//!   cannot register witnesses for a principal.
+//! - `unauthenticated_registration_refused` (N1.3): Unauthenticated or improperly signed
+//!   registrations are refused.
+//! - `responses_carry_freshness` (N1.4): Responses from registration endpoints carry required
+//!   protocol freshness fields.
+//! - `revocation_retains_record` (N1.5): Revocation/deletion of a witness retains historical
+//!   records in append-only storage.
+//! - `bound_refuses_rather_than_evicts` (N1.6): Enforcing capacity bounds by refusing new
+//!   registrations rather than evicting existing ones.
 
 use std::sync::Arc;
 
@@ -67,9 +73,9 @@ fn build_witness_register_coz(
         "alg": signer.alg,
         "id": witness_pg,
         "now": now,
+        "principal_id": principal_id,
         "tmb": signer_tmb,
         "typ": format!("cyphr.me/cyphr/witness/register/{verb}"),
-        "principal_id": principal_id,
     });
 
     let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
@@ -77,8 +83,8 @@ fn build_witness_register_coz(
     let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub base64");
     let pay_bytes = serde_json::to_vec(&pay).expect("pay serializes");
 
-    let (sig_bytes, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key)
-        .expect("signing supported");
+    let (sig_bytes, _cad) =
+        coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("signing supported");
 
     serde_json::json!({
         "pay": pay,
@@ -105,7 +111,12 @@ async fn post_witness_register(
     state: &Arc<AppState>,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    common::post_json(build_router(state.clone()), REGISTRATION_URI, body.to_string()).await
+    common::post_json(
+        build_router(state.clone()),
+        REGISTRATION_URI,
+        body.to_string(),
+    )
+    .await
 }
 
 async fn get_witness_list(
@@ -169,9 +180,13 @@ async fn register_list_revoke_roundtrip() {
         "witness registration listing must succeed: {list_json:?}"
     );
     let payload = common::envelope_payload(&list_json);
-    let witnesses = payload["witnesses"].as_array().expect("witnesses array in payload");
+    let witnesses = payload["witnesses"]
+        .as_array()
+        .expect("witnesses array in payload");
     assert!(
-        witnesses.iter().any(|w| w.as_str() == Some(witness_pg) || w["id"].as_str() == Some(witness_pg)),
+        witnesses
+            .iter()
+            .any(|w| w.as_str() == Some(witness_pg) || w["id"].as_str() == Some(witness_pg)),
         "registered witness PG must be present in listing: {list_json:?}"
     );
 
@@ -192,9 +207,13 @@ async fn register_list_revoke_roundtrip() {
         "witness registration listing after deletion must succeed: {post_del_json:?}"
     );
     let post_payload = common::envelope_payload(&post_del_json);
-    let post_witnesses = post_payload["witnesses"].as_array().expect("witnesses array");
+    let post_witnesses = post_payload["witnesses"]
+        .as_array()
+        .expect("witnesses array");
     assert!(
-        !post_witnesses.iter().any(|w| w.as_str() == Some(witness_pg) || w["id"].as_str() == Some(witness_pg)),
+        !post_witnesses
+            .iter()
+            .any(|w| w.as_str() == Some(witness_pg) || w["id"].as_str() == Some(witness_pg)),
         "revoked witness must no longer be present in active listing: {post_del_json:?}"
     );
 }
@@ -253,7 +272,8 @@ async fn unauthenticated_registration_refused() {
     assert_eq!(
         status_corrupt,
         StatusCode::UNAUTHORIZED,
-        "registration with corrupted signature must be rejected with 401 Unauthorized, got {status_corrupt}: {json_corrupt:?}"
+        "registration with corrupted signature must be rejected with 401 Unauthorized, got \
+         {status_corrupt}: {json_corrupt:?}"
     );
 
     // Case 2: Completely unauthenticated / missing signature payload
@@ -270,7 +290,8 @@ async fn unauthenticated_registration_refused() {
     assert_eq!(
         status_no_sig,
         StatusCode::BAD_REQUEST,
-        "unauthenticated registration missing signature must be rejected with 400 Bad Request, got {status_no_sig}: {json_no_sig:?}"
+        "unauthenticated registration missing signature must be rejected with 400 Bad Request, \
+         got {status_no_sig}: {json_no_sig:?}"
     );
 }
 
@@ -333,11 +354,8 @@ async fn revocation_retains_record() {
     assert_eq!(del_status, StatusCode::OK);
 
     // Step 3: Retrieve patch / history for the principal
-    let (patch_status, patch_json) = common::get_json(
-        build_router(state.clone()),
-        &format!("/patch?pr={pid}"),
-    )
-    .await;
+    let (patch_status, patch_json) =
+        common::get_json(build_router(state.clone()), &format!("/patch?pr={pid}")).await;
 
     assert_eq!(
         patch_status,
@@ -352,7 +370,8 @@ async fn revocation_retains_record() {
 
     assert!(
         entries.len() >= 2,
-        "patch history must retain all historical operations (expected >= 2 entries), got: {entries:?}"
+        "patch history must retain all historical operations (expected >= 2 entries), got: \
+         {entries:?}"
     );
 }
 
@@ -372,14 +391,8 @@ async fn bound_refuses_rather_than_evicts() {
 
     for i in 0..max_bound {
         let witness_pg = format!("SHA-256:witness_pg_bound_{i:04}");
-        let coz = build_witness_register_coz(
-            &pool,
-            "golden",
-            pid,
-            &witness_pg,
-            "create",
-            NOW + i as i64,
-        );
+        let coz =
+            build_witness_register_coz(&pool, "golden", pid, &witness_pg, "create", NOW + i as i64);
         let (status, json) = post_witness_register(&state, coz).await;
         assert_eq!(
             status,
@@ -411,7 +424,9 @@ async fn bound_refuses_rather_than_evicts() {
     let (list_status, list_json) = get_witness_list(&state, pid).await;
     assert_eq!(list_status, StatusCode::OK);
     let payload = common::envelope_payload(&list_json);
-    let active_witnesses = payload["witnesses"].as_array().expect("active witnesses array");
+    let active_witnesses = payload["witnesses"]
+        .as_array()
+        .expect("active witnesses array");
 
     assert_eq!(
         active_witnesses.len(),
