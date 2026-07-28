@@ -420,7 +420,7 @@ include `id` containing the witness principal's Principal Genesis (PG) value.
 
 - **PRE**: Signing key MUST be active in KR.
 - **POST**: Witness registration is recorded in DT (if DT exists). PR and AT remain unmodified.
-  (SPEC.md §13.5.1)
+  `VERIFIED: agent-check`
 
 **[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` is a
 data action that removes a previously registered external witness. The transaction
@@ -430,7 +430,7 @@ principal's PG to remove.
 
 - **PRE**: Signing key MUST be active in KR. Witness MUST be currently registered.
 - **POST**: Witness registration is removed from DT (if DT exists). PR and AT remain unmodified.
-  (SPEC.md §13.5.1)
+  `VERIFIED: agent-check`
 
 
 #### Nonce Transactions

@@ -120,6 +120,9 @@ pub struct ActionIntent {
     /// Optional message content.
     #[serde(default)]
     pub msg: Option<String>,
+    /// Optional payload ID (e.g. for witness/register/*).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// Expected assertions after test execution.

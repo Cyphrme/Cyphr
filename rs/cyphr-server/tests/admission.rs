@@ -265,13 +265,14 @@ fn assert_denied(resp: &HttpResponse, expected_policy: &str) {
     );
     let json: serde_json::Value = serde_json::from_str(&resp.body)
         .unwrap_or_else(|e| panic!("denial body must be JSON, got {:?}: {e}", resp.body));
+    let payload = json.get("payload").unwrap_or(&json);
     assert_eq!(
-        json["policy"], expected_policy,
+        payload["policy"], expected_policy,
         "denial JSON must name the active policy: {}",
         resp.body
     );
     assert!(
-        json.get("error").and_then(|e| e.as_str()).is_some(),
+        payload.get("error").and_then(|e| e.as_str()).is_some(),
         "denial JSON must carry a machine-readable `error`: {}",
         resp.body
     );

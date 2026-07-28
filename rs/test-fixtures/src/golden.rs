@@ -1247,6 +1247,9 @@ impl<'a> Generator<'a> {
 
         let mut pay_map: IndexMap<String, Value> = IndexMap::new();
         pay_map.insert("alg".to_string(), Value::String(signer.alg.clone()));
+        if let Some(ref id) = action.id {
+            pay_map.insert("id".to_string(), Value::String(id.clone()));
+        }
         if let Some(ref msg) = action.msg {
             pay_map.insert("msg".to_string(), Value::String(msg.clone()));
         }

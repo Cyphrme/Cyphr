@@ -6,7 +6,7 @@ name      = "register_create"
 principal = ["golden"]
 
 [[test.action]]
-msg    = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+id     = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 now    = 1700000001
 signer = "golden"
 typ    = "cyphr.me/cyphr/witness/register/create"
@@ -19,7 +19,7 @@ name      = "register_delete"
 principal = ["golden"]
 
 [[test.action]]
-msg    = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+id     = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
 now    = 1700000002
 signer = "golden"
 typ    = "cyphr.me/cyphr/witness/register/delete"
