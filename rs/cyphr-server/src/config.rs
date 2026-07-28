@@ -103,6 +103,10 @@ pub struct ServeArgs {
     /// `auth::login`.
     #[arg(long, env = "CYPHR_AUDIENCE")]
     pub audience: Option<String>,
+
+    /// Target authority URL for witness mode sync.
+    #[arg(long, env = "CYPHR_AUTHORITY_URL")]
+    pub authority_url: Option<String>,
 }
 
 // ========================================================================
@@ -134,6 +138,10 @@ pub struct ServerConfig {
     /// `auth::login`). `None` means logins are not accepted.
     #[serde(default)]
     pub audience: Option<String>,
+
+    /// Target authority URL for witness mode sync.
+    #[serde(default)]
+    pub authority_url: Option<String>,
 
     /// Server-side admission policy (the `[admission]` TOML table). Gates
     /// new-principal residency only; defaults to `Open` (permissionless).
@@ -286,6 +294,7 @@ impl Default for ServerConfig {
             mode: ServerMode::Authority,
             signing_key_path: None,
             audience: None,
+            authority_url: None,
             admission: AdmissionConfig::default(),
             limits: LimitsConfig::default(),
         }
@@ -382,6 +391,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         }
         if let Some(ref audience) = args.audience {
             config.audience = Some(audience.clone());
+        }
+        if let Some(ref authority_url) = args.authority_url {
+            config.authority_url = Some(authority_url.clone());
         }
 
         // Witness mode is parsed but has no enforcement anywhere in the

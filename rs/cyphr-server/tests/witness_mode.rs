@@ -78,9 +78,10 @@ async fn witness_mode_starts() {
 /// N2.2: `all_write_routes_refused`
 ///
 /// Structural write refusal: In Witness mode, ALL state-mutating (write) endpoints
-/// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`)
-/// MUST be structurally refused with a non-success write-refusal HTTP status code
-/// (e.g. 403 Forbidden, 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope.
+/// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`,
+/// and unmapped mutating routes like `POST /unmapped_write_route_test`) MUST be
+/// structurally refused with a non-success write-refusal HTTP status code (403 Forbidden,
+/// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope (`statement.kind == "unsigned"`).
 #[tokio::test]
 async fn all_write_routes_refused() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -96,7 +97,7 @@ async fn all_write_routes_refused() {
     let pool = load_pool();
     let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
 
-    // 1. POST /push MUST be refused in witness mode
+    // 1. POST /push MUST be refused in witness mode with an unsigned envelope
     let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
     assert!(
         push_status == StatusCode::FORBIDDEN
@@ -106,10 +107,10 @@ async fn all_write_routes_refused() {
     );
     assert_eq!(
         push_json["statement"]["kind"], "unsigned",
-        "write refusal envelope MUST be unsigned: {push_json:?}"
+        "push refusal envelope MUST be unsigned: {push_json:?}"
     );
 
-    // 2. POST /revoke MUST be refused in witness mode
+    // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
     let revoke_body = serde_json::json!({
         "principal_id": "n2-write-refusal-principal",
         "coz": {}
@@ -127,7 +128,7 @@ async fn all_write_routes_refused() {
         "revoke refusal envelope MUST be unsigned: {revoke_json:?}"
     );
 
-    // 3. POST /witness/register MUST be refused in witness mode
+    // 3. POST /witness/register MUST be refused in witness mode with an unsigned envelope
     let reg_body = serde_json::json!({
         "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/create" }
     })
@@ -139,8 +140,12 @@ async fn all_write_routes_refused() {
             || reg_status == StatusCode::NOT_IMPLEMENTED,
         "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: {reg_json:?}"
     );
+    assert_eq!(
+        reg_json["statement"]["kind"], "unsigned",
+        "POST /witness/register refusal envelope MUST be unsigned: {reg_json:?}"
+    );
 
-    // 4. DELETE /witness/register MUST be refused in witness mode
+    // 4. DELETE /witness/register MUST be refused in witness mode with an unsigned envelope
     let del_body = serde_json::json!({
         "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/delete" }
     })
@@ -152,16 +157,52 @@ async fn all_write_routes_refused() {
             || del_status == StatusCode::NOT_IMPLEMENTED,
         "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: {del_json:?}"
     );
+    assert_eq!(
+        del_json["statement"]["kind"], "unsigned",
+        "DELETE /witness/register refusal envelope MUST be unsigned: {del_json:?}"
+    );
+
+    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused in witness mode with an unsigned envelope
+    let unmapped_body = serde_json::json!({"test": "unmapped"}).to_string();
+    let (unmapped_status, unmapped_json) =
+        post_json(app.clone(), "/unmapped_write_route_test", unmapped_body).await;
+    assert!(
+        unmapped_status == StatusCode::FORBIDDEN
+            || unmapped_status == StatusCode::METHOD_NOT_ALLOWED
+            || unmapped_status == StatusCode::NOT_IMPLEMENTED,
+        "unmapped write route in witness mode MUST be structurally refused, got {unmapped_status}: {unmapped_json:?}"
+    );
+    assert_eq!(
+        unmapped_json["statement"]["kind"], "unsigned",
+        "unmapped write route refusal envelope MUST be unsigned: {unmapped_json:?}"
+    );
 }
 
 /// N2.3: `syncs_from_authority`
 ///
-/// Verifies that a witness node configured to sync from an authority node pulls state
-/// and commits from the authority node so that queries to the witness node return the synced state.
+/// Verifies that a witness node configured to sync from an authority node (via authority TCP URL)
+/// pulls state and commits from the authority node so that queries to the witness node return the synced state.
 #[tokio::test]
 async fn syncs_from_authority() {
-    let (auth_state, _identity, _dir) = attestor_server().await;
+    let (auth_state, _identity, auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+
+    let mut auth_instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: auth_state.clone(),
+        identity: Some(_identity),
+        dir: auth_dir,
+        router: auth_app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    let _auth_addr = auth_instance
+        .bind_tcp()
+        .await
+        .expect("bind TCP for authority server");
+    let auth_url = auth_instance
+        .url()
+        .expect("authority TCP URL must be available");
 
     let pool = load_pool();
     let principal_id = "n2-sync-principal";
@@ -176,11 +217,12 @@ async fn syncs_from_authority() {
         "authority push must succeed: {push_res:?}"
     );
 
-    // Construct witness node
+    // Construct witness node configured with authority_url
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
+        authority_url: Some(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -205,12 +247,29 @@ async fn syncs_from_authority() {
 
 /// N2.4: `rejects_unverifiable_delta`
 ///
-/// Verifies that a witness node REJECTS unverifiable, corrupted, or forged state deltas from an
-/// authority node, refusing to apply them to its local storage.
+/// Verifies that a witness node configured with authority TCP URL REJECTS unverifiable,
+/// corrupted, or forged state deltas from an authority node, refusing to apply them to its local storage.
 #[tokio::test]
 async fn rejects_unverifiable_delta() {
-    let (auth_state, _identity, _dir) = attestor_server().await;
+    let (auth_state, _identity, auth_dir) = attestor_server().await;
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+
+    let mut auth_instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: auth_state.clone(),
+        identity: Some(_identity),
+        dir: auth_dir,
+        router: auth_app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    let _auth_addr = auth_instance
+        .bind_tcp()
+        .await
+        .expect("bind TCP for authority server");
+    let auth_url = auth_instance
+        .url()
+        .expect("authority TCP URL must be available");
 
     let pool = load_pool();
     let principal_id = "n2-unverifiable-principal";
@@ -244,11 +303,12 @@ async fn rejects_unverifiable_delta() {
         .await
         .expect("corrupt index_commit");
 
-    // 3. Construct witness node
+    // 3. Construct witness node configured with authority_url
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
+        authority_url: Some(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -274,21 +334,66 @@ async fn rejects_unverifiable_delta() {
 
 /// N2.5: `serves_only_self_verified`
 ///
-/// Adversarial check: A witness node MUST serve only state that it has independently verified
-/// against protocol rules and cryptographic signatures. If an unverified delta is submitted
-/// or in transit, querying GET endpoints (/tip, /patch, /e/{digest}) MUST NOT return unverified state.
+/// Adversarial check: Stand up an upstream authority server using Instance::bind_tcp(),
+/// craft a delta with an invalid/forged signature or corrupted commit on that authority,
+/// trigger witness sync against that authority, and assert that the witness node refuses
+/// to accept or serve the unverified delta on GET /tip, GET /patch, and GET /e/{digest}
+/// (returning 404 or refusal error rather than relaying unverified state).
 #[tokio::test]
 async fn serves_only_self_verified() {
+    let (auth_state, _identity, auth_dir) = attestor_server().await;
+    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+
+    let mut auth_instance = common::multi::Instance {
+        name: "adversarial-authority".to_string(),
+        state: auth_state.clone(),
+        identity: Some(_identity),
+        dir: auth_dir,
+        router: auth_app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    let _auth_addr = auth_instance
+        .bind_tcp()
+        .await
+        .expect("bind TCP for adversarial authority server");
+    let auth_url = auth_instance
+        .url()
+        .expect("authority TCP URL must be available");
+
+    let adversarial_principal = "n2-adversarial-unverified-principal";
+    let now = 1_700_000_000;
+    let dummy_hash = Blake3Hash::from_bytes([9u8; 32]);
+    let forged_commit = IndexableCommit {
+        principal_id: adversarial_principal.to_string(),
+        commit_ids: vec!["SHA-256:FORGED_ADVERSARIAL_COMMIT_12345".to_string()],
+        sequence: 0,
+        pre: None,
+        prs: vec!["SHA-256:FORGED_PR_ROOT".to_string()],
+        srs: vec!["SHA-256:FORGED_SR_ROOT".to_string()],
+        ars: vec!["SHA-256:FORGED_AR_ROOT".to_string()],
+        crs: vec!["SHA-256:FORGED_CR_ROOT".to_string()],
+        blob_hashes: vec![dummy_hash],
+        cozies: vec![],
+        timestamp: now,
+        keys: vec![],
+    };
+    auth_state
+        .engine
+        .indexer()
+        .index_commit(&forged_commit)
+        .await
+        .expect("index forged commit on authority");
+
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
+        authority_url: Some(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
     let witness_app = build_app_router(witness_state.clone()).expect("witness router");
-
-    let adversarial_principal = "n2-adversarial-unverified-principal";
 
     // 1. GET /tip?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
     let (tip_status, tip_json) =
@@ -299,7 +404,7 @@ async fn serves_only_self_verified() {
         "witness node MUST NOT serve unverified state on GET /tip: {tip_json:?}"
     );
 
-    // 2. GET /patch?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error for unverified principal)
+    // 2. GET /patch?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
     let (patch_status, patch_json) =
         get_json(witness_app.clone(), &format!("/patch?pr={adversarial_principal}")).await;
     assert_ne!(
@@ -311,7 +416,7 @@ async fn serves_only_self_verified() {
     // 3. GET /e/{digest} MUST NOT serve unverified entity blobs
     let (entity_status, entity_json) = get_json(
         witness_app.clone(),
-        "/e/SHA-256:UNVERIFIED_DIGEST_99999999999999999999999999999999",
+        "/e/SHA-256:FORGED_ADVERSARIAL_COMMIT_12345",
     )
     .await;
     assert_ne!(
@@ -325,7 +430,7 @@ async fn serves_only_self_verified() {
 ///
 /// Verifies that all read API responses from a witness node carry required protocol
 /// freshness metadata (non-zero timestamp 'now' or 'last_updated', envelope version v=1,
-/// and statement markers).
+/// and statement markers) on both GET /server and state read queries (GET /tip).
 #[tokio::test]
 async fn responses_carry_freshness() {
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
@@ -337,7 +442,7 @@ async fn responses_carry_freshness() {
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
     let witness_app = build_app_router(witness_state.clone()).expect("witness router");
 
-    // GET /server on witness node
+    // 1. GET /server on witness node
     let (server_status, server_json) = get_json(witness_app.clone(), "/server").await;
     assert_eq!(
         server_status,
@@ -347,17 +452,17 @@ async fn responses_carry_freshness() {
 
     let payload = common::envelope_payload(&server_json);
 
-    // Verify freshness timestamp field is present and positive
-    let timestamp = payload
+    // Verify freshness timestamp field is present and positive on /server
+    let server_timestamp = payload
         .get("now")
         .or_else(|| payload.get("last_updated"))
         .or_else(|| payload.get("timestamp"))
         .and_then(|v| v.as_i64())
-        .expect("witness response payload MUST carry a freshness timestamp ('now', 'last_updated', or 'timestamp')");
+        .expect("witness GET /server response payload MUST carry a freshness timestamp ('now', 'last_updated', or 'timestamp')");
 
     assert!(
-        timestamp > 0,
-        "freshness timestamp MUST be positive, got: {timestamp}"
+        server_timestamp > 0,
+        "freshness timestamp on GET /server MUST be positive, got: {server_timestamp}"
     );
 
     // Verify witness mode is reported in server info metadata
@@ -369,5 +474,22 @@ async fn responses_carry_freshness() {
     assert_eq!(
         mode_str, "witness",
         "server info mode MUST be 'witness', got: {mode_str}"
+    );
+
+    // 2. GET /tip state read query on witness node MUST carry freshness metadata
+    let (_tip_status, tip_json) =
+        get_json(witness_app.clone(), "/tip?pr=n2-freshness-principal").await;
+    let tip_payload = common::envelope_payload(&tip_json);
+    let tip_timestamp = tip_payload
+        .get("now")
+        .or_else(|| tip_payload.get("last_updated"))
+        .or_else(|| tip_payload.get("timestamp"))
+        .or_else(|| tip_json.get("now"))
+        .and_then(|v| v.as_i64())
+        .expect("witness GET /tip response MUST carry freshness metadata ('now', 'last_updated', or 'timestamp')");
+
+    assert!(
+        tip_timestamp > 0,
+        "freshness timestamp on GET /tip MUST be positive, got: {tip_timestamp}"
     );
 }
