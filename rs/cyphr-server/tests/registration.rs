@@ -255,6 +255,52 @@ async fn third_party_cannot_register_for_principal() {
     }
 }
 
+/// Adversarial check on `check_registration_authorization`
+/// (`src/routes.rs:713-728`): the third-party guard for a not-yet-resident
+/// principal only fires when `witness_id.strip_prefix("SHA-256:")` succeeds.
+/// Real fanout targets are URLs (see `src/fanout.rs:118-124`), not
+/// `SHA-256:`-prefixed thumbprints, so `strip_prefix` returns `None` and the
+/// `else if` guard is skipped entirely -- an attacker-signed registration for
+/// a victim principal that has no authorized keys and no tip yet would then
+/// fall through to `Ok(())` unchecked. This mirrors N1.2 but with a
+/// URL-shaped `witness_id` in place of a `SHA-256:` thumbprint, isolating the
+/// `strip_prefix` branch as the interesting case.
+#[tokio::test]
+async fn third_party_cannot_register_url_witness_for_principal() {
+    let (state, _dir) = fresh_keyed_state();
+    let pool = common::load_pool();
+    let pid = "n1-url-witness-target";
+    let witness_url = "http://attacker.example";
+
+    // Attacker 'alice' (not an authorized key for principal pid) attempts to
+    // register a URL-shaped witness for a principal that has no tip and no
+    // authorized keys yet.
+    let attacker_coz = build_witness_register_coz(&pool, "alice", pid, witness_url, "create", NOW);
+    let (status, json) = post_witness_register(&state, attacker_coz).await;
+
+    assert!(
+        status.is_client_error(),
+        "third-party URL-witness registration attempt must be rejected with 4xx status, got \
+         {status}: {json:?}"
+    );
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "unauthorized third-party URL-witness registration must return 401 Unauthorized: {json:?}"
+    );
+
+    // Verify witness list remains empty for principal pid
+    let (list_status, list_json) = get_witness_list(&state, pid).await;
+    if list_status.is_success() {
+        let payload = common::envelope_payload(&list_json);
+        let witnesses = payload["witnesses"].as_array();
+        assert!(
+            witnesses.is_none_or(|w| w.is_empty()),
+            "no witnesses should be registered after third-party URL-witness attempt: {list_json:?}"
+        );
+    }
+}
+
 /// N1.3: `unauthenticated_registration_refused`
 ///
 /// Registration requests that are unauthenticated or carry invalid signatures MUST be refused.
