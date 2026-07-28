@@ -60,6 +60,14 @@ impl AppError {
         }
     }
 
+    /// 403 Forbidden.
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: msg.into(),
+        }
+    }
+
     /// 501 Not Implemented.
     ///
     /// For a capability the server genuinely does not offer under its
@@ -86,8 +94,44 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({ "error": self.message });
+        let now = crate::auth::server_now();
+        let body = crate::envelope::Envelope::unsigned(serde_json::json!({
+            "error": self.message,
+            "now": now,
+        }));
         (self.status, axum::Json(body)).into_response()
+    }
+}
+
+/// Custom JSON extractor that maps JSON deserialization / body parsing errors into
+/// `AppError::bad_request`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppJson<T>(pub T);
+
+impl<S, T> axum::extract::FromRequest<S> for AppJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(value) => Ok(Self(value.0)),
+            Err(rejection) => {
+                let status = rejection.status();
+                let msg = rejection.body_text();
+                if status == StatusCode::PAYLOAD_TOO_LARGE || msg.contains("length limit exceeded")
+                {
+                    Err(AppError {
+                        status: StatusCode::PAYLOAD_TOO_LARGE,
+                        message: msg,
+                    })
+                } else {
+                    Err(AppError::bad_request(msg))
+                }
+            },
+        }
     }
 }
 

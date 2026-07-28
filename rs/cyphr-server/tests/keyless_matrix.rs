@@ -376,7 +376,8 @@ async fn keyless_challenge_returns_capability_absence_not_internal_error() {
         "a keyless capability absence must not read as a transient server fault, got {status}: \
          {json:?}"
     );
-    let message = json["error"]
+    let payload = assert_unsigned_envelope(&json);
+    let message = payload["error"]
         .as_str()
         .expect("error body names the condition");
     assert!(
@@ -407,7 +408,8 @@ async fn keyless_login_returns_capability_absence_not_internal_error() {
         "a keyless capability absence must not read as a transient server fault, got {status}: \
          {json:?}"
     );
-    let message = json["error"]
+    let payload = assert_unsigned_envelope(&json);
+    let message = payload["error"]
         .as_str()
         .expect("error body names the condition");
     assert!(

@@ -6,16 +6,16 @@ All active development happens here.
 
 ## Crate map
 
-| Crate | Role |
-| :--- | :--- |
-| `cyphr` | Protocol core: `Principal<S: eml::Storage>`, commit/transaction machinery, Merkle trees (`principal_tree`, `semantic_tree`), multihash. Consumer-agnostic (root I4). |
-| `cyphr-storage` | `StorageEngine<B: BlobStore, I: Indexer, S>`: validated write path (`submit_commit`), read paths, recovery (`reindex`), import/export |
-| `cyphr-blob-fjall` | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction) |
-| `cyphr-index-fjall` | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version |
-| `cyphr-server` | axum HTTP scaffold: `/tip`, `/patch`, `/push`, `/e/{digest}` wired to durable backends. No auth yet; `Export` subcommand and `witness` mode are non-functional stubs |
-| `cyphr-cli` | Single-user dev CLI; plaintext keystore, not secure by design |
-| `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator) |
-| `fuzz` | cargo-fuzz targets; not run in CI |
+| Crate                          | Role                                                                                                                                                                 |
+| :----------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cyphr`                        | Protocol core: `Principal<S: eml::Storage>`, commit/transaction machinery, Merkle trees (`principal_tree`, `semantic_tree`), multihash. Consumer-agnostic (root I4). |
+| `cyphr-storage`                | `StorageEngine<B: BlobStore, I: Indexer, S>`: validated write path (`submit_commit`), read paths, recovery (`reindex`), import/export                                |
+| `cyphr-blob-fjall`             | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction)                                                                       |
+| `cyphr-index-fjall`            | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version         |
+| `cyphr-server`                 | axum HTTP scaffold: `/tip`, `/patch`, `/push`, `/e/{digest}` wired to durable backends. No auth yet; `Export` subcommand and `witness` mode are non-functional stubs |
+| `cyphr-cli`                    | Single-user dev CLI; plaintext keystore, not secure by design                                                                                                        |
+| `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator)                                                                                                  |
+| `fuzz`                         | cargo-fuzz targets; not run in CI                                                                                                                                    |
 
 ## Gates
 
@@ -60,6 +60,26 @@ All active development happens here.
   are the replacement boundaries (the index replacement lands behind
   `Indexer`). Signpost: backend types leaking through a seam into
   consumers.
+- **I4 — Server instance independence.** Every server instance is fully
+  isolated by construction with its own data directory, storage engine, and
+  identity key pair. No state, cache, or cryptographic material is shared
+  across server instances. Grounding: `rs/cyphr-server/tests/invariants.rs`
+  (`two_instances_are_independent`) and `tests/common/multi.rs`.
+- **I5 — Refusals are never signed.** Server error responses, rejections,
+  and refusals MUST ALWAYS be returned as unsigned envelopes
+  (`Statement::Unsigned`) and MUST NEVER carry a signed statement / receipt.
+  Grounding: `rs/cyphr-server/tests/invariants.rs` (`refusals_are_never_signed`).
+- **I6 — Signed statements carry freshness.** All signed server statements
+  and receipts MUST carry a valid, positive, non-zero unix timestamp (`now`)
+  reflecting request processing time within acceptable clock drift boundaries;
+  freshness scope is request-bound. Grounding:
+  `rs/cyphr-server/tests/invariants.rs` (`signed_statements_carry_freshness`).
+- **I7 — No standing honesty claim.** The server MUST NEVER issue or publish
+  standing, static, or unverified claims of honesty or attestation. Keyless
+  and unbootstrapped configurations strictly declare `repository` tier
+  without identity claims, and attestations are bound per-request. Grounding:
+  `rs/cyphr-server/tests/invariants.rs` (`no_standing_honesty_claim`).
+- **I8 — Storage pressure and pruning refusal.** storage pressure is relieved by refusing admission, never by pruning retained history; a design that needs pruning is a SPEC §16.2 escalation, not a server change.
 
 ## Known traps (updated 2026-07-08; fix, don't inherit)
 

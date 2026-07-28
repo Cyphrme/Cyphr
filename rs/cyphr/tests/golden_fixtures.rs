@@ -685,3 +685,8 @@ fn test_golden_errors() {
 fn test_golden_lifecycle() {
     run_golden_dir("lifecycle");
 }
+
+#[test]
+fn test_golden_witness() {
+    run_golden_dir("witness");
+}

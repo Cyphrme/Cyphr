@@ -10,14 +10,18 @@
 pub mod admission;
 pub mod auth;
 pub mod config;
+pub mod consistency;
 pub mod envelope;
 pub mod error;
+pub mod fanout;
 pub mod logging;
 pub mod observation;
 pub mod rate_limit;
 pub mod receipt;
+pub mod registration;
 pub mod revoke;
 pub mod routes;
+pub mod sync;
 
 use std::sync::Arc;
 
@@ -80,6 +84,22 @@ pub struct AppState {
     /// mutates no chain and must survive a reindex, so it cannot live in
     /// the index that a reindex rebuilds.
     pub observations: observation::ObservationStore,
+
+    /// In-memory witness registration store (SPEC §13.5.1).
+    pub registration: registration::RegistrationStore,
+
+    /// Reusable HTTP client for witness state sync and upstream calls.
+    pub http_client: reqwest::Client,
+
+    /// Per-principal locks for synchronizing witness state sync execution.
+    pub sync_locks: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    >,
+
+    /// Background fanout delivery tracker (SPEC §13.5).
+    pub fanout: fanout::FanoutTracker,
 }
 
 impl AppState {
@@ -106,6 +126,15 @@ impl AppState {
         let observations =
             observation::ObservationStore::open(&config.data_dir.join("observations"))?;
 
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build http client");
+
+        let sync_locks =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
         Ok(Self {
             config,
             engine,
@@ -113,6 +142,10 @@ impl AppState {
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             observations,
+            registration: registration::RegistrationStore::new(),
+            http_client,
+            sync_locks,
+            fanout: fanout::FanoutTracker::new(),
         })
     }
 
@@ -185,16 +218,45 @@ impl AppState {
 // Server lifecycle
 // ========================================================================
 
+async fn witness_write_refusal_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, error::AppError> {
+    if req.method() == axum::http::Method::POST
+        && req.uri().path() == "/push"
+        && (req.headers().contains_key("x-cyphr-fanout")
+            || req.headers().contains_key("x-witness-push"))
+    {
+        return Ok(next.run(req).await);
+    }
+
+    match *req.method() {
+        axum::http::Method::POST
+        | axum::http::Method::PUT
+        | axum::http::Method::DELETE
+        | axum::http::Method::PATCH => Err(error::AppError::forbidden(
+            "write operations disabled in witness mode",
+        )),
+        _ => Ok(next.run(req).await),
+    }
+}
+
 /// Build the application router with all routes and middleware.
 ///
 /// Separated from [`serve`] to enable integration testing without
 /// binding a TCP listener.
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
-    axum::Router::new()
+    let mut router = axum::Router::new()
         .route("/tip", axum::routing::get(routes::tip))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
+        .route(
+            "/witness/register",
+            axum::routing::post(routes::witness_register_post)
+                .get(routes::witness_register_get)
+                .delete(routes::witness_register_delete),
+        )
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route(
@@ -202,20 +264,74 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
             axum::routing::post(auth::login::challenge),
         )
         .route("/auth/login", axum::routing::post(auth::login::login))
-        .with_state(state)
-        .layer(
-            tower_http::trace::TraceLayer::new_for_http().make_span_with(
-                |request: &axum::http::Request<_>| {
-                    let request_id = uuid::Uuid::new_v4().to_string();
-                    tracing::info_span!(
-                        "request",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        request_id = %request_id,
-                    )
-                },
-            ),
-        )
+        .fallback(async || error::AppError::not_found("route not found"));
+
+    if state.config.mode == config::ServerMode::Witness {
+        router = router.layer(axum::middleware::from_fn(witness_write_refusal_middleware));
+    }
+
+    router.with_state(state).layer(
+        tower_http::trace::TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<_>| {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            },
+        ),
+    )
+}
+
+/// Build the full application router with all routes, admission layer, rate-limiting layer, and
+/// body limit layer.
+pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn std::error::Error>> {
+    let admission_config = state.config.admission.clone();
+    let admission_data_dir = state.config.data_dir.clone();
+    let probe_state = state.clone();
+    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
+        let state = probe_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.is_some())
+                .unwrap_or(false)
+        })
+    });
+
+    let limits = state.config.limits.clone();
+    let count_state = state.clone();
+    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
+        let state = count_state.clone();
+        Box::pin(async move {
+            state
+                .engine
+                .get_tip(&id)
+                .await
+                .map(|tip| tip.map(|t| t.commit_count).unwrap_or(0))
+                .unwrap_or(0)
+        })
+    });
+
+    let mut app = build_router(state);
+    if let Some(gate) = admission::layer(
+        &admission_config,
+        &admission_data_dir,
+        resident,
+        limits.max_body_bytes as usize,
+    )? {
+        app = app.layer(gate);
+    }
+    app = app.layer(rate_limit::layer(&limits, count_probe));
+    app = app.layer(axum::extract::DefaultBodyLimit::max(
+        limits.max_body_bytes as usize,
+    ));
+
+    Ok(app)
 }
 
 /// Start the HTTP server with graceful shutdown.
@@ -249,75 +365,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     }
 
     let state = Arc::new(state);
-
-    // Compose the orthogonal admission fence over the router (never inside
-    // `build_router`, which stays the standing strip test). The one protocol
-    // fact the fence needs -- whether a principal already has a resident tip
-    // -- crosses as a `bool` through this probe, so no engine type enters the
-    // admission module. A probe error resolves to "not resident", which only
-    // ever tightens the fence (never a bypass).
-    let admission_config = state.config.admission.clone();
-    let admission_data_dir = state.config.data_dir.clone();
-    let probe_state = state.clone();
-    let resident: admission::ResidentProbe = Arc::new(move |id: String| {
-        let state = probe_state.clone();
-        Box::pin(async move {
-            state
-                .engine
-                .get_tip(&id)
-                .await
-                .map(|tip| tip.is_some())
-                .unwrap_or(false)
-        })
-    });
-
-    // Compose the orthogonal resource fences (rate / size / count-quota) over
-    // the router, outside admission so a throttle refuses before the costlier
-    // admission work. Like admission, they never touch `build_router`. The one
-    // storage fact the count quota needs -- a principal's commit count --
-    // crosses as a `u64` through this probe, so no engine type enters the
-    // `rate_limit` module. A probe error resolves to `0`, which never
-    // fabricates a quota refusal (it only ever refuses on a known over-cap).
-    let limits = state.config.limits.clone();
-    let count_state = state.clone();
-    let count_probe: rate_limit::CountProbe = Arc::new(move |id: String| {
-        let state = count_state.clone();
-        Box::pin(async move {
-            state
-                .engine
-                .get_tip(&id)
-                .await
-                .map(|tip| tip.map(|t| t.commit_count).unwrap_or(0))
-                .unwrap_or(0)
-        })
-    });
-
-    let mut app = build_router(state);
-    if let Some(gate) = admission::layer(
-        &admission_config,
-        &admission_data_dir,
-        resident,
-        limits.max_body_bytes as usize,
-    )? {
-        app = app.layer(gate);
-    }
-    app = app.layer(rate_limit::layer(&limits, count_probe));
-
-    // The single authoritative body-size cap, over EVERY route (composed here,
-    // never in `build_router`, exactly like admission and the rate/size/quota
-    // fences above). `rate_limit`'s own fence only bounds `/push`'s actual
-    // buffered bytes; every other route otherwise falls back to axum's 2 MiB
-    // default. `DefaultBodyLimit` tags the request with `limits.max_body_bytes`
-    // for `Bytes`-based extractors (which `Json`, used by `/revoke` and
-    // `/auth/*`, is built on) to enforce while reading -- so it bounds the
-    // ACTUAL bytes read off the body, not merely a declared `Content-Length`,
-    // and a chunked over-cap body is refused `413` exactly like a
-    // `Content-Length`-declared one. It only inserts a request extension (no
-    // body-type change), so it composes with `build_router`'s `axum::Router`
-    // without touching it.
-    app = app.layer(axum::extract::DefaultBodyLimit::max(
-        limits.max_body_bytes as usize,
-    ));
+    let app = build_app_router(state)?;
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     let local_addr = listener.local_addr()?;

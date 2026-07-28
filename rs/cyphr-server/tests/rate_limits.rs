@@ -42,13 +42,7 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::process::{Child, Command};
-use std::time::{Duration, Instant};
-
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use socket2::{Domain, Socket, Type};
 use tempfile::TempDir;
 
 // A distinct, deterministic `now` per principal keeps genesis blob bytes (and
@@ -117,68 +111,23 @@ impl Limits {
 }
 
 // ========================================================================
-// Subprocess server harness (mirrors tests/admission.rs)
+// In-process server harness
 // ========================================================================
 
-/// Path to the compiled `cyphr-server` binary, resolved beside this test binary
-/// (`<target>/debug/deps/..` -> `<target>/debug/cyphr-server`).
-fn server_binary() -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("deps dir")
-        .parent()
-        .expect("profile dir")
-        .join("cyphr-server")
-}
-
-/// Read the server's resolved bind port from its stdout: it binds the ephemeral
-/// port itself (`:0`) and prints exactly one `listening on <addr>` line once
-/// bound. Reading the real bound port removes the free-then-rebind window a
-/// test-side reservation would open.
-fn read_reported_port(child: &mut Child) -> u16 {
-    use std::io::BufRead;
-    let stdout = child.stdout.take().expect("child stdout is piped");
-    let mut reader = std::io::BufReader::new(stdout);
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).expect("read server stdout");
-    assert_ne!(
-        read, 0,
-        "server stdout closed before reporting bind address"
-    );
-    let addr = line
-        .trim()
-        .strip_prefix("listening on ")
-        .unwrap_or_else(|| panic!("unexpected first server stdout line: {line:?}"));
-    addr.rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("unparseable server bind address: {addr:?}"))
-}
-
-/// A running `cyphr-server` subprocess plus the temp dir backing its store.
-/// Dropping it kills the child and removes the store.
+/// A test server wrapping an in-process `common::multi::Instance`.
 struct TestServer {
-    child: Child,
-    port: u16,
-    _tmp: TempDir,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    instance: common::multi::Instance,
 }
 
 impl TestServer {
     /// Boot with the given `[limits]` table and no admission policy.
-    fn with_limits(limits: &Limits) -> TestServer {
-        Self::boot(tempfile::tempdir().expect("tempdir"), &limits.render())
+    async fn with_limits(limits: &Limits) -> TestServer {
+        Self::boot(tempfile::tempdir().expect("tempdir"), &limits.render()).await
     }
 
     /// Boot a server whose config carries `extra` (raw TOML appended after the
-    /// base `listen`/`data_dir`), and wait until it accepts connections.
-    fn boot(tmp: TempDir, extra: &str) -> TestServer {
+    /// base `listen`/`data_dir`).
+    async fn boot(tmp: TempDir, extra: &str) -> TestServer {
         let data_dir = tmp.path().join("data");
         let config_path = tmp.path().join("cyphr-server.toml");
         let config = format!(
@@ -187,107 +136,53 @@ impl TestServer {
         );
         std::fs::write(&config_path, config).expect("write config");
 
-        let mut child = Command::new(server_binary())
-            .arg("--config")
-            .arg(&config_path)
-            .arg("serve")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn cyphr-server");
-
-        let port = read_reported_port(&mut child);
-        let server = TestServer {
-            child,
-            port,
-            _tmp: tmp,
-        };
-        server.wait_ready();
-        server
+        let instance = common::multi::Instance::from_config_file(&config_path, tmp).await;
+        TestServer { instance }
     }
 
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("server did not become ready on port {}", self.port);
+    async fn get(&self, path: &str) -> HttpResponse {
+        self.request("GET", path, None, "127.0.0.1").await
     }
 
-    fn get(&self, path: &str) -> HttpResponse {
-        self.request("GET", path, None, "127.0.0.1")
+    async fn post(&self, path: &str, body: &str) -> HttpResponse {
+        self.request("POST", path, Some(body), "127.0.0.1").await
     }
 
-    fn post(&self, path: &str, body: &str) -> HttpResponse {
-        self.request("POST", path, Some(body), "127.0.0.1")
-    }
-
-    /// Issue one request over a fresh connection bound to `source_ip` (loopback
-    /// alias). The server sees `source_ip` as the peer address, so per-IP
-    /// keying can be exercised with distinct synthesized clients. `Connection:
-    /// close` -> the server closes after the response, so read-to-EOF yields
-    /// the whole message.
-    fn request(
+    async fn request(
         &self,
         method: &str,
         path: &str,
         body: Option<&str>,
         source_ip: &str,
     ) -> HttpResponse {
-        let mut stream = connect_from(source_ip, self.port);
-        let body = body.unwrap_or("");
-        let mut req =
-            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
-        if !body.is_empty() || method == "POST" {
-            req.push_str("Content-Type: application/json\r\n");
-            req.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        let resp = self
+            .instance
+            .request(method, path, body.map(String::from), &[], Some(source_ip))
+            .await;
+        HttpResponse {
+            status: resp.status.as_u16(),
+            body: resp.body,
         }
-        req.push_str("\r\n");
-        stream
-            .write_all(req.as_bytes())
-            .expect("write request head");
-        stream
-            .write_all(body.as_bytes())
-            .expect("write request body");
-        stream.flush().expect("flush");
-
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read response");
-        HttpResponse::parse(&raw)
     }
 
-    /// Issue one POST whose body is sent with `Transfer-Encoding: chunked` and
-    /// NO `Content-Length` header, so the request carries no declared length.
-    /// This is the case the merged size fence's `Content-Length` check cannot
-    /// see: a non-push route with a chunked over-cap body slips the header
-    /// check and falls back to axum's 2 MiB default extractor limit rather than
-    /// `max_body_bytes`. A single chunk carries the whole body.
-    fn post_chunked(&self, path: &str, body: &str) -> HttpResponse {
-        let mut stream = connect_from("127.0.0.1", self.port);
-        let mut req = format!(
-            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: \
-             application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
-        );
-        // One chunk: `<hex-len>\r\n<bytes>\r\n`, then the terminating `0` chunk.
-        req.push_str(&format!("{:x}\r\n", body.len()));
-        req.push_str(body);
-        req.push_str("\r\n0\r\n\r\n");
-        stream
-            .write_all(req.as_bytes())
-            .expect("write chunked request");
-        stream.flush().expect("flush");
-
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read response");
-        HttpResponse::parse(&raw)
+    async fn post_chunked(&self, path: &str, body: &str) -> HttpResponse {
+        let resp = self
+            .instance
+            .request(
+                "POST",
+                path,
+                Some(body.to_string()),
+                &[("Transfer-Encoding", "chunked")],
+                Some("127.0.0.1"),
+            )
+            .await;
+        HttpResponse {
+            status: resp.status.as_u16(),
+            body: resp.body,
+        }
     }
 
-    /// Fire `n` identical requests as fast as possible from `source_ip` and
-    /// return every status. Fresh connection per request (the harness default).
-    fn burst(
+    async fn burst(
         &self,
         method: &str,
         path: &str,
@@ -295,53 +190,18 @@ impl TestServer {
         source_ip: &str,
         n: usize,
     ) -> Vec<u16> {
-        (0..n)
-            .map(|_| self.request(method, path, body, source_ip).status)
-            .collect()
+        let mut res = Vec::with_capacity(n);
+        for _ in 0..n {
+            res.push(self.request(method, path, body, source_ip).await.status);
+        }
+        res
     }
-}
-
-/// Open a TCP connection to the server from an explicit loopback `source_ip`.
-///
-/// On Linux the whole `127.0.0.0/8` block is loopback, so binding the client
-/// socket to e.g. `127.0.0.2` and connecting to `127.0.0.1` makes the server's
-/// `accept()` report `127.0.0.2` as the peer -- the only way to present the
-/// per-IP fence with genuinely distinct clients over loopback.
-fn connect_from(source_ip: &str, port: u16) -> TcpStream {
-    let src: SocketAddr = format!("{source_ip}:0").parse().expect("source addr");
-    let dst = SocketAddr::from(([127, 0, 0, 1], port));
-    let sock = Socket::new(Domain::IPV4, Type::STREAM, None).expect("socket");
-    sock.bind(&src.into())
-        .unwrap_or_else(|e| panic!("bind source {source_ip}: {e}"));
-    sock.connect(&dst.into()).expect("connect");
-    let stream: TcpStream = sock.into();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("set read timeout");
-    stream
 }
 
 /// A parsed HTTP response: status code plus the raw body string.
 struct HttpResponse {
     status: u16,
     body: String,
-}
-
-impl HttpResponse {
-    fn parse(raw: &[u8]) -> HttpResponse {
-        let text = String::from_utf8_lossy(raw);
-        let status = text
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|code| code.parse::<u16>().ok())
-            .unwrap_or_else(|| panic!("no status line in response: {text:?}"));
-        let body = text
-            .split_once("\r\n\r\n")
-            .map(|(_, b)| b.to_string())
-            .unwrap_or_default();
-        HttpResponse { status, body }
-    }
 }
 
 fn some_429(statuses: &[u16]) -> bool {
@@ -520,13 +380,15 @@ fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
 /// the "some 429" assertion fails behaviorally. Green once the per-IP
 /// `GovernorLayer` is composed AND `serve()` wires `ConnectInfo<SocketAddr>`
 /// (without it the peer-key extractor cannot key and the burst never 429s).
-#[test]
-fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
+#[tokio::test]
+async fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
     let mut limits = Limits::generous();
     limits.per_ip = (TRIP_PER_SECOND, TRIP_BURST);
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
-    let from_a = server.burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST);
+    let from_a = server
+        .burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST)
+        .await;
     assert!(
         some_429(&from_a),
         "a per-IP burst past the bucket must yield at least one 429: {from_a:?}"
@@ -534,7 +396,9 @@ fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
 
     // A distinct source IP is a distinct bucket: a modest burst from it, after
     // the first client is throttled, must NOT be collateral-throttled.
-    let from_b = server.burst("GET", "/tip?pr=nobody", None, "127.0.0.2", MODEST);
+    let from_b = server
+        .burst("GET", "/tip?pr=nobody", None, "127.0.0.2", MODEST)
+        .await;
     assert!(
         !some_429(&from_b),
         "a distinct client IP must bucket independently (no shared/global limiter): {from_b:?}"
@@ -552,22 +416,24 @@ fn per_ip_rate_limit_burst_429s_and_isolates_by_ip() {
 /// pool. Distinct `principal_id` per push keeps the (generous) per-principal
 /// fence out of the picture, isolating the per-op push bucket. Today the push
 /// flood never 429s.
-#[test]
-fn per_operation_push_bucket_limits_reads_independent() {
+#[tokio::test]
+async fn per_operation_push_bucket_limits_reads_independent() {
     let mut limits = Limits::generous();
     limits.push = (TRIP_PER_SECOND, TRIP_BURST);
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
-    let pushes: Vec<u16> = (0..BURST)
-        .map(|i| {
+    let mut pushes = Vec::with_capacity(BURST);
+    for i in 0..BURST {
+        pushes.push(
             server
                 .post(
                     "/push",
                     &genesis_body(&format!("perop-{i}"), NOW_BASE + i as i64),
                 )
-                .status
-        })
-        .collect();
+                .await
+                .status,
+        );
+    }
     assert!(
         some_429(&pushes),
         "a push flood past the push bucket must yield at least one 429: {pushes:?}"
@@ -575,7 +441,7 @@ fn per_operation_push_bucket_limits_reads_independent() {
 
     // Reads have their OWN (generous) bucket; the push flood must not have
     // drained them, and per-IP is generous so nothing collateral-throttles.
-    let read = server.get("/tip?pr=nobody").status;
+    let read = server.get("/tip?pr=nobody").await.status;
     assert_ne!(
         read, 429,
         "reads must bucket independently of pushes -- a push flood must not throttle a read: \
@@ -586,19 +452,23 @@ fn per_operation_push_bucket_limits_reads_independent() {
 /// RED today: `/revoke` takes ORDINARY per-op limits -- NO exemption. A modest
 /// revoke burst passes; an abusive burst 429s. Today `/revoke` is never rate
 /// limited, so the abusive burst never 429s.
-#[test]
-fn revoke_takes_ordinary_limits_no_exemption() {
+#[tokio::test]
+async fn revoke_takes_ordinary_limits_no_exemption() {
     let mut limits = Limits::generous();
     limits.revoke = (TRIP_PER_SECOND, TRIP_BURST);
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
-    let modest = server.burst("POST", "/revoke", Some("{}"), "127.0.0.1", MODEST);
+    let modest = server
+        .burst("POST", "/revoke", Some("{}"), "127.0.0.1", MODEST)
+        .await;
     assert!(
         !some_429(&modest),
         "a modest /revoke burst must pass -- ordinary limits, not a stricter fence: {modest:?}"
     );
 
-    let abusive = server.burst("POST", "/revoke", Some("{}"), "127.0.0.1", BURST);
+    let abusive = server
+        .burst("POST", "/revoke", Some("{}"), "127.0.0.1", BURST)
+        .await;
     assert!(
         some_429(&abusive),
         "an abusive /revoke burst must 429 -- /revoke is NOT exempt from rate limits: {abusive:?}"
@@ -628,8 +498,8 @@ fn revoke_takes_ordinary_limits_no_exemption() {
 /// the field dropped from `LimitsConfig`, the `per_principal` line below is
 /// an unknown `[limits]` key the server ignores, so the victim's follow-on
 /// push reaches the handler and commits (2xx).
-#[test]
-fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
+#[tokio::test]
+async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
     // Generous everywhere, then append a per-principal rate bucket as raw
     // `[limits]` TOML, tight enough that the attacker's burst drains it. This
     // key no longer exists in `LimitsConfig`, so the server ignores this line
@@ -642,12 +512,14 @@ fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
         TRIP_PER_SECOND,
         TRIP_BURST,
     );
-    let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), &extra);
+    let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), &extra).await;
 
     // The victim establishes residency with an active key via its genesis push
     // (from its own IP). Under generous per-op/per-IP limits this succeeds.
     let (genesis, followon) = genesis_and_followon("griefing-victim", NOW_BASE + 700);
-    let g = server.request("POST", "/push", Some(&genesis), "127.0.0.1");
+    let g = server
+        .request("POST", "/push", Some(&genesis), "127.0.0.1")
+        .await;
     assert_eq!(
         g.status, 201,
         "the victim's genesis push must establish residency: {} {}",
@@ -659,12 +531,16 @@ fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
     // them), so the victim's chain is untouched -- but a per-principal rate
     // fence keyed on the named principal would drain the victim's bucket.
     let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
-    let _ = server.burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST);
+    let _ = server
+        .burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST)
+        .await;
 
     // The victim's OWN legitimate follow-on push, from its own IP, must NOT be
     // throttled by the attacker's traffic: with no per-principal rate limit,
     // the follow-on commits.
-    let f = server.request("POST", "/push", Some(&followon), "127.0.0.1");
+    let f = server
+        .request("POST", "/push", Some(&followon), "127.0.0.1")
+        .await;
     assert!(
         (200..300).contains(&f.status),
         "a victim's own push must succeed despite an attacker naming its principal_id in a \
@@ -684,17 +560,17 @@ fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 /// (256 KiB) sits between the two. The merged fence already caps the push path,
 /// so this stays green across the rework; the RED driver for the size fence is
 /// the NON-push case below, which the merged fence does not cover.
-#[test]
-fn request_size_cap_rejects_oversized_body() {
+#[tokio::test]
+async fn request_size_cap_rejects_oversized_body() {
     let mut limits = Limits::generous();
     limits.max_body_bytes = 64 * 1024;
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
     // A well-formed push envelope whose single blob is 256 KiB of filler: over
     // the 64 KiB cap, under axum's 2 MiB default.
     let filler = "A".repeat(256 * 1024);
     let oversized = serde_json::json!({ "principal_id": "too-big", "blobs": [filler] }).to_string();
-    let over = server.post("/push", &oversized);
+    let over = server.post("/push", &oversized).await;
     assert_eq!(
         over.status, 413,
         "an over-cap body must be refused 413 (payload too large): {} {}",
@@ -702,7 +578,9 @@ fn request_size_cap_rejects_oversized_body() {
     );
 
     // A normal genesis body is far under the cap and must still be admitted.
-    let under = server.post("/push", &genesis_body("size-ok", NOW_BASE + 5));
+    let under = server
+        .post("/push", &genesis_body("size-ok", NOW_BASE + 5))
+        .await;
     assert_ne!(
         under.status, 413,
         "an under-cap body must not be size-refused: {} {}",
@@ -720,17 +598,17 @@ fn request_size_cap_rejects_oversized_body() {
 /// instead of being 413'd. A `serve()`-composed body-limit layer applying
 /// `max_body_bytes` to every route closes that gap: the oversized chunked
 /// body is refused 413 regardless of framing.
-#[test]
-fn non_push_route_size_cap_rejects_oversized_body() {
+#[tokio::test]
+async fn non_push_route_size_cap_rejects_oversized_body() {
     let mut limits = Limits::generous();
     limits.max_body_bytes = 1024; // 1 KiB cap
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
     // 100 KiB: over the 1 KiB cap, well under axum's 2 MiB default. Sent
     // chunked (no Content-Length), so the fence's declared-length check -- its
     // only all-routes size check today -- has nothing to test.
     let oversized = "A".repeat(100 * 1024);
-    let over = server.post_chunked("/revoke", &oversized);
+    let over = server.post_chunked("/revoke", &oversized).await;
     assert_eq!(
         over.status, 413,
         "an over-cap chunked body on a non-push route must be refused 413, not processed by the \
@@ -740,7 +618,7 @@ fn non_push_route_size_cap_rejects_oversized_body() {
 
     // A small body on the same route must still be served (413 is a size
     // verdict, not a blanket refusal of the route).
-    let under = server.post_chunked("/revoke", "{}");
+    let under = server.post_chunked("/revoke", "{}").await;
     assert_ne!(
         under.status, 413,
         "an under-cap body on a non-push route must not be size-refused: {} {}",
@@ -759,22 +637,22 @@ fn non_push_route_size_cap_rejects_oversized_body() {
 /// commit -- one the protocol would accept absent the quota -- is refused.
 /// Today no quota exists, so the follow-on succeeds (2xx) where it must be
 /// refused.
-#[test]
-fn per_principal_count_quota_refuses_over_cap() {
+#[tokio::test]
+async fn per_principal_count_quota_refuses_over_cap() {
     let mut limits = Limits::generous();
     limits.count_quota = 1;
-    let server = TestServer::with_limits(&limits);
+    let server = TestServer::with_limits(&limits).await;
 
     let (genesis, followon) = genesis_and_followon("quota-p", NOW_BASE + 100);
 
-    let g = server.post("/push", &genesis);
+    let g = server.post("/push", &genesis).await;
     assert_eq!(
         g.status, 201,
         "the first (genesis) commit is under the quota and must succeed: {} {}",
         g.status, g.body
     );
 
-    let f = server.post("/push", &followon);
+    let f = server.post("/push", &followon).await;
     assert!(
         (400..500).contains(&f.status) && f.status != 429 && f.status != 403,
         "a principal at the count quota must be REFUSED the next commit with a distinct quota 4xx \
@@ -803,8 +681,8 @@ fn per_principal_count_quota_refuses_over_cap() {
 /// layer before ever reaching admission, and valid-token pushes cannot repeat
 /// (single-use), so reads are the only route that isolates the rate fence
 /// while admission is armed.
-#[test]
-fn both_fences_compose_in_serve() {
+#[tokio::test]
+async fn both_fences_compose_in_serve() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let tokens = tmp.path().join("invite-tokens.txt");
     // A real sha256(token) hex so the invite policy loads and arms cleanly (the
@@ -822,10 +700,12 @@ fn both_fences_compose_in_serve() {
         limits = limits.render(),
         tokens = tokens,
     );
-    let server = TestServer::boot(tmp, &extra);
+    let server = TestServer::boot(tmp, &extra).await;
 
     // Admission still fires: a no-token genesis under invite is 403.
-    let denied = server.post("/push", &genesis_body("coexist-admission", NOW_BASE + 200));
+    let denied = server
+        .post("/push", &genesis_body("coexist-admission", NOW_BASE + 200))
+        .await;
     assert_eq!(
         denied.status, 403,
         "admission must still deny a no-token genesis under invite: {} {}",
@@ -834,7 +714,9 @@ fn both_fences_compose_in_serve() {
 
     // Rate fence still fires alongside admission, on a route admission does not
     // gate: a read flood past the read bucket must 429.
-    let flood = server.burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST);
+    let flood = server
+        .burst("GET", "/tip?pr=nobody", None, "127.0.0.1", BURST)
+        .await;
     assert!(
         some_429(&flood),
         "the rate fence must fire alongside admission -- a read flood must 429: {flood:?}"
@@ -851,17 +733,18 @@ fn both_fences_compose_in_serve() {
 /// normal traffic through). Together with the whole in-process suite over
 /// `build_router` staying green, this is the standing strip test that the
 /// fences never leak into `build_router`.
-#[test]
-fn bare_server_boots_and_self_bootstraps() {
-    let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), "");
+#[tokio::test]
+async fn bare_server_boots_and_self_bootstraps() {
+    let server = TestServer::boot(tempfile::tempdir().expect("tempdir"), "").await;
     assert_eq!(
-        server.get("/server").status,
+        server.get("/server").await.status,
         200,
         "a bare (no-[limits]) server must boot and serve /server"
     );
     assert_eq!(
         server
             .post("/push", &genesis_body("bare-genesis", NOW_BASE + 400))
+            .await
             .status,
         201,
         "a bare server must admit a normal genesis push under default limits"
@@ -870,24 +753,13 @@ fn bare_server_boots_and_self_bootstraps() {
 
 // ========================================================================
 // Bounded limiter state (self-DoS guard)
-//
-// A liveness guard, NOT a RED driver. The bounded-state guarantee (idle
-// buckets are evicted / the key map cannot grow without bound) is not
-// observable as a deterministic black-box HTTP behavior within a test's
-// timescale; it is verified at the source level by
-// `rate_limit::tests::keyed_limiter_map_is_bounded_by_key_ceiling` (a
-// size-ceiling backstop over `governor`'s own time-based sweep -- see
-// `rate_limit`'s module doc). What IS black-box checkable here is the
-// SYMPTOM's absence: driving many distinct limiter keys must not wedge or
-// crash the server. Green today and after -- it exists to catch a gross
-// regression; the real bounded-state proof lives in the source-level test.
 // ========================================================================
 
 /// GUARD: many distinct principals and many distinct per-IP keys keep the
 /// server responsive.
-#[test]
-fn many_distinct_keys_keep_server_responsive() {
-    let server = TestServer::with_limits(&Limits::generous());
+#[tokio::test]
+async fn many_distinct_keys_keep_server_responsive() {
+    let server = TestServer::with_limits(&Limits::generous()).await;
 
     // Many distinct principals, all from the same source IP -- this loop
     // exercises storage/count-quota state growth, not the rate limiter's key
@@ -895,18 +767,22 @@ fn many_distinct_keys_keep_server_responsive() {
     // bucket; see the `rate_limit` module doc), so these pushes never grow a
     // limiter key map by themselves ...
     for i in 0..64 {
-        let _ = server.post(
-            "/push",
-            &genesis_body(&format!("bounded-{i}"), NOW_BASE + 500 + i),
-        );
+        let _ = server
+            .post(
+                "/push",
+                &genesis_body(&format!("bounded-{i}"), NOW_BASE + 500 + i),
+            )
+            .await;
     }
     // Many distinct source IPs (distinct per-IP keys) ...
     for i in 2..32u8 {
-        let _ = server.request("GET", "/tip?pr=nobody", None, &format!("127.0.0.{i}"));
+        let _ = server
+            .request("GET", "/tip?pr=nobody", None, &format!("127.0.0.{i}"))
+            .await;
     }
     // The server is still live and serving after churning the key space.
     assert_eq!(
-        server.get("/server").status,
+        server.get("/server").await.status,
         200,
         "the server must stay responsive after many distinct limiter keys (no unbounded-state \
          wedge)"

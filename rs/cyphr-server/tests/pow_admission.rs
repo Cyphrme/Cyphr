@@ -43,11 +43,7 @@
 
 mod common;
 
-use std::io::{BufRead, Read, Write};
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::process::{Child, Command};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tempfile::TempDir;
 
@@ -139,67 +135,20 @@ fn solve_pow_in_range(principal_id: &str, utc_hour: u64, lo_bits: u32, hi_bits: 
 // Subprocess server harness (mirrors tests/admission.rs)
 // ========================================================================
 
-/// Path to the compiled `cyphr-server` binary, resolved beside this test
-/// binary -- the same discovery `tests/cli.rs` and `tests/admission.rs` use.
-fn server_binary() -> PathBuf {
-    std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("deps dir")
-        .parent()
-        .expect("profile dir")
-        .join("cyphr-server")
-}
-
-/// Read the server's resolved bind port from its stdout. The server binds the
-/// ephemeral port itself (config `:0`) and prints exactly one `listening on
-/// <addr>` line once bound. If the server exits before binding (as it does
-/// today under `policy = "pow"`, rejected at config resolution), stdout closes
-/// first and this panics -- the behavioral RED signal for the boot-based tests.
-fn read_reported_port(child: &mut Child) -> u16 {
-    let stdout = child.stdout.take().expect("child stdout is piped");
-    let mut reader = std::io::BufReader::new(stdout);
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).expect("read server stdout");
-    assert_ne!(
-        read, 0,
-        "server stdout closed before reporting its bind address (pow-configured server refused to \
-         boot -- resolve_config rejects pow today)"
-    );
-    let addr = line
-        .trim()
-        .strip_prefix("listening on ")
-        .unwrap_or_else(|| panic!("unexpected first server stdout line: {line:?}"));
-    addr.rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("unparseable server bind address: {addr:?}"))
-}
-
-/// A running `cyphr-server` subprocess plus the temp dir backing its data and
-/// config. Dropping it kills the child and removes the store.
+/// A test server wrapping an in-process `common::multi::Instance`.
 struct TestServer {
-    child: Child,
-    port: u16,
-    _tmp: TempDir,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    instance: common::multi::Instance,
 }
 
 impl TestServer {
     /// Proof-of-work policy at `difficulty` leading zero bits.
-    fn start_pow(difficulty: u32) -> TestServer {
+    async fn start_pow(difficulty: u32) -> TestServer {
         let table = format!("[admission]\npolicy = \"pow\"\ndifficulty = {difficulty}\n");
-        Self::boot(tempfile::tempdir().expect("tempdir"), &table)
+        Self::boot(tempfile::tempdir().expect("tempdir"), &table).await
     }
 
-    /// Boot a server over `tmp` whose config carries `admission_table`, and
-    /// wait until it accepts connections.
-    fn boot(tmp: TempDir, admission_table: &str) -> TestServer {
+    /// Boot a server over `tmp` whose config carries `admission_table`.
+    async fn boot(tmp: TempDir, admission_table: &str) -> TestServer {
         let data_dir = tmp.path().join("data");
         let config_path = tmp.path().join("cyphr-server.toml");
         let config = format!(
@@ -208,80 +157,27 @@ impl TestServer {
         );
         std::fs::write(&config_path, config).expect("write config");
 
-        let mut child = Command::new(server_binary())
-            .arg("--config")
-            .arg(&config_path)
-            .arg("serve")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn cyphr-server");
-
-        let port = read_reported_port(&mut child);
-
-        let server = TestServer {
-            child,
-            port,
-            _tmp: tmp,
-        };
-        server.wait_ready();
-        server
+        let instance = common::multi::Instance::from_config_file(&config_path, tmp).await;
+        TestServer { instance }
     }
 
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+    async fn post(&self, path: &str, body: &str, headers: &[(&str, &str)]) -> HttpResponse {
+        let resp = self
+            .instance
+            .request("POST", path, Some(body.to_string()), headers, None)
+            .await;
+        HttpResponse {
+            status: resp.status.as_u16(),
+            body: resp.body,
         }
-        panic!("server did not become ready on port {}", self.port);
     }
 
-    fn post(&self, path: &str, body: &str, headers: &[(&str, &str)]) -> HttpResponse {
-        self.request("POST", path, Some(body), headers)
-    }
-
-    fn get(&self, path: &str) -> HttpResponse {
-        self.request("GET", path, None, &[])
-    }
-
-    fn request(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-        headers: &[(&str, &str)],
-    ) -> HttpResponse {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .expect("set read timeout");
-
-        let body = body.unwrap_or("");
-        let mut req =
-            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
-        if !body.is_empty() || method == "POST" {
-            req.push_str("Content-Type: application/json\r\n");
-            req.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    async fn get(&self, path: &str) -> HttpResponse {
+        let resp = self.instance.request("GET", path, None, &[], None).await;
+        HttpResponse {
+            status: resp.status.as_u16(),
+            body: resp.body,
         }
-        for (k, v) in headers {
-            req.push_str(&format!("{k}: {v}\r\n"));
-        }
-        req.push_str("\r\n");
-
-        stream
-            .write_all(req.as_bytes())
-            .expect("write request head");
-        stream
-            .write_all(body.as_bytes())
-            .expect("write request body");
-        stream.flush().expect("flush");
-
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read response");
-        HttpResponse::parse(&raw)
     }
 }
 
@@ -289,23 +185,6 @@ impl TestServer {
 struct HttpResponse {
     status: u16,
     body: String,
-}
-
-impl HttpResponse {
-    fn parse(raw: &[u8]) -> HttpResponse {
-        let text = String::from_utf8_lossy(raw);
-        let status = text
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|code| code.parse::<u16>().ok())
-            .unwrap_or_else(|| panic!("no status line in response: {text:?}"));
-        let body = text
-            .split_once("\r\n\r\n")
-            .map(|(_, b)| b.to_string())
-            .unwrap_or_default();
-        HttpResponse { status, body }
-    }
 }
 
 // ========================================================================
@@ -332,24 +211,25 @@ fn assert_denied_pow(resp: &HttpResponse, expected_difficulty: u64) {
     );
     let json: serde_json::Value = serde_json::from_str(&resp.body)
         .unwrap_or_else(|e| panic!("denial body must be JSON, got {:?}: {e}", resp.body));
+    let payload = common::envelope_payload(&json);
     assert_eq!(
-        json["policy"], "pow",
+        payload["policy"], "pow",
         "denial JSON must name the pow policy: {}",
         resp.body
     );
     assert!(
-        json.get("error").and_then(|e| e.as_str()).is_some(),
+        payload.get("error").and_then(|e| e.as_str()).is_some(),
         "denial JSON must carry a machine-readable `error`: {}",
         resp.body
     );
     assert_eq!(
-        json["difficulty"].as_u64(),
+        payload["difficulty"].as_u64(),
         Some(expected_difficulty),
         "denial must echo the configured difficulty so a client can size its work: {}",
         resp.body
     );
     assert!(
-        json.get("window").and_then(|w| w.as_str()).is_some(),
+        payload.get("window").and_then(|w| w.as_str()).is_some(),
         "denial must name the time window (e.g. \"utc-hour\") so a client knows the binding: {}",
         resp.body
     );
@@ -384,6 +264,7 @@ fn pow_policy_resolves_at_config() {
             log_format: None,
             mode: None,
             signing_key_path: None,
+            authority_url: None,
             audience: None,
         }),
     };
@@ -403,21 +284,23 @@ fn pow_policy_resolves_at_config() {
 
 /// RED today (server won't boot): under pow, a new-principal genesis push with
 /// NO nonce header is refused 403 naming the pow policy and its parameters.
-#[test]
-fn pow_missing_nonce_is_denied() {
+#[tokio::test]
+async fn pow_missing_nonce_is_denied() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
-    let r = server.post("/push", &genesis_body("pow-missing", NOW_BASE + 10), &[]);
+    let server = TestServer::start_pow(difficulty).await;
+    let r = server
+        .post("/push", &genesis_body("pow-missing", NOW_BASE + 10), &[])
+        .await;
     assert_denied_pow(&r, difficulty as u64);
 }
 
 /// RED today: a present-but-insufficient nonce (fewer than `difficulty` leading
 /// zero bits) is refused exactly like a missing one. The test proves the
 /// presented nonce is genuinely insufficient before sending it.
-#[test]
-fn pow_insufficient_nonce_is_denied() {
+#[tokio::test]
+async fn pow_insufficient_nonce_is_denied() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let pid = "pow-insufficient";
     let hour = current_utc_hour();
     // A nonce that clears only a handful of bits -- provably below difficulty.
@@ -426,29 +309,33 @@ fn pow_insufficient_nonce_is_denied() {
         leading_zero_bits(&pow_digest(pid, hour, weak)) < difficulty,
         "test setup: the weak nonce must be below difficulty"
     );
-    let r = server.post(
-        "/push",
-        &genesis_body(pid, NOW_BASE + 11),
-        &[(POW_HEADER, &weak.to_string())],
-    );
+    let r = server
+        .post(
+            "/push",
+            &genesis_body(pid, NOW_BASE + 11),
+            &[(POW_HEADER, &weak.to_string())],
+        )
+        .await;
     assert_denied_pow(&r, difficulty as u64);
 }
 
 /// RED today: a valid nonce (meets difficulty, bound to this principal and the
 /// current window) ADMITS the genesis push. The server runs keyless (no signing
 /// identity), so this also confirms pow works with no server signing key.
-#[test]
-fn pow_valid_nonce_admits_keyless() {
+#[tokio::test]
+async fn pow_valid_nonce_admits_keyless() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let pid = "pow-valid";
     let hour = current_utc_hour();
     let nonce = solve_pow(pid, hour, difficulty);
-    let r = server.post(
-        "/push",
-        &genesis_body(pid, NOW_BASE + 12),
-        &[(POW_HEADER, &nonce.to_string())],
-    );
+    let r = server
+        .post(
+            "/push",
+            &genesis_body(pid, NOW_BASE + 12),
+            &[(POW_HEADER, &nonce.to_string())],
+        )
+        .await;
     assert_eq!(
         r.status, 201,
         "a valid pow nonce must admit a new principal (keyless): {}",
@@ -464,10 +351,10 @@ fn pow_valid_nonce_admits_keyless() {
 /// test first proves, in-process, that A's nonce is genuinely insufficient for
 /// B's preimage -- so a 403 is the ONLY correct behavior and the assertion
 /// genuinely exercises the principal binding rather than passing by luck.
-#[test]
-fn pow_nonce_does_not_transfer_across_principals() {
+#[tokio::test]
+async fn pow_nonce_does_not_transfer_across_principals() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let hour = current_utc_hour();
 
     let principal_a = "pow-amortize-a";
@@ -484,11 +371,13 @@ fn pow_nonce_does_not_transfer_across_principals() {
         "test setup: A's nonce must NOT clear difficulty for B (the binding under test)"
     );
 
-    let r = server.post(
-        "/push",
-        &genesis_body(principal_b, NOW_BASE + 20),
-        &[(POW_HEADER, &nonce_a.to_string())],
-    );
+    let r = server
+        .post(
+            "/push",
+            &genesis_body(principal_b, NOW_BASE + 20),
+            &[(POW_HEADER, &nonce_a.to_string())],
+        )
+        .await;
     assert_denied_pow(&r, difficulty as u64);
 }
 
@@ -517,10 +406,10 @@ fn naive_colon_preimage(principal_id: &str, utc_hour: u64, nonce: &str) -> Strin
 /// work (Sybil amortization). The length-prefixed injective encoding gives the
 /// two principals unrelated digests, so the nonce that admits `A` is refused
 /// for the reframed twin.
-#[test]
-fn pow_colon_injection_cannot_reframe_a_solution() {
+#[tokio::test]
+async fn pow_colon_injection_cannot_reframe_a_solution() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let hour = current_utc_hour();
 
     let principal_a = "sybil";
@@ -560,11 +449,13 @@ fn pow_colon_injection_cannot_reframe_a_solution() {
     }
 
     // A's genuine nonce admits A ...
-    let admit_a = server.post(
-        "/push",
-        &genesis_body(principal_a, NOW_BASE + 60),
-        &[(POW_HEADER, &nonce_a.to_string())],
-    );
+    let admit_a = server
+        .post(
+            "/push",
+            &genesis_body(principal_a, NOW_BASE + 60),
+            &[(POW_HEADER, &nonce_a.to_string())],
+        )
+        .await;
     assert_eq!(
         admit_a.status, 201,
         "A's own valid nonce must admit A: {}",
@@ -574,11 +465,13 @@ fn pow_colon_injection_cannot_reframe_a_solution() {
     // ... but is refused for the colon-reframed twin: the injective encoding
     // defeats the delimiter injection the naive framing above would have
     // admitted for free.
-    let deny_b = server.post(
-        "/push",
-        &genesis_body(&principal_b, NOW_BASE + 61),
-        &[(POW_HEADER, &nonce_a.to_string())],
-    );
+    let deny_b = server
+        .post(
+            "/push",
+            &genesis_body(&principal_b, NOW_BASE + 61),
+            &[(POW_HEADER, &nonce_a.to_string())],
+        )
+        .await;
     assert_denied_pow(&deny_b, difficulty as u64);
 }
 
@@ -587,10 +480,10 @@ fn pow_colon_injection_cannot_reframe_a_solution() {
 /// market. The test proves the stale nonce clears difficulty for its own old
 /// window but not for the current window nor the immediately-previous one (the
 /// grace boundary), so rejection is the only correct behavior.
-#[test]
-fn pow_stale_window_nonce_is_rejected() {
+#[tokio::test]
+async fn pow_stale_window_nonce_is_rejected() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let pid = "pow-stale";
     let now_hour = current_utc_hour();
     let stale_hour = now_hour - 5; // far outside any reasonable grace window
@@ -609,11 +502,13 @@ fn pow_stale_window_nonce_is_rejected() {
         "test setup: the stale nonce must NOT clear difficulty for the previous (in-grace) window"
     );
 
-    let r = server.post(
-        "/push",
-        &genesis_body(pid, NOW_BASE + 21),
-        &[(POW_HEADER, &nonce.to_string())],
-    );
+    let r = server
+        .post(
+            "/push",
+            &genesis_body(pid, NOW_BASE + 21),
+            &[(POW_HEADER, &nonce.to_string())],
+        )
+        .await;
     assert_denied_pow(&r, difficulty as u64);
 }
 
@@ -627,10 +522,10 @@ fn pow_stale_window_nonce_is_rejected() {
 /// mis-reads difficulty as *bytes* (or otherwise thresholds on a byte
 /// boundary) would accept the 9-bit nonce -- so this pins the bit boundary and
 /// catches the off-by-a-byte misread in both directions.
-#[test]
-fn pow_difficulty_is_bits_not_bytes() {
+#[tokio::test]
+async fn pow_difficulty_is_bits_not_bytes() {
     let difficulty = 10;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let hour = current_utc_hour();
 
     let below_pid = "pow-bits-below";
@@ -640,20 +535,24 @@ fn pow_difficulty_is_bits_not_bytes() {
         difficulty - 1,
         "test setup: the below nonce must clear exactly difficulty-1 bits"
     );
-    let rejected = server.post(
-        "/push",
-        &genesis_body(below_pid, NOW_BASE + 30),
-        &[(POW_HEADER, &below.to_string())],
-    );
+    let rejected = server
+        .post(
+            "/push",
+            &genesis_body(below_pid, NOW_BASE + 30),
+            &[(POW_HEADER, &below.to_string())],
+        )
+        .await;
     assert_denied_pow(&rejected, difficulty as u64);
 
     let above_pid = "pow-bits-above";
     let above = solve_pow(above_pid, hour, difficulty); // >= 10 bits
-    let admitted = server.post(
-        "/push",
-        &genesis_body(above_pid, NOW_BASE + 31),
-        &[(POW_HEADER, &above.to_string())],
-    );
+    let admitted = server
+        .post(
+            "/push",
+            &genesis_body(above_pid, NOW_BASE + 31),
+            &[(POW_HEADER, &above.to_string())],
+        )
+        .await;
     assert_eq!(
         admitted.status, 201,
         "a nonce clearing difficulty in BITS must admit: {}",
@@ -669,16 +568,18 @@ fn pow_difficulty_is_bits_not_bytes() {
 /// later push with NO nonce is never a 403 (residency is a protocol fact, not
 /// an admission event). Seeds residency with a valid nonce, then re-pushes with
 /// no header.
-#[test]
-fn pow_resident_principal_bypasses_admission() {
+#[tokio::test]
+async fn pow_resident_principal_bypasses_admission() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let pid = "pow-resident";
     let hour = current_utc_hour();
     let nonce = solve_pow(pid, hour, difficulty);
     let body = genesis_body(pid, NOW_BASE + 40);
 
-    let seed = server.post("/push", &body, &[(POW_HEADER, &nonce.to_string())]);
+    let seed = server
+        .post("/push", &body, &[(POW_HEADER, &nonce.to_string())])
+        .await;
     assert_eq!(
         seed.status, 201,
         "seed the resident principal with a valid nonce: {}",
@@ -687,7 +588,7 @@ fn pow_resident_principal_bypasses_admission() {
 
     // Re-push to the now-resident principal with NO nonce: admission must not
     // fire. The protocol may reject the replay, but never with a 403 denial.
-    let again = server.post("/push", &body, &[]);
+    let again = server.post("/push", &body, &[]).await;
     assert_ne!(
         again.status, 403,
         "a resident principal must bypass admission (no 403 without a nonce): {} {}",
@@ -700,16 +601,16 @@ fn pow_resident_principal_bypasses_admission() {
 // ========================================================================
 
 /// RED today: reads and other endpoints are never gated by pow admission.
-#[test]
-fn pow_non_push_requests_are_never_gated() {
-    let server = TestServer::start_pow(16);
-    let identity = server.get("/server");
+#[tokio::test]
+async fn pow_non_push_requests_are_never_gated() {
+    let server = TestServer::start_pow(16).await;
+    let identity = server.get("/server").await;
     assert_eq!(
         identity.status, 200,
         "GET /server must never be gated by pow: {}",
         identity.body
     );
-    let tip = server.get("/tip?pr=nobody");
+    let tip = server.get("/tip?pr=nobody").await;
     assert_ne!(
         tip.status, 403,
         "GET /tip must never be gated by pow: {} {}",
@@ -726,10 +627,10 @@ fn pow_non_push_requests_are_never_gated() {
 /// never accepts connections, so a successful `/server` read proves the
 /// composed pow server is live. (The source-level guard -- `admission.rs`
 /// imports no `cyphr`/`coz` type -- is verified by source review, not here.)
-#[test]
-fn pow_serve_boots_and_serves_reads() {
-    let server = TestServer::start_pow(20);
-    let r = server.get("/server");
+#[tokio::test]
+async fn pow_serve_boots_and_serves_reads() {
+    let server = TestServer::start_pow(20).await;
+    let r = server.get("/server").await;
     assert_eq!(
         r.status, 200,
         "server with the pow arm installed must boot and serve reads: {}",
@@ -745,10 +646,10 @@ fn pow_serve_boots_and_serves_reads() {
 /// within the grace window (a solution found near an hour boundary must still
 /// verify). Distinct from the stale-window rejection, which uses a window far
 /// outside the grace.
-#[test]
-fn pow_previous_window_nonce_accepted_within_grace() {
+#[tokio::test]
+async fn pow_previous_window_nonce_accepted_within_grace() {
     let difficulty = 16;
-    let server = TestServer::start_pow(difficulty);
+    let server = TestServer::start_pow(difficulty).await;
     let pid = "pow-grace";
     let previous_hour = current_utc_hour() - 1;
     let nonce = solve_pow(pid, previous_hour, difficulty);
@@ -756,11 +657,13 @@ fn pow_previous_window_nonce_accepted_within_grace() {
         leading_zero_bits(&pow_digest(pid, previous_hour, nonce)) >= difficulty,
         "test setup: the nonce must be valid for the previous window"
     );
-    let r = server.post(
-        "/push",
-        &genesis_body(pid, NOW_BASE + 50),
-        &[(POW_HEADER, &nonce.to_string())],
-    );
+    let r = server
+        .post(
+            "/push",
+            &genesis_body(pid, NOW_BASE + 50),
+            &[(POW_HEADER, &nonce.to_string())],
+        )
+        .await;
     assert_eq!(
         r.status, 201,
         "a nonce for the previous UTC hour must be accepted within grace: {}",
