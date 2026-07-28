@@ -60,6 +60,25 @@ All active development happens here.
   are the replacement boundaries (the index replacement lands behind
   `Indexer`). Signpost: backend types leaking through a seam into
   consumers.
+- **I4 — Server instance independence.** Every server instance is fully
+  isolated by construction with its own data directory, storage engine, and
+  identity key pair. No state, cache, or cryptographic material is shared
+  across server instances. Grounding: `rs/cyphr-server/tests/invariants.rs`
+  (`two_instances_are_independent`) and `tests/common/multi.rs`.
+- **I5 — Refusals are never signed.** Server error responses, rejections,
+  and refusals MUST ALWAYS be returned as unsigned envelopes
+  (`Statement::Unsigned`) and MUST NEVER carry a signed statement / receipt.
+  Grounding: `rs/cyphr-server/tests/invariants.rs` (`refusals_are_never_signed`).
+- **I6 — Signed statements carry freshness.** All signed server statements
+  and receipts MUST carry a valid, positive, non-zero unix timestamp (`now`)
+  reflecting request processing time within acceptable clock drift boundaries.
+  Grounding: `rs/cyphr-server/tests/invariants.rs`
+  (`signed_statements_carry_freshness`).
+- **I7 — No standing honesty claim.** The server MUST NEVER issue or publish
+  standing, static, or unverified claims of honesty or attestation. Keyless
+  and unbootstrapped configurations strictly declare `repository` tier
+  without identity claims, and attestations are bound per-request. Grounding:
+  `rs/cyphr-server/tests/invariants.rs` (`no_standing_honesty_claim`).
 
 ## Known traps (updated 2026-07-08; fix, don't inherit)
 
