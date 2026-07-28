@@ -720,8 +720,14 @@ async fn check_registration_authorization(
                 "unauthorized third-party witness registration",
             ));
         }
-    } else if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
-        if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
+    } else {
+        let is_self_authorized = signer_tmb == principal_id
+            || witness_id
+                .strip_prefix("SHA-256:")
+                .is_some_and(|target_tmb| target_tmb == signer_tmb)
+            || witness_id == signer_tmb;
+
+        if !is_self_authorized {
             return Err(AppError::unauthorized(
                 "unauthorized third-party witness registration",
             ));

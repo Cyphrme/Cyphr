@@ -296,7 +296,8 @@ async fn third_party_cannot_register_url_witness_for_principal() {
         let witnesses = payload["witnesses"].as_array();
         assert!(
             witnesses.is_none_or(|w| w.is_empty()),
-            "no witnesses should be registered after third-party URL-witness attempt: {list_json:?}"
+            "no witnesses should be registered after third-party URL-witness attempt: \
+             {list_json:?}"
         );
     }
 }
@@ -328,14 +329,14 @@ async fn third_party_cannot_register_malformed_thumbprint_witness_for_principal(
 
     assert!(
         status.is_client_error(),
-        "third-party malformed-thumbprint registration attempt must be rejected with 4xx \
-         status, got {status}: {json:?}"
+        "third-party malformed-thumbprint registration attempt must be rejected with 4xx status, \
+         got {status}: {json:?}"
     );
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "unauthorized third-party malformed-thumbprint registration must return 401 \
-         Unauthorized: {json:?}"
+        "unauthorized third-party malformed-thumbprint registration must return 401 Unauthorized: \
+         {json:?}"
     );
 
     // Verify witness list remains empty for principal pid
@@ -522,12 +523,21 @@ async fn bound_refuses_rather_than_evicts() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
     let pid = "n1-bound-principal";
+    let golden_tmb = pool
+        .get("golden")
+        .expect("golden key")
+        .compute_tmb_b64()
+        .expect("golden tmb");
 
     let max_bound = 10;
     let mut registered_pgs = Vec::new();
 
     for i in 0..max_bound {
-        let witness_pg = format!("SHA-256:witness_pg_bound_{i:04}");
+        let witness_pg = if i == 0 {
+            format!("SHA-256:{golden_tmb}")
+        } else {
+            format!("SHA-256:witness_pg_bound_{i:04}")
+        };
         let coz =
             build_witness_register_coz(&pool, "golden", pid, &witness_pg, "create", NOW + i as i64);
         let (status, json) = post_witness_register(&state, coz).await;
