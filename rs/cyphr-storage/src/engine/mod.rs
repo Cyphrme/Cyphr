@@ -349,7 +349,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             for hash in &commit_ref.blob_hashes {
                 let data = self.blob_store.get(hash).await?.ok_or_else(|| {
                     EngineError::NotFound(format!(
-                        "blob {hash} referenced by commit {} not found in store",
+                        "blob {hash} referenced by index commit {} missing",
                         commit_ref.commit_id
                     ))
                 })?;
@@ -936,7 +936,6 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
             Some((commit_ids, ar, sr, pr, cr))
         } else {
             // Action-only bundle.
-            let mut commit_ids = Vec::new();
             for (i, blob_bytes) in raw_blobs.iter().enumerate() {
                 let parsed = parse_coz(blob_bytes, i)?;
                 if let Some(info) = &parsed.key_info {
@@ -949,25 +948,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     &parsed.sig,
                     parsed.czd.clone(),
                 )?;
-                let czd_str = Base64UrlUnpadded::encode_string(parsed.czd.as_bytes());
-                commit_ids.push(czd_str);
                 parsed_cozies.push(parsed);
             }
-
-            let ar = format_multihash_all(principal.auth_root().as_multihash())?;
-            let sr = principal
-                .sr()
-                .map(|s| format_multihash_all(s.as_multihash()))
-                .transpose()?
-                .unwrap_or_default();
-            let pr = format_multihash_all(principal.pr().as_multihash())?;
-            let cr = principal
-                .cr()
-                .map(|c| format_multihash_all(c.as_multihash()))
-                .transpose()?
-                .unwrap_or_default();
-
-            Some((commit_ids, ar, sr, pr, cr))
+            None
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {

@@ -19,6 +19,7 @@ pub mod receipt;
 pub mod registration;
 pub mod revoke;
 pub mod routes;
+pub mod sync;
 
 use std::sync::Arc;
 
@@ -84,6 +85,16 @@ pub struct AppState {
 
     /// In-memory witness registration store (SPEC §13.5.1).
     pub registration: registration::RegistrationStore,
+
+    /// Reusable HTTP client for witness state sync and upstream calls.
+    pub http_client: reqwest::Client,
+
+    /// Per-principal locks for synchronizing witness state sync execution.
+    pub sync_locks: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    >,
 }
 
 impl AppState {
@@ -110,6 +121,15 @@ impl AppState {
         let observations =
             observation::ObservationStore::open(&config.data_dir.join("observations"))?;
 
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build http client");
+
+        let sync_locks =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
         Ok(Self {
             config,
             engine,
@@ -118,6 +138,8 @@ impl AppState {
             challenges: auth::login::ChallengeStore::new(),
             observations,
             registration: registration::RegistrationStore::new(),
+            http_client,
+            sync_locks,
         })
     }
 
@@ -190,12 +212,27 @@ impl AppState {
 // Server lifecycle
 // ========================================================================
 
+async fn witness_write_refusal_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, error::AppError> {
+    match *req.method() {
+        axum::http::Method::POST
+        | axum::http::Method::PUT
+        | axum::http::Method::DELETE
+        | axum::http::Method::PATCH => Err(error::AppError::forbidden(
+            "write operations disabled in witness mode",
+        )),
+        _ => Ok(next.run(req).await),
+    }
+}
+
 /// Build the application router with all routes and middleware.
 ///
 /// Separated from [`serve`] to enable integration testing without
 /// binding a TCP listener.
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
-    axum::Router::new()
+    let mut router = axum::Router::new()
         .route("/tip", axum::routing::get(routes::tip))
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
@@ -213,21 +250,25 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
             axum::routing::post(auth::login::challenge),
         )
         .route("/auth/login", axum::routing::post(auth::login::login))
-        .fallback(async || error::AppError::not_found("route not found"))
-        .with_state(state)
-        .layer(
-            tower_http::trace::TraceLayer::new_for_http().make_span_with(
-                |request: &axum::http::Request<_>| {
-                    let request_id = uuid::Uuid::new_v4().to_string();
-                    tracing::info_span!(
-                        "request",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        request_id = %request_id,
-                    )
-                },
-            ),
-        )
+        .fallback(async || error::AppError::not_found("route not found"));
+
+    if state.config.mode == config::ServerMode::Witness {
+        router = router.layer(axum::middleware::from_fn(witness_write_refusal_middleware));
+    }
+
+    router.with_state(state).layer(
+        tower_http::trace::TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<_>| {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            },
+        ),
+    )
 }
 
 /// Build the full application router with all routes, admission layer, rate-limiting layer, and

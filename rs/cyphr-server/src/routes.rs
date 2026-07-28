@@ -66,6 +66,7 @@ pub struct TipResponse {
     pub commit_id: String,
     pub commit_count: u64,
     pub last_updated: i64,
+    pub now: i64,
 }
 
 /// A single commit entry in a patch response.
@@ -165,6 +166,8 @@ pub enum IdentityResponse {
         tmb: String,
         genesis: GenesisKeyInfo,
     },
+    /// A read-only witness server syncing from an authority.
+    Witness { mode: String, now: i64 },
     /// No established, servable chain to pin: no signing key configured,
     /// or a keyed process whose principal has not been bootstrapped.
     Repository,
@@ -180,6 +183,10 @@ pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    if state.config.mode == crate::config::ServerMode::Witness {
+        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+    }
+
     let tip = state
         .engine
         .get_tip(&query.pr)
@@ -197,6 +204,7 @@ pub async fn tip(
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
         last_updated: t.last_updated,
+        now: crate::auth::server_now(),
     };
 
     match state.attestor_identity() {
@@ -243,11 +251,30 @@ pub async fn patch(
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
+    if state.config.mode == crate::config::ServerMode::Witness {
+        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+    }
+
     let response = state
         .engine
         .get_patch(&query.pr, query.from, query.to)
         .await
         .map_err(AppError::engine)?;
+
+    if response.entries.is_empty() {
+        let tip = state
+            .engine
+            .get_tip(&query.pr)
+            .await
+            .map_err(AppError::engine)?;
+
+        if tip.is_none() {
+            return Err(AppError::not_found(format!(
+                "principal {} not found",
+                query.pr
+            )));
+        }
+    }
 
     let entries = response
         .entries
@@ -469,27 +496,34 @@ pub async fn revoke(
 pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let payload = match state.attestor() {
-        Some((principal, identity)) => {
-            let tmb = identity
-                .alg()
-                .compute_thumbprint(identity.pub_key())
-                .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
-            let genesis_key = principal.genesis_key();
-            IdentityResponse::Attestor {
-                pg: principal.pg().to_string(),
-                alg: identity.alg().name().to_string(),
-                pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
-                tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
-                genesis: GenesisKeyInfo {
-                    alg: genesis_key.alg.clone(),
-                    pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
-                    tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
-                    first_seen: genesis_key.first_seen,
-                },
-            }
-        },
-        None => IdentityResponse::Repository,
+    let payload = if state.config.mode == crate::config::ServerMode::Witness {
+        IdentityResponse::Witness {
+            mode: "witness".to_string(),
+            now: crate::auth::server_now(),
+        }
+    } else {
+        match state.attestor() {
+            Some((principal, identity)) => {
+                let tmb = identity
+                    .alg()
+                    .compute_thumbprint(identity.pub_key())
+                    .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
+                let genesis_key = principal.genesis_key();
+                IdentityResponse::Attestor {
+                    pg: principal.pg().to_string(),
+                    alg: identity.alg().name().to_string(),
+                    pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
+                    tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+                    genesis: GenesisKeyInfo {
+                        alg: genesis_key.alg.clone(),
+                        pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
+                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
+                        first_seen: genesis_key.first_seen,
+                    },
+                }
+            },
+            None => IdentityResponse::Repository,
+        }
     };
 
     Ok(Json(Envelope::unsigned(payload)))
@@ -680,13 +714,11 @@ async fn check_registration_authorization(
                 "unauthorized third-party witness registration",
             ));
         }
-    } else {
-        if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
-            if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
-                return Err(AppError::unauthorized(
-                    "unauthorized third-party witness registration",
-                ));
-            }
+    } else if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
+        if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
+            return Err(AppError::unauthorized(
+                "unauthorized third-party witness registration",
+            ));
         }
     }
 

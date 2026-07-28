@@ -264,6 +264,7 @@ fn pow_policy_resolves_at_config() {
             log_format: None,
             mode: None,
             signing_key_path: None,
+            authority_url: None,
             audience: None,
         }),
     };
