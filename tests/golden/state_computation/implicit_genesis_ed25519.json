@@ -1,6 +1,8 @@
 {
   "name": "implicit_genesis_ed25519",
-  "principal": ["eve_ed25519"],
+  "principal": [
+    "eve_ed25519"
+  ],
   "genesis_keys": [
     {
       "alg": "Ed25519",

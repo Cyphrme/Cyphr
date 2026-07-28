@@ -1,6 +1,8 @@
 {
   "name": "register_create",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": "9-az4zGQrMyaqxLxyhornm7Y76yHJEYJy6IBdXYrEvY"
     }
   ],
-  "digests": ["qTvhjXTwdZY0eL5lGCiASjvE-b0ujd1wCS-om4mv6JM"],
+  "digests": [
+    "qTvhjXTwdZY0eL5lGCiASjvE-b0ujd1wCS-om4mv6JM"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,

@@ -1,6 +1,8 @@
 {
   "name": "action_changes_ps",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": "TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0"
     }
   ],
-  "digests": ["MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"],
+  "digests": [
+    "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,

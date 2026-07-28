@@ -1,6 +1,8 @@
 {
   "name": "action_after_key_add",
-  "principal": ["alice"],
+  "principal": [
+    "alice"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

@@ -1,6 +1,8 @@
 {
   "name": "transaction_sequence_replay",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

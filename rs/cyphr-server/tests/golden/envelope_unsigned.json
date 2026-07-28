@@ -1,8 +1,1 @@
-{
-  "v": 1,
-  "payload": {
-    "principal_id": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
-    "commit_count": 3
-  },
-  "statement": { "kind": "unsigned" }
-}
+{"v":1,"payload":{"principal_id":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA","commit_count":3},"statement":{"kind":"unsigned"}}

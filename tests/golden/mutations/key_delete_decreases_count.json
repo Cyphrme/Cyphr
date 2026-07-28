@@ -1,6 +1,9 @@
 {
   "name": "key_delete_decreases_count",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

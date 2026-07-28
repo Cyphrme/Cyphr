@@ -1,6 +1,9 @@
 {
   "name": "self_revoke_moves_to_revoked",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

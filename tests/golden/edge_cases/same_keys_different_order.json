@@ -1,6 +1,10 @@
 {
   "name": "same_keys_different_order",
-  "principal": ["carol", "alice", "bob"],
+  "principal": [
+    "carol",
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

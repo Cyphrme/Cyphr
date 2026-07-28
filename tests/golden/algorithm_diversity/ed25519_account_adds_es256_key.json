@@ -1,6 +1,8 @@
 {
   "name": "ed25519_account_adds_es256_key",
-  "principal": ["eve_ed25519"],
+  "principal": [
+    "eve_ed25519"
+  ],
   "genesis_keys": [
     {
       "alg": "Ed25519",

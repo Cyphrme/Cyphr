@@ -1,6 +1,9 @@
 {
   "name": "add_third_key_to_dual_key_account",
-  "principal": ["alice", "bob"],
+  "principal": [
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

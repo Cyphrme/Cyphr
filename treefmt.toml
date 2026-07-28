@@ -18,7 +18,7 @@ options  = ["fmt", "-o", "align_entries=true", "-o", "reorder_keys=true"]
 
 [formatter.prettier]
 command  = "prettier"
-excludes = ["*/sources.json"]
+excludes = ["*/sources.json", "tests/golden/**", "rs/cyphr-server/tests/golden/**"]
 includes = ["*.json", "*.md", "*.yaml", "*.yml"]
 options  = ["--write"]
 

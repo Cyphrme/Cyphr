@@ -1,6 +1,8 @@
 {
   "name": "freeze_after_delete_is_rejected",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

@@ -1,6 +1,9 @@
 {
   "name": "non_signer_adds_key",
-  "principal": ["alice", "bob"],
+  "principal": [
+    "alice",
+    "bob"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",

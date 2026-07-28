@@ -1,6 +1,8 @@
 {
   "name": "timestamp_past_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
