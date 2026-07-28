@@ -82,6 +82,7 @@ use serde::Deserialize;
 use tower::{Layer, Service};
 
 use crate::config::{LimitsConfig, RateBucket};
+use crate::envelope::Envelope;
 
 /// Hard per-limiter entry ceiling: the `moka` cache capacity backing each
 /// [`BoundedLimiter`] (see the module doc's "Bounded state" section).
@@ -354,7 +355,9 @@ where
 fn rate_limited() -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
-        Json(serde_json::json!({ "error": "rate limit exceeded" })),
+        Json(Envelope::unsigned(
+            serde_json::json!({ "error": "rate limit exceeded" }),
+        )),
     )
         .into_response()
 }
@@ -363,10 +366,10 @@ fn rate_limited() -> Response {
 fn too_large(limit: u64) -> Response {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
-        Json(serde_json::json!({
+        Json(Envelope::unsigned(serde_json::json!({
             "error": "request body too large",
             "limit_bytes": limit,
-        })),
+        }))),
     )
         .into_response()
 }
@@ -377,10 +380,10 @@ fn too_large(limit: u64) -> Response {
 fn quota_exceeded(limit: u64) -> Response {
     (
         StatusCode::PAYMENT_REQUIRED,
-        Json(serde_json::json!({
+        Json(Envelope::unsigned(serde_json::json!({
             "error": "per-principal commit quota exhausted",
             "limit_commits": limit,
-        })),
+        }))),
     )
         .into_response()
 }

@@ -12,7 +12,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::Envelope;
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::{AppState, receipt};
 
 // ========================================================================
@@ -276,7 +276,7 @@ pub async fn patch(
 pub async fn push(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<PushRequest>,
+    AppJson(request): AppJson<PushRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -409,7 +409,7 @@ pub async fn push(
 #[tracing::instrument(skip(state, envelope))]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
-    Json(envelope): Json<crate::revoke::NakedRevokeEnvelope>,
+    AppJson(envelope): AppJson<crate::revoke::NakedRevokeEnvelope>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
