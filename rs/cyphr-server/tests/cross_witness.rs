@@ -171,9 +171,11 @@ async fn conflicting_tips_yield_evidence() {
     );
 
     // Call domain consistency module (cyphr_server::consistency)
-    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[tip_a, tip_b])
-        .expect("cross-witness consistency check MUST yield standing evidence claim on conflicting tips")
-        .expect("standing claim MUST be present on conflicting tips");
+    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&tip_a, identity_a.pub_key()),
+        (&tip_b, identity_b.pub_key()),
+    ])
+    .expect("standing claim MUST be present on conflicting tips");
     assert_eq!(claim["kind"], "equivocation_evidence");
 }
 
@@ -236,7 +238,7 @@ async fn evidence_verifies_offline() {
         identity_b.pub_key(),
     );
     assert!(
-        verified_offline.expect("offline evidence verifier MUST evaluate and confirm evidence validity"),
+        verified_offline,
         "cross-witness evidence MUST verify offline without server cooperation"
     );
 }
@@ -292,9 +294,10 @@ async fn key_validity_interval() {
     );
 
     // Call domain consistency module (cyphr_server::consistency)
-    let evaluated_interval_validity = cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_150_000);
+    let evaluated_interval_validity =
+        cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_150_000);
     assert!(
-        evaluated_interval_validity.expect("cross-witness key validity evaluator MUST enforce validity interval"),
+        evaluated_interval_validity,
         "key validity interval evaluation MUST pass for active key"
     );
 }
@@ -331,9 +334,10 @@ async fn key_validity_from_portable_proof() {
     );
 
     // Call domain consistency module (cyphr_server::consistency)
-    let portable_proof_result = cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs);
+    let portable_proof_result =
+        cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs);
     assert!(
-        portable_proof_result.expect("cross-witness evaluator MUST verify key validity from portable proof"),
+        portable_proof_result,
         "portable key inclusion proof MUST verify witness key validity offline without in-memory Principal"
     );
 }
@@ -398,8 +402,17 @@ async fn fork_detection_ignores_self_assertion() {
         &wrong_pub_key,
     );
     assert!(
-        !fork_detected_for_unverified.expect("cross-witness evaluator MUST ignore unverified self-assertions"),
+        !fork_detected_for_unverified,
         "unverified self-assertion MUST NOT trigger fork evidence"
+    );
+
+    let claim_unverified = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&valid_tip, valid_identity.pub_key()),
+        (&self_asserted_tip, wrong_pub_key.as_slice()),
+    ]);
+    assert!(
+        claim_unverified.is_none(),
+        "unauthenticated/forged tip reports MUST NOT produce standing claim in check_cross_witness_consistency"
     );
 }
 
@@ -428,9 +441,10 @@ async fn principal_settable_threshold() {
     assert_eq!(config.total_witnesses, 3);
 
     // Call domain consistency module (cyphr_server::consistency)
-    let threshold_satisfied = cyphr_server::consistency::check_witness_threshold(config.required_witnesses, 2);
+    let threshold_satisfied =
+        cyphr_server::consistency::check_witness_threshold(config.required_witnesses, 2);
     assert!(
-        threshold_satisfied.expect("cross-witness evaluator MUST enforce principal-settable threshold"),
+        threshold_satisfied,
         "cross-witness agreement MUST satisfy principal settable witness threshold"
     );
 }
@@ -487,10 +501,12 @@ async fn agreement_produces_no_standing_claim() {
     );
 
     // Call domain consistency module (cyphr_server::consistency)
-    let standing_claim_on_agreement = cyphr_server::consistency::check_cross_witness_consistency(&[tip_a, tip_b]);
-    let claim = standing_claim_on_agreement.expect("cross-witness evaluator MUST evaluate agreeing reports");
+    let standing_claim_on_agreement = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&tip_a, identity_a.pub_key()),
+        (&tip_b, identity_b.pub_key()),
+    ]);
     assert!(
-        claim.is_none(),
+        standing_claim_on_agreement.is_none(),
         "cross-witness agreement MUST produce NO standing claim"
     );
 }
@@ -543,8 +559,67 @@ async fn golden_disagreement_artifact_byte_stable() {
     assert_eq!(wire, golden("witness_disagreement.json"));
 
     // Call domain consistency module (cyphr_server::consistency)
-    let domain_evidence = cyphr_server::consistency::format_disagreement_evidence(pr, seq, &[tip_a, tip_b]);
-    let formatted = domain_evidence.expect("consistency module MUST format disagreement evidence");
+    let formatted =
+        cyphr_server::consistency::format_disagreement_evidence(pr, seq, &[tip_a, tip_b]);
     let domain_wire = serde_json::to_string(&formatted).unwrap();
     assert_eq!(domain_wire, golden("witness_disagreement.json"));
+}
+
+/// N4.1a: `unauthenticated_tips_rejected_by_consistency_check`
+///
+/// Verifies that when unauthenticated or forged-signature tip reports are passed to
+/// `check_cross_witness_consistency`, signature verification rejects them upfront
+/// and no false equivocation evidence claim is produced.
+#[tokio::test]
+async fn unauthenticated_tips_rejected_by_consistency_check() {
+    let (_dir_valid, valid_identity) = identity_with_seed(0x55);
+    let (_dir_untrusted, untrusted_identity) = identity_with_seed(0x66);
+
+    let pr = "n4-principal-unauthenticated-tips";
+    let seq = 7;
+    let now = 1_700_000_000;
+
+    let valid_tip = receipt::tip_report(
+        &valid_identity,
+        now,
+        pr,
+        seq,
+        "SHA-256:valid_commit_id",
+        &roots_a(),
+        8,
+        now,
+    )
+    .expect("compose valid tip");
+
+    let forged_tip = receipt::tip_report(
+        &untrusted_identity,
+        now,
+        pr,
+        seq,
+        "SHA-256:forged_conflicting_commit",
+        &roots_b(),
+        8,
+        now,
+    )
+    .expect("compose forged tip");
+
+    let wrong_pub_key = vec![0xff; 32];
+
+    let claim_forged = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&valid_tip, valid_identity.pub_key()),
+        (&forged_tip, wrong_pub_key.as_slice()),
+    ]);
+    assert!(
+        claim_forged.is_none(),
+        "forged tip report with invalid public key MUST NOT produce equivocation claim"
+    );
+
+    let claim_both_forged = cyphr_server::consistency::check_cross_witness_consistency(&[
+        (&valid_tip, wrong_pub_key.as_slice()),
+        (&forged_tip, wrong_pub_key.as_slice()),
+    ]);
+    assert!(
+        claim_both_forged.is_none(),
+        "unauthenticated tip reports MUST NOT produce equivocation claim"
+    );
 }
