@@ -1,0 +1,28 @@
+# Witness Registration Intent Vectors
+# Per SPEC §13.5.1 and docs/specs/transactions.md [witness-register-create] & [witness-register-delete]
+
+[[test]]
+name      = "register_create"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/cyphr/witness/register/create"
+
+[test.expected]
+level = 4
+
+[[test]]
+name      = "register_delete"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+now    = 1700000002
+signer = "golden"
+typ    = "cyphr.me/cyphr/witness/register/delete"
+
+[test.expected]
+level = 4

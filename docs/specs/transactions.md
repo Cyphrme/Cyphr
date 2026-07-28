@@ -412,6 +412,27 @@ explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 - **POST**: DR = MR(DT) is included as a component of SR (and thus PR).
   `VERIFIED: agent-check`
 
+**[witness-register-create]**: `cyphr.me/cyphr/witness/register/create` is a
+data action that registers an external witness (represented as a principal)
+with the principal's clients. The transaction MUST NOT mutate PT or AT and MUST NOT
+contain `pre` (per [data-action-stateless] and [data-action-no-pre]). The payload MUST
+include `id` containing the witness principal's Principal Genesis (PG) value.
+
+- **PRE**: Signing key MUST be active in KR.
+- **POST**: Witness registration is recorded in DT (if DT exists). PR and AT remain unmodified.
+  (SPEC.md §13.5.1)
+
+**[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` is a
+data action that removes a previously registered external witness. The transaction
+MUST NOT mutate PT or AT and MUST NOT contain `pre` (per [data-action-stateless] and
+[data-action-no-pre]). The payload MUST include `id` identifying the witness
+principal's PG to remove.
+
+- **PRE**: Signing key MUST be active in KR. Witness MUST be currently registered.
+- **POST**: Witness registration is removed from DT (if DT exists). PR and AT remain unmodified.
+  (SPEC.md §13.5.1)
+
+
 #### Nonce Transactions
 
 **[nonce-path]**: Nonce `typ` MUST specify the insertion path in the state tree.
@@ -536,6 +557,8 @@ included `pre`.
 | [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                            |
 | [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AR→AT, updated 2026-03-09)            |
 | [dr-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
+| [witness-register-create]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                         |
+| [witness-register-delete]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                         |
 | [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                            |
 | [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                    |
 | [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                     |
