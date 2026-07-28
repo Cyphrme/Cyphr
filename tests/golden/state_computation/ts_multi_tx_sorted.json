@@ -1,8 +1,6 @@
 {
   "name": "ts_multi_tx_sorted",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

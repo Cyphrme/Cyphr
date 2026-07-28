@@ -101,8 +101,8 @@ async fn crash_heals_at_plain_engine_open() {
         .await
         .expect("get_tip failed")
         .expect(
-            "index must be healed automatically at open -- the orphan \
-             manifest's commit must be visible with no explicit recovery call",
+            "index must be healed automatically at open -- the orphan manifest's commit must be \
+             visible with no explicit recovery call",
         );
     assert_eq!(tip.commit_count, 1);
     assert_eq!(tip.pr, commit.prs[0]);

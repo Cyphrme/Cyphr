@@ -90,7 +90,9 @@ mod tests {
             (f && !d && m && k, LifecycleState::Frozen),
             (!d && !f && m && k, LifecycleState::Active),
         ];
-        rows.into_iter().find(|(matches, _)| *matches).map(|(_, s)| s)
+        rows.into_iter()
+            .find(|(matches, _)| *matches)
+            .map(|(_, s)| s)
     }
 
     #[test]
@@ -174,8 +176,8 @@ mod tests {
                         assert_ne!(
                             derive_lifecycle_state(d, f, k, c),
                             LifecycleState::Zombie,
-                            "d={d} f={f} k={k} c={c} produced Zombie despite \
-                             can_data_action => has_active_keys"
+                            "d={d} f={f} k={k} c={c} produced Zombie despite can_data_action => \
+                             has_active_keys"
                         );
                     }
                 }

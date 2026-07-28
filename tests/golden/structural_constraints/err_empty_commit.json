@@ -1,8 +1,6 @@
 {
   "name": "err_empty_commit",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

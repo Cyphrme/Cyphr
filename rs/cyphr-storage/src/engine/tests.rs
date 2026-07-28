@@ -600,7 +600,11 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
     let fixture = load_golden("actions", "single_action_promotes_ds");
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
-    assert_eq!(commits.len(), 1, "fixture must be a single action-only bundle");
+    assert_eq!(
+        commits.len(),
+        1,
+        "fixture must be a single action-only bundle"
+    );
 
     let engine = test_engine();
     let principal_id = "action-only-test";
@@ -657,8 +661,8 @@ async fn submit_commit_rejects_blob_missing_typ() {
 
     assert!(
         matches!(result, Err(EngineError::MalformedBlob(_))),
-        "a blob missing 'typ' must be rejected as malformed, not silently \
-         misclassified as an action, got {result:?}"
+        "a blob missing 'typ' must be rejected as malformed, not silently misclassified as an \
+         action, got {result:?}"
     );
 }
 
@@ -912,7 +916,11 @@ async fn manifest_retains_ingest_order_without_search() {
     // `reindex`'s permutation search.
     let manifest_bytes = engine
         .blob_store()
-        .get(&result.manifest_hash.expect("ingest_commit always forms a manifest"))
+        .get(
+            &result
+                .manifest_hash
+                .expect("ingest_commit always forms a manifest"),
+        )
         .await
         .unwrap()
         .expect("manifest must be present in the blob store");
@@ -1300,8 +1308,7 @@ fn sign_pay(pk: &test_fixtures::PoolKey, pay: serde_json::Value) -> (Vec<u8>, Ve
     .expect("pool prv base64");
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
 
-    let (sig, _cad) =
-        coz::sign_json(&pay_vec, &pk.alg, &prv_bytes, &pub_bytes).expect("sign_json");
+    let (sig, _cad) = coz::sign_json(&pay_vec, &pk.alg, &prv_bytes, &pub_bytes).expect("sign_json");
     (pay_vec, sig)
 }
 
@@ -1447,7 +1454,7 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
         .await
         .expect(
-            "a second commit signed on top of a fresh multi-key established genesis must \
-             submit without a state-root mismatch (F40)",
+            "a second commit signed on top of a fresh multi-key established genesis must submit \
+             without a state-root mismatch (F40)",
         );
 }

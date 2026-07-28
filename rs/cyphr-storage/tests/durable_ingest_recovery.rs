@@ -11,13 +11,13 @@
 //! `ingest_commit` wrote, never a permutation search over the raw cozies.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::StateDigest;
 use cyphr_blob_fjall::FjallBlobStore;
 use cyphr_index_fjall::FjallIndexer;
-use cyphr::StateDigest;
 use cyphr_storage::Genesis;
 use cyphr_storage::blob::BlobStore;
-use cyphr_storage::index::Indexer;
 use cyphr_storage::engine::StorageEngine;
+use cyphr_storage::index::Indexer;
 
 fn load_golden(category: &str, name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -421,9 +421,8 @@ async fn reindex_same_timestamp_action_does_not_corrupt_concurrent_key_replace()
     });
     assert!(
         !recorded_action,
-        "action signed by the replaced key, sharing the key/replace \
-         transaction's exact timestamp, is expected to be dropped under \
-         the current, deliberately-chosen tie-break -- see this test's \
-         doc comment for why the alternative is worse"
+        "action signed by the replaced key, sharing the key/replace transaction's exact \
+         timestamp, is expected to be dropped under the current, deliberately-chosen tie-break -- \
+         see this test's doc comment for why the alternative is worse"
     );
 }

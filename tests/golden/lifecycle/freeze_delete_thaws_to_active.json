@@ -1,8 +1,6 @@
 {
   "name": "freeze_delete_thaws_to_active",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

@@ -1,8 +1,6 @@
 {
   "name": "as_only_ks_promotion",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

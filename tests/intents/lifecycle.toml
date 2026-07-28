@@ -22,10 +22,10 @@ tx = [
 ]
 
 [test.expected]
-key_count = 1
-level     = 3
 deleted   = true
 frozen    = false
+key_count = 1
+level     = 3
 
 # Test: freeze/create transitions Active -> Frozen (SPEC.md:2782-2801)
 [[test]]
@@ -40,10 +40,10 @@ tx = [
 ]
 
 [test.expected]
-key_count = 1
-level     = 3
 deleted   = false
 frozen    = true
+key_count = 1
+level     = 3
 
 # Test: freeze/delete (Thaw) transitions Frozen -> Active (SPEC.md:2803-2818)
 [[test]]
@@ -65,10 +65,10 @@ tx = [
 ]
 
 [test.expected]
-key_count = 1
-level     = 3
 deleted   = false
 frozen    = false
+key_count = 1
+level     = 3
 
 # Test: Deleted and Frozen are mutually exclusive (SPEC.md:1974-1978)
 # [no-both-deleted-and-frozen] — a principal that has signed

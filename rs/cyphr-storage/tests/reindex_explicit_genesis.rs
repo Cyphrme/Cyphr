@@ -100,6 +100,7 @@ impl tracing::Subscriber for CapturingSubscriber {
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
+
     fn exit(&self, _span: &tracing::span::Id) {}
 }
 
@@ -187,17 +188,15 @@ async fn incomplete_commit_logs_loudly_instead_of_vanishing_silently() {
         .await
         .unwrap();
 
-    let (result, logs) =
-        with_captured_logs(|| async { engine.reindex(&[], false).await }).await;
+    let (result, logs) = with_captured_logs(|| async { engine.reindex(&[], false).await }).await;
 
     result.expect(
-        "an incomplete commit must not fail reindex outright -- its raw \
-         content stays harmlessly unindexed until a finalizer arrives",
+        "an incomplete commit must not fail reindex outright -- its raw content stays harmlessly \
+         unindexed until a finalizer arrives",
     );
 
     assert!(
         logs.contains(&principal_id) && logs.contains(&incomplete_now.to_string()),
-        "expected a loud diagnostic naming the stalled principal and \
-         timestamp, got: {logs:?}"
+        "expected a loud diagnostic naming the stalled principal and timestamp, got: {logs:?}"
     );
 }

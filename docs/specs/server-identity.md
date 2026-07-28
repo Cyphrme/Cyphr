@@ -235,6 +235,7 @@ out-of-band trust anchor:
    re-derivation, never silently accepted. `docs/specs/receipts.md`
    names the full six-step verification procedure this pinning story
    is the prose form of.
+
 5. **A changed PG means a different principal -- refuse loudly.** If a
    later `GET /server` against the same host returns a `pg` that does not
    match the pinned value, the client is not talking to the server it

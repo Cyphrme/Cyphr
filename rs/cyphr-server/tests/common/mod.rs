@@ -355,6 +355,32 @@ pub fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, n
     .to_string()
 }
 
+/// Build a second commit push HTTP body for an existing principal (introducing `key_b`).
+pub fn build_second_commit_push_body(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+) -> String {
+    let golden = pool.get("golden").expect("golden key in pool");
+    let golden_key = cyphr::Key {
+        alg: golden.alg.clone(),
+        tmb: golden.compute_tmb().expect("golden tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+    let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+    let blobs = sign_key_create_commit(principal, pool, "golden", "key_b", now);
+
+    serde_json::json!({
+        "principal_id": principal_id,
+        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 // ========================================================================
 // Capability 3 -- issue HTTP requests (unauthed oneshot against build_router)
 // ========================================================================

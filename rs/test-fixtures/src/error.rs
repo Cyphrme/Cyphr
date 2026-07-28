@@ -102,8 +102,8 @@ pub enum Error {
     /// A test intent's declared `expected.error` does not match the error
     /// genesis construction actually raised.
     #[error(
-        "test '{name}': declared expected.error '{declared}' does not \
-         match actual genesis error '{actual}' ({source})"
+        "test '{name}': declared expected.error '{declared}' does not match actual genesis error \
+         '{actual}' ({source})"
     )]
     DeclaredErrorMismatch {
         /// Test name.

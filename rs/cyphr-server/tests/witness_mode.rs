@@ -580,7 +580,8 @@ async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
         StatusCode::FORBIDDEN,
         "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
          status {}: {:?}",
-        resp.status, resp.json
+        resp.status,
+        resp.json
     );
 
     assert_eq!(

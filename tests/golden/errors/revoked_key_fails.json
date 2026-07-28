@@ -1,9 +1,6 @@
 {
   "name": "revoked_key_fails",
-  "principal": [
-    "golden",
-    "key_a"
-  ],
+  "principal": ["golden", "key_a"],
   "setup": {
     "revoke_key": "key_a",
     "revoke_at": 1699999999
@@ -47,9 +44,7 @@
       "pr": ""
     }
   ],
-  "digests": [
-    "r9TEGvkM5Dx-PR9R1oB7GoXlMHyvN_si50N3FPneqF0"
-  ],
+  "digests": ["r9TEGvkM5Dx-PR9R1oB7GoXlMHyvN_si50N3FPneqF0"],
   "expected": {
     "key_count": 1,
     "level": 1,

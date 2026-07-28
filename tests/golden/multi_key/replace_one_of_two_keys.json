@@ -1,9 +1,6 @@
 {
   "name": "replace_one_of_two_keys",
-  "principal": [
-    "alice",
-    "bob"
-  ],
+  "principal": ["alice", "bob"],
   "genesis_keys": [
     {
       "alg": "ES256",

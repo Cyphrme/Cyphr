@@ -10,10 +10,10 @@
 //! of `eml` itself.
 
 use coz::Thumbprint;
+use cyphr::Principal;
 use cyphr::eml::{AlgorithmMetas, Storage};
 use cyphr::error::Error;
 use cyphr::key::Key;
-use cyphr::Principal;
 
 /// A minimal single-key genesis key, sufficient to reach
 /// `Principal::implicit_with_storage`'s `CommitTrees::open` call.
@@ -130,8 +130,8 @@ fn storage_backend_failure_surfaces_as_storage_error() {
         Err(Error::Storage(_)) => {},
         Err(other) => panic!(
             "storage-backend failure must surface as Error::Storage, got {other:?} instead \
-             (Error::UnsupportedAlgorithm misreports an infrastructure failure as a client-\
-             facing algorithm-support question — see GitHub issue #32)"
+             (Error::UnsupportedAlgorithm misreports an infrastructure failure as a client-facing \
+             algorithm-support question — see GitHub issue #32)"
         ),
         Ok(_) => panic!("expected the injected storage failure to propagate as an error"),
     }

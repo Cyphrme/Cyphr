@@ -580,9 +580,8 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
     let now = 1_700_000_000i64;
 
-    let mut principal =
-        Principal::explicit(vec![arrow_domain_key(key_a), arrow_domain_key(key_b)])
-            .expect("explicit multi-key genesis construction");
+    let mut principal = Principal::explicit(vec![arrow_domain_key(key_a), arrow_domain_key(key_b)])
+        .expect("explicit multi-key genesis construction");
     assert!(
         principal.pg().is_none(),
         "PG must not exist before principal/create"
@@ -595,7 +594,8 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         .expect("pr_tagged should succeed for a fresh genesis");
 
     // ---- Commit #1: principal/create, establishing PG. ----
-    let (pc_pay, pc_sig, pc_czd) = arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
+    let (pc_pay, pc_sig, pc_czd) =
+        arrow_signed_principal_create(key_a, &a_tmb_b64, &id_tagged, now);
     let mut scope1 = principal.begin_commit();
     scope1
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
@@ -618,7 +618,7 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
     scope2
         .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
         .expect(
-            "a second commit signed on top of a fresh multi-key established genesis must \
-             finalize without a state-root mismatch (F40)",
+            "a second commit signed on top of a fresh multi-key established genesis must finalize \
+             without a state-root mismatch (F40)",
         );
 }

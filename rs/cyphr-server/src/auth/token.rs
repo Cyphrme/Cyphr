@@ -268,7 +268,12 @@ mod tests {
         let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
 
         let token = identity
-            .issue_token(PR, vec!["read".to_string(), "write".to_string()], 1_000, 300)
+            .issue_token(
+                PR,
+                vec!["read".to_string(), "write".to_string()],
+                1_000,
+                300,
+            )
             .expect("issue token");
 
         let claims = identity
@@ -422,8 +427,8 @@ mod tests {
         let result = identity.verify_token(&forged, 1_100);
         assert!(
             matches!(result, Err(TokenError::TypMismatch)),
-            "a validly-signed, unexpired message whose typ is not the bearer typ must be \
-             rejected as TypMismatch, got: {result:?}"
+            "a validly-signed, unexpired message whose typ is not the bearer typ must be rejected \
+             as TypMismatch, got: {result:?}"
         );
     }
 }

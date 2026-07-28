@@ -93,7 +93,7 @@ contradictory — they are different frames and MUST NOT be conflated:
 - **Intra-commit**: transactions within a commit apply sequentially, in
   `txs` array order (see [intra-commit-ordering]). Each transaction's
   authorization is evaluated against the key state as it exists immediately
-  before *that* transaction, reflecting all earlier transactions already
+  before _that_ transaction, reflecting all earlier transactions already
   applied in the same commit.
 - **Extra-commit**: external authenticators (e.g. login, or a third party
   verifying a principal from outside the commit) see only already-committed
@@ -432,7 +432,6 @@ principal's PG to remove.
 - **POST**: Witness registration is removed from DT (if DT exists). PR and AT remain unmodified.
   `VERIFIED: agent-check`
 
-
 #### Nonce Transactions
 
 **[nonce-path]**: Nonce `typ` MUST specify the insertion path in the state tree.
@@ -519,56 +518,56 @@ included `pre`.
 
 ## Verification
 
-| Constraint                    | Method      | Result | Detail                                              |
-| :---------------------------- | :---------- | :----- | :-------------------------------------------------- |
-| [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                          |
+| Constraint                    | Method      | Result | Detail                                                                                   |
+| :---------------------------- | :---------- | :----- | :--------------------------------------------------------------------------------------- |
+| [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                                                               |
 | [transaction-classification]  | agent-check | pass   | SPEC.md §4.1 (no `pre` in example); `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
-| [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                   |
-| [authorization-triple]        | agent-check | pass   | SPEC.md §2.3.2 (Antecedent Authorization Gate)      |
-| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section) |
-| [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                          |
-| [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies") |
-| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4.1 (list of lists structure)              |
-| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                         |
-| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                             |
-| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                   |
-| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                 |
-| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                         |
-| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                          |
-| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                    |
-| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                      |
-| [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                              |
-| [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                        |
-| [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                            |
-| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.5                            |
-| [transaction-id-required]     | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                   |
-| [timestamp-range]             | agent-check | pass   | Explicit in SPEC.md §6.4 (inherited from Coz)       |
-| [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
-| [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                    |
-| [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-pre-bootstrap]       | agent-check | pass   | Explicit in SPEC.md §5.1                            |
-| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PG)                                |
-| [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                            |
-| [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                            |
-| [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                            |
-| [key-revoke]                  | agent-check | pass   | Explicit in SPEC.md §6.4                            |
-| [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                            |
-| [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
-| [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                            |
-| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AR→AT, updated 2026-03-09)            |
-| [dr-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                          |
-| [witness-register-create]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                         |
-| [witness-register-delete]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                         |
-| [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                            |
-| [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                    |
-| [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                     |
-| [no-self-revoke-recovery]     | agent-check | pass   | Explicit in SPEC.md §3.1                            |
-| [no-revoke-non-self]          | agent-check | pass   | Explicit in SPEC.md §6.4                            |
-| [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]    |
-| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]           |
-| [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                 |
-| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)           |
-| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)               |
+| [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                                                        |
+| [authorization-triple]        | agent-check | pass   | SPEC.md §2.3.2 (Antecedent Authorization Gate)                                           |
+| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section)    |
+| [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                                                               |
+| [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies")                                      |
+| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4.1 (list of lists structure)                                                   |
+| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                                                              |
+| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                                                                  |
+| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                                                        |
+| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                                                      |
+| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                                                              |
+| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                                                               |
+| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                                                         |
+| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                                                           |
+| [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                                                                   |
+| [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                                                             |
+| [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                                                                 |
+| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.5                                                                 |
+| [transaction-id-required]     | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                                                        |
+| [timestamp-range]             | agent-check | pass   | Explicit in SPEC.md §6.4 (inherited from Coz)                                            |
+| [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                                                         |
+| [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                                                         |
+| [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                                                                 |
+| [genesis-pre-bootstrap]       | agent-check | pass   | Explicit in SPEC.md §5.1                                                                 |
+| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PG)                                                                     |
+| [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                                                                 |
+| [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                                                                 |
+| [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                                                                 |
+| [key-revoke]                  | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
+| [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
+| [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
+| [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                                                                 |
+| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AR→AT, updated 2026-03-09)                                                 |
+| [dr-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                                                               |
+| [witness-register-create]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                                                              |
+| [witness-register-delete]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                                                              |
+| [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                                                                 |
+| [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                                                         |
+| [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                                                          |
+| [no-self-revoke-recovery]     | agent-check | pass   | Explicit in SPEC.md §3.1                                                                 |
+| [no-revoke-non-self]          | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
+| [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]                                         |
+| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]                                                |
+| [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                                                      |
+| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)                                                |
+| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)                                                    |
 
 ## Implications
 

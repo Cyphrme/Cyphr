@@ -1,8 +1,6 @@
 {
   "name": "key_replace_single_key",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

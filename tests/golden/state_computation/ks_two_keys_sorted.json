@@ -1,8 +1,6 @@
 {
   "name": "ks_two_keys_sorted",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

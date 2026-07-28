@@ -60,8 +60,7 @@ fn sign_pay(pk: &test_fixtures::PoolKey, pay: serde_json::Value) -> (Vec<u8>, Ve
     .expect("pool prv base64");
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
 
-    let (sig, _cad) =
-        coz::sign_json(&pay_vec, &pk.alg, &prv_bytes, &pub_bytes).expect("sign_json");
+    let (sig, _cad) = coz::sign_json(&pay_vec, &pk.alg, &prv_bytes, &pub_bytes).expect("sign_json");
     (pay_vec, sig)
 }
 
@@ -162,9 +161,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     engine
         .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
         .await
-        .expect(
-            "genesis commit should submit through the real durable StorageEngine write path",
-        );
+        .expect("genesis commit should submit through the real durable StorageEngine write path");
 
     let kc_pay = serde_json::json!({
         "alg": key_a.alg,
@@ -198,7 +195,7 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         .submit_commit(principal_id, Some(genesis), &[&kc_blob, &cc2_blob])
         .await
         .expect(
-            "a second commit signed on top of a fresh multi-key established genesis must \
-             submit without a state-root mismatch (F40), through a durable backend",
+            "a second commit signed on top of a fresh multi-key established genesis must submit \
+             without a state-root mismatch (F40), through a durable backend",
         );
 }

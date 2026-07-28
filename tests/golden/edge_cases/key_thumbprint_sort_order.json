@@ -1,10 +1,6 @@
 {
   "name": "key_thumbprint_sort_order",
-  "principal": [
-    "alice",
-    "bob",
-    "carol"
-  ],
+  "principal": ["alice", "bob", "carol"],
   "genesis_keys": [
     {
       "alg": "ES256",

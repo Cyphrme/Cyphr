@@ -31,12 +31,12 @@ tokio      = { workspace = true, features = ["io-util", "sync"] }
 tracing    = { workspace = true }
 
 [dev-dependencies]
-cyphr              = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
-cyphr-blob-fjall   = { path = "../cyphr-blob-fjall", version = "0.1.0" }
-cyphr-index-fjall  = { path = "../cyphr-index-fjall", version = "0.1.0" }
-fjall              = { workspace = true }
-proptest           = { workspace = true }
-serde              = { workspace = true }
-serde_json         = { workspace = true }
-tempfile           = "3"
-test-fixtures      = { path = "../test-fixtures" }
+cyphr             = { path = "../cyphr", version = "0.1.0", features = ["test-utils"] }
+cyphr-blob-fjall  = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-fjall = { path = "../cyphr-index-fjall", version = "0.1.0" }
+fjall             = { workspace = true }
+proptest          = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+tempfile          = "3"
+test-fixtures     = { path = "../test-fixtures" }

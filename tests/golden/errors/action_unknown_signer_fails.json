@@ -1,8 +1,6 @@
 {
   "name": "action_unknown_signer_fails",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -31,9 +29,7 @@
       "pr": ""
     }
   ],
-  "digests": [
-    "zTBHI2ZDPqIjWD9oENk4VvigCrGEo36jROKNfL7SxHE"
-  ],
+  "digests": ["zTBHI2ZDPqIjWD9oENk4VvigCrGEo36jROKNfL7SxHE"],
   "expected": {
     "key_count": 1,
     "level": 1,

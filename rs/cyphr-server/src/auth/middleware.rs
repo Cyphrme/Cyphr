@@ -58,7 +58,9 @@ pub fn require_bearer(
     match verify_bearer_if_present(headers, identity, now) {
         Ok(Some(claims)) => Ok(claims),
         Ok(None) => Err(AppError::unauthorized("missing bearer token")),
-        Err(e) => Err(AppError::unauthorized(format!("bearer token rejected: {e}"))),
+        Err(e) => Err(AppError::unauthorized(format!(
+            "bearer token rejected: {e}"
+        ))),
     }
 }
 
@@ -88,7 +90,9 @@ pub fn check_push_admission(
         Ok(Some(_)) => Err(AppError::unauthorized(
             "bearer token does not authorize this principal",
         )),
-        Err(e) => Err(AppError::unauthorized(format!("bearer token rejected: {e}"))),
+        Err(e) => Err(AppError::unauthorized(format!(
+            "bearer token rejected: {e}"
+        ))),
     }
 }
 
@@ -171,7 +175,9 @@ mod tests {
             .expect("issue token");
         let headers = headers_with_bearer(&token);
         let result = verify_bearer_if_present(&headers, &identity, 1_100);
-        let claims = result.expect("valid token verifies").expect("token present");
+        let claims = result
+            .expect("valid token verifies")
+            .expect("token present");
         assert_eq!(claims.pr, PR);
     }
 

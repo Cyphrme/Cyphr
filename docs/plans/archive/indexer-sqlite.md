@@ -411,11 +411,11 @@ migrations sequentially.
 
 ## Implementation Status
 
-| Component                     | Status                              |
-| :---------------------------- | :---------------------------------- |
-| Schema design                 | Specified (this document)           |
-| `SqliteIndexer` struct        | Implemented                         |
-| Actor model (async bridge)    | Implemented (tokio::sync::mpsc)     |
-| Migration from `FjallIndexer` | Complete (FjallIndexer removed)     |
-| Schema versioning             | Implemented (schema_version table)  |
-| Integration tests             | Implemented (unit + proptest)       |
+| Component                     | Status                             |
+| :---------------------------- | :--------------------------------- |
+| Schema design                 | Specified (this document)          |
+| `SqliteIndexer` struct        | Implemented                        |
+| Actor model (async bridge)    | Implemented (tokio::sync::mpsc)    |
+| Migration from `FjallIndexer` | Complete (FjallIndexer removed)    |
+| Schema versioning             | Implemented (schema_version table) |
+| Integration tests             | Implemented (unit + proptest)      |

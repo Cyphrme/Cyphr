@@ -190,7 +190,7 @@ detect and report this.
 
 ## Implementations
 
-| Backend           | Crate           | Status     | Notes                                            |
-| :---------------- | :-------------- | :--------- | :----------------------------------------------- |
+| Backend           | Crate              | Status     | Notes                                            |
+| :---------------- | :----------------- | :--------- | :----------------------------------------------- |
 | Fjall (LSM-tree)  | `cyphr-blob-fjall` | Production | See [`blob-store-fjall.md`](blob-store-fjall.md) |
-| In-memory HashMap | `cyphr-storage` | Testing    | `MemoryBlobStore`                                |
+| In-memory HashMap | `cyphr-storage`    | Testing    | `MemoryBlobStore`                                |

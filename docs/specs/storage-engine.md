@@ -80,10 +80,10 @@ output.
 
 The two layers are:
 
-| Layer                      | Responsibility                                         | Backend                                | Spec                             |
-| :------------------------- | :----------------------------------------------------- | :------------------------------------- | :------------------------------- |
-| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing)  | [`blob-store.md`](blob-store.md) |
-| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | Fjall (production), HashMap (testing)  | [`indexer.md`](indexer.md)       |
+| Layer                      | Responsibility                                         | Backend                               | Spec                             |
+| :------------------------- | :----------------------------------------------------- | :------------------------------------ | :------------------------------- |
+| **Layer 0: Content Store** | Immutable content-addressed blobs (BLAKE3 → raw bytes) | Fjall (production), HashMap (testing) | [`blob-store.md`](blob-store.md) |
+| **Layer 1: Query Index**   | Relational index: tips, chains, digests, keys          | Fjall (production), HashMap (testing) | [`indexer.md`](indexer.md)       |
 
 **[separate-durability]**: Content store and index are **separate databases**
 with independent durability. The content store is the durable source of
@@ -338,17 +338,17 @@ same principal MUST reflect the ingested commit's state.
 
 ## Verification
 
-| Constraint               | Method      | Result | Detail                                             |
-| :----------------------- | :---------- | :----- | :------------------------------------------------- |
-| [two-tier-separation]    | agent-check | pass   | `StorageEngine<B, I>` generic over distinct traits |
+| Constraint               | Method      | Result | Detail                                                                                    |
+| :----------------------- | :---------- | :----- | :---------------------------------------------------------------------------------------- |
+| [two-tier-separation]    | agent-check | pass   | `StorageEngine<B, I>` generic over distinct traits                                        |
 | [separate-durability]    | agent-check | pass   | cyphr-index-fjall (Layer 1) + cyphr-blob-fjall (Layer 0) are separate Fjall keyspaces/DBs |
-| [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist       |
-| [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                 |
-| [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                    |
-| [recovery-reindex]       | agent-check | pass   | reindex() scans BlobStore, rebuilds index          |
-| [recovery-convergence]   | agent-check | pass   | reindex() terminates in finite time                |
-| [hash-boundary]          | agent-check | pass   | format_multihash_all() for all active variants     |
-| [read-after-write]       | agent-check | pass   | Verified in integration tests                      |
+| [validate-first-write]   | agent-check | pass   | submit_commit(): verify → finalize → persist                                              |
+| [ingest-ordering]        | agent-check | pass   | Blobs stored before index_commit()                                                        |
+| [read-path-coordination] | agent-check | pass   | get_patch() joins index + blobs                                                           |
+| [recovery-reindex]       | agent-check | pass   | reindex() scans BlobStore, rebuilds index                                                 |
+| [recovery-convergence]   | agent-check | pass   | reindex() terminates in finite time                                                       |
+| [hash-boundary]          | agent-check | pass   | format_multihash_all() for all active variants                                            |
+| [read-after-write]       | agent-check | pass   | Verified in integration tests                                                             |
 
 ## Implications
 

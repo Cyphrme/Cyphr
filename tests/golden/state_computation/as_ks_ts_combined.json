@@ -1,8 +1,6 @@
 {
   "name": "as_ks_ts_combined",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

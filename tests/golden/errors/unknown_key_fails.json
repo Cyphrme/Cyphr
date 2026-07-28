@@ -1,8 +1,6 @@
 {
   "name": "unknown_key_fails",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -37,9 +35,7 @@
       "pr": ""
     }
   ],
-  "digests": [
-    "FLinqTMOxdSXWFsAmy3g4Ot3Dcfj6iect9JBynhcAHE"
-  ],
+  "digests": ["FLinqTMOxdSXWFsAmy3g4Ot3Dcfj6iect9JBynhcAHE"],
   "expected": {
     "key_count": 1,
     "level": 1,

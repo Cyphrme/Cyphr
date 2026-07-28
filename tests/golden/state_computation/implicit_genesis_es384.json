@@ -1,8 +1,6 @@
 {
   "name": "implicit_genesis_es384",
-  "principal": [
-    "diana_es384"
-  ],
+  "principal": ["diana_es384"],
   "genesis_keys": [
     {
       "alg": "ES384",

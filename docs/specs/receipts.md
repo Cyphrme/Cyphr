@@ -215,8 +215,7 @@ issued it, using only HTTP responses and local replay:
    chain**, not merely asserted by discovery: load the fully replayed
    principal and check `is_key_active(receipt.tmb)`.
 6. **Verify the signature with plain `coz::verify_json`**, sourcing the
-   public key from the replayed principal's active key material (step
-   5) -- never from discovery's own current-key claim.
+   public key from the replayed principal's active key material (step 5) -- never from discovery's own current-key claim.
 
 A verifier that completes all six steps has established the receipt's
 authenticity using only material it fetched and validated itself: no

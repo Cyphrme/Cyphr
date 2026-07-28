@@ -1,8 +1,6 @@
 {
   "name": "ps_only_as_promotion",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

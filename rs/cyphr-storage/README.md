@@ -10,6 +10,7 @@ This crate provides a modern, backend-agnostic storage engine that coordinates:
 - **Export/Import**: Standardized logic for archiving and restoring Principals using cryptographic export formats.
 
 Included implementations:
+
 - **`cyphr-blob-fjall`**: BLOB storage backed by the Fjall LSM-tree database.
 - **`cyphr-index-fjall`**: Indexing backed by the Fjall LSM-tree database (KV, not relational).
 - **Memory implementations** (for testing): In-memory blob stores and indexers.

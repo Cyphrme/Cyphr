@@ -121,9 +121,11 @@ async fn commit_reaches_registered_witness() {
     let witness_addr = witness_inst.bind_tcp().await.expect("bind TCP witness");
     let witness_url = format!("http://{witness_addr}");
 
-    // 3. Register witness_url for principal on authority server
     let pool = load_pool();
-    let pid = "n3-fanout-principal";
+    let golden_tmb = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_tmb.as_str();
+
+    // 1. Register witness_url for principal on authority server
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, &witness_url, "create", NOW);
     let (reg_status, reg_json) =
         post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
@@ -133,7 +135,7 @@ async fn commit_reaches_registered_witness() {
         "witness registration must succeed: {reg_json:?}"
     );
 
-    // 4. Push commit to authority server
+    // 2. Push commit to authority server
     let push_body = build_genesis_push_body(&pool, pid, NOW + 10);
     let (push_status, push_json) = post_json(auth_app.clone(), "/push", push_body).await;
     assert_eq!(
@@ -145,7 +147,7 @@ async fn commit_reaches_registered_witness() {
     // Allow background fanout processing time if asynchronous
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // 5. Query witness server GET /tip?pr=<pid> to verify commit reached the witness
+    // 3. Query witness server GET /tip?pr=<pid> to verify commit reached the witness
     let (witness_tip_status, witness_tip_json) =
         get_json(witness_app.clone(), &format!("/tip?pr={pid}")).await;
 
@@ -183,7 +185,8 @@ async fn unreachable_witness_does_not_fail_push() {
     auth_inst.bind_tcp().await.expect("bind TCP authority");
 
     let pool = load_pool();
-    let pid = "n3-unreachable-witness-principal";
+    let golden_tmb = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_tmb.as_str();
     let unreachable_witness_url = "http://127.0.0.1:59999";
 
     // 1. Register unreachable witness URL for principal on authority server
@@ -252,9 +255,11 @@ async fn unreachable_witness_does_not_delay_push() {
     };
     auth_inst.bind_tcp().await.expect("bind TCP authority");
 
-    // 3. Register blocking witness URL on authority server
     let pool = load_pool();
-    let pid = "n3-nonblocking-push-principal";
+    let golden_tmb = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_tmb.as_str();
+
+    // 3. Register blocking witness URL on authority server
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, &blocking_url, "create", NOW);
     let (reg_status, reg_json) =
         post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
@@ -303,7 +308,8 @@ async fn delivery_is_bounded_and_abandonment_visible() {
     auth_inst.bind_tcp().await.expect("bind TCP authority");
 
     let pool = load_pool();
-    let pid = "n3-bounded-delivery-principal";
+    let golden_tmb = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_tmb.as_str();
     let unreachable_witness_url = "http://127.0.0.1:59998";
 
     // 1. Register unreachable witness
@@ -380,7 +386,8 @@ async fn no_delivery_consistency_claim() {
     auth_inst.bind_tcp().await.expect("bind TCP authority");
 
     let pool = load_pool();
-    let pid = "n3-no-consistency-claim-principal";
+    let golden_tmb = pool.get("golden").unwrap().compute_tmb_b64().unwrap();
+    let pid = golden_tmb.as_str();
 
     // 1. Register 3 unreachable witnesses for principal
     for i in 0..3 {

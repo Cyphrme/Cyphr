@@ -800,8 +800,8 @@ mod tests {
         let commit = pending.finalize(auth_root, sr, pr, &[coz::HashAlg::Sha256]);
         assert!(
             matches!(commit, Err(crate::error::Error::EmptyCommit)),
-            "a finalizer-only commit (no mutation cozies) must be rejected \
-             as empty, got {commit:?}"
+            "a finalizer-only commit (no mutation cozies) must be rejected as empty, got \
+             {commit:?}"
         );
     }
 
@@ -1234,10 +1234,17 @@ mod tests {
         // CommitCreate skips the active-key check, so the just-removed
         // signer may still carry the arrow (principal.rs key/replace arm).
         let old_prv = fold_prv_bytes(old_key);
-        let old_pub = coz::base64ct::Base64UrlUnpadded::decode_vec(&old_key.pub_key)
-            .expect("old pub base64");
+        let old_pub =
+            coz::base64ct::Base64UrlUnpadded::decode_vec(&old_key.pub_key).expect("old pub base64");
         let commit = scope_a
-            .finalize_with_arrow(&old_key.alg, &old_prv, &old_pub, &old_tmb, now + 1, "cyphr.me")
+            .finalize_with_arrow(
+                &old_key.alg,
+                &old_prv,
+                &old_pub,
+                &old_tmb,
+                now + 1,
+                "cyphr.me",
+            )
             .expect("sole-key algorithm-change commit should finalize via genesis promotion");
         let genuine_arrow = commit
             .commit_tx()
@@ -1250,8 +1257,8 @@ mod tests {
 
         assert!(
             scope_b.matches_arrow(&genuine_arrow),
-            "matches_arrow must accept a sole-key algorithm-change arrow \
-             built via genesis promotion (zero shared algorithms)"
+            "matches_arrow must accept a sole-key algorithm-change arrow built via genesis \
+             promotion (zero shared algorithms)"
         );
     }
 
@@ -1428,7 +1435,10 @@ mod tests {
         // Snapshot observable pre-commit state to compare against after the
         // injected failure.
         let pr_before = principal.pr().clone();
-        assert!(!principal.is_deleted(), "fresh principal must not be deleted");
+        assert!(
+            !principal.is_deleted(),
+            "fresh principal must not be deleted"
+        );
         assert!(
             !principal.deleted_pending,
             "fresh principal must not have a pending delete"
@@ -1488,13 +1498,13 @@ mod tests {
         );
         assert!(
             !principal.is_deleted(),
-            "a failed finalize must not leave `deleted` set on the live \
-             principal (GitHub issue #77)"
+            "a failed finalize must not leave `deleted` set on the live principal (GitHub issue \
+             #77)"
         );
         assert!(
             !principal.deleted_pending,
-            "a failed finalize must not leave `deleted_pending` set on \
-             the live principal — its own sibling of GitHub issue #77"
+            "a failed finalize must not leave `deleted_pending` set on the live principal — its \
+             own sibling of GitHub issue #77"
         );
     }
 }

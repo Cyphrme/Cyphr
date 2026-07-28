@@ -1,8 +1,6 @@
 {
   "name": "transaction_replay_order",
-  "principal": [
-    "alice"
-  ],
+  "principal": ["alice"],
   "genesis_keys": [
     {
       "alg": "ES256",

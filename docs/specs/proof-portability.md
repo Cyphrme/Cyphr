@@ -20,7 +20,7 @@ only serves a caller that already owns and trusts a live `Principal` --
 it reads its trusted roots from `self`. Issue #19 asks for the portable
 alternative: a third party holding only a server's pinned PG and a
 signed tip report can verify that a specific key was really included
-under a *foreign* principal's Principal Root, without ever owning,
+under a _foreign_ principal's Principal Root, without ever owning,
 replaying, or querying that principal directly.
 
 **Target System:** `rs/cyphr/src/inclusion.rs`'s free function
@@ -74,7 +74,7 @@ This is **not a gap**: `roots[0]` (KR) is derived as `hops[1].leaf_hash`
 instead of read from an independent source. This is cryptographically
 sound because `verify_key_inclusion`'s bridge-and-hop-verify loop
 checks hop 1 (the KT proof) against `roots[0]`, but hop 2 (the AR-node
-proof) is *itself* checked against `roots[1]` (AR) -- which IS an
+proof) is _itself_ checked against `roots[1]` (AR) -- which IS an
 independently-trusted tip claim. An attacker cannot substitute a forged
 KR at `roots[0]` without also forging a valid Merkle proof for hop 2
 against the real, tip-attested AR, which is infeasible under the same
@@ -123,8 +123,8 @@ unsigned envelope carrying the 4 hops) was considered and is
    without any new server route: the free function
    `cyphr::verify_key_inclusion` is already fully portable, and the
    e2e already proves a verifier holding only the tip report and hops
-   can use it. An HTTP endpoint would only change *who generates the
-   hops*, not whether the verification itself is portable.
+   can use it. An HTTP endpoint would only change _who generates the
+   hops_, not whether the verification itself is portable.
 
 **Follow-up shape**, for whoever picks this up: `GET
 /proof/key-inclusion?pr=<pg>&tmb=<b64ut>&alg=<name>` inside

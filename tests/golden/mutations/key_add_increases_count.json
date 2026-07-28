@@ -1,8 +1,6 @@
 {
   "name": "key_add_increases_count",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

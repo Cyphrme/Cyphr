@@ -1,14 +1,11 @@
 //! Route-protection tests over real HTTP (ARCHITECT RULING R7).
 //!
-//! - `POST /push`: no bearer token is ever required -- a valid signed
-//!   commit bundle is its own authorization, including a brand-new
-//!   principal's genesis (`push_new_principal_happy_path` in
-//!   `tests/e2e.rs` is the untouched empirical baseline for this). A
-//!   bearer token is an OPTIONAL admission knob: absent or matching is
-//!   always fine, present-but-mismatched is rejected.
-//! - `GET /tip`, `GET /patch`, `GET /e/{digest}`: public reads with no
-//!   bearer requirement at all (SPEC.md §13 -- witness registration via
-//!   `GET /tip`, resync via `GET /patch`).
+//! - `POST /push`: no bearer token is ever required -- a valid signed commit bundle is its own
+//!   authorization, including a brand-new principal's genesis (`push_new_principal_happy_path` in
+//!   `tests/e2e.rs` is the untouched empirical baseline for this). A bearer token is an OPTIONAL
+//!   admission knob: absent or matching is always fine, present-but-mismatched is rejected.
+//! - `GET /tip`, `GET /patch`, `GET /e/{digest}`: public reads with no bearer requirement at all
+//!   (SPEC.md §13 -- witness registration via `GET /tip`, resync via `GET /patch`).
 
 use std::sync::Arc;
 
@@ -171,7 +168,14 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(&signer.alg, &signer_prv, &signer_pub, &signer_tmb, now, "cyphr.me")
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            now,
+            "cyphr.me",
+        )
         .expect("commit should finalize");
 
     let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
@@ -351,7 +355,12 @@ async fn push_with_mismatched_token_pr_rejected() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token("a-different-principal", vec!["write".to_string()], real_now(), 300)
+        .issue_token(
+            "a-different-principal",
+            vec!["write".to_string()],
+            real_now(),
+            300,
+        )
         .expect("issue token");
 
     let app = build_router(state);
@@ -376,7 +385,12 @@ async fn push_with_matching_token_pr_succeeds() {
         .identity
         .as_ref()
         .unwrap()
-        .issue_token(principal_id, vec!["read".to_string(), "write".to_string()], real_now(), 300)
+        .issue_token(
+            principal_id,
+            vec!["read".to_string(), "write".to_string()],
+            real_now(),
+            300,
+        )
         .expect("issue token");
 
     let app = build_router(state);
@@ -420,7 +434,8 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
     let (mut genesis_blobs, genesis_entry) =
         sign_key_create_commit(principal, &pool, "golden", "key_a", 1_700_000_000);
     let closing_idx = genesis_blobs.len() - 1;
-    let mut closing: serde_json::Value = serde_json::from_slice(&genesis_blobs[closing_idx]).unwrap();
+    let mut closing: serde_json::Value =
+        serde_json::from_slice(&genesis_blobs[closing_idx]).unwrap();
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
@@ -494,7 +509,8 @@ async fn tip_succeeds_with_no_bearer_token() {
         .body(Body::empty())
         .unwrap();
     assert!(
-        !req.headers().contains_key(axum::http::header::AUTHORIZATION),
+        !req.headers()
+            .contains_key(axum::http::header::AUTHORIZATION),
         "test setup: this request must carry no Authorization header"
     );
 
@@ -518,12 +534,17 @@ async fn patch_succeeds_with_no_bearer_token() {
         .body(Body::empty())
         .unwrap();
     assert!(
-        !req.headers().contains_key(axum::http::header::AUTHORIZATION),
+        !req.headers()
+            .contains_key(axum::http::header::AUTHORIZATION),
         "test setup: this request must carry no Authorization header"
     );
 
     let (status, json) = send(req, app).await;
-    assert_eq!(status, StatusCode::OK, "GET /patch must be public: {json:?}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET /patch must be public: {json:?}"
+    );
 }
 
 /// `GET /e/{digest}` is reachable with zero `Authorization` header: a
@@ -540,7 +561,8 @@ async fn entity_succeeds_with_no_bearer_token() {
         .body(Body::empty())
         .unwrap();
     assert!(
-        !req.headers().contains_key(axum::http::header::AUTHORIZATION),
+        !req.headers()
+            .contains_key(axum::http::header::AUTHORIZATION),
         "test setup: this request must carry no Authorization header"
     );
 
@@ -548,7 +570,7 @@ async fn entity_succeeds_with_no_bearer_token() {
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
-        "GET /e/{{digest}} must be public: unknown digest is 404, never a 401/403 auth \
-         rejection: {json:?}"
+        "GET /e/{{digest}} must be public: unknown digest is 404, never a 401/403 auth rejection: \
+         {json:?}"
     );
 }

@@ -7,15 +7,15 @@ pass lands, calibrate trust as below.
 
 ## Layout & how to work here
 
-| Path | What it is / how to approach |
-| :--- | :--- |
-| `specs/` | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them) |
-| `adr/` | Architecture decision records |
-| `models/` | Formal models (self-flagged staleness applies) |
-| `protocol/` | Constraint→test traceability matrix |
-| `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only |
-| `sites/` | Published websites — see below |
-| `level_2.5.md` | Orphaned; not linked from any spec — verify with the human operator before relying on it |
+| Path                            | What it is / how to approach                                                                                                                                                                      |
+| :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `specs/`                        | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them) |
+| `adr/`                          | Architecture decision records                                                                                                                                                                     |
+| `models/`                       | Formal models (self-flagged staleness applies)                                                                                                                                                    |
+| `protocol/`                     | Constraint→test traceability matrix                                                                                                                                                               |
+| `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only                                                                                                                              |
+| `sites/`                        | Published websites — see below                                                                                                                                                                    |
+| `level_2.5.md`                  | Orphaned; not linked from any spec — verify with the human operator before relying on it                                                                                                          |
 
 Markdown is formatted by `treefmt` (prettier) from the repo root; the
 pre-commit hook audits local links in touched files. Follow the
@@ -115,11 +115,11 @@ SPEC.md change:
   the default reading is
   "downstream is stale," and the resolution is a question to the spec
   author, never a spec amendment to match downstream.
-- **Two authorization contexts — never mix their rules.** *Intra-commit*:
+- **Two authorization contexts — never mix their rules.** _Intra-commit_:
   transactions within a commit apply sequentially ("one-by-one using a
   given order as dictated by the principal", SPEC §4); a key activated by
   an earlier transaction may authorize a later one, a key revoked earlier
-  is barred (spec author, PR #39 thread). *Extra-commit*: external
+  is barred (spec author, PR #39 thread). _Extra-commit_: external
   authenticators see only commits — intra-commit transactions are
   ephemeral to them, so external authorization is evaluated against
   committed state. Rules stated for one context are not contradictions of
@@ -132,7 +132,7 @@ SPEC.md change:
   cannot name its evaluator must be corrected or removed, not propagated.
   Grounding: the 2026-07-06 spec-drift findings above (verifiable against
   the named files and `rs/`). Signpost: new docs copying `VERIFIED:
-  agent-check` style claims without an evaluator.
+agent-check` style claims without an evaluator.
 
 ## Unknowns
 

@@ -23,13 +23,13 @@ version and the statement slot are designed in from day one even though
 this server does not yet sign responses.
 
 **Target System:** `rs/cyphr-server` — the HTTP response layer only. The
-envelope is transport: it *carries* a coz, it does not change the coz wire
+envelope is transport: it _carries_ a coz, it does not change the coz wire
 format (`{pay, sig, key?}`), which is SPEC.md's and the `coz` crate's.
 
 **Scope boundary:** This document defines the container and records the
 rulings below. It does not wrap any handler's response (that is a later
 adoption step) and does not define what a signed statement's payload
-*claims* (that is the server-receipt design, later still). This document
+_claims_ (that is the server-receipt design, later still). This document
 pins only that the slot is a coz.
 
 ## Wire shape
@@ -179,7 +179,7 @@ this ruling) omitted `cr`.
 
 ## Statement payload — deferred
 
-What a signed statement's `pay` *claims* (its `typ`, and whether it binds a
+What a signed statement's `pay` _claims_ (its `typ`, and whether it binds a
 digest of the payload, the tip, or something else) is NOT settled here.
 This document pins only that the slot is a coz `{pay, sig}`. The golden vector's
 signed `pay` is illustrative, not normative: it demonstrates a valid coz in

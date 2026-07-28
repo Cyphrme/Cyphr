@@ -1,8 +1,6 @@
 {
   "name": "freeze_create_transitions_to_frozen",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

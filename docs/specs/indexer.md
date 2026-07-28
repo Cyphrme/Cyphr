@@ -297,8 +297,8 @@ No index can shortcut this.
 
 ## Implementations
 
-| Backend           | Crate                | Status                    | Notes                                                |
-| :---------------- | :------------------- | :------------------------ | :---------------------------------------------------- |
-| Fjall (LSM-tree)  | `cyphr-index-fjall`  | Implemented (production)  | No dedicated spec doc yet; see crate source          |
-| SQLite (B-tree)   | `cyphr-index-sqlite` | Retired (2026-07-08)      | Replaced by Fjall in the KV-index migration; spec archived to `docs/plans/archive/indexer-sqlite.md` |
-| In-memory HashMap | `cyphr-storage`      | Testing                   | `MemoryIndexer`                                      |
+| Backend           | Crate                | Status                   | Notes                                                                                                |
+| :---------------- | :------------------- | :----------------------- | :--------------------------------------------------------------------------------------------------- |
+| Fjall (LSM-tree)  | `cyphr-index-fjall`  | Implemented (production) | No dedicated spec doc yet; see crate source                                                          |
+| SQLite (B-tree)   | `cyphr-index-sqlite` | Retired (2026-07-08)     | Replaced by Fjall in the KV-index migration; spec archived to `docs/plans/archive/indexer-sqlite.md` |
+| In-memory HashMap | `cyphr-storage`      | Testing                  | `MemoryIndexer`                                                                                      |

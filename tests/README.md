@@ -90,44 +90,44 @@ For each JSON file in `golden/`:
 
 #### Field Descriptions
 
-| Field          | Description                                                                       |
-| -------------- | ---------------------------------------------------------------------------------- |
-| `principal`    | Key names from pool (for reference)                                                |
-| `genesis_keys` | Full key material for genesis creation                                             |
+| Field          | Description                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| `principal`    | Key names from pool (for reference)                                                                       |
+| `genesis_keys` | Full key material for genesis creation                                                                    |
 | `commits`      | Atomic commit bundles, each containing `txs[]`, `keys[]`, and computed `commit_id`/`ar`/`sr`/`pr` digests |
-| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification             |
-| `expected`     | Expected state after all commits applied — see Expected State Fields below         |
+| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification                                    |
+| `expected`     | Expected state after all commits applied — see Expected State Fields below                                |
 
 #### Expected State Fields
 
-| Field                                        | Description                                                                                            |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `key_count`                                   | Number of active keys after all commits                                                                  |
-| `level`                                        | Principal level (1-4) after all commits                                                                   |
-| `kr`                                           | Key Root digest (`alg:base64url`)                                                                        |
-| `ar`                                           | Auth Root digest (`alg:base64url`)                                                                        |
-| `sr`                                           | State Root digest (`alg:base64url`); promotes from AR when no Data Root is present, otherwise the tree root over AR and DR |
-| `pr`                                           | Principal Root digest (`alg:base64url`)                                                                   |
-| `tr`                                           | Commit ID digest of the final commit (`alg:base64url`; accepts legacy alias `ts`)                         |
-| `cr`                                           | Commit Root digest (`alg:base64url`); not yet present in the persisted fixture corpus, exercised by `test_fixtures::golden::tests::test_generate_single_commit` |
-| `dr`                                           | Data Root digest (Level 4, base64url, single algorithm)                                                    |
-| `pg`                                           | Principal Genesis digest (`alg:base64url`); empty string when there is no prior genesis state             |
-| `error`                                         | Expected error name, if the last transaction is expected to fail                                          |
-| `multihash_kr` / `multihash_ar` / `multihash_pr` | Per-algorithm KR/AR/PR variants, present for multi-algorithm principals (SPEC §14)                        |
+| Field                                            | Description                                                                                                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key_count`                                      | Number of active keys after all commits                                                                                                                         |
+| `level`                                          | Principal level (1-4) after all commits                                                                                                                         |
+| `kr`                                             | Key Root digest (`alg:base64url`)                                                                                                                               |
+| `ar`                                             | Auth Root digest (`alg:base64url`)                                                                                                                              |
+| `sr`                                             | State Root digest (`alg:base64url`); promotes from AR when no Data Root is present, otherwise the tree root over AR and DR                                      |
+| `pr`                                             | Principal Root digest (`alg:base64url`)                                                                                                                         |
+| `tr`                                             | Commit ID digest of the final commit (`alg:base64url`; accepts legacy alias `ts`)                                                                               |
+| `cr`                                             | Commit Root digest (`alg:base64url`); not yet present in the persisted fixture corpus, exercised by `test_fixtures::golden::tests::test_generate_single_commit` |
+| `dr`                                             | Data Root digest (Level 4, base64url, single algorithm)                                                                                                         |
+| `pg`                                             | Principal Genesis digest (`alg:base64url`); empty string when there is no prior genesis state                                                                   |
+| `error`                                          | Expected error name, if the last transaction is expected to fail                                                                                                |
+| `multihash_kr` / `multihash_ar` / `multihash_pr` | Per-algorithm KR/AR/PR variants, present for multi-algorithm principals (SPEC §14)                                                                              |
 
 ### Test Categories
 
-| Category                     | Path                                 | Description                                          |
-| ---------------------------- | ------------------------------------ | ---------------------------------------------------- |
-| `mutations`                  | `golden/mutations/`                  | Transaction mutations (key/add, key/delete, etc.)    |
-| `multi_key`                  | `golden/multi_key/`                  | Multi-key principal operations                       |
-| `algorithm_diversity`        | `golden/algorithm_diversity/`        | Cross-algorithm key management                       |
-| `state_computation`          | `golden/state_computation/`          | State digest verification (KR, CommitID, AR, SR, PR) |
-| `edge_cases`                 | `golden/edge_cases/`                 | Ordering, idempotency, combined operations           |
-| `actions`                    | `golden/actions/`                    | Level 4 action recording                             |
-| `errors`                     | `golden/errors/`                     | Error condition rejection tests                      |
-| `data_action_constraints`    | `golden/data_action_constraints/`    | Constraints over data actions                        |
-| `structural_constraints`     | `golden/structural_constraints/`     | Structural validation algorithms                     |
+| Category                  | Path                              | Description                                          |
+| ------------------------- | --------------------------------- | ---------------------------------------------------- |
+| `mutations`               | `golden/mutations/`               | Transaction mutations (key/add, key/delete, etc.)    |
+| `multi_key`               | `golden/multi_key/`               | Multi-key principal operations                       |
+| `algorithm_diversity`     | `golden/algorithm_diversity/`     | Cross-algorithm key management                       |
+| `state_computation`       | `golden/state_computation/`       | State digest verification (KR, CommitID, AR, SR, PR) |
+| `edge_cases`              | `golden/edge_cases/`              | Ordering, idempotency, combined operations           |
+| `actions`                 | `golden/actions/`                 | Level 4 action recording                             |
+| `errors`                  | `golden/errors/`                  | Error condition rejection tests                      |
+| `data_action_constraints` | `golden/data_action_constraints/` | Constraints over data actions                        |
+| `structural_constraints`  | `golden/structural_constraints/`  | Structural validation algorithms                     |
 
 ### Setup Modifiers
 
@@ -140,14 +140,14 @@ Some tests require setup before the main operation:
 
 Tests with `expected.error` verify that operations are correctly rejected:
 
-| Error                  | Trigger                                    |
-| ---------------------- | ------------------------------------------ |
-| `UnknownKey`           | Signer not in principal's key set          |
-| `KeyRevoked`           | Signer key is revoked                      |
-| `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)    |
-| `DuplicateKey`         | Adding key already in KR                   |
-| `TimestampPast`        | Transaction timestamp older than previous  |
-| `UnsupportedAlgorithm` | Genesis with unsupported algorithm         |
+| Error                  | Trigger                                   |
+| ---------------------- | ----------------------------------------- |
+| `UnknownKey`           | Signer not in principal's key set         |
+| `KeyRevoked`           | Signer key is revoked                     |
+| `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)   |
+| `DuplicateKey`         | Adding key already in KR                  |
+| `TimestampPast`        | Transaction timestamp older than previous |
+| `UnsupportedAlgorithm` | Genesis with unsupported algorithm        |
 
 ---
 
@@ -349,18 +349,18 @@ cargo run -p fixture-gen -- \
 
 ### Golden Tests (Pre-Computed Fixtures)
 
-| Category                   | Tests  |
-| -------------------------- | ------ |
-| mutations                  | 6      |
-| multi_key                  | 4      |
-| algorithm_diversity        | 2      |
-| state_computation          | 9      |
-| edge_cases                 | 4      |
-| actions                    | 5      |
-| errors                     | 12     |
-| data_action_constraints    | 1      |
-| structural_constraints     | 2      |
-| **Total**                  | **45** |
+| Category                | Tests  |
+| ----------------------- | ------ |
+| mutations               | 6      |
+| multi_key               | 4      |
+| algorithm_diversity     | 2      |
+| state_computation       | 9      |
+| edge_cases              | 4      |
+| actions                 | 5      |
+| errors                  | 12     |
+| data_action_constraints | 1      |
+| structural_constraints  | 2      |
+| **Total**               | **45** |
 
 ---
 
@@ -376,15 +376,15 @@ In addition to golden tests, `tests/e2e/` contains **intent files** that are par
 
 ### E2E Intent Files
 
-| File                       | Tests   | Description                                                                                     |
-| -------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `round_trip.toml`          | 5       | Export/import round-trip verification                                                            |
-| `genesis_load.toml`        | 4       | Genesis creation and initial state                                                                |
-| `edge_cases.toml`          | 4       | Algorithm diversity, large history, timing                                                        |
-| `error_conditions.toml`    | 9       | Error rejection (revoked, timestamp order)                                                        |
-| `multihash_coherence.toml` | 2       | Multi-algorithm state coherence (SPEC §14)                                                       |
-| `e2e_features.toml`        | 179     | Generated feature-coverage matrix: 16 features across 4 tiers (see `generate_e2e_features.py`)    |
-| **Total**                  | **203** |                                                                                                    |
+| File                       | Tests   | Description                                                                                    |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `round_trip.toml`          | 5       | Export/import round-trip verification                                                          |
+| `genesis_load.toml`        | 4       | Genesis creation and initial state                                                             |
+| `edge_cases.toml`          | 4       | Algorithm diversity, large history, timing                                                     |
+| `error_conditions.toml`    | 9       | Error rejection (revoked, timestamp order)                                                     |
+| `multihash_coherence.toml` | 2       | Multi-algorithm state coherence (SPEC §14)                                                     |
+| `e2e_features.toml`        | 179     | Generated feature-coverage matrix: 16 features across 4 tiers (see `generate_e2e_features.py`) |
+| **Total**                  | **203** |                                                                                                |
 
 ### Running E2E Tests
 

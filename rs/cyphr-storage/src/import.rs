@@ -726,9 +726,12 @@ mod tests {
 
         let result = load_principal(Genesis::Implicit(key), &[entry]);
         assert!(
-            matches!(result, Err(LoadError::Protocol(cyphr::Error::MalformedPayload))),
-            "an entry missing 'typ' must be rejected as malformed, not silently \
-             misclassified as an action, got {result:?}"
+            matches!(
+                result,
+                Err(LoadError::Protocol(cyphr::Error::MalformedPayload))
+            ),
+            "an entry missing 'typ' must be rejected as malformed, not silently misclassified as \
+             an action, got {result:?}"
         );
     }
 

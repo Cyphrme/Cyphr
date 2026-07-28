@@ -2308,8 +2308,7 @@ mod tests {
             crate::lifecycle::LifecycleState::Zombie
         );
 
-        let multi =
-            Principal::explicit(vec![make_test_key(0xD3), make_test_key(0xD4)]).unwrap();
+        let multi = Principal::explicit(vec![make_test_key(0xD3), make_test_key(0xD4)]).unwrap();
         assert_ne!(
             multi.lifecycle_state(),
             crate::lifecycle::LifecycleState::Zombie
@@ -2427,8 +2426,8 @@ mod tests {
         assert_eq!(
             principal.lifecycle_state(),
             crate::lifecycle::LifecycleState::Deleted,
-            "[no-both-deleted-and-frozen]: a rejected freeze/create must \
-             not perturb the Deleted state"
+            "[no-both-deleted-and-frozen]: a rejected freeze/create must not perturb the Deleted \
+             state"
         );
     }
 
@@ -2673,10 +2672,9 @@ mod tests {
         let result = principal.apply_transaction_test(cz, None);
         assert!(
             matches!(result, Err(Error::AlreadyDeleted)),
-            "the blanket gate must reject PrincipalCreate before genesis-key/id \
-             validation ever runs, since a Deleted principal is by definition \
-             already Established and genesis finalization can never legitimately \
-             be reachable here"
+            "the blanket gate must reject PrincipalCreate before genesis-key/id validation ever \
+             runs, since a Deleted principal is by definition already Established and genesis \
+             finalization can never legitimately be reachable here"
         );
     }
 
@@ -2770,8 +2768,7 @@ mod tests {
             principal.auth.keys.values().map(|k| &k.tmb).collect();
         let action_refs: Vec<&Action> = principal.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs).unwrap();
-        let (_kr, _ar, sr) =
-            derive_state_roots(&thumbprints, dr.as_ref(), &active_algs).unwrap();
+        let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs).unwrap();
 
         let tx_alg = delete_cz.hash_alg;
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
@@ -2805,8 +2802,8 @@ mod tests {
         principal
             .apply_verified_internal(commit_vtx.clone())
             .expect(
-                "commit/create finalizing its own commit's principal/delete \
-                 must not be rejected by the blanket deleted gate",
+                "commit/create finalizing its own commit's principal/delete must not be rejected \
+                 by the blanket deleted gate",
             );
 
         pending.push_tx(crate::transaction::Transaction(vec![commit_vtx]));
@@ -2863,8 +2860,8 @@ mod tests {
         let result = principal.apply_verified_internal(commit_vtx);
         assert!(
             matches!(result, Err(Error::AlreadyDeleted)),
-            "a bare commit/create against a principal deleted in an earlier, \
-             separately-finalized commit must be rejected, got {result:?}"
+            "a bare commit/create against a principal deleted in an earlier, separately-finalized \
+             commit must be rejected, got {result:?}"
         );
     }
 

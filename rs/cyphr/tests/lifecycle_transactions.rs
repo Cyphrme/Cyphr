@@ -87,10 +87,9 @@ fn principal_delete_parses_and_targets_deleted_state() {
 
     assert!(
         result.is_ok(),
-        "principal/delete (SPEC.md:1994-2013) should parse into a CozKind \
-         once N03 implements it, and applying it should transition the \
-         principal from Active to LifecycleState::Deleted; currently: \
-         {result:?}"
+        "principal/delete (SPEC.md:1994-2013) should parse into a CozKind once N03 implements it, \
+         and applying it should transition the principal from Active to LifecycleState::Deleted; \
+         currently: {result:?}"
     );
 }
 
@@ -115,10 +114,9 @@ fn freeze_create_parses_and_targets_frozen_state() {
 
     assert!(
         result.is_ok(),
-        "freeze/create (SPEC.md:2782-2801) should parse into a CozKind \
-         once N03 implements it, and applying it should transition the \
-         principal from Active to LifecycleState::Frozen; currently: \
-         {result:?}"
+        "freeze/create (SPEC.md:2782-2801) should parse into a CozKind once N03 implements it, \
+         and applying it should transition the principal from Active to LifecycleState::Frozen; \
+         currently: {result:?}"
     );
 }
 
@@ -148,10 +146,9 @@ fn freeze_delete_parses_and_targets_thaw_to_active() {
 
     assert!(
         result.is_ok(),
-        "freeze/delete (SPEC.md:2803-2818) should parse into a CozKind \
-         once N03 implements it, and applying it to a Frozen principal \
-         should transition it back to LifecycleState::Active; currently: \
-         {result:?}"
+        "freeze/delete (SPEC.md:2803-2818) should parse into a CozKind once N03 implements it, \
+         and applying it to a Frozen principal should transition it back to \
+         LifecycleState::Active; currently: {result:?}"
     );
 }
 
@@ -194,8 +191,8 @@ fn deleted_and_frozen_mutual_exclusion_is_unreachable_today() {
 
     assert!(
         delete_result.is_ok() && freeze_result.is_ok(),
-        "principal/delete and freeze/create must both parse before \
-         [no-both-deleted-and-frozen] (SPEC.md:1974-1978) is reachable; \
-         currently delete={delete_result:?} freeze={freeze_result:?}"
+        "principal/delete and freeze/create must both parse before [no-both-deleted-and-frozen] \
+         (SPEC.md:1974-1978) is reachable; currently delete={delete_result:?} \
+         freeze={freeze_result:?}"
     );
 }

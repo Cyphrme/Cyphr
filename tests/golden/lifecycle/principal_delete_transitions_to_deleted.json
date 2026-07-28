@@ -1,8 +1,6 @@
 {
   "name": "principal_delete_transitions_to_deleted",
-  "principal": [
-    "golden"
-  ],
+  "principal": ["golden"],
   "genesis_keys": [
     {
       "alg": "ES256",

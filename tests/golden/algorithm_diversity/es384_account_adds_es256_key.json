@@ -1,8 +1,6 @@
 {
   "name": "es384_account_adds_es256_key",
-  "principal": [
-    "diana_es384"
-  ],
+  "principal": ["diana_es384"],
   "genesis_keys": [
     {
       "alg": "ES384",
