@@ -60,6 +60,14 @@ impl AppError {
         }
     }
 
+    /// 403 Forbidden.
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: msg.into(),
+        }
+    }
+
     /// 501 Not Implemented.
     ///
     /// For a capability the server genuinely does not offer under its
@@ -86,8 +94,11 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let body =
-            crate::envelope::Envelope::unsigned(serde_json::json!({ "error": self.message }));
+        let now = crate::auth::server_now();
+        let body = crate::envelope::Envelope::unsigned(serde_json::json!({
+            "error": self.message,
+            "now": now,
+        }));
         (self.status, axum::Json(body)).into_response()
     }
 }

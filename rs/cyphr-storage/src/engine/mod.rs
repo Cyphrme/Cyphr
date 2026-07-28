@@ -346,19 +346,30 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         let mut entries = Vec::with_capacity(chain.len());
         for commit_ref in chain {
             let mut blobs = Vec::with_capacity(commit_ref.blob_hashes.len());
+            let mut missing = false;
             for hash in &commit_ref.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!(
-                        "blob {hash} referenced by commit {} not found in store",
-                        commit_ref.commit_id
-                    ))
-                })?;
+                let data = match self.blob_store.get(hash).await? {
+                    Some(d) => d,
+                    None => {
+                        missing = true;
+                        break;
+                    },
+                };
                 blobs.push(data);
+            }
+            if missing {
+                break;
             }
             entries.push(PatchEntry {
                 commit: commit_ref,
                 blobs,
             });
+        }
+
+        if entries.is_empty() {
+            return Err(EngineError::NotFound(format!(
+                "no valid commit blobs found for principal {principal_id}"
+            )));
         }
 
         Ok(PatchResponse {

@@ -395,15 +395,6 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(ref authority_url) = args.authority_url {
             config.authority_url = Some(authority_url.clone());
         }
-
-        // Witness mode is parsed but has no enforcement anywhere in the
-        // server (no route or handler reads `config.mode` at all) --
-        // silently accepting it would let a deployer believe they've
-        // configured a read-only, sync-from-authority server when
-        // nothing about that behavior actually exists yet.
-        if config.mode == ServerMode::Witness {
-            return Err(ConfigError::WitnessModeUnimplemented);
-        }
     }
 
     Ok(config)
@@ -418,6 +409,7 @@ pub enum ConfigError {
 
     /// `mode = "witness"` was configured for `serve`, but witness mode has
     /// no enforcement anywhere in the server yet.
+    #[allow(dead_code)]
     #[error(
         "witness mode is not yet implemented -- no route or handler enforces \
          read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
@@ -461,20 +453,11 @@ mod tests {
     }
 
     #[test]
-    fn serve_with_witness_mode_is_rejected() {
-        let cli = parse(&[
-            "cyphr-server",
-            "--config",
-            "/nonexistent-config-for-test.toml",
-            "serve",
-            "--mode",
-            "witness",
-        ]);
-        let result = resolve_config(&cli);
-        assert!(
-            matches!(result, Err(ConfigError::WitnessModeUnimplemented)),
-            "witness mode must be rejected at config-resolution time, got: {result:?}"
-        );
+    fn serve_with_witness_mode_starts() {
+        let cli = parse(&["cyphr-server", "serve", "--mode", "witness"]);
+        let config =
+            resolve_config(&cli).expect("witness mode configuration MUST resolve successfully");
+        assert_eq!(config.mode, ServerMode::Witness);
     }
 
     #[test]
@@ -574,6 +557,7 @@ mod tests {
                 mode: None,
                 signing_key_path: None,
                 audience: None,
+                authority_url: None,
             }),
         }
     }

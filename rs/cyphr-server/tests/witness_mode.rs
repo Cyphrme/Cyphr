@@ -2,11 +2,14 @@
 //!
 //! Evaluates criteria N2.1 – N2.6:
 //! - `witness_mode_starts` (N2.1): Server starts successfully when configured in witness mode.
-//! - `all_write_routes_refused` (N2.2): Structural write refusal for all write routes in witness mode.
+//! - `all_write_routes_refused` (N2.2): Structural write refusal for all write routes in witness
+//!   mode.
 //! - `syncs_from_authority` (N2.3): Witness node syncs state from authority node.
 //! - `rejects_unverifiable_delta` (N2.4): Witness node rejects unverifiable state deltas.
-//! - `serves_only_self_verified` (N2.5): Adversarial check ensuring only self-verified state is served.
-//! - `responses_carry_freshness` (N2.6): Responses from witness node carry required freshness indicators.
+//! - `serves_only_self_verified` (N2.5): Adversarial check ensuring only self-verified state is
+//!   served.
+//! - `responses_carry_freshness` (N2.6): Responses from witness node carry required freshness
+//!   indicators.
 
 use std::sync::Arc;
 
@@ -25,7 +28,11 @@ mod common;
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
 /// Helper: Issue a `DELETE` request against an axum router with a JSON body.
-async fn delete_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, serde_json::Value) {
+async fn delete_json(
+    app: axum::Router,
+    uri: &str,
+    body: String,
+) -> (StatusCode, serde_json::Value) {
     let req = Request::builder()
         .method("DELETE")
         .uri(uri)
@@ -70,8 +77,8 @@ async fn witness_mode_starts() {
     let mut witness_config = config;
     witness_config.data_dir = temp_dir.path().join("data");
 
-    let state = AppState::new(witness_config)
-        .expect("witness mode AppState MUST initialize successfully");
+    let state =
+        AppState::new(witness_config).expect("witness mode AppState MUST initialize successfully");
     assert_eq!(state.config.mode, ServerMode::Witness);
 }
 
@@ -81,7 +88,8 @@ async fn witness_mode_starts() {
 /// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`,
 /// and unmapped mutating routes like `POST /unmapped_write_route_test`) MUST be
 /// structurally refused with a non-success write-refusal HTTP status code (403 Forbidden,
-/// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope (`statement.kind == "unsigned"`).
+/// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope
+/// (`statement.kind == "unsigned"`).
 #[tokio::test]
 async fn all_write_routes_refused() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -103,7 +111,8 @@ async fn all_write_routes_refused() {
         push_status == StatusCode::FORBIDDEN
             || push_status == StatusCode::METHOD_NOT_ALLOWED
             || push_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /push in witness mode MUST be structurally refused (403/405/501), got status {push_status}: {push_json:?}"
+        "POST /push in witness mode MUST be structurally refused (403/405/501), got status \
+         {push_status}: {push_json:?}"
     );
     assert_eq!(
         push_json["statement"]["kind"], "unsigned",
@@ -121,7 +130,8 @@ async fn all_write_routes_refused() {
         revoke_status == StatusCode::FORBIDDEN
             || revoke_status == StatusCode::METHOD_NOT_ALLOWED
             || revoke_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /revoke in witness mode MUST be structurally refused, got {revoke_status}: {revoke_json:?}"
+        "POST /revoke in witness mode MUST be structurally refused, got {revoke_status}: \
+         {revoke_json:?}"
     );
     assert_eq!(
         revoke_json["statement"]["kind"], "unsigned",
@@ -138,7 +148,8 @@ async fn all_write_routes_refused() {
         reg_status == StatusCode::FORBIDDEN
             || reg_status == StatusCode::METHOD_NOT_ALLOWED
             || reg_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: {reg_json:?}"
+        "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: \
+         {reg_json:?}"
     );
     assert_eq!(
         reg_json["statement"]["kind"], "unsigned",
@@ -155,14 +166,16 @@ async fn all_write_routes_refused() {
         del_status == StatusCode::FORBIDDEN
             || del_status == StatusCode::METHOD_NOT_ALLOWED
             || del_status == StatusCode::NOT_IMPLEMENTED,
-        "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: {del_json:?}"
+        "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: \
+         {del_json:?}"
     );
     assert_eq!(
         del_json["statement"]["kind"], "unsigned",
         "DELETE /witness/register refusal envelope MUST be unsigned: {del_json:?}"
     );
 
-    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused in witness mode with an unsigned envelope
+    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
+    //    in witness mode with an unsigned envelope
     let unmapped_body = serde_json::json!({"test": "unmapped"}).to_string();
     let (unmapped_status, unmapped_json) =
         post_json(app.clone(), "/unmapped_write_route_test", unmapped_body).await;
@@ -170,7 +183,8 @@ async fn all_write_routes_refused() {
         unmapped_status == StatusCode::FORBIDDEN
             || unmapped_status == StatusCode::METHOD_NOT_ALLOWED
             || unmapped_status == StatusCode::NOT_IMPLEMENTED,
-        "unmapped write route in witness mode MUST be structurally refused, got {unmapped_status}: {unmapped_json:?}"
+        "unmapped write route in witness mode MUST be structurally refused, got \
+         {unmapped_status}: {unmapped_json:?}"
     );
     assert_eq!(
         unmapped_json["statement"]["kind"], "unsigned",
@@ -181,7 +195,8 @@ async fn all_write_routes_refused() {
 /// N2.3: `syncs_from_authority`
 ///
 /// Verifies that a witness node configured to sync from an authority node (via authority TCP URL)
-/// pulls state and commits from the authority node so that queries to the witness node return the synced state.
+/// pulls state and commits from the authority node so that queries to the witness node return the
+/// synced state.
 #[tokio::test]
 async fn syncs_from_authority() {
     let (auth_state, _identity, auth_dir) = attestor_server().await;
@@ -235,7 +250,8 @@ async fn syncs_from_authority() {
     assert_eq!(
         witness_tip_status,
         StatusCode::OK,
-        "witness node MUST serve synced state from authority node, got status {witness_tip_status}: {witness_tip_json:?}"
+        "witness node MUST serve synced state from authority node, got status \
+         {witness_tip_status}: {witness_tip_json:?}"
     );
 
     let payload = common::envelope_payload(&witness_tip_json);
@@ -248,7 +264,8 @@ async fn syncs_from_authority() {
 /// N2.4: `rejects_unverifiable_delta`
 ///
 /// Verifies that a witness node configured with authority TCP URL REJECTS unverifiable,
-/// corrupted, or forged state deltas from an authority node, refusing to apply them to its local storage.
+/// corrupted, or forged state deltas from an authority node, refusing to apply them to its local
+/// storage.
 #[tokio::test]
 async fn rejects_unverifiable_delta() {
     let (auth_state, _identity, auth_dir) = attestor_server().await;
@@ -328,7 +345,8 @@ async fn rejects_unverifiable_delta() {
     let payload = common::envelope_payload(&witness_tip_json);
     assert_ne!(
         payload["roots"]["pr"], "SHA-256:CORRUPT_PR_FORGED_ROOT",
-        "witness node MUST REJECT unverifiable delta and MUST NOT serve corrupted PR root: {witness_tip_json:?}"
+        "witness node MUST REJECT unverifiable delta and MUST NOT serve corrupted PR root: \
+         {witness_tip_json:?}"
     );
 }
 
@@ -396,8 +414,11 @@ async fn serves_only_self_verified() {
     let witness_app = build_app_router(witness_state.clone()).expect("witness router");
 
     // 1. GET /tip?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (tip_status, tip_json) =
-        get_json(witness_app.clone(), &format!("/tip?pr={adversarial_principal}")).await;
+    let (tip_status, tip_json) = get_json(
+        witness_app.clone(),
+        &format!("/tip?pr={adversarial_principal}"),
+    )
+    .await;
     assert_ne!(
         tip_status,
         StatusCode::OK,
@@ -405,8 +426,11 @@ async fn serves_only_self_verified() {
     );
 
     // 2. GET /patch?pr=... MUST NOT serve unverified state (MUST return 404 or refusal error)
-    let (patch_status, patch_json) =
-        get_json(witness_app.clone(), &format!("/patch?pr={adversarial_principal}")).await;
+    let (patch_status, patch_json) = get_json(
+        witness_app.clone(),
+        &format!("/patch?pr={adversarial_principal}"),
+    )
+    .await;
     assert_ne!(
         patch_status,
         StatusCode::OK,
@@ -458,7 +482,10 @@ async fn responses_carry_freshness() {
         .or_else(|| payload.get("last_updated"))
         .or_else(|| payload.get("timestamp"))
         .and_then(|v| v.as_i64())
-        .expect("witness GET /server response payload MUST carry a freshness timestamp ('now', 'last_updated', or 'timestamp')");
+        .expect(
+            "witness GET /server response payload MUST carry a freshness timestamp ('now', \
+             'last_updated', or 'timestamp')",
+        );
 
     assert!(
         server_timestamp > 0,
@@ -486,7 +513,10 @@ async fn responses_carry_freshness() {
         .or_else(|| tip_payload.get("timestamp"))
         .or_else(|| tip_json.get("now"))
         .and_then(|v| v.as_i64())
-        .expect("witness GET /tip response MUST carry freshness metadata ('now', 'last_updated', or 'timestamp')");
+        .expect(
+            "witness GET /tip response MUST carry freshness metadata ('now', 'last_updated', or \
+             'timestamp')",
+        );
 
     assert!(
         tip_timestamp > 0,

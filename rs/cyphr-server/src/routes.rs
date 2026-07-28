@@ -66,6 +66,7 @@ pub struct TipResponse {
     pub commit_id: String,
     pub commit_count: u64,
     pub last_updated: i64,
+    pub now: i64,
 }
 
 /// A single commit entry in a patch response.
@@ -165,6 +166,8 @@ pub enum IdentityResponse {
         tmb: String,
         genesis: GenesisKeyInfo,
     },
+    /// A read-only witness server syncing from an authority.
+    Witness { mode: String, now: i64 },
     /// No established, servable chain to pin: no signing key configured,
     /// or a keyed process whose principal has not been bootstrapped.
     Repository,
@@ -180,6 +183,10 @@ pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    if state.config.mode == crate::config::ServerMode::Witness {
+        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+    }
+
     let tip = state
         .engine
         .get_tip(&query.pr)
@@ -197,6 +204,7 @@ pub async fn tip(
         commit_id: t.commit_id.clone(),
         commit_count: t.commit_count,
         last_updated: t.last_updated,
+        now: crate::auth::server_now(),
     };
 
     match state.attestor_identity() {
@@ -242,6 +250,23 @@ pub async fn patch(
     Query(query): Query<PatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    if state.config.mode == crate::config::ServerMode::Witness {
+        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+    }
+
+    let tip = state
+        .engine
+        .get_tip(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
+
+    if tip.is_none() {
+        return Err(AppError::not_found(format!(
+            "principal {} not found",
+            query.pr
+        )));
+    }
 
     let response = state
         .engine
