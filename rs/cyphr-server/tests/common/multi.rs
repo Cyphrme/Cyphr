@@ -41,6 +41,16 @@ pub struct Instance {
     pub identity: Option<Arc<ServerIdentity>>,
     pub dir: TempDir,
     pub router: Router,
+    pub listener_addr: Option<std::net::SocketAddr>,
+    pub tcp_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        if let Some(handle) = self.tcp_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl Instance {
@@ -80,6 +90,8 @@ impl Instance {
             identity,
             dir,
             router,
+            listener_addr: None,
+            tcp_handle: None,
         }
     }
 
@@ -95,6 +107,44 @@ impl Instance {
             .extract()
             .expect("failed to parse ServerConfig TOML");
         Self::from_config(config, dir).await
+    }
+
+    /// Bind an ephemeral TCP listener on `127.0.0.1:0` and spawn `axum::serve` in the background.
+    ///
+    /// Extends this instance to support real network socket transport testing capabilities
+    /// alongside in-process dispatch.
+    pub async fn bind_tcp(
+        &mut self,
+    ) -> Result<std::net::SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(addr) = self.listener_addr {
+            return Ok(addr);
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = self.router.clone();
+
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+
+        self.listener_addr = Some(addr);
+        self.tcp_handle = Some(handle);
+        Ok(addr)
+    }
+
+    /// Returns the bound TCP socket address, if `bind_tcp` has been called.
+    pub fn tcp_addr(&self) -> Option<std::net::SocketAddr> {
+        self.listener_addr
+    }
+
+    /// Returns the HTTP base URL string (e.g. `http://127.0.0.1:12345`), if `bind_tcp` has been called.
+    pub fn url(&self) -> Option<String> {
+        self.listener_addr.map(|addr| format!("http://{addr}"))
     }
 
     /// Send an HTTP request against this instance's router.
@@ -226,6 +276,8 @@ impl MultiServer {
                 identity: Some(identity),
                 dir,
                 router,
+                listener_addr: None,
+                tcp_handle: None,
             });
         }
         Self { instances }
@@ -243,9 +295,22 @@ impl MultiServer {
                 identity: None,
                 dir,
                 router,
+                listener_addr: None,
+                tcp_handle: None,
             });
         }
         Self { instances }
+    }
+
+    /// Bind ephemeral TCP socket listeners for all instances in this container.
+    pub async fn bind_tcp(
+        &mut self,
+    ) -> Result<Vec<std::net::SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut addrs = Vec::with_capacity(self.instances.len());
+        for inst in &mut self.instances {
+            addrs.push(inst.bind_tcp().await?);
+        }
+        Ok(addrs)
     }
 
     /// Get reference to instance at index `i`.

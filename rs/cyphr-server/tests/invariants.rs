@@ -296,3 +296,22 @@ async fn no_standing_honesty_claim() {
         "N0.4 / I7 invariant failure: keyless discovery statement must be unsigned"
     );
 }
+
+/// N0.5: `multi_server_tcp_socket_listener_option`
+///
+/// Verifies that `MultiServer` instances can bind real ephemeral TCP socket listeners
+/// on `127.0.0.1:0` alongside in-process dispatch, returning distinct local addresses and URLs.
+#[tokio::test]
+async fn multi_server_tcp_socket_listener_option() {
+    let mut multi = MultiServer::new_attestors(2).await;
+    let addrs = multi.bind_tcp().await.expect("bind_tcp must succeed");
+
+    assert_eq!(addrs.len(), 2);
+    assert_ne!(addrs[0], addrs[1]);
+    assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+    assert_eq!(addrs[1].ip().to_string(), "127.0.0.1");
+
+    let inst0 = multi.get(0);
+    assert_eq!(inst0.tcp_addr(), Some(addrs[0]));
+    assert_eq!(inst0.url(), Some(format!("http://{}", addrs[0])));
+}
