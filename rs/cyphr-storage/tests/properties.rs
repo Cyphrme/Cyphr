@@ -193,6 +193,7 @@ fn build_intent(genesis_key_idx: usize, steps: Vec<Step>) -> test_fixtures::inte
                         now,
                         signer,
                         msg: Some(format!("msg_{}", msg_idx)),
+                        id: None,
                     });
                     now += 10;
                 }
