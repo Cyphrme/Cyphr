@@ -522,3 +522,289 @@ pub async fn entity(
         ))),
     }
 }
+
+// ========================================================================
+// Witness registration routes (SPEC §13.5.1)
+// ========================================================================
+
+/// Request envelope for POST /witness/register and DELETE /witness/register.
+#[derive(Debug, Deserialize)]
+pub struct WitnessRegisterEnvelope {
+    pub pay: serde_json::Value,
+    #[serde(with = "coz::b64")]
+    pub sig: Vec<u8>,
+    pub key: Option<crate::revoke::DisclosedKey>,
+}
+
+/// Parsed and cryptographically verified witness registration details.
+pub struct VerifiedWitnessRegister {
+    pub principal_id: String,
+    pub witness_id: String,
+    pub signer_tmb: String,
+    pub now: i64,
+    pub verb: String,
+    pub raw_blob: Vec<u8>,
+}
+
+/// Verify envelope structure, key thumbprint bind, and signature.
+pub fn verify_witness_register_envelope(
+    envelope: &WitnessRegisterEnvelope,
+) -> Result<VerifiedWitnessRegister, AppError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let key = envelope
+        .key
+        .as_ref()
+        .ok_or_else(|| AppError::bad_request("witness register envelope missing disclosed key"))?;
+
+    let pay_bytes = serde_json::to_vec(&envelope.pay)
+        .map_err(|e| AppError::bad_request(format!("invalid JSON pay: {e}")))?;
+
+    let id = envelope
+        .pay
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("missing id in pay"))?;
+
+    let tmb = envelope
+        .pay
+        .get("tmb")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("missing tmb in pay"))?;
+
+    let typ = envelope
+        .pay
+        .get("typ")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("missing typ in pay"))?;
+
+    let principal_id = envelope
+        .pay
+        .get("principal_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::bad_request("missing principal_id in pay"))?;
+
+    let now = envelope
+        .pay
+        .get("now")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| AppError::bad_request("missing now in pay"))?;
+
+    // Thumbprint bind verification
+    let computed_tmb = coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key)
+        .ok_or_else(|| AppError::unauthorized("unsupported algorithm for key thumbprint"))?;
+
+    let computed_tmb_b64 = Base64UrlUnpadded::encode_string(computed_tmb.as_bytes());
+    if computed_tmb_b64 != tmb {
+        return Err(AppError::unauthorized("signer thumbprint mismatch"));
+    }
+
+    // Signature verification
+    let valid =
+        coz::verify_json(&pay_bytes, &envelope.sig, &key.alg, &key.pub_key).unwrap_or(false);
+    if !valid {
+        return Err(AppError::unauthorized(
+            "invalid signature on witness register envelope",
+        ));
+    }
+
+    let verb = if typ.ends_with("/witness/register/create") {
+        "create".to_string()
+    } else if typ.ends_with("/witness/register/delete") {
+        "delete".to_string()
+    } else {
+        return Err(AppError::bad_request(format!("invalid typ: {typ}")));
+    };
+
+    let coz_obj = serde_json::json!({
+        "pay": envelope.pay,
+        "sig": Base64UrlUnpadded::encode_string(&envelope.sig),
+        "key": {
+            "alg": key.alg,
+            "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
+            "tmb": tmb,
+        }
+    });
+    let raw_blob = serde_json::to_vec(&coz_obj).unwrap_or_default();
+
+    Ok(VerifiedWitnessRegister {
+        principal_id: principal_id.to_string(),
+        witness_id: id.to_string(),
+        signer_tmb: tmb.to_string(),
+        now,
+        verb,
+        raw_blob,
+    })
+}
+
+/// Verify that `signer_tmb` is authorized for `principal_id`.
+async fn check_registration_authorization(
+    state: &AppState,
+    principal_id: &str,
+    signer_tmb: &str,
+    witness_id: &str,
+) -> Result<(), AppError> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let tip = state.engine.get_tip(principal_id).await;
+    if let Ok(Some(_)) = tip {
+        let genesis = state
+            .engine
+            .resolve_genesis(principal_id, &[])
+            .await
+            .map_err(AppError::engine)?;
+        let principal = state
+            .engine
+            .load_principal(principal_id, genesis)
+            .await
+            .map_err(AppError::engine)?;
+
+        let signer_tmb_bytes = Base64UrlUnpadded::decode_vec(signer_tmb)
+            .map_err(|_| AppError::unauthorized("invalid signer thumbprint base64"))?;
+        let signer_tmb_obj = coz::Thumbprint::from_bytes(signer_tmb_bytes);
+
+        if !principal.is_key_active(&signer_tmb_obj) {
+            return Err(AppError::unauthorized(
+                "signer key is not active for principal",
+            ));
+        }
+        return Ok(());
+    }
+
+    if state.registration.has_authorized_keys(principal_id) {
+        if !state
+            .registration
+            .is_key_authorized(principal_id, signer_tmb)
+        {
+            return Err(AppError::unauthorized(
+                "unauthorized third-party witness registration",
+            ));
+        }
+    } else {
+        if let Some(target_tmb) = witness_id.strip_prefix("SHA-256:") {
+            if target_tmb.len() == 43 && target_tmb != signer_tmb && principal_id != signer_tmb {
+                return Err(AppError::unauthorized(
+                    "unauthorized third-party witness registration",
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// `POST /witness/register` — register an external witness for a principal.
+#[tracing::instrument(skip(state, envelope))]
+pub async fn witness_register_post(
+    State(state): State<Arc<AppState>>,
+    AppJson(envelope): AppJson<WitnessRegisterEnvelope>,
+) -> Result<impl IntoResponse, AppError> {
+    let verified = verify_witness_register_envelope(&envelope)?;
+    if verified.verb != "create" {
+        return Err(AppError::bad_request(
+            "invalid verb for POST witness register",
+        ));
+    }
+
+    check_registration_authorization(
+        &state,
+        &verified.principal_id,
+        &verified.signer_tmb,
+        &verified.witness_id,
+    )
+    .await?;
+
+    let (current_witnesses, _) = state.registration.get_witnesses(&verified.principal_id);
+    if current_witnesses.len() >= crate::registration::MAX_WITNESSES_PER_PRINCIPAL
+        && !current_witnesses.iter().any(|w| w == &verified.witness_id)
+    {
+        return Err(AppError::bad_request("capacity limit reached"));
+    }
+
+    let _ = state
+        .engine
+        .submit_commit(&verified.principal_id, None, &[&verified.raw_blob])
+        .await;
+
+    state.registration.register_witness(
+        &verified.principal_id,
+        &verified.witness_id,
+        &verified.signer_tmb,
+        verified.now,
+    )?;
+
+    let payload = serde_json::json!({
+        "principal_id": verified.principal_id,
+        "witness_id": verified.witness_id,
+        "last_updated": verified.now,
+        "now": verified.now,
+    });
+
+    let env = crate::envelope::Envelope::unsigned(payload);
+
+    Ok((StatusCode::CREATED, Json(env)))
+}
+
+/// `DELETE /witness/register` — revoke (mark inactive) a registered witness.
+#[tracing::instrument(skip(state, envelope))]
+pub async fn witness_register_delete(
+    State(state): State<Arc<AppState>>,
+    AppJson(envelope): AppJson<WitnessRegisterEnvelope>,
+) -> Result<impl IntoResponse, AppError> {
+    let verified = verify_witness_register_envelope(&envelope)?;
+    if verified.verb != "delete" {
+        return Err(AppError::bad_request(
+            "invalid verb for DELETE witness register",
+        ));
+    }
+
+    check_registration_authorization(
+        &state,
+        &verified.principal_id,
+        &verified.signer_tmb,
+        &verified.witness_id,
+    )
+    .await?;
+
+    let _ = state
+        .engine
+        .submit_commit(&verified.principal_id, None, &[&verified.raw_blob])
+        .await;
+
+    state.registration.revoke_witness(
+        &verified.principal_id,
+        &verified.witness_id,
+        verified.now,
+    )?;
+
+    let (active_witnesses, last_updated) = state.registration.get_witnesses(&verified.principal_id);
+
+    let payload = serde_json::json!({
+        "principal_id": verified.principal_id,
+        "witnesses": active_witnesses,
+        "last_updated": last_updated,
+    });
+
+    let env = crate::envelope::Envelope::unsigned(payload);
+
+    Ok((StatusCode::OK, Json(env)))
+}
+
+/// `GET /witness/register` — query active witnesses for a principal.
+#[tracing::instrument(skip(state, query))]
+pub async fn witness_register_get(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<TipQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let (active_witnesses, last_updated) = state.registration.get_witnesses(&query.pr);
+
+    let payload = serde_json::json!({
+        "principal_id": query.pr,
+        "witnesses": active_witnesses,
+        "last_updated": last_updated,
+    });
+
+    let env = crate::envelope::Envelope::unsigned(payload);
+
+    Ok((StatusCode::OK, Json(env)))
+}

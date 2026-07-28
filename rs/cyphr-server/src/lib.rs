@@ -16,6 +16,7 @@ pub mod logging;
 pub mod observation;
 pub mod rate_limit;
 pub mod receipt;
+pub mod registration;
 pub mod revoke;
 pub mod routes;
 
@@ -80,6 +81,9 @@ pub struct AppState {
     /// mutates no chain and must survive a reindex, so it cannot live in
     /// the index that a reindex rebuilds.
     pub observations: observation::ObservationStore,
+
+    /// In-memory witness registration store (SPEC §13.5.1).
+    pub registration: registration::RegistrationStore,
 }
 
 impl AppState {
@@ -113,6 +117,7 @@ impl AppState {
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             observations,
+            registration: registration::RegistrationStore::new(),
         })
     }
 
@@ -195,6 +200,12 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
+        .route(
+            "/witness/register",
+            axum::routing::post(routes::witness_register_post)
+                .get(routes::witness_register_get)
+                .delete(routes::witness_register_delete),
+        )
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route(
