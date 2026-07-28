@@ -201,11 +201,22 @@ pub async fn tip(
 
     match state.attestor_identity() {
         Some(identity) => {
+            let derived = state.engine.rederive_roots(&query.pr).await.map_err(|e| {
+                AppError::internal(format!("attestation root re-derivation failed: {e}"))
+            })?;
+
+            if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr
+            {
+                return Err(AppError::internal(
+                    "attestation root desynchronized with index",
+                ));
+            }
+
             let roots = receipt::Roots {
-                pr: t.pr,
-                sr: t.sr,
-                ar: t.ar,
-                cr: t.cr,
+                pr: derived.pr,
+                sr: derived.sr,
+                ar: derived.ar,
+                cr: derived.cr,
             };
             let coz = receipt::tip_report(
                 identity,
@@ -372,11 +383,26 @@ pub async fn push(
 
     match state.attestor_identity() {
         Some(identity) => {
+            let derived = state
+                .engine
+                .rederive_roots(&request.principal_id)
+                .await
+                .map_err(|e| {
+                    AppError::internal(format!("attestation root re-derivation failed: {e}"))
+                })?;
+
+            if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr
+            {
+                return Err(AppError::internal(
+                    "attestation root desynchronized with index",
+                ));
+            }
+
             let roots = receipt::Roots {
-                pr: t.pr,
-                sr: t.sr,
-                ar: t.ar,
-                cr: t.cr,
+                pr: derived.pr,
+                sr: derived.sr,
+                ar: derived.ar,
+                cr: derived.cr,
             };
             let coz = receipt::commit_receipt(
                 identity,
