@@ -283,14 +283,14 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
     tip_a.pay["pr"] = serde_json::json!(9999);
     tip_a.pay["sequence"] = serde_json::json!("42");
     let pay_bytes_a = serde_json::to_vec(&tip_a.pay).unwrap();
-    let (sig_a, _cad) = identity_a.sign(&pay_bytes_a).unwrap();
-    tip_a.sig = sig_a;
+    let (sig_bytes_a, _cad) = identity_a.sign(&pay_bytes_a).unwrap();
+    tip_a.sig = sig_bytes_a;
 
     tip_b.pay["pr"] = serde_json::json!(9999);
     tip_b.pay["sequence"] = serde_json::json!("42");
     let pay_bytes_b = serde_json::to_vec(&tip_b.pay).unwrap();
-    let (sig_b, _cad) = identity_b.sign(&pay_bytes_b).unwrap();
-    tip_b.sig = sig_b;
+    let (sig_bytes_b, _cad) = identity_b.sign(&pay_bytes_b).unwrap();
+    tip_b.sig = sig_bytes_b;
 
     let verdict =
         receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
