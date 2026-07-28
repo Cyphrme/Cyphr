@@ -8,12 +8,30 @@
 //! - `fork_detection_ignores_self_assertion` (N4.4): Fork detection ignores unverified self-assertions and unauthenticated reports.
 //! - `principal_settable_threshold` (N4.5): Principal can configure a settable witness threshold.
 //! - `agreement_produces_no_standing_claim` (N4.6): Agreement across queried witnesses produces no standing claim or alert.
+//! - `golden_disagreement_artifact_byte_stable` (N4.7): Disagreement evidence serializes deterministically matching golden vector.
 
+use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::commit_root::hash_alg_to_u64;
+use cyphr::principal_tree::PrincipalTree;
+use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
+use cyphr::{HashAlg, LeafProof};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::receipt::{self, Roots};
 
 mod common;
+
+/// Read a committed golden vector, trimming a trailing newline so the
+/// file can end in one.
+fn golden(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .trim_end()
+        .to_string()
+}
 
 /// Generate deterministic identity for testing cross-witness reports.
 fn identity_with_seed(seed: u8) -> (tempfile::TempDir, ServerIdentity) {
@@ -50,6 +68,51 @@ fn roots_b() -> Roots {
         cr: "SHA-256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE".to_string(),
         ..roots_a()
     }
+}
+
+/// Builds the 4-hop KT -> AR-node -> SR-node -> PT chain for non-trivial
+/// portable key inclusion testing (N4.3a).
+fn build_key_inclusion_material(
+    alg: HashAlg,
+) -> (
+    Vec<cyphr::LeafProof>,
+    Vec<Vec<u8>>,
+    Thumbprint,
+    Thumbprint,
+) {
+    let alg_id = hash_alg_to_u64(alg);
+    let tmb_a = Thumbprint::from_bytes(vec![0x01; 32]);
+    let tmb_b = Thumbprint::from_bytes(vec![0x02; 32]);
+    let thumbprints = vec![&tmb_a, &tmb_b];
+
+    let kt = KeyTree::build_tree(&thumbprints, &[alg]).unwrap();
+    let kr = kt.root(&[alg]).unwrap();
+    let ar_node = AuthTree::build_tree(&kr, &[alg]).unwrap();
+    let ar = ar_node.root(&[alg]).unwrap();
+    let sr_node = StateTree::build_tree(&ar, None, &[alg]).unwrap();
+    let sr = sr_node.root(&[alg]).unwrap();
+    let mut pt = PrincipalTree::new();
+    pt.set_sr(&sr, &[alg]).unwrap();
+    let pr = pt.pr(&[alg]).unwrap();
+
+    let mut sorted: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
+    sorted.sort();
+    let index = sorted.iter().position(|&b| b == tmb_a.as_bytes()).unwrap() as u64;
+
+    let hops = vec![
+        kt.thumbprint_inclusion_proof(alg_id, index).unwrap(),
+        ar_node.kr_inclusion_proof(alg_id).unwrap(),
+        sr_node.ar_inclusion_proof(alg_id).unwrap(),
+        pt.sr_inclusion_proof(alg_id).unwrap(),
+    ];
+    let roots = vec![
+        kr.0.get(alg).unwrap().to_vec(),
+        ar.0.get(alg).unwrap().to_vec(),
+        sr.0.get(alg).unwrap().to_vec(),
+        pr.0.get(alg).unwrap().to_vec(),
+    ];
+
+    (hops, roots, tmb_a, tmb_b)
 }
 
 // ========================================================================
@@ -94,8 +157,6 @@ async fn conflicting_tips_yield_evidence() {
     )
     .expect("compose tip B");
 
-    // Cross-witness consistency check MUST detect the conflicting tips and yield
-    // portable equivocation evidence.
     let verdict = receipt::check_equivocation(
         &tip_a,
         identity_a.pub_key(),
@@ -103,32 +164,15 @@ async fn conflicting_tips_yield_evidence() {
         identity_b.pub_key(),
     );
 
-    // Cross-witness checking must return Proven equivocation verdict for cross-witness conflicting tips
     assert_eq!(
         verdict,
         receipt::EquivocationVerdict::Proven,
         "conflicting signed tip reports from distinct witnesses MUST yield proven equivocation evidence"
     );
 
-    // Additionally, cross-witness consistency evaluation over multi-witness state reports
-    // MUST package portable evidence containing both signed tip cozies.
-    let evidence_json = serde_json::json!({
-        "principal_id": pr,
-        "sequence": seq,
-        "cozies": [tip_a.pay, tip_b.pay],
-    });
-
-    assert_eq!(
-        evidence_json["cozies"].as_array().map(|a| a.len()),
-        Some(2),
-        "equivocation evidence MUST carry both conflicting cozies"
-    );
-
-    // Verify cross-witness consistency endpoint / helper output
-    // Core worker will implement src/consistency.rs; until then, cross-witness consistency
-    // evaluator assertion fails because standing consistency claim has not been implemented.
-    let standing_claim: Option<serde_json::Value> = None;
-    let claim = standing_claim.expect("cross-witness consistency check MUST yield standing evidence claim on conflicting tips");
+    // Call domain consistency module (cyphr_server::consistency)
+    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[tip_a, tip_b])
+        .expect("cross-witness consistency check MUST yield standing evidence claim on conflicting tips");
     assert_eq!(claim["kind"], "equivocation_evidence");
 }
 
@@ -170,7 +214,6 @@ async fn evidence_verifies_offline() {
     )
     .expect("compose tip 2");
 
-    // Perform offline verification on the raw coz bytes and caller-supplied public keys
     let verdict = receipt::check_equivocation(
         &tip1,
         identity_a.pub_key(),
@@ -184,9 +227,13 @@ async fn evidence_verifies_offline() {
         "offline verification of cross-witness evidence MUST yield Proven"
     );
 
-    // Cross-witness offline verification helper check
-    // Core worker will implement offline evidence verification runner in src/consistency.rs.
-    let verified_offline: Option<bool> = None;
+    // Call domain consistency module (cyphr_server::consistency)
+    let verified_offline = cyphr_server::consistency::verify_evidence_offline(
+        &tip1,
+        identity_a.pub_key(),
+        &tip2,
+        identity_b.pub_key(),
+    );
     assert!(
         verified_offline.expect("offline evidence verifier MUST evaluate and confirm evidence validity"),
         "cross-witness evidence MUST verify offline without server cooperation"
@@ -216,7 +263,6 @@ async fn key_validity_interval() {
         tag: None,
     };
 
-    // Helper: check key validity at given timestamp `now`
     let is_key_valid_at = |k: &cyphr::Key, t: i64| -> bool {
         if t < k.first_seen {
             return false;
@@ -229,27 +275,23 @@ async fn key_validity_interval() {
         true
     };
 
-    // 1. Timestamp before first_seen MUST be invalid
     assert!(
         !is_key_valid_at(&key, 1_700_099_999),
         "key MUST NOT be valid before first_seen timestamp"
     );
 
-    // 2. Timestamp within interval [first_seen, revocation) MUST be valid
     assert!(
         is_key_valid_at(&key, 1_700_150_000),
         "key MUST be valid within [first_seen, revocation) interval"
     );
 
-    // 3. Timestamp at or after revocation MUST be invalid
     assert!(
         !is_key_valid_at(&key, 1_700_200_000),
         "key MUST NOT be valid at or after revocation timestamp"
     );
 
-    // Cross-witness key validity evaluator check
-    // Core worker will implement receipt/key validity interval checking in src/consistency.rs.
-    let evaluated_interval_validity: Option<bool> = None;
+    // Call domain consistency module (cyphr_server::consistency)
+    let evaluated_interval_validity = cyphr_server::consistency::verify_key_validity_interval(&key, 1_700_150_000);
     assert!(
         evaluated_interval_validity.expect("cross-witness key validity evaluator MUST enforce validity interval"),
         "key validity interval evaluation MUST pass for active key"
@@ -263,26 +305,32 @@ async fn key_validity_interval() {
 /// key validity purely from self-contained proof material and a trusted Principal Root.
 #[tokio::test]
 async fn key_validity_from_portable_proof() {
-    let alg = coz::HashAlg::Sha256;
-    let tmb = coz::Thumbprint::from_bytes(vec![0xcc; 32]);
+    let alg = HashAlg::Sha256;
+    let (hops, roots, tmb_a, tmb_b) = build_key_inclusion_material(alg);
+    let root_refs: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
 
-    // Construct empty / dummy proof hops and roots
-    let hops: Vec<cyphr::LeafProof> = vec![];
-    let roots: Vec<&[u8]> = vec![];
-
-    // Portable key inclusion verification using cyphr::inclusion::verify_key_inclusion
-    // MUST NOT rely on an in-memory Principal struct.
-    let verified = cyphr::inclusion::verify_key_inclusion(alg, &tmb, &hops, &roots);
-
-    // Empty / invalid proof material MUST return false
+    // 1. Portable key inclusion verification against non-trivial, valid proof MUST succeed
     assert!(
-        !verified,
-        "key validity check from empty/invalid portable proof MUST return false"
+        cyphr::inclusion::verify_key_inclusion(alg, &tmb_a, &hops, &root_refs),
+        "valid portable key inclusion proof MUST verify successfully"
     );
 
-    // Cross-witness portable key inclusion verification assertion
-    // Core worker will implement portable key proof validation for cross-witness evidence in src/consistency.rs.
-    let portable_proof_result: Option<bool> = None;
+    // 2. Mismatched thumbprint MUST fail verification
+    assert!(
+        !cyphr::inclusion::verify_key_inclusion(alg, &tmb_b, &hops, &root_refs),
+        "portable proof verification with mismatched thumbprint MUST fail"
+    );
+
+    // 3. Empty / invalid proof material MUST fail verification
+    let empty_hops: Vec<LeafProof> = vec![];
+    let empty_roots: Vec<&[u8]> = vec![];
+    assert!(
+        !cyphr::inclusion::verify_key_inclusion(alg, &tmb_a, &empty_hops, &empty_roots),
+        "empty or invalid proof material MUST return false"
+    );
+
+    // Call domain consistency module (cyphr_server::consistency)
+    let portable_proof_result = cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs);
     assert!(
         portable_proof_result.expect("cross-witness evaluator MUST verify key validity from portable proof"),
         "portable key inclusion proof MUST verify witness key validity offline without in-memory Principal"
@@ -303,7 +351,6 @@ async fn fork_detection_ignores_self_assertion() {
     let seq = 7;
     let now = 1_700_000_000;
 
-    // Valid report from a verified witness
     let valid_tip = receipt::tip_report(
         &valid_identity,
         now,
@@ -316,7 +363,6 @@ async fn fork_detection_ignores_self_assertion() {
     )
     .expect("compose valid tip");
 
-    // Unverified / self-asserted report signed by an unknown/untrusted key claiming a conflicting tip
     let self_asserted_tip = receipt::tip_report(
         &untrusted_identity,
         now,
@@ -329,8 +375,6 @@ async fn fork_detection_ignores_self_assertion() {
     )
     .expect("compose self-asserted tip");
 
-    // If check_equivocation is called with an invalid key for the second report (simulating unverified key),
-    // it MUST return InvalidSignature, NOT Proven equivocation.
     let wrong_pub_key = vec![0xff; 32];
     let verdict = receipt::check_equivocation(
         &valid_tip,
@@ -345,8 +389,13 @@ async fn fork_detection_ignores_self_assertion() {
         "fork detection MUST reject unverified self-assertions (InvalidSignature)"
     );
 
-    // Cross-witness consistency check MUST ignore unverified self-assertions and produce NO standing claim.
-    let fork_detected_for_unverified: Option<bool> = None;
+    // Call domain consistency module (cyphr_server::consistency)
+    let fork_detected_for_unverified = cyphr_server::consistency::detect_fork_unverified(
+        &valid_tip,
+        valid_identity.pub_key(),
+        &self_asserted_tip,
+        &wrong_pub_key,
+    );
     assert!(
         !fork_detected_for_unverified.expect("cross-witness evaluator MUST ignore unverified self-assertions"),
         "unverified self-assertion MUST NOT trigger fork evidence"
@@ -361,7 +410,6 @@ async fn fork_detection_ignores_self_assertion() {
 async fn principal_settable_threshold() {
     let pr = "n4-principal-settable-threshold";
 
-    // Struct representing principal threshold configuration
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct WitnessThresholdConfig {
         principal_id: String,
@@ -378,9 +426,8 @@ async fn principal_settable_threshold() {
     assert_eq!(config.required_witnesses, 2);
     assert_eq!(config.total_witnesses, 3);
 
-    // Cross-witness threshold evaluator check
-    // Core worker will implement principal settable threshold logic in src/consistency.rs.
-    let threshold_satisfied: Option<bool> = None;
+    // Call domain consistency module (cyphr_server::consistency)
+    let threshold_satisfied = cyphr_server::consistency::check_witness_threshold(config.required_witnesses, 2);
     assert!(
         threshold_satisfied.expect("cross-witness evaluator MUST enforce principal-settable threshold"),
         "cross-witness agreement MUST satisfy principal settable witness threshold"
@@ -401,7 +448,6 @@ async fn agreement_produces_no_standing_claim() {
     let seq = 12;
     let now = 1_700_000_000;
 
-    // Both witnesses report identical tip claims
     let tip_a = receipt::tip_report(
         &identity_a,
         now,
@@ -439,11 +485,65 @@ async fn agreement_produces_no_standing_claim() {
         "agreeing tip reports MUST yield IdenticalClaims verdict"
     );
 
-    // Cross-witness consistency check on agreeing witnesses MUST return no standing claim / evidence.
-    let standing_claim_on_agreement: Option<Option<serde_json::Value>> = None;
+    // Call domain consistency module (cyphr_server::consistency)
+    let standing_claim_on_agreement = cyphr_server::consistency::check_cross_witness_consistency(&[tip_a, tip_b]);
     let claim = standing_claim_on_agreement.expect("cross-witness evaluator MUST evaluate agreeing reports");
     assert!(
         claim.is_none(),
         "cross-witness agreement MUST produce NO standing claim"
     );
+}
+
+/// N4.7: `golden_disagreement_artifact_byte_stable`
+///
+/// Verifies that disagreement evidence serializes deterministically and matches
+/// the committed golden vector `rs/cyphr-server/tests/golden/witness_disagreement.json`.
+#[tokio::test]
+async fn golden_disagreement_artifact_byte_stable() {
+    let (_dir_a, identity_a) = identity_with_seed(0x11);
+    let (_dir_b, identity_b) = identity_with_seed(0x22);
+
+    let pr = "n4-principal-conflicting-tips";
+    let seq = 5;
+    let now = 1_700_000_000;
+
+    let tip_a = receipt::tip_report(
+        &identity_a,
+        now,
+        pr,
+        seq,
+        "SHA-256:commit_id_aaaaa",
+        &roots_a(),
+        6,
+        now,
+    )
+    .expect("compose tip A");
+
+    let tip_b = receipt::tip_report(
+        &identity_b,
+        now,
+        pr,
+        seq,
+        "SHA-256:commit_id_bbbbb",
+        &roots_b(),
+        6,
+        now,
+    )
+    .expect("compose tip B");
+
+    let evidence_json = serde_json::json!({
+        "kind": "equivocation_evidence",
+        "principal_id": pr,
+        "sequence": seq,
+        "reports": [tip_a.clone(), tip_b.clone()],
+    });
+
+    let wire = serde_json::to_string(&evidence_json).unwrap();
+    assert_eq!(wire, golden("witness_disagreement.json"));
+
+    // Call domain consistency module (cyphr_server::consistency)
+    let domain_evidence = cyphr_server::consistency::format_disagreement_evidence(pr, seq, &[tip_a, tip_b]);
+    let formatted = domain_evidence.expect("consistency module MUST format disagreement evidence");
+    let domain_wire = serde_json::to_string(&formatted).unwrap();
+    assert_eq!(domain_wire, golden("witness_disagreement.json"));
 }
