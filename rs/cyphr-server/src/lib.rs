@@ -10,6 +10,7 @@
 pub mod admission;
 pub mod auth;
 pub mod config;
+pub mod consistency;
 pub mod envelope;
 pub mod error;
 pub mod fanout;

@@ -172,7 +172,8 @@ async fn conflicting_tips_yield_evidence() {
 
     // Call domain consistency module (cyphr_server::consistency)
     let claim = cyphr_server::consistency::check_cross_witness_consistency(&[tip_a, tip_b])
-        .expect("cross-witness consistency check MUST yield standing evidence claim on conflicting tips");
+        .expect("cross-witness consistency check MUST yield standing evidence claim on conflicting tips")
+        .expect("standing claim MUST be present on conflicting tips");
     assert_eq!(claim["kind"], "equivocation_evidence");
 }
 
