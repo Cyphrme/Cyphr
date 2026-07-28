@@ -222,14 +222,6 @@ async fn witness_write_refusal_middleware(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, error::AppError> {
-    if req.method() == axum::http::Method::POST
-        && req.uri().path() == "/push"
-        && (req.headers().contains_key("x-cyphr-fanout")
-            || req.headers().contains_key("x-witness-push"))
-    {
-        return Ok(next.run(req).await);
-    }
-
     match *req.method() {
         axum::http::Method::POST
         | axum::http::Method::PUT

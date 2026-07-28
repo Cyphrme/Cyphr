@@ -106,7 +106,7 @@ async fn all_write_routes_refused() {
     let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
-    let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
+    let (push_status, push_json) = post_json(app.clone(), "/push", push_body.clone()).await;
     assert!(
         push_status == StatusCode::FORBIDDEN
             || push_status == StatusCode::METHOD_NOT_ALLOWED
@@ -117,6 +117,22 @@ async fn all_write_routes_refused() {
     assert_eq!(
         push_json["statement"]["kind"], "unsigned",
         "push refusal envelope MUST be unsigned: {push_json:?}"
+    );
+
+    // 1b. POST /push with fanout/witness-push headers MUST ALSO be refused in witness mode
+    let fanout_req = Request::builder()
+        .method("POST")
+        .uri("/push")
+        .header("content-type", "application/json")
+        .header("x-cyphr-fanout", "true")
+        .header("x-witness-push", "true")
+        .body(Body::from(push_body))
+        .unwrap();
+    let fanout_resp = app.clone().oneshot(fanout_req).await.unwrap();
+    assert_eq!(
+        fanout_resp.status(),
+        StatusCode::FORBIDDEN,
+        "POST /push with fanout headers MUST be structurally refused in witness mode"
     );
 
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
@@ -529,5 +545,52 @@ async fn responses_carry_freshness() {
     assert!(
         tip_timestamp > 0,
         "freshness timestamp on GET /tip MUST be positive, got: {tip_timestamp}"
+    );
+}
+
+/// Security Regression Test: `unauthenticated_fanout_header_cannot_bypass_witness_write_refusal`
+///
+/// Verifies that unauthenticated request headers (`x-cyphr-fanout`, `x-witness-push`) CANNOT
+/// bypass strict structural write refusal on Witness nodes. All POST /push requests MUST be
+/// rejected with HTTP 403 Forbidden and an unsigned refusal envelope.
+#[tokio::test]
+async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
+    let witness_dir = tempfile::tempdir().expect("witness tempdir");
+    let witness_config = ServerConfig {
+        mode: ServerMode::Witness,
+        data_dir: witness_dir.path().join("data"),
+        ..Default::default()
+    };
+    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
+    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+
+    let pool = load_pool();
+    let push_body =
+        build_genesis_push_body(&pool, "n2-fanout-bypass-attempt-principal", 1_700_000_000);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/push")
+        .header("content-type", "application/json")
+        .header("x-cyphr-fanout", "true")
+        .header("x-witness-push", "true")
+        .body(Body::from(push_body))
+        .unwrap();
+
+    let resp = witness_app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
+         status {status}: {json:?}"
+    );
+
+    assert_eq!(
+        json["statement"]["kind"], "unsigned",
+        "Refusal envelope MUST be unsigned, got: {json:?}"
     );
 }

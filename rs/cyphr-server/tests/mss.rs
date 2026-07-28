@@ -1,8 +1,8 @@
 //! Acceptance test suite for Node N3: Push on Mutation (MSS).
 //!
 //! Evaluates criteria N3.1 – N3.6:
-//! - `commit_reaches_registered_witness` (N3.1): Valid push on authority triggers fanout
-//!   delivery to registered witness nodes.
+//! - `commit_reaches_registered_witness` (N3.1): Valid push on authority triggers fanout delivery
+//!   to registered witness nodes.
 //! - `unreachable_witness_does_not_fail_push` (N3.2): Unreachable witness node during push fanout
 //!   does not cause authority push to fail.
 //! - `unreachable_witness_does_not_delay_push` (N3.3): Fanout to an indefinitely blocking witness
@@ -11,8 +11,8 @@
 //!   abandonment/failure is recorded in delivery status.
 //! - `no_delivery_consistency_claim` (N3.5): Push response payload makes no structural delivery
 //!   consistency claims (best-effort fanout).
-//! - `delivered_state_is_still_verified` (N3.6): Witness independently verifies all pushed/delivered
-//!   state deltas before applying them.
+//! - `delivered_state_is_still_verified` (N3.6): Witness independently verifies all
+//!   pushed/delivered state deltas before applying them.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -97,12 +97,14 @@ async fn commit_reaches_registered_witness() {
         tcp_handle: None,
     };
     auth_inst.bind_tcp().await.expect("bind TCP authority");
+    let auth_url = auth_inst.url().expect("authority URL");
 
     // 2. Stand up witness server and bind TCP listener
     let witness_dir = tempfile::tempdir().expect("witness tempdir");
     let witness_config = ServerConfig {
         mode: ServerMode::Witness,
         data_dir: witness_dir.path().join("data"),
+        authority_url: Some(auth_url),
         ..Default::default()
     };
     let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
@@ -123,13 +125,22 @@ async fn commit_reaches_registered_witness() {
     let pool = load_pool();
     let pid = "n3-fanout-principal";
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, &witness_url, "create", NOW);
-    let (reg_status, reg_json) = post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
-    assert_eq!(reg_status, StatusCode::CREATED, "witness registration must succeed: {reg_json:?}");
+    let (reg_status, reg_json) =
+        post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
+    assert_eq!(
+        reg_status,
+        StatusCode::CREATED,
+        "witness registration must succeed: {reg_json:?}"
+    );
 
     // 4. Push commit to authority server
     let push_body = build_genesis_push_body(&pool, pid, NOW + 10);
     let (push_status, push_json) = post_json(auth_app.clone(), "/push", push_body).await;
-    assert_eq!(push_status, StatusCode::CREATED, "push to authority must succeed: {push_json:?}");
+    assert_eq!(
+        push_status,
+        StatusCode::CREATED,
+        "push to authority must succeed: {push_json:?}"
+    );
 
     // Allow background fanout processing time if asynchronous
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -141,7 +152,8 @@ async fn commit_reaches_registered_witness() {
     assert_eq!(
         witness_tip_status,
         StatusCode::OK,
-        "commit pushed to authority MUST reach registered witness and be queryable on GET /tip, got status {witness_tip_status}: {witness_tip_json:?}"
+        "commit pushed to authority MUST reach registered witness and be queryable on GET /tip, \
+         got status {witness_tip_status}: {witness_tip_json:?}"
     );
 
     let payload = common::envelope_payload(&witness_tip_json);
@@ -175,9 +187,15 @@ async fn unreachable_witness_does_not_fail_push() {
     let unreachable_witness_url = "http://127.0.0.1:59999";
 
     // 1. Register unreachable witness URL for principal on authority server
-    let reg_coz = build_witness_register_coz(&pool, "golden", pid, unreachable_witness_url, "create", NOW);
-    let (reg_status, reg_json) = post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
-    assert_eq!(reg_status, StatusCode::CREATED, "witness registration must succeed: {reg_json:?}");
+    let reg_coz =
+        build_witness_register_coz(&pool, "golden", pid, unreachable_witness_url, "create", NOW);
+    let (reg_status, reg_json) =
+        post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
+    assert_eq!(
+        reg_status,
+        StatusCode::CREATED,
+        "witness registration must succeed: {reg_json:?}"
+    );
 
     // 2. Push commit to authority server -- MUST succeed despite unreachable witness
     let push_body = build_genesis_push_body(&pool, pid, NOW + 10);
@@ -186,7 +204,8 @@ async fn unreachable_witness_does_not_fail_push() {
     assert_eq!(
         push_status,
         StatusCode::CREATED,
-        "POST /push MUST succeed with 201 Created even when a registered witness is unreachable, got {push_status}: {push_json:?}"
+        "POST /push MUST succeed with 201 Created even when a registered witness is unreachable, \
+         got {push_status}: {push_json:?}"
     );
 }
 
@@ -237,8 +256,13 @@ async fn unreachable_witness_does_not_delay_push() {
     let pool = load_pool();
     let pid = "n3-nonblocking-push-principal";
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, &blocking_url, "create", NOW);
-    let (reg_status, reg_json) = post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
-    assert_eq!(reg_status, StatusCode::CREATED, "witness registration must succeed: {reg_json:?}");
+    let (reg_status, reg_json) =
+        post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
+    assert_eq!(
+        reg_status,
+        StatusCode::CREATED,
+        "witness registration must succeed: {reg_json:?}"
+    );
 
     // 4. Time the POST /push execution
     let push_body = build_genesis_push_body(&pool, pid, NOW + 10);
@@ -283,7 +307,8 @@ async fn delivery_is_bounded_and_abandonment_visible() {
     let unreachable_witness_url = "http://127.0.0.1:59998";
 
     // 1. Register unreachable witness
-    let reg_coz = build_witness_register_coz(&pool, "golden", pid, unreachable_witness_url, "create", NOW);
+    let reg_coz =
+        build_witness_register_coz(&pool, "golden", pid, unreachable_witness_url, "create", NOW);
     let (reg_status, _) = post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
     assert_eq!(reg_status, StatusCode::CREATED);
 
@@ -296,8 +321,13 @@ async fn delivery_is_bounded_and_abandonment_visible() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 3. Query witness registration listing / status to verify abandonment is recorded
-    let (list_status, list_json) = get_json(auth_app.clone(), &format!("{REGISTRATION_URI}?pr={pid}")).await;
-    assert_eq!(list_status, StatusCode::OK, "witness listing query must succeed: {list_json:?}");
+    let (list_status, list_json) =
+        get_json(auth_app.clone(), &format!("{REGISTRATION_URI}?pr={pid}")).await;
+    assert_eq!(
+        list_status,
+        StatusCode::OK,
+        "witness listing query must succeed: {list_json:?}"
+    );
 
     let payload = common::envelope_payload(&list_json);
     let deliveries = payload
@@ -313,7 +343,10 @@ async fn delivery_is_bounded_and_abandonment_visible() {
 
     let unreachable_delivery = deliveries
         .iter()
-        .find(|d| d["witness_id"].as_str() == Some(unreachable_witness_url) || d["url"].as_str() == Some(unreachable_witness_url))
+        .find(|d| {
+            d["witness_id"].as_str() == Some(unreachable_witness_url)
+                || d["url"].as_str() == Some(unreachable_witness_url)
+        })
         .expect("unreachable witness delivery entry MUST exist");
 
     let status_str = unreachable_delivery["status"]
@@ -322,7 +355,8 @@ async fn delivery_is_bounded_and_abandonment_visible() {
 
     assert!(
         status_str == "abandoned" || status_str == "failed" || status_str == "unreachable",
-        "fanout delivery to unreachable witness MUST be recorded as abandoned/failed, got: {status_str}"
+        "fanout delivery to unreachable witness MUST be recorded as abandoned/failed, got: \
+         {status_str}"
     );
 }
 
@@ -352,7 +386,8 @@ async fn no_delivery_consistency_claim() {
     for i in 0..3 {
         let url = format!("http://127.0.0.1:5998{i}");
         let reg_coz = build_witness_register_coz(&pool, "golden", pid, &url, "create", NOW + i);
-        let (reg_status, _) = post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
+        let (reg_status, _) =
+            post_json(auth_app.clone(), REGISTRATION_URI, reg_coz.to_string()).await;
         assert_eq!(reg_status, StatusCode::CREATED);
     }
 
@@ -409,8 +444,11 @@ async fn delivered_state_is_still_verified() {
 
     // Witness node MUST refuse write/push in witness mode or reject unverified payload
     assert!(
-        push_status.is_client_error() || push_status == StatusCode::FORBIDDEN || push_status == StatusCode::METHOD_NOT_ALLOWED,
-        "witness node MUST reject invalid/unverified push delivery, got {push_status}: {push_json:?}"
+        push_status.is_client_error()
+            || push_status == StatusCode::FORBIDDEN
+            || push_status == StatusCode::METHOD_NOT_ALLOWED,
+        "witness node MUST reject invalid/unverified push delivery, got {push_status}: \
+         {push_json:?}"
     );
 
     // 3. Query witness GET /tip?pr=<pid> to ensure unverified state was NOT applied
