@@ -561,36 +561,31 @@ async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
         data_dir: witness_dir.path().join("data"),
         ..Default::default()
     };
-    let witness_state = Arc::new(AppState::new(witness_config).expect("witness AppState"));
-    let witness_app = build_app_router(witness_state.clone()).expect("witness router");
+    let witness_instance = common::multi::Instance::from_config(witness_config, witness_dir).await;
 
     let pool = load_pool();
     let push_body =
         build_genesis_push_body(&pool, "n2-fanout-bypass-attempt-principal", 1_700_000_000);
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/push")
-        .header("content-type", "application/json")
-        .header("x-cyphr-fanout", "true")
-        .header("x-witness-push", "true")
-        .body(Body::from(push_body))
-        .unwrap();
-
-    let resp = witness_app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let resp = witness_instance
+        .post_with_headers(
+            "/push",
+            push_body,
+            &[("x-cyphr-fanout", "true"), ("x-witness-push", "true")],
+        )
+        .await;
 
     assert_eq!(
-        status,
+        resp.status,
         StatusCode::FORBIDDEN,
         "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
-         status {status}: {json:?}"
+         status {}: {:?}",
+        resp.status, resp.json
     );
 
     assert_eq!(
-        json["statement"]["kind"], "unsigned",
-        "Refusal envelope MUST be unsigned, got: {json:?}"
+        resp.json["statement"]["kind"], "unsigned",
+        "Refusal envelope MUST be unsigned, got: {:?}",
+        resp.json
     );
 }
