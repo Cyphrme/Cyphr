@@ -494,27 +494,35 @@ pub async fn revoke(
 pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let payload = match state.attestor() {
-        Some((principal, identity)) => {
-            let tmb = identity
-                .alg()
-                .compute_thumbprint(identity.pub_key())
-                .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
-            let genesis_key = principal.genesis_key();
-            IdentityResponse::Attestor {
-                pg: principal.pg().to_string(),
-                alg: identity.alg().name().to_string(),
-                pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
-                tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
-                genesis: GenesisKeyInfo {
-                    alg: genesis_key.alg.clone(),
-                    pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
-                    tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
-                    first_seen: genesis_key.first_seen,
-                },
+    let payload = if state.config.mode == crate::config::ServerMode::Witness {
+        IdentityResponse::Witness {
+            mode: "witness".to_string(),
+            now: crate::auth::server_now(),
+        }
+    } else {
+        match state.attestor() {
+            Some((principal, identity)) => {
+                let tmb = identity
+                    .alg()
+                    .compute_thumbprint(identity.pub_key())
+                    .ok_or_else(|| AppError::internal("signing identity thumbprint unavailable"))?;
+                let genesis_key = principal.genesis_key();
+                IdentityResponse::Attestor {
+                    pg: principal.pg().to_string(),
+                    alg: identity.alg().name().to_string(),
+                    pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
+                    tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+                    genesis: GenesisKeyInfo {
+                        alg: genesis_key.alg.clone(),
+                        pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
+                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
+                        first_seen: genesis_key.first_seen,
+                    },
+                }
+            } else {
+                IdentityResponse::Repository
             }
         },
-        None => IdentityResponse::Repository,
     };
 
     Ok(Json(Envelope::unsigned(payload)))
