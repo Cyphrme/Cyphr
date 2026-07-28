@@ -519,10 +519,9 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                         first_seen: genesis_key.first_seen,
                     },
                 }
-            } else {
-                IdentityResponse::Repository
-            }
-        },
+            },
+            None => IdentityResponse::Repository,
+        }
     };
 
     Ok(Json(Envelope::unsigned(payload)))
