@@ -13,6 +13,7 @@
 //! here persists a receipt or a received-at time. The recipient holds the
 //! trust object; the server signs and forgets.
 
+use cyphr::state::TaggedDigest;
 use serde_json::Value;
 
 use crate::auth::ServerIdentity;
@@ -149,6 +150,136 @@ fn sign_receipt(
         pay: pay_value,
         sig,
     })
+}
+
+/// The post-commit roots a tip report attests, parsed into the typed
+/// domain (S3 of `ND-typed-witness-domain.md`): the same four fields
+/// [`Roots`] carries on the wire, but each one validated into a
+/// [`TaggedDigest`] rather than trusted as a bare `String`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TipReportRoots {
+    pub pr: TaggedDigest,
+    pub sr: TaggedDigest,
+    pub ar: TaggedDigest,
+    pub cr: TaggedDigest,
+}
+
+/// A signed tip report's claims, canonically parsed (S3): the typed
+/// counterpart to the raw `pr`/`sequence`/`commit_id`/`roots` JSON
+/// [`check_equivocation`] used to compare directly, before this node. This
+/// is the ONLY path a report's claims take into that comparison --
+/// non-canonical input is rejected here (the boundary-side property),
+/// never downstream, and everything that parses is compared by this typed
+/// value alone (the passing-through property).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TipReport {
+    pub pr: TaggedDigest,
+    pub sequence: u64,
+    pub commit_id: TaggedDigest,
+    pub roots: TipReportRoots,
+}
+
+/// Why a signed report's `pay` failed to canonicalize into a [`TipReport`].
+///
+/// Every variant is a REJECT-LOUD outcome (S3): a validly-signed report
+/// that produces one of these must never be silently compared or dropped
+/// by its caller -- see `EquivocationVerdict::Malformed` at the one
+/// comparison this type feeds today.
+#[derive(Debug, thiserror::Error)]
+pub enum TipReportParseError {
+    /// `pr` is not a JSON string, or the string does not parse as a
+    /// [`TaggedDigest`] (S3's ruling: an array, a number, or `null` is not
+    /// a digest encoding at all -- never unwrapped to recover one).
+    #[error("pr: {0}")]
+    Pr(cyphr::error::Error),
+    /// `commit_id` -- same disposition as `pr`.
+    #[error("commit_id: {0}")]
+    CommitId(cyphr::error::Error),
+    /// `sequence` is neither a JSON number nor the JSON string of a `u64`'s
+    /// decimal digits (S3: the one field that CANONICALIZES across those
+    /// two representations; anything else -- `"5x"`, `"5.0"`, `""`, a
+    /// bool, an array -- is malformed, never coerced).
+    #[error("sequence is not a canonical non-negative integer: {0}")]
+    Sequence(Value),
+    /// `roots.<field>` -- same disposition as `pr`/`commit_id`.
+    #[error("roots.{field}: {source}")]
+    Roots {
+        field: &'static str,
+        source: cyphr::error::Error,
+    },
+}
+
+impl TipReport {
+    /// Parse a signed report's `pay` into the typed domain -- S3's
+    /// canonical parse, and the single boundary through which a report's
+    /// claims enter typed comparison.
+    pub fn parse(coz: &coz::CozJson) -> Result<Self, TipReportParseError> {
+        let pr = parse_digest_field(&coz.pay["pr"]).map_err(TipReportParseError::Pr)?;
+        let commit_id =
+            parse_digest_field(&coz.pay["commit_id"]).map_err(TipReportParseError::CommitId)?;
+        let sequence = parse_sequence(&coz.pay["sequence"])?;
+        let roots = TipReportRoots {
+            pr: parse_digest_field(&coz.pay["roots"]["pr"]).map_err(|source| {
+                TipReportParseError::Roots {
+                    field: "pr",
+                    source,
+                }
+            })?,
+            sr: parse_digest_field(&coz.pay["roots"]["sr"]).map_err(|source| {
+                TipReportParseError::Roots {
+                    field: "sr",
+                    source,
+                }
+            })?,
+            ar: parse_digest_field(&coz.pay["roots"]["ar"]).map_err(|source| {
+                TipReportParseError::Roots {
+                    field: "ar",
+                    source,
+                }
+            })?,
+            cr: parse_digest_field(&coz.pay["roots"]["cr"]).map_err(|source| {
+                TipReportParseError::Roots {
+                    field: "cr",
+                    source,
+                }
+            })?,
+        };
+        Ok(Self {
+            pr,
+            sequence,
+            commit_id,
+            roots,
+        })
+    }
+}
+
+/// Parse a JSON value as a digest field: it MUST be a JSON string --
+/// an array, a number, or `null` is not a digest encoding at all (S3's
+/// ruling against unwrapping `["digest"]` down to its inner string) -- and
+/// that string must parse as a [`TaggedDigest`].
+fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error> {
+    value
+        .as_str()
+        .ok_or(cyphr::error::Error::MalformedDigest(
+            "not a JSON string -- digests are never arrays, numbers, or null",
+        ))
+        .and_then(|s| s.parse())
+}
+
+/// Parse a JSON value as a `sequence`: a JSON number canonicalizes
+/// directly; a JSON string canonicalizes if and only if it is exactly the
+/// decimal digits of a `u64` (S3). Any other JSON shape, or a string that
+/// isn't a clean integer, is malformed.
+fn parse_sequence(value: &Value) -> Result<u64, TipReportParseError> {
+    match value {
+        Value::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| TipReportParseError::Sequence(value.clone())),
+        Value::String(s) => s
+            .parse::<u64>()
+            .map_err(|_| TipReportParseError::Sequence(value.clone())),
+        _ => Err(TipReportParseError::Sequence(value.clone())),
+    }
 }
 
 /// The outcome of checking two signed tip reports for equivocation
