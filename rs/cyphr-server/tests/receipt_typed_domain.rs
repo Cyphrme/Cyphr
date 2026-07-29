@@ -1,25 +1,20 @@
 //! Tests for `cyphr_server::receipt::TipReport`: the typed tip-report
 //! domain and its canonical parse.
 //!
-//! - `sequence_canonicalizes_across_representations`: `sequence`
-//!   canonicalizes across JSON number/string representations; a `pr`
-//!   genesis-identifier string parses to `coz::Thumbprint`.
-//! - `malformed_report_is_not_a_silent_escape`: the boundary-side
-//!   property -- a validly-signed report that fails to canonicalize is
-//!   REJECTED AND DIAGNOSED as a verdict distinct from every "no
-//!   equivocation occurred" outcome an honest pair can produce.
-//! - `canonical_pair_compared_by_value`: the passing-through property --
-//!   everything that clears the boundary is compared by typed value,
-//!   regardless of JSON representation.
-//! - `pr_array_wrap_is_loud_not_unwrapped`: the field-disposition rule for
-//!   every digest-bearing field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`)
-//!   -- non-digest encodings (array-wrap, number, null) are rejected
-//!   loudly, never unwrapped.
-//! - `receipt_rejects_malformed_digest`: receipt construction cannot sign
-//!   a malformed digest into `pr`/`commit_id`/`roots`.
-//! - `genesis_commit_root_is_accepted`: a genesis-stage report (no
-//!   commit root yet) signs and parses cleanly -- the empty `cr` sentinel
-//!   is absence, not a malformed digest.
+//! - `sequence_canonicalizes_across_representations`: `sequence` canonicalizes across JSON
+//!   number/string representations; a `pr` genesis-identifier string parses to `coz::Thumbprint`.
+//! - `malformed_report_is_not_a_silent_escape`: the boundary-side property -- a validly-signed
+//!   report that fails to canonicalize is REJECTED AND DIAGNOSED as a verdict distinct from every
+//!   "no equivocation occurred" outcome an honest pair can produce.
+//! - `canonical_pair_compared_by_value`: the passing-through property -- everything that clears the
+//!   boundary is compared by typed value, regardless of JSON representation.
+//! - `pr_array_wrap_is_loud_not_unwrapped`: the field-disposition rule for every digest-bearing
+//!   field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`) -- non-digest encodings (array-wrap, number,
+//!   null) are rejected loudly, never unwrapped.
+//! - `receipt_rejects_malformed_digest`: receipt construction cannot sign a malformed digest into
+//!   `pr`/`commit_id`/`roots`.
+//! - `genesis_commit_root_is_accepted`: a genesis-stage report (no commit root yet) signs and
+//!   parses cleanly -- the empty `cr` sentinel is absence, not a malformed digest.
 //!
 //! **`pr` is a genesis identifier, not a `TaggedDigest`:** the top-level
 //! `pr` is the attested principal's GENESIS IDENTIFIER, SPEC §2.2.3's
@@ -30,25 +25,20 @@
 //!
 //! Design choices this file's fixtures encode, worth stating since
 //! nothing else pins them:
-//! - `TipReport` and its parse live in `cyphr_server::receipt`, as a plain
-//!   struct with public fields: `pr: coz::Thumbprint`, `commit_id:
-//!   TaggedDigest`, `sequence: u64`, `roots: TipReportRoots { pr, sr, ar,
-//!   cr: Option<TaggedDigest> }` -- the minimal shape these tests need,
-//!   nothing added.
-//! - The distinct malformed outcome's EXACT name is deliberately left
-//!   unpinned here: `is_an_honest_pair_verdict` below asserts only that a
-//!   malformed pair's verdict is NONE OF the four an honest pair (proven
-//!   or not) can produce -- never that it equals one specific new variant
-//!   name. A new `EquivocationVerdict` variant and a `TipReport::parse`
-//!   error the caller handles are equally valid forms; only the
-//!   distinctness property is asserted.
-//! - `Roots` stays `String`-typed (unchanged struct) and validates its
-//!   four fields at the point `sign_receipt` consumes them, rather than
-//!   becoming `TaggedDigest`-typed itself: `Roots` is constructed at the
-//!   `/tip` and `/push` handlers directly from storage's `String` fields,
-//!   so keeping its public shape `String` avoids forcing every call site
-//!   to parse before it can even attempt construction, while
-//!   `tip_report`/`commit_receipt` still refuse (return `None`) on a
+//! - `TipReport` and its parse live in `cyphr_server::receipt`, as a plain struct with public
+//!   fields: `pr: coz::Thumbprint`, `commit_id: TaggedDigest`, `sequence: u64`, `roots:
+//!   TipReportRoots { pr, sr, ar, cr: Option<TaggedDigest> }` -- the minimal shape these tests
+//!   need, nothing added.
+//! - The distinct malformed outcome's EXACT name is deliberately left unpinned here:
+//!   `is_an_honest_pair_verdict` below asserts only that a malformed pair's verdict is NONE OF the
+//!   four an honest pair (proven or not) can produce -- never that it equals one specific new
+//!   variant name. A new `EquivocationVerdict` variant and a `TipReport::parse` error the caller
+//!   handles are equally valid forms; only the distinctness property is asserted.
+//! - `Roots` stays `String`-typed (unchanged struct) and validates its four fields at the point
+//!   `sign_receipt` consumes them, rather than becoming `TaggedDigest`-typed itself: `Roots` is
+//!   constructed at the `/tip` and `/push` handlers directly from storage's `String` fields, so
+//!   keeping its public shape `String` avoids forcing every call site to parse before it can even
+//!   attempt construction, while `tip_report`/`commit_receipt` still refuse (return `None`) on a
 //!   malformed field.
 
 use cyphr::HashAlg;
@@ -104,8 +94,8 @@ fn digest_string(bytes: &[u8]) -> String {
 }
 
 /// Render digest bytes as a receipt's top-level `pr`: a BARE genesis
-/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form (A2) --
-/// via the SAME strict `Base64UrlUnpadded` encoder `TaggedDigest::to_string`
+/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form -- via the
+/// SAME strict `Base64UrlUnpadded` encoder `TaggedDigest::to_string`
 /// uses internally, just without the `ALG:` prefix. Distinct from
 /// [`digest_string`], which tags `commit_id`/`roots`.
 fn principal_digest(bytes: &[u8]) -> String {
@@ -128,7 +118,7 @@ fn differing_bytes(bytes: &[u8]) -> Vec<u8> {
 /// dispositions this file exercises: `TaggedDigest::from_str`
 /// (`commit_id`/`roots.<field>`) rejects it because it contains no `:` at
 /// all, so `split_once(':')` always fails at the first parse step; the
-/// bare genesis-identifier parse (`pr`, A2) rejects it because a 1-24
+/// bare genesis-identifier parse (`pr`) rejects it because a 1-24
 /// character base64url string can never decode to a supported digest
 /// length (32/48/64 bytes -- the longest possible decode here is ~18
 /// bytes). Both are guaranteed by construction, never by chance that a
@@ -588,9 +578,7 @@ fn genesis_commit_root_is_accepted() {
         1,
         1_700_000_000,
     )
-    .expect(
-        "tip_report MUST sign a genesis-stage report whose commit root is legitimately absent",
-    );
+    .expect("tip_report MUST sign a genesis-stage report whose commit root is legitimately absent");
 
     assert_eq!(
         coz.pay["roots"]["cr"], "",

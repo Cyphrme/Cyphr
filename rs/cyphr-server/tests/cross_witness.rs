@@ -302,8 +302,7 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
     assert_eq!(
         verdict,
         receipt::EquivocationVerdict::Malformed,
-        "an integer `pr` is not a digest encoding on either side -- MALFORMED, not silently \
-         Proven"
+        "an integer `pr` is not a digest encoding on either side -- MALFORMED, not silently Proven"
     );
 
     let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
