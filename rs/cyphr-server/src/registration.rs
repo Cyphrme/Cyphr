@@ -41,8 +41,6 @@ impl RegistrationAuthority {
 /// Per-principal witness state.
 #[derive(Debug, Clone, Default)]
 pub struct PrincipalRegistrationState {
-    /// Authorized key thumbprints (base64url) for this principal.
-    pub authorized_keys: Vec<String>,
     /// Currently active witness IDs / PGs (e.g. `SHA-256:...`).
     pub active_witnesses: Vec<String>,
     /// Unix timestamp (seconds) of the most recent update.
@@ -60,27 +58,6 @@ impl RegistrationStore {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Check if authorized keys have been established for `principal_id`.
-    pub fn has_authorized_keys(&self, principal_id: &str) -> bool {
-        let map = self.state.read().unwrap_or_else(|e| e.into_inner());
-        map.get(principal_id)
-            .is_some_and(|entry| !entry.authorized_keys.is_empty())
-    }
-
-    /// Check if a signer thumbprint `signer_tmb` is authorized for `principal_id`.
-    pub fn is_key_authorized(&self, principal_id: &str, signer_tmb: &str) -> bool {
-        let map = self.state.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = map.get(principal_id) {
-            if entry.authorized_keys.is_empty() {
-                true
-            } else {
-                entry.authorized_keys.iter().any(|k| k == signer_tmb)
-            }
-        } else {
-            true
         }
     }
 
