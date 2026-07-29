@@ -1,70 +1,55 @@
-//! Acceptance test suite for Node ND: Typed Witness-Surface Domain.
+//! Tests for `cyphr_server::receipt::TipReport`: the typed tip-report
+//! domain and its canonical parse.
 //!
-//! Evaluates criteria ND.1, ND.2a, ND.2b, ND.2c, ND.4
-//! (`.scratch/campaigns/server-witness-remediation/ibcs/ND-typed-witness-domain.md`,
-//! S5):
-//! - `sequence_canonicalizes_across_representations` (ND.1): `sequence` canonicalizes across JSON
-//!   number/string representations; a `pr` genesis-identifier string parses to `coz::Thumbprint`.
-//! - `malformed_report_is_not_a_silent_escape` (ND.2a): the boundary-side property -- a
-//!   validly-signed report that fails to canonicalize is REJECTED AND DIAGNOSED as a verdict
-//!   distinct from every "no equivocation occurred" outcome an honest pair can produce.
-//! - `canonical_pair_compared_by_value` (ND.2b): the passing-through property -- everything that
-//!   clears the boundary is compared by typed value, regardless of JSON representation.
-//! - `pr_array_wrap_is_loud_not_unwrapped` (ND.2c): the field-disposition ruling for
-//!   `pr`/`commit_id` -- non-digest encodings (array-wrap, number, null) are rejected loudly, never
-//!   unwrapped.
-//! - `receipt_rejects_malformed_digest` (ND.4): receipt construction cannot sign a malformed digest
-//!   into `pr`/`commit_id`/`roots`.
+//! - `sequence_canonicalizes_across_representations`: `sequence`
+//!   canonicalizes across JSON number/string representations; a `pr`
+//!   genesis-identifier string parses to `coz::Thumbprint`.
+//! - `malformed_report_is_not_a_silent_escape`: the boundary-side
+//!   property -- a validly-signed report that fails to canonicalize is
+//!   REJECTED AND DIAGNOSED as a verdict distinct from every "no
+//!   equivocation occurred" outcome an honest pair can produce.
+//! - `canonical_pair_compared_by_value`: the passing-through property --
+//!   everything that clears the boundary is compared by typed value,
+//!   regardless of JSON representation.
+//! - `pr_array_wrap_is_loud_not_unwrapped`: the field-disposition rule for
+//!   every digest-bearing field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`)
+//!   -- non-digest encodings (array-wrap, number, null) are rejected
+//!   loudly, never unwrapped.
+//! - `receipt_rejects_malformed_digest`: receipt construction cannot sign
+//!   a malformed digest into `pr`/`commit_id`/`roots`.
+//! - `genesis_commit_root_is_accepted`: a genesis-stage report (no
+//!   commit root yet) signs and parses cleanly -- the empty `cr` sentinel
+//!   is absence, not a malformed digest.
 //!
-//! **Amendment A2 (`ND-typed-witness-domain.md`) retypes `pr`:** the
-//! top-level `pr` is the attested principal's GENESIS IDENTIFIER, SPEC
-//! §2.2.3's DEFAULT (untagged) identifier form -- NOT a `TaggedDigest`,
-//! which remains `commit_id`/`roots`'s labeled exemption. This file's
-//! fixtures use [`principal_digest`] (bare) for `pr` and [`digest_string`]
-//! (tagged) for `commit_id`/`roots`; the two are never interchangeable.
+//! **`pr` is a genesis identifier, not a `TaggedDigest`:** the top-level
+//! `pr` is the attested principal's GENESIS IDENTIFIER, SPEC §2.2.3's
+//! DEFAULT (untagged) identifier form -- NOT a `TaggedDigest`, which
+//! remains `commit_id`/`roots`'s labeled exemption. This file's fixtures
+//! use [`principal_digest`] (bare) for `pr` and [`digest_string`] (tagged)
+//! for `commit_id`/`roots`; the two are never interchangeable.
 //!
-//! This node introduces `cyphr_server::receipt::TipReport` (a typed
-//! tip-report with a canonical parse, S3) and a new, distinct
-//! "malformed" outcome from `check_equivocation`; NEITHER exists in the
-//! implementation these tests run against, so the whole file is RED via
-//! compile failure until the implementation walk lands them, EXCEPT
-//! `receipt_rejects_malformed_digest`, which references only the
-//! currently-existing `receipt::tip_report`/`Roots` and was empirically
-//! confirmed to fail at RUNTIME against the unmodified implementation
-//! (scratch check, not committed: `tip_report` returns `Some` for a
-//! `Roots.pr` of `"not-a-digest-at-all"`) before this test was written.
-//!
-//! Design choices this node's test-worker made (S6 DELEGATED items,
-//! reasoning logged per the IBC's requirement):
-//! - `TipReport` and its parse live in `cyphr_server::receipt` (S4's first option), as a plain
-//!   struct with public fields: `pr: coz::Thumbprint` (A2), `commit_id: TaggedDigest`, `sequence:
-//!   u64`, `roots: TipReportRoots { pr, sr, ar, cr: TaggedDigest }` -- the minimal shape S3/A2
-//!   name, nothing added. `TipReport::parse(&coz::CozJson) -> Result<TipReport, _>` is PINNED by S3
-//!   itself, not delegated; only the struct's field layout and error type are this file's choice.
-//! - The distinct malformed outcome's EXACT name is deliberately left unpinned here:
-//!   `is_an_honest_pair_verdict` below asserts only that a malformed pair's verdict is NONE OF the
-//!   four an honest pair (proven or not) can produce -- never that it equals one specific new
-//!   variant name. S3 offers a new `EquivocationVerdict` variant or a `TipReport::parse` error the
-//!   caller handles as equally valid FORMs; `check_equivocation` keeping its `&coz::CozJson` in /
-//!   `EquivocationVerdict` out signature (S3's second bullet: "it parses both reports ... and
-//!   compares typed values", i.e. the parse is absorbed internally) makes a new variant the natural
-//!   choice, but this test does not require that specific choice -- only the distinctness property
-//!   S3 rules on.
-//! - `Roots` stays `String`-typed (unchanged struct) and validates its four fields as
-//!   `TaggedDigest` at the point `sign_receipt` consumes them, rather than becoming
-//!   `TaggedDigest`-typed itself: `Roots` is constructed at the `/tip` and `/push` handlers
-//!   directly from storage's `String` fields (P4's containment claim -- nothing in `cyphr-storage`
-//!   changes), so keeping its public shape `String` avoids forcing every call site to parse before
-//!   it can even attempt construction, while `tip_report`/`commit_receipt` still refuse (return
-//!   `None`) on a malformed field (ND.4). This is the minimal-diff reading of S3's "(or parse
-//!   String->TaggedDigest at construction)" alternative.
-//!
-//! These are DELEGATED choices (S6), not RESERVED ones: the implementation
-//! walk may rename/reshape them with its own logged reasoning as long as
-//! the two RULED properties (S3: boundary-side rejection-and-diagnosis,
-//! passing-through typed comparison) and the RULED field dispositions
-//! (`sequence` canonicalizes, `pr`/`commit_id` reject-loudly) hold -- which
-//! is exactly what these tests check, independent of the exact names.
+//! Design choices this file's fixtures encode, worth stating since
+//! nothing else pins them:
+//! - `TipReport` and its parse live in `cyphr_server::receipt`, as a plain
+//!   struct with public fields: `pr: coz::Thumbprint`, `commit_id:
+//!   TaggedDigest`, `sequence: u64`, `roots: TipReportRoots { pr, sr, ar,
+//!   cr: Option<TaggedDigest> }` -- the minimal shape these tests need,
+//!   nothing added.
+//! - The distinct malformed outcome's EXACT name is deliberately left
+//!   unpinned here: `is_an_honest_pair_verdict` below asserts only that a
+//!   malformed pair's verdict is NONE OF the four an honest pair (proven
+//!   or not) can produce -- never that it equals one specific new variant
+//!   name. A new `EquivocationVerdict` variant and a `TipReport::parse`
+//!   error the caller handles are equally valid forms; only the
+//!   distinctness property is asserted.
+//! - `Roots` stays `String`-typed (unchanged struct) and validates its
+//!   four fields at the point `sign_receipt` consumes them, rather than
+//!   becoming `TaggedDigest`-typed itself: `Roots` is constructed at the
+//!   `/tip` and `/push` handlers directly from storage's `String` fields,
+//!   so keeping its public shape `String` avoids forcing every call site
+//!   to parse before it can even attempt construction, while
+//!   `tip_report`/`commit_receipt` still refuse (return `None`) on a
+//!   malformed field.
 
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
@@ -109,9 +94,9 @@ fn arb_digest_bytes() -> impl Strategy<Value = Vec<u8>> {
 }
 
 /// Render digest bytes as the TAGGED wire form (`SHA-256:<base64url>`) via
-/// the SAME `TaggedDigest` this node adopts -- never a hand-rolled
-/// encoding. For `commit_id`/`roots.<field>` ONLY -- `pr` is untagged
-/// (A2), see [`principal_digest`].
+/// `cyphr::state::TaggedDigest` -- never a hand-rolled encoding. For
+/// `commit_id`/`roots.<field>` ONLY -- `pr` is untagged, see
+/// [`principal_digest`].
 fn digest_string(bytes: &[u8]) -> String {
     TaggedDigest::new(HashAlg::Sha256, bytes.to_vec())
         .expect("32 bytes matches SHA-256's expected digest length")
@@ -152,11 +137,10 @@ fn arb_malformed_digest_string() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9]{1,24}"
 }
 
-/// A `sequence` string GUARANTEED to fail integer parsing -- the exact
-/// three shapes S3's field-disposition ruling names verbatim ("a
-/// `sequence` string that does NOT parse as an integer (`"5x"`, `"5.0"`,
-/// empty) is malformed"): trailing garbage, a decimal point, or empty.
-/// Each is malformed by its shape, not by chance.
+/// A `sequence` string GUARANTEED to fail integer parsing: a `sequence`
+/// string that does NOT parse as an integer -- trailing garbage, a
+/// decimal point, or empty -- is malformed. Each is malformed by its
+/// shape, not by chance.
 fn arb_malformed_sequence_string() -> impl Strategy<Value = String> {
     prop_oneof![
         any::<u64>().prop_map(|n| format!("{n}x")),
@@ -165,14 +149,15 @@ fn arb_malformed_sequence_string() -> impl Strategy<Value = String> {
     ]
 }
 
-/// The three non-digest encodings S3's ruling names for a digest-bearing
-/// field: array-wrapped, a bare JSON number, and JSON null. `ArrayWrapSelf`
-/// wraps the CALLER's own valid value at that field (handed in explicitly,
-/// not independently generated) so it exercises the exact trap S0.1 names:
-/// an implementation that "helpfully" unwraps a 1-element array would
-/// otherwise recover a perfectly valid digest and pass. Shared across
-/// every digest-bearing field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`) --
-/// not `pr`-specific, since all six reject non-string JSON identically.
+/// The three non-digest encodings a digest-bearing field must reject:
+/// array-wrapped, a bare JSON number, and JSON null. `ArrayWrapSelf` wraps
+/// the CALLER's own valid value at that field (handed in explicitly, not
+/// independently generated) so it exercises the exact trap an
+/// array-unwrap bug would fall into: an implementation that "helpfully"
+/// unwraps a 1-element array would otherwise recover a perfectly valid
+/// digest and pass. Shared across every digest-bearing field (`pr`,
+/// `commit_id`, `roots.{pr,sr,ar,cr}`) -- not `pr`-specific, since all six
+/// reject non-string JSON identically.
 #[derive(Debug, Clone)]
 enum MalformedShape {
     ArrayWrapSelf,
@@ -226,7 +211,8 @@ fn resign_with_field(
 /// claim" diagnoses (`IdenticalClaims`, `DifferentPrincipal`,
 /// `DifferentSequence`). A malformed report's verdict must be NONE of
 /// these -- landing in any of them is exactly the silent-escape/relocated-
-/// evasion trap S0.1 names, whichever direction it falls.
+/// evasion trap this file's properties exist to close, whichever
+/// direction it falls.
 fn is_an_honest_pair_verdict(verdict: EquivocationVerdict) -> bool {
     matches!(
         verdict,
@@ -238,78 +224,63 @@ fn is_an_honest_pair_verdict(verdict: EquivocationVerdict) -> bool {
 }
 
 proptest! {
-    /// ND.1: `sequence_canonicalizes_across_representations`
+    /// `sequence_canonicalizes_across_representations`
     ///
-    /// `sequence` CANONICALIZES (S3's field-disposition ruling): a JSON
-    /// number and the JSON string of its digits denote the SAME integer.
-    /// Two reports sharing `pr` and this logical `sequence` but with a
-    /// GENUINELY conflicting `commit_id` (guaranteed unequal via
-    /// `differing_bytes`, never left to chance) MUST be detected as
-    /// equivocation regardless of which side used which JSON
-    /// representation -- this is the exact F1 evasion the campaign found
-    /// (`5` to one witness, `"5"` to another). Each side's representation
-    /// is drawn INDEPENDENTLY (`a_as_string`, `b_as_string` are separate
-    /// generated booleans, never one flag reused for both) -- the prior
-    /// generator-reachability defect this campaign found twice (N1, N4):
-    /// stamping one drawn value into both pair members makes the
-    /// asymmetric shape unreachable at any case count.
+    /// `sequence` CANONICALIZES: a JSON number and the JSON string of its
+    /// digits denote the SAME integer, and a `pr` genesis-identifier
+    /// string parses to the equal `coz::Thumbprint`. The detection half of
+    /// this property -- that a genuinely conflicting pair is still
+    /// recognized as equivocation regardless of which side's `sequence`
+    /// used which representation -- is `canonical_pair_compared_by_value`'s
+    /// more general passing-through property (its `same_commit = false`
+    /// case); this test does not re-derive that scenario, only the
+    /// canonicalization and `pr`-roundtrip facts a single report's parse
+    /// must establish.
     #[test]
     fn sequence_canonicalizes_across_representations(
         seq in 0u64..1_000_000_000u64,
         pr_bytes in arb_digest_bytes(),
-        commit_a_bytes in arb_digest_bytes(),
-        a_as_string in any::<bool>(),
-        b_as_string in any::<bool>(),
+        commit_bytes in arb_digest_bytes(),
+        as_string in any::<bool>(),
     ) {
         let (_dir, identity) = identity_with_seed(0x11);
         let pr_root = digest_string(&pr_bytes);
         let pr = principal_digest(&pr_bytes);
-        let commit_a = digest_string(&commit_a_bytes);
-        let commit_b = digest_string(&differing_bytes(&commit_a_bytes));
+        let commit_id = digest_string(&commit_bytes);
         let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
-        let mut a = receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), seq, commit_a, &roots, seq + 1, 1_700_000_000,
+        let mut report = receipt::tip_report(
+            &identity, 1_700_000_000, pr.clone(), seq, commit_id, &roots, seq + 1, 1_700_000_000,
         )
-        .expect("compose report a");
-        let mut b = receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), seq, commit_b, &roots, seq + 1, 1_700_000_000,
-        )
-        .expect("compose report b");
+        .expect("compose report");
 
-        if a_as_string {
-            a = resign_with_field(&identity, a, "sequence", serde_json::json!(seq.to_string()));
-        }
-        if b_as_string {
-            b = resign_with_field(&identity, b, "sequence", serde_json::json!(seq.to_string()));
+        if as_string {
+            report =
+                resign_with_field(&identity, report, "sequence", serde_json::json!(seq.to_string()));
         }
 
-        let parsed_a = TipReport::parse(&a).expect("canonical report a parses");
+        let parsed = TipReport::parse(&report).expect("canonical report parses");
         prop_assert_eq!(
-            parsed_a.pr.to_string(), pr.clone(),
-            "a pr genesis-identifier string MUST parse to the equal identifier"
+            parsed.sequence, seq,
+            "sequence as a JSON {} MUST canonicalize to the same integer",
+            if as_string { "string" } else { "number" }
         );
-
-        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
         prop_assert_eq!(
-            verdict, EquivocationVerdict::Proven,
-            "sequence {} (a_as_string={}, b_as_string={}) with conflicting commit_id MUST \
-             canonicalize to the same position and be detected, not evade as DifferentSequence: \
-             got {:?}",
-            seq, a_as_string, b_as_string, verdict
+            parsed.pr.to_string(), pr,
+            "a pr genesis-identifier string MUST parse to the equal identifier"
         );
     }
 
-    /// ND.2a: `malformed_report_is_not_a_silent_escape`
+    /// `malformed_report_is_not_a_silent_escape`
     ///
-    /// The boundary-side property (S3): a validly-signed report that fails
-    /// to canonicalize is REJECTED AND DIAGNOSED as a DISTINCT outcome --
+    /// The boundary-side property: a validly-signed report that fails to
+    /// canonicalize is REJECTED AND DIAGNOSED as a DISTINCT outcome --
     /// never silently compared into one of the "no equivocation occurred"
     /// verdicts an honest non-conflicting pair also produces, and never
     /// silently proven either. Without this, a rejecting parse RELOCATES
-    /// the F1 evasion instead of closing it (S0.1's "the trap"): an
-    /// attacker makes one report fail to parse and the caller reads that
-    /// as an honest disagreement or, worse, a false proof.
+    /// the evasion instead of closing it: an attacker makes one report
+    /// fail to parse and the caller reads that as an honest disagreement
+    /// or, worse, a false proof.
     ///
     /// Corrupts exactly ONE field (`sequence`, `pr`, or `commit_id`,
     /// chosen independently per case) on an otherwise-canonical,
@@ -371,9 +342,9 @@ proptest! {
         );
     }
 
-    /// ND.2b: `canonical_pair_compared_by_value`
+    /// `canonical_pair_compared_by_value`
     ///
-    /// The passing-through property (S3): every report that clears the
+    /// The passing-through property: every report that clears the
     /// boundary is compared by TYPED value, not by its JSON shape. Holds
     /// `pr` fixed; draws `sequence`'s JSON representation (number vs
     /// string) INDEPENDENTLY per side; and varies `commit_id` and
@@ -381,10 +352,11 @@ proptest! {
     /// (guaranteed via `differing_bytes`, never by chance). The verdict
     /// tracks the CANONICAL values exactly: `IdenticalClaims` iff both
     /// canonical fields match, `Proven` iff either differs -- regardless
-    /// of which JSON representation either side used for `sequence`. This
-    /// is the metamorphic dual of ND.1: ND.1 shows representation
-    /// variance does not cause a MISS; this shows it does not cause a
-    /// false ALARM either.
+    /// of which JSON representation either side used for `sequence`.
+    /// Covers both directions at once: representation variance causes
+    /// neither a missed conflict (a `Proven` case wrongly read as
+    /// `DifferentSequence`) nor a false alarm (an `IdenticalClaims` case
+    /// wrongly read as `Proven`).
     #[test]
     fn canonical_pair_compared_by_value(
         seq in 0u64..1_000_000_000u64,
@@ -444,26 +416,26 @@ proptest! {
         );
     }
 
-    /// ND.2c: `pr_array_wrap_is_loud_not_unwrapped`
+    /// `pr_array_wrap_is_loud_not_unwrapped`
     ///
-    /// The RULING (S3, field-disposition): every digest-bearing field --
-    /// `pr`, `commit_id`, and each `roots.{pr,sr,ar,cr}` -- REJECTS-LOUDLY
-    /// non-digest encodings; there is no ambiguity to canonicalize away.
-    /// `["digest"]` (array-wrapped), a bare JSON number, and JSON `null`
-    /// are the three shapes S3 names. Exercised across ALL SIX fields, not
-    /// just `pr`: `commit_id`/`roots.<field>` parse through a DIFFERENT
-    /// function (`parse_digest_field`) than `pr` does (`parse_genesis_id`),
-    /// and the two are documented as rejecting these shapes identically --
-    /// a claim this property now checks on every field that makes it,
-    /// rather than on `pr` alone. The array variant wraps the corrupted
-    /// side's OWN valid value at that field, handed in explicitly rather
-    /// than independently generated, so it exercises the exact trap
-    /// S0.1/S3 names: an implementation that "helpfully" unwraps a
-    /// 1-element array would recover a perfectly valid, MATCHING digest
-    /// and treat the pair as non-conflicting -- silently reopening the
-    /// evasion one layer down. `TipReport::parse` MUST reject every shape
-    /// on every field, and `check_equivocation` MUST NOT fold any of them
-    /// into `Proven` nor any other honest-pair verdict.
+    /// Every digest-bearing field -- `pr`, `commit_id`, and each
+    /// `roots.{pr,sr,ar,cr}` -- REJECTS-LOUDLY non-digest encodings; there
+    /// is no ambiguity to canonicalize away. `["digest"]` (array-wrapped),
+    /// a bare JSON number, and JSON `null` are the three shapes exercised
+    /// across ALL SIX fields, not just `pr`: `commit_id`/`roots.<field>`
+    /// parse through a DIFFERENT function (`parse_digest_field`) than `pr`
+    /// does (`parse_genesis_id`), and the two are documented as rejecting
+    /// these shapes identically -- a claim this property now checks on
+    /// every field that makes it, rather than on `pr` alone. The array
+    /// variant wraps the corrupted side's OWN valid value at that field,
+    /// handed in explicitly rather than independently generated, so it
+    /// exercises the exact trap an array-unwrap bug would fall into: an
+    /// implementation that "helpfully" unwraps a 1-element array would
+    /// recover a perfectly valid, MATCHING digest and treat the pair as
+    /// non-conflicting -- silently reopening the evasion one layer down.
+    /// `TipReport::parse` MUST reject every shape on every field, and
+    /// `check_equivocation` MUST NOT fold any of them into `Proven` nor
+    /// any other honest-pair verdict.
     #[test]
     fn pr_array_wrap_is_loud_not_unwrapped(
         pr_bytes in arb_digest_bytes(),
@@ -522,21 +494,16 @@ proptest! {
         );
     }
 
-    /// ND.4: `receipt_rejects_malformed_digest`
+    /// `receipt_rejects_malformed_digest`
     ///
-    /// Receipt CONSTRUCTION cannot sign a malformed digest (survey finding
-    /// #6): `receipt::tip_report` validates `commit_id` and every `Roots`
-    /// field as `TaggedDigest`, and `pr` as a bare genesis identifier (A2),
-    /// and refuses (returns `None`) rather than silently signing an
-    /// unvalidated value. EMPIRICALLY confirmed
-    /// RED before this test was written: a scratch check (not committed)
-    /// against the unmodified implementation showed `tip_report` returns
-    /// `Some` for a `Roots.pr` of `"not-a-digest-at-all"`, with no
-    /// validation performed anywhere in `sign_receipt`. Which
-    /// digest-bearing parameter is corrupted is drawn independently per
-    /// case across all six (`pr`, `commit_id`, and each of the four
-    /// `Roots` fields) so the property covers the whole parameter surface,
-    /// not one hardcoded field.
+    /// Receipt CONSTRUCTION cannot sign a malformed digest:
+    /// `receipt::tip_report` validates `commit_id` and every `Roots`
+    /// field as `TaggedDigest`, and `pr` as a bare genesis identifier, and
+    /// refuses (returns `None`) rather than silently signing an
+    /// unvalidated value. Which digest-bearing parameter is corrupted is
+    /// drawn independently per case across all six (`pr`, `commit_id`,
+    /// and each of the four `Roots` fields) so the property covers the
+    /// whole parameter surface, not one hardcoded field.
     #[test]
     fn receipt_rejects_malformed_digest(
         pr_bytes in arb_digest_bytes(),
