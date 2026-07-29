@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::envelope::Envelope;
 use crate::error::{AppError, AppJson};
+use crate::registration::RegistrationAuthority;
 use crate::{AppState, receipt};
 
 // ========================================================================
@@ -677,17 +678,28 @@ pub fn verify_witness_register_envelope(
     })
 }
 
-/// Verify that `signer_tmb` is authorized for `principal_id`.
+/// Parse the registration authorization context into a typed
+/// [`RegistrationAuthority`] proof: a resident principal is managed by its
+/// active keys; a not-yet-resident principal only by itself (SPEC §13.5.1:
+/// the principal signs its witness registrations). `witness_id` plays no
+/// part — a `witness_id` naming the signer's own key was never evidence
+/// that the signer may register for the principal.
 async fn check_registration_authorization(
     state: &AppState,
     principal_id: &str,
     signer_tmb: &str,
-    witness_id: &str,
-) -> Result<(), AppError> {
+) -> Result<RegistrationAuthority, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let tip = state.engine.get_tip(principal_id).await;
-    if let Ok(Some(_)) = tip {
+    // A residency lookup failure propagates: falling through to the
+    // non-resident branch on an engine fault would decide authorization
+    // against absent evidence.
+    let tip = state
+        .engine
+        .get_tip(principal_id)
+        .await
+        .map_err(AppError::engine)?;
+    if tip.is_some() {
         let genesis = state
             .engine
             .resolve_genesis(principal_id, &[])
@@ -703,38 +715,12 @@ async fn check_registration_authorization(
             .map_err(|_| AppError::unauthorized("invalid signer thumbprint base64"))?;
         let signer_tmb_obj = coz::Thumbprint::from_bytes(signer_tmb_bytes);
 
-        if !principal.is_key_active(&signer_tmb_obj) {
-            return Err(AppError::unauthorized(
-                "signer key is not active for principal",
-            ));
-        }
-        return Ok(());
+        return RegistrationAuthority::active_key(&principal, &signer_tmb_obj)
+            .ok_or_else(|| AppError::unauthorized("signer key is not active for principal"));
     }
 
-    if state.registration.has_authorized_keys(principal_id) {
-        if !state
-            .registration
-            .is_key_authorized(principal_id, signer_tmb)
-        {
-            return Err(AppError::unauthorized(
-                "unauthorized third-party witness registration",
-            ));
-        }
-    } else {
-        let is_self_authorized = signer_tmb == principal_id
-            || witness_id
-                .strip_prefix("SHA-256:")
-                .is_some_and(|target_tmb| target_tmb == signer_tmb)
-            || witness_id == signer_tmb;
-
-        if !is_self_authorized {
-            return Err(AppError::unauthorized(
-                "unauthorized third-party witness registration",
-            ));
-        }
-    }
-
-    Ok(())
+    RegistrationAuthority::self_signer(principal_id, signer_tmb)
+        .ok_or_else(|| AppError::unauthorized("unauthorized third-party witness registration"))
 }
 
 /// `POST /witness/register` — register an external witness for a principal.
@@ -750,13 +736,9 @@ pub async fn witness_register_post(
         ));
     }
 
-    check_registration_authorization(
-        &state,
-        &verified.principal_id,
-        &verified.signer_tmb,
-        &verified.witness_id,
-    )
-    .await?;
+    let authority =
+        check_registration_authorization(&state, &verified.principal_id, &verified.signer_tmb)
+            .await?;
 
     let (current_witnesses, _) = state.registration.get_witnesses(&verified.principal_id);
     if current_witnesses.len() >= crate::registration::MAX_WITNESSES_PER_PRINCIPAL
@@ -771,9 +753,9 @@ pub async fn witness_register_post(
         .await;
 
     state.registration.register_witness(
+        authority,
         &verified.principal_id,
         &verified.witness_id,
-        &verified.signer_tmb,
         verified.now,
     )?;
 
@@ -802,13 +784,9 @@ pub async fn witness_register_delete(
         ));
     }
 
-    check_registration_authorization(
-        &state,
-        &verified.principal_id,
-        &verified.signer_tmb,
-        &verified.witness_id,
-    )
-    .await?;
+    let authority =
+        check_registration_authorization(&state, &verified.principal_id, &verified.signer_tmb)
+            .await?;
 
     let _ = state
         .engine
@@ -816,6 +794,7 @@ pub async fn witness_register_delete(
         .await;
 
     state.registration.revoke_witness(
+        authority,
         &verified.principal_id,
         &verified.witness_id,
         verified.now,
