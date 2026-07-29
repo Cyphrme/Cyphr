@@ -425,12 +425,23 @@ pub enum EquivocationVerdict {
     /// The two reports are claim-identical -- not a conflict.
     IdenticalClaims,
     /// One or both reports fail to canonicalize via [`TipReport::parse`] --
-    /// a validly-signed report whose claims cannot be typed. Distinct from
-    /// every other variant so a malformed report can never be silently
-    /// folded into "no equivocation occurred" (S3's boundary-side
-    /// property): the trap this node exists to close is an attacker
-    /// making one report fail to parse instead of making an honest
-    /// comparison disagree, and that must not read as any of the above.
+    /// a validly-signed report whose claims cannot be typed.
+    ///
+    /// This variant is DISTINCT from every other one in this enum -- but
+    /// distinctness in the type is not the same as distinctness in
+    /// practice: NO current consumer treats it differently from an honest
+    /// non-conflict. `consistency.rs`'s three call sites each compare
+    /// `verdict == Proven`, so `Malformed` folds in with `WrongTyp`,
+    /// `InvalidSignature`, `DifferentPrincipal`, `DifferentSequence`, and
+    /// `IdenticalClaims` alike -- an attacker who makes one report fail to
+    /// parse gets the same "no equivocation" outcome as an honest
+    /// non-conflicting pair, today. Closing that gap needs two things
+    /// neither of which lives in this function: a consumer that reads
+    /// `Malformed` as distinct from a genuine non-conflict, and an
+    /// ingestion gate that refuses a report failing `TipReport::parse`
+    /// before it is ever retained as a claim (so a malformed report cannot
+    /// relocate the evasion instead of being closed by it). Until both
+    /// land, this variant exists but is not yet load-bearing anywhere.
     Malformed,
 }
 
@@ -453,13 +464,15 @@ pub enum EquivocationVerdict {
 /// The pinned predicate, checked in order: (1) both pays carry `typ ==
 /// TIP_REPORT_TYP`; (2) each signature verifies under its own
 /// caller-supplied key; (3) both reports canonicalize into a [`TipReport`]
-/// (S3's boundary-side property -- a report that does not is diagnosed
-/// [`EquivocationVerdict::Malformed`], never silently compared or
-/// dropped); (4) both claim the same typed `pr` and the same typed
+/// -- a report that does not is diagnosed [`EquivocationVerdict::Malformed`],
+/// a verdict this function's own return type keeps distinct from every
+/// other outcome, though no current caller reads it that way (see
+/// `Malformed`'s doc: `consistency.rs` folds it in with every other
+/// non-conflict); (4) both claim the same typed `pr` and the same typed
 /// `sequence`; (5) they differ in typed `commit_id` or in any typed
-/// `roots` field (S3's passing-through property -- compared by canonical
-/// value, so representation never causes a miss or a false alarm).
-/// Anything else is a diagnosed non-equivocation.
+/// `roots` field -- compared by canonical value, so representation never
+/// causes a miss or a false alarm. Anything else is a diagnosed
+/// non-equivocation.
 pub fn check_equivocation(
     a: &coz::CozJson,
     a_pub_key: &[u8],
