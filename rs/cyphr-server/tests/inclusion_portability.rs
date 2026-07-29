@@ -47,6 +47,19 @@ use tower::ServiceExt;
 // integration-test crate and cannot be imported here)
 // ========================================================================
 
+/// Render a distinct, valid genesis-identifier string from a repeated
+/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
+/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
+/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
+/// `receipt::tip_report` refuses a malformed `pr`, so this
+/// foreign-principal identifier must genuinely parse. Named
+/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
+/// digest helper other test files use for `commit_id`/`roots` fixtures --
+/// same shape, different wire form, never interchangeable.
+fn principal_digest(byte: u8) -> String {
+    Base64UrlUnpadded::encode_string(&[byte; 32])
+}
+
 fn load_pool() -> test_fixtures::Pool {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -337,7 +350,8 @@ async fn build_fixture() -> PortabilityFixture {
 
     let pool = load_pool();
     let now = 1_700_100_000;
-    let principal_id = "portability-foreign-principal";
+    let principal_id_digest = principal_digest(0x01);
+    let principal_id = principal_id_digest.as_str();
 
     // ---- PROVER: materialize the foreign principal and push it ----
     let (foreign_principal, push_body) =
