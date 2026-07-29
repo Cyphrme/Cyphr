@@ -397,9 +397,9 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 /// for a stable, recognizable payload -- the same bytes (0x01..0x20),
 /// BARE: a receipt's top-level `pr` is the attested principal's genesis
 /// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
-/// (Amendment A2, `ND-typed-witness-domain.md`) -- the SAME untagged form
-/// `token.rs`/`envelope_vectors.rs`'s `pr`/`principal_id` claims already use.
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption --
+/// the SAME untagged form `token.rs`/`envelope_vectors.rs`'s
+/// `pr`/`principal_id` claims already use.
 const VECTOR_PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
 const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao";

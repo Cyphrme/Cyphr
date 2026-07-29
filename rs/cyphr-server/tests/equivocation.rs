@@ -257,11 +257,11 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 
 /// Render a distinct, valid SHA-256 digest string from a repeated seed
 /// byte -- the same convention `tests/cross_witness.rs` established
-/// (`455894a`). Node ND's typed `check_equivocation`/`receipt::tip_report`
-/// now parse `commit_id`/`roots` as `TaggedDigest`, so this suite's
-/// placeholders, which used to be human-readable or hand-typed
-/// repeated-letter literals, must genuinely parse. `pr` is NOT tagged --
-/// see [`principal_digest`].
+/// (`455894a`). `check_equivocation`/`receipt::tip_report` parse
+/// `commit_id`/`roots` as `TaggedDigest`, so this suite's placeholders,
+/// which used to be human-readable or hand-typed repeated-letter
+/// literals, must genuinely parse. `pr` is NOT tagged -- see
+/// [`principal_digest`].
 fn digest(byte: u8) -> String {
     TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
         .expect("32 bytes is SHA-256's expected digest length")
@@ -272,9 +272,9 @@ fn digest(byte: u8) -> String {
 /// repeated seed byte -- the untagged counterpart to [`digest`]. A
 /// receipt's top-level `pr` is the attested principal's genesis
 /// identifier: SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
-/// (Amendment A2, `ND-typed-witness-domain.md`). Every `pr`/`principal_id`
-/// fixture in this suite uses this helper, never [`digest`].
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption.
+/// Every `pr`/`principal_id` fixture in this suite uses this helper,
+/// never [`digest`].
 fn principal_digest(byte: u8) -> String {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::encode_string(&[byte; 32])

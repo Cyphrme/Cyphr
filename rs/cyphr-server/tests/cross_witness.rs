@@ -32,11 +32,11 @@ mod common;
 /// Render a distinct, valid TAGGED SHA-256 digest string from a repeated
 /// seed byte -- the same convention `roots_a`/`roots_b` already use
 /// (all-`A`/`B`/`C`/`D`/`E` blocks), extended to every `commit_id`/`roots`
-/// fixture in this file. Node ND's typed `check_equivocation` parses
-/// `commit_id`/`roots` as `TaggedDigest`, so a human-readable placeholder
-/// like `"commit-a"` no longer round-trips through `receipt::tip_report`
-/// -- every fixture here must be a digest that genuinely parses.
-/// `pr` is NOT tagged -- see [`principal_digest`] (Amendment A2).
+/// fixture in this file. `check_equivocation` parses `commit_id`/`roots`
+/// as `TaggedDigest`, so a human-readable placeholder like `"commit-a"`
+/// no longer round-trips through `receipt::tip_report` -- every fixture
+/// here must be a digest that genuinely parses. `pr` is NOT tagged -- see
+/// [`principal_digest`].
 fn digest(byte: u8) -> String {
     TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
         .expect("32 bytes is SHA-256's expected digest length")
@@ -47,9 +47,8 @@ fn digest(byte: u8) -> String {
 /// repeated seed byte -- the untagged counterpart to [`digest`]. A
 /// receipt's top-level `pr` is the attested principal's genesis
 /// identifier: SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
-/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
-/// (Amendment A2, `ND-typed-witness-domain.md`). Every `pr` fixture in
-/// this suite uses this helper, never [`digest`].
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption.
+/// Every `pr` fixture in this suite uses this helper, never [`digest`].
 fn principal_digest(byte: u8) -> String {
     Base64UrlUnpadded::encode_string(&[byte; 32])
 }
@@ -260,18 +259,18 @@ async fn three_plus_witness_array_scan() {
     assert_eq!(claim["sequence"], seq);
 }
 
-/// N4.1c: `non_standard_json_types_surfaced_by_consistency_check`
+/// `non_standard_json_types_surfaced_by_consistency_check`
 ///
 /// Verifies that a `pr` restamped to a non-standard JSON type (an integer,
 /// which is not a digest encoding at all) is neither silently compared
 /// nor silently proven: `check_equivocation` diagnoses it as `Malformed`
-/// (node ND's typed-domain boundary, `receipt::TipReport::parse`), and
+/// (`receipt::TipReport::parse`'s typed-domain boundary), and
 /// `check_cross_witness_consistency` -- which forwards a claim only on
-/// `Proven` -- produces no claim for the pair. Before node ND, this test
+/// `Proven` -- produces no claim for the pair. This test previously
 /// asserted the opposite (a restamped-integer `pr` still reached `Proven`
 /// and a forwarded claim); that assertion is now wrong by construction,
-/// since an integer `pr` fails to parse as a `TaggedDigest` on both
-/// sides -- see `receipt::TipReport::parse`'s field-disposition ruling.
+/// since an integer `pr` fails to parse as a `TaggedDigest` on either
+/// side -- see `receipt::TipReport::parse`'s field-disposition rule.
 #[tokio::test]
 async fn non_standard_json_types_surfaced_by_consistency_check() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
@@ -304,7 +303,7 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
         verdict,
         receipt::EquivocationVerdict::Malformed,
         "an integer `pr` is not a digest encoding on either side -- MALFORMED, not silently \
-         Proven (node ND's typed-domain boundary)"
+         Proven"
     );
 
     let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
@@ -314,9 +313,11 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
     assert!(
         claim.is_none(),
         "check_cross_witness_consistency forwards a claim only on a Proven verdict; a malformed \
-         pair yields none here -- the distinct diagnostic lives at check_equivocation's verdict, \
-         not at this surface (node ND's S5.1 consumer contract leaves closing this gap to N1/N2's \
-         ingestion-rejection)"
+         pair yields none here. This documents TODAY's behavior, not a closed guarantee: the \
+         distinct Malformed diagnostic exists at check_equivocation, but no consumer currently \
+         reads it as distinct from an honest non-conflict -- closing that gap needs a consumer \
+         that treats Malformed specially and an ingestion gate that refuses a malformed report \
+         before it is ever retained as a claim"
     );
 }
 
