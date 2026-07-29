@@ -29,12 +29,13 @@ fn current_unix_timestamp() -> i64 {
 /// Render a distinct, valid genesis-identifier string from a repeated
 /// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
 /// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not the top-level `pr` this suite's principal identifiers become --
-/// Amendment A2, `ND-typed-witness-domain.md`). Node ND's typed
-/// `receipt::tip_report`/`commit_receipt` now refuse a malformed `pr`, so
-/// these principal identifiers, which used to be human-readable
-/// placeholders, must genuinely parse.
-fn digest(byte: u8) -> String {
+/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
+/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
+/// these principal identifiers must genuinely parse. Named
+/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
+/// digest helper other test files use for `commit_id`/`roots` fixtures --
+/// same shape, different wire form, never interchangeable.
+fn principal_digest(byte: u8) -> String {
     Base64UrlUnpadded::encode_string(&[byte; 32])
 }
 
@@ -69,7 +70,7 @@ async fn two_instances_are_independent() {
 
     // 2. Data & Storage engine isolation: push principal to inst0
     let pool = load_pool();
-    let principal_id_digest = digest(0x01);
+    let principal_id_digest = principal_digest(0x01);
     let principal_id = principal_id_digest.as_str();
     let now = current_unix_timestamp();
     let push_body = build_genesis_push_body(&pool, principal_id, now);
@@ -226,7 +227,7 @@ async fn signed_statements_carry_freshness() {
     let identity = inst.identity.as_ref().unwrap();
 
     let pool = load_pool();
-    let principal_id_digest = digest(0x02);
+    let principal_id_digest = principal_digest(0x02);
     let principal_id = principal_id_digest.as_str();
     let start_time = current_unix_timestamp();
     let push_body = build_genesis_push_body(&pool, principal_id, start_time);

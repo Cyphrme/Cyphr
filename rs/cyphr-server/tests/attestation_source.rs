@@ -26,11 +26,13 @@ const CORRUPT_CR: &str = "SHA-256:CORRUPTED_CR_999999999999999999999999999999999
 /// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
 /// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
 /// not the top-level `pr` this suite's `principal_id` fixtures become --
-/// Amendment A2, `ND-typed-witness-domain.md`). Node ND's typed
-/// `receipt::tip_report`/`commit_receipt` now refuse a malformed `pr`, so
-/// this suite's principal identifiers, which used to be human-readable
-/// placeholders, must genuinely parse.
-fn digest(byte: u8) -> String {
+/// `docs/specs/receipts.md`). `receipt::tip_report`/`commit_receipt`
+/// refuse a malformed `pr`, so this suite's principal identifiers must
+/// genuinely parse. Named `principal_digest` (not `digest`) to stay
+/// distinct from the TAGGED digest helper other test files use for
+/// `commit_id`/`roots` fixtures -- same shape, different wire form,
+/// never interchangeable.
+fn principal_digest(byte: u8) -> String {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     Base64UrlUnpadded::encode_string(&[byte; 32])
 }
@@ -68,7 +70,7 @@ async fn roots_derive_from_blobs() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = digest(0x01);
+    let principal_id_digest = principal_digest(0x01);
     let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_000;
 
@@ -129,7 +131,7 @@ async fn roots_derive_from_blobs() {
 
     // 4. POST /push under corrupted index MUST NOT return a commit receipt signed over corrupted
     //    index values.
-    let push_principal_digest = digest(0x02);
+    let push_principal_digest = principal_digest(0x02);
     let push_principal = push_principal_digest.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
@@ -168,7 +170,7 @@ async fn stale_index_fails_attestation() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = digest(0x03);
+    let principal_id_digest = principal_digest(0x03);
     let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_000;
 
@@ -206,7 +208,7 @@ async fn stale_index_fails_attestation() {
     );
 
     // 4. POST /push with stale/corrupted index MUST FAIL attestation.
-    let push_principal_digest = digest(0x04);
+    let push_principal_digest = principal_digest(0x04);
     let push_principal = push_principal_digest.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
@@ -236,7 +238,7 @@ async fn failure_is_typed_not_silent() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state.clone());
     let pool = load_pool();
-    let principal_id_digest = digest(0x05);
+    let principal_id_digest = principal_digest(0x05);
     let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_000;
 
@@ -284,7 +286,7 @@ async fn failure_is_typed_not_silent() {
     );
 
     // 4. POST /push under corrupted index must also fail with a typed error message.
-    let push_principal_digest = digest(0x06);
+    let push_principal_digest = principal_digest(0x06);
     let push_principal = push_principal_digest.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
     let push_body_corrupt = build_genesis_push_body(&pool, push_principal, now);
