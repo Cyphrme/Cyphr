@@ -165,24 +165,26 @@ fn arb_malformed_sequence_string() -> impl Strategy<Value = String> {
     ]
 }
 
-/// The three non-digest `pr` encodings S3's ruling names: array-wrapped,
-/// a bare JSON number, and JSON null. `ArrayWrapSelf` wraps the CALLER's
-/// own valid `pr` digest string (handed in explicitly, not independently
-/// generated) so it exercises the exact trap S0.1 names: an
-/// implementation that "helpfully" unwraps a 1-element array would
-/// otherwise recover a perfectly valid digest and pass.
+/// The three non-digest encodings S3's ruling names for a digest-bearing
+/// field: array-wrapped, a bare JSON number, and JSON null. `ArrayWrapSelf`
+/// wraps the CALLER's own valid value at that field (handed in explicitly,
+/// not independently generated) so it exercises the exact trap S0.1 names:
+/// an implementation that "helpfully" unwraps a 1-element array would
+/// otherwise recover a perfectly valid digest and pass. Shared across
+/// every digest-bearing field (`pr`, `commit_id`, `roots.{pr,sr,ar,cr}`) --
+/// not `pr`-specific, since all six reject non-string JSON identically.
 #[derive(Debug, Clone)]
-enum MalformedPrShape {
+enum MalformedShape {
     ArrayWrapSelf,
     Null,
     Number(i64),
 }
 
-fn arb_malformed_pr_shape() -> impl Strategy<Value = MalformedPrShape> {
+fn arb_malformed_shape() -> impl Strategy<Value = MalformedShape> {
     prop_oneof![
-        Just(MalformedPrShape::ArrayWrapSelf),
-        Just(MalformedPrShape::Null),
-        any::<i64>().prop_map(MalformedPrShape::Number),
+        Just(MalformedShape::ArrayWrapSelf),
+        Just(MalformedShape::Null),
+        any::<i64>().prop_map(MalformedShape::Number),
     ]
 }
 
@@ -195,10 +197,12 @@ fn roots_from(pr: &str, sr: &str, ar: &str, cr: &str) -> Roots {
     }
 }
 
-/// Overwrite one payload field on an already-signed report and re-sign
-/// under the SAME identity -- the "dishonest signer hand-crafts its own
-/// report" pattern already established ad hoc in `tests/equivocation.rs`
-/// and `tests/cross_witness.rs`, lifted into a shared helper since every
+/// Overwrite one payload field -- top-level (`"pr"`, `"commit_id"`,
+/// `"sequence"`) or one level nested (`"roots.<field>"`) -- on an
+/// already-signed report and re-sign under the SAME identity -- the
+/// "dishonest signer hand-crafts its own report" pattern already
+/// established ad hoc in `tests/equivocation.rs` and `tests/
+/// cross_witness.rs`, lifted into a shared helper since every
 /// malformed-field property in this file needs it.
 fn resign_with_field(
     identity: &ServerIdentity,
@@ -206,7 +210,10 @@ fn resign_with_field(
     field: &str,
     value: serde_json::Value,
 ) -> coz::CozJson {
-    coz.pay[field] = value;
+    match field.split_once('.') {
+        Some((parent, child)) => coz.pay[parent][child] = value,
+        None => coz.pay[field] = value,
+    }
     let pay_bytes = serde_json::to_vec(&coz.pay).expect("serialize restamped pay");
     let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
     coz.sig = sig;
@@ -439,25 +446,33 @@ proptest! {
 
     /// ND.2c: `pr_array_wrap_is_loud_not_unwrapped`
     ///
-    /// The RULING (S3, field-disposition): `pr`/`commit_id` REJECT-LOUDLY
+    /// The RULING (S3, field-disposition): every digest-bearing field --
+    /// `pr`, `commit_id`, and each `roots.{pr,sr,ar,cr}` -- REJECTS-LOUDLY
     /// non-digest encodings; there is no ambiguity to canonicalize away.
     /// `["digest"]` (array-wrapped), a bare JSON number, and JSON `null`
-    /// are the three shapes S3 names. The array variant wraps report A's
-    /// OWN valid `pr` digest string, handed in explicitly rather than
-    /// independently generated, so it exercises the exact trap S0.1/S3
-    /// name: an implementation that "helpfully" unwraps a 1-element array
-    /// would recover a perfectly valid, MATCHING digest and treat the
-    /// pair as the same principal -- silently reopening the evasion one
-    /// layer down. `TipReport::parse` MUST reject every shape, and
-    /// `check_equivocation` MUST NOT fold any of them into `Proven` (an
-    /// array-unwrapping bug reads the wrapped `pr` as equal to `a`'s,
-    /// making `DifferentPrincipal`'s check pass and falling through to a
-    /// FALSE `Proven`) nor any other honest-pair verdict.
+    /// are the three shapes S3 names. Exercised across ALL SIX fields, not
+    /// just `pr`: `commit_id`/`roots.<field>` parse through a DIFFERENT
+    /// function (`parse_digest_field`) than `pr` does (`parse_genesis_id`),
+    /// and the two are documented as rejecting these shapes identically --
+    /// a claim this property now checks on every field that makes it,
+    /// rather than on `pr` alone. The array variant wraps the corrupted
+    /// side's OWN valid value at that field, handed in explicitly rather
+    /// than independently generated, so it exercises the exact trap
+    /// S0.1/S3 names: an implementation that "helpfully" unwraps a
+    /// 1-element array would recover a perfectly valid, MATCHING digest
+    /// and treat the pair as non-conflicting -- silently reopening the
+    /// evasion one layer down. `TipReport::parse` MUST reject every shape
+    /// on every field, and `check_equivocation` MUST NOT fold any of them
+    /// into `Proven` nor any other honest-pair verdict.
     #[test]
     fn pr_array_wrap_is_loud_not_unwrapped(
         pr_bytes in arb_digest_bytes(),
         commit_bytes in arb_digest_bytes(),
-        shape in arb_malformed_pr_shape(),
+        malformed_field in prop_oneof![
+            Just("pr"), Just("commit_id"),
+            Just("roots.pr"), Just("roots.sr"), Just("roots.ar"), Just("roots.cr"),
+        ],
+        shape in arb_malformed_shape(),
     ) {
         let (_dir, identity) = identity_with_seed(0x44);
         let pr_root = digest_string(&pr_bytes);
@@ -471,30 +486,39 @@ proptest! {
         )
         .expect("compose report a");
         let b = receipt::tip_report(
-            &identity, 1_700_000_000, pr.clone(), 5u64, commit_b, &roots, 6, 1_700_000_000,
+            &identity, 1_700_000_000, pr.clone(), 5u64, commit_b.clone(), &roots, 6, 1_700_000_000,
         )
         .expect("compose report b");
 
-        let malformed_pr = match &shape {
-            MalformedPrShape::ArrayWrapSelf => serde_json::json!([pr.clone()]),
-            MalformedPrShape::Null => serde_json::Value::Null,
-            MalformedPrShape::Number(n) => serde_json::json!(n),
+        // The value legitimately sitting at `malformed_field` on `b`
+        // before corruption -- what an array-unwrap bug would recover.
+        let own_value = match malformed_field {
+            "pr" => pr.clone(),
+            "commit_id" => commit_b.clone(),
+            "roots.pr" | "roots.sr" | "roots.ar" | "roots.cr" => pr_root.clone(),
+            _ => unreachable!("prop_oneof exhausts exactly these six field names"),
         };
-        let b = resign_with_field(&identity, b, "pr", malformed_pr.clone());
+
+        let malformed_value = match &shape {
+            MalformedShape::ArrayWrapSelf => serde_json::json!([own_value]),
+            MalformedShape::Null => serde_json::Value::Null,
+            MalformedShape::Number(n) => serde_json::json!(n),
+        };
+        let b = resign_with_field(&identity, b, malformed_field, malformed_value.clone());
 
         prop_assert!(
             TipReport::parse(&b).is_err(),
-            "pr={:?} (shape={:?}) MUST fail TipReport::parse -- not a digest encoding, and the \
+            "{}={:?} (shape={:?}) MUST fail TipReport::parse -- not a digest encoding, and the \
              array case MUST NOT be unwrapped to its inner string",
-            malformed_pr, shape
+            malformed_field, malformed_value, shape
         );
 
         let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
         prop_assert!(
             !is_an_honest_pair_verdict(verdict),
-            "pr={:?} (shape={:?}) MUST NOT be silently unwrapped/compared into any honest-pair \
+            "{}={:?} (shape={:?}) MUST NOT be silently unwrapped/compared into any honest-pair \
              verdict -- got {:?}",
-            malformed_pr, shape, verdict
+            malformed_field, malformed_value, shape, verdict
         );
     }
 
