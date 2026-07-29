@@ -122,6 +122,22 @@ fn sign_receipt(
     roots: &Roots,
     tip_extra: Option<(u64, i64)>,
 ) -> Option<coz::CozJson> {
+    let pr = pr.into();
+    let commit_id = commit_id.into();
+
+    // Refuse to sign a malformed digest into a receipt (S3: receipt
+    // construction validates at the boundary). Parsing (and discarding)
+    // each digest-bearing field as a TaggedDigest before composing the
+    // payload means a value that isn't a valid digest never reaches the
+    // signature -- `?` on `.ok()` returns `None` on the first failure,
+    // matching this function's existing "compose failed" contract.
+    pr.parse::<TaggedDigest>().ok()?;
+    commit_id.parse::<TaggedDigest>().ok()?;
+    roots.pr.parse::<TaggedDigest>().ok()?;
+    roots.sr.parse::<TaggedDigest>().ok()?;
+    roots.ar.parse::<TaggedDigest>().ok()?;
+    roots.cr.parse::<TaggedDigest>().ok()?;
+
     let tmb = identity.alg().compute_thumbprint(identity.pub_key())?;
 
     let mut pay = coz::Pay::new();
@@ -129,11 +145,11 @@ fn sign_receipt(
     pay.now = Some(now);
     pay.tmb = Some(tmb);
     pay.typ = Some(typ.to_string());
-    pay.extra.insert("pr".to_string(), Value::String(pr.into()));
+    pay.extra.insert("pr".to_string(), Value::String(pr));
     pay.extra
         .insert("sequence".to_string(), Value::from(sequence));
     pay.extra
-        .insert("commit_id".to_string(), Value::String(commit_id.into()));
+        .insert("commit_id".to_string(), Value::String(commit_id));
     pay.extra.insert("roots".to_string(), roots.to_value());
     if let Some((commit_count, last_updated)) = tip_extra {
         pay.extra
