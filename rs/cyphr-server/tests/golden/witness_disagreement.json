@@ -1,6 +1,6 @@
 {
   "kind": "equivocation_evidence",
-  "principal_id": "n4-principal-conflicting-tips",
+  "principal_id": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
   "sequence": 5,
   "reports": [
     {
@@ -9,19 +9,19 @@
         "now": 1700000000,
         "tmb": "aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw",
         "typ": "cyphr-server/receipt/tip",
-        "pr": "n4-principal-conflicting-tips",
+        "pr": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
         "sequence": 5,
-        "commit_id": "SHA-256:commit_id_aaaaa",
+        "commit_id": "SHA-256:GhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGho",
         "roots": {
-          "pr": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-          "sr": "SHA-256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-          "ar": "SHA-256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-          "cr": "SHA-256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+          "pr": "SHA-256:oaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaE",
+          "sr": "SHA-256:oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqI",
+          "ar": "SHA-256:o6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6M",
+          "cr": "SHA-256:pKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKQ"
         },
         "commit_count": 6,
         "last_updated": 1700000000
       },
-      "sig": "nFvuHHsRTUutd4TPQTRF_pW8JF1v5T_D1sPpr71lq7xqIuJgTvhxa8LoW7XMG4wxCeeWXdyKVDIAgkli5kNoAA"
+      "sig": "66vnYOoouVyWn5myXNDVCrqlyAf2RggXbuyDenG08LoFFCPH9nJ6r0HUIfpcgxQXU4XjCBNPSODuoJuZtzTYBQ"
     },
     {
       "pay": {
@@ -29,19 +29,19 @@
         "now": 1700000000,
         "tmb": "YiwVM5dI4WE8qEoVuaLa_w8s1dTnIHDvLnf306xslyGQBm-wduDT5VzFZ9d4Lmyq3xAnJ1_B9k1mnixxT6VtqQ",
         "typ": "cyphr-server/receipt/tip",
-        "pr": "n4-principal-conflicting-tips",
+        "pr": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
         "sequence": 5,
-        "commit_id": "SHA-256:commit_id_bbbbb",
+        "commit_id": "SHA-256:GxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxs",
         "roots": {
-          "pr": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-          "sr": "SHA-256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-          "ar": "SHA-256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-          "cr": "SHA-256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
+          "pr": "SHA-256:oaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaE",
+          "sr": "SHA-256:oqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqI",
+          "ar": "SHA-256:o6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6Ojo6M",
+          "cr": "SHA-256:paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaU"
         },
         "commit_count": 6,
         "last_updated": 1700000000
       },
-      "sig": "z0ZrcAuLovynS8V3tJ-N_nHRfIdQ4CmTGxFAWpHT5za5S1-gYXmBWNVEFbfwfk0Ij26Fou9hZHirIC5akfKLCg"
+      "sig": "cprGpiLsBXEyvZRWmTNwEABFpjfAyZB1XM4jDsWrcMZY3OTIq9X-Ncw5T5SRM2DyYSbK7KQ9VgLWFurO6Hg-Ag"
     }
   ]
 }

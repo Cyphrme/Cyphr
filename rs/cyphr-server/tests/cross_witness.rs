@@ -22,11 +22,25 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::commit_root::hash_alg_to_u64;
 use cyphr::principal_tree::PrincipalTree;
 use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
+use cyphr::state::TaggedDigest;
 use cyphr::{HashAlg, LeafProof};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::receipt::{self, Roots};
 
 mod common;
+
+/// Render a distinct, valid SHA-256 digest string from a repeated seed
+/// byte -- the same convention `roots_a`/`roots_b` already use (all-`A`/
+/// `B`/`C`/`D`/`E` blocks), extended to every `pr`/`commit_id` fixture in
+/// this file. Node ND's typed `check_equivocation` parses `pr`/`commit_id`
+/// as `TaggedDigest`, so a human-readable placeholder like `"principal-x"`
+/// no longer round-trips through `receipt::tip_report` -- every fixture
+/// here must be a digest that genuinely parses.
+fn digest(byte: u8) -> String {
+    TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
+        .expect("32 bytes is SHA-256's expected digest length")
+        .to_string()
+}
 
 /// Read a committed golden vector, trimming a trailing newline so the
 /// file can end in one.
@@ -61,18 +75,25 @@ fn identity_with_seed(seed: u8) -> (tempfile::TempDir, ServerIdentity) {
     (dir, identity)
 }
 
+/// Two root sets that differ only in `cr`, standing in for a conflicting
+/// commit outcome at the same chain position. Generated via [`digest`]
+/// rather than hand-typed repeated-letter literals: a repeated-letter
+/// base64url block is canonical only when the letter's value is zero
+/// (`A`) -- `B`/`C`/`D`/`E` blocks of the same shape leave nonzero
+/// trailing bits in the final character, which `TaggedDigest::from_str`'s
+/// strict decoder rejects even though a lenient decoder would accept them.
 fn roots_a() -> Roots {
     Roots {
-        pr: "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
-        sr: "SHA-256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
-        ar: "SHA-256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_string(),
-        cr: "SHA-256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD".to_string(),
+        pr: digest(0xa1),
+        sr: digest(0xa2),
+        ar: digest(0xa3),
+        cr: digest(0xa4),
     }
 }
 
 fn roots_b() -> Roots {
     Roots {
-        cr: "SHA-256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE".to_string(),
+        cr: digest(0xa5),
         ..roots_a()
     }
 }
@@ -131,33 +152,15 @@ async fn conflicting_tips_yield_evidence() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
-    let pr = "n4-principal-conflicting-tips";
+    let pr = digest(0x10);
     let seq = 5;
     let now = 1_700_000_000;
 
-    let tip_a = receipt::tip_report(
-        &identity_a,
-        now,
-        pr,
-        seq,
-        "SHA-256:commit_id_aaaaa",
-        &roots_a(),
-        6,
-        now,
-    )
-    .expect("compose tip A");
+    let tip_a = receipt::tip_report(&identity_a, now, &pr, seq, digest(0x1a), &roots_a(), 6, now)
+        .expect("compose tip A");
 
-    let tip_b = receipt::tip_report(
-        &identity_b,
-        now,
-        pr,
-        seq,
-        "SHA-256:commit_id_bbbbb",
-        &roots_b(),
-        6,
-        now,
-    )
-    .expect("compose tip B");
+    let tip_b = receipt::tip_report(&identity_b, now, &pr, seq, digest(0x1b), &roots_b(), 6, now)
+        .expect("compose tip B");
 
     let verdict =
         receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
@@ -189,17 +192,17 @@ async fn three_plus_witness_array_scan() {
     let (_dir_w1, identity_w1) = identity_with_seed(0x22);
     let (_dir_w2, identity_w2) = identity_with_seed(0x33);
 
-    let pr_other = "n4-principal-other";
-    let pr_target = "n4-principal-target";
+    let pr_other = digest(0x20);
+    let pr_target = digest(0x21);
     let seq = 5;
     let now = 1_700_000_000;
 
     let tip_w0 = receipt::tip_report(
         &identity_w0,
         now,
-        pr_other,
+        &pr_other,
         seq,
-        "SHA-256:commit_id_00000",
+        digest(0x2a),
         &roots_a(),
         6,
         now,
@@ -209,9 +212,9 @@ async fn three_plus_witness_array_scan() {
     let tip_w1 = receipt::tip_report(
         &identity_w1,
         now,
-        pr_target,
+        &pr_target,
         seq,
-        "SHA-256:commit_id_11111",
+        digest(0x2b),
         &roots_a(),
         6,
         now,
@@ -221,9 +224,9 @@ async fn three_plus_witness_array_scan() {
     let tip_w2 = receipt::tip_report(
         &identity_w2,
         now,
-        pr_target,
+        &pr_target,
         seq,
-        "SHA-256:commit_id_22222",
+        digest(0x2c),
         &roots_b(),
         6,
         now,
@@ -247,38 +250,29 @@ async fn three_plus_witness_array_scan() {
 
 /// N4.1c: `non_standard_json_types_surfaced_by_consistency_check`
 ///
-/// Verifies that when tip reports carry non-string `pr` (e.g. integer) or non-u64 `sequence`
-/// (e.g. string), proven equivocations are NOT silently dropped by check_cross_witness_consistency.
+/// Verifies that a `pr` restamped to a non-standard JSON type (an integer,
+/// which is not a digest encoding at all) is neither silently compared
+/// nor silently proven: `check_equivocation` diagnoses it as `Malformed`
+/// (node ND's typed-domain boundary, `receipt::TipReport::parse`), and
+/// `check_cross_witness_consistency` -- which forwards a claim only on
+/// `Proven` -- produces no claim for the pair. Before node ND, this test
+/// asserted the opposite (a restamped-integer `pr` still reached `Proven`
+/// and a forwarded claim); that assertion is now wrong by construction,
+/// since an integer `pr` fails to parse as a `TaggedDigest` on both
+/// sides -- see `receipt::TipReport::parse`'s field-disposition ruling.
 #[tokio::test]
 async fn non_standard_json_types_surfaced_by_consistency_check() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
     let now = 1_700_000_000;
+    let pr = digest(0x30);
 
-    let mut tip_a = receipt::tip_report(
-        &identity_a,
-        now,
-        "dummy",
-        1,
-        "SHA-256:commit_id_aaaaa",
-        &roots_a(),
-        6,
-        now,
-    )
-    .expect("compose tip A");
+    let mut tip_a = receipt::tip_report(&identity_a, now, &pr, 1, digest(0x3a), &roots_a(), 6, now)
+        .expect("compose tip A");
 
-    let mut tip_b = receipt::tip_report(
-        &identity_b,
-        now,
-        "dummy",
-        1,
-        "SHA-256:commit_id_bbbbb",
-        &roots_b(),
-        6,
-        now,
-    )
-    .expect("compose tip B");
+    let mut tip_b = receipt::tip_report(&identity_b, now, &pr, 1, digest(0x3b), &roots_b(), 6, now)
+        .expect("compose tip B");
 
     tip_a.pay["pr"] = serde_json::json!(9999);
     tip_a.pay["sequence"] = serde_json::json!("42");
@@ -294,20 +288,24 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
 
     let verdict =
         receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
-    assert_eq!(verdict, receipt::EquivocationVerdict::Proven);
+    assert_eq!(
+        verdict,
+        receipt::EquivocationVerdict::Malformed,
+        "an integer `pr` is not a digest encoding on either side -- MALFORMED, not silently \
+         Proven (node ND's typed-domain boundary)"
+    );
 
     let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
         (&tip_a, identity_a.pub_key()),
         (&tip_b, identity_b.pub_key()),
-    ])
-    .expect(
-        "check_cross_witness_consistency MUST NOT drop proven equivocation with atypical JSON \
-         types",
+    ]);
+    assert!(
+        claim.is_none(),
+        "check_cross_witness_consistency forwards a claim only on a Proven verdict; a malformed \
+         pair yields none here -- the distinct diagnostic lives at check_equivocation's verdict, \
+         not at this surface (node ND's S5.1 consumer contract leaves closing this gap to N1/N2's \
+         ingestion-rejection)"
     );
-
-    assert_eq!(claim["kind"], "equivocation_evidence");
-    assert_eq!(claim["principal_id"], 9999);
-    assert_eq!(claim["sequence"], "42");
 }
 
 /// N4.2: `evidence_verifies_offline`
@@ -320,16 +318,16 @@ async fn evidence_verifies_offline() {
     let (_dir_a, identity_a) = identity_with_seed(0x33);
     let (_dir_b, identity_b) = identity_with_seed(0x44);
 
-    let pr = "n4-principal-offline-verification";
+    let pr = digest(0x40);
     let seq = 10;
     let now = 1_700_050_000;
 
     let tip1 = receipt::tip_report(
         &identity_a,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:commit_id_11111",
+        digest(0x4a),
         &roots_a(),
         11,
         now,
@@ -339,9 +337,9 @@ async fn evidence_verifies_offline() {
     let tip2 = receipt::tip_report(
         &identity_b,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:commit_id_22222",
+        digest(0x4b),
         &roots_b(),
         11,
         now,
@@ -461,16 +459,16 @@ async fn fork_detection_ignores_self_assertion() {
     let (_dir_valid, valid_identity) = identity_with_seed(0x55);
     let (_dir_untrusted, untrusted_identity) = identity_with_seed(0x66);
 
-    let pr = "n4-principal-fork-self-assertion";
+    let pr = digest(0x70);
     let seq = 7;
     let now = 1_700_000_000;
 
     let valid_tip = receipt::tip_report(
         &valid_identity,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:valid_commit_id",
+        digest(0x7a),
         &roots_a(),
         8,
         now,
@@ -480,9 +478,9 @@ async fn fork_detection_ignores_self_assertion() {
     let self_asserted_tip = receipt::tip_report(
         &untrusted_identity,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:self_asserted_conflicting_commit",
+        digest(0x7b),
         &roots_b(),
         8,
         now,
@@ -559,33 +557,16 @@ async fn agreement_produces_no_standing_claim() {
     let (_dir_a, identity_a) = identity_with_seed(0x77);
     let (_dir_b, identity_b) = identity_with_seed(0x88);
 
-    let pr = "n4-principal-agreement";
+    let pr = digest(0x90);
+    let commit_id = digest(0x9a);
     let seq = 12;
     let now = 1_700_000_000;
 
-    let tip_a = receipt::tip_report(
-        &identity_a,
-        now,
-        pr,
-        seq,
-        "SHA-256:agreeing_commit_id",
-        &roots_a(),
-        13,
-        now,
-    )
-    .expect("compose tip A");
+    let tip_a = receipt::tip_report(&identity_a, now, &pr, seq, &commit_id, &roots_a(), 13, now)
+        .expect("compose tip A");
 
-    let tip_b = receipt::tip_report(
-        &identity_b,
-        now,
-        pr,
-        seq,
-        "SHA-256:agreeing_commit_id",
-        &roots_a(),
-        13,
-        now,
-    )
-    .expect("compose tip B");
+    let tip_b = receipt::tip_report(&identity_b, now, &pr, seq, &commit_id, &roots_a(), 13, now)
+        .expect("compose tip B");
 
     let verdict =
         receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
@@ -617,37 +598,19 @@ async fn golden_disagreement_artifact_byte_stable() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
-    let pr = "n4-principal-conflicting-tips";
+    let pr = digest(0x10);
     let seq = 5;
     let now = 1_700_000_000;
 
-    let tip_a = receipt::tip_report(
-        &identity_a,
-        now,
-        pr,
-        seq,
-        "SHA-256:commit_id_aaaaa",
-        &roots_a(),
-        6,
-        now,
-    )
-    .expect("compose tip A");
+    let tip_a = receipt::tip_report(&identity_a, now, &pr, seq, digest(0x1a), &roots_a(), 6, now)
+        .expect("compose tip A");
 
-    let tip_b = receipt::tip_report(
-        &identity_b,
-        now,
-        pr,
-        seq,
-        "SHA-256:commit_id_bbbbb",
-        &roots_b(),
-        6,
-        now,
-    )
-    .expect("compose tip B");
+    let tip_b = receipt::tip_report(&identity_b, now, &pr, seq, digest(0x1b), &roots_b(), 6, now)
+        .expect("compose tip B");
 
     let evidence_json = serde_json::json!({
         "kind": "equivocation_evidence",
-        "principal_id": pr,
+        "principal_id": &pr,
         "sequence": seq,
         "reports": [tip_a.clone(), tip_b.clone()],
     });
@@ -672,16 +635,16 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
     let (_dir_valid, valid_identity) = identity_with_seed(0x55);
     let (_dir_untrusted, untrusted_identity) = identity_with_seed(0x66);
 
-    let pr = "n4-principal-unauthenticated-tips";
+    let pr = digest(0xb0);
     let seq = 7;
     let now = 1_700_000_000;
 
     let valid_tip = receipt::tip_report(
         &valid_identity,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:valid_commit_id",
+        digest(0xba),
         &roots_a(),
         8,
         now,
@@ -691,9 +654,9 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
     let forged_tip = receipt::tip_report(
         &untrusted_identity,
         now,
-        pr,
+        &pr,
         seq,
-        "SHA-256:forged_conflicting_commit",
+        digest(0xbb),
         &roots_b(),
         8,
         now,
