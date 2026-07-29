@@ -161,8 +161,21 @@ async fn delete_witness_register(
 async fn register_list_revoke_roundtrip() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "n1-roundtrip-principal";
-    let witness_pg = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+    // Direction A (S3): a non-resident principal's `principal_id` IS the
+    // signer's own thumbprint. This fixture previously used an arbitrary
+    // label and only registered because `witness_pg` below happened to
+    // equal golden's own tmb -- the Direction-B bypass N0's
+    // registration-authz rework closes. Corrected to genuine Direction A:
+    // `pid` is golden's tmb AND `witness_pg` no longer coincides with it,
+    // so this test exercises Direction A only, not Direction A confounded
+    // with a residual Direction-B match.
+    let golden_tmb = pool
+        .get("golden")
+        .expect("golden key")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let pid = golden_tmb.as_str();
+    let witness_pg = "http://roundtrip-witness.example";
 
     // Step 1: Register witness via POST /witness/register
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, witness_pg, "create", NOW);
@@ -438,8 +451,16 @@ async fn unauthenticated_registration_refused() {
 async fn responses_carry_freshness() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "n1-freshness-principal";
-    let witness_pg = "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg";
+    // Direction A (S3): see `register_list_revoke_roundtrip` above -- this
+    // fixture had the same accidental Direction-B dependency (`pid` AND
+    // `witness_pg`), corrected the same way.
+    let golden_tmb = pool
+        .get("golden")
+        .expect("golden key")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let pid = golden_tmb.as_str();
+    let witness_pg = "http://freshness-witness.example";
 
     let reg_coz = build_witness_register_coz(&pool, "golden", pid, witness_pg, "create", NOW);
     let (status, json) = post_witness_register(&state, reg_coz).await;
@@ -523,22 +544,26 @@ async fn revocation_retains_record() {
 async fn bound_refuses_rather_than_evicts() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "n1-bound-principal";
+    // Direction A (S3): this fixture previously used an arbitrary
+    // `principal_id` label and bootstrapped itself via registration #0's
+    // Direction-B coincidence (a witness_id naming golden's own key), then
+    // rode the resulting implicit `authorized_keys` seeding -- both closed
+    // by N0's registration-authz rework -- to authorize #1..#9. Corrected
+    // to genuine Direction A throughout: every registration is directly
+    // authorized by `signer_tmb == principal_id`, so no seeding step (and
+    // no special-cased witness #0) is needed.
     let golden_tmb = pool
         .get("golden")
         .expect("golden key")
         .compute_tmb_b64()
         .expect("golden tmb");
+    let pid = golden_tmb.as_str();
 
     let max_bound = 10;
     let mut registered_pgs = Vec::new();
 
     for i in 0..max_bound {
-        let witness_pg = if i == 0 {
-            format!("SHA-256:{golden_tmb}")
-        } else {
-            format!("SHA-256:witness_pg_bound_{i:04}")
-        };
+        let witness_pg = format!("SHA-256:witness_pg_bound_{i:04}");
         let coz =
             build_witness_register_coz(&pool, "golden", pid, &witness_pg, "create", NOW + i as i64);
         let (status, json) = post_witness_register(&state, coz).await;
@@ -595,31 +620,61 @@ async fn bound_refuses_rather_than_evicts() {
 // ========================================================================
 // N0 — registration authorization: class-closing property tests
 //
-// The four named example tests above (`third_party_cannot_register_*`,
-// `third_party_cannot_delete_*`) each isolate ONE historically-exploited
-// `witness_id` shape. They stay as regression anchors, but the class-closer
-// is the property below: `check_registration_authorization`'s caller-facing
-// contract (`verify_witness_register_envelope`, src/routes.rs:590-673) takes
-// `witness_id` as an opaque, wire-supplied `&str` with no shape validation at
-// all -- so the invariant's domain is "any string", not "the three shapes
-// someone once tried." The generator below is built from that domain, not
-// from the guard's branches: an unweighted arbitrary-Unicode-string arm
-// covers the whole space; the URL / `SHA-256:`-arbitrary-length / bare /
-// empty arms exist only to raise sampling density over the historically
-// interesting sub-regions, and narrow nothing (the arbitrary arm alone
-// already contains them).
+// The fix (S0/S3, head-ratified): self-registration is legitimate ONLY when
+// `signer_tmb == principal_id` (Direction A). The guard's prior heuristic --
+// treating a `witness_id` that names the signer's OWN key as authorization
+// for ANY `principal_id` (Direction B: `witness_id == signer_tmb` or
+// `witness_id.strip_prefix("SHA-256:") == Some(signer_tmb)`) -- is REMOVED.
+// It conflated "this witness names my key" with "I may register for this
+// principal," two unrelated propositions, and is the live bypass this node
+// closes: an attacker registers `witness_id = "SHA-256:<their own key>"` for
+// a principal they do not control; combined with the (also removed)
+// implicit `authorized_keys` seeding, that single call seeds them into the
+// victim principal's key list.
+//
+// `check_registration_authorization`'s caller-facing contract
+// (`verify_witness_register_envelope`, src/routes.rs:590-673) takes
+// `witness_id` as an opaque, wire-supplied `&str` with no shape validation
+// at all -- so the invariant's domain is "any string," not "the three
+// shapes someone once tried." The generator below is built from that
+// domain, not from the guard's branches: an unweighted arbitrary-Unicode-
+// string arm covers the whole space; the URL / `SHA-256:`-arbitrary-length /
+// bare / empty arms raise sampling density over the historically interesting
+// sub-regions and narrow nothing. The signer's-own-key arms (`bare` /
+// `prefixed`, added below) are the one exception that must be explicit
+// rather than density-boosted: the bypass shape is one exact 43-character
+// base64 string, and no random-string strategy will land on it by chance
+// with any practical probability, so without a dedicated arm this property
+// could pass by simply never trying the shape that matters.
 // ========================================================================
 
-/// The domain a `witness_id` can inhabit on the wire: an arbitrary string.
-/// See the module doc above for why the non-`.*` arms are density boosters,
-/// not a restriction of the space.
-fn witness_id_strategy() -> impl Strategy<Value = String> {
+/// The signer key used throughout this module's properties. Computed once
+/// per property invocation (the `in` clause of a `proptest!` parameter runs
+/// once, before case generation begins, so an ordinary pool lookup here is
+/// fine) so the generator can manufacture the Direction-B bypass shape
+/// against the SAME key the property later signs with.
+fn alice_tmb() -> String {
+    common::load_pool()
+        .get("alice")
+        .expect("alice key in pool")
+        .compute_tmb_b64()
+        .expect("alice tmb b64")
+}
+
+/// The domain a `witness_id` can inhabit on the wire: an arbitrary string,
+/// with explicit density on the historically interesting sub-regions
+/// (including the Direction-B bypass shape -- `own_tmb`, bare and
+/// `SHA-256:`-prefixed). See the module doc above for why the non-`.*` arms
+/// are density boosters, not a restriction of the space.
+fn witness_id_strategy(own_tmb: &str) -> impl Strategy<Value = String> {
     prop_oneof![
         2 => ".*",
         2 => "(http|https)://[a-zA-Z0-9.-]{1,40}(/[a-zA-Z0-9_-]{0,20}){0,3}",
         2 => "SHA-256:.{0,80}",
         1 => Just(String::new()),
         1 => "[a-zA-Z0-9_-]{1,64}",
+        2 => Just(own_tmb.to_string()),
+        2 => Just(format!("SHA-256:{own_tmb}")),
     ]
 }
 
@@ -659,26 +714,21 @@ proptest! {
 
     /// N0.1: `registration_refuses_unbound_signer_property`
     ///
-    /// For any signer key NOT bound to `principal_id` (a fresh principal:
-    /// not resident, no authorized keys, and not the signer itself), and for
-    /// ANY `witness_id` shape and EITHER verb, registration MUST be
-    /// refused. This single generated property subsumes the three named
-    /// regression anchors (URL, malformed thumbprint, delete verb) plus
-    /// every other shape in the domain: bare tokens, empty strings,
-    /// arbitrary Unicode, and `SHA-256:`-prefixed strings of any length.
-    ///
-    /// The two legitimate self-registration directions (`signer_tmb ==
-    /// principal_id`, and `witness_id` naming the signer's own key) are
-    /// excluded by precondition here -- they are `witness_id` values the
-    /// current guard treats as authorized by design (S3), and are covered
-    /// by their own, independent property below (N0.2). Excluding them by
-    /// `prop_assume!` rather than baking them into the refusal claim keeps
-    /// this property's statement exactly "unbound signer -> refused",
-    /// with no silent narrowing.
+    /// For any signer key NOT bound to `principal_id` (`signer_tmb !=
+    /// principal_id` -- Direction A, the only legitimate shape, is the sole
+    /// exclusion), registration MUST be refused for ANY `witness_id` shape
+    /// and EITHER verb -- INCLUDING `witness_id` that names the signer's own
+    /// key (Direction B). Direction B is no longer excluded here: it is the
+    /// live bypass, and asserting it refused is the entire point of this
+    /// rework (S0/S3). This single generated property subsumes the three
+    /// regression anchors (URL, malformed thumbprint, delete verb) plus the
+    /// rest of the domain: bare tokens, empty strings, arbitrary Unicode,
+    /// `SHA-256:`-prefixed strings of any length, and the signer's own
+    /// thumbprint bare or prefixed.
     #[test]
     fn registration_refuses_unbound_signer_property(
         principal_id in principal_id_strategy(),
-        witness_id in witness_id_strategy(),
+        witness_id in witness_id_strategy(&alice_tmb()),
         verb in verb_strategy(),
     ) {
         let pool = common::load_pool();
@@ -688,10 +738,9 @@ proptest! {
             .compute_tmb_b64()
             .expect("alice tmb b64");
 
-        // Exclude the legitimate self-registration directions (N0.2's domain).
+        // Direction A (signer == principal) is the only legitimate
+        // self-registration (S3); it is N0.2's domain, not this property's.
         prop_assume!(principal_id != signer_tmb);
-        prop_assume!(witness_id != signer_tmb);
-        prop_assume!(witness_id.strip_prefix("SHA-256:") != Some(signer_tmb.as_str()));
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (status, json) =
@@ -700,35 +749,30 @@ proptest! {
         prop_assert_eq!(
             status,
             StatusCode::UNAUTHORIZED,
-            "unbound signer must be refused: principal_id={:?}, witness_id={:?}, verb={}, response={:?}",
+            "unbound signer must be refused regardless of witness_id shape, including the \
+             signer's-own-key Direction-B bypass shape: principal_id={:?}, witness_id={:?}, \
+             verb={}, response={:?}",
             principal_id, witness_id, verb, json
         );
     }
 
     /// N0.2: `registration_permits_self_registration_property`
     ///
-    /// The dual of N0.1: the two legitimate self-registration directions
-    /// (S3) remain permitted under generation, for either verb.
+    /// The dual of N0.1: Direction A (`signer_tmb == principal_id`) remains
+    /// permitted under generation, for ANY `witness_id` shape and EITHER
+    /// verb. This is an INDEPENDENT test fn from N0.1, phrased to catch a
+    /// regression that over-tightens the guard and starts refusing
+    /// legitimate self-registration -- the same way N0.1 catches
+    /// under-tightening.
     ///
-    /// Direction A -- the signer registers a witness for itself
-    /// (`signer_tmb == principal_id`) -- is permitted for ANY `witness_id`
-    /// shape. Direction B -- `witness_id` names the signer's own key,
-    /// either bare (`witness_id == signer_tmb`) or `SHA-256:`-prefixed
-    /// (`witness_id == "SHA-256:" + signer_tmb`) -- is permitted for ANY
-    /// distinct `principal_id`. Both directions are generated independently
-    /// (`prop_oneof!`), so a regression that over-tightens the guard and
-    /// starts rejecting legitimate self-registration is caught the same as
-    /// a regression that under-tightens it (N0.1).
+    /// Direction B ("`witness_id` names the signer's own key" for a
+    /// DIFFERENT `principal_id`) is deliberately NOT asserted permitted
+    /// here -- that was the prior suite's defect (S0): it encoded the
+    /// bypass as legitimate. Direction B now lives entirely in N0.1's
+    /// refused domain.
     #[test]
     fn registration_permits_self_registration_property(
-        direction in prop_oneof![
-            witness_id_strategy().prop_map(SelfRegDirection::SignerIsPrincipal),
-            (principal_id_strategy(), any::<bool>())
-                .prop_map(|(principal_id, sha256_prefixed)| SelfRegDirection::WitnessNamesSigner {
-                    principal_id,
-                    sha256_prefixed,
-                }),
-        ],
+        witness_id in witness_id_strategy(&alice_tmb()),
         verb in verb_strategy(),
     ) {
         let pool = common::load_pool();
@@ -737,21 +781,7 @@ proptest! {
             .expect("alice key in pool")
             .compute_tmb_b64()
             .expect("alice tmb b64");
-
-        let (principal_id, witness_id) = match direction {
-            SelfRegDirection::SignerIsPrincipal(witness_id) => (signer_tmb.clone(), witness_id),
-            SelfRegDirection::WitnessNamesSigner { principal_id, sha256_prefixed } => {
-                // Direction A already covers signer_tmb == principal_id; keep
-                // this arm disjoint so each direction is tested in isolation.
-                prop_assume!(principal_id != signer_tmb);
-                let witness_id = if sha256_prefixed {
-                    format!("SHA-256:{signer_tmb}")
-                } else {
-                    signer_tmb.clone()
-                };
-                (principal_id, witness_id)
-            }
-        };
+        let principal_id = signer_tmb.clone();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (status, json) =
@@ -761,22 +791,93 @@ proptest! {
         prop_assert_eq!(
             status,
             expected,
-            "legitimate self-registration must be permitted: principal_id={:?}, witness_id={:?}, \
-             verb={}, response={:?}",
+            "legitimate Direction-A self-registration must be permitted: principal_id={:?}, \
+             witness_id={:?}, verb={}, response={:?}",
             principal_id, witness_id, verb, json
         );
     }
 }
 
-/// The two legitimate self-registration directions generated by
-/// `registration_permits_self_registration_property` (N0.2). Kept as an enum
-/// rather than two separate test functions so a single property statement
-/// covers both, matching N0.1's single-property shape for the dual claim.
-#[derive(Debug, Clone)]
-enum SelfRegDirection {
-    SignerIsPrincipal(String),
-    WitnessNamesSigner {
-        principal_id: String,
-        sha256_prefixed: bool,
-    },
+/// N0.4: `grant_on_absence_is_refused`
+///
+/// A targeted, example-level companion to N0.1's generative claim, isolating
+/// the two concrete conditions the guard's `else` branch (`routes.rs:713-
+/// 735`) used to conflate:
+///
+/// - **Absence**: an unbound signer, an ordinary (non-coincidental) `witness_id`, against a
+///   principal with no tip and no `authorized_keys` entry at all. Absence of authorization evidence
+///   must never itself grant -- this already refuses on the unfixed guard (nothing in the current
+///   code grants on absence alone once `has_authorized_keys` is false and no `witness_id` heuristic
+///   matches).
+/// - **Direction-B string-coincidence**: `witness_id` names the signer's own key, for a principal
+///   the signer does not control. This is the live bypass and is RED here until the fix lands.
+#[tokio::test]
+async fn grant_on_absence_is_refused() {
+    let pool = common::load_pool();
+    let signer_tmb = pool
+        .get("alice")
+        .expect("alice key in pool")
+        .compute_tmb_b64()
+        .expect("alice tmb b64");
+
+    for verb in ["create", "delete"] {
+        let (status, json) =
+            attempt_registration(&pool, "n0-absence-target", "http://attacker.example", verb).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "absent-authorization state must refuse (verb={verb}): {json:?}"
+        );
+
+        let (status, json) = attempt_registration(
+            &pool,
+            "n0-direction-b-target",
+            &format!("SHA-256:{signer_tmb}"),
+            verb,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "Direction-B string-coincidence must refuse (verb={verb}): {json:?}"
+        );
+    }
+}
+
+/// N0.5b: `principal_manages_own_witnesses`
+///
+/// Bootstrap preservation (S0 RULINGS, S3): the fix must not lock a
+/// principal out of managing its own witness set before it is resident. A
+/// principal (`signer_tmb == principal_id`, Direction A) registers AND
+/// revokes its own witness for its non-resident principal, for both verbs,
+/// and both MUST succeed -- Direction A is the one legitimate shape N0.1 and
+/// N0.4 refuse around, so closing the bypass must not also close this.
+#[tokio::test]
+async fn principal_manages_own_witnesses() {
+    let pool = common::load_pool();
+    let (state, _dir) = fresh_keyed_state();
+    let signer_tmb = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb b64");
+    let witness_pg = "http://self-managed.example";
+
+    let reg_coz =
+        build_witness_register_coz(&pool, "golden", &signer_tmb, witness_pg, "create", NOW);
+    let (reg_status, reg_json) = post_witness_register(&state, reg_coz).await;
+    assert_eq!(
+        reg_status,
+        StatusCode::CREATED,
+        "principal must be able to register a witness for itself: {reg_json:?}"
+    );
+
+    let del_coz =
+        build_witness_register_coz(&pool, "golden", &signer_tmb, witness_pg, "delete", NOW + 1);
+    let (del_status, del_json) = delete_witness_register(&state, del_coz).await;
+    assert_eq!(
+        del_status,
+        StatusCode::OK,
+        "principal must be able to revoke its own witness: {del_json:?}"
+    );
 }
