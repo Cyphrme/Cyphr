@@ -145,7 +145,12 @@ fn sign_receipt(
     roots.pr.parse::<TaggedDigest>().ok()?;
     roots.sr.parse::<TaggedDigest>().ok()?;
     roots.ar.parse::<TaggedDigest>().ok()?;
-    roots.cr.parse::<TaggedDigest>().ok()?;
+    // `cr` alone may legitimately be empty: storage's sentinel for "no
+    // commit root yet" (a principal that is key-established but has not
+    // finalized a data commit). Accept that one value through the same
+    // optional-parse path `TipReport::parse` uses below; any other
+    // malformed string still refuses to sign.
+    parse_optional_digest_str(&roots.cr).ok()?;
 
     let tmb = identity.alg().compute_thumbprint(identity.pub_key())?;
 
@@ -181,12 +186,18 @@ fn sign_receipt(
 /// domain (S3 of `ND-typed-witness-domain.md`): the same four fields
 /// [`Roots`] carries on the wire, but each one validated into a
 /// [`TaggedDigest`] rather than trusted as a bare `String`.
+///
+/// `cr` alone is `Option`: a principal that is key-established but has not
+/// yet finalized a data commit has no commit root, and storage's
+/// re-derivation reports that absence as an empty wire string -- typed
+/// here as `None` rather than rejected as malformed. `pr`/`sr`/`ar` are
+/// always present once a principal exists, so they stay mandatory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TipReportRoots {
     pub pr: TaggedDigest,
     pub sr: TaggedDigest,
     pub ar: TaggedDigest,
-    pub cr: TaggedDigest,
+    pub cr: Option<TaggedDigest>,
 }
 
 /// A signed tip report's claims, canonically parsed (S3): the typed
@@ -271,7 +282,7 @@ impl TipReport {
                     source,
                 }
             })?,
-            cr: parse_digest_field(&coz.pay["roots"]["cr"]).map_err(|source| {
+            cr: parse_optional_digest_field(&coz.pay["roots"]["cr"]).map_err(|source| {
                 TipReportParseError::Roots {
                     field: "cr",
                     source,
@@ -299,6 +310,33 @@ fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error
             "not a JSON string -- digests are never arrays, numbers, or null",
         ))
         .and_then(|s| s.parse())
+}
+
+/// Parse a `roots.cr`-shaped JSON value: it MUST still be a JSON string
+/// (an array, a number, or `null` is not a digest encoding, exactly as
+/// [`parse_digest_field`]), but an EMPTY string is not malformed -- it is
+/// storage's sentinel for "no commit root yet" (a principal that is
+/// key-established but has not finalized a data commit) -- and parses to
+/// `None`. Any other non-empty string still parses as a [`TaggedDigest`]
+/// or rejects loudly, exactly as every other digest field.
+fn parse_optional_digest_field(value: &Value) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
+    value
+        .as_str()
+        .ok_or(cyphr::error::Error::MalformedDigest(
+            "not a JSON string -- digests are never arrays, numbers, or null",
+        ))
+        .and_then(parse_optional_digest_str)
+}
+
+/// Parse a `cr`-shaped wire string: empty means "no commit root yet"
+/// (`None`); anything else must parse as a [`TaggedDigest`]. Shared by
+/// [`parse_optional_digest_field`] (typed parse) and [`sign_receipt`]
+/// (construction-time validation) so both accept the same one exception.
+fn parse_optional_digest_str(s: &str) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
+    if s.is_empty() {
+        return Ok(None);
+    }
+    s.parse().map(Some)
 }
 
 /// Parse a JSON value as a genesis identifier -- `pr`'s disposition under

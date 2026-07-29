@@ -561,3 +561,54 @@ proptest! {
         );
     }
 }
+
+/// `genesis_commit_root_is_accepted`
+///
+/// A principal that has been key-established but has not yet finalized a
+/// data commit has no commit root: storage's re-derivation returns `""`
+/// for `cr` in exactly that state, while every other root (`pr`/`sr`/`ar`)
+/// already carries a genuine value. `""` is the wire sentinel for "no
+/// commit root yet," not a malformed digest -- `receipt::tip_report`/
+/// `commit_receipt` MUST sign a genesis-stage report rather than refusing
+/// the whole receipt over one legitimately-absent field, and the parse
+/// MUST canonicalize that absence to `None`, never reject it.
+///
+/// EMPIRICALLY confirmed RED before this fix: `tip_report` with
+/// `roots.cr == ""` returned `None` under the unmodified `sign_receipt`,
+/// which validated `cr` identically to `pr`/`sr`/`ar` (an unconditional
+/// `TaggedDigest` parse) -- refusing to sign an entirely valid genesis
+/// report.
+#[test]
+fn genesis_commit_root_is_accepted() {
+    let (_dir, identity) = identity_with_seed(0x66);
+    let pr_root = digest_string(&[0x77; 32]);
+    let pr = principal_digest(&[0x77; 32]);
+    let commit_id = digest_string(&[0x88; 32]);
+    // `cr` empty -- storage's sentinel for "no commit root yet."
+    let roots = roots_from(&pr_root, &pr_root, &pr_root, "");
+
+    let coz = receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        pr.clone(),
+        0u64,
+        commit_id,
+        &roots,
+        1,
+        1_700_000_000,
+    )
+    .expect(
+        "tip_report MUST sign a genesis-stage report whose commit root is legitimately absent",
+    );
+
+    assert_eq!(
+        coz.pay["roots"]["cr"], "",
+        "wire bytes MUST be unchanged -- the empty cr sentinel serializes back as an empty string"
+    );
+
+    let parsed = TipReport::parse(&coz).expect("a genesis-stage report MUST canonicalize");
+    assert_eq!(
+        parsed.roots.cr, None,
+        "an empty wire cr MUST parse to None (\"no commit root yet\"), never a malformed digest"
+    );
+}
