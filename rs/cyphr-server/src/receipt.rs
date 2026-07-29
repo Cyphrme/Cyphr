@@ -301,6 +301,14 @@ pub enum EquivocationVerdict {
     DifferentSequence,
     /// The two reports are claim-identical -- not a conflict.
     IdenticalClaims,
+    /// One or both reports fail to canonicalize via [`TipReport::parse`] --
+    /// a validly-signed report whose claims cannot be typed. Distinct from
+    /// every other variant so a malformed report can never be silently
+    /// folded into "no equivocation occurred" (S3's boundary-side
+    /// property): the trap this node exists to close is an attacker
+    /// making one report fail to parse instead of making an honest
+    /// comparison disagree, and that must not read as any of the above.
+    Malformed,
 }
 
 /// Check whether two signed tip reports constitute proven equivocation.
@@ -321,8 +329,13 @@ pub enum EquivocationVerdict {
 ///
 /// The pinned predicate, checked in order: (1) both pays carry `typ ==
 /// TIP_REPORT_TYP`; (2) each signature verifies under its own
-/// caller-supplied key; (3) both claim the same `pr` and the same
-/// `sequence`; (4) they differ in `commit_id` or in any `roots` field.
+/// caller-supplied key; (3) both reports canonicalize into a [`TipReport`]
+/// (S3's boundary-side property -- a report that does not is diagnosed
+/// [`EquivocationVerdict::Malformed`], never silently compared or
+/// dropped); (4) both claim the same typed `pr` and the same typed
+/// `sequence`; (5) they differ in typed `commit_id` or in any typed
+/// `roots` field (S3's passing-through property -- compared by canonical
+/// value, so representation never causes a miss or a false alarm).
 /// Anything else is a diagnosed non-equivocation.
 pub fn check_equivocation(
     a: &coz::CozJson,
@@ -339,13 +352,17 @@ pub fn check_equivocation(
         return EquivocationVerdict::InvalidSignature;
     }
 
-    if a.pay["pr"] != b.pay["pr"] {
+    let (Ok(a_report), Ok(b_report)) = (TipReport::parse(a), TipReport::parse(b)) else {
+        return EquivocationVerdict::Malformed;
+    };
+
+    if a_report.pr != b_report.pr {
         return EquivocationVerdict::DifferentPrincipal;
     }
-    if a.pay["sequence"] != b.pay["sequence"] {
+    if a_report.sequence != b_report.sequence {
         return EquivocationVerdict::DifferentSequence;
     }
-    if a.pay["commit_id"] == b.pay["commit_id"] && a.pay["roots"] == b.pay["roots"] {
+    if a_report.commit_id == b_report.commit_id && a_report.roots == b_report.roots {
         return EquivocationVerdict::IdenticalClaims;
     }
 
