@@ -13,6 +13,7 @@
 //! here persists a receipt or a received-at time. The recipient holds the
 //! trust object; the server signs and forgets.
 
+use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
 use serde_json::Value;
 
@@ -125,13 +126,21 @@ fn sign_receipt(
     let pr = pr.into();
     let commit_id = commit_id.into();
 
-    // Refuse to sign a malformed digest into a receipt (S3: receipt
+    // Refuse to sign a malformed value into a receipt (S3: receipt
     // construction validates at the boundary). Parsing (and discarding)
-    // each digest-bearing field as a TaggedDigest before composing the
-    // payload means a value that isn't a valid digest never reaches the
-    // signature -- `?` on `.ok()` returns `None` on the first failure,
-    // matching this function's existing "compose failed" contract.
-    pr.parse::<TaggedDigest>().ok()?;
+    // each identifier/digest-bearing field before composing the payload
+    // means a value that isn't valid never reaches the signature -- `?`
+    // on `.ok()` returns `None` on the first failure, matching this
+    // function's existing "compose failed" contract.
+    //
+    // `pr` is the attested principal's GENESIS IDENTIFIER, not a tagged
+    // digest (Amendment A2, `ND-typed-witness-domain.md`): SPEC §2.2.3's
+    // DEFAULT identifier form is bare canonical b64ut -- tagging is the
+    // labeled exemption `commit_id`/`roots` use, not this field. At Level
+    // 1/2 a principal's genesis identifier IS its raw thumbprint via
+    // implicit promotion, so requiring a tag here would reject every
+    // Level 1/2 principal's receipt.
+    let _: coz::Thumbprint = parse_genesis_id_str(&pr).ok()?;
     commit_id.parse::<TaggedDigest>().ok()?;
     roots.pr.parse::<TaggedDigest>().ok()?;
     roots.sr.parse::<TaggedDigest>().ok()?;
@@ -187,9 +196,16 @@ pub struct TipReportRoots {
 /// non-canonical input is rejected here (the boundary-side property),
 /// never downstream, and everything that parses is compared by this typed
 /// value alone (the passing-through property).
+///
+/// `pr` is `coz::Thumbprint`, not `TaggedDigest` (Amendment A2): it is the
+/// attested principal's GENESIS IDENTIFIER, SPEC §2.2.3's DEFAULT
+/// (untagged) identifier form -- at Level 1/2 that identifier IS the
+/// principal's raw key thumbprint via implicit promotion
+/// (`docs/specs/principal-lifecycle.md`), so `coz::Thumbprint` is the
+/// existing type this node reuses rather than a hand-rolled wrapper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TipReport {
-    pub pr: TaggedDigest,
+    pub pr: coz::Thumbprint,
     pub sequence: u64,
     pub commit_id: TaggedDigest,
     pub roots: TipReportRoots,
@@ -203,9 +219,11 @@ pub struct TipReport {
 /// comparison this type feeds today.
 #[derive(Debug, thiserror::Error)]
 pub enum TipReportParseError {
-    /// `pr` is not a JSON string, or the string does not parse as a
-    /// [`TaggedDigest`] (S3's ruling: an array, a number, or `null` is not
-    /// a digest encoding at all -- never unwrapped to recover one).
+    /// `pr` is not a JSON string, or the string does not decode as a bare
+    /// canonical b64ut genesis identifier (S3/A2's ruling: an array, a
+    /// number, or `null` is not an identifier encoding at all -- never
+    /// unwrapped to recover one; a tagged `ALG:...` string also fails,
+    /// since tagging is `commit_id`/`roots`'s labeled exemption, not `pr`'s).
     #[error("pr: {0}")]
     Pr(cyphr::error::Error),
     /// `commit_id` -- same disposition as `pr`.
@@ -230,7 +248,7 @@ impl TipReport {
     /// canonical parse, and the single boundary through which a report's
     /// claims enter typed comparison.
     pub fn parse(coz: &coz::CozJson) -> Result<Self, TipReportParseError> {
-        let pr = parse_digest_field(&coz.pay["pr"]).map_err(TipReportParseError::Pr)?;
+        let pr = parse_genesis_id(&coz.pay["pr"]).map_err(TipReportParseError::Pr)?;
         let commit_id =
             parse_digest_field(&coz.pay["commit_id"]).map_err(TipReportParseError::CommitId)?;
         let sequence = parse_sequence(&coz.pay["sequence"])?;
@@ -272,7 +290,8 @@ impl TipReport {
 /// Parse a JSON value as a digest field: it MUST be a JSON string --
 /// an array, a number, or `null` is not a digest encoding at all (S3's
 /// ruling against unwrapping `["digest"]` down to its inner string) -- and
-/// that string must parse as a [`TaggedDigest`].
+/// that string must parse as a [`TaggedDigest`]. Used for `commit_id` and
+/// each `roots.<field>` -- NOT `pr`, see [`parse_genesis_id`].
 fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error> {
     value
         .as_str()
@@ -280,6 +299,56 @@ fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error
             "not a JSON string -- digests are never arrays, numbers, or null",
         ))
         .and_then(|s| s.parse())
+}
+
+/// Parse a JSON value as a genesis identifier -- `pr`'s disposition under
+/// Amendment A2 (`ND-typed-witness-domain.md`): the same reject-loud shape
+/// discipline as [`parse_digest_field`] (a JSON string only; an array, a
+/// number, or `null` is never an identifier encoding), but the string
+/// itself decodes as BARE canonical b64ut, not `ALG:b64ut` -- SPEC
+/// §2.2.3's DEFAULT identifier form. See [`parse_genesis_id_str`] for the
+/// decode itself.
+fn parse_genesis_id(value: &Value) -> Result<coz::Thumbprint, cyphr::error::Error> {
+    value
+        .as_str()
+        .ok_or(cyphr::error::Error::MalformedDigest(
+            "not a JSON string -- a genesis identifier is never an array, number, or null",
+        ))
+        .and_then(parse_genesis_id_str)
+}
+
+/// Decode a bare b64ut genesis-identifier string into `coz::Thumbprint`.
+///
+/// Uses the SAME strict canonical decoder `TaggedDigest::from_str` uses
+/// (`Base64UrlUnpadded::decode_vec`, which rejects padding, the standard
+/// alphabet, whitespace/case variants, and any non-canonical encoding of
+/// the same bytes) -- this is the load-bearing property (security review,
+/// A2): a looser check would let two spellings of one identifier compare
+/// unequal, reopening the equivocation door this node exists to close. A
+/// tagged `ALG:...` string also fails here, since `:` is outside the
+/// b64url alphabet -- tagging is `commit_id`/`roots`'s exemption, not
+/// `pr`'s.
+///
+/// Length is checked against the codebase's supported digest lengths
+/// (32/48/64 -- SHA-256/384/512 via [`TaggedDigest::expected_len`]), NOT
+/// against the receipt's own `alg`: a receipt's `alg` is the WITNESS
+/// SERVER's signing algorithm, independent of the attested principal's
+/// genesis-key algorithm, so binding `pr`'s length to it would reject
+/// every principal whose algorithm differs from the witness's -- A2's
+/// finding, the exact defect class this parse exists to fix.
+fn parse_genesis_id_str(s: &str) -> Result<coz::Thumbprint, cyphr::error::Error> {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    let bytes = Base64UrlUnpadded::decode_vec(s)
+        .map_err(|_| cyphr::error::Error::MalformedDigest("invalid base64"))?;
+    let supported_len = [HashAlg::Sha256, HashAlg::Sha384, HashAlg::Sha512]
+        .iter()
+        .any(|&alg| bytes.len() == TaggedDigest::expected_len(alg));
+    if !supported_len {
+        return Err(cyphr::error::Error::MalformedDigest(
+            "not a supported digest length (32/48/64 bytes)",
+        ));
+    }
+    Ok(coz::Thumbprint::from_bytes(bytes))
 }
 
 /// Parse a JSON value as a `sequence`: a JSON number canonicalizes

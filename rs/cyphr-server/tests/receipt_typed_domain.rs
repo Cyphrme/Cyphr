@@ -4,7 +4,7 @@
 //! (`.scratch/campaigns/server-witness-remediation/ibcs/ND-typed-witness-domain.md`,
 //! S5):
 //! - `sequence_canonicalizes_across_representations` (ND.1): `sequence` canonicalizes across JSON
-//!   number/string representations; a `pr` digest string parses to `TaggedDigest`.
+//!   number/string representations; a `pr` genesis-identifier string parses to `coz::Thumbprint`.
 //! - `malformed_report_is_not_a_silent_escape` (ND.2a): the boundary-side property -- a
 //!   validly-signed report that fails to canonicalize is REJECTED AND DIAGNOSED as a verdict
 //!   distinct from every "no equivocation occurred" outcome an honest pair can produce.
@@ -15,6 +15,13 @@
 //!   unwrapped.
 //! - `receipt_rejects_malformed_digest` (ND.4): receipt construction cannot sign a malformed digest
 //!   into `pr`/`commit_id`/`roots`.
+//!
+//! **Amendment A2 (`ND-typed-witness-domain.md`) retypes `pr`:** the
+//! top-level `pr` is the attested principal's GENESIS IDENTIFIER, SPEC
+//! §2.2.3's DEFAULT (untagged) identifier form -- NOT a `TaggedDigest`,
+//! which remains `commit_id`/`roots`'s labeled exemption. This file's
+//! fixtures use [`principal_digest`] (bare) for `pr` and [`digest_string`]
+//! (tagged) for `commit_id`/`roots`; the two are never interchangeable.
 //!
 //! This node introduces `cyphr_server::receipt::TipReport` (a typed
 //! tip-report with a canonical parse, S3) and a new, distinct
@@ -30,10 +37,10 @@
 //! Design choices this node's test-worker made (S6 DELEGATED items,
 //! reasoning logged per the IBC's requirement):
 //! - `TipReport` and its parse live in `cyphr_server::receipt` (S4's first option), as a plain
-//!   struct with public fields: `pr`/`commit_id: TaggedDigest`, `sequence: u64`, `roots:
-//!   TipReportRoots { pr, sr, ar, cr: TaggedDigest }` -- the minimal shape S3 names, nothing added.
-//!   `TipReport::parse(&coz::CozJson) -> Result<TipReport, _>` is PINNED by S3 itself, not
-//!   delegated; only the struct's field layout and error type are this file's choice.
+//!   struct with public fields: `pr: coz::Thumbprint` (A2), `commit_id: TaggedDigest`, `sequence:
+//!   u64`, `roots: TipReportRoots { pr, sr, ar, cr: TaggedDigest }` -- the minimal shape S3/A2
+//!   name, nothing added. `TipReport::parse(&coz::CozJson) -> Result<TipReport, _>` is PINNED by S3
+//!   itself, not delegated; only the struct's field layout and error type are this file's choice.
 //! - The distinct malformed outcome's EXACT name is deliberately left unpinned here:
 //!   `is_an_honest_pair_verdict` below asserts only that a malformed pair's verdict is NONE OF the
 //!   four an honest pair (proven or not) can produce -- never that it equals one specific new
@@ -101,12 +108,24 @@ fn arb_digest_bytes() -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(any::<u8>(), 32)
 }
 
-/// Render digest bytes as the wire form (`SHA-256:<base64url>`) via the
-/// SAME `TaggedDigest` this node adopts -- never a hand-rolled encoding.
+/// Render digest bytes as the TAGGED wire form (`SHA-256:<base64url>`) via
+/// the SAME `TaggedDigest` this node adopts -- never a hand-rolled
+/// encoding. For `commit_id`/`roots.<field>` ONLY -- `pr` is untagged
+/// (A2), see [`principal_digest`].
 fn digest_string(bytes: &[u8]) -> String {
     TaggedDigest::new(HashAlg::Sha256, bytes.to_vec())
         .expect("32 bytes matches SHA-256's expected digest length")
         .to_string()
+}
+
+/// Render digest bytes as a receipt's top-level `pr`: a BARE genesis
+/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form (A2) --
+/// via the SAME strict `Base64UrlUnpadded` encoder `TaggedDigest::to_string`
+/// uses internally, just without the `ALG:` prefix. Distinct from
+/// [`digest_string`], which tags `commit_id`/`roots`.
+fn principal_digest(bytes: &[u8]) -> String {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    Base64UrlUnpadded::encode_string(bytes)
 }
 
 /// Flip every bit of the first byte -- a digest DERIVED to be genuinely,
@@ -120,10 +139,15 @@ fn differing_bytes(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A string GUARANTEED to fail `TaggedDigest::from_str`: it contains no
-/// `:` at all, so `split_once(':')` always fails at the first parse step,
-/// by construction -- never merely by chance that a random string happens
-/// to be malformed.
+/// A string GUARANTEED to fail malformed-field parsing, for BOTH
+/// dispositions this file exercises: `TaggedDigest::from_str`
+/// (`commit_id`/`roots.<field>`) rejects it because it contains no `:` at
+/// all, so `split_once(':')` always fails at the first parse step; the
+/// bare genesis-identifier parse (`pr`, A2) rejects it because a 1-24
+/// character base64url string can never decode to a supported digest
+/// length (32/48/64 bytes -- the longest possible decode here is ~18
+/// bytes). Both are guaranteed by construction, never by chance that a
+/// random string happens to be malformed.
 fn arb_malformed_digest_string() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9]{1,24}"
 }
@@ -231,10 +255,11 @@ proptest! {
         b_as_string in any::<bool>(),
     ) {
         let (_dir, identity) = identity_with_seed(0x11);
-        let pr = digest_string(&pr_bytes);
+        let pr_root = digest_string(&pr_bytes);
+        let pr = principal_digest(&pr_bytes);
         let commit_a = digest_string(&commit_a_bytes);
         let commit_b = digest_string(&differing_bytes(&commit_a_bytes));
-        let roots = roots_from(&pr, &pr, &pr, &pr);
+        let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let mut a = receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), seq, commit_a, &roots, seq + 1, 1_700_000_000,
@@ -254,8 +279,8 @@ proptest! {
 
         let parsed_a = TipReport::parse(&a).expect("canonical report a parses");
         prop_assert_eq!(
-            parsed_a.pr, pr.parse::<TaggedDigest>().unwrap(),
-            "a pr digest string MUST parse to the equal TaggedDigest"
+            parsed_a.pr.to_string(), pr.clone(),
+            "a pr genesis-identifier string MUST parse to the equal identifier"
         );
 
         let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
@@ -302,10 +327,11 @@ proptest! {
         malformed_digest in arb_malformed_digest_string(),
     ) {
         let (_dir, identity) = identity_with_seed(0x33);
-        let pr = digest_string(&pr_bytes);
+        let pr_root = digest_string(&pr_bytes);
+        let pr = principal_digest(&pr_bytes);
         let commit_a = digest_string(&commit_bytes);
         let commit_b = digest_string(&differing_bytes(&commit_bytes));
-        let roots = roots_from(&pr, &pr, &pr, &pr);
+        let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let a = receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
@@ -364,7 +390,8 @@ proptest! {
         same_roots in any::<bool>(),
     ) {
         let (_dir, identity) = identity_with_seed(0x22);
-        let pr = digest_string(&pr_bytes);
+        let pr_root = digest_string(&pr_bytes);
+        let pr = principal_digest(&pr_bytes);
         let commit_a = digest_string(&commit_bytes);
         let commit_b = if same_commit {
             commit_a.clone()
@@ -377,8 +404,8 @@ proptest! {
         } else {
             digest_string(&differing_bytes(&cr_bytes))
         };
-        let roots_a = roots_from(&pr, &pr, &pr, &cr_a);
-        let roots_b = roots_from(&pr, &pr, &pr, &cr_b);
+        let roots_a = roots_from(&pr_root, &pr_root, &pr_root, &cr_a);
+        let roots_b = roots_from(&pr_root, &pr_root, &pr_root, &cr_b);
 
         let mut a = receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), seq, commit_a, &roots_a, seq + 1, 1_700_000_000,
@@ -433,10 +460,11 @@ proptest! {
         shape in arb_malformed_pr_shape(),
     ) {
         let (_dir, identity) = identity_with_seed(0x44);
-        let pr = digest_string(&pr_bytes);
+        let pr_root = digest_string(&pr_bytes);
+        let pr = principal_digest(&pr_bytes);
         let commit_a = digest_string(&commit_bytes);
         let commit_b = digest_string(&differing_bytes(&commit_bytes));
-        let roots = roots_from(&pr, &pr, &pr, &pr);
+        let roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let a = receipt::tip_report(
             &identity, 1_700_000_000, pr.clone(), 5u64, commit_a, &roots, 6, 1_700_000_000,
@@ -473,9 +501,10 @@ proptest! {
     /// ND.4: `receipt_rejects_malformed_digest`
     ///
     /// Receipt CONSTRUCTION cannot sign a malformed digest (survey finding
-    /// #6): `receipt::tip_report` validates `pr`, `commit_id`, and every
-    /// `Roots` field as `TaggedDigest` and refuses (returns `None`) rather
-    /// than silently signing an unvalidated value. EMPIRICALLY confirmed
+    /// #6): `receipt::tip_report` validates `commit_id` and every `Roots`
+    /// field as `TaggedDigest`, and `pr` as a bare genesis identifier (A2),
+    /// and refuses (returns `None`) rather than silently signing an
+    /// unvalidated value. EMPIRICALLY confirmed
     /// RED before this test was written: a scratch check (not committed)
     /// against the unmodified implementation showed `tip_report` returns
     /// `Some` for a `Roots.pr` of `"not-a-digest-at-all"`, with no
@@ -495,9 +524,10 @@ proptest! {
         malformed_digest in arb_malformed_digest_string(),
     ) {
         let (_dir, identity) = identity_with_seed(0x55);
-        let pr = digest_string(&pr_bytes);
+        let pr_root = digest_string(&pr_bytes);
+        let pr = principal_digest(&pr_bytes);
         let commit_id = digest_string(&commit_bytes);
-        let mut roots = roots_from(&pr, &pr, &pr, &pr);
+        let mut roots = roots_from(&pr_root, &pr_root, &pr_root, &pr_root);
 
         let (arg_pr, arg_commit) = match malformed_field {
             "pr" => (malformed_digest.clone(), commit_id.clone()),
