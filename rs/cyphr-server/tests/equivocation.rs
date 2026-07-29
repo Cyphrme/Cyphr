@@ -13,6 +13,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::HashAlg;
+use cyphr::state::TaggedDigest;
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
@@ -253,20 +255,50 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
     (status, json)
 }
 
+/// Render a distinct, valid SHA-256 digest string from a repeated seed
+/// byte -- the same convention `tests/cross_witness.rs` established
+/// (`455894a`). Node ND's typed `check_equivocation`/`receipt::tip_report`
+/// now parse `commit_id`/`roots` as `TaggedDigest`, so this suite's
+/// placeholders, which used to be human-readable or hand-typed
+/// repeated-letter literals, must genuinely parse. `pr` is NOT tagged --
+/// see [`principal_digest`].
+fn digest(byte: u8) -> String {
+    TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
+        .expect("32 bytes is SHA-256's expected digest length")
+        .to_string()
+}
+
+/// Render a distinct, valid BARE genesis-identifier string from a
+/// repeated seed byte -- the untagged counterpart to [`digest`]. A
+/// receipt's top-level `pr` is the attested principal's genesis
+/// identifier: SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
+/// (Amendment A2, `ND-typed-witness-domain.md`). Every `pr`/`principal_id`
+/// fixture in this suite uses this helper, never [`digest`].
+fn principal_digest(byte: u8) -> String {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    Base64UrlUnpadded::encode_string(&[byte; 32])
+}
+
 /// Two root sets that differ only in `cr`, standing in for a conflicting
-/// commit outcome at the same chain position.
+/// commit outcome at the same chain position. Generated via [`digest`]
+/// rather than hand-typed repeated-letter literals: a repeated-letter
+/// base64url block is canonical only when the letter's value is zero
+/// (`A`) -- `B`/`C`/`D`/`E` blocks of the same shape leave nonzero
+/// trailing bits in the final character, which `TaggedDigest::from_str`'s
+/// strict decoder rejects even though a lenient decoder would accept them.
 fn roots_a() -> Roots {
     Roots {
-        pr: "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
-        sr: "SHA-256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
-        ar: "SHA-256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_string(),
-        cr: "SHA-256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD".to_string(),
+        pr: digest(0xb1),
+        sr: digest(0xb2),
+        ar: digest(0xb3),
+        cr: digest(0xb4),
     }
 }
 
 fn roots_b() -> Roots {
     Roots {
-        cr: "SHA-256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE".to_string(),
+        cr: digest(0xb5),
         ..roots_a()
     }
 }
@@ -285,7 +317,8 @@ async fn same_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = "equivocation-same-key-principal";
+    let principal_id_digest = principal_digest(0x30);
+    let principal_id = principal_id_digest.as_str();
     let now = 1_700_100_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -316,7 +349,7 @@ async fn same_key_pair_proves_equivocation() {
         now,
         real_pr,
         real_sequence,
-        "SHA-256:conflictingcommitid00000000000000000000000",
+        digest(0x50),
         &roots_b(),
         real_commit_count,
         real_last_updated,
@@ -342,7 +375,8 @@ async fn cross_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = "equivocation-cross-key-principal";
+    let principal_id_digest = principal_digest(0x31);
+    let principal_id = principal_id_digest.as_str();
     let now = 1_700_200_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -369,7 +403,7 @@ async fn cross_key_pair_proves_equivocation() {
         now,
         real_pr,
         real_sequence,
-        "SHA-256:conflictingcommitid00000000000000000000000",
+        digest(0x50),
         &roots_b(),
         real_commit_count,
         real_last_updated,
@@ -400,9 +434,9 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -411,9 +445,9 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_b(),
         4,
         1_700_000_000,
@@ -439,9 +473,9 @@ fn identical_claims_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -450,9 +484,9 @@ fn identical_claims_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -473,9 +507,9 @@ fn different_principal_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -484,9 +518,9 @@ fn different_principal_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-y",
+        principal_digest(0x11),
         3,
-        "commit-b",
+        digest(0x21),
         &roots_b(),
         4,
         1_700_000_000,
@@ -507,9 +541,9 @@ fn different_sequence_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -518,9 +552,9 @@ fn different_sequence_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_100,
-        "principal-x",
+        principal_digest(0x10),
         4,
-        "commit-b",
+        digest(0x21),
         &roots_b(),
         5,
         1_700_000_100,
@@ -542,9 +576,9 @@ fn bad_signature_pair_is_not_equivocation() {
     let a = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -553,9 +587,9 @@ fn bad_signature_pair_is_not_equivocation() {
     let b = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-b",
+        digest(0x21),
         &roots_b(),
         4,
         1_700_000_000,
@@ -576,9 +610,9 @@ fn wrong_typ_pair_is_not_equivocation() {
     let tip = receipt::tip_report(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
         4,
         1_700_000_000,
@@ -587,9 +621,9 @@ fn wrong_typ_pair_is_not_equivocation() {
     let commit = receipt::commit_receipt(
         &identity,
         1_700_000_000,
-        "principal-x",
+        principal_digest(0x10),
         3,
-        "commit-a",
+        digest(0x20),
         &roots_a(),
     )
     .expect("compose commit receipt");

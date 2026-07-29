@@ -1,6 +1,6 @@
 {
   "kind": "equivocation_evidence",
-  "principal_id": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+  "principal_id": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
   "sequence": 5,
   "reports": [
     {
@@ -9,7 +9,7 @@
         "now": 1700000000,
         "tmb": "aaMiqIXTeW8wfSkKY_ME3BDBAfz5t-qPLabapQ1TQfNzUFPOEp4_4KTGYRUHVbe18MOVsXusLb0qAWmmoV3Yvw",
         "typ": "cyphr-server/receipt/tip",
-        "pr": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+        "pr": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
         "sequence": 5,
         "commit_id": "SHA-256:GhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGho",
         "roots": {
@@ -21,7 +21,7 @@
         "commit_count": 6,
         "last_updated": 1700000000
       },
-      "sig": "66vnYOoouVyWn5myXNDVCrqlyAf2RggXbuyDenG08LoFFCPH9nJ6r0HUIfpcgxQXU4XjCBNPSODuoJuZtzTYBQ"
+      "sig": "f0OlD_ypUdTq8u45kNDIR7jxufXRdZZL5s2j0xk1Uj2pN_gJ6JxKa9oau0DDBszmvYx0YvsW1d7Q-jnqPy0oDQ"
     },
     {
       "pay": {
@@ -29,7 +29,7 @@
         "now": 1700000000,
         "tmb": "YiwVM5dI4WE8qEoVuaLa_w8s1dTnIHDvLnf306xslyGQBm-wduDT5VzFZ9d4Lmyq3xAnJ1_B9k1mnixxT6VtqQ",
         "typ": "cyphr-server/receipt/tip",
-        "pr": "SHA-256:EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+        "pr": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
         "sequence": 5,
         "commit_id": "SHA-256:GxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxs",
         "roots": {
@@ -41,7 +41,7 @@
         "commit_count": 6,
         "last_updated": 1700000000
       },
-      "sig": "cprGpiLsBXEyvZRWmTNwEABFpjfAyZB1XM4jDsWrcMZY3OTIq9X-Ncw5T5SRM2DyYSbK7KQ9VgLWFurO6Hg-Ag"
+      "sig": "J195wuz_agWKkcW8yQdz-0QgSMavvQlT4yfGjpZbYhEG4MQgDO-D53nKL2f5slTaoAcsh5w936nCDd4PSdDtAQ"
     }
   ]
 }

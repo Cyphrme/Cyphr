@@ -29,17 +29,29 @@ use cyphr_server::receipt::{self, Roots};
 
 mod common;
 
-/// Render a distinct, valid SHA-256 digest string from a repeated seed
-/// byte -- the same convention `roots_a`/`roots_b` already use (all-`A`/
-/// `B`/`C`/`D`/`E` blocks), extended to every `pr`/`commit_id` fixture in
-/// this file. Node ND's typed `check_equivocation` parses `pr`/`commit_id`
-/// as `TaggedDigest`, so a human-readable placeholder like `"principal-x"`
-/// no longer round-trips through `receipt::tip_report` -- every fixture
-/// here must be a digest that genuinely parses.
+/// Render a distinct, valid TAGGED SHA-256 digest string from a repeated
+/// seed byte -- the same convention `roots_a`/`roots_b` already use
+/// (all-`A`/`B`/`C`/`D`/`E` blocks), extended to every `commit_id`/`roots`
+/// fixture in this file. Node ND's typed `check_equivocation` parses
+/// `commit_id`/`roots` as `TaggedDigest`, so a human-readable placeholder
+/// like `"commit-a"` no longer round-trips through `receipt::tip_report`
+/// -- every fixture here must be a digest that genuinely parses.
+/// `pr` is NOT tagged -- see [`principal_digest`] (Amendment A2).
 fn digest(byte: u8) -> String {
     TaggedDigest::new(HashAlg::Sha256, vec![byte; 32])
         .expect("32 bytes is SHA-256's expected digest length")
         .to_string()
+}
+
+/// Render a distinct, valid BARE genesis-identifier string from a
+/// repeated seed byte -- the untagged counterpart to [`digest`]. A
+/// receipt's top-level `pr` is the attested principal's genesis
+/// identifier: SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
+/// (Amendment A2, `ND-typed-witness-domain.md`). Every `pr` fixture in
+/// this suite uses this helper, never [`digest`].
+fn principal_digest(byte: u8) -> String {
+    Base64UrlUnpadded::encode_string(&[byte; 32])
 }
 
 /// Read a committed golden vector, trimming a trailing newline so the
@@ -152,7 +164,7 @@ async fn conflicting_tips_yield_evidence() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
-    let pr = digest(0x10);
+    let pr = principal_digest(0x10);
     let seq = 5;
     let now = 1_700_000_000;
 
@@ -192,8 +204,8 @@ async fn three_plus_witness_array_scan() {
     let (_dir_w1, identity_w1) = identity_with_seed(0x22);
     let (_dir_w2, identity_w2) = identity_with_seed(0x33);
 
-    let pr_other = digest(0x20);
-    let pr_target = digest(0x21);
+    let pr_other = principal_digest(0x20);
+    let pr_target = principal_digest(0x21);
     let seq = 5;
     let now = 1_700_000_000;
 
@@ -266,7 +278,7 @@ async fn non_standard_json_types_surfaced_by_consistency_check() {
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
     let now = 1_700_000_000;
-    let pr = digest(0x30);
+    let pr = principal_digest(0x30);
 
     let mut tip_a = receipt::tip_report(&identity_a, now, &pr, 1, digest(0x3a), &roots_a(), 6, now)
         .expect("compose tip A");
@@ -318,7 +330,7 @@ async fn evidence_verifies_offline() {
     let (_dir_a, identity_a) = identity_with_seed(0x33);
     let (_dir_b, identity_b) = identity_with_seed(0x44);
 
-    let pr = digest(0x40);
+    let pr = principal_digest(0x40);
     let seq = 10;
     let now = 1_700_050_000;
 
@@ -459,7 +471,7 @@ async fn fork_detection_ignores_self_assertion() {
     let (_dir_valid, valid_identity) = identity_with_seed(0x55);
     let (_dir_untrusted, untrusted_identity) = identity_with_seed(0x66);
 
-    let pr = digest(0x70);
+    let pr = principal_digest(0x70);
     let seq = 7;
     let now = 1_700_000_000;
 
@@ -557,7 +569,7 @@ async fn agreement_produces_no_standing_claim() {
     let (_dir_a, identity_a) = identity_with_seed(0x77);
     let (_dir_b, identity_b) = identity_with_seed(0x88);
 
-    let pr = digest(0x90);
+    let pr = principal_digest(0x90);
     let commit_id = digest(0x9a);
     let seq = 12;
     let now = 1_700_000_000;
@@ -598,7 +610,7 @@ async fn golden_disagreement_artifact_byte_stable() {
     let (_dir_a, identity_a) = identity_with_seed(0x11);
     let (_dir_b, identity_b) = identity_with_seed(0x22);
 
-    let pr = digest(0x10);
+    let pr = principal_digest(0x10);
     let seq = 5;
     let now = 1_700_000_000;
 
@@ -635,7 +647,7 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
     let (_dir_valid, valid_identity) = identity_with_seed(0x55);
     let (_dir_untrusted, untrusted_identity) = identity_with_seed(0x66);
 
-    let pr = digest(0xb0);
+    let pr = principal_digest(0xb0);
     let seq = 7;
     let now = 1_700_000_000;
 

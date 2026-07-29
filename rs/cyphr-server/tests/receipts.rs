@@ -30,6 +30,18 @@ use common::{
     keyless_server, load_pool, post_json, write_signing_key,
 };
 
+/// Render a distinct, valid genesis-identifier string from a repeated
+/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
+/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
+/// not the top-level `pr` this suite's principal identifiers become --
+/// Amendment A2, `ND-typed-witness-domain.md`). Node ND's typed
+/// `receipt::tip_report`/`commit_receipt` now refuse a malformed `pr`, so
+/// these principal identifiers, which used to be human-readable
+/// placeholders, must genuinely parse.
+fn digest(byte: u8) -> String {
+    Base64UrlUnpadded::encode_string(&[byte; 32])
+}
+
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
 /// signature verifies against `identity`'s key. Returns `(payload,
 /// claims)`, where `claims` is the receipt's `pay` object.
@@ -87,7 +99,8 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = "receipt-commit-principal";
+    let principal_id_digest = digest(0x01);
+    let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -117,7 +130,8 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = "receipt-tip-principal";
+    let principal_id_digest = digest(0x02);
+    let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_100;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -253,7 +267,8 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = "offline-verify-principal";
+    let principal_id_digest = digest(0x03);
+    let principal_id = principal_id_digest.as_str();
     let now = 1_700_000_400;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
@@ -378,7 +393,12 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
 // ========================================================================
 
 /// A fixed principal genesis id, reused from the token/envelope vectors
-/// for a stable, recognizable payload.
+/// for a stable, recognizable payload -- the same bytes (0x01..0x20),
+/// BARE: a receipt's top-level `pr` is the attested principal's genesis
+/// identifier, SPEC §2.2.3's DEFAULT (untagged) identifier form, not the
+/// `TaggedDigest` `roots`/`commit_id` use under their labeled exemption
+/// (Amendment A2, `ND-typed-witness-domain.md`) -- the SAME untagged form
+/// `token.rs`/`envelope_vectors.rs`'s `pr`/`principal_id` claims already use.
 const VECTOR_PR: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA";
 
 const VECTOR_COMMIT_ID: &str = "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao";
