@@ -59,6 +59,20 @@ fn fresh_keyed_state() -> (Arc<AppState>, TempDir) {
     (state, dir)
 }
 
+/// A pool key's base64url thumbprint, by name. Callers throughout this file
+/// need a key's own tmb both to decide what `principal_id`/`witness_id` to
+/// construct (before signing) and, for the N0 properties below, to seed a
+/// generator strategy (the `in` clause of a `proptest!` parameter runs once,
+/// before case generation begins, so calling this from an `in` clause is
+/// fine, not a per-case cost) -- this is shared setup, not N0-specific.
+fn key_tmb(name: &str) -> String {
+    common::load_pool()
+        .get(name)
+        .unwrap_or_else(|| panic!("{name} key in pool"))
+        .compute_tmb_b64()
+        .expect("tmb b64")
+}
+
 fn build_witness_register_coz(
     pool: &Pool,
     signer_name: &str,
@@ -169,11 +183,7 @@ async fn register_list_revoke_roundtrip() {
     // `pid` is golden's tmb AND `witness_pg` no longer coincides with it,
     // so this test exercises Direction A only, not Direction A confounded
     // with a residual Direction-B match.
-    let golden_tmb = pool
-        .get("golden")
-        .expect("golden key")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    let golden_tmb = key_tmb("golden");
     let pid = golden_tmb.as_str();
     let witness_pg = "http://roundtrip-witness.example";
 
@@ -454,11 +464,7 @@ async fn responses_carry_freshness() {
     // Direction A (S3): see `register_list_revoke_roundtrip` above -- this
     // fixture had the same accidental Direction-B dependency (`pid` AND
     // `witness_pg`), corrected the same way.
-    let golden_tmb = pool
-        .get("golden")
-        .expect("golden key")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    let golden_tmb = key_tmb("golden");
     let pid = golden_tmb.as_str();
     let witness_pg = "http://freshness-witness.example";
 
@@ -552,11 +558,7 @@ async fn bound_refuses_rather_than_evicts() {
     // to genuine Direction A throughout: every registration is directly
     // authorized by `signer_tmb == principal_id`, so no seeding step (and
     // no special-cased witness #0) is needed.
-    let golden_tmb = pool
-        .get("golden")
-        .expect("golden key")
-        .compute_tmb_b64()
-        .expect("golden tmb");
+    let golden_tmb = key_tmb("golden");
     let pid = golden_tmb.as_str();
 
     let max_bound = 10;
@@ -648,19 +650,6 @@ async fn bound_refuses_rather_than_evicts() {
 // could pass by simply never trying the shape that matters.
 // ========================================================================
 
-/// The signer key used throughout this module's properties. Computed once
-/// per property invocation (the `in` clause of a `proptest!` parameter runs
-/// once, before case generation begins, so an ordinary pool lookup here is
-/// fine) so the generator can manufacture the Direction-B bypass shape
-/// against the SAME key the property later signs with.
-fn alice_tmb() -> String {
-    common::load_pool()
-        .get("alice")
-        .expect("alice key in pool")
-        .compute_tmb_b64()
-        .expect("alice tmb b64")
-}
-
 /// The domain a `witness_id` can inhabit on the wire: an arbitrary string,
 /// with explicit density on the historically interesting sub-regions
 /// (including the Direction-B bypass shape -- `own_tmb`, bare and
@@ -728,15 +717,11 @@ proptest! {
     #[test]
     fn registration_refuses_unbound_signer_property(
         principal_id in principal_id_strategy(),
-        witness_id in witness_id_strategy(&alice_tmb()),
+        witness_id in witness_id_strategy(&key_tmb("alice")),
         verb in verb_strategy(),
     ) {
         let pool = common::load_pool();
-        let signer_tmb = pool
-            .get("alice")
-            .expect("alice key in pool")
-            .compute_tmb_b64()
-            .expect("alice tmb b64");
+        let signer_tmb = key_tmb("alice");
 
         // Direction A (signer == principal) is the only legitimate
         // self-registration (S3); it is N0.2's domain, not this property's.
@@ -772,16 +757,11 @@ proptest! {
     /// refused domain.
     #[test]
     fn registration_permits_self_registration_property(
-        witness_id in witness_id_strategy(&alice_tmb()),
+        witness_id in witness_id_strategy(&key_tmb("alice")),
         verb in verb_strategy(),
     ) {
         let pool = common::load_pool();
-        let signer_tmb = pool
-            .get("alice")
-            .expect("alice key in pool")
-            .compute_tmb_b64()
-            .expect("alice tmb b64");
-        let principal_id = signer_tmb.clone();
+        let principal_id = key_tmb("alice");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (status, json) =
@@ -814,11 +794,7 @@ proptest! {
 #[tokio::test]
 async fn grant_on_absence_is_refused() {
     let pool = common::load_pool();
-    let signer_tmb = pool
-        .get("alice")
-        .expect("alice key in pool")
-        .compute_tmb_b64()
-        .expect("alice tmb b64");
+    let signer_tmb = key_tmb("alice");
 
     for verb in ["create", "delete"] {
         let (status, json) =
@@ -856,11 +832,7 @@ async fn grant_on_absence_is_refused() {
 async fn principal_manages_own_witnesses() {
     let pool = common::load_pool();
     let (state, _dir) = fresh_keyed_state();
-    let signer_tmb = pool
-        .get("golden")
-        .expect("golden key in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb b64");
+    let signer_tmb = key_tmb("golden");
     let witness_pg = "http://self-managed.example";
 
     let reg_coz =
