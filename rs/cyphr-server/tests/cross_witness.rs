@@ -549,7 +549,7 @@ async fn fork_detection_ignores_self_assertion() {
         (&self_asserted_tip, wrong_pub_key.as_slice()),
     ]);
     assert!(
-        claim_unverified.is_none(),
+        claim_unverified.is_err(),
         "unauthenticated/forged tip reports MUST NOT produce standing claim in \
          check_cross_witness_consistency"
     );
@@ -592,7 +592,7 @@ async fn agreement_produces_no_standing_claim() {
             (&tip_b, identity_b.pub_key()),
         ]);
     assert!(
-        standing_claim_on_agreement.is_none(),
+        standing_claim_on_agreement.is_err(),
         "cross-witness agreement MUST produce NO standing claim"
     );
 }
@@ -678,7 +678,7 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
         (&forged_tip, wrong_pub_key.as_slice()),
     ]);
     assert!(
-        claim_forged.is_none(),
+        claim_forged.is_err(),
         "forged tip report with invalid public key MUST NOT produce equivocation claim"
     );
 
@@ -687,7 +687,7 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
         (&forged_tip, wrong_pub_key.as_slice()),
     ]);
     assert!(
-        claim_both_forged.is_none(),
+        claim_both_forged.is_err(),
         "unauthenticated tip reports MUST NOT produce equivocation claim"
     );
 }
@@ -901,7 +901,7 @@ proptest! {
 
         let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
         prop_assert!(
-            claim.is_some(),
+            claim.is_ok(),
             "a conflicting pair at positions ({conflict_i}, {conflict_j}) of {n} witnesses MUST \
              yield evidence, p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}"
         );
@@ -968,7 +968,7 @@ proptest! {
 
         let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
         prop_assert!(
-            claim.is_none(),
+            claim.is_err(),
             "{n} agreeing tip reports MUST produce no standing claim, p_a={p_a:?} p_b={p_b:?} \
              s_a={s_a:?} s_b={s_b:?}"
         );
@@ -1030,7 +1030,7 @@ proptest! {
 
         let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
         prop_assert!(
-            claim.is_none(),
+            claim.is_err(),
             "an invalid signature on one of the two otherwise-conflicting reports MUST prevent \
              the pair from counting as equivocation, corrupt_a={corrupt_a}, n={n}, \
              p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}"
@@ -1097,7 +1097,7 @@ proptest! {
             (&report_b, identity_b.pub_key()),
         ]);
         prop_assert!(
-            claim.is_some(),
+            claim.is_ok(),
             "the same logical sequence {seq} claimed as {s_a:?} to one witness and {s_b:?} to \
              another, with conflicting commit_id, MUST still yield equivocation evidence"
         );

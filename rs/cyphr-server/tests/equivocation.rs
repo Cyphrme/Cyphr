@@ -696,26 +696,21 @@ fn wrong_typ_pair_is_not_equivocation() {
 
 // ========================================================================
 // N1 (rework, redirected against ND's landed typed contract): the
-// `Malformed` verdict's own doc comment names a two-sided gap --
+// `Malformed` verdict's own doc comment named a two-sided gap --
 // `check_equivocation` diagnoses a report that fails to canonicalize as
 // DISTINCT from every other outcome (ND's boundary-side property; already
-// implemented and covered by ND's own suite), but NO consumer in
-// `consistency.rs` reads that distinction as anything other than "no
-// conflict" -- `check_cross_witness_consistency`, `verify_evidence_offline`,
-// and `detect_fork_unverified` each compare `verdict == Proven` only, so a
-// malformed report and an honest non-conflicting pair are indistinguishable
-// at every current call site. Four properties close N1's half of this from
-// its own file surface: the first is decorrelated coverage of ND's already-
-// landed boundary property (GREEN); the other three each pin one consumer
-// site and require it to stop folding the two apart (RED -- unsatisfiable by
-// the current implementation, which still folds `Malformed` into the same
-// value an honest agreeing pair produces at every site, until a fix makes
-// them observably distinct; see each property's own doc for why that RED is
-// by design, not a broken test). `verify_evidence_offline`/
-// `detect_fork_unverified` were widened from bare `bool` to `Option<bool>`
-// as part of this rework -- scaffolding only, so the invariant becomes
-// expressible; every path still returns `Some` today, matching the old
-// `bool` behavior exactly, which is why their properties are still red.
+// implemented and covered by ND's own suite), but every consumer in
+// `consistency.rs` read that distinction as nothing but "no conflict" --
+// `check_cross_witness_consistency`, `verify_evidence_offline`, and
+// `detect_fork_unverified` each compared `verdict == Proven` only, so a
+// malformed report and an honest non-conflicting pair were indistinguishable
+// at every call site. Four properties close N1's half of this from its own
+// file surface: the first is decorrelated coverage of ND's already-landed
+// boundary property; the other three each pin one consumer site's fold.
+// `check_cross_witness_consistency` now returns `Result<Value, NoEvidence>`
+// (`NoEvidence::Malformed` distinct from `NoEvidence::NoConflict`);
+// `verify_evidence_offline`/`detect_fork_unverified` now return `None` on a
+// `Malformed` verdict instead of folding it into `Some(false)`.
 // ========================================================================
 
 /// Re-stamp a signed tip report's `pr` claim and re-sign -- the `pr`
@@ -815,17 +810,10 @@ proptest! {
     /// The consumer half of ND's two-sided contract (S5.1): a report that
     /// fails to canonicalize MUST read differently at
     /// `consistency::check_cross_witness_consistency` than a genuinely
-    /// honest, agreeing pair -- both silently collapsing to `None` is
-    /// exactly the fold `EquivocationVerdict::Malformed`'s own doc comment
-    /// names as still open ("no consumer currently reads it as distinct
-    /// from an honest non-conflict"). RED BY DESIGN: `check_cross_witness_
-    /// consistency`'s three call sites in `consistency.rs` each compare
-    /// `verdict == Proven` only, so today BOTH cases below return bare
-    /// `None` and this assertion is unsatisfiable -- that is the live gap
-    /// this property pins, not a broken test. It does not prescribe the
-    /// fix's shape (a changed return value on the existing function is the
-    /// minimal one; a companion function is another) -- only that the two
-    /// outcomes become observably distinct.
+    /// honest, agreeing pair. Closed by widening the function's return to
+    /// `Result<Value, NoEvidence>`: a malformed pair now yields
+    /// `Err(NoEvidence::Malformed)`, distinct from the honest pair's
+    /// `Err(NoEvidence::NoConflict)`.
     #[test]
     fn malformed_pair_is_distinguishable_from_honest_agreement_at_consumer(
         malformed_on_pr in any::<bool>(),
@@ -915,14 +903,8 @@ proptest! {
     /// The same consumer-side contract as
     /// `malformed_pair_is_distinguishable_from_honest_agreement_at_consumer`,
     /// pinned at `verify_evidence_offline` instead of
-    /// `check_cross_witness_consistency` -- the second of the three
-    /// identically-folding call sites `EquivocationVerdict::Malformed`'s doc
-    /// names. RED BY DESIGN: `verify_evidence_offline` was widened to
-    /// `Option<bool>` by this rework so the invariant is expressible at all,
-    /// but every path still returns `Some(bool)` -- a malformed pair and an
-    /// honest agreeing pair both currently yield `Some(false)`, so this
-    /// assertion is unsatisfiable until the fold at THIS site (not
-    /// `check_cross_witness_consistency`, already pinned above) is closed.
+    /// `check_cross_witness_consistency`. Closed: a `Malformed` verdict now
+    /// returns `None`, distinct from the honest pair's `Some(false)`.
     #[test]
     fn malformed_pair_is_distinguishable_from_honest_agreement_at_verify_evidence_offline(
         malformed_on_pr in any::<bool>(),
@@ -1012,10 +994,8 @@ proptest! {
     }
 
     /// As the two properties above, pinned at `detect_fork_unverified` --
-    /// the third and last of the three identically-folding call sites.
-    /// RED BY DESIGN, same reason: widened to `Option<bool>` as scaffolding,
-    /// but every path still returns `Some(bool)`, so a malformed pair and an
-    /// honest agreeing pair both currently yield `Some(false)` here too.
+    /// the third and last of the three call sites. Closed the same way:
+    /// `Malformed` now returns `None`, distinct from `Some(false)`.
     #[test]
     fn malformed_pair_is_distinguishable_from_honest_agreement_at_detect_fork_unverified(
         malformed_on_pr in any::<bool>(),
