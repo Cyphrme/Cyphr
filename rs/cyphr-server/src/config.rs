@@ -763,7 +763,13 @@ mod tests {
     }
 
     /// GUARD: `Authority` mode is never flagged, regardless of the other
-    /// fields -- the check is witness-specific.
+    /// fields -- the check is witness-specific. `authority_url` is set
+    /// here to the SAME value the flagged fixture
+    /// (`witness_with_authority_url_and_no_identity_resolves_but_is_flagged`)
+    /// uses, so `mode` is the only field differing between the two -- with
+    /// `authority_url` left at its default `None`, clause 2
+    /// (`authority_url.is_some()`) was already false on its own, so this
+    /// guard never exercised the `mode` clause it is named for.
     #[test]
     fn authority_mode_is_never_flagged() {
         let cli = parse(&[
@@ -773,8 +779,36 @@ mod tests {
             "serve",
             "--mode",
             "authority",
+            "--authority-url",
+            "http://127.0.0.1:1",
         ]);
         let config = resolve_config(&cli).expect("authority mode resolves");
         assert!(!config.witness_authenticated_channel_unconfigured());
+    }
+
+    /// GUARD: a witness with a correctly configured `authority_identity`
+    /// must NOT be flagged -- nothing else pinned that a correctly
+    /// configured K10 witness avoids the `UNAUTHENTICATED` startup warning
+    /// (`resolve_config`'s `eprintln!`); the other three tests each hold
+    /// `authority_identity` at its default `None`, so clause 3
+    /// (`authority_identity.is_none()`) was unexercised by every one of
+    /// them. `authority_identity` has no CLI/env override (TOML only), so
+    /// this constructs the resolved config directly rather than via `parse`.
+    #[test]
+    fn witness_with_configured_identity_is_not_flagged() {
+        let config = ServerConfig {
+            mode: ServerMode::Witness,
+            authority_url: Some("http://127.0.0.1:1".to_string()),
+            authority_identity: Some(AuthorityIdentity {
+                alg: "Ed25519".to_string(),
+                pub_key: vec![0u8; 32],
+            }),
+            ..Default::default()
+        };
+        assert!(
+            !config.witness_authenticated_channel_unconfigured(),
+            "a witness with a configured authority_identity has an authenticated channel and must \
+             not be flagged as unauthenticated"
+        );
     }
 }
