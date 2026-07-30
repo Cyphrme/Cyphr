@@ -17,8 +17,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use clap::Parser;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
-use cyphr_server::config::{Cli, ServerConfig, ServerMode, resolve_config};
-use cyphr_server::{AppState, build_app_router};
+use cyphr::HashAlg;
+use cyphr::state::TaggedDigest;
+use cyphr_server::auth::ServerIdentity;
+use cyphr_server::config::{AuthorityIdentity, Cli, ServerConfig, ServerMode, resolve_config};
+use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
 use cyphr_storage::index::{IndexableCommit, Indexer};
 use http_body_util::BodyExt;
@@ -383,9 +386,43 @@ async fn rejects_unverifiable_delta() {
     );
 
     let payload = common::envelope_payload(&witness_tip_json);
+
+    // BIND THE CLAIM. `TipResponse` is FLAT: the served roots live at
+    // payload.pr/sr/ar/cr, NOT under a `roots` object. The original assertion
+    // indexed payload["roots"]["pr"], which is always `Null` (no such object),
+    // so `assert_ne!(Null, "…")` held for every program state -- it could not
+    // fail even against a witness that served the forged root verbatim. Index
+    // the real fields.
     assert_ne!(
-        payload["roots"]["pr"], "SHA-256:CORRUPT_PR_FORGED_ROOT",
-        "witness node MUST REJECT unverifiable delta and MUST NOT serve corrupted PR root: \
+        payload["pr"], "SHA-256:CORRUPT_PR_FORGED_ROOT",
+        "witness MUST NOT serve the forged PR root: {witness_tip_json:?}"
+    );
+    assert_ne!(
+        payload["sr"], "SHA-256:CORRUPT_SR_FORGED_ROOT",
+        "witness MUST NOT serve the forged SR root: {witness_tip_json:?}"
+    );
+    assert_ne!(
+        payload["ar"], "SHA-256:CORRUPT_AR_FORGED_ROOT",
+        "witness MUST NOT serve the forged AR root: {witness_tip_json:?}"
+    );
+    assert_ne!(
+        payload["cr"], "SHA-256:CORRUPT_CR_FORGED_ROOT",
+        "witness MUST NOT serve the forged CR root: {witness_tip_json:?}"
+    );
+
+    // POSITIVE BINDING. A negative assertion alone still passes on an error
+    // envelope or an unrelated shape. The witness's state must be EXACTLY the
+    // legitimate genesis it verified: commit_count 1 (never the injected
+    // sequence 99), and the served commit_id must not be the forged one.
+    assert_eq!(
+        payload["commit_count"].as_u64(),
+        Some(1),
+        "witness must hold exactly the legitimate genesis (commit_count 1), never advance to the \
+         injected sequence-99 delta: {witness_tip_json:?}"
+    );
+    assert_ne!(
+        payload["commit_id"], "SHA-256:CORRUPTED_COMMIT_999999999999999999999999",
+        "witness must serve the legitimate genesis commit, not the forged one: \
          {witness_tip_json:?}"
     );
 }
@@ -604,5 +641,647 @@ async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
         resp.json["statement"]["kind"], "unsigned",
         "Refusal envelope MUST be unsigned, got: {:?}",
         resp.json
+    );
+}
+
+// ========================================================================
+// N2 remediation: wedge elimination + authenticated channel + ingestion
+// ========================================================================
+//
+// These acceptance tests drive deliverables 2, 4, and 5 of the sync-channel
+// node. They are RED against the current code and GREEN once the honest
+// outcome type, wedge fix, authenticated channel, and ingestion gate land.
+//
+// Design note -- why an on-path proxy / fixed mock, not two plain servers:
+// the threats these tests bound are alterations of what the authority served
+// (truncation, injection) and of what it signed (unsigned, mis-signed,
+// non-canonical). A real attestor server serves only correct, fully-signed
+// patches, so it cannot exhibit the shapes under test. The proxy reuses the
+// authority's GENUINE signature and only deletes/injects entries (so the
+// entry-binding check, not a broken signature, is what must catch it); the
+// fixed mock serves a hand-crafted body a real server would never emit.
+//
+// Contract these tests pin (delegated shapes made concrete, honoring S3/S6):
+//   * `ServerConfig::authority_identity: Option<AuthorityIdentity>` carries the expected
+//     authority's alg + PUBLIC-KEY BYTES (not a bare thumbprint -- `coz::verify_json` needs key
+//     material).
+//   * When `authority_identity` is set, the witness MUST verify the patch envelope's signature
+//     against it AND recompute the entry-commitment over the entries as received; an unsigned /
+//     mis-signed / commitment-mismatch / non-canonical-report response is a `Failed` sync that
+//     applies NOTHING.
+//   * When it is UNSET, the legacy unauthenticated sync path is preserved (the existing
+//     `syncs_from_authority` deployment shape): the wedge fix is orthogonal to the channel and
+//     holds there.
+//   * The authority's signed report rides the EXISTING envelope shape -- the signed coz at
+//     `statement.coz`, exactly as `GET /tip` already returns `Envelope::signed(payload,
+//     tip_report_coz)` (routes.rs). This is the one load-bearing assumption about the delegated
+//     wrapping; it mirrors the established pattern rather than inventing a new one.
+
+/// Append a single `key/create` commit (introducing `new_key_name`, signed by
+/// `signer_name`) onto `principal`, and return the just-appended commit's wire
+/// coz blobs with the new key embedded on its key-introducing cozy.
+///
+/// This is the per-commit core of `common::sign_key_create_commit`, lifted here
+/// so TWO commits can be built on ONE principal (that helper takes the
+/// principal by value and drops it, so it cannot chain a second commit; and
+/// `common` is read-only for this node). Keeping one principal across both
+/// commits is what makes the second genuinely chain -- `build_second_commit_
+/// push_body` builds from a fresh principal and 409s with a state-root mismatch.
+fn append_key_create(
+    principal: &mut cyphr::Principal,
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    new_key_name: &str,
+    now: i64,
+) -> Vec<Vec<u8>> {
+    let signer = pool.get(signer_name).expect("signer key in pool");
+    let new_key = pool.get(new_key_name).expect("new key in pool");
+
+    let signer_tmb_b64 = signer.compute_tmb_b64().expect("signer tmb");
+    let new_tmb_b64 = new_key.compute_tmb_b64().expect("new key tmb");
+
+    // Alphabetical field order matches `canonicalize_value`'s `sort_keys()`.
+    let pay_value = serde_json::json!({
+        "alg": signer.alg,
+        "id": new_tmb_b64,
+        "now": now,
+        "tmb": signer_tmb_b64,
+        "typ": "cyphr.me/cyphr/key/create",
+    });
+    let pay_vec = serde_json::to_vec(&pay_value).unwrap();
+
+    let signer_prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv"))
+        .expect("valid signer prv base64");
+    let signer_pub = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("valid signer pub");
+    let (sig_bytes, cad) = coz::sign_json(&pay_vec, &signer.alg, &signer_prv, &signer_pub)
+        .expect("signing supported for this algorithm");
+    let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
+
+    let new_cyphr_key = cyphr::Key {
+        alg: new_key.alg.clone(),
+        tmb: coz::Thumbprint::from_bytes(
+            Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
+        ),
+        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+        first_seen: now,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let mut scope = principal.begin_commit();
+    scope
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_cyphr_key))
+        .expect("key/create verifies against the current principal state");
+    let signer_tmb = coz::Thumbprint::from_bytes(
+        Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
+    );
+    scope
+        .finalize_with_arrow(
+            &signer.alg,
+            &signer_prv,
+            &signer_pub,
+            &signer_tmb,
+            now,
+            "cyphr.me",
+        )
+        .expect("commit finalizes");
+
+    let entries = cyphr_storage::export_commits(principal).expect("export commits");
+    let new_commit = entries.last().expect("at least one commit after finalize");
+
+    let mut key_idx = 0;
+    new_commit
+        .cozies
+        .iter()
+        .map(|v| {
+            let mut coz = v.clone();
+            let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+            if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < new_commit.keys.len() {
+                let key = &new_commit.keys[key_idx];
+                coz.as_object_mut().unwrap().insert(
+                    "key".to_string(),
+                    serde_json::json!({ "alg": key.alg, "pub": key.pub_key, "tmb": key.tmb }),
+                );
+                key_idx += 1;
+            }
+            serde_json::to_vec(&coz).expect("cozy serializes")
+        })
+        .collect()
+}
+
+/// Build genuine, CHAINING genesis + second-commit push bodies for one
+/// principal: a `key/create` (key_a) genesis closed under the golden key, then
+/// a second `key/create` (key_b) signed by golden onto the post-genesis state.
+/// The two-entry patch the truncation test needs.
+fn build_two_commit_push_bodies(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+) -> (String, String) {
+    let golden = pool.get("golden").expect("golden key");
+    let golden_key = cyphr::Key {
+        alg: golden.alg.clone(),
+        tmb: golden.compute_tmb().expect("golden tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+
+    // Commit 0 (genesis): introduce key_a, then embed the golden genesis key on
+    // the closing cozy -- the wire contract `resolve_genesis` needs for a
+    // never-before-seen principal (mirrors `build_genesis_push_body`).
+    let mut c0 = append_key_create(&mut principal, pool, "golden", "key_a", now);
+    let closing = c0.len() - 1;
+    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
+    closing_coz.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({
+            "alg": golden_key.alg,
+            "pub": golden.pub_key,
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+        }),
+    );
+    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
+
+    // Commit 1: introduce key_b, signed by the still-active golden key.
+    let c1 = append_key_create(&mut principal, pool, "golden", "key_b", now + 1);
+
+    let body = |blobs: &[Vec<u8>]| {
+        serde_json::json!({
+            "principal_id": principal_id,
+            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+        })
+        .to_string()
+    };
+    (body(&c0), body(&c1))
+}
+
+/// A mutation applied to an upstream `/patch` JSON body by the proxy below.
+type PatchMutation = Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>;
+
+/// Spawn a mock authority that serves a FIXED JSON body for `GET /patch`
+/// (any query) over a real ephemeral TCP socket. Returns its base URL and the
+/// task handle -- hold the handle for the test's lifetime (drop/abort stops
+/// it). Serves hand-crafted patch responses a real server would never emit.
+async fn spawn_fixed_authority(body: serde_json::Value) -> (String, tokio::task::JoinHandle<()>) {
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move || {
+            let body = body.clone();
+            async move { axum::Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock authority listener");
+    let addr = listener.local_addr().expect("mock authority local addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// Spawn an on-path proxy in front of `upstream`: for each `GET /patch` it
+/// forwards the request (preserving the query), then applies `mutate` to the
+/// returned JSON body. Models an on-path party altering what the authority
+/// served WITHOUT touching the authority's signature.
+async fn spawn_patch_proxy(
+    upstream: String,
+    mutate: PatchMutation,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let upstream = upstream.clone();
+            let mutate = mutate.clone();
+            async move {
+                let url = match raw.0 {
+                    Some(q) => format!("{upstream}/patch?{q}"),
+                    None => format!("{upstream}/patch"),
+                };
+                let body: serde_json::Value = reqwest::Client::new()
+                    .get(&url)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("proxy upstream request")
+                    .json()
+                    .await
+                    .expect("proxy upstream json decode");
+                axum::Json(mutate(body))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy listener");
+    let addr = listener.local_addr().expect("proxy local addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// A running attestor authority bound on TCP, holding `principal_id`.
+/// Hold the whole struct: dropping it aborts the TCP task and removes the
+/// backing store.
+struct RunningAuthority {
+    instance: common::multi::Instance,
+    url: String,
+}
+
+impl RunningAuthority {
+    fn identity(&self) -> AuthorityIdentity {
+        let id = self
+            .instance
+            .identity
+            .as_ref()
+            .expect("attestor authority holds a signing identity");
+        AuthorityIdentity {
+            alg: id.alg().name().to_string(),
+            pub_key: id.pub_key().to_vec(),
+        }
+    }
+}
+
+/// Stand up a real attestor authority on TCP and push a genuine genesis for
+/// `principal_id` over HTTP.
+async fn authority_with_genesis(principal_id: &str, now: i64) -> RunningAuthority {
+    let (state, identity, dir) = attestor_server().await;
+    let app = build_app_router(state.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state,
+        identity: Some(identity),
+        dir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind authority TCP");
+    let url = instance.url().expect("authority TCP URL");
+
+    let pool = load_pool();
+    let (status, body) = post_json(
+        app.clone(),
+        "/push",
+        build_genesis_push_body(&pool, principal_id, now),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "authority genesis push: {body:?}"
+    );
+
+    RunningAuthority { instance, url }
+}
+
+/// Stand up a real attestor authority on TCP holding a genuine TWO-commit
+/// principal, pushed over HTTP (genesis + a chaining second commit). The
+/// witness syncs HTTP-pushed principals; a fixture bootstrapped directly into
+/// the engine does NOT round-trip through the witness's genesis auto-detection.
+async fn authority_with_two_commits(principal_id: &str, now: i64) -> RunningAuthority {
+    let (state, identity, dir) = attestor_server().await;
+    let app = build_app_router(state.clone()).expect("authority router");
+    let mut instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state,
+        identity: Some(identity),
+        dir,
+        router: app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    instance.bind_tcp().await.expect("bind authority TCP");
+    let url = instance.url().expect("authority TCP URL");
+
+    let pool = load_pool();
+    let (genesis_body, second_body) = build_two_commit_push_bodies(&pool, principal_id, now);
+    let (s0, b0) = post_json(app.clone(), "/push", genesis_body).await;
+    assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
+    let (s1, b1) = post_json(app.clone(), "/push", second_body).await;
+    assert_eq!(s1, StatusCode::CREATED, "second commit push: {b1:?}");
+
+    RunningAuthority { instance, url }
+}
+
+/// Build a witness `AppState` + router pointed at `authority_url`, optionally
+/// carrying an expected authority identity (the authenticated channel).
+async fn witness_for(
+    authority_url: &str,
+    authority_identity: Option<AuthorityIdentity>,
+) -> (Arc<AppState>, axum::Router) {
+    let dir = tempfile::tempdir().expect("witness tempdir");
+    let config = ServerConfig {
+        mode: ServerMode::Witness,
+        data_dir: dir.path().join("data"),
+        authority_url: Some(authority_url.to_string()),
+        authority_identity,
+        ..Default::default()
+    };
+    // Leak the TempDir guard for the test's lifetime: the witness store must
+    // outlive this function. Tests are short-lived processes.
+    std::mem::forget(dir);
+    let state = Arc::new(AppState::new(config).expect("witness AppState"));
+    let app = build_app_router(state.clone()).expect("witness router");
+    (state, app)
+}
+
+/// N2.1: a witness stalled by one malformed entry still applies a later good
+/// entry -- no permanent wedge.
+///
+/// The sync audit's S4 wedge: an entry whose `blobs` array is empty aborts the
+/// entire apply loop, and because nothing advanced, every later sync refetches
+/// and re-aborts on the same entry -- a permanent, silent stall that also
+/// blocks every GENUINE entry positioned after it. Here the malformed entry is
+/// spliced BEFORE the genuine genesis, so under the current code the genesis
+/// (the only real commit) never applies and the witness answers 404 forever.
+/// A witness that gets past the bad entry applies the genesis and serves it.
+///
+/// Runs in the UNAUTHENTICATED sync mode (no expected identity): the wedge fix
+/// is orthogonal to the authenticated channel and must hold on the legacy path.
+#[tokio::test]
+async fn sync_recovers_after_bad_entry() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x11);
+    let authority = authority_with_genesis(&principal, now).await;
+
+    let bad_pr = principal.clone();
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(move |mut body: serde_json::Value| {
+            let bad_entry = serde_json::json!({
+                "commit_id": "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "sequence": 0,
+                "pr": bad_pr,
+                "blobs": [],
+            });
+            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
+                entries.insert(0, bad_entry);
+            }
+            body
+        }),
+    )
+    .await;
+
+    let (_witness_state, witness_app) = witness_for(&proxy_url, None).await;
+
+    // One /tip drives one sync attempt.
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a malformed entry preceding the genesis must not permanently wedge the sync -- the \
+         genuine genesis MUST still apply and be served: {json:?}"
+    );
+    let payload = common::envelope_payload(&json);
+    assert_eq!(payload["principal_id"], principal);
+    assert!(
+        payload["commit_count"].as_u64().unwrap_or(0) >= 1,
+        "witness must have applied the genuine genesis past the bad entry: {json:?}"
+    );
+}
+
+/// N2.4: a patch response NOT signed by the expected authority identity is
+/// rejected -- no entry applied.
+///
+/// The witness expects a fresh identity the authority has never signed with,
+/// so the authority's envelope -- unsigned today, or signed under the
+/// authority's OWN key once the channel is authenticated -- cannot verify
+/// against the expected key. An unverifiable channel must yield no applied
+/// state, so `GET /tip` for the principal is NOT 200.
+#[tokio::test]
+async fn patch_envelope_authority_signature() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x14);
+    let authority = authority_with_genesis(&principal, now).await;
+
+    let expected = coz::Alg::Ed25519.generate_keypair();
+    let wrong_identity = AuthorityIdentity {
+        alg: expected.alg.name().to_string(),
+        pub_key: expected.pub_bytes.clone(),
+    };
+    let (_witness_state, witness_app) = witness_for(&authority.url, Some(wrong_identity)).await;
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a patch response not signed by the EXPECTED authority identity must be rejected: the \
+         witness must not apply or serve its entries: {json:?}"
+    );
+}
+
+/// N2.4b: a patch whose entries were TRUNCATED after signing is rejected --
+/// the entry-commitment mismatch is caught, nothing applied.
+///
+/// The on-path proxy drops the trailing entry of a genuinely-signed, two-commit
+/// patch. Every entry that remains is authentic and the authority's signature
+/// still verifies -- so a channel that only checks "is the signature valid?"
+/// accepts it and applies the short prefix. The signature must instead BIND the
+/// entries served: recomputing the commitment over the received (truncated)
+/// entries must not match what was signed, and the witness must fail closed --
+/// applying NOTHING, not the surviving prefix.
+#[tokio::test]
+async fn patch_truncated_entries_rejected() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x1e);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
+                if entries.len() > 1 {
+                    entries.pop();
+                }
+            }
+            body
+        }),
+    )
+    .await;
+
+    let (_witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a patch whose entries were truncated after signing must be rejected wholesale (fail \
+         closed, apply nothing) -- never accepted as a valid shorter prefix: {json:?}"
+    );
+}
+
+/// Sign a tip-report-shaped coz over `pay` with `identity`. The report rides
+/// the wire as `{pay, sig}`; the signature is computed over the canonical `pay`
+/// exactly as `coz::verify_json` re-canonicalizes it, so a validly-signed but
+/// SEMANTICALLY malformed report (e.g. a non-canonical `pr`) still verifies --
+/// isolating the parse gate from the signature gate.
+fn sign_report(identity: &ServerIdentity, pay: serde_json::Value) -> coz::CozJson {
+    let pay_bytes = serde_json::to_vec(&pay).expect("serialize report pay");
+    let (sig, _cad) = identity
+        .sign(&pay_bytes)
+        .expect("authority signs report pay");
+    coz::CozJson { pay, sig }
+}
+
+/// Stand up a real attestor, push a genesis for `principal`, and return its
+/// genuine `/patch` entries array plus the signing identity (and the store
+/// guard to hold). The entries are authentic, so a witness with NO ingestion
+/// gate would apply them -- which is exactly what the malformed-report test
+/// must observe the gate PREVENT.
+async fn genuine_entries_and_identity(
+    principal: &str,
+    now: i64,
+) -> (serde_json::Value, Arc<ServerIdentity>, tempfile::TempDir) {
+    let (state, identity, dir) = attestor_server().await;
+    let app = build_app_router(state.clone()).expect("authority router");
+    let pool = load_pool();
+    let (status, body) = post_json(
+        app.clone(),
+        "/push",
+        build_genesis_push_body(&pool, principal, now),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "genesis push: {body:?}");
+    let (pstatus, patch) = get_json(app, &format!("/patch?pr={principal}&from=0")).await;
+    assert_eq!(pstatus, StatusCode::OK, "authority /patch: {patch:?}");
+    let entries = patch["payload"]["entries"].clone();
+    assert!(
+        entries.as_array().map(|e| !e.is_empty()).unwrap_or(false),
+        "authority must serve at least the genesis entry: {patch:?}"
+    );
+    (entries, identity, dir)
+}
+
+/// N2.8 (reject direction): a witness refuses to ingest a report that fails
+/// `TipReport::parse`, even when it is validly signed by the expected authority.
+///
+/// This is the load-bearing half of the cross-node equivocation closure: ND
+/// made `check_equivocation` compare TYPED values, but a report that cannot be
+/// typed yields "no claim", observationally identical to the evasion. The
+/// closure holds only if a malformed report never becomes a retained/applied
+/// attestation in the first place -- and ingestion is this node's surface.
+///
+/// The mock serves GENUINE entries (a witness with no gate would apply them)
+/// wrapped in `Envelope::signed` whose statement coz is a VALIDLY-SIGNED report
+/// with a non-canonical `pr` (a JSON array -- `TipReport::parse`'s
+/// `parse_genesis_id` rejects it; it is never unwrapped to an inner string).
+/// The signature verifies (isolating the PARSE gate from the signature gate),
+/// so a witness that stops at "signature valid" applies the entries. A witness
+/// that parses the report before acting rejects it and applies nothing.
+///
+/// NB (a discrepancy surfaced): the IBC lists `sequence: "5"` as a malformed
+/// example, but the merged `TipReport::parse` CANONICALIZES a decimal-string
+/// sequence (`"5"` -> 5) -- it is accepted, not rejected. The genuinely
+/// non-canonical shape used here is `pr: [..]`; a malformed sequence would be
+/// `"5x"`/`""`/`true`, never `"5"`.
+#[tokio::test]
+async fn witness_rejects_malformed_report_at_ingestion() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x18);
+    let (entries, identity, _auth_dir) = genuine_entries_and_identity(&principal, now).await;
+
+    let tmb = identity
+        .alg()
+        .compute_thumbprint(identity.pub_key())
+        .expect("authority thumbprint");
+    let malformed_pay = serde_json::json!({
+        "alg": identity.alg().name(),
+        "now": now,
+        "tmb": Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+        "typ": receipt::TIP_REPORT_TYP,
+        // NON-CANONICAL: `pr` is a JSON array, not a bare b64ut genesis id.
+        "pr": ["SHA-256:not-a-genesis-identifier"],
+        "sequence": 0,
+        "commit_id": TaggedDigest::new(HashAlg::Sha256, vec![0x18; 32]).unwrap().to_string(),
+        "roots": {
+            "pr": TaggedDigest::new(HashAlg::Sha256, vec![0x19; 32]).unwrap().to_string(),
+            "sr": TaggedDigest::new(HashAlg::Sha256, vec![0x1a; 32]).unwrap().to_string(),
+            "ar": TaggedDigest::new(HashAlg::Sha256, vec![0x1b; 32]).unwrap().to_string(),
+            "cr": "",
+        },
+    });
+    let report = sign_report(&identity, malformed_pay);
+
+    // PIN that the violating shape is exactly what the invariant demands: the
+    // report carries a VALID signature by the expected authority AND is
+    // REJECTED by the gate's own parser. Together these isolate the PARSE gate
+    // from the signature gate -- a rejection under test cannot be blamed on a
+    // bad signature, and the report genuinely fails `TipReport::parse`.
+    assert_eq!(
+        coz::verify_json(
+            &serde_json::to_vec(&report.pay).unwrap(),
+            &report.sig,
+            identity.alg().name(),
+            identity.pub_key(),
+        ),
+        Some(true),
+        "the malformed report MUST be validly signed by the expected authority"
+    );
+    assert!(
+        receipt::TipReport::parse(&report).is_err(),
+        "the report MUST fail TipReport::parse (the ingestion gate's own parser)"
+    );
+
+    let body = serde_json::json!({
+        "v": 1,
+        "payload": { "principal_id": principal, "entries": entries },
+        "statement": { "kind": "signed", "coz": serde_json::to_value(&report).unwrap() },
+    });
+    let (mock_url, _mock) = spawn_fixed_authority(body).await;
+
+    let expected = AuthorityIdentity {
+        alg: identity.alg().name().to_string(),
+        pub_key: identity.pub_key().to_vec(),
+    };
+    let (_witness_state, witness_app) = witness_for(&mock_url, Some(expected)).await;
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a validly-signed but NON-CANONICAL report must be refused at ingestion -- its (genuine) \
+         entries must NOT be applied or served: {json:?}"
+    );
+}
+
+/// N2.8 (accept direction): a genesis principal's report -- valid but with NO
+/// commit root (`cr` empty) -- is ACCEPTED, not over-rejected.
+///
+/// The other half of the two-sided property. `TipReport::parse` treats an empty
+/// `cr` as "no commit root yet" (`None`), never malformed; an ingestion gate
+/// that rejected it would recreate the availability defect in the node that
+/// inherits it. A witness pointed at a genuine authority (which signs its patch
+/// envelope) must sync the genesis and serve it. This is GREEN only once the
+/// authenticated channel is fully implemented (serve-side signing + the
+/// accepting parse); a parse weakened to reject empty `cr` turns it RED.
+#[tokio::test]
+async fn witness_accepts_genesis_report_at_ingestion() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x1c);
+    let authority = authority_with_genesis(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (_witness_state, witness_app) = witness_for(&authority.url, Some(authority_identity)).await;
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a valid genesis report (no commit root, cr empty) must be ACCEPTED through the \
+         authenticated channel and served, never over-rejected: {json:?}"
+    );
+    let payload = common::envelope_payload(&json);
+    assert_eq!(payload["principal_id"], principal);
+    assert!(
+        payload["commit_count"].as_u64().unwrap_or(0) >= 1,
+        "witness must have applied the accepted genesis: {json:?}"
     );
 }
