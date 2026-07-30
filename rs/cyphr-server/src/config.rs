@@ -143,6 +143,19 @@ pub struct ServerConfig {
     #[serde(default)]
     pub authority_url: Option<String>,
 
+    /// The expected upstream-authority signing identity a witness verifies
+    /// a `GET /patch` envelope's signature against before consuming any
+    /// entry (the authenticated-channel identity, K10). `None` preserves the
+    /// legacy unauthenticated sync path; when set, an unsigned, mis-signed,
+    /// or entry-unbound patch response is a sync failure, never applied.
+    ///
+    /// Carries verifiable KEY MATERIAL (alg + public-key bytes), not a bare
+    /// thumbprint: `coz::verify_json` needs the actual public key, and a
+    /// thumbprint verifies nothing. Mirrors the disclosed-key `alg`/`pub`
+    /// pattern (`crate::revoke::DisclosedKey`).
+    #[serde(default)]
+    pub authority_identity: Option<AuthorityIdentity>,
+
     /// Server-side admission policy (the `[admission]` TOML table). Gates
     /// new-principal residency only; defaults to `Open` (permissionless).
     #[serde(default)]
@@ -203,6 +216,23 @@ pub struct LimitsConfig {
     /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
     /// is not exempt from rate limiting.
     pub revoke: RateBucket,
+}
+
+/// The expected upstream-authority signing identity for witness-mode sync
+/// (`ServerConfig::authority_identity`).
+///
+/// Verifiable key material -- `alg` names the signature algorithm and
+/// `pub_key` is the raw public key `coz::verify_json` checks the patch
+/// envelope's signature against. A bare thumbprint is deliberately NOT
+/// sufficient: it identifies a key but cannot verify a signature. Mirrors
+/// the `alg`/`pub` wire shape of [`crate::revoke::DisclosedKey`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct AuthorityIdentity {
+    /// The authority's signature algorithm (e.g. `Ed25519`).
+    pub alg: String,
+    /// The authority's public key bytes (base64url in JSON, wire field `pub`).
+    #[serde(rename = "pub", with = "coz::b64")]
+    pub pub_key: Vec<u8>,
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -295,6 +325,7 @@ impl Default for ServerConfig {
             signing_key_path: None,
             audience: None,
             authority_url: None,
+            authority_identity: None,
             admission: AdmissionConfig::default(),
             limits: LimitsConfig::default(),
         }
