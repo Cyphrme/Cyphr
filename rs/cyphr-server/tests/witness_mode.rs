@@ -1165,15 +1165,29 @@ async fn patch_envelope_authority_signature() {
 }
 
 /// N2.4b: a patch whose entries were TRUNCATED after signing is rejected --
-/// the entry-commitment mismatch is caught, nothing applied.
+/// the post-apply reconciliation catches that local state falls short of
+/// what the signed report attests.
 ///
-/// The on-path proxy drops the trailing entry of a genuinely-signed, two-commit
-/// patch. Every entry that remains is authentic and the authority's signature
-/// still verifies -- so a channel that only checks "is the signature valid?"
-/// accepts it and applies the short prefix. The signature must instead BIND the
-/// entries served: recomputing the commitment over the received (truncated)
-/// entries must not match what was signed, and the witness must fail closed --
-/// applying NOTHING, not the surviving prefix.
+/// The on-path proxy drops the trailing entry of a genuinely-signed,
+/// two-commit patch. Every entry that remains is authentic and the
+/// authority's signature still verifies -- so a channel that only checks
+/// "is the signature valid?" accepts it and applies the short prefix
+/// silently, as `Synced`.
+///
+/// REWORK NOTE (discrepancy surfaced, not silently resolved): the base IBC's
+/// N2.4b text says "nothing applied." This node's council round (attack +
+/// security + architect, converged) rejected pre-apply atomicity as the
+/// mechanism -- see `architect-N2-round.md`'s "digest-over-all declination":
+/// a genuine chain-verified PREFIX apply is explicitly ruled SOUND ("exactly
+/// one reachable from an honest, shorter serving -- monotone, no integrity
+/// loss"), and this node's own S3 forbids changing what a caller serves ("log
+/// distinctly and proceed to serve as today"). Under that ratified design the
+/// genuine sequence-0 entry legitimately applies and `/tip` legitimately
+/// keeps serving it -- checking the NEXT `/tip` call's HTTP status is no
+/// longer a valid proxy for "was the truncation caught." What must hold, and
+/// is asserted directly below, is that the SYNC OUTCOME reports the
+/// mismatch (never `Synced`) and that local state never silently advances
+/// past the withheld commit.
 #[tokio::test]
 async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
@@ -1194,14 +1208,40 @@ async fn patch_truncated_entries_rejected() {
     )
     .await;
 
-    let (_witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
 
-    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a patch whose entries were truncated after signing must be rejected wholesale (fail \
-         closed, apply nothing) -- never accepted as a valid shorter prefix: {json:?}"
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            cyphr_server::sync::SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "a patch whose entries were truncated after signing must never report success, got \
+         {outcome:?}"
+    );
+
+    // Local state may legitimately hold the sound genesis prefix (per the
+    // ratified design), but must never have silently advanced to the
+    // withheld second commit. Read the engine directly, not via a second
+    // `/tip` round trip: the proxy's truncation is keyed on "does this
+    // response hold more than one entry," so a SECOND sync attempt (with
+    // `from` advanced past 0) would ask the real authority for only the
+    // remaining entry, which the proxy then passes through untouched --
+    // correctly resyncing on the next honest attempt, but not exercising
+    // this test's property.
+    let resulting = witness_state
+        .engine
+        .get_tip(&principal)
+        .await
+        .expect("local tip lookup");
+    let commit_count = resulting.map(|t| t.commit_count);
+    assert_eq!(
+        commit_count,
+        Some(1),
+        "the witness must hold only the sound genesis prefix, never the withheld second commit: \
+         {commit_count:?}"
     );
 }
 
@@ -1511,5 +1551,396 @@ async fn authenticated_channel_accepts_genuine_authority() {
     assert!(
         payload["commit_count"].as_u64().unwrap_or(0) >= 1,
         "witness must have applied the synced genesis: {json:?}"
+    );
+}
+
+// ========================================================================
+// N2 rework: post-apply reconciliation against the witness's OWN resulting
+// state, and the cross-principal `pr` check
+// ========================================================================
+//
+// The prior authenticated-channel gate compared the response's claimed
+// `(sequence, commit_id)` against the SAME values the signed report carries
+// in the clear -- a check any on-path reader can reproduce for free, since
+// it never touches anything the witness itself verifies or produces. These
+// tests derive from the attack/security/architect council round on this
+// node (`.scratch/campaigns/server-witness-remediation/probes/N2-hacker.md`,
+// `N2-security.md`, `architect-N2-round.md`): each pins one shape that
+// defeated the old gate and must be caught by the new one.
+
+/// Spawn an on-path proxy that rewrites the REQUEST query before forwarding,
+/// leaving the authority's response byte-for-byte genuine. Models a party
+/// that never touches what the authority serves, only what it is asked --
+/// the shape no response-integrity check can ever see.
+async fn spawn_query_rewriting_proxy(
+    upstream: String,
+    rewrite: Arc<dyn Fn(Option<String>) -> Option<String> + Send + Sync>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let upstream = upstream.clone();
+            let rewrite = rewrite.clone();
+            async move {
+                let q = rewrite(raw.0);
+                let url = match q {
+                    Some(q) => format!("{upstream}/patch?{q}"),
+                    None => format!("{upstream}/patch"),
+                };
+                let body: serde_json::Value = reqwest::Client::new()
+                    .get(&url)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("proxy upstream request")
+                    .json()
+                    .await
+                    .expect("proxy upstream json decode");
+                axum::Json(body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy listener");
+    let addr = listener.local_addr().expect("proxy local addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// Build a genuine genesis push body whose genesis key is `signer` (not
+/// `golden`), so the resulting chain has a genuinely DIFFERENT principal
+/// root from the golden-keyed fixtures every other test in this file uses --
+/// required so the cross-principal test below cannot be dismissed as an
+/// artifact of every fixture sharing one genesis key.
+fn build_genesis_push_body_with(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+    signer: &str,
+    new_key: &str,
+) -> String {
+    let g = pool.get(signer).expect("signer key in pool");
+    let g_key = cyphr::Key {
+        alg: g.alg.clone(),
+        tmb: g.compute_tmb().expect("signer tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+    let mut principal = cyphr::Principal::implicit(g_key.clone()).expect("implicit genesis");
+    let mut blobs = append_key_create(&mut principal, pool, signer, new_key, now);
+    let closing = blobs.len() - 1;
+    let mut closing_coz: serde_json::Value = serde_json::from_slice(&blobs[closing]).unwrap();
+    closing_coz.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({
+            "alg": g_key.alg,
+            "pub": g.pub_key,
+            "tmb": Base64UrlUnpadded::encode_string(g_key.tmb.as_bytes()),
+        }),
+    );
+    blobs[closing] = serde_json::to_vec(&closing_coz).unwrap();
+    serde_json::json!({
+        "principal_id": principal_id,
+        "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+/// N2 rework, fix 1: cross-principal state substitution is rejected before
+/// any entry is applied.
+///
+/// An on-path proxy rewrites only the OUTBOUND request's `pr` from A to B;
+/// the authority answers completely honestly for B. Every prior check
+/// passes -- the signature verifies, the report parses, its claims are
+/// internally consistent -- because the response genuinely is what it
+/// claims to be, just an answer about a different principal. Principal A's
+/// and B's genesis keys are genuinely distinct (`alice` vs `golden`), so
+/// this is not a shared-fixture artifact: if the witness ever applied B's
+/// blobs under A's identifier, A's `/tip` would come back 200 holding B's
+/// chain.
+#[tokio::test]
+async fn cross_principal_substitution_rejected() {
+    let now = 1_700_000_000;
+    let principal_a = principal_digest(0x81);
+    let principal_b = principal_digest(0x82);
+
+    let authority = authority_with_two_commits(&principal_b, now).await;
+    let authority_identity = authority.identity();
+    let pool = load_pool();
+    let (status, body) = post_json(
+        authority.instance.router.clone(),
+        "/push",
+        build_genesis_push_body_with(&pool, &principal_a, now, "alice", "bob"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "principal A genesis push: {body:?}"
+    );
+
+    let b_for_rewrite = principal_b.clone();
+    let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
+        authority.url.clone(),
+        Arc::new(move |_q: Option<String>| Some(format!("pr={b_for_rewrite}&from=0"))),
+    )
+    .await;
+
+    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal_a).await;
+    assert!(
+        matches!(
+            outcome,
+            cyphr_server::sync::SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::PrincipalMismatch
+            }
+        ),
+        "a genuine, validly-signed response for a DIFFERENT principal must be rejected as a \
+         principal mismatch before any entry applies, got {outcome:?}"
+    );
+
+    // A's own state must be untouched -- never advanced to B's chain.
+    let (status_a, json_a) = get_json(witness_app, &format!("/tip?pr={principal_a}")).await;
+    if status_a == StatusCode::OK {
+        let payload = common::envelope_payload(&json_a);
+        assert_eq!(
+            payload["commit_count"].as_u64(),
+            Some(1),
+            "principal A must hold only its own genesis (commit_count 1), never B's chain: \
+             {json_a:?}"
+        );
+    }
+}
+
+/// N2 rework, fix 2 (part a): a decoy top entry that preserves its victim's
+/// declared `(sequence, commit_id)` labels while swapping in junk `blobs` no
+/// longer defeats the channel -- the witness's post-apply resulting state,
+/// not any label carried on the wire, is what gets compared against the
+/// signed attestation.
+///
+/// Run across three polls: the withholding must be caught EVERY time, never
+/// silently accepted even once.
+#[tokio::test]
+async fn decoy_top_entry_withholding_rejected() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x7a);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            // Withhold sequence 1 on every response, leaving a decoy that
+            // carries its genuine labels but junk blobs as the top entry.
+            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
+                for e in entries.iter_mut() {
+                    if e["sequence"].as_u64() == Some(1) {
+                        *e = serde_json::json!({
+                            "commit_id": e["commit_id"].clone(),
+                            "sequence": e["sequence"].clone(),
+                            "pr": e["pr"].clone(),
+                            "blobs": [Base64UrlUnpadded::encode_string(b"{}")],
+                        });
+                    }
+                }
+            }
+            body
+        }),
+    )
+    .await;
+
+    let (witness_state, witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+
+    for attempt in 0..3 {
+        let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+        assert!(
+            matches!(
+                outcome,
+                cyphr_server::sync::SyncOutcome::Failed {
+                    reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
+                }
+            ),
+            "attempt {attempt}: a label-preserving decoy top entry must be caught by the \
+             post-apply reconciliation on EVERY poll, got {outcome:?}"
+        );
+    }
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    let payload = common::envelope_payload(&json);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the genuine sequence-0 entry (never withheld) must still have applied: {json:?}"
+    );
+    assert_eq!(
+        payload["commit_count"].as_u64(),
+        Some(1),
+        "the witness must never advance past the withheld commit, and must never report success \
+         while short of it: {json:?}"
+    );
+}
+
+/// N2 rework, fix 2 (part b): wholesale-emptying the `entries` array of a
+/// genuine, genuinely-signed response no longer reads as `UpToDate`. The
+/// signed report the witness just verified proves the authority is two
+/// commits ahead; the post-apply comparison against the witness's own
+/// (empty) resulting state must catch that the two disagree.
+#[tokio::test]
+async fn empty_entries_with_advanced_report_rejected() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x7b);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            body["payload"]["entries"] = serde_json::json!([]);
+            body
+        }),
+    )
+    .await;
+
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            cyphr_server::sync::SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "wholesale entry deletion against a report proving the authority is ahead must be \
+         rejected, never read as UpToDate, got {outcome:?}"
+    );
+}
+
+/// N2 rework, fix 2 (part c) -- the variant NO response-integrity mechanism
+/// can ever catch: the on-path party never touches the response at all, only
+/// the OUTBOUND request's `from`. The authority answers completely
+/// honestly -- an empty entry set (nothing new past the huge `from`) plus its
+/// genuine signature over its genuine current tip. Only comparing that
+/// signed tip against the witness's own local state (never advanced) can
+/// close this.
+#[tokio::test]
+async fn request_side_from_rewrite_withholding_rejected() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x7c);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
+        authority.url.clone(),
+        Arc::new(|q: Option<String>| {
+            let q = q.unwrap_or_default();
+            let pr = q
+                .split('&')
+                .find(|kv| kv.starts_with("pr="))
+                .unwrap_or("")
+                .to_string();
+            Some(format!("{pr}&from=999999"))
+        }),
+    )
+    .await;
+
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            cyphr_server::sync::SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EntryCommitmentMismatch
+            }
+        ),
+        "a request-side `from` rewrite must not withhold every entry behind a fully genuine \
+         response, got {outcome:?}"
+    );
+}
+
+/// N2 rework, fix 4 (architect): `Synced` carries a `rejected` count
+/// alongside `applied`, so a caller can no longer mistake a sync where some
+/// entries in the SAME response were individually rejected for a clean one.
+///
+/// The authority's genuine two-commit patch is followed by one extra
+/// entry the witness cannot apply (its `blobs` array is absent). The two
+/// genuine entries fully catch the witness up to what the signed report
+/// attests (so the post-apply reconciliation passes and this is a real
+/// `Synced`, not a `Failed`), while the trailing garbage entry is
+/// individually rejected in the same pass.
+#[tokio::test]
+async fn synced_outcome_reports_rejected_count_alongside_applied() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x7f);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            if let Some(entries) = body["payload"]["entries"].as_array_mut() {
+                entries.push(serde_json::json!({
+                    "commit_id": "SHA-256:GARBAGE_TRAILING_ENTRY_NO_BLOBS_ARRAY",
+                    "sequence": 2,
+                    "pr": "",
+                }));
+            }
+            body
+        }),
+    )
+    .await;
+
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    match outcome {
+        cyphr_server::sync::SyncOutcome::Synced { applied, rejected } => {
+            assert_eq!(applied, 2, "both genuine entries must have applied");
+            assert_eq!(
+                rejected, 1,
+                "the trailing garbage entry must be counted as rejected, not silently absorbed \
+                 into a clean-looking Synced"
+            );
+        },
+        other => panic!("expected Synced {{ applied: 2, rejected: 1 }}, got {other:?}"),
+    }
+}
+
+/// GUARD (regression protection, already-correct behavior): a CONFIGURED
+/// witness fails closed when the statement is stripped entirely -- the
+/// `/patch` unsigned-on-signing-failure degradation (a liveness affordance
+/// for an UNCONFIGURED witness) must never be usable to downgrade a
+/// configured one's channel.
+#[tokio::test]
+async fn stripped_statement_fails_closed_when_configured() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x7e);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            body["statement"] = serde_json::json!({ "kind": "unsigned" });
+            body
+        }),
+    )
+    .await;
+
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+    let outcome = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            outcome,
+            cyphr_server::sync::SyncOutcome::Failed {
+                reason: cyphr_server::sync::SyncFailure::EnvelopeUnsignedOrMisSigned
+            }
+        ),
+        "a configured witness must fail closed on a stripped statement, applying nothing, got \
+         {outcome:?}"
     );
 }
