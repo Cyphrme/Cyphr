@@ -14,13 +14,27 @@
 //!    *different* principal (an on-path party rewrote only the outbound query) is refused here,
 //!    before it ever reaches storage.
 //! 2. After the apply loop runs, the witness's own resulting local tip must equal what the signed
-//!    report attests -- see [`resulting_tip_matches_report`]. This is the load-bearing check: a
-//!    signature over `pay` says nothing about a *separate* plaintext `entries` array, so no
-//!    per-entry label comparison against that same array can ever be sound (a decoy entry that
-//!    copies its victim's declared `sequence`/`commit_id` passes any such check while carrying junk
-//!    `blobs`). Comparing against what the witness's own storage engine independently verified and
-//!    produced is not defeatable by altering the wire body, because it never trusts the wire body's
-//!    self-consistency in the first place.
+//!    report attests -- see [`resulting_tip_matches_report`]. A signature over `pay` says nothing
+//!    about a *separate* plaintext `entries` array, so no per-entry label comparison against that
+//!    same array can ever be sound (a decoy entry that copies its victim's declared
+//!    `sequence`/`commit_id` passes any such check while carrying junk `blobs`). Comparing against
+//!    what the witness's own storage engine independently verified and produced instead of reading
+//!    the wire body against itself catches every MODIFICATION of a response -- truncation,
+//!    per-principal substitution, and wholesale emptying all leave local state short of, or
+//!    divergent from, the attested tip, whether the response or only the outbound request was
+//!    altered.
+//!
+//! **What this does not close: replay of a genuine response.** The check authenticates the
+//! *pairing* of local state and signed report, not the report's *currency*. A response the
+//! authority genuinely signed at a moment when its tip equalled the witness's own state matches
+//! that state by construction, forever -- an on-path party can hold such a response and keep
+//! serving it on every later poll, and the witness reads [`SyncOutcome::UpToDate`] indefinitely
+//! while the authority advances without limit. Nothing is forged or altered, so no comparison of
+//! wire fields against each other or against local state can distinguish it from a live response.
+//! Closing it needs a freshness or monotonicity property this channel does not provide; that is an
+//! open protocol question upstream of this module, not a defect in this comparison -- tracked as
+//! issue #152, gated on the open specification question of what an attestation asserts about
+//! currency.
 //!
 //! Without a configured identity, sync runs the legacy unauthenticated path
 //! unchanged.
@@ -94,11 +108,14 @@ pub enum SyncFailure {
     PrincipalMismatch,
     /// After the apply loop ran, the witness's own resulting local tip does
     /// not equal what the signed report attests -- see
-    /// [`resulting_tip_matches_report`]. This is the general withholding
-    /// closure: it catches a decoy entry that preserves its victim's
-    /// declared labels, a dropped middle or trailing entry, and a wholesale
-    /// emptied or request-rewritten response identically, because none of
-    /// them change what the witness's own storage engine actually produced.
+    /// [`resulting_tip_matches_report`]. Catches every MODIFICATION of the
+    /// response: a decoy entry that preserves its victim's declared labels, a
+    /// dropped middle or trailing entry, and a wholesale emptied or
+    /// request-rewritten response are all caught identically, because none
+    /// of them change what the witness's own storage engine actually
+    /// produced. Does NOT catch a *replay* of a genuine, unmodified response
+    /// captured while the authority's tip matched the witness's own state --
+    /// see the module documentation's "What this does not close" section.
     EntryCommitmentMismatch,
     /// Every entry in a non-empty response was individually rejected
     /// (decode or verification failure); nothing applied.
