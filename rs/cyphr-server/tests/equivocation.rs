@@ -704,13 +704,18 @@ fn wrong_typ_pair_is_not_equivocation() {
 // conflict" -- `check_cross_witness_consistency`, `verify_evidence_offline`,
 // and `detect_fork_unverified` each compare `verdict == Proven` only, so a
 // malformed report and an honest non-conflicting pair are indistinguishable
-// at every current call site. Two properties close N1's half of this from
+// at every current call site. Four properties close N1's half of this from
 // its own file surface: the first is decorrelated coverage of ND's already-
-// landed boundary property (GREEN); the second requires the consumer to stop
-// folding the two apart (RED -- it is unsatisfiable by the current API,
-// which returns bare `None` for both, until a fix makes them observably
-// distinct; see the property's own doc for why that RED is by design, not a
-// broken test).
+// landed boundary property (GREEN); the other three each pin one consumer
+// site and require it to stop folding the two apart (RED -- unsatisfiable by
+// the current implementation, which still folds `Malformed` into the same
+// value an honest agreeing pair produces at every site, until a fix makes
+// them observably distinct; see each property's own doc for why that RED is
+// by design, not a broken test). `verify_evidence_offline`/
+// `detect_fork_unverified` were widened from bare `bool` to `Option<bool>`
+// as part of this rework -- scaffolding only, so the invariant becomes
+// expressible; every path still returns `Some` today, matching the old
+// `bool` behavior exactly, which is why their properties are still red.
 // ========================================================================
 
 /// Re-stamp a signed tip report's `pr` claim and re-sign -- the `pr`
@@ -902,6 +907,190 @@ proptest! {
             "a pair where one report fails to canonicalize (malformed_on_pr={}, \
              malformed_value={:?}) MUST read differently at check_cross_witness_consistency \
              than a genuinely honest agreeing pair",
+            malformed_on_pr,
+            malformed_value
+        );
+    }
+
+    /// The same consumer-side contract as
+    /// `malformed_pair_is_distinguishable_from_honest_agreement_at_consumer`,
+    /// pinned at `verify_evidence_offline` instead of
+    /// `check_cross_witness_consistency` -- the second of the three
+    /// identically-folding call sites `EquivocationVerdict::Malformed`'s doc
+    /// names. RED BY DESIGN: `verify_evidence_offline` was widened to
+    /// `Option<bool>` by this rework so the invariant is expressible at all,
+    /// but every path still returns `Some(bool)` -- a malformed pair and an
+    /// honest agreeing pair both currently yield `Some(false)`, so this
+    /// assertion is unsatisfiable until the fold at THIS site (not
+    /// `check_cross_witness_consistency`, already pinned above) is closed.
+    #[test]
+    fn malformed_pair_is_distinguishable_from_honest_agreement_at_verify_evidence_offline(
+        malformed_on_pr in any::<bool>(),
+        malformed_value in malformed_field_strategy(),
+    ) {
+        let (_dir_a, identity_a) = identity_with_seed(0x11);
+        let (_dir_b, identity_b) = identity_with_seed(0x22);
+        let pr = principal_digest(0x54);
+
+        // Attack shape, as the consumer property above: one report
+        // hand-crafted to fail canonicalization, paired with a genuinely
+        // conflicting well-formed counterpart.
+        let a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x55),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report a");
+        let b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x56),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report b");
+        let a = if malformed_on_pr {
+            restamp_pr(a, &identity_a, malformed_value.clone())
+        } else {
+            restamp_sequence(a, &identity_a, malformed_value.clone())
+        };
+
+        let malformed_result = consistency::verify_evidence_offline(
+            &a,
+            identity_a.pub_key(),
+            &b,
+            identity_b.pub_key(),
+        );
+
+        // Control: a fully honest, genuinely agreeing pair.
+        let honest_a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x57),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report a");
+        let honest_b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x57),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report b");
+        let honest_result = consistency::verify_evidence_offline(
+            &honest_a,
+            identity_a.pub_key(),
+            &honest_b,
+            identity_b.pub_key(),
+        );
+
+        prop_assert_ne!(
+            malformed_result,
+            honest_result,
+            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
+             malformed_value={:?}) MUST read differently at verify_evidence_offline than a \
+             genuinely honest agreeing pair",
+            malformed_on_pr,
+            malformed_value
+        );
+    }
+
+    /// As the two properties above, pinned at `detect_fork_unverified` --
+    /// the third and last of the three identically-folding call sites.
+    /// RED BY DESIGN, same reason: widened to `Option<bool>` as scaffolding,
+    /// but every path still returns `Some(bool)`, so a malformed pair and an
+    /// honest agreeing pair both currently yield `Some(false)` here too.
+    #[test]
+    fn malformed_pair_is_distinguishable_from_honest_agreement_at_detect_fork_unverified(
+        malformed_on_pr in any::<bool>(),
+        malformed_value in malformed_field_strategy(),
+    ) {
+        let (_dir_a, identity_a) = identity_with_seed(0x11);
+        let (_dir_b, identity_b) = identity_with_seed(0x22);
+        let pr = principal_digest(0x58);
+
+        let a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x59),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report a");
+        let b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x5a),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report b");
+        let a = if malformed_on_pr {
+            restamp_pr(a, &identity_a, malformed_value.clone())
+        } else {
+            restamp_sequence(a, &identity_a, malformed_value.clone())
+        };
+
+        let malformed_result =
+            consistency::detect_fork_unverified(&a, identity_a.pub_key(), &b, identity_b.pub_key());
+
+        let honest_a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x5b),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report a");
+        let honest_b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x5b),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report b");
+        let honest_result = consistency::detect_fork_unverified(
+            &honest_a,
+            identity_a.pub_key(),
+            &honest_b,
+            identity_b.pub_key(),
+        );
+
+        prop_assert_ne!(
+            malformed_result,
+            honest_result,
+            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
+             malformed_value={:?}) MUST read differently at detect_fork_unverified than a \
+             genuinely honest agreeing pair",
             malformed_on_pr,
             malformed_value
         );
