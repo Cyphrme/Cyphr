@@ -6,15 +6,29 @@
 //! partial application.
 //!
 //! When [`crate::config::ServerConfig::authority_identity`] is configured,
-//! the channel is additionally authenticated (K10): the response's signed
-//! statement must verify against that identity AND its claims must bind the
-//! entries actually received (entry-commitment), not merely carry a valid
-//! signature over an unrelated `pay` -- see [`verify_authenticated_envelope`].
-//! Without it, sync runs the legacy unauthenticated path unchanged.
+//! the channel is additionally authenticated (K10) in two parts:
+//!
+//! 1. Before any entry is applied, the response's signed statement must verify against the expected
+//!    identity, canonicalize via [`TipReport::parse`], and attest to the SAME principal being
+//!    synced -- see [`verify_authenticated_envelope`]. A genuine, validly-signed report for a
+//!    *different* principal (an on-path party rewrote only the outbound query) is refused here,
+//!    before it ever reaches storage.
+//! 2. After the apply loop runs, the witness's own resulting local tip must equal what the signed
+//!    report attests -- see [`resulting_tip_matches_report`]. This is the load-bearing check: a
+//!    signature over `pay` says nothing about a *separate* plaintext `entries` array, so no
+//!    per-entry label comparison against that same array can ever be sound (a decoy entry that
+//!    copies its victim's declared `sequence`/`commit_id` passes any such check while carrying junk
+//!    `blobs`). Comparing against what the witness's own storage engine independently verified and
+//!    produced is not defeatable by altering the wire body, because it never trusts the wire body's
+//!    self-consistency in the first place.
+//!
+//! Without a configured identity, sync runs the legacy unauthenticated path
+//! unchanged.
 
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_storage::index::types::TipState;
 use serde_json::Value;
 use tracing::{error, warn};
 
@@ -32,13 +46,20 @@ use crate::receipt::{self, TipReport};
 #[derive(Debug)]
 #[must_use = "a discarded sync outcome hides upstream and verification failures silently"]
 pub enum SyncOutcome {
-    /// At least one entry was applied to local storage.
-    Synced { applied: usize },
+    /// At least one entry was applied to local storage. `rejected` counts
+    /// entries in the SAME response that were individually skipped (decode
+    /// or verification failure) -- a caller that only reads `applied` cannot
+    /// tell a clean sync from one where some entries were poisoned, exactly
+    /// the signal a future staleness adapter needs.
+    Synced { applied: usize, rejected: usize },
     /// Not in witness mode, no authority configured, or the authority had
     /// nothing new to serve.
     UpToDate,
-    /// The sync attempt failed. Local storage is untouched -- every failure
-    /// path fails closed, never a partial apply.
+    /// The sync attempt failed. Local storage is untouched by THIS call's
+    /// failure path -- a failure detected after the apply loop (the
+    /// post-apply reconciliation) may still follow a partial, but fully
+    /// chain-verified, apply from entries earlier in the same response; see
+    /// [`resulting_tip_matches_report`].
     Failed { reason: SyncFailure },
 }
 
@@ -65,11 +86,19 @@ pub enum SyncFailure {
     /// claim," so a malformed report must never become a retained
     /// attestation in the first place.
     MalformedReport,
-    /// The signed report's `(sequence, commit_id)` does not match the
-    /// highest-sequence entry actually received -- an on-path party altered
-    /// what was served after signing (e.g. truncation). The signature alone
-    /// proves the report is genuine; this proves the entries are what the
-    /// report attests to.
+    /// The signed report attests a DIFFERENT principal than the one being
+    /// synced -- an on-path party rewrote the outbound query's `pr`, and the
+    /// authority answered honestly for whichever principal it was actually
+    /// asked about. The response is entirely genuine; it simply is not a
+    /// claim about this principal. Caught before any entry is applied.
+    PrincipalMismatch,
+    /// After the apply loop ran, the witness's own resulting local tip does
+    /// not equal what the signed report attests -- see
+    /// [`resulting_tip_matches_report`]. This is the general withholding
+    /// closure: it catches a decoy entry that preserves its victim's
+    /// declared labels, a dropped middle or trailing entry, and a wholesale
+    /// emptied or request-rewritten response identically, because none of
+    /// them change what the witness's own storage engine actually produced.
     EntryCommitmentMismatch,
     /// Every entry in a non-empty response was individually rejected
     /// (decode or verification failure); nothing applied.
@@ -175,24 +204,33 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         },
     };
 
-    // Authenticated channel (K10). When the witness knows the expected
-    // authority identity, the signature AND the entry-binding are checked
-    // here, strictly before the per-entry apply loop below -- a mismatch
-    // must leave local storage completely untouched (fail closed), and the
-    // only way to guarantee that with no undo path is to gate before the
-    // first `submit_commit`, not after.
-    if let Some(expected) = &state.config.authority_identity {
-        if let Err(reason) = verify_authenticated_envelope(&body, entries, expected) {
-            warn!(
-                principal = %principal_id,
-                ?reason,
-                "witness sync authenticated-channel check failed"
-            );
-            return SyncOutcome::Failed { reason };
-        }
-    }
+    // Authenticated channel (K10), part 1. When the witness knows the
+    // expected authority identity, the signature, the report's canonical
+    // shape, AND the report's principal are checked here, strictly before
+    // the per-entry apply loop below -- a mismatch must leave local storage
+    // completely untouched (fail closed), and the only way to guarantee
+    // that with no undo path is to gate before the first `submit_commit`,
+    // not after. Entry-binding is NOT checked here (see part 2, after the
+    // loop): no comparison of the wire body against itself can be sound.
+    let authenticated_report: Option<TipReport> =
+        if let Some(expected) = &state.config.authority_identity {
+            match verify_authenticated_envelope(&body, expected, principal_id) {
+                Ok(report) => Some(report),
+                Err(reason) => {
+                    warn!(
+                        principal = %principal_id,
+                        ?reason,
+                        "witness sync authenticated-channel check failed"
+                    );
+                    return SyncOutcome::Failed { reason };
+                },
+            }
+        } else {
+            None
+        };
 
     let mut applied = 0usize;
+    let mut rejected = 0usize;
     for entry in entries {
         let seq = entry.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
         if seq < from_seq {
@@ -202,7 +240,12 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         let blob_strs = match entry.get("blobs").and_then(|b| b.as_array()) {
             Some(b) => b,
             None => {
-                warn!(principal_id = %principal_id, "patch entry carries no blobs array; skipping");
+                warn!(
+                    principal_id = %principal_id,
+                    sequence = seq,
+                    "patch entry carries no blobs array; skipping"
+                );
+                rejected += 1;
                 continue;
             },
         };
@@ -228,7 +271,12 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
             // recomputed fresh from local state on every call with no
             // persisted progress marker, so aborting here would refetch
             // and re-abort on this same entry forever.
-            warn!(principal_id = %principal_id, "patch entry blob decode failed; skipping");
+            warn!(
+                principal_id = %principal_id,
+                sequence = seq,
+                "patch entry blob decode failed; skipping"
+            );
+            rejected += 1;
             continue;
         }
 
@@ -245,19 +293,59 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         {
             warn!(
                 principal_id = %principal_id,
+                sequence = seq,
                 error = %err,
                 "witness node rejected unverifiable delta from authority; skipping"
             );
+            rejected += 1;
             continue;
         }
 
         applied += 1;
     }
 
+    // Authenticated channel (K10), part 2: the post-apply reconciliation.
+    // Independent of anything the wire body claims about itself, compare
+    // what the witness's OWN storage engine now holds against what the
+    // signed report attests. This is the check that actually closes
+    // withholding: a decoy entry, a dropped middle or trailing entry, and a
+    // wholesale emptied or request-rewritten response all leave local state
+    // short of (or divergent from) the attested tip, and none of them can
+    // be dressed up to avoid that -- there is no wire field left to falsify
+    // that this comparison reads.
+    if let Some(report) = &authenticated_report {
+        let resulting = match state.engine.get_tip(principal_id).await {
+            Ok(tip) => tip,
+            Err(err) => {
+                error!(
+                    principal = %principal_id,
+                    error = %err,
+                    "witness sync: post-apply local tip lookup failed"
+                );
+                return SyncOutcome::Failed {
+                    reason: SyncFailure::LocalStorageError(err.to_string()),
+                };
+            },
+        };
+
+        if !resulting_tip_matches_report(resulting.as_ref(), report) {
+            warn!(
+                principal = %principal_id,
+                applied,
+                rejected,
+                "witness sync: resulting local state does not match the authority's signed \
+                 attestation -- entries were withheld or substituted"
+            );
+            return SyncOutcome::Failed {
+                reason: SyncFailure::EntryCommitmentMismatch,
+            };
+        }
+    }
+
     if entries.is_empty() {
         SyncOutcome::UpToDate
     } else if applied > 0 {
-        SyncOutcome::Synced { applied }
+        SyncOutcome::Synced { applied, rejected }
     } else {
         SyncOutcome::Failed {
             reason: SyncFailure::RejectedEntry,
@@ -265,26 +353,30 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
     }
 }
 
-/// Verify the authenticated channel (K10) for one `/patch` response: the
-/// statement must be a signature by `expected`, it must canonicalize via
-/// [`TipReport::parse`], and its claimed `(sequence, commit_id)` must match
-/// the highest-sequence entry actually present in `entries`.
+/// Verify the authenticated channel (K10), part 1, for one `/patch`
+/// response: the statement must be a signature by `expected`, it must
+/// canonicalize via [`TipReport::parse`], and it must attest to
+/// `principal_id` -- the principal actually being synced, not merely SOME
+/// principal the authority happens to hold.
 ///
-/// The last check is the load-bearing correction over "the signature
-/// verifies": a signature over `pay` says nothing about a *separate*
-/// plaintext `entries` array, so an on-path attacker who truncates
-/// `entries` after signing produces a response whose signature still
-/// verifies. Binding `(sequence, commit_id)` of the highest-sequence entry
-/// closes that gap without needing engine state: a commit's identity is
-/// only reachable by genuinely possessing the full chain up to it, so a
-/// truncated array's highest surviving entry can never carry the same
-/// `(sequence, commit_id)` the authority actually signed for its true
-/// final entry.
+/// The principal check is load-bearing, not defense in depth: the storage
+/// engine's `resolve_genesis` derives a new principal's genesis from
+/// whatever blobs are submitted under `principal_id` and never compares it
+/// against the identifier itself, so an on-path party who rewrites only the
+/// outbound query's `pr` gets back a fully genuine, genuinely-signed
+/// response for a *different* principal -- every other check here passes,
+/// because the response really is what it claims to be, just not an answer
+/// about the principal the witness asked. This is the only place that can
+/// be stopped.
+///
+/// Entry-binding is NOT decided here -- see [`resulting_tip_matches_report`],
+/// which runs after the apply loop against the witness's own resulting
+/// state rather than against anything the wire body carries about itself.
 fn verify_authenticated_envelope(
     body: &Value,
-    entries: &[Value],
     expected: &AuthorityIdentity,
-) -> Result<(), SyncFailure> {
+    principal_id: &str,
+) -> Result<TipReport, SyncFailure> {
     let statement: Option<Statement> = body
         .get("statement")
         .and_then(|s| serde_json::from_value(s.clone()).ok());
@@ -301,28 +393,49 @@ fn verify_authenticated_envelope(
 
     let report = TipReport::parse(&coz).map_err(|_| SyncFailure::MalformedReport)?;
 
-    if entries.is_empty() {
-        return Ok(());
+    // `report.pr` (a bare b64ut genesis identifier, SPEC §2.2.3's DEFAULT
+    // form) and `principal_id` share the identical wire form -- a direct
+    // string comparison, no re-encoding needed.
+    if report.pr.to_string() != principal_id {
+        return Err(SyncFailure::PrincipalMismatch);
     }
 
-    // The highest CLAIMED sequence, not merely the last array element: an
-    // attacker controlling entry order should not be able to dodge this
-    // check by reordering rather than truncating.
-    let Some(highest) = entries
-        .iter()
-        .max_by_key(|e| e.get("sequence").and_then(Value::as_u64).unwrap_or(0))
-    else {
-        return Ok(());
+    Ok(report)
+}
+
+/// Authenticated channel (K10), part 2: does the witness's own resulting
+/// local tip -- freshly re-read from the storage engine after the apply loop
+/// ran, so every applied entry has already passed full cryptographic
+/// verification -- equal what the signed report attests?
+///
+/// `report.sequence` is the attested commit's 0-indexed position;
+/// `TipState::commit_count` is that position plus one (the same relationship
+/// `sign_tip_attestation` uses when composing the report). `resulting` is
+/// `None` exactly when the witness holds nothing for this principal, which
+/// can never equal a report that attests a real committed tip (the
+/// `commit_count == 0` case is unreachable for a signed report in the first
+/// place -- a `TipState` is only ever recorded after indexing a commit).
+fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport) -> bool {
+    let Some(tip) = resulting else {
+        return false;
     };
-    let highest_seq = highest.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-    let highest_commit_id = highest
-        .get("commit_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
-    if highest_seq != report.sequence || highest_commit_id != report.commit_id.to_string() {
-        return Err(SyncFailure::EntryCommitmentMismatch);
+    if tip.commit_count == 0 || tip.commit_count - 1 != report.sequence {
+        return false;
     }
-
-    Ok(())
+    if tip.commit_id != report.commit_id.to_string() {
+        return false;
+    }
+    if tip.pr != report.roots.pr.to_string()
+        || tip.sr != report.roots.sr.to_string()
+        || tip.ar != report.roots.ar.to_string()
+    {
+        return false;
+    }
+    let report_cr = report
+        .roots
+        .cr
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    tip.cr == report_cr
 }

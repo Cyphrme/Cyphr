@@ -188,8 +188,13 @@ pub async fn tip(
 ) -> Result<impl IntoResponse, AppError> {
     if state.config.mode == crate::config::ServerMode::Witness {
         match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied } => {
-                tracing::debug!(principal = %query.pr, applied, "witness sync applied entries");
+            SyncOutcome::Synced { applied, rejected } => {
+                tracing::debug!(
+                    principal = %query.pr,
+                    applied,
+                    rejected,
+                    "witness sync applied entries"
+                );
             },
             SyncOutcome::UpToDate => {},
             SyncOutcome::Failed { reason } => {
@@ -279,8 +284,13 @@ pub async fn patch(
 
     if state.config.mode == crate::config::ServerMode::Witness {
         match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied } => {
-                tracing::debug!(principal = %query.pr, applied, "witness sync applied entries");
+            SyncOutcome::Synced { applied, rejected } => {
+                tracing::debug!(
+                    principal = %query.pr,
+                    applied,
+                    rejected,
+                    "witness sync applied entries"
+                );
             },
             SyncOutcome::UpToDate => {},
             SyncOutcome::Failed { reason } => {
