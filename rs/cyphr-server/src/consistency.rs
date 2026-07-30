@@ -91,11 +91,6 @@ pub fn detect_fork_unverified(
     verdict == receipt::EquivocationVerdict::Proven
 }
 
-/// Checks whether cross-witness agreement satisfies a principal-settable threshold (N4.5).
-pub fn check_witness_threshold(required_witnesses: usize, actual_witnesses: usize) -> bool {
-    actual_witnesses >= required_witnesses
-}
-
 /// Formats disagreement evidence for conflicting tip reports (N4.7).
 ///
 /// The output matches the golden vector `witness_disagreement.json`.
