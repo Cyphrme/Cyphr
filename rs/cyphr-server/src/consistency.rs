@@ -16,9 +16,15 @@ use crate::receipt;
 /// authorizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoEvidence {
-    /// Every evaluated pair canonicalized and none conflicted (or fewer
-    /// than two reports were supplied) -- a genuine non-conflict; no
-    /// standing claim (N4.6).
+    /// Every evaluated pair was a diagnosed non-equivocation
+    /// (`docs/specs/receipts.md`'s enumeration: wrong `typ`, an
+    /// unverifiable signature, a different principal, a different
+    /// sequence, or claim-identical reports), or fewer than two reports
+    /// were supplied -- no standing claim (N4.6). NOT a claim that every
+    /// pair canonicalized: `WrongTyp` and `InvalidSignature` are
+    /// diagnosed before [`receipt::TipReport::parse`] is ever reached
+    /// (`receipt.rs`'s `check_equivocation`), so a pair can land here
+    /// having never attempted canonicalization at all.
     NoConflict,
     /// At least one evaluated pair had a report that failed to
     /// canonicalize ([`receipt::EquivocationVerdict::Malformed`]), and no
