@@ -1219,14 +1219,22 @@ fn sign_report(identity: &ServerIdentity, pay: serde_json::Value) -> coz::CozJso
 }
 
 /// Stand up a real attestor, push a genesis for `principal`, and return its
-/// genuine `/patch` entries array plus the signing identity (and the store
+/// genuine `/patch` entries array, its REAL signed `/tip` report (the
+/// attestor's own `statement.coz`), and the signing identity (plus the store
 /// guard to hold). The entries are authentic, so a witness with NO ingestion
 /// gate would apply them -- which is exactly what the malformed-report test
-/// must observe the gate PREVENT.
+/// must observe the gate PREVENT -- and the real report is the byte-genuine
+/// claim set the accept-direction test derives its one-field-emptied fixture
+/// from.
 async fn genuine_entries_and_identity(
     principal: &str,
     now: i64,
-) -> (serde_json::Value, Arc<ServerIdentity>, tempfile::TempDir) {
+) -> (
+    serde_json::Value,
+    coz::CozJson,
+    Arc<ServerIdentity>,
+    tempfile::TempDir,
+) {
     let (state, identity, dir) = attestor_server().await;
     let app = build_app_router(state.clone()).expect("authority router");
     let pool = load_pool();
@@ -1237,14 +1245,24 @@ async fn genuine_entries_and_identity(
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {body:?}");
-    let (pstatus, patch) = get_json(app, &format!("/patch?pr={principal}&from=0")).await;
+    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pr={principal}&from=0")).await;
     assert_eq!(pstatus, StatusCode::OK, "authority /patch: {patch:?}");
     let entries = patch["payload"]["entries"].clone();
     assert!(
         entries.as_array().map(|e| !e.is_empty()).unwrap_or(false),
         "authority must serve at least the genesis entry: {patch:?}"
     );
-    (entries, identity, dir)
+
+    let (tstatus, tip) = get_json(app, &format!("/tip?pr={principal}")).await;
+    assert_eq!(tstatus, StatusCode::OK, "authority /tip: {tip:?}");
+    assert_eq!(
+        tip["statement"]["kind"], "signed",
+        "an attestor authority must sign its tip report: {tip:?}"
+    );
+    let report: coz::CozJson = serde_json::from_value(tip["statement"]["coz"].clone())
+        .expect("authority tip statement.coz deserializes as a coz");
+
+    (entries, report, identity, dir)
 }
 
 /// N2.8 (reject direction): a witness refuses to ingest a report that fails
@@ -1273,7 +1291,8 @@ async fn genuine_entries_and_identity(
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
     let principal = principal_digest(0x18);
-    let (entries, identity, _auth_dir) = genuine_entries_and_identity(&principal, now).await;
+    let (entries, _real_report, identity, _auth_dir) =
+        genuine_entries_and_identity(&principal, now).await;
 
     let tmb = identity
         .alg()
@@ -1339,20 +1358,142 @@ async fn witness_rejects_malformed_report_at_ingestion() {
     );
 }
 
-/// N2.8 (accept direction): a genesis principal's report -- valid but with NO
-/// commit root (`cr` empty) -- is ACCEPTED, not over-rejected.
+/// N2.8 (accept direction): a report with NO commit root (`cr: ""`) --
+/// validly signed by the expected authority, every OTHER claim byte-genuine
+/// -- is ACCEPTED at ingestion, not over-rejected.
 ///
-/// The other half of the two-sided property. `TipReport::parse` treats an empty
-/// `cr` as "no commit root yet" (`None`), never malformed; an ingestion gate
-/// that rejected it would recreate the availability defect in the node that
-/// inherits it. A witness pointed at a genuine authority (which signs its patch
-/// envelope) must sync the genesis and serve it. This is GREEN only once the
-/// authenticated channel is fully implemented (serve-side signing + the
-/// accepting parse); a parse weakened to reject empty `cr` turns it RED.
+/// The other half of the two-sided property, built with the same rigor as
+/// the reject-direction sibling: hand-construct the input, sign it for
+/// real, and self-validate in-test that it genuinely has the property
+/// under test before asserting the outcome.
+///
+/// WHY an empty `cr` is a legitimate wire value with real producers, not a
+/// hypothetical: the engine reports "no commit root yet" as an empty
+/// string for any principal whose EML log has no leaf (`DerivedRoots`
+/// derivation in `cyphr-storage`'s engine), its reindex path indexes
+/// legacy/synthetic implicit-genesis principals with `crs: Vec::new()`
+/// ("No CR at genesis: PR = SR until the first real commit populates the
+/// EML log"), and `receipt::sign_receipt`'s own construction-time
+/// validation deliberately signs `cr: ""` through the same optional parse
+/// `TipReport::parse` uses. A key-established principal with no commit
+/// root is a spec-level state (`docs/specs/receipts.md`); an ingestion
+/// gate rejecting its report re-creates, at this boundary, the exact
+/// over-rejection availability defect already shipped three times in this
+/// remediation.
+///
+/// FIXTURE HONESTY: no ordinary PUSH path on this Rust authority yields a
+/// servable tip with an empty `cr` (`finalize_commit` writes CR on every
+/// finalized commit), so a plain end-to-end sync cannot exercise this
+/// value -- the prior version of this test claimed it did and did not
+/// (its fixture's `cr` was a real digest). Instead the fixture takes the
+/// authority's REAL signed tip report, empties exactly `roots.cr`, and
+/// re-signs with the same identity: every mandatory claim (`pr`,
+/// `sequence`, `commit_id`, `roots.pr/sr/ar`, `commit_count`) stays
+/// byte-identical to what the true authority attests for these same
+/// entries, so a correct fail-closed entry-binding has nothing to reject.
+/// The `cr` claim alone flips from present to ABSENT -- the authority's
+/// declared "no commit root yet", the one root the wire contract makes
+/// optional. Only an implementation that treats that absence as malformed
+/// (a parse weakened to reject `""`) or as a binding violation turns this
+/// red -- and both of those ARE the defect this test exists to catch.
+///
+/// The in-test self-validations hold at baseline; the negative control
+/// (red against a deliberately over-rejecting gate) cannot be exercised
+/// until the gate exists, and is a lead-maintainer merge-gate review
+/// obligation, exactly as N2.3's weakened-implementation control.
 #[tokio::test]
 async fn witness_accepts_genesis_report_at_ingestion() {
     let now = 1_700_000_000;
     let principal = principal_digest(0x1c);
+    let (entries, real_report, identity, _auth_dir) =
+        genuine_entries_and_identity(&principal, now).await;
+
+    // The true authority's report carries a REAL commit root for these
+    // entries -- the fixture below genuinely flips a present claim to an
+    // absent one, rather than restating what the authority already says.
+    let parsed_real =
+        receipt::TipReport::parse(&real_report).expect("the authority's own tip report parses");
+    assert!(
+        parsed_real.roots.cr.is_some(),
+        "the authority's true tip must carry a commit root -- otherwise this fixture empties \
+         nothing: {:?}",
+        real_report.pay
+    );
+
+    // Empty exactly `roots.cr`; re-sign the otherwise byte-genuine claims
+    // with the authority's real identity.
+    let mut pay = real_report.pay.clone();
+    pay["roots"]["cr"] = serde_json::Value::String(String::new());
+    let report = sign_report(&identity, pay);
+
+    // PIN the property under test, mirroring the reject-direction sibling:
+    // the report is validly signed by the EXPECTED authority, and the
+    // gate's own parser accepts it with the commit root typed as ABSENT.
+    assert_eq!(
+        coz::verify_json(
+            &serde_json::to_vec(&report.pay).unwrap(),
+            &report.sig,
+            identity.alg().name(),
+            identity.pub_key(),
+        ),
+        Some(true),
+        "the empty-cr report MUST be validly signed by the expected authority"
+    );
+    let parsed = receipt::TipReport::parse(&report).expect(
+        "an empty cr is 'no commit root yet', never malformed -- TipReport::parse MUST accept it",
+    );
+    assert!(
+        parsed.roots.cr.is_none(),
+        "the fixture MUST genuinely carry an empty commit root, typed as None: {:?}",
+        report.pay
+    );
+
+    let body = serde_json::json!({
+        "v": 1,
+        "payload": { "principal_id": principal, "entries": entries },
+        "statement": { "kind": "signed", "coz": serde_json::to_value(&report).unwrap() },
+    });
+    let (mock_url, _mock) = spawn_fixed_authority(body).await;
+
+    let expected = AuthorityIdentity {
+        alg: identity.alg().name().to_string(),
+        pub_key: identity.pub_key().to_vec(),
+    };
+    let (_witness_state, witness_app) = witness_for(&mock_url, Some(expected)).await;
+
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a validly-signed report whose commit root is ABSENT (cr empty -- 'no commit root yet') \
+         must be ACCEPTED at ingestion and its genuine entries applied and served, never \
+         over-rejected: {json:?}"
+    );
+    let payload = common::envelope_payload(&json);
+    assert_eq!(payload["principal_id"], principal);
+    assert!(
+        payload["commit_count"].as_u64().unwrap_or(0) >= 1,
+        "witness must have applied the accepted genesis: {json:?}"
+    );
+}
+
+/// Authenticated-channel positive control: a witness configured with the
+/// expected authority identity, syncing an UNTAMPERED real authority, must
+/// accept and serve -- the end-to-end interop bind between serve-side
+/// envelope signing and sync-side verification.
+///
+/// Every other authenticated-channel test rejects (unsigned, mis-signed,
+/// truncated, malformed report) or drives a mock; a channel implementation
+/// that over-rejects the REAL authority's genuine wire shape would leave
+/// all of them green while breaking every actual deployment. This is the
+/// whole-loop accept that forces the two sides to interoperate once
+/// serve-side signing lands. (This fixture's tip report carries a real,
+/// non-empty commit root -- the empty-`cr` accept case is
+/// `witness_accepts_genesis_report_at_ingestion` above.)
+#[tokio::test]
+async fn authenticated_channel_accepts_genuine_authority() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x1d);
     let authority = authority_with_genesis(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1362,13 +1503,13 @@ async fn witness_accepts_genesis_report_at_ingestion() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "a valid genesis report (no commit root, cr empty) must be ACCEPTED through the \
-         authenticated channel and served, never over-rejected: {json:?}"
+        "a witness holding the expected authority identity must accept an untampered genuine \
+         authority's patch and serve the synced state: {json:?}"
     );
     let payload = common::envelope_payload(&json);
     assert_eq!(payload["principal_id"], principal);
     assert!(
         payload["commit_count"].as_u64().unwrap_or(0) >= 1,
-        "witness must have applied the accepted genesis: {json:?}"
+        "witness must have applied the synced genesis: {json:?}"
     );
 }
