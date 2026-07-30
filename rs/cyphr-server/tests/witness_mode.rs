@@ -1047,6 +1047,93 @@ async fn sync_recovers_after_bad_entry() {
     );
 }
 
+/// N2.1 (sibling): a witness stalled by one UNVERIFIABLE entry still applies
+/// a later good entry -- the wedge's SECOND trigger site.
+///
+/// `sync_from_authority`'s per-entry loop wedges at two structurally
+/// identical `break`s: blob-DECODE failure, and `submit_commit`
+/// VERIFICATION failure (sync.rs -- the "rejected unverifiable delta"
+/// arm). Both share the mechanism (nothing persists progress, `from_seq`
+/// is recomputed fresh, the bad entry is refetched forever), but sharing a
+/// mechanism is an argument, not evidence: a fix applied only to the
+/// decode `break` leaves this second, equally real wedge open while
+/// `sync_recovers_after_bad_entry` goes green. This sibling exercises the
+/// second site with its own diagnostic.
+///
+/// The proxy clones the GENUINE genesis entry and corrupts one signature
+/// inside its blobs: the entry stays well-formed (valid base64, valid coz
+/// JSON -- it sails past the decode stage) but fails cryptographic
+/// verification inside `submit_commit`. Spliced BEFORE the genuine
+/// genesis, it wedges the loop at the verification `break` under the
+/// current code, so the only real commit never applies.
+///
+/// Runs in the UNAUTHENTICATED sync mode (no expected identity), exactly
+/// as the decode-site sibling: the wedge fix is orthogonal to the
+/// authenticated channel and must hold on the legacy path.
+#[tokio::test]
+async fn sync_recovers_after_unverifiable_entry() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x12);
+    let authority = authority_with_genesis(&principal, now).await;
+
+    let (proxy_url, _proxy) = spawn_patch_proxy(
+        authority.url.clone(),
+        Arc::new(|mut body: serde_json::Value| {
+            let Some(entries) = body["payload"]["entries"].as_array_mut() else {
+                return body;
+            };
+            let Some(genuine) = entries.first() else {
+                return body;
+            };
+
+            // Corrupt the first blob's signature: decode the blob, flip the
+            // sig's leading character to a DIFFERENT base64url character, and
+            // re-encode. Everything about the entry still decodes and parses;
+            // only the cryptographic check can reject it.
+            let mut bad = genuine.clone();
+            let blob_b64 = bad["blobs"][0]
+                .as_str()
+                .expect("genuine entry blob is a base64 string")
+                .to_string();
+            let blob =
+                Base64UrlUnpadded::decode_vec(&blob_b64).expect("genuine entry blob decodes");
+            let mut coz: serde_json::Value =
+                serde_json::from_slice(&blob).expect("genuine entry blob is coz JSON");
+            let mut sig = coz["sig"]
+                .as_str()
+                .expect("genuine coz carries a sig")
+                .to_string();
+            let flipped = if sig.starts_with('A') { "B" } else { "A" };
+            sig.replace_range(0..1, flipped);
+            coz["sig"] = sig.into();
+            bad["blobs"][0] =
+                Base64UrlUnpadded::encode_string(&serde_json::to_vec(&coz).unwrap()).into();
+
+            entries.insert(0, bad);
+            body
+        }),
+    )
+    .await;
+
+    let (_witness_state, witness_app) = witness_for(&proxy_url, None).await;
+
+    // One /tip drives one sync attempt.
+    let (status, json) = get_json(witness_app, &format!("/tip?pr={principal}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a well-formed but UNVERIFIABLE entry preceding the genesis must not permanently wedge \
+         the sync at the verification-failure break (the submit_commit arm, the wedge's second \
+         trigger site) -- the genuine genesis MUST still apply and be served: {json:?}"
+    );
+    let payload = common::envelope_payload(&json);
+    assert_eq!(payload["principal_id"], principal);
+    assert!(
+        payload["commit_count"].as_u64().unwrap_or(0) >= 1,
+        "witness must have applied the genuine genesis past the unverifiable entry: {json:?}"
+    );
+}
+
 /// N2.4: a patch response NOT signed by the expected authority identity is
 /// rejected -- no entry applied.
 ///
