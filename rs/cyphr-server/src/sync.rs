@@ -499,7 +499,63 @@ fn percent_encode_query_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use cyphr::HashAlg;
+    use cyphr::state::TaggedDigest;
+
     use super::*;
+
+    /// C2: the empty-commit-root invariant, pinned where it is actually
+    /// constructible. A principal legitimately in the no-commit-root state
+    /// (a key-established-but-uncommitted principal, or a reindexed
+    /// implicit-genesis principal with `crs: Vec::new()` -- see the module
+    /// doc's discussion of storage's `""` sentinel) must not be
+    /// over-rejected: a report whose `cr` is ABSENT matches a local tip
+    /// whose `cr` is EMPTY.
+    ///
+    /// The integration-level sibling this pinned before
+    /// (`witness_accepts_genesis_report_at_ingestion`) could not hold: no
+    /// push path on this authority produces a witness-resulting tip whose
+    /// OWN `cr` is empty (`finalize_commit` writes a real CR on every
+    /// finalized commit), so a wire fixture built by doctoring the *report*
+    /// alone was fixture-vs-entries incoherent -- a `cr`-mismatch is the
+    /// entries' true, correct verdict. This unit test asserts the same
+    /// property directly against the pure comparison, with no fixture
+    /// contortion.
+    #[test]
+    fn resulting_tip_matches_report_accepts_legitimate_empty_commit_root() {
+        let pr = TaggedDigest::new(HashAlg::Sha256, vec![0x01; 32]).unwrap();
+        let sr = TaggedDigest::new(HashAlg::Sha256, vec![0x02; 32]).unwrap();
+        let ar = TaggedDigest::new(HashAlg::Sha256, vec![0x03; 32]).unwrap();
+        let commit_id = TaggedDigest::new(HashAlg::Sha256, vec![0x04; 32]).unwrap();
+
+        let tip = TipState {
+            principal_id: "test-principal".to_string(),
+            pr: pr.to_string(),
+            sr: sr.to_string(),
+            ar: ar.to_string(),
+            cr: String::new(),
+            commit_id: commit_id.to_string(),
+            commit_count: 1,
+            last_updated: 0,
+        };
+        let report = TipReport {
+            pr: coz::Thumbprint::from_bytes(vec![0xffu8; 32]),
+            sequence: 0,
+            commit_id,
+            roots: receipt::TipReportRoots {
+                pr,
+                sr,
+                ar,
+                cr: None,
+            },
+        };
+
+        assert!(
+            resulting_tip_matches_report(Some(&tip), &report),
+            "a report with an ABSENT commit root must match a local tip with an EMPTY commit \
+             root, not be rejected as a mismatch"
+        );
+    }
 
     #[test]
     fn percent_encode_query_value_leaves_unreserved_bytes_alone() {
