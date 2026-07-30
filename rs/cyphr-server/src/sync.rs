@@ -39,6 +39,7 @@
 //! Without a configured identity, sync runs the legacy unauthenticated path
 //! unchanged.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -157,7 +158,16 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         },
     };
 
-    let patch_url = format!("{base_url}/patch?pr={principal_id}&from={from_seq}");
+    // Percent-encode `principal_id` (client-supplied) before it is
+    // interpolated into the outbound URL, so a value containing
+    // `&`/`=`/`#` cannot inject extra query parameters into the witness's
+    // own outbound request. Currently redundant with the pre-apply principal
+    // comparison below (any such value already fails to match the report's
+    // attested principal), but the safety should not depend on that being
+    // the only guard. `from_seq` never needs encoding: it is a `u64` this
+    // call itself computed, never attacker-supplied.
+    let encoded_principal = percent_encode_query_value(principal_id);
+    let patch_url = format!("{base_url}/patch?pr={encoded_principal}&from={from_seq}");
 
     let res = match state
         .http_client
@@ -462,4 +472,45 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
         .map(ToString::to_string)
         .unwrap_or_default();
     tip.cr == report_cr
+}
+
+/// Percent-encode `value` for use as one query-string component, escaping
+/// every byte outside RFC 3986's `unreserved` set (`ALPHA` / `DIGIT` / `-` /
+/// `.` / `_` / `~`) as `%XX`. A minimal, dependency-free encoder scoped to
+/// this module's one call site: `principal_id` is client-supplied and
+/// interpolated into the outbound `/patch` URL, so a value containing
+/// `&`/`=`/`#` must not be able to inject extra query parameters into the
+/// witness's own outbound request.
+fn percent_encode_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            },
+            _ => {
+                out.push('%');
+                write!(out, "{byte:02X}").expect("write to String never fails");
+            },
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encode_query_value_leaves_unreserved_bytes_alone() {
+        assert_eq!(percent_encode_query_value("abcXYZ019-_.~"), "abcXYZ019-_.~");
+        assert_eq!(percent_encode_query_value(""), "");
+    }
+
+    #[test]
+    fn percent_encode_query_value_escapes_query_injection_chars() {
+        // `&`, `=`, and `#` are exactly the bytes an injected extra query
+        // parameter or a fragment marker would need.
+        assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
+    }
 }
