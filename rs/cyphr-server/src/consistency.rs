@@ -39,14 +39,25 @@ pub fn check_cross_witness_consistency(
 ///
 /// Verifies that evidence produced by cross-witness checking is completely
 /// self-contained and verifies offline without relying on any active server connection.
+///
+/// `Some(true)` -- proven equivocation. `Some(false)` -- the reports
+/// canonicalize and verify but do not conflict (or a signature/typ check
+/// failed outright). The `Option` is scaffolding, not yet load-bearing:
+/// every current path returns `Some`, so a caller matching only on
+/// `verify_evidence_offline(..) == Some(true)`/`Some(false)` sees today's
+/// exact `bool` behavior. It exists so the same fold `EquivocationVerdict::
+/// Malformed`'s doc names at `check_cross_witness_consistency` (a
+/// malformed report reading identically to an honest non-conflict) can be
+/// closed here too, by returning `None` on `Malformed` -- not yet done;
+/// see the property that pins the gap in `equivocation.rs`.
 pub fn verify_evidence_offline(
     a: &coz::CozJson,
     a_pub_key: &[u8],
     b: &coz::CozJson,
     b_pub_key: &[u8],
-) -> bool {
+) -> Option<bool> {
     let verdict = receipt::check_equivocation(a, a_pub_key, b, b_pub_key);
-    verdict == receipt::EquivocationVerdict::Proven
+    Some(verdict == receipt::EquivocationVerdict::Proven)
 }
 
 /// Verifies that witness key validity for signing tip reports is strictly bounded
@@ -78,17 +89,21 @@ pub fn verify_key_portable_proof(
 
 /// Fork detection ignoring unverified self-assertions and unauthenticated reports (N4.4).
 ///
-/// Returns `true` if and only if both reports pass signature verification and
+/// Returns `Some(true)` if and only if both reports pass signature verification and
 /// constitute a proven fork/equivocation. Unverified self-assertions or invalid signatures
-/// return `false`.
+/// return `Some(false)`.
+///
+/// As [`verify_evidence_offline`]: the `Option` is scaffolding for the same
+/// still-open `Malformed`-vs-honest-agreement fold, not yet distinguished --
+/// every current path returns `Some`.
 pub fn detect_fork_unverified(
     a: &coz::CozJson,
     a_pub_key: &[u8],
     b: &coz::CozJson,
     b_pub_key: &[u8],
-) -> bool {
+) -> Option<bool> {
     let verdict = receipt::check_equivocation(a, a_pub_key, b, b_pub_key);
-    verdict == receipt::EquivocationVerdict::Proven
+    Some(verdict == receipt::EquivocationVerdict::Proven)
 }
 
 /// Formats disagreement evidence for conflicting tip reports (N4.7).

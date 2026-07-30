@@ -7,7 +7,7 @@
 //!   yield portable equivocation evidence.
 //! - `evidence_verifies_offline` (N4.2): Equivocation evidence is self-contained and verifies
 //!   offline without server cooperation.
-//! - `evidence_offline_false_path` (N4.2b): `verify_evidence_offline` returns `false` for an
+//! - `evidence_offline_false_path` (N4.2b): `verify_evidence_offline` returns `Some(false)` for an
 //!   agreeing pair -- the false path the domain wrapper itself was never exercised on.
 //! - `key_validity_interval` (N4.3): Witness key validity is strictly bounded by [first_seen,
 //!   revocation) interval.
@@ -334,8 +334,9 @@ async fn evidence_verifies_offline() {
         &tip2,
         identity_b.pub_key(),
     );
-    assert!(
+    assert_eq!(
         verified_offline,
+        Some(true),
         "cross-witness evidence MUST verify offline without server cooperation"
     );
 }
@@ -344,7 +345,7 @@ async fn evidence_verifies_offline() {
 ///
 /// `evidence_verifies_offline` above only ever exercises the domain wrapper's TRUE
 /// path (a genuine conflict). Verifies the false path directly: an agreeing pair
-/// MUST verify offline to `false`, through `verify_evidence_offline` itself, not
+/// MUST verify offline to `Some(false)`, through `verify_evidence_offline` itself, not
 /// only through the `check_equivocation` primitive it wraps.
 #[tokio::test]
 async fn evidence_offline_false_path() {
@@ -385,10 +386,11 @@ async fn evidence_offline_false_path() {
         &tip_b,
         identity_b.pub_key(),
     );
-    assert!(
-        !verified_offline,
-        "verify_evidence_offline MUST return false for agreeing tip reports, not just true for \
-         conflicting ones"
+    assert_eq!(
+        verified_offline,
+        Some(false),
+        "verify_evidence_offline MUST return Some(false) for agreeing tip reports, not just \
+         Some(true) for conflicting ones"
     );
 }
 
@@ -536,8 +538,9 @@ async fn fork_detection_ignores_self_assertion() {
         &self_asserted_tip,
         &wrong_pub_key,
     );
-    assert!(
-        !fork_detected_for_unverified,
+    assert_eq!(
+        fork_detected_for_unverified,
+        Some(false),
         "unverified self-assertion MUST NOT trigger fork evidence"
     );
 
