@@ -58,9 +58,9 @@ pub fn check_cross_witness_consistency(
                     let evidence =
                         format_disagreement_evidence(pr_a, seq_a, &[a.clone(), b.clone()]);
                     return Ok(evidence);
-                }
+                },
                 receipt::EquivocationVerdict::Malformed => any_malformed = true,
-                _ => {}
+                _ => {},
             }
         }
     }
