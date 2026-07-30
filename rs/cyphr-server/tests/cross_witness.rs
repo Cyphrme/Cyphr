@@ -967,10 +967,16 @@ proptest! {
             .collect();
 
         let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
-        prop_assert!(
-            claim.is_err(),
-            "{n} agreeing tip reports MUST produce no standing claim, p_a={p_a:?} p_b={p_b:?} \
-             s_a={s_a:?} s_b={s_b:?}"
+        prop_assert_eq!(
+            claim,
+            Err(cyphr_server::consistency::NoEvidence::NoConflict),
+            "{n} agreeing tip reports MUST diagnose NoConflict, not Malformed, p_a={p_a:?} \
+             p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}",
+            n = n,
+            p_a = p_a,
+            p_b = p_b,
+            s_a = s_a,
+            s_b = s_b
         );
     }
 
@@ -1029,11 +1035,18 @@ proptest! {
         }
 
         let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
-        prop_assert!(
-            claim.is_err(),
-            "an invalid signature on one of the two otherwise-conflicting reports MUST prevent \
-             the pair from counting as equivocation, corrupt_a={corrupt_a}, n={n}, \
-             p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}"
+        prop_assert_eq!(
+            claim,
+            Err(cyphr_server::consistency::NoEvidence::NoConflict),
+            "an invalid signature on one of the two otherwise-conflicting reports MUST \
+             diagnose NoConflict, not Malformed, corrupt_a={corrupt_a}, n={n}, \
+             p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}",
+            corrupt_a = corrupt_a,
+            n = n,
+            p_a = p_a,
+            p_b = p_b,
+            s_a = s_a,
+            s_b = s_b
         );
     }
 }

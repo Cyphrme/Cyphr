@@ -889,14 +889,20 @@ proptest! {
             (&honest_b, identity_b.pub_key()),
         ]);
 
-        prop_assert_ne!(
+        prop_assert_eq!(
             malformed_claim,
-            honest_claim,
+            Err(consistency::NoEvidence::Malformed),
             "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST read differently at check_cross_witness_consistency \
-             than a genuinely honest agreeing pair",
+             malformed_value={:?}) MUST diagnose Malformed at \
+             check_cross_witness_consistency, not silently fold into NoConflict",
             malformed_on_pr,
             malformed_value
+        );
+        prop_assert_eq!(
+            honest_claim,
+            Err(consistency::NoEvidence::NoConflict),
+            "a genuinely honest agreeing pair MUST diagnose NoConflict at \
+             check_cross_witness_consistency, not Malformed"
         );
     }
 
@@ -982,14 +988,20 @@ proptest! {
             identity_b.pub_key(),
         );
 
-        prop_assert_ne!(
+        prop_assert_eq!(
             malformed_result,
-            honest_result,
+            None,
             "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST read differently at verify_evidence_offline than a \
-             genuinely honest agreeing pair",
+             malformed_value={:?}) MUST return None at verify_evidence_offline, not \
+             silently fold into Some(false)",
             malformed_on_pr,
             malformed_value
+        );
+        prop_assert_eq!(
+            honest_result,
+            Some(false),
+            "a genuinely honest agreeing pair MUST verify to Some(false) at \
+             verify_evidence_offline, not None"
         );
     }
 
@@ -1065,14 +1077,20 @@ proptest! {
             identity_b.pub_key(),
         );
 
-        prop_assert_ne!(
+        prop_assert_eq!(
             malformed_result,
-            honest_result,
+            None,
             "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST read differently at detect_fork_unverified than a \
-             genuinely honest agreeing pair",
+             malformed_value={:?}) MUST return None at detect_fork_unverified, not \
+             silently fold into Some(false)",
             malformed_on_pr,
             malformed_value
+        );
+        prop_assert_eq!(
+            honest_result,
+            Some(false),
+            "a genuinely honest agreeing pair MUST verify to Some(false) at \
+             detect_fork_unverified, not None"
         );
     }
 }
