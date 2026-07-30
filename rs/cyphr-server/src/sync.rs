@@ -359,14 +359,21 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         }
     }
 
-    if entries.is_empty() {
-        SyncOutcome::UpToDate
-    } else if applied > 0 {
+    if applied > 0 {
         SyncOutcome::Synced { applied, rejected }
-    } else {
+    } else if rejected > 0 {
         SyncOutcome::Failed {
             reason: SyncFailure::RejectedEntry,
         }
+    } else {
+        // Nothing applied and nothing rejected: either the response carried
+        // no entries at all, or every entry present was skipped by the
+        // `seq < from_seq` guard above because the witness already holds it
+        // (e.g. a stale response that predates the witness's last sync).
+        // Neither case is a rejection -- `rejected` counts entries this call
+        // actually attempted and failed, and reporting `RejectedEntry` here
+        // would tell the operator every entry was rejected when none was.
+        SyncOutcome::UpToDate
     }
 }
 

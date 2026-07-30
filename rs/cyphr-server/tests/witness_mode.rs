@@ -1910,6 +1910,106 @@ async fn synced_outcome_reports_rejected_count_alongside_applied() {
     }
 }
 
+/// Spawn an on-path proxy that forwards the FIRST `/patch` request to
+/// `upstream` untouched, caches that genuine response, and replays the SAME
+/// cached response for every later request regardless of the query --
+/// models an on-path party that holds one genuine response and rebroadcasts
+/// it after the witness has moved past it, rather than forwarding a fresh
+/// one.
+async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandle<()>) {
+    let cache: Arc<tokio::sync::Mutex<Option<serde_json::Value>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let upstream = upstream.clone();
+            let cache = cache.clone();
+            async move {
+                let mut cached = cache.lock().await;
+                if let Some(body) = cached.clone() {
+                    return axum::Json(body);
+                }
+                let url = match raw.0 {
+                    Some(q) => format!("{upstream}/patch?{q}"),
+                    None => format!("{upstream}/patch"),
+                };
+                let body: serde_json::Value = reqwest::Client::new()
+                    .get(&url)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("proxy upstream request")
+                    .json()
+                    .await
+                    .expect("proxy upstream json decode");
+                *cached = Some(body.clone());
+                axum::Json(body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy listener");
+    let addr = listener.local_addr().expect("proxy local addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// Diagnostic fix: a non-empty response every one of whose entries the
+/// `seq < from_seq` guard skips -- because the witness already holds them,
+/// exactly what a replayed-but-stale genuine response looks like once the
+/// witness has since caught up further -- must not be reported as
+/// `Failed { RejectedEntry }`. Nothing in such a response is rejected
+/// (`rejected` stays 0); reporting a rejection would tell the operator every
+/// entry failed verification when in fact none was even attempted.
+///
+/// The proxy forwards the witness's first request to a real two-commit
+/// authority untouched and caches that genuine catch-up response (entries
+/// for sequence 0 and 1, a signed report attesting the final tip), then
+/// replays that identical cached response on every later request regardless
+/// of the `from` it is asked for. The first sync legitimately applies both
+/// entries; on the second sync both entries are now below the witness's
+/// (advanced) `from_seq` and are skipped, not rejected, while the post-apply
+/// check trivially agrees with local state because the replayed report
+/// attests exactly the tip the witness already reached.
+#[tokio::test]
+async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
+    let now = 1_700_000_000;
+    let principal = principal_digest(0x8a);
+    let authority = authority_with_two_commits(&principal, now).await;
+    let authority_identity = authority.identity();
+
+    let (proxy_url, _proxy) = spawn_replay_proxy(authority.url.clone()).await;
+    let (witness_state, _witness_app) = witness_for(&proxy_url, Some(authority_identity)).await;
+
+    let first = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    assert!(
+        matches!(
+            first,
+            cyphr_server::sync::SyncOutcome::Synced {
+                applied: 2,
+                rejected: 0
+            }
+        ),
+        "the first sync must genuinely catch the witness up to both commits: {first:?}"
+    );
+
+    let second = cyphr_server::sync::sync_from_authority(&witness_state, &principal).await;
+    match second {
+        cyphr_server::sync::SyncOutcome::UpToDate => {},
+        cyphr_server::sync::SyncOutcome::Failed {
+            reason: cyphr_server::sync::SyncFailure::RejectedEntry,
+        } => panic!(
+            "a stale-but-genuine response whose entries are all already applied must not be \
+             reported as RejectedEntry -- nothing in it was rejected, both entries were merely \
+             already held"
+        ),
+        other => panic!("expected UpToDate, got {other:?}"),
+    }
+}
+
 /// GUARD (regression protection, already-correct behavior): a CONFIGURED
 /// witness fails closed when the statement is stripped entirely -- the
 /// `/patch` unsigned-on-signing-failure degradation (a liveness affordance
