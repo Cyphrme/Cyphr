@@ -504,7 +504,13 @@ pub fn check_equivocation(
 /// Verify one receipt cozy's signature against a caller-supplied key,
 /// using only the `alg` the pay itself claims -- plain `coz::verify_json`,
 /// no bespoke crypto.
-fn receipt_signature_verifies(coz: &coz::CozJson, pub_key: &[u8]) -> bool {
+///
+/// `pub(crate)`: also the signature-verification primitive for the witness
+/// sync authenticated channel (`crate::sync`'s `/patch` envelope check,
+/// K10) -- the same "verify under a caller-supplied key" shape
+/// [`check_equivocation`] needs, so sync reuses it rather than re-deriving
+/// `coz::verify_json` plumbing.
+pub(crate) fn receipt_signature_verifies(coz: &coz::CozJson, pub_key: &[u8]) -> bool {
     let Some(alg) = coz.pay["alg"].as_str() else {
         return false;
     };

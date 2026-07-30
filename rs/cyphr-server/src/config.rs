@@ -143,6 +143,19 @@ pub struct ServerConfig {
     #[serde(default)]
     pub authority_url: Option<String>,
 
+    /// The expected upstream-authority signing identity a witness verifies
+    /// a `GET /patch` envelope's signature against before consuming any
+    /// entry (the authenticated-channel identity, K10). `None` preserves the
+    /// legacy unauthenticated sync path; when set, an unsigned, mis-signed,
+    /// or entry-unbound patch response is a sync failure, never applied.
+    ///
+    /// Carries verifiable KEY MATERIAL (alg + public-key bytes), not a bare
+    /// thumbprint: `coz::verify_json` needs the actual public key, and a
+    /// thumbprint verifies nothing. Mirrors the disclosed-key `alg`/`pub`
+    /// pattern (`crate::revoke::DisclosedKey`).
+    #[serde(default)]
+    pub authority_identity: Option<AuthorityIdentity>,
+
     /// Server-side admission policy (the `[admission]` TOML table). Gates
     /// new-principal residency only; defaults to `Open` (permissionless).
     #[serde(default)]
@@ -203,6 +216,23 @@ pub struct LimitsConfig {
     /// Per-operation bucket for `POST /revoke`. Ordinary limits -- `/revoke`
     /// is not exempt from rate limiting.
     pub revoke: RateBucket,
+}
+
+/// The expected upstream-authority signing identity for witness-mode sync
+/// (`ServerConfig::authority_identity`).
+///
+/// Verifiable key material -- `alg` names the signature algorithm and
+/// `pub_key` is the raw public key `coz::verify_json` checks the patch
+/// envelope's signature against. A bare thumbprint is deliberately NOT
+/// sufficient: it identifies a key but cannot verify a signature. Mirrors
+/// the `alg`/`pub` wire shape of [`crate::revoke::DisclosedKey`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct AuthorityIdentity {
+    /// The authority's signature algorithm (e.g. `Ed25519`).
+    pub alg: String,
+    /// The authority's public key bytes (base64url in JSON, wire field `pub`).
+    #[serde(rename = "pub", with = "coz::b64")]
+    pub pub_key: Vec<u8>,
 }
 
 /// A token-bucket rate: `per_second` cells replenished each second, up to a
@@ -285,6 +315,23 @@ pub enum AdmissionConfig {
     },
 }
 
+impl ServerConfig {
+    /// True when this config is a witness pointed at an authority but has no
+    /// [`AuthorityIdentity`] to verify its `/patch` responses against -- the
+    /// sync channel is fully unauthenticated (K10 disabled). Not
+    /// attacker-influenced (deployment configuration only, and
+    /// `authority_identity` has no CLI/env override -- TOML only), so this
+    /// is a deployment-safety gap rather than an attack: the fully
+    /// unauthenticated path is a deliberate, documented backward-compatible
+    /// mode (see `crate::sync`), not one this refuses to start -- it is
+    /// surfaced as a loud, explicit warning instead.
+    pub fn witness_authenticated_channel_unconfigured(&self) -> bool {
+        self.mode == ServerMode::Witness
+            && self.authority_url.is_some()
+            && self.authority_identity.is_none()
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -295,6 +342,7 @@ impl Default for ServerConfig {
             signing_key_path: None,
             audience: None,
             authority_url: None,
+            authority_identity: None,
             admission: AdmissionConfig::default(),
             limits: LimitsConfig::default(),
         }
@@ -395,6 +443,22 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         if let Some(ref authority_url) = args.authority_url {
             config.authority_url = Some(authority_url.clone());
         }
+    }
+
+    // Deployment-safety warning, not a refusal to start (see
+    // `witness_authenticated_channel_unconfigured`'s doc): `eprintln!`
+    // rather than `tracing::warn!` because this runs before
+    // `logging::init_tracing` (see `main.rs`), so a tracing event here could
+    // be silently dropped by the default no-op subscriber -- this must reach
+    // an operator regardless of log configuration.
+    if config.witness_authenticated_channel_unconfigured() {
+        eprintln!(
+            "WARNING: witness mode is configured with an authority_url but no \
+             [authority_identity] -- the sync channel is UNAUTHENTICATED (K10 disabled). An \
+             on-path party can forge, withhold, or substitute /patch entries with no \
+             verification. Configure an [authority_identity] table (alg + pub) in the TOML config \
+             file to enable the authenticated channel."
+        );
     }
 
     Ok(config)
@@ -652,5 +716,99 @@ mod tests {
         let config = resolve_config(&cli).expect("a valid [limits] table must resolve cleanly");
         assert_eq!(config.limits.max_body_bytes, 1_048_576);
         assert_eq!(config.limits.count_quota, 500);
+    }
+
+    /// A witness pointed at an authority with no `[authority_identity]` is
+    /// the fully unauthenticated (K10-disabled) sync path -- a deliberate,
+    /// documented backward-compatible mode, so `resolve_config` must still
+    /// succeed (this is a warning, not a refusal to start), but the gap
+    /// must be DETECTED so `main` can surface it loudly.
+    #[test]
+    fn witness_with_authority_url_and_no_identity_resolves_but_is_flagged() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--mode",
+            "witness",
+            "--authority-url",
+            "http://127.0.0.1:1",
+        ]);
+        let config = resolve_config(&cli)
+            .expect("an unauthenticated witness sync path must not be refused at startup");
+        assert!(
+            config.witness_authenticated_channel_unconfigured(),
+            "a witness with authority_url set and no authority_identity must be flagged"
+        );
+    }
+
+    /// GUARD: a witness with no `authority_url` at all (never syncs) must
+    /// not be flagged -- there is no channel to leave unauthenticated.
+    #[test]
+    fn witness_with_no_authority_url_is_not_flagged() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--mode",
+            "witness",
+        ]);
+        let config = resolve_config(&cli).expect("witness mode with no authority_url resolves");
+        assert!(
+            !config.witness_authenticated_channel_unconfigured(),
+            "a witness with no authority_url configured has no channel to flag"
+        );
+    }
+
+    /// GUARD: `Authority` mode is never flagged, regardless of the other
+    /// fields -- the check is witness-specific. `authority_url` is set
+    /// here to the SAME value the flagged fixture
+    /// (`witness_with_authority_url_and_no_identity_resolves_but_is_flagged`)
+    /// uses, so `mode` is the only field differing between the two -- with
+    /// `authority_url` left at its default `None`, clause 2
+    /// (`authority_url.is_some()`) was already false on its own, so this
+    /// guard never exercised the `mode` clause it is named for.
+    #[test]
+    fn authority_mode_is_never_flagged() {
+        let cli = parse(&[
+            "cyphr-server",
+            "--config",
+            "/nonexistent-config-for-test.toml",
+            "serve",
+            "--mode",
+            "authority",
+            "--authority-url",
+            "http://127.0.0.1:1",
+        ]);
+        let config = resolve_config(&cli).expect("authority mode resolves");
+        assert!(!config.witness_authenticated_channel_unconfigured());
+    }
+
+    /// GUARD: a witness with a correctly configured `authority_identity`
+    /// must NOT be flagged -- nothing else pinned that a correctly
+    /// configured K10 witness avoids the `UNAUTHENTICATED` startup warning
+    /// (`resolve_config`'s `eprintln!`); the other three tests each hold
+    /// `authority_identity` at its default `None`, so clause 3
+    /// (`authority_identity.is_none()`) was unexercised by every one of
+    /// them. `authority_identity` has no CLI/env override (TOML only), so
+    /// this constructs the resolved config directly rather than via `parse`.
+    #[test]
+    fn witness_with_configured_identity_is_not_flagged() {
+        let config = ServerConfig {
+            mode: ServerMode::Witness,
+            authority_url: Some("http://127.0.0.1:1".to_string()),
+            authority_identity: Some(AuthorityIdentity {
+                alg: "Ed25519".to_string(),
+                pub_key: vec![0u8; 32],
+            }),
+            ..Default::default()
+        };
+        assert!(
+            !config.witness_authenticated_channel_unconfigured(),
+            "a witness with a configured authority_identity has an authenticated channel and must \
+             not be flagged as unauthenticated"
+        );
     }
 }

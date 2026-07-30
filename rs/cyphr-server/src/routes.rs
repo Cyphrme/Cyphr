@@ -9,11 +9,13 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use cyphr_storage::index::types::TipState;
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::Envelope;
 use crate::error::{AppError, AppJson};
 use crate::registration::RegistrationAuthority;
+use crate::sync::SyncOutcome;
 use crate::{AppState, receipt};
 
 // ========================================================================
@@ -185,7 +187,20 @@ pub async fn tip(
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     if state.config.mode == crate::config::ServerMode::Witness {
-        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+        match crate::sync::sync_from_authority(&state, &query.pr).await {
+            SyncOutcome::Synced { applied, rejected } => {
+                tracing::debug!(
+                    principal = %query.pr,
+                    applied,
+                    rejected,
+                    "witness sync applied entries"
+                );
+            },
+            SyncOutcome::UpToDate => {},
+            SyncOutcome::Failed { reason } => {
+                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
+            },
+        }
     }
 
     let tip = state
@@ -208,40 +223,55 @@ pub async fn tip(
         now: crate::auth::server_now(),
     };
 
-    match state.attestor_identity() {
-        Some(identity) => {
-            let derived = state.engine.rederive_roots(&query.pr).await.map_err(|e| {
-                AppError::internal(format!("attestation root re-derivation failed: {e}"))
-            })?;
-
-            if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr
-            {
-                return Err(AppError::internal(
-                    "attestation root desynchronized with index",
-                ));
-            }
-
-            let roots = receipt::Roots {
-                pr: derived.pr,
-                sr: derived.sr,
-                ar: derived.ar,
-                cr: derived.cr,
-            };
-            let coz = receipt::tip_report(
-                identity,
-                crate::auth::server_now(),
-                t.principal_id,
-                t.commit_count - 1,
-                t.commit_id,
-                &roots,
-                t.commit_count,
-                t.last_updated,
-            )
-            .ok_or_else(|| AppError::internal("tip report signing unavailable"))?;
-            Ok(Json(Envelope::signed(payload, coz)))
-        },
+    match sign_tip_attestation(&state, &t).await? {
+        Some(coz) => Ok(Json(Envelope::signed(payload, coz))),
         None => Ok(Json(Envelope::unsigned(payload))),
     }
+}
+
+/// Sign a tip-report attestation over an already-fetched tip state `t` --
+/// the claim set `/tip` and `/patch` both need (identity, entry/root
+/// binding, `now`), factored out so `/patch`'s envelope signing (K10) reuses
+/// exactly `/tip`'s signing path rather than a second one. Returns `Ok(None)`
+/// when the server holds no signing identity (the legacy unsigned path).
+async fn sign_tip_attestation(
+    state: &Arc<AppState>,
+    t: &TipState,
+) -> Result<Option<coz::CozJson>, AppError> {
+    let Some(identity) = state.attestor_identity() else {
+        return Ok(None);
+    };
+
+    let derived = state
+        .engine
+        .rederive_roots(&t.principal_id)
+        .await
+        .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
+
+    if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr {
+        return Err(AppError::internal(
+            "attestation root desynchronized with index",
+        ));
+    }
+
+    let roots = receipt::Roots {
+        pr: derived.pr,
+        sr: derived.sr,
+        ar: derived.ar,
+        cr: derived.cr,
+    };
+    let coz = receipt::tip_report(
+        identity,
+        crate::auth::server_now(),
+        t.principal_id.clone(),
+        t.commit_count - 1,
+        t.commit_id.clone(),
+        &roots,
+        t.commit_count,
+        t.last_updated,
+    )
+    .ok_or_else(|| AppError::internal("tip attestation signing unavailable"))?;
+    Ok(Some(coz))
 }
 
 /// `GET /patch?pr=<PG>&from=<n>&to=<n>` — commit chain delta.
@@ -253,7 +283,20 @@ pub async fn patch(
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     if state.config.mode == crate::config::ServerMode::Witness {
-        let _ = crate::sync::sync_from_authority(&state, &query.pr).await;
+        match crate::sync::sync_from_authority(&state, &query.pr).await {
+            SyncOutcome::Synced { applied, rejected } => {
+                tracing::debug!(
+                    principal = %query.pr,
+                    applied,
+                    rejected,
+                    "witness sync applied entries"
+                );
+            },
+            SyncOutcome::UpToDate => {},
+            SyncOutcome::Failed { reason } => {
+                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
+            },
+        }
     }
 
     let response = state
@@ -262,19 +305,21 @@ pub async fn patch(
         .await
         .map_err(AppError::engine)?;
 
-    if response.entries.is_empty() {
-        let tip = state
-            .engine
-            .get_tip(&query.pr)
-            .await
-            .map_err(AppError::engine)?;
+    // Fetched unconditionally (not just when entries are empty, as before):
+    // the not-found check below still needs it, and the signing step after
+    // now needs it too -- one fetch serves both instead of two call sites
+    // each deciding independently whether a tip lookup is warranted.
+    let tip = state
+        .engine
+        .get_tip(&query.pr)
+        .await
+        .map_err(AppError::engine)?;
 
-        if tip.is_none() {
-            return Err(AppError::not_found(format!(
-                "principal {} not found",
-                query.pr
-            )));
-        }
+    if response.entries.is_empty() && tip.is_none() {
+        return Err(AppError::not_found(format!(
+            "principal {} not found",
+            query.pr
+        )));
     }
 
     let entries = response
@@ -292,10 +337,46 @@ pub async fn patch(
         })
         .collect();
 
-    Ok(Json(Envelope::unsigned(PatchResponseBody {
+    let payload = PatchResponseBody {
         principal_id: response.principal_id,
         entries,
-    })))
+    };
+
+    // Signed via the same tip-attestation path `/tip` uses (K10): the
+    // envelope attests the AUTHORITY's current tip, accurate whenever a
+    // request is served through to that tip (the `to=None` case every
+    // existing caller and test uses). A bounded `to` older than the
+    // current tip would make this attestation describe a later state than
+    // what was actually served -- `PatchQuery`/the resync anchor are a
+    // separate node's surface, so that combination is a known, undecided
+    // edge left for that node's owner rather than silently patched over
+    // here.
+    //
+    // Unlike `/tip`, a failure to sign is NOT propagated as a hard error:
+    // `/patch`'s entries are independently re-verified by every witness
+    // that applies them (`submit_commit`), so an authority whose own
+    // re-derived roots momentarily disagree with its index (the same
+    // desync guard `/tip` enforces strictly) is safer serving them
+    // unsigned than refusing to serve at all.
+    let coz = match tip {
+        Some(t) => match sign_tip_attestation(&state, &t).await {
+            Ok(coz) => coz,
+            Err(err) => {
+                tracing::warn!(
+                    principal = %query.pr,
+                    error = %err,
+                    "patch envelope signing unavailable; serving unsigned"
+                );
+                None
+            },
+        },
+        None => None,
+    };
+
+    match coz {
+        Some(coz) => Ok(Json(Envelope::signed(payload, coz))),
+        None => Ok(Json(Envelope::unsigned(payload))),
+    }
 }
 
 /// `POST /push` — accept and validate a signed commit bundle.
