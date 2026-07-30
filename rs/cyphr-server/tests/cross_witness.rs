@@ -1,21 +1,41 @@
 //! Acceptance test suite for Node N4: Cross-Witness Consistency.
 //!
-//! Evaluates criteria N4.1 – N4.6 & N4.7:
+//! Evaluates criteria N4.1 – N4.4, N4.6 & N4.7, plus the N1 property suite that
+//! replaces the narrow N4.1c regression and grounds N4.1/N4.2 by generation
+//! instead of one hand-picked case:
 //! - `conflicting_tips_yield_evidence` (N4.1): Conflicting tip reports from distinct witnesses
 //!   yield portable equivocation evidence.
 //! - `evidence_verifies_offline` (N4.2): Equivocation evidence is self-contained and verifies
 //!   offline without server cooperation.
+//! - `evidence_offline_false_path` (N4.2b): `verify_evidence_offline` returns `false` for an
+//!   agreeing pair -- the false path the domain wrapper itself was never exercised on.
 //! - `key_validity_interval` (N4.3): Witness key validity is strictly bounded by [first_seen,
 //!   revocation) interval.
 //! - `key_validity_from_portable_proof` (N4.3a): Key validity is verified using portable
-//!   key-inclusion proof, NOT in-memory Principal.
+//!   key-inclusion proof, NOT in-memory Principal, on the valid AND both failure paths.
 //! - `fork_detection_ignores_self_assertion` (N4.4): Fork detection ignores unverified
 //!   self-assertions and unauthenticated reports.
-//! - `principal_settable_threshold` (N4.5): Principal can configure a settable witness threshold.
 //! - `agreement_produces_no_standing_claim` (N4.6): Agreement across queried witnesses produces no
 //!   standing claim or alert.
 //! - `golden_disagreement_artifact_byte_stable` (N4.7): Disagreement evidence serializes
 //!   deterministically matching golden vector.
+//!
+//! `equivocation_conflict_yields_evidence_property`,
+//! `equivocation_agreement_yields_none_property`, and
+//! `equivocation_invalid_sig_not_counted_property` generate over the `pr`/`sequence`
+//! JSON-type space (string, integer, null, array) and witness counts N∈[2,5] --
+//! the N1 audit's decorrelated check on `check_cross_witness_consistency`,
+//! superseding the single hand-picked case `non_standard_json_types_surfaced_by_consistency_check`
+//! used to cover it alone. Each of the conflicting pair's two positions draws
+//! its representation INDEPENDENTLY, so representation asymmetry across the
+//! pair (`5` vs `"5"` for the same logical value) is reachable -- the shape of
+//! the live evasion the first, symmetric-stamping revision of this suite was
+//! structurally unable to produce.
+//! `equivocation_asymmetric_type_still_detected_property` (F1) forces that
+//! asymmetry on every case, and `evidence_names_exactly_the_conflicting_pair`
+//! (F2) pins the evidence bundle to exactly the two conflicting reports. No
+//! witness threshold (N4.5): removed per Zami #139 -- a quorum threshold is a
+//! provable-consistency claim, not proof-of-error.
 
 use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -26,6 +46,7 @@ use cyphr::state::TaggedDigest;
 use cyphr::{HashAlg, LeafProof};
 use cyphr_server::auth::ServerIdentity;
 use cyphr_server::receipt::{self, Roots};
+use proptest::prelude::*;
 
 mod common;
 
@@ -259,67 +280,6 @@ async fn three_plus_witness_array_scan() {
     assert_eq!(claim["sequence"], seq);
 }
 
-/// `non_standard_json_types_surfaced_by_consistency_check`
-///
-/// Verifies that a `pr` restamped to a non-standard JSON type (an integer,
-/// which is not a digest encoding at all) is neither silently compared
-/// nor silently proven: `check_equivocation` diagnoses it as `Malformed`
-/// (`receipt::TipReport::parse`'s typed-domain boundary), and
-/// `check_cross_witness_consistency` -- which forwards a claim only on
-/// `Proven` -- produces no claim for the pair. This test previously
-/// asserted the opposite (a restamped-integer `pr` still reached `Proven`
-/// and a forwarded claim); that assertion is now wrong by construction,
-/// since an integer `pr` fails to parse as a `TaggedDigest` on either
-/// side -- see `receipt::TipReport::parse`'s field-disposition rule.
-#[tokio::test]
-async fn non_standard_json_types_surfaced_by_consistency_check() {
-    let (_dir_a, identity_a) = identity_with_seed(0x11);
-    let (_dir_b, identity_b) = identity_with_seed(0x22);
-
-    let now = 1_700_000_000;
-    let pr = principal_digest(0x30);
-
-    let mut tip_a = receipt::tip_report(&identity_a, now, &pr, 1, digest(0x3a), &roots_a(), 6, now)
-        .expect("compose tip A");
-
-    let mut tip_b = receipt::tip_report(&identity_b, now, &pr, 1, digest(0x3b), &roots_b(), 6, now)
-        .expect("compose tip B");
-
-    tip_a.pay["pr"] = serde_json::json!(9999);
-    tip_a.pay["sequence"] = serde_json::json!("42");
-    let pay_bytes_a = serde_json::to_vec(&tip_a.pay).unwrap();
-    let (sig_bytes_a, _cad) = identity_a.sign(&pay_bytes_a).unwrap();
-    tip_a.sig = sig_bytes_a;
-
-    tip_b.pay["pr"] = serde_json::json!(9999);
-    tip_b.pay["sequence"] = serde_json::json!("42");
-    let pay_bytes_b = serde_json::to_vec(&tip_b.pay).unwrap();
-    let (sig_bytes_b, _cad) = identity_b.sign(&pay_bytes_b).unwrap();
-    tip_b.sig = sig_bytes_b;
-
-    let verdict =
-        receipt::check_equivocation(&tip_a, identity_a.pub_key(), &tip_b, identity_b.pub_key());
-    assert_eq!(
-        verdict,
-        receipt::EquivocationVerdict::Malformed,
-        "an integer `pr` is not a digest encoding on either side -- MALFORMED, not silently Proven"
-    );
-
-    let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
-        (&tip_a, identity_a.pub_key()),
-        (&tip_b, identity_b.pub_key()),
-    ]);
-    assert!(
-        claim.is_none(),
-        "check_cross_witness_consistency forwards a claim only on a Proven verdict; a malformed \
-         pair yields none here. This documents TODAY's behavior, not a closed guarantee: the \
-         distinct Malformed diagnostic exists at check_equivocation, but no consumer currently \
-         reads it as distinct from an honest non-conflict -- closing that gap needs a consumer \
-         that treats Malformed specially and an ingestion gate that refuses a malformed report \
-         before it is ever retained as a claim"
-    );
-}
-
 /// N4.2: `evidence_verifies_offline`
 ///
 /// Verifies that equivocation evidence produced by cross-witness checking is completely
@@ -380,6 +340,58 @@ async fn evidence_verifies_offline() {
     );
 }
 
+/// N4.2b: `evidence_offline_false_path` (n4-audit F5)
+///
+/// `evidence_verifies_offline` above only ever exercises the domain wrapper's TRUE
+/// path (a genuine conflict). Verifies the false path directly: an agreeing pair
+/// MUST verify offline to `false`, through `verify_evidence_offline` itself, not
+/// only through the `check_equivocation` primitive it wraps.
+#[tokio::test]
+async fn evidence_offline_false_path() {
+    let (_dir_a, identity_a) = identity_with_seed(0x33);
+    let (_dir_b, identity_b) = identity_with_seed(0x44);
+
+    let pr = principal_digest(0x41);
+    let seq = 20;
+    let now = 1_700_060_000;
+
+    let tip_a = receipt::tip_report(
+        &identity_a,
+        now,
+        &pr,
+        seq,
+        digest(0x4c),
+        &roots_a(),
+        21,
+        now,
+    )
+    .expect("compose tip A");
+
+    let tip_b = receipt::tip_report(
+        &identity_b,
+        now,
+        &pr,
+        seq,
+        digest(0x4c),
+        &roots_a(),
+        21,
+        now,
+    )
+    .expect("compose tip B");
+
+    let verified_offline = cyphr_server::consistency::verify_evidence_offline(
+        &tip_a,
+        identity_a.pub_key(),
+        &tip_b,
+        identity_b.pub_key(),
+    );
+    assert!(
+        !verified_offline,
+        "verify_evidence_offline MUST return false for agreeing tip reports, not just true for \
+         conflicting ones"
+    );
+}
+
 /// N4.3: `key_validity_interval`
 ///
 /// Verifies that witness key validity for signing tip reports is strictly bounded by the
@@ -419,12 +431,19 @@ async fn key_validity_interval() {
     );
 }
 
-/// N4.3a: `key_validity_from_portable_proof`
+/// N4.3a: `key_validity_from_portable_proof` (n4-audit F4)
 ///
 /// Verifies key validity using a portable key-inclusion proof
-/// (`cyphr::inclusion::verify_key_inclusion`), NOT an in-memory `Principal` object. Ensures that
+/// (`consistency::verify_key_portable_proof`), NOT an in-memory `Principal` object. Ensures that
 /// offline cross-witness verification can establish key validity purely from self-contained proof
 /// material and a trusted Principal Root.
+///
+/// All three cases -- the valid proof AND both failure paths -- call the domain
+/// wrapper under test directly. The prior version asserted its two failure cases
+/// against the raw `cyphr::inclusion::verify_key_inclusion` primitive and called
+/// the wrapper only for the positive case, so a defect introduced in the wrapper
+/// itself (as opposed to the primitive it delegates to) could pass its failure
+/// paths unexercised.
 #[tokio::test]
 async fn key_validity_from_portable_proof() {
     let alg = HashAlg::Sha256;
@@ -433,31 +452,28 @@ async fn key_validity_from_portable_proof() {
 
     // 1. Portable key inclusion verification against non-trivial, valid proof MUST succeed
     assert!(
-        cyphr::inclusion::verify_key_inclusion(alg, &tmb_a, &hops, &root_refs),
-        "valid portable key inclusion proof MUST verify successfully"
+        cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs),
+        "valid portable key inclusion proof MUST verify successfully through the domain wrapper"
     );
 
-    // 2. Mismatched thumbprint MUST fail verification
+    // 2. Mismatched thumbprint MUST fail verification, through the domain wrapper
     assert!(
-        !cyphr::inclusion::verify_key_inclusion(alg, &tmb_b, &hops, &root_refs),
-        "portable proof verification with mismatched thumbprint MUST fail"
+        !cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_b, &hops, &root_refs),
+        "portable proof verification with mismatched thumbprint MUST fail through the domain \
+         wrapper"
     );
 
-    // 3. Empty / invalid proof material MUST fail verification
+    // 3. Empty / invalid proof material MUST fail verification, through the domain wrapper
     let empty_hops: Vec<LeafProof> = vec![];
     let empty_roots: Vec<&[u8]> = vec![];
     assert!(
-        !cyphr::inclusion::verify_key_inclusion(alg, &tmb_a, &empty_hops, &empty_roots),
-        "empty or invalid proof material MUST return false"
-    );
-
-    // Call domain consistency module (cyphr_server::consistency)
-    let portable_proof_result =
-        cyphr_server::consistency::verify_key_portable_proof(alg, &tmb_a, &hops, &root_refs);
-    assert!(
-        portable_proof_result,
-        "portable key inclusion proof MUST verify witness key validity offline without in-memory \
-         Principal"
+        !cyphr_server::consistency::verify_key_portable_proof(
+            alg,
+            &tmb_a,
+            &empty_hops,
+            &empty_roots
+        ),
+        "empty or invalid proof material MUST return false through the domain wrapper"
     );
 }
 
@@ -533,29 +549,6 @@ async fn fork_detection_ignores_self_assertion() {
         claim_unverified.is_none(),
         "unauthenticated/forged tip reports MUST NOT produce standing claim in \
          check_cross_witness_consistency"
-    );
-}
-
-/// N4.5: `principal_settable_threshold`
-///
-/// Verifies that a principal can specify a settable witness threshold (e.g. M-of-N agreement
-/// threshold for cross-witness confirmation).
-#[tokio::test]
-async fn principal_settable_threshold() {
-    // Call domain consistency module (cyphr_server::consistency)
-    let threshold_unmet = cyphr_server::consistency::check_witness_threshold(3, 2);
-    assert!(!threshold_unmet, "actual < required MUST return false");
-
-    let threshold_boundary = cyphr_server::consistency::check_witness_threshold(2, 2);
-    assert!(
-        threshold_boundary,
-        "actual == required MUST satisfy threshold"
-    );
-
-    let threshold_exceeded = cyphr_server::consistency::check_witness_threshold(2, 3);
-    assert!(
-        threshold_exceeded,
-        "actual > required MUST satisfy threshold"
     );
 }
 
@@ -694,4 +687,487 @@ async fn unauthenticated_tips_rejected_by_consistency_check() {
         claim_both_forged.is_none(),
         "unauthenticated tip reports MUST NOT produce equivocation claim"
     );
+}
+
+// ========================================================================
+// N1: equivocation property suite (audit of
+// `non_standard_json_types_surfaced_by_consistency_check`)
+// ========================================================================
+//
+// The replaced test hand-picked ONE atypical shape (integer `pr`, string
+// `sequence`) at N=2. Neither axis of the invariant -- the `pr`/`sequence` JSON
+// type space, nor witness counts beyond the single possible pair at N=2 -- was
+// swept. These properties are derived from what `pr` and `sequence` structurally
+// ARE (signer-controlled JSON claims about one logical chain position), not
+// from which branches the implementation happens to take, so they do not
+// inherit the implementation's blind spots.
+//
+// REDIRECTED against the landed typed-domain contract (ND, `2ebb37a`): a
+// report's `pr`/`sequence`/`commit_id`/`roots` no longer reach the comparison
+// as raw `Value`s -- `receipt::TipReport::parse` canonicalizes or REJECTS-LOUD
+// each field first (`EquivocationVerdict::Malformed`), and `receipt::tip_report`
+// itself now refuses to CONSTRUCT a report around a malformed `pr`/digest
+// (construction-time validation). That changes what "vary the representation"
+// means per field:
+// - `sequence` CANONICALIZES across two JSON shapes (a raw number and its decimal string denote the
+//   same integer) -- see [`canonical_sequence_pair_strategy`]. This is the ONLY field with
+//   representation variety to draw independently across a conflicting pair's two positions; F1's
+//   evasion (`5` vs `"5"`) lives here.
+// - `pr` has exactly ONE canonical encoding per identity (a bare b64ut string of a supported digest
+//   length) -- an array-wrapped or re-encoded digest is REJECTED, not accepted as an alternate
+//   spelling (ND's field-disposition ruling). A conflicting pair's two positions therefore share
+//   the identical `pr` string, exactly as an honest signer's two reports about the same principal
+//   would -- see [`valid_pr_strategy`]. There is no F1-shaped asymmetry left to test for `pr`
+//   specifically; the type closes it.
+// A generated shape that fails to canonicalize on EITHER field is a different
+// property's territory (the boundary-side "malformed input is never a silent
+// escape" guarantee ND's own suite closes, and the consumer-visibility gap
+// N1's dispatch flags in `equivocation.rs`) -- these properties only generate
+// shapes valid `TipReport::parse` accepts, so every generated case remains
+// inside the passing-through half of S3's two-sided contract.
+
+/// A distinguishable, VALID genesis identifier that no generated `pr` value
+/// can equal (an astronomically improbable byte collision -- the same
+/// standard the fixed `roots_a`/`roots_b` byte patterns already rely on).
+/// Used to build distractor witnesses that can never accidentally equivocate
+/// with the generated target principal. Unlike the pre-typed-domain suite's
+/// sentinel (a bare unicode string), this MUST be a valid genesis identifier:
+/// `receipt::tip_report`'s construction-time validation refuses to sign a
+/// malformed `pr` into a fixture at all, so an invalid distractor `pr` would
+/// make the fixture itself fail to construct, not merely fail to conflict.
+fn distractor_pr() -> String {
+    principal_digest(0xee)
+}
+
+/// The two attested representations of one non-negative integer: the raw
+/// JSON number, or its decimal string -- the two shapes `sequence`
+/// canonicalizes across (ND's field-disposition ruling).
+fn int_rep(n: u64, as_string: bool) -> serde_json::Value {
+    if as_string {
+        serde_json::Value::from(n.to_string())
+    } else {
+        serde_json::Value::from(n)
+    }
+}
+
+/// An arbitrary VALID genesis identifier: a bare b64ut string over 32 random
+/// bytes (SHA-256's length, one of the three lengths `parse_genesis_id_str`
+/// accepts). `pr` has exactly one canonical encoding per identity, so unlike
+/// [`canonical_sequence_pair_strategy`] there is no per-position
+/// representation to draw independently -- a conflicting pair's two
+/// positions use the SAME drawn string, exactly as an honest signer's two
+/// reports about one principal would.
+fn valid_pr_strategy() -> impl Strategy<Value = String> {
+    prop::collection::vec(any::<u8>(), 32)
+        .prop_map(|bytes| Base64UrlUnpadded::encode_string(&bytes))
+}
+
+/// One logical `sequence` value as a PAIR of per-position JSON
+/// representations, each drawn independently.
+///
+/// The first revision of this suite generated a single value and stamped it
+/// into BOTH members of the conflicting pair, so the type varied across cases
+/// but never across positions within a case -- representation asymmetry (`5`
+/// in one report, `"5"` in the other), the exact shape of the F1 evasion, was
+/// structurally unreachable at any case count. A property about a pair must
+/// vary independently across every position it quantifies over: this draws
+/// each position's representation (raw JSON number vs its decimal string) as
+/// a separate draw, so the asymmetric pairing is a routine case, not an
+/// unreachable one.
+fn canonical_sequence_pair_strategy()
+-> impl Strategy<Value = (serde_json::Value, serde_json::Value)> {
+    (any::<u64>(), any::<bool>(), any::<bool>())
+        .prop_map(|(n, rep_a, rep_b)| (int_rep(n, rep_a), int_rep(n, rep_b)))
+}
+
+/// Total witness count N∈[2,5] and the two positions among them that carry
+/// the conflicting pair. For N=2 the pair is trivially `(0, 1)` -- there is no
+/// other position it could occupy. For N≥3 the pair is confined to positions
+/// `[1, N)`, so position 0 is always a distractor that can never be part of
+/// the detected conflict: a regression that scans only `(reports[0],
+/// reports[1])` instead of every pair would see nothing but disagreements
+/// that never actually occur at that position, and would wrongly report no
+/// evidence.
+fn conflict_layout_strategy() -> impl Strategy<Value = (usize, usize, usize)> {
+    (2usize..=5).prop_flat_map(|n| {
+        if n == 2 {
+            Just((n, 0usize, 1usize)).boxed()
+        } else {
+            (1usize..n - 1)
+                .prop_flat_map(move |i| (i + 1..n).prop_map(move |j| (n, i, j)))
+                .boxed()
+        }
+    })
+}
+
+/// Re-stamps a signed tip report's `pr`/`sequence` claims to arbitrary JSON
+/// values and re-signs, mirroring the mutate-then-resign pattern the deleted
+/// `non_standard_json_types_surfaced_by_consistency_check` used for its one
+/// hand-picked pair -- `receipt::tip_report`'s public constructor only ever
+/// composes a string `pr` and a `u64` `sequence`, so reaching the other type
+/// families requires stamping the pay directly, exactly as that test did.
+fn restamp_pr_sequence(
+    mut tip: coz::CozJson,
+    identity: &ServerIdentity,
+    p: &serde_json::Value,
+    s: &serde_json::Value,
+) -> coz::CozJson {
+    tip.pay["pr"] = p.clone();
+    tip.pay["sequence"] = s.clone();
+    let pay_bytes = serde_json::to_vec(&tip.pay).expect("serialize restamped pay");
+    let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
+    tip.sig = sig;
+    tip
+}
+
+/// Memoized deterministic identities for the property suite: the same three
+/// fixed-seed signers as the file's other tests, built once and reused across
+/// generated cases instead of re-deriving key material (tempdir + Ed25519
+/// derivation) on every one of proptest's ~256 iterations per property.
+fn property_identity(seed: u8) -> &'static ServerIdentity {
+    use std::sync::OnceLock;
+    static IDENTITY_A: OnceLock<(tempfile::TempDir, ServerIdentity)> = OnceLock::new();
+    static IDENTITY_B: OnceLock<(tempfile::TempDir, ServerIdentity)> = OnceLock::new();
+    static DISTRACTOR: OnceLock<(tempfile::TempDir, ServerIdentity)> = OnceLock::new();
+    match seed {
+        0x11 => &IDENTITY_A.get_or_init(|| identity_with_seed(0x11)).1,
+        0x22 => &IDENTITY_B.get_or_init(|| identity_with_seed(0x22)).1,
+        0x33 => &DISTRACTOR.get_or_init(|| identity_with_seed(0x33)).1,
+        _ => unreachable!("property_identity: undeclared seed {seed:#x}"),
+    }
+}
+
+proptest! {
+    /// N1.1: `equivocation_conflict_yields_evidence_property`
+    ///
+    /// The invariant under test: when two witness reports about the same
+    /// principal are Proven-eligible and disagree (same logical `pr`/`sequence`,
+    /// differing `commit_id`), the check reports a standing claim naming that
+    /// `pr`/`sequence` -- regardless of `pr`/`sequence`'s JSON type, regardless
+    /// of which representation EACH report independently carries for the same
+    /// logical value, regardless of how many OTHER witnesses (all distractors
+    /// for an unrelated principal) share the slice, and regardless of where in
+    /// that slice the conflicting pair sits.
+    #[test]
+    fn equivocation_conflict_yields_evidence_property(
+        p in valid_pr_strategy(),
+        (s_a, s_b) in canonical_sequence_pair_strategy(),
+        (n, conflict_i, conflict_j) in conflict_layout_strategy(),
+    ) {
+        let (p_a, p_b) = (serde_json::Value::from(p.clone()), serde_json::Value::from(p.clone()));
+        let now = 1_700_000_000;
+        let identity_a = property_identity(0x11);
+        let identity_b = property_identity(0x22);
+        let distractor = property_identity(0x33);
+
+        let base_a = receipt::tip_report(identity_a, now, &p, 0, digest(0x5a), &roots_a(), 1, now)
+            .expect("compose conflict report A");
+        let report_a = restamp_pr_sequence(base_a, identity_a, &p_a, &s_a);
+
+        let base_b = receipt::tip_report(identity_b, now, &p, 0, digest(0x5b), &roots_a(), 1, now)
+            .expect("compose conflict report B");
+        let report_b = restamp_pr_sequence(base_b, identity_b, &p_b, &s_b);
+
+        // A different principal entirely (`distractor_pr()` never equals the
+        // generated `p`, an astronomically improbable byte collision), so
+        // every pair touching a distractor slot is a non-conflict -- the
+        // only detectable conflict in the whole slice is (conflict_i,
+        // conflict_j).
+        let distractor_report = receipt::tip_report(
+            distractor,
+            now,
+            distractor_pr(),
+            0,
+            digest(0x5c),
+            &roots_a(),
+            1,
+            now,
+        )
+        .expect("compose distractor report");
+
+        let mut reports: Vec<(&coz::CozJson, &[u8])> = Vec::with_capacity(n);
+        for idx in 0..n {
+            if idx == conflict_i {
+                reports.push((&report_a, identity_a.pub_key()));
+            } else if idx == conflict_j {
+                reports.push((&report_b, identity_b.pub_key()));
+            } else {
+                reports.push((&distractor_report, distractor.pub_key()));
+            }
+        }
+
+        let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
+        prop_assert!(
+            claim.is_some(),
+            "a conflicting pair at positions ({conflict_i}, {conflict_j}) of {n} witnesses MUST \
+             yield evidence, p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}"
+        );
+        let claim = claim.unwrap();
+        prop_assert_eq!(claim["kind"].clone(), serde_json::json!("equivocation_evidence"));
+        // The evidence labels the claimed position in one of the pair's own
+        // attested representations (`receipts.md`: the bundled reports are the
+        // proof; the top-level fields are the label). Either member's
+        // representation is a faithful label; a value matching neither is not.
+        let pid = claim["principal_id"].clone();
+        prop_assert!(
+            pid == p_a || pid == p_b,
+            "evidence principal_id {pid:?} MUST be one of the pair's attested representations \
+             ({p_a:?} / {p_b:?})"
+        );
+        let seq = claim["sequence"].clone();
+        prop_assert!(
+            seq == s_a || seq == s_b,
+            "evidence sequence {seq:?} MUST be one of the pair's attested representations \
+             ({s_a:?} / {s_b:?})"
+        );
+    }
+
+    /// N1.2: `equivocation_agreement_yields_none_property`
+    ///
+    /// The invariant under test: N∈[2,5] witness reports that all agree (same
+    /// logical `pr`/`sequence`, same `commit_id`/`roots`) yield NO evidence and
+    /// NO standing claim (K1) -- regardless of `pr`/`sequence`'s JSON type,
+    /// regardless of which representation each report independently carries
+    /// for the same logical value, and regardless of how many witnesses attest
+    /// it.
+    #[test]
+    fn equivocation_agreement_yields_none_property(
+        p in valid_pr_strategy(),
+        (s_a, s_b) in canonical_sequence_pair_strategy(),
+        n in 2usize..=5,
+    ) {
+        let (p_a, p_b) = (serde_json::Value::from(p.clone()), serde_json::Value::from(p.clone()));
+        let now = 1_700_000_000;
+        let identity_a = property_identity(0x11);
+        let identity_b = property_identity(0x22);
+
+        let base_a = receipt::tip_report(identity_a, now, &p, 0, digest(0x6a), &roots_a(), 1, now)
+            .expect("compose agreeing report A");
+        let report_a = restamp_pr_sequence(base_a, identity_a, &p_a, &s_a);
+
+        let base_b = receipt::tip_report(identity_b, now, &p, 0, digest(0x6a), &roots_a(), 1, now)
+            .expect("compose agreeing report B");
+        let report_b = restamp_pr_sequence(base_b, identity_b, &p_b, &s_b);
+
+        // Alternate signers across positions (tmb/alg differ, not part of the
+        // comparison) so agreement is exercised across distinct witnesses --
+        // each carrying its OWN independently drawn representation of the same
+        // logical claim -- not one witness's report duplicated.
+        let reports: Vec<(&coz::CozJson, &[u8])> = (0..n)
+            .map(|idx| {
+                if idx % 2 == 0 {
+                    (&report_a, identity_a.pub_key())
+                } else {
+                    (&report_b, identity_b.pub_key())
+                }
+            })
+            .collect();
+
+        let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
+        prop_assert!(
+            claim.is_none(),
+            "{n} agreeing tip reports MUST produce no standing claim, p_a={p_a:?} p_b={p_b:?} \
+             s_a={s_a:?} s_b={s_b:?}"
+        );
+    }
+
+    /// N1.3: `equivocation_invalid_sig_not_counted_property`
+    ///
+    /// The invariant under test: a report whose signature does not verify under
+    /// the caller-supplied key is never counted toward an equivocation, even
+    /// when its claimed content would otherwise conflict -- regardless of
+    /// `pr`/`sequence`'s JSON type, regardless of which representation each
+    /// report independently carries for the same logical value, regardless of
+    /// witness count N∈[2,5], and regardless of which of the two
+    /// otherwise-conflicting reports carries the bad signature.
+    #[test]
+    fn equivocation_invalid_sig_not_counted_property(
+        p in valid_pr_strategy(),
+        (s_a, s_b) in canonical_sequence_pair_strategy(),
+        n in 2usize..=5,
+        corrupt_a in any::<bool>(),
+    ) {
+        let (p_a, p_b) = (serde_json::Value::from(p.clone()), serde_json::Value::from(p.clone()));
+        let now = 1_700_000_000;
+        let identity_a = property_identity(0x11);
+        let identity_b = property_identity(0x22);
+        let distractor = property_identity(0x33);
+        let wrong_key: Vec<u8> = vec![0xff; 32];
+
+        let base_a = receipt::tip_report(identity_a, now, &p, 0, digest(0x7a), &roots_a(), 1, now)
+            .expect("compose conflict report A");
+        let report_a = restamp_pr_sequence(base_a, identity_a, &p_a, &s_a);
+
+        let base_b = receipt::tip_report(identity_b, now, &p, 0, digest(0x7b), &roots_a(), 1, now)
+            .expect("compose conflict report B");
+        let report_b = restamp_pr_sequence(base_b, identity_b, &p_b, &s_b);
+
+        let distractor_report = receipt::tip_report(
+            distractor,
+            now,
+            distractor_pr(),
+            0,
+            digest(0x7c),
+            &roots_a(),
+            1,
+            now,
+        )
+        .expect("compose distractor report");
+
+        let (key_a, key_b): (&[u8], &[u8]) = if corrupt_a {
+            (wrong_key.as_slice(), identity_b.pub_key())
+        } else {
+            (identity_a.pub_key(), wrong_key.as_slice())
+        };
+
+        let mut reports: Vec<(&coz::CozJson, &[u8])> = vec![(&report_a, key_a), (&report_b, key_b)];
+        for _ in 2..n {
+            reports.push((&distractor_report, distractor.pub_key()));
+        }
+
+        let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports);
+        prop_assert!(
+            claim.is_none(),
+            "an invalid signature on one of the two otherwise-conflicting reports MUST prevent \
+             the pair from counting as equivocation, corrupt_a={corrupt_a}, n={n}, \
+             p_a={p_a:?} p_b={p_b:?} s_a={s_a:?} s_b={s_b:?}"
+        );
+    }
+}
+
+// ========================================================================
+// F1/F2 acceptance (N1.9, N1.11): the security lens's live evasion and
+// the evidence-hygiene contract
+// ========================================================================
+
+/// Total witness count N∈[3,5] and the two positions among them carrying the
+/// conflicting pair, positions [1, N) -- position 0 is always a distractor.
+/// N starts at 3 (unlike `conflict_layout_strategy`) because at N=2 the whole
+/// slice IS the conflicting pair and whole-slice bundling would be
+/// indistinguishable from pair-only evidence.
+fn pair_among_distractors_strategy() -> impl Strategy<Value = (usize, usize, usize)> {
+    (3usize..=5).prop_flat_map(|n| {
+        (1usize..n - 1).prop_flat_map(move |i| (i + 1..n).prop_map(move |j| (n, i, j)))
+    })
+}
+
+proptest! {
+    /// N1.9 (F1): `equivocation_asymmetric_type_still_detected_property`
+    ///
+    /// The invariant under test: a dishonest signer that hand-crafts its two
+    /// reports so the SAME logical `sequence` arrives as a raw JSON number at
+    /// one witness and as its decimal string at the other -- with genuinely
+    /// conflicting `commit_id` -- is still detected. Representation asymmetry
+    /// is signer-controlled bytes, not a different logical claim; letting it
+    /// read as "different sequence" silently discards a provable equivocation
+    /// and defeats the non-repudiation this node exists to provide. Unlike
+    /// N1.1 (where asymmetry is reachable), every case here IS asymmetric.
+    #[test]
+    fn equivocation_asymmetric_type_still_detected_property(
+        seq in any::<u64>(),
+        string_side_a in any::<bool>(),
+    ) {
+        let now = 1_700_000_000;
+        let identity_a = property_identity(0x11);
+        let identity_b = property_identity(0x22);
+
+        let seq_num = serde_json::Value::from(seq);
+        let seq_str = serde_json::Value::from(seq.to_string());
+        let (s_a, s_b) = if string_side_a {
+            (seq_str, seq_num)
+        } else {
+            (seq_num, seq_str)
+        };
+        let pr = principal_digest(0x91);
+        let p = serde_json::Value::from(pr.clone());
+
+        let base_a = receipt::tip_report(identity_a, now, &pr, 0, digest(0x9a), &roots_a(), 1, now)
+            .expect("compose conflict report A");
+        let report_a = restamp_pr_sequence(base_a, identity_a, &p, &s_a);
+
+        let base_b = receipt::tip_report(identity_b, now, &pr, 0, digest(0x9b), &roots_a(), 1, now)
+            .expect("compose conflict report B");
+        let report_b = restamp_pr_sequence(base_b, identity_b, &p, &s_b);
+
+        let claim = cyphr_server::consistency::check_cross_witness_consistency(&[
+            (&report_a, identity_a.pub_key()),
+            (&report_b, identity_b.pub_key()),
+        ]);
+        prop_assert!(
+            claim.is_some(),
+            "the same logical sequence {seq} claimed as {s_a:?} to one witness and {s_b:?} to \
+             another, with conflicting commit_id, MUST still yield equivocation evidence"
+        );
+    }
+
+    /// N1.11 (F2): `evidence_names_exactly_the_conflicting_pair`
+    ///
+    /// The invariant under test: the evidence bundle contains EXACTLY the two
+    /// conflicting reports, in scan order -- not the whole queried slice
+    /// (`receipts.md`: equivocation evidence is "exactly two things, nothing
+    /// else"). Bundling unrelated witnesses' reports about other principals
+    /// pollutes a portable proof with third-party statements and grows
+    /// evidence O(N) with the query size.
+    #[test]
+    fn evidence_names_exactly_the_conflicting_pair(
+        (n, conflict_i, conflict_j) in pair_among_distractors_strategy(),
+    ) {
+        let now = 1_700_000_000;
+        let identity_a = property_identity(0x11);
+        let identity_b = property_identity(0x22);
+        let distractor = property_identity(0x33);
+
+        let pr = principal_digest(0xa1);
+        let report_a =
+            receipt::tip_report(identity_a, now, &pr, 5, digest(0xa2), &roots_a(), 6, now)
+                .expect("compose conflict report A");
+        let report_b =
+            receipt::tip_report(identity_b, now, &pr, 5, digest(0xa3), &roots_b(), 6, now)
+                .expect("compose conflict report B");
+        let distractor_report = receipt::tip_report(
+            distractor,
+            now,
+            distractor_pr(),
+            0,
+            digest(0xa4),
+            &roots_a(),
+            1,
+            now,
+        )
+        .expect("compose distractor report");
+
+        let mut reports: Vec<(&coz::CozJson, &[u8])> = Vec::with_capacity(n);
+        for idx in 0..n {
+            if idx == conflict_i {
+                reports.push((&report_a, identity_a.pub_key()));
+            } else if idx == conflict_j {
+                reports.push((&report_b, identity_b.pub_key()));
+            } else {
+                reports.push((&distractor_report, distractor.pub_key()));
+            }
+        }
+
+        let claim = cyphr_server::consistency::check_cross_witness_consistency(&reports)
+            .expect("conflicting pair MUST yield evidence");
+        let bundled = claim["reports"]
+            .as_array()
+            .expect("evidence reports MUST be an array")
+            .clone();
+        prop_assert_eq!(
+            bundled.len(),
+            2,
+            "evidence MUST bundle exactly the conflicting pair, not all {} queried reports",
+            n
+        );
+        prop_assert_eq!(
+            bundled[0].clone(),
+            serde_json::to_value(&report_a).expect("serialize report A"),
+            "first bundled report MUST be conflicting report A"
+        );
+        prop_assert_eq!(
+            bundled[1].clone(),
+            serde_json::to_value(&report_b).expect("serialize report B"),
+            "second bundled report MUST be conflicting report B"
+        );
+    }
 }

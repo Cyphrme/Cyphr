@@ -19,8 +19,9 @@ use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
 use cyphr_server::receipt::{self, EquivocationVerdict, Roots};
-use cyphr_server::{AppState, build_router};
+use cyphr_server::{AppState, build_router, consistency};
 use http_body_util::BodyExt;
+use proptest::prelude::*;
 use tower::ServiceExt;
 
 // ========================================================================
@@ -255,6 +256,23 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
     (status, json)
 }
 
+/// Re-stamp a signed tip report's `sequence` claim and re-sign -- the
+/// dishonest-signer move: `receipt::tip_report`'s public constructor only
+/// ever composes a `u64` sequence, so reaching any other JSON
+/// representation requires stamping the pay directly, exactly as a signer
+/// hand-crafting its own reports would.
+fn restamp_sequence(
+    mut tip: coz::CozJson,
+    identity: &ServerIdentity,
+    s: serde_json::Value,
+) -> coz::CozJson {
+    tip.pay["sequence"] = s;
+    let pay_bytes = serde_json::to_vec(&tip.pay).expect("serialize restamped pay");
+    let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
+    tip.sig = sig;
+    tip
+}
+
 /// Render a distinct, valid SHA-256 digest string from a repeated seed
 /// byte -- the same convention `tests/cross_witness.rs` established
 /// (`455894a`). `check_equivocation`/`receipt::tip_report` parse
@@ -460,6 +478,48 @@ fn same_commit_id_differing_roots_still_proves_equivocation() {
     );
 }
 
+/// N1.9b (F1): the same logical `sequence` claimed as a raw JSON number in
+/// one report and as its decimal string in the other, with conflicting
+/// `commit_id`, still proves equivocation. A dishonest signer controls its
+/// reports' bytes: hand-crafting `5` for one witness and `"5"` for another
+/// would otherwise read as "different sequence" and evade the pinned
+/// predicate entirely -- the same logical claim in two representations is
+/// one claim, not two positions.
+#[test]
+fn asymmetric_type_sequence_proves_equivocation() {
+    let (_dir, identity) = identity_with_seed(0x11);
+    let a = receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        principal_digest(0x15),
+        5,
+        digest(0x25),
+        &roots_a(),
+        6,
+        1_700_000_000,
+    )
+    .expect("compose report a");
+    let b = receipt::tip_report(
+        &identity,
+        1_700_000_000,
+        principal_digest(0x15),
+        5,
+        digest(0x26),
+        &roots_b(),
+        6,
+        1_700_000_000,
+    )
+    .expect("compose report b");
+    let b = restamp_sequence(b, &identity, serde_json::json!("5"));
+
+    assert_eq!(
+        receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key()),
+        EquivocationVerdict::Proven,
+        "the same logical sequence in different JSON representations MUST NOT evade the pinned \
+         predicate"
+    );
+}
+
 // ========================================================================
 // Diagnosed non-equivocation arms -- constructed directly, no real
 // endpoint required (the helper is pure; input provenance does not
@@ -632,4 +692,218 @@ fn wrong_typ_pair_is_not_equivocation() {
         receipt::check_equivocation(&tip, identity.pub_key(), &commit, identity.pub_key()),
         EquivocationVerdict::WrongTyp
     );
+}
+
+// ========================================================================
+// N1 (rework, redirected against ND's landed typed contract): the
+// `Malformed` verdict's own doc comment names a two-sided gap --
+// `check_equivocation` diagnoses a report that fails to canonicalize as
+// DISTINCT from every other outcome (ND's boundary-side property; already
+// implemented and covered by ND's own suite), but NO consumer in
+// `consistency.rs` reads that distinction as anything other than "no
+// conflict" -- `check_cross_witness_consistency`, `verify_evidence_offline`,
+// and `detect_fork_unverified` each compare `verdict == Proven` only, so a
+// malformed report and an honest non-conflicting pair are indistinguishable
+// at every current call site. Two properties close N1's half of this from
+// its own file surface: the first is decorrelated coverage of ND's already-
+// landed boundary property (GREEN); the second requires the consumer to stop
+// folding the two apart (RED -- it is unsatisfiable by the current API,
+// which returns bare `None` for both, until a fix makes them observably
+// distinct; see the property's own doc for why that RED is by design, not a
+// broken test).
+// ========================================================================
+
+/// Re-stamp a signed tip report's `pr` claim and re-sign -- the `pr`
+/// counterpart to [`restamp_sequence`], needed to reach `pr` shapes
+/// `receipt::tip_report`'s public constructor (which requires a valid
+/// genesis identifier at construction, per ND's F1 fix) refuses to
+/// compose directly.
+fn restamp_pr(
+    mut tip: coz::CozJson,
+    identity: &ServerIdentity,
+    p: serde_json::Value,
+) -> coz::CozJson {
+    tip.pay["pr"] = p;
+    let pay_bytes = serde_json::to_vec(&tip.pay).expect("serialize restamped pay");
+    let (sig, _cad) = identity.sign(&pay_bytes).expect("re-sign restamped pay");
+    tip.sig = sig;
+    tip
+}
+
+/// A JSON shape that is malformed for BOTH `pr` and `sequence` under ND's
+/// field-disposition ruling (`receipt.rs`'s `TipReportParseError`): a short
+/// alnum string forced to start with a non-digit is never a clean decimal
+/// integer (so never a canonical `sequence` string) and, capped well under
+/// 43 characters -- the shortest valid base64url encoding of a supported
+/// 32-byte digest -- is never long enough to be a canonical `pr` either;
+/// `null`, a bool, a short array, and a negative integer are not a JSON
+/// string at all, so they fail `pr`'s string-only gate, and (being neither
+/// a number nor a digit-string) `sequence`'s canonicalization gate alike.
+fn malformed_field_strategy() -> impl Strategy<Value = serde_json::Value> {
+    prop_oneof![
+        Just(serde_json::Value::Null),
+        any::<bool>().prop_map(serde_json::Value::from),
+        prop::collection::vec(any::<i32>(), 0..4).prop_map(|v| serde_json::json!(v)),
+        "[a-zA-Z_-][a-zA-Z0-9_-]{0,30}".prop_map(serde_json::Value::from),
+        (1i64..=i64::MAX).prop_map(|n| serde_json::Value::from(-n)),
+    ]
+}
+
+proptest! {
+    /// Decorrelated coverage of ND.2a/ND.2c from N1's own suite: a report
+    /// whose `pr` OR `sequence` fails to canonicalize is diagnosed
+    /// `Malformed` by `check_equivocation` -- never silently read as
+    /// `Proven` (a false claim raised on unparseable input) and never
+    /// silently read as `DifferentPrincipal`/`DifferentSequence`/
+    /// `IdenticalClaims` (indistinguishable from an honest non-conflict).
+    /// GREEN: this is ND's own boundary-side property, already
+    /// implemented; N1 asserts it again from the consumer side of the
+    /// typed contract it no longer implements itself (S3/S5.1).
+    #[test]
+    fn equivocation_malformed_field_yields_malformed_verdict_property(
+        malformed_on_pr in any::<bool>(),
+        malformed_value in malformed_field_strategy(),
+    ) {
+        let (_dir, identity) = identity_with_seed(0x11);
+        let pr = principal_digest(0x40);
+
+        let a = receipt::tip_report(
+            &identity,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x41),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose well-formed report a");
+        let b = receipt::tip_report(
+            &identity,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x42),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose well-formed report b (conflicting commit_id)");
+
+        let a = if malformed_on_pr {
+            restamp_pr(a, &identity, malformed_value.clone())
+        } else {
+            restamp_sequence(a, &identity, malformed_value.clone())
+        };
+
+        let verdict = receipt::check_equivocation(&a, identity.pub_key(), &b, identity.pub_key());
+        prop_assert_eq!(
+            verdict,
+            EquivocationVerdict::Malformed,
+            "a report with malformed {} = {:?} MUST diagnose Malformed, not silently Proven or \
+             silently folded in with an honest non-conflict verdict",
+            if malformed_on_pr { "pr" } else { "sequence" },
+            malformed_value
+        );
+    }
+
+    /// The consumer half of ND's two-sided contract (S5.1): a report that
+    /// fails to canonicalize MUST read differently at
+    /// `consistency::check_cross_witness_consistency` than a genuinely
+    /// honest, agreeing pair -- both silently collapsing to `None` is
+    /// exactly the fold `EquivocationVerdict::Malformed`'s own doc comment
+    /// names as still open ("no consumer currently reads it as distinct
+    /// from an honest non-conflict"). RED BY DESIGN: `check_cross_witness_
+    /// consistency`'s three call sites in `consistency.rs` each compare
+    /// `verdict == Proven` only, so today BOTH cases below return bare
+    /// `None` and this assertion is unsatisfiable -- that is the live gap
+    /// this property pins, not a broken test. It does not prescribe the
+    /// fix's shape (a changed return value on the existing function is the
+    /// minimal one; a companion function is another) -- only that the two
+    /// outcomes become observably distinct.
+    #[test]
+    fn malformed_pair_is_distinguishable_from_honest_agreement_at_consumer(
+        malformed_on_pr in any::<bool>(),
+        malformed_value in malformed_field_strategy(),
+    ) {
+        let (_dir_a, identity_a) = identity_with_seed(0x11);
+        let (_dir_b, identity_b) = identity_with_seed(0x22);
+        let pr = principal_digest(0x50);
+
+        // Attack shape: one report hand-crafted to fail canonicalization,
+        // paired with a genuinely conflicting well-formed counterpart --
+        // the live evasion (an attacker makes one report fail to parse
+        // instead of making the raw comparison see two different values).
+        let a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x51),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report a");
+        let b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            0,
+            digest(0x52),
+            &roots_a(),
+            1,
+            1_700_000_000,
+        )
+        .expect("compose conflicting report b");
+        let a = if malformed_on_pr {
+            restamp_pr(a, &identity_a, malformed_value.clone())
+        } else {
+            restamp_sequence(a, &identity_a, malformed_value.clone())
+        };
+
+        let malformed_claim = consistency::check_cross_witness_consistency(&[
+            (&a, identity_a.pub_key()),
+            (&b, identity_b.pub_key()),
+        ]);
+
+        // Control: a fully honest, genuinely agreeing pair -- the ONE
+        // outcome a malformed report must never be indistinguishable from.
+        let honest_a = receipt::tip_report(
+            &identity_a,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x53),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report a");
+        let honest_b = receipt::tip_report(
+            &identity_b,
+            1_700_000_000,
+            &pr,
+            1,
+            digest(0x53),
+            &roots_a(),
+            2,
+            1_700_000_000,
+        )
+        .expect("compose honest agreeing report b");
+        let honest_claim = consistency::check_cross_witness_consistency(&[
+            (&honest_a, identity_a.pub_key()),
+            (&honest_b, identity_b.pub_key()),
+        ]);
+
+        prop_assert_ne!(
+            malformed_claim,
+            honest_claim,
+            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
+             malformed_value={:?}) MUST read differently at check_cross_witness_consistency \
+             than a genuinely honest agreeing pair",
+            malformed_on_pr,
+            malformed_value
+        );
+    }
 }
