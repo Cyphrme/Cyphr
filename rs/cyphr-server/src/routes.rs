@@ -34,8 +34,13 @@ pub struct TipQuery {
 pub struct PatchQuery {
     /// Principal genesis identifier.
     pub pr: String,
-    /// Start sequence (inclusive). Omit for genesis.
-    pub from: Option<u64>,
+    /// Resync anchor: a tagged content digest (Zami #140; the anchor root
+    /// is PR). Raw string here -- the `patch` handler parses it into a
+    /// [`cyphr::state::TaggedDigest`] and refuses a malformed value with the
+    /// app's JSON error envelope, matching the `GET /e/{digest}` handler's
+    /// precedent. Omit to resync from genesis. Sequence is never accepted
+    /// here (S3: sequence is metadata, not a trust anchor).
+    pub from: Option<String>,
     /// End sequence (inclusive). Omit for tip.
     pub to: Option<u64>,
 }
@@ -299,9 +304,23 @@ pub async fn patch(
         }
     }
 
+    // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
+    // anchor root is PR). Parsed here, once, at the same boundary the
+    // existing `GET /e/{digest}` handler (`entity`, below) parses a digest
+    // path parameter -- a malformed anchor is refused with the app's JSON
+    // error envelope, not axum's generic query-rejection, matching that
+    // precedent exactly (parse-don't-validate, eng-frame §2).
+    let anchor: Option<cyphr::state::TaggedDigest> = match &query.from {
+        Some(raw) => Some(
+            raw.parse()
+                .map_err(|e| AppError::bad_request(format!("invalid resync anchor digest: {e}")))?,
+        ),
+        None => None,
+    };
+
     let response = state
         .engine
-        .get_patch(&query.pr, query.from, query.to)
+        .get_patch(&query.pr, anchor.as_ref(), query.to)
         .await
         .map_err(AppError::engine)?;
 
@@ -343,22 +362,34 @@ pub async fn patch(
     };
 
     // Signed via the same tip-attestation path `/tip` uses (K10): the
-    // envelope attests the AUTHORITY's current tip, accurate whenever a
-    // request is served through to that tip (the `to=None` case every
-    // existing caller and test uses). A bounded `to` older than the
-    // current tip would make this attestation describe a later state than
-    // what was actually served -- `PatchQuery`/the resync anchor are a
-    // separate node's surface, so that combination is a known, undecided
-    // edge left for that node's owner rather than silently patched over
-    // here.
+    // envelope attests the AUTHORITY's current tip, accurate ONLY when a
+    // request is served through to that tip. A bounded `to` can stop short
+    // of the tip -- signing the current-tip attestation over a response
+    // that does not actually reach it would misdescribe what was served
+    // (flagged at this node's dispatch as the bounded-`to` attestation
+    // edge). Resolved here by refusing to sign a bounded response rather
+    // than attesting a state later than what was actually served -- the
+    // simpler of S3's two sanctioned resolutions, since re-deriving roots
+    // AT an arbitrary bounded position is a materially larger change than
+    // this node's digest-anchor surface calls for. `to=None` (every
+    // existing caller and test) is unaffected.
     //
-    // Unlike `/tip`, a failure to sign is NOT propagated as a hard error:
-    // `/patch`'s entries are independently re-verified by every witness
-    // that applies them (`submit_commit`), so an authority whose own
-    // re-derived roots momentarily disagree with its index (the same
+    // Unlike `/tip`, a failure to sign is NOT otherwise propagated as a
+    // hard error: `/patch`'s entries are independently re-verified by every
+    // witness that applies them (`submit_commit`), so an authority whose
+    // own re-derived roots momentarily disagree with its index (the same
     // desync guard `/tip` enforces strictly) is safer serving them
     // unsigned than refusing to serve at all.
     let coz = match tip {
+        Some(_) if query.to.is_some() => {
+            tracing::debug!(
+                principal = %query.pr,
+                to = ?query.to,
+                "patch response bounded by `to`; serving unsigned to avoid attesting a later \
+                 state than what was actually served"
+            );
+            None
+        },
         Some(t) => match sign_tip_attestation(&state, &t).await {
             Ok(coz) => coz,
             Err(err) => {

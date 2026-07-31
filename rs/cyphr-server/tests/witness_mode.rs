@@ -1325,7 +1325,10 @@ async fn genuine_entries_and_identity(
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "genesis push: {body:?}");
-    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pr={principal}&from=0")).await;
+    // `from` omitted entirely (genesis onward) -- the pre-N4 fixture used
+    // `from=0` for this under sequence-anchor semantics, which is no longer
+    // a valid anchor (Zami #140: sequence is metadata, not a digest).
+    let (pstatus, patch) = get_json(app.clone(), &format!("/patch?pr={principal}")).await;
     assert_eq!(pstatus, StatusCode::OK, "authority /patch: {patch:?}");
     let entries = patch["payload"]["entries"].clone();
     assert!(
@@ -1637,10 +1640,14 @@ async fn cross_principal_substitution_rejected() {
         "principal A genesis push: {body:?}"
     );
 
+    // `from` omitted (genesis onward for B) -- the pre-N4 fixture rewrote it
+    // to `from=0` under sequence-anchor semantics; that string is no longer
+    // a valid digest anchor and is immaterial to what this test pins (the
+    // rewritten `pr`, not `from`).
     let b_for_rewrite = principal_b.clone();
     let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
         authority.url.clone(),
-        Arc::new(move |_q: Option<String>| Some(format!("pr={b_for_rewrite}&from=0"))),
+        Arc::new(move |_q: Option<String>| Some(format!("pr={b_for_rewrite}"))),
     )
     .await;
 
@@ -1787,16 +1794,37 @@ async fn request_side_from_rewrite_withholding_rejected() {
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
+    // The authority's own current tip PR digest -- a legitimately resolving
+    // anchor, so its honest response's entries are genuinely EMPTY (nothing
+    // new past its own tip). This is the digest-anchor era's equivalent of
+    // the pre-N4 fixture's `from=999999` (an innocuous huge sequence past
+    // the tip): both make the on-path `from` rewrite produce an honestly
+    // "already caught up" response, which is exactly what this test needs
+    // K10's post-apply reconciliation (not the response body) to catch.
+    let (tip_status, tip_json) = get_json(
+        authority.instance.router.clone(),
+        &format!("/tip?pr={principal}"),
+    )
+    .await;
+    assert_eq!(tip_status, StatusCode::OK, "authority /tip: {tip_json:?}");
+    // Read the `payload` directly, not via `common::envelope_payload` --
+    // this authority is attestor-keyed, so its `/tip` is genuinely SIGNED,
+    // and that helper asserts the envelope is unsigned.
+    let current_tip_pr = tip_json["payload"]["pr"]
+        .as_str()
+        .expect("authority tip pr")
+        .to_string();
+
     let (proxy_url, _proxy) = spawn_query_rewriting_proxy(
         authority.url.clone(),
-        Arc::new(|q: Option<String>| {
+        Arc::new(move |q: Option<String>| {
             let q = q.unwrap_or_default();
             let pr = q
                 .split('&')
                 .find(|kv| kv.starts_with("pr="))
                 .unwrap_or("")
                 .to_string();
-            Some(format!("{pr}&from=999999"))
+            Some(format!("{pr}&from={current_tip_pr}"))
         }),
     )
     .await;
@@ -2002,15 +2030,12 @@ async fn stripped_statement_fails_closed_when_configured() {
 // ========================================================================
 //
 // Evaluates the test-shaped acceptance criteria N4.1, N4.2, N4.4, N4.5:
-// - `sync_resumes_from_digest_anchor` (N4.1): a witness resumes sync from a
-//   content-digest anchor.
-// - `fork_shares_sequence_rejected_by_digest_anchor` (N4.2): a fork reaching
-//   the same sequence as the canonical chain is NOT accepted via the digest
-//   anchor.
-// - `sequence_only_anchor_does_not_resume` (N4.4): a request whose ONLY
-//   anchor is a sequence does not resume.
-// - `anchor_digest_rejects_malformed` (N4.5): the anchor rejects malformed
-//   input.
+// - `sync_resumes_from_digest_anchor` (N4.1): a witness resumes sync from a content-digest anchor.
+// - `fork_shares_sequence_rejected_by_digest_anchor` (N4.2): a fork reaching the same sequence as
+//   the canonical chain is NOT accepted via the digest anchor.
+// - `sequence_only_anchor_does_not_resume` (N4.4): a request whose ONLY anchor is a sequence does
+//   not resume.
+// - `anchor_digest_rejects_malformed` (N4.5): the anchor rejects malformed input.
 //
 // RED against the current code: `PatchQuery.from` is `Option<u64>` and
 // `sync.rs` builds `from={from_seq}` from `commit_count` (sync.rs:39-47,
@@ -2168,7 +2193,9 @@ async fn sync_resumes_from_digest_anchor() {
         .bind_tcp()
         .await
         .expect("bind TCP for authority server");
-    let auth_url = auth_instance.url().expect("authority TCP URL must be available");
+    let auth_url = auth_instance
+        .url()
+        .expect("authority TCP URL must be available");
 
     let (s0, b0) = post_json(auth_app.clone(), "/push", bodies[0].clone()).await;
     assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
@@ -2225,8 +2252,8 @@ async fn sync_resumes_from_digest_anchor() {
     assert_eq!(
         decoded_from.as_deref(),
         Some(witness_tip_pr.as_str()),
-        "the resync anchor MUST be the witness's own tip PR content digest, not a sequence \
-         number -- captured second outbound query: {:?}",
+        "the resync anchor MUST be the witness's own tip PR content digest, not a sequence number \
+         -- captured second outbound query: {:?}",
         queries[1]
     );
 }
@@ -2266,7 +2293,11 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let auth_app = build_app_router(auth_state.clone()).expect("authority router");
     for body in &bodies {
         let (status, resp) = post_json(auth_app.clone(), "/push", body.clone()).await;
-        assert_eq!(status, StatusCode::CREATED, "canonical chain push: {resp:?}");
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "canonical chain push: {resp:?}"
+        );
     }
 
     // The honest position-1 PR digest, read back from the canonical chain's
@@ -2277,7 +2308,11 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
         .as_array()
         .cloned()
         .expect("canonical patch entries array");
-    assert_eq!(canonical_entries.len(), 3, "canonical chain must hold 3 entries");
+    assert_eq!(
+        canonical_entries.len(),
+        3,
+        "canonical chain must hold 3 entries"
+    );
     let honest_seq1_pr = canonical_entries[1]["pr"]
         .as_str()
         .expect("entry[1] carries pr digest")
@@ -2287,8 +2322,7 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
     // shape (key_a, signed by golden) but a DIFFERENT, genuinely valid
     // "sequence 1" commit (introducing "bob" rather than "key_b") -- a real
     // equivocation, not a corrupted/forged fixture.
-    let fork_bodies =
-        build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]);
+    let fork_bodies = build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]);
     let (fork_state, _fork_identity, _fork_dir) = attestor_server().await;
     let fork_app = build_app_router(fork_state.clone()).expect("fork router");
     for body in &fork_bodies {
@@ -2470,8 +2504,8 @@ async fn anchor_digest_rejects_malformed() {
     );
     let payload = common::envelope_payload(&resp);
     let message = payload["error"].as_str().expect(
-        "a malformed-anchor refusal MUST carry the app's JSON error envelope, not axum's \
-         default plain-text query rejection",
+        "a malformed-anchor refusal MUST carry the app's JSON error envelope, not axum's default \
+         plain-text query rejection",
     );
     assert!(
         message.to_lowercase().contains("digest"),

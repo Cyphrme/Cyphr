@@ -144,8 +144,8 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
 
     let base_url = authority_url.trim_end_matches('/');
 
-    let from_seq = match state.engine.get_tip(principal_id).await {
-        Ok(tip) => tip.map(|t| t.commit_count).unwrap_or(0),
+    let local_tip = match state.engine.get_tip(principal_id).await {
+        Ok(tip) => tip,
         Err(err) => {
             error!(
                 principal = %principal_id,
@@ -158,16 +158,39 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
         },
     };
 
-    // Percent-encode `principal_id` (client-supplied) before it is
-    // interpolated into the outbound URL, so a value containing
+    // The resync anchor (Zami #140; S0.1: the anchor root is PR) is the
+    // witness's own current tip PR content digest, not a sequence number --
+    // a digest binds the SPECIFIC history it was produced from, where a
+    // sequence number is shared by any equivocating fork at the same
+    // position. Absent entirely (rather than an anchor to some sentinel
+    // position) when the witness holds nothing yet for this principal, so
+    // the authority serves a full resync from genesis, matching legacy
+    // bootstrapping behavior.
+    //
+    // `from_seq` is retained ONLY as a local, defensive re-application
+    // guard on the entries this call itself receives below (`seq <
+    // from_seq`) -- it is never placed on the wire and never what the
+    // authority resumes from, so it stays exactly the metadata S3 permits,
+    // not a second de facto anchor.
+    let from_seq = local_tip.as_ref().map_or(0, |t| t.commit_count);
+    let anchor_pr = local_tip.as_ref().map(|t| t.pr.clone());
+
+    // Percent-encode `principal_id` (client-supplied) and the anchor before
+    // they are interpolated into the outbound URL, so a value containing
     // `&`/`=`/`#` cannot inject extra query parameters into the witness's
     // own outbound request. Currently redundant with the pre-apply principal
     // comparison below (any such value already fails to match the report's
-    // attested principal), but the safety should not depend on that being
-    // the only guard. `from_seq` never needs encoding: it is a `u64` this
-    // call itself computed, never attacker-supplied.
+    // attested principal) and with the anchor's own tagged-digest charset
+    // (algorithm name plus base64url, which excludes those bytes), but the
+    // safety should not depend on either being the only guard.
     let encoded_principal = percent_encode_query_value(principal_id);
-    let patch_url = format!("{base_url}/patch?pr={encoded_principal}&from={from_seq}");
+    let patch_url = match &anchor_pr {
+        Some(pr) => {
+            let encoded_anchor = percent_encode_query_value(pr);
+            format!("{base_url}/patch?pr={encoded_principal}&from={encoded_anchor}")
+        },
+        None => format!("{base_url}/patch?pr={encoded_principal}"),
+    };
 
     let res = match state
         .http_client
