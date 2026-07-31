@@ -1996,3 +1996,485 @@ async fn stripped_statement_fails_closed_when_configured() {
          {outcome:?}"
     );
 }
+
+// ========================================================================
+// Node N4: content-addressed resync anchor (#140)
+// ========================================================================
+//
+// Evaluates the test-shaped acceptance criteria N4.1, N4.2, N4.4, N4.5:
+// - `sync_resumes_from_digest_anchor` (N4.1): a witness resumes sync from a
+//   content-digest anchor.
+// - `fork_shares_sequence_rejected_by_digest_anchor` (N4.2): a fork reaching
+//   the same sequence as the canonical chain is NOT accepted via the digest
+//   anchor.
+// - `sequence_only_anchor_does_not_resume` (N4.4): a request whose ONLY
+//   anchor is a sequence does not resume.
+// - `anchor_digest_rejects_malformed` (N4.5): the anchor rejects malformed
+//   input.
+//
+// RED against the current code: `PatchQuery.from` is `Option<u64>` and
+// `sync.rs` builds `from={from_seq}` from `commit_count` (sync.rs:39-47,
+// routes.rs:35-37). Every positive assertion below sends a TAGGED DIGEST
+// STRING (e.g. `SHA-256:...`) as `from` -- that fails to parse as a `u64` at
+// all today, so each test's own positive control is what fails for the
+// right reason, not merely a checked-but-vacuous negative. See Zami #140
+// ("Content addressed digest for everything... Sequence is metadata") and
+// the split-view/equivocation analysis in
+// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` ("a sequence cannot
+// bind a history") for why N4.2 constructs a genuine two-branch equivocation
+// rather than asserting the property abstractly.
+
+/// Build a genuinely CHAINING sequence of push bodies for one principal: a
+/// `key/create` genesis (introducing `key_names[0]`, closed under the golden
+/// key per the wire contract for a never-before-seen principal -- mirrors
+/// `build_two_commit_push_bodies`'s C0 step), then one chained `key/create`
+/// push body per remaining name in `key_names`, each signed by golden onto
+/// the state left by the previous entry via the SAME `principal` object (the
+/// `append_key_create` doc comment explains why a shared object, not a fresh
+/// one per commit, is what makes the chain genuine).
+///
+/// Generalizes `build_two_commit_push_bodies` to an arbitrary chain length
+/// so N4's fixtures -- an honest 3-commit authority, a split two-step chain,
+/// and a forked branch -- share one construction instead of three
+/// hand-rolled ones.
+fn build_chained_push_bodies(
+    pool: &test_fixtures::Pool,
+    principal_id: &str,
+    now: i64,
+    key_names: &[&str],
+) -> Vec<String> {
+    assert!(!key_names.is_empty(), "at least a genesis key is required");
+    let golden = pool.get("golden").expect("golden key");
+    let golden_key = cyphr::Key {
+        alg: golden.alg.clone(),
+        tmb: golden.compute_tmb().expect("golden tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+    let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+
+    let mut c0 = append_key_create(&mut principal, pool, "golden", key_names[0], now);
+    let closing = c0.len() - 1;
+    let mut closing_coz: serde_json::Value = serde_json::from_slice(&c0[closing]).unwrap();
+    closing_coz.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({
+            "alg": golden_key.alg,
+            "pub": golden.pub_key,
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+        }),
+    );
+    c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
+
+    let body = |blobs: &[Vec<u8>]| {
+        serde_json::json!({
+            "principal_id": principal_id,
+            "blobs": blobs.iter().map(|b| Base64UrlUnpadded::encode_string(b)).collect::<Vec<_>>(),
+        })
+        .to_string()
+    };
+
+    let mut bodies = vec![body(&c0)];
+    for (i, name) in key_names.iter().enumerate().skip(1) {
+        let c = append_key_create(&mut principal, pool, "golden", name, now + i as i64);
+        bodies.push(body(&c));
+    }
+    bodies
+}
+
+/// Spawn a passthrough proxy in front of `upstream` for `GET /patch`: records
+/// every request's raw query string, in arrival order, into `captured`, then
+/// forwards the request unmodified and relays the upstream's JSON body
+/// verbatim. Unlike `spawn_patch_proxy` (which MUTATES the body to model an
+/// on-path attacker), this proxy changes nothing -- it exists only to let
+/// the test observe what `sync_from_authority` actually places on the wire,
+/// which the client itself gives no other hook into.
+async fn spawn_observing_patch_proxy(
+    upstream: String,
+    captured: Arc<std::sync::Mutex<Vec<String>>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = axum::Router::new().route(
+        "/patch",
+        axum::routing::get(move |raw: axum::extract::RawQuery| {
+            let upstream = upstream.clone();
+            let captured = captured.clone();
+            async move {
+                let query = raw.0.unwrap_or_default();
+                captured.lock().unwrap().push(query.clone());
+                let url = if query.is_empty() {
+                    format!("{upstream}/patch")
+                } else {
+                    format!("{upstream}/patch?{query}")
+                };
+                let body: serde_json::Value = reqwest::Client::new()
+                    .get(&url)
+                    .header("accept", "application/json")
+                    .send()
+                    .await
+                    .expect("proxy upstream request")
+                    .json()
+                    .await
+                    .expect("proxy upstream json decode");
+                axum::Json(body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observing proxy listener");
+    let addr = listener.local_addr().expect("observing proxy local addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), handle)
+}
+
+/// N4.1: `sync_resumes_from_digest_anchor`
+///
+/// A witness that already synced a genesis commit, then resumes after the
+/// authority gains a second commit, MUST anchor its resync request on the
+/// CONTENT DIGEST of its own current tip's PR (S0.1 -- the specification
+/// owner's ruling that PR is the anchor root), not on a bare sequence
+/// number. Pinned two ways: functionally, the witness must actually apply
+/// exactly the one new commit (`applied: 1`, not a full resync and not
+/// zero); and on the wire, an observing proxy in front of the authority
+/// records the outbound `/patch` request's `from` value, which MUST equal
+/// the witness's own previously-synced tip PR digest. The wire check is
+/// what makes this differ from merely checking that *a* resync happened --
+/// the legacy path also resumes correctly, just by sequence.
+#[tokio::test]
+async fn sync_resumes_from_digest_anchor() {
+    let pool = load_pool();
+    let principal_id_digest = principal_digest(0xa1);
+    let principal_id = principal_id_digest.as_str();
+    let now = 1_700_100_000;
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+
+    let (auth_state, _identity, auth_dir) = attestor_server().await;
+    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+    let mut auth_instance = common::multi::Instance {
+        name: "authority".to_string(),
+        state: auth_state.clone(),
+        identity: Some(_identity),
+        dir: auth_dir,
+        router: auth_app.clone(),
+        listener_addr: None,
+        tcp_handle: None,
+    };
+    auth_instance
+        .bind_tcp()
+        .await
+        .expect("bind TCP for authority server");
+    let auth_url = auth_instance.url().expect("authority TCP URL must be available");
+
+    let (s0, b0) = post_json(auth_app.clone(), "/push", bodies[0].clone()).await;
+    assert_eq!(s0, StatusCode::CREATED, "genesis push: {b0:?}");
+
+    let captured: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (proxy_url, _proxy) = spawn_observing_patch_proxy(auth_url, captured.clone()).await;
+    let (witness_state, _witness_app) = witness_for(&proxy_url, None).await;
+
+    let first = sync_from_authority(&witness_state, principal_id).await;
+    assert!(
+        matches!(
+            first,
+            SyncOutcome::Synced {
+                applied: 1,
+                rejected: 0
+            }
+        ),
+        "first sync must apply exactly the genesis commit: {first:?}"
+    );
+    let witness_tip_pr = witness_state
+        .engine
+        .get_tip(principal_id)
+        .await
+        .expect("witness get_tip")
+        .expect("witness holds a tip after the first sync")
+        .pr;
+
+    let (s1, b1) = post_json(auth_app.clone(), "/push", bodies[1].clone()).await;
+    assert_eq!(s1, StatusCode::CREATED, "second commit push: {b1:?}");
+
+    let second = sync_from_authority(&witness_state, principal_id).await;
+    assert!(
+        matches!(
+            second,
+            SyncOutcome::Synced {
+                applied: 1,
+                rejected: 0
+            }
+        ),
+        "second sync must resume and apply EXACTLY the new commit, not a full resync: {second:?}"
+    );
+
+    let queries = captured.lock().unwrap().clone();
+    assert_eq!(
+        queries.len(),
+        2,
+        "expected exactly two outbound /patch requests, one per sync: {queries:?}"
+    );
+    let decoded_from = reqwest::Url::parse(&format!("http://capture/?{}", queries[1]))
+        .expect("parse captured query")
+        .query_pairs()
+        .find(|(k, _)| k == "from")
+        .map(|(_, v)| v.into_owned());
+    assert_eq!(
+        decoded_from.as_deref(),
+        Some(witness_tip_pr.as_str()),
+        "the resync anchor MUST be the witness's own tip PR content digest, not a sequence \
+         number -- captured second outbound query: {:?}",
+        queries[1]
+    );
+}
+
+/// N4.2: `fork_shares_sequence_rejected_by_digest_anchor`
+///
+/// The point of #140: a sequence number cannot bind a specific history, a
+/// content digest can. Constructs a genuine equivocation -- two
+/// INDEPENDENTLY built, individually valid commit chains for the same
+/// principal that both claim "sequence 1", but with different content and
+/// therefore different PR digests -- the split-view shape
+/// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` analyzes ("my
+/// anchor commits a prefix of the canonical record" fails silently if the
+/// anchor cannot actually distinguish which record). The canonical
+/// authority never held the fork's commit, so the fork's digest must not
+/// resolve to the canonical chain's own sequence-1 position merely because
+/// the two share a sequence number.
+///
+/// Differential, not a bare assertion (per the composer's note that a prior
+/// suite in this campaign asserted a property no fixture could exercise):
+/// the HONEST digest anchor's resume tail is the POSITIVE control (this
+/// alone is RED against the current `u64` anchor -- a tagged digest string
+/// never parses as a sequence number), and the FORK's digest -- despite
+/// claiming the identical position -- MUST NOT resolve to that same tail.
+#[tokio::test]
+async fn fork_shares_sequence_rejected_by_digest_anchor() {
+    let pool = load_pool();
+    let principal_id_digest = principal_digest(0xa2);
+    let principal_id = principal_id_digest.as_str();
+    let fork_principal_id_digest = principal_digest(0xa3);
+    let fork_principal_id = fork_principal_id_digest.as_str();
+    let now = 1_700_200_000;
+
+    // Canonical authority: three genuinely chained commits.
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let (auth_state, _identity, _auth_dir) = attestor_server().await;
+    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+    for body in &bodies {
+        let (status, resp) = post_json(auth_app.clone(), "/push", body.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "canonical chain push: {resp:?}");
+    }
+
+    // The honest position-1 PR digest, read back from the canonical chain's
+    // own `/patch` entries -- exactly what a witness anchored there holds.
+    let (_, canonical_patch) =
+        get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+    let canonical_entries = canonical_patch["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .expect("canonical patch entries array");
+    assert_eq!(canonical_entries.len(), 3, "canonical chain must hold 3 entries");
+    let honest_seq1_pr = canonical_entries[1]["pr"]
+        .as_str()
+        .expect("entry[1] carries pr digest")
+        .to_string();
+
+    // A SEPARATE, independent authority holding a fork: the SAME genesis
+    // shape (key_a, signed by golden) but a DIFFERENT, genuinely valid
+    // "sequence 1" commit (introducing "bob" rather than "key_b") -- a real
+    // equivocation, not a corrupted/forged fixture.
+    let fork_bodies =
+        build_chained_push_bodies(&pool, fork_principal_id, now, &["key_a", "bob"]);
+    let (fork_state, _fork_identity, _fork_dir) = attestor_server().await;
+    let fork_app = build_app_router(fork_state.clone()).expect("fork router");
+    for body in &fork_bodies {
+        let (status, resp) = post_json(fork_app.clone(), "/push", body.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "fork chain push: {resp:?}");
+    }
+    let (_, fork_patch) =
+        get_json(fork_app.clone(), &format!("/patch?pr={fork_principal_id}")).await;
+    let fork_entries = fork_patch["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .expect("fork patch entries array");
+    assert_eq!(fork_entries.len(), 2, "fork chain must hold 2 entries");
+    let fork_seq1_pr = fork_entries[1]["pr"]
+        .as_str()
+        .expect("fork entry[1] carries pr digest")
+        .to_string();
+    assert_ne!(
+        honest_seq1_pr, fork_seq1_pr,
+        "fixture bug: the fork must genuinely diverge from the canonical chain at the shared \
+         sequence position"
+    );
+
+    // POSITIVE CONTROL: the honest digest anchor resumes correctly.
+    let (honest_status, honest_resp) = get_json(
+        auth_app.clone(),
+        &format!("/patch?pr={principal_id}&from={honest_seq1_pr}"),
+    )
+    .await;
+    assert_eq!(
+        honest_status,
+        StatusCode::OK,
+        "resuming from the canonical chain's own digest MUST succeed: {honest_resp:?}"
+    );
+    let honest_tail = honest_resp["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        honest_tail.len(),
+        1,
+        "the honest digest anchor MUST resume to exactly the one entry after it: {honest_resp:?}"
+    );
+
+    // THE FORK: querying the CANONICAL authority with the fork's digest
+    // (same claimed position, different content) MUST NOT be accepted as
+    // the same resume point.
+    let (fork_anchor_status, fork_anchor_resp) = get_json(
+        auth_app.clone(),
+        &format!("/patch?pr={principal_id}&from={fork_seq1_pr}"),
+    )
+    .await;
+    let fork_anchor_tail = if fork_anchor_status == StatusCode::OK {
+        fork_anchor_resp["payload"]["entries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    assert_ne!(
+        fork_anchor_tail, honest_tail,
+        "a digest that shares the canonical chain's sequence position but not its content MUST \
+         NOT resolve to the same resume tail as the genuine anchor -- fork response: \
+         {fork_anchor_resp:?}"
+    );
+}
+
+/// N4.4: `sequence_only_anchor_does_not_resume`
+///
+/// A request whose ONLY anchor is a raw sequence number -- exactly what the
+/// legacy `from={from_seq}` path sent -- MUST NOT resume the same way the
+/// genuine digest anchor does; sequence becomes metadata (S3), never a de
+/// facto anchor, including under a THIRD spelling the N4.3 grep for the two
+/// known literal forms cannot catch. Paired with the same positive control
+/// as the fork test: the digest anchor resuming correctly to exactly one
+/// entry is what's actually RED against the current `u64`-typed `from`,
+/// since a tagged digest string fails to parse there today.
+#[tokio::test]
+async fn sequence_only_anchor_does_not_resume() {
+    let pool = load_pool();
+    let principal_id_digest = principal_digest(0xa4);
+    let principal_id = principal_id_digest.as_str();
+    let now = 1_700_300_000;
+
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
+    let (auth_state, _identity, _auth_dir) = attestor_server().await;
+    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+    for body in &bodies {
+        let (status, resp) = post_json(auth_app.clone(), "/push", body.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "chain push: {resp:?}");
+    }
+
+    let (_, patch_resp) = get_json(auth_app.clone(), &format!("/patch?pr={principal_id}")).await;
+    let entries = patch_resp["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .expect("patch entries array");
+    assert_eq!(entries.len(), 3, "canonical chain must hold 3 entries");
+    let seq1_pr = entries[1]["pr"].as_str().expect("entry[1] pr").to_string();
+    let seq1_number = entries[1]["sequence"].as_u64().expect("entry[1] sequence");
+
+    // Digest anchor: MUST resume to exactly the one entry after position 1.
+    let (digest_status, digest_resp) = get_json(
+        auth_app.clone(),
+        &format!("/patch?pr={principal_id}&from={seq1_pr}"),
+    )
+    .await;
+    assert_eq!(digest_status, StatusCode::OK, "{digest_resp:?}");
+    let digest_tail = digest_resp["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(digest_tail.len(), 1, "{digest_resp:?}");
+
+    // Bare sequence number, same numeric position: MUST NOT reach the same
+    // resume outcome.
+    let (seq_status, seq_resp) = get_json(
+        auth_app.clone(),
+        &format!("/patch?pr={principal_id}&from={seq1_number}"),
+    )
+    .await;
+    let seq_tail = if seq_status == StatusCode::OK {
+        seq_resp["payload"]["entries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    assert_ne!(
+        seq_tail, digest_tail,
+        "a bare sequence number MUST NOT function as a de facto resync anchor once the digest \
+         anchor is in place -- sequence-only response: {seq_resp:?}"
+    );
+}
+
+/// N4.5: `anchor_digest_rejects_malformed`
+///
+/// A malformed `from` anchor MUST be refused with the app's structured JSON
+/// error envelope -- the same `AppError::bad_request` pattern the existing
+/// `GET /e/{digest}` handler already uses for a malformed digest path
+/// parameter (routes.rs's `entity` handler) -- not silently treated as
+/// absent. Checking ONLY the status code would be vacuous: today, ANY
+/// non-numeric `from` value already 400s via axum's generic `Option<u64>`
+/// query-rejection, coincidentally at the same status code, but with
+/// axum's default plain-text body rather than the app's JSON envelope.
+/// Requiring the JSON envelope shape is what's actually RED today.
+#[tokio::test]
+async fn anchor_digest_rejects_malformed() {
+    let pool = load_pool();
+    let principal_id_digest = principal_digest(0xa5);
+    let principal_id = principal_id_digest.as_str();
+    let now = 1_700_400_000;
+
+    let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
+    let (auth_state, _identity, _auth_dir) = attestor_server().await;
+    let auth_app = build_app_router(auth_state.clone()).expect("authority router");
+    for body in &bodies {
+        let (status, resp) = post_json(auth_app.clone(), "/push", body.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "chain push: {resp:?}");
+    }
+
+    // Digest-shaped (right "ALG:" prefix) but the wrong byte length for
+    // SHA-256 -- the exact `DigestLengthMismatch` case
+    // `cyphr::state::TaggedDigest`'s own unit tests already pin
+    // (rs/cyphr/src/state.rs's `tagged_digest_length_mismatch`).
+    let malformed = "SHA-256:AAAAAAAAAAAAAAAAAAAAAA";
+    let (status, resp) = get_json(
+        auth_app.clone(),
+        &format!("/patch?pr={principal_id}&from={malformed}"),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a malformed digest anchor MUST be refused with 400: {resp:?}"
+    );
+    let payload = common::envelope_payload(&resp);
+    let message = payload["error"].as_str().expect(
+        "a malformed-anchor refusal MUST carry the app's JSON error envelope, not axum's \
+         default plain-text query rejection",
+    );
+    assert!(
+        message.to_lowercase().contains("digest"),
+        "refusal message should name the digest as the problem, got: {message:?}"
+    );
+}
