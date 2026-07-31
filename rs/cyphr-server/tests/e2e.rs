@@ -115,8 +115,11 @@ async fn patch_with_range() {
 
     let app = build_router(state);
 
-    // Request only commit 0.
-    let (status, envelope) = get_json(app, &format!("/patch?pr={principal_id}&from=0&to=0")).await;
+    // Request only commit 0: `from` omitted (genesis has no anchor to
+    // resume from) and `to=0` bounds the response to it. The pre-N4 fixture
+    // used `from=0` under sequence-anchor semantics; `0` is no longer a
+    // valid digest anchor (Zami #140: sequence is metadata, not a digest).
+    let (status, envelope) = get_json(app, &format!("/patch?pr={principal_id}&to=0")).await;
     assert_eq!(status, StatusCode::OK);
     let patch = envelope_payload(&envelope);
 
