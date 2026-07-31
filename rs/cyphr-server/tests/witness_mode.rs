@@ -2512,3 +2512,59 @@ async fn anchor_digest_rejects_malformed() {
         "refusal message should name the digest as the problem, got: {message:?}"
     );
 }
+
+/// Merge-gate C1 (F1): the bounded-`to` unsigned guard in `routes.rs`'s
+/// `patch` handler is a deliberate, security-relevant refusal-to-sign --
+/// signing the authority's CURRENT tip attestation over a response that may
+/// stop short of it (a bounded `to`) would misdescribe what was actually
+/// served. Before this test, NOTHING in the suite could distinguish that
+/// guard existing from it being deleted outright: `e2e.rs`'s only bounded
+/// caller (`patch_with_range`) runs against a KEYLESS server, so its
+/// response is unsigned regardless of the guard, and it asserts nothing
+/// about `statement` at all.
+///
+/// Paired with a positive control on the SAME authority and principal: an
+/// UNBOUNDED request IS signed. Without the control, "unsigned" here could
+/// be misread as "this server never signs" rather than "this specific
+/// response was refused a signature" -- exactly the vacuity class this
+/// campaign's earlier suites (N4 included) were built to close.
+#[tokio::test]
+async fn patch_bounded_to_is_unsigned_on_attestor() {
+    let now = 1_700_500_000;
+    let principal = principal_digest(0x8e);
+    let authority = authority_with_two_commits(&principal, now).await;
+
+    let (unbounded_status, unbounded) = get_json(
+        authority.instance.router.clone(),
+        &format!("/patch?pr={principal}"),
+    )
+    .await;
+    assert_eq!(unbounded_status, StatusCode::OK, "{unbounded:?}");
+    assert_eq!(
+        unbounded["statement"]["kind"], "signed",
+        "positive control: an UNBOUNDED patch on a signing-capable authority must be signed -- \
+         {unbounded:?}"
+    );
+
+    let (bounded_status, bounded) = get_json(
+        authority.instance.router.clone(),
+        &format!("/patch?pr={principal}&to=0"),
+    )
+    .await;
+    assert_eq!(bounded_status, StatusCode::OK, "{bounded:?}");
+    assert_eq!(
+        bounded["statement"]["kind"], "unsigned",
+        "a bounded `to` response MUST be served unsigned -- signing the authority's CURRENT tip \
+         over a response that stops short of it would misdescribe what was actually served: \
+         {bounded:?}"
+    );
+    let entries = bounded["payload"]["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        entries.len(),
+        1,
+        "to=0 should bound the response to exactly commit 0: {bounded:?}"
+    );
+}
