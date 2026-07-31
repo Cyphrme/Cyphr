@@ -49,6 +49,11 @@ async fn resolve_digest_returns_none_for_unknown() {
 }
 
 #[tokio::test]
+async fn resolve_digest_returns_indexed_position() {
+    conformance::resolve_digest_returns_indexed_position(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
 async fn indexed_blobs_tracked_in_commit_chain() {
     conformance::indexed_blobs_tracked_in_commit_chain(&MemoryIndexer::new()).await;
 }
