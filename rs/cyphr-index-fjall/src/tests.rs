@@ -29,6 +29,7 @@ conformance_test!(get_commit_chain_full);
 conformance_test!(get_commit_chain_range);
 conformance_test!(get_commit_chain_unknown_returns_empty);
 conformance_test!(resolve_digest_returns_none_for_unknown);
+conformance_test!(resolve_digest_returns_indexed_position);
 conformance_test!(indexed_blobs_tracked_in_commit_chain);
 conformance_test!(list_principals_returns_all);
 conformance_test!(principal_summary_tracks_creation_time);

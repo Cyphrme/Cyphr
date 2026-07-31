@@ -140,6 +140,15 @@ pub struct EntityRef {
     pub blob_hash: Blake3Hash,
     /// What kind of entity this digest refers to.
     pub entity_type: EntityType,
+    /// The commit sequence position this digest was produced at, when known.
+    ///
+    /// Lets a content digest (e.g. a PR, per Zami #140's content-addressed
+    /// resync anchor) resolve to a chain position without a second lookup
+    /// table -- `None` only for an `EntityRef` written by a backend before
+    /// this field existed (`#[serde(default)]` so an already-durable
+    /// `digests` record deserializes instead of failing to open).
+    #[serde(default)]
+    pub sequence: Option<u64>,
 }
 
 /// Classification of indexed entities.

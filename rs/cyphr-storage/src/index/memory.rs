@@ -147,6 +147,7 @@ impl Indexer for MemoryIndexer {
                         digest: digest_key,
                         blob_hash: coz.blob_hash,
                         entity_type,
+                        sequence: Some(commit.sequence),
                     },
                 );
 
@@ -156,6 +157,7 @@ impl Indexer for MemoryIndexer {
                         digest: coz.czd.clone(),
                         blob_hash: coz.blob_hash,
                         entity_type,
+                        sequence: Some(commit.sequence),
                     },
                 );
             }
@@ -176,6 +178,7 @@ impl Indexer for MemoryIndexer {
                         digest: variant.clone(),
                         blob_hash: commit.blob_hashes[0],
                         entity_type: EntityType::Commit,
+                        sequence: Some(commit.sequence),
                     },
                 );
             }

@@ -473,6 +473,7 @@ fn db_index_commit(
                     digest: digest_key.clone(),
                     blob_hash: coz.blob_hash,
                     entity_type,
+                    sequence: Some(commit.sequence),
                 })?,
             );
         }
@@ -493,6 +494,7 @@ fn db_index_commit(
                 digest: variant.clone(),
                 blob_hash: first_blob_hash,
                 entity_type: EntityType::Commit,
+                sequence: Some(commit.sequence),
             })?,
         );
     }

@@ -173,6 +173,36 @@ pub async fn resolve_digest_returns_none_for_unknown<I: Indexer>(indexer: &I) {
     );
 }
 
+/// A commit-level digest variant (PR here, but any of commit_id/pr/sr/ar/cr
+/// share the same code path -- see `index_commit`) must resolve to the
+/// chain position it was produced at, not merely to a blob -- this is the
+/// lookup the content-addressed resync anchor (Zami #140) is built on.
+/// `make_commit`'s default `prs` value is a placeholder string, not a
+/// parseable `TaggedDigest`, so this overrides just that field with a real
+/// digest the test can independently resolve by.
+pub async fn resolve_digest_returns_indexed_position<I: Indexer>(indexer: &I) {
+    let real_pr: TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
+        .parse()
+        .expect("parse tagged digest");
+
+    let mut commit = make_commit("alice", 2, 3000);
+    commit.prs = vec![real_pr.to_string()];
+
+    indexer.index_commit(&commit).await.expect("index failed");
+
+    let resolved = indexer
+        .resolve_digest(&real_pr)
+        .await
+        .expect("resolve failed")
+        .expect("digest should resolve to an entity");
+
+    assert_eq!(
+        resolved.sequence,
+        Some(2),
+        "a commit-level digest must resolve to the chain position (sequence) it was produced at",
+    );
+}
+
 pub async fn indexed_blobs_tracked_in_commit_chain<I: Indexer>(indexer: &I) {
     let commit = make_commit("alice", 0, 1000);
     let blob_hash = commit.blob_hashes[0];
