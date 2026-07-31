@@ -330,17 +330,31 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// For each commit in the range, fetches the raw blob bytes from
     /// the blob store. This is the engine's primary coordination value —
     /// neither trait can serve this alone.
+    ///
+    /// `from` is a content-digest resync anchor (Zami #140: "Content
+    /// addressed digest for everything… Sequence is metadata"; S0.1 of the
+    /// campaign IBC settles the anchor root as PR). It is resolved to the
+    /// chain position it was produced at and the response starts
+    /// immediately AFTER that position — sequence itself is never accepted
+    /// as an anchor (see [`Self::resolve_anchor_position`]). `to` remains a
+    /// bare sequence bound: only the resync ANCHOR needed content-addressing
+    /// per #140, and widening `to` identically is out of this change's
+    /// surface.
     #[tracing::instrument(skip(self))]
     pub async fn get_patch(
         &self,
         principal_id: &str,
-        from: Option<u64>,
+        from: Option<&TaggedDigest>,
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
+        let from_seq = match from {
+            Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
+            None => None,
+        };
         let chain = self
             .indexer
-            .get_commit_chain(principal_id, from, to)
+            .get_commit_chain(principal_id, from_seq, to)
             .await?;
 
         let mut entries = Vec::with_capacity(chain.len());
@@ -364,6 +378,36 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         Ok(PatchResponse {
             principal_id: principal_id.to_string(),
             entries,
+        })
+    }
+
+    /// Resolve a `/patch` resync anchor (a content digest) to the chain
+    /// position immediately AFTER it — the inclusive `from` bound
+    /// [`Indexer::get_commit_chain`] needs to serve exactly the entries a
+    /// caller does not yet hold, never re-serving the anchored commit
+    /// itself.
+    ///
+    /// An anchor that does not resolve to an indexed position is refused as
+    /// [`EngineError::NotFound`] rather than silently degrading to "no
+    /// anchor" (a full resync — the fork/equivocation case #140 exists to
+    /// prevent: a digest genuinely valid elsewhere but never recorded by
+    /// THIS principal's history is not evidence of any position in it) or
+    /// to sequence zero (which would silently wrap an unrecognized anchor
+    /// onto genesis).
+    async fn resolve_anchor_position(
+        &self,
+        principal_id: &str,
+        anchor: &TaggedDigest,
+    ) -> Result<u64, EngineError> {
+        let entity = self.indexer.resolve_digest(anchor).await?.ok_or_else(|| {
+            EngineError::NotFound(format!(
+                "resync anchor {anchor} not recognized for principal {principal_id}"
+            ))
+        })?;
+        entity.sequence.map(|seq| seq + 1).ok_or_else(|| {
+            EngineError::NotFound(format!(
+                "resync anchor {anchor} carries no chain position for principal {principal_id}"
+            ))
         })
     }
 

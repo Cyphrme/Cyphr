@@ -102,28 +102,64 @@ async fn ingest_two_then_get_patch_full() {
     assert_eq!(patch.entries[1].commit.sequence, 1);
 }
 
+/// REWRITE (not a mechanical signature patch): the range is now
+/// digest-bounded (Zami #140), so this anchors on position 0's PR digest and
+/// expects the same tail `Some(1)` used to select directly -- resuming
+/// AFTER position 0, through `to = Some(3)`. `make_meta`'s default `prs`
+/// value is a placeholder string, not a parseable `TaggedDigest`, so only
+/// position 0's `prs` is overridden with a real, resolvable digest.
 #[tokio::test]
 async fn get_patch_with_range() {
     let engine = test_engine();
 
+    let anchor: cyphr::state::TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
+        .parse()
+        .expect("parse anchor digest");
+
     for seq in 0..5u64 {
         let blob = format!("{{\"pay\":{{\"now\":{}}}}}", 1000 + seq);
+        let mut meta = make_meta("alice", seq, 1000 + seq as i64);
+        if seq == 0 {
+            meta.prs = vec![anchor.to_string()];
+        }
         engine
-            .ingest_commit(
-                &[blob.as_bytes()],
-                make_meta("alice", seq, 1000 + seq as i64),
-            )
+            .ingest_commit(&[blob.as_bytes()], meta)
             .await
             .expect("ingest");
     }
 
     let patch = engine
-        .get_patch("alice", Some(1), Some(3))
+        .get_patch("alice", Some(&anchor), Some(3))
         .await
         .expect("get_patch");
     assert_eq!(patch.entries.len(), 3);
     assert_eq!(patch.entries[0].commit.sequence, 1);
     assert_eq!(patch.entries[2].commit.sequence, 3);
+}
+
+/// An anchor digest never indexed for ANY principal must refuse, not
+/// silently degrade to a full resync (S3: an unrecognized anchor is not
+/// evidence of a position, sequence zero least of all).
+#[tokio::test]
+async fn get_patch_unknown_anchor_is_not_found() {
+    let engine = test_engine();
+    engine
+        .ingest_commit(&[b"alice-genesis"], make_meta("alice", 0, 1000))
+        .await
+        .expect("ingest");
+
+    let unknown: cyphr::state::TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
+        .parse()
+        .expect("parse anchor digest");
+
+    let err = engine
+        .get_patch("alice", Some(&unknown), None)
+        .await
+        .expect_err("an unrecognized anchor must be refused, not silently resolved");
+    assert!(
+        matches!(err, EngineError::NotFound(_)),
+        "expected NotFound, got {err:?}"
+    );
 }
 
 #[tokio::test]
