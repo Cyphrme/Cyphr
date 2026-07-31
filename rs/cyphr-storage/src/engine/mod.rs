@@ -387,13 +387,36 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// caller does not yet hold, never re-serving the anchored commit
     /// itself.
     ///
-    /// An anchor that does not resolve to an indexed position is refused as
-    /// [`EngineError::NotFound`] rather than silently degrading to "no
-    /// anchor" (a full resync — the fork/equivocation case #140 exists to
-    /// prevent: a digest genuinely valid elsewhere but never recorded by
-    /// THIS principal's history is not evidence of any position in it) or
-    /// to sequence zero (which would silently wrap an unrecognized anchor
-    /// onto genesis).
+    /// An anchor that does not resolve to ANY indexed position at all is
+    /// refused as [`EngineError::NotFound`] rather than silently degrading
+    /// to "no anchor" (a full resync) or to sequence zero (which would
+    /// silently wrap an unrecognized anchor onto genesis).
+    ///
+    /// **Not principal-scoped — a known, tracked gap (issue #154), not an
+    /// enforced property.** `principal_id` is a parameter of this function
+    /// only to compose the error messages below; [`Indexer::resolve_digest`]
+    /// takes no principal, and the [`EntityRef`](crate::index::EntityRef) it
+    /// returns carries no principal field, so digest→position resolution is
+    /// a GLOBAL namespace. An anchor genuinely produced by a DIFFERENT
+    /// principal's chain resolves here exactly as it would for its own
+    /// principal — nothing below compares the resolved entity against
+    /// `principal_id` at all. This is the identity-binding gap #154 already
+    /// tracks elsewhere in this file (storage never binds a derived genesis
+    /// to the identifier it is filed under); this is a third instance of
+    /// that same structural gap, not a distinct defect.
+    ///
+    /// Reachable: `from` is attacker-rewritable on the wire (see
+    /// `request_side_from_rewrite_withholding_rejected`,
+    /// `cyphr-server/tests/witness_mode.rs`), so a rewritten anchor
+    /// belonging to principal A can resolve a position that then bounds
+    /// principal B's own `get_commit_chain` query. `get_commit_chain`
+    /// itself stays principal-scoped, so only B's own entries are ever
+    /// served — no cross-principal data leak — but the POSITION used to
+    /// bound them is unverified against which principal it actually names.
+    /// Every downstream branch traced fails closed behind N2's post-apply
+    /// authenticated-channel comparison (`EntryCommitmentMismatch`) or the
+    /// chain-verification gap case, so this is defence-in-depth, not a
+    /// demonstrated path to forged or leaked state.
     async fn resolve_anchor_position(
         &self,
         principal_id: &str,
@@ -401,12 +424,13 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     ) -> Result<u64, EngineError> {
         let entity = self.indexer.resolve_digest(anchor).await?.ok_or_else(|| {
             EngineError::NotFound(format!(
-                "resync anchor {anchor} not recognized for principal {principal_id}"
+                "resync anchor {anchor} not indexed (requested for principal {principal_id})"
             ))
         })?;
         entity.sequence.map(|seq| seq + 1).ok_or_else(|| {
             EngineError::NotFound(format!(
-                "resync anchor {anchor} carries no chain position for principal {principal_id}"
+                "resync anchor {anchor} carries no chain position (requested for principal \
+                 {principal_id})"
             ))
         })
     }
