@@ -637,10 +637,12 @@ garbage pushes that never commit cannot inflate it. Concurrent pushes from
 one principal can overshoot the cap by the in-flight burst; the fence bounds
 growth, it does not enforce an exact ceiling.
 
-**None of these refusals appear in the log at the default level.** Five
-requests against a server with a burst of one — four of them refused —
-added zero lines. Budget for that when you plan monitoring; it is covered
-below.
+**None of these refusals appear in the log — at any level.** Five requests
+against a server with a burst of one — four of them refused — added zero
+lines, and turning `RUST_LOG` up does not add them. A fence builds its
+refusal and returns it without ever calling the code underneath, and the
+request logging lives underneath. Budget for that when you plan
+monitoring; it is covered below.
 
 ## TLS and reverse proxies
 
@@ -938,7 +940,31 @@ extracting, given what is and is not emitted:
 - `server principal established` with its `pg`, at every keyed start. A `pg` that changed is the loudest possible alarm — every client that pinned you will refuse.
 - `witness sync failed` and `witness sync authenticated-channel check failed`, which are the only evidence a witness is serving stale or empty state.
 - `configuration error:` on stderr with exit 1, which is a start that never happened.
-- Response status counts from `tower_http=debug`, which is the only way to see `429`, `413`, and `402` at all.
+- Response status counts from `tower_http=debug`, which covers every status a route handler produces — including a witness's `403` write refusal. It does not cover the fences; see below.
+
+**The fence refusals cannot be logged, and no `RUST_LOG` setting changes
+that.** The request tracing wraps the routes; the body-limit, rate-limit,
+and admission layers wrap the tracing. A `429`, `413`, or `402` is built
+and returned by the fence that caught the request, which never calls the
+service beneath it, so the request never reaches the traced span and never
+gets a line — not at `debug`, not at `trace`. Admission's `403` is refused
+the same way. The one `413` that does get a line is the uncommon
+chunked-body case above, which is refused from the handler side rather than
+by the fence, so a `413` count scraped from logs undercounts by however
+many the fence caught. Setting `RUST_LOG=tower_http=debug` to catch a
+rate-limit storm buys you a line for every request that _succeeded_ and not
+one for any that was throttled.
+
+Witness mode's `403` is the confusing counter-example: it is refused by a
+layer sitting _inside_ the tracing, so it does show up like any other
+response. Seeing one `403` in the log is what makes it natural to assume
+the `429`s are in there somewhere too. They are not.
+
+That leaves the fences observable only from outside the process — from the
+reverse proxy or load balancer in front of it, which sees the status codes
+the server actually returned. If you want an alarm on rate-limit storms,
+oversized bodies, or quota exhaustion, that is where the counter has to
+live. There is nowhere inside the server to put it.
 
 ## Restarting and upgrading
 
