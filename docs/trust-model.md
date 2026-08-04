@@ -27,7 +27,7 @@ restating it, it says so.
 its `rc1` tag; its written paper is a work-in-progress draft that is not. So a mechanized
 result is cited by its Lean theorem name, which is stable, and a point of prose is quoted
 rather than cited by section — a section number in an unfrozen draft is the same unstable
-handle this repository refuses for `SPEC.md`.
+handle this repository warns readers to verify before trusting for `SPEC.md`.
 
 **Scope.** This is a lens for reasoning about what a Cyphr deployment trusts. It is not
 part of the Cyphr protocol and not a proposal to one; `SPEC.md` is the normative source
