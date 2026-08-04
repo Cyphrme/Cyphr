@@ -73,9 +73,12 @@ result and are easy to lose:
   proved at all, with no predicate in the mechanization even encoding the time and size
   bounds it would need.
 - **At the oracle stratum certifiability is vacuous.** Every record predicate satisfies it
-  there, so at that stratum the characterization collapses to determination alone. The
-  axis has effective content at the computable stratum, which is where a real verifier
-  lives.
+  there, so at that stratum the _snapshot_ characterization collapses to determination
+  alone (`snapshot_iff_determined_ALL`). The _enduring_ one does not: it still carries
+  monotonicity as a separate conjunct (`trichotomy_ALL_iff`), so the collapse is a fact
+  about one of the two soundness flavors rather than about the stratum as such. The
+  certifiability axis has effective content at the computable stratum, which is where a
+  real verifier lives.
 
 ### Determination (T1)
 
@@ -328,10 +331,12 @@ bare unscoped signature is not one of them. It does not establish:
   and no notion of a sequence number, a threshold, or a resync. It is a taxonomy over an
   append-only record and the structures built from it — including, in one of its worked
   instances, a chain of key events whose genesis is a single binding commitment, which is
-  this repository's own subject matter. Of that instance the source proves that "the trust
-  surface of a chain is exactly the genesis binding and nothing else," and the chain it
-  mechanizes is structural, "with no hash function in it," so what the instance exercises
-  is the accounting rather than the cryptography.
+  this repository's own subject matter. Of that instance the source proves that "under
+  `Total`, the trust surface of a chain is _exactly_ the genesis binding and nothing
+  else" — the totality condition is an antecedent, carried in the mechanization as an
+  explicit hypothesis (`principal_trust_bounded`), not a detail of the statement's
+  phrasing. The chain it mechanizes is structural, "with no hash function in it," so what
+  the instance exercises is the accounting rather than the cryptography.
 - **What a trust failure costs.** The model factors the residue by cause; it does not
   quantify what any particular failure is worth.
 
