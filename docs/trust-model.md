@@ -3,7 +3,7 @@
 This document defines the vocabulary this repository's architecture documents use to type
 a claim — the three axes a claim is measured on, the cells those axes produce, the party
 kinds that cure a failing axis, and the cures available when a claim stops being true as
-the record grows. Every term those documents borrow is defined here.
+the record grows. Every term those documents borrow from the model is defined here.
 
 The vocabulary comes from a formal trust taxonomy developed outside this project: the
 Factoring Trust model, built in a separate repository (`nrdxp/factoring-trust`) with its
@@ -68,7 +68,7 @@ the very next append.
 
 ## Cells
 
-A claim's **cell** is its position once the three axis outcomes are fixed. The cell fixes
+A claim's **cell** is its position once the three axis outcomes are fixed. The cell says
 what the claim needs — an evaluator, a trusted party, or an accepted bound — and the
 architecture documents cite it in a `cell` column.
 
@@ -97,9 +97,9 @@ system trusts is a defence; leaving a free check unrun is not one.
 
 ### Labels outside the model
 
-Two labels appear in this repository's claim tables that the axes do not produce. They
-mark claims falling outside the taxonomy, and they are this project's labels rather than
-the model's.
+This repository's claim tables carry two labels the axes do not produce. They mark claims
+that fall outside the taxonomy, and they are this project's labels rather than the
+model's.
 
 **below the floor** — the claim is settled by a computation over the artifact presented,
 before any question about the record arises. Verifying a signature over a message is the
@@ -130,7 +130,7 @@ produces about itself, which _is_ reproducible and is therefore the exact invers
 sense used here.
 
 **watcher** — cures a monotonicity failure by holding more than one view of the same
-subject over time. A point observation cures nothing here no matter who signs it, because
+subject over time. A point observation cures nothing, no matter who signs it, because
 staleness is precisely what a single view cannot detect in itself.
 
 The model's own name for the watcher's role is **liveness holder**, and it offers witness
@@ -145,8 +145,8 @@ than one.
 ## Curing a non-monotone claim
 
 A non-monotone claim admits **no offline, non-expiring, present-tense certificate** — not
-as a matter of expense but as a matter of impossibility. Three properties are wanted at
-once and at most two are available together:
+as a matter of expense but as a matter of impossibility. A design wants three properties
+at once, and at most two of them are available together:
 
 - **Offline** — checked from the certificate alone, with no further interaction.
 - **Eternal** — that certificate never expiring.
