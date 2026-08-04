@@ -38,6 +38,26 @@ output: `public/`, gitignored), then copy `../theme/*.css` into
 `public/theme/` to mirror the Netlify step. There is no CI job for the
 sites; Netlify builds on push.
 
+## docket — claim registration (`docket.ncl`)
+
+The repository root's `docket.ncl` registers `docs/architecture/**` as the
+one genre permitted to carry `requirement` claims — fenced `claim` blocks
+that a Nickel contract validates, checked via docket
+(ssh://git@github.com/axiosoph/docket.git). No other tree is declared: an
+undeclared genre is a slot docket leaves unscanned, not a gap, and each
+tree is declared only once it actually carries a claim. `docs/architecture/`
+does not exist yet; no claim blocks exist anywhere in this repository.
+
+docket's checkout is not vendored — its contract is passed by path at
+invocation, so this repository carries no copy that could drift against
+a pre-1.0 tool. Given a docket checkout at `<docket>`, run from the
+repository root:
+
+```
+<docket>/target/release/docket check --corpus . \
+  --contract <docket>/contracts/claim_apply.ncl
+```
+
 ## Trust calibration (verified 2026-07-06)
 
 - **Do not trust `VERIFIED`/`pass` annotations in `docs/specs/*.md`.**
