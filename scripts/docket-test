@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Runs one cyphr-server test by target and name, scoped to that crate.
+#
+# docket invokes a claim's evaluator command with the repository root as its
+# working directory, and rs/ is a virtual workspace with nine members, so a
+# marker naming the raw `cargo test` invocation is both too long to survive
+# rustfmt's 100-column comment wrap (rs/.rustfmt.toml) and, for a bare
+# `--lib`, too broad -- it runs every crate's unit tests, not just
+# cyphr-server's. This wrapper is short enough to fit a marker line with a
+# full test name, and always scopes to `-p cyphr-server`.
+#
+# See .scratch/findings/2026-08-04-signon-brief-marker-width-conflict.md for
+# the measured column budget that ruled out an inline `cargo test` marker.
+#
+# Usage: docket-test <target> <name>
+#        docket-test <claim-id>
+#   <target>    a file under rs/cyphr-server/tests/<target>.rs, or the
+#               literal `lib` to run cyphr-server's own unit tests
+#               (`cargo test --lib`)
+#   <name>      the test function name (cargo's substring filter)
+#   <claim-id>  looked up in CLAIMS below to recover <target> and <name> --
+#               the escape hatch for a claim whose id and test name are
+#               long enough together that even this short an invocation
+#               still overflows the 100-column wrap (measured, not
+#               assumed: verified against every marker with `treefmt`
+#               before landing). Add an entry here rather than reaching
+#               for a two-line marker, which rustfmt truncates silently.
+set -euo pipefail
+
+# claim id -> "target name", for ids that don't fit `docket-test <target>
+# <name>` on one comment line. Keep entries only for ids that actually need
+# it (checked with treefmt) -- most claims should use the two-arg form
+# directly in their marker, which stays self-explaining at the call site.
+declare -A CLAIMS=(
+  [signon-honest-refusal]="keyless_matrix keyless_login_and_challenge_share_the_same_rejection"
+  [signon-disowned-key]="naked_revoke revoked_key_refused_at_login_sibling_survives"
+  [signon-token-kind-binding]="lib verify_rejects_valid_signature_with_wrong_typ"
+  [signon-claimed-principal]="login login_binds_key_to_claimed_principal_not_thumbprint"
+  [signon-key-active-in-principal]="login login_rejects_key_revoked_in_claimed_principal"
+)
+
+if [ "$#" -eq 1 ]; then
+  entry="${CLAIMS[$1]:-}"
+  if [ -z "$entry" ]; then
+    echo "docket-test: no <target> <name> entry for claim id '$1'" >&2
+    exit 2
+  fi
+  read -r target name <<<"$entry"
+elif [ "$#" -eq 2 ]; then
+  target="$1"
+  name="$2"
+else
+  echo "usage: docket-test <target|lib> <name>  |  docket-test <claim-id>" >&2
+  exit 2
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+manifest="$root/rs/Cargo.toml"
+
+if [ "$target" = "lib" ]; then
+  exec cargo test --manifest-path "$manifest" -p cyphr-server --lib "$name"
+else
+  exec cargo test --manifest-path "$manifest" -p cyphr-server --test "$target" "$name"
+fi
