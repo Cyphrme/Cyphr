@@ -195,10 +195,10 @@ without saying so.
 
 ### Signing a payload `/push` will accept
 
-**A payload's keys have to be sorted alphabetically before you sign it.**
-Not before you send it — before you sign it. This is the one rule most
-likely to cost you an afternoon, because nothing in the error message
-points at it.
+**A payload's keys have to be sorted alphabetically before you sign it, at
+every level of nesting.** Not before you send it — before you sign it.
+This is the one rule most likely to cost you an afternoon, because nothing
+in the error message points at it.
 
 The same fields, signed over the compact JSON in the order a person would
 naturally write them:
@@ -237,6 +237,35 @@ And signed over the sorted form but transmitted with the keys back in
 their original order — also `201`. The push path re-sorts every payload's
 keys before it verifies, so the wire order is irrelevant and the signed
 order is everything.
+
+Nesting is where the rule bites, and both examples above are too flat to
+show it. Objects inside arrays get sorted as well; array order itself is
+left alone. Publish under a `typ` of your own and the payload acquires
+nested structure immediately, which is how you end up staring at
+`protocol: invalid signature` over something whose outer keys are plainly
+in order:
+
+```json
+{
+  "alg": "ES256",
+  "now": 1785880211,
+  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "typ": "example.com/note/create",
+  "note": { "title": "hello", "tags": ["b", "a"], "body": "world" }
+}
+```
+
+Sign over this instead — `note`'s three keys sorted, `tags` untouched:
+
+```json
+{
+  "alg": "ES256",
+  "note": { "body": "world", "tags": ["b", "a"], "title": "hello" },
+  "now": 1785880211,
+  "tmb": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "typ": "example.com/note/create"
+}
+```
 
 **This is the opposite of the rule that governs `/auth/login` and
 `/revoke`,** both of which verify over exactly the bytes they receive. A
@@ -845,7 +874,7 @@ reading them here:
   and forgotten: no commit, no root movement, no index entry, no way to
   fetch it back — and a signed receipt attesting the unchanged tip anyway.
 - **No agreement about what a signature covers.** `/push` verifies over
-  the payload's alphabetically key-sorted form and `/auth/login` verifies
+  the payload's recursively key-sorted form and `/auth/login` verifies
   over the bytes as sent. Two verification paths in one server disagree,
   the divergence is stated nowhere else, and the failure it produces is a
   bare `protocol: invalid signature`.
