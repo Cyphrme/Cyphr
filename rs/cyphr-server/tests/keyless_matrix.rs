@@ -426,7 +426,7 @@ async fn keyless_login_returns_capability_absence_not_internal_error() {
 /// on a keyless server (delegated design lean): one honest condition, one
 /// treatment, not two differently-worded rejections a client would have
 /// to reconcile.
-// docket: signon-honest-refusal :: cargo test --manifest-path rs/Cargo.toml --test keyless_matrix
+// docket: signon-honest-refusal :: scripts/docket-test signon-honest-refusal
 #[tokio::test]
 async fn keyless_login_and_challenge_share_the_same_rejection() {
     let state = keyless_state();

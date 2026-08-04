@@ -407,7 +407,7 @@ mod tests {
     /// any other message the server key ever signs could be replayed as a
     /// bearer token. The signature here is real (same identity), so only
     /// the `typ` binding stands between it and acceptance.
-    // docket: signon-token-kind-binding :: cargo test --manifest-path rs/Cargo.toml --lib
+    // docket: signon-token-kind-binding :: scripts/docket-test signon-token-kind-binding
     #[test]
     fn verify_rejects_valid_signature_with_wrong_typ() {
         let (_dir, path) = write_random_key_file();

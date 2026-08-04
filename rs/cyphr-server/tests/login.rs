@@ -573,7 +573,7 @@ async fn login_challenge_flow_issues_valid_token() {
 // ========================================================================
 
 /// A consumed challenge cannot be replayed.
-// docket: signon-replay-bound :: cargo test --manifest-path rs/Cargo.toml --test login
+// docket: signon-replay-bound :: scripts/docket-test login login_rejects_replayed_challenge
 #[tokio::test]
 async fn login_rejects_replayed_challenge() {
     let state = login_state();
@@ -631,7 +631,7 @@ async fn login_rejects_out_of_window_timestamp() {
 // ========================================================================
 
 /// A login for a different audience (the relay attack) is rejected.
-// docket: signon-audience-binding :: cargo test --manifest-path rs/Cargo.toml --test login
+// docket: signon-audience-binding :: scripts/docket-test login login_rejects_mismatched_audience
 #[tokio::test]
 async fn login_rejects_mismatched_audience() {
     let state = login_state();
@@ -704,7 +704,7 @@ async fn login_rejects_missing_principal_claim() {
 /// principal it is active in, but rejected for a different claimed principal
 /// that does not have it -- the server never infers the principal from the
 /// thumbprint.
-// docket: signon-claimed-principal :: cargo test --manifest-path rs/Cargo.toml --test login
+// docket: signon-claimed-principal :: scripts/docket-test signon-claimed-principal
 #[tokio::test]
 async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     let state = login_state();
@@ -894,7 +894,7 @@ async fn login_rejects_deleted_principal() {
 /// built via a real implicit genesis, a real `key/create` for `key_a`, and
 /// a real, separately-signed `key/revoke` self-revoking `key_a` -- all
 /// through the full storage path.
-// docket: signon-key-active-in-principal :: cargo test --manifest-path rs/Cargo.toml --test login
+// docket: signon-key-active-in-principal :: scripts/docket-test signon-key-active-in-principal
 #[tokio::test]
 async fn login_rejects_key_revoked_in_claimed_principal() {
     let state = login_state();

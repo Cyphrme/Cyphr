@@ -934,7 +934,7 @@ async fn death_record_survives_restart_and_reindex() {
 /// refusal is scoped to the revoked key, not the whole principal.
 ///
 /// Behavior: green on both servers (login refusal + key-scoping unchanged).
-// docket: signon-disowned-key :: cargo test --manifest-path rs/Cargo.toml --test naked_revoke
+// docket: signon-disowned-key :: scripts/docket-test signon-disowned-key
 #[tokio::test]
 async fn revoked_key_refused_at_login_sibling_survives() {
     let (state, _dir) = fresh_keyed_state();

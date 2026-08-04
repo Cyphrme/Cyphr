@@ -55,8 +55,13 @@ matched by a prose link to the same id, and that link must use the anchor
 form (`[my-id](#my-id)`) — the bare form docket's own fixtures use is
 rejected by the pre-commit link audit. A claim whose `evaluator` is `test`
 needs a `docket:` marker comment at the test naming the command that runs
-it; commands run from the repository root, so a Rust evaluator needs
-`--manifest-path rs/Cargo.toml`.
+it. A Rust evaluator invokes `scripts/docket-test <target> <name>` rather
+than `cargo test` directly — the wrapper resolves `rs/Cargo.toml`'s path
+regardless of the marker's working directory and always scopes to
+`cyphr-server`, so `--lib` cannot fall through to the whole nine-member
+workspace. Where `<target> <name>` still overflows `rs/.rustfmt.toml`'s
+100-column comment wrap, use `scripts/docket-test <claim-id>` instead — see
+the script's header comment for the id lookup table this falls back to.
 
 docket's checkout is not vendored — its contract is passed by path at
 invocation, so this repository carries no copy that could drift against
