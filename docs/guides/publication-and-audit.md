@@ -268,12 +268,17 @@ Sign over this instead — `note`'s three keys sorted, `tags` untouched:
 ```
 
 **This is the opposite of the rule that governs `/auth/login` and
-`/revoke`,** both of which verify over exactly the bytes they receive. A
-login payload signed and sent as `{alg, now, tmb, typ, pr, challenge}` is
+`/revoke`,** both of which verify over the key order they receive. A login
+payload signed and sent as `{alg, now, tmb, typ, pr, challenge}` is
 accepted; sorted to `{alg, challenge, now, pr, tmb, typ}`, signed sorted
 and sent sorted, it is also accepted. Login only requires that your signer
-and your serialiser agree with each other. Push requires that both agree
-with the sort.
+and your serialiser agree on the order. Push requires that both agree with
+the sort.
+
+It is key order that carries, not the literal bytes. Both paths re-compact
+the payload after parsing it, so whitespace and string escaping are
+normalised away on the way to the check — pretty-print your login payload
+and it still verifies. Reorder its keys and it does not.
 
 If you drive the CLI you will never meet this, because the transaction
 payloads it emits — `{alg, id, now, tmb, typ}` and
@@ -575,9 +580,11 @@ key to one that never appeared in its chain.
 
 Two things, and nothing else:
 
-- **The receipts, byte-exact.** Both `pay` and `sig`, unmodified. Do not
-  re-serialise them into your own storage format and reconstruct them
-  later — the signature covers the bytes.
+- **The receipts, byte-exact.** Both `pay` and `sig`, unmodified. What the
+  signature actually depends on is the order of `pay`'s keys, so a round
+  trip through anything that reorders them — most object-to-record
+  mappings, some databases — destroys it silently. Keeping the bytes is
+  the cheap way to keep the order.
 - **Enough of the server's chain to bind the signing keys.** A receipt
   names its signing key by thumbprint; the chain is what proves that
   thumbprint was the server's at that moment. Two receipts a rotation
@@ -875,7 +882,7 @@ reading them here:
   fetch it back — and a signed receipt attesting the unchanged tip anyway.
 - **No agreement about what a signature covers.** `/push` verifies over
   the payload's recursively key-sorted form and `/auth/login` verifies
-  over the bytes as sent. Two verification paths in one server disagree,
+  over the key order as sent. Two verification paths in one server disagree,
   the divergence is stated nowhere else, and the failure it produces is a
   bare `protocol: invalid signature`.
 - **No offline verifier you can run.** The six-step procedure exists in
