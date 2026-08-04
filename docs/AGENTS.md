@@ -11,6 +11,7 @@ pass lands, calibrate trust as below.
 | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `specs/`                        | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them) |
 | `adr/`                          | Architecture decision records                                                                                                                                                                     |
+| `architecture/`                 | How the system fits together, per critical path. Carries `requirement` claim blocks registered with docket (below); claim ids are `[kebab-id]` headings                                           |
 | `models/`                       | Formal models (self-flagged staleness applies)                                                                                                                                                    |
 | `protocol/`                     | Constraint→test traceability matrix                                                                                                                                                               |
 | `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only                                                                                                                              |
@@ -45,8 +46,17 @@ one genre permitted to carry `requirement` claims — fenced `claim` blocks
 that a Nickel contract validates, checked via docket
 (ssh://git@github.com/axiosoph/docket.git). No other tree is declared: an
 undeclared genre is a slot docket leaves unscanned, not a gap, and each
-tree is declared only once it actually carries a claim. `docs/architecture/`
-does not exist yet; no claim blocks exist anywhere in this repository.
+tree is declared only once it actually carries a claim.
+
+A claim id is declared by a heading whose text is exactly a bracketed
+kebab-case token (`## [my-id]`, at any heading level); a heading with
+trailing prose declares nothing. A `because:`/`depends:` edge must be
+matched by a prose link to the same id, and that link must use the anchor
+form (`[my-id](#my-id)`) — the bare form docket's own fixtures use is
+rejected by the pre-commit link audit. A claim whose `evaluator` is `test`
+needs a `docket:` marker comment at the test naming the command that runs
+it; commands run from the repository root, so a Rust evaluator needs
+`--manifest-path rs/Cargo.toml`.
 
 docket's checkout is not vendored — its contract is passed by path at
 invocation, so this repository carries no copy that could drift against
