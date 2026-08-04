@@ -573,7 +573,7 @@ async fn login_challenge_flow_issues_valid_token() {
 // ========================================================================
 
 /// A consumed challenge cannot be replayed.
-// docket: signon-replay-bound :: scripts/docket-test login login_rejects_replayed_challenge
+// docket: signon-replay-bound :: scripts/docket-test signon-replay-bound
 #[tokio::test]
 async fn login_rejects_replayed_challenge() {
     let state = login_state();
@@ -631,7 +631,7 @@ async fn login_rejects_out_of_window_timestamp() {
 // ========================================================================
 
 /// A login for a different audience (the relay attack) is rejected.
-// docket: signon-audience-binding :: scripts/docket-test login login_rejects_mismatched_audience
+// docket: signon-audience-binding :: scripts/docket-test signon-audience-binding
 #[tokio::test]
 async fn login_rejects_mismatched_audience() {
     let state = login_state();

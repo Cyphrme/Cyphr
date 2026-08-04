@@ -9,34 +9,45 @@
 # cyphr-server's. This wrapper is short enough to fit a marker line with a
 # full test name, and always scopes to `-p cyphr-server`.
 #
-# See .scratch/findings/2026-08-04-signon-brief-marker-width-conflict.md for
-# the measured column budget that ruled out an inline `cargo test` marker.
-#
-# Usage: docket-test <target> <name>
-#        docket-test <claim-id>
+# Usage: docket-test <claim-id>          the marker convention
+#        docket-test <target> <name>     a manual convenience only
+#   <claim-id>  looked up in CLAIMS below to recover <target> and <name>.
+#               This is the ONLY form permitted in a `docket:` marker.
 #   <target>    a file under rs/cyphr-server/tests/<target>.rs, or the
 #               literal `lib` to run cyphr-server's own unit tests
 #               (`cargo test --lib`)
 #   <name>      the test function name (cargo's substring filter)
-#   <claim-id>  looked up in CLAIMS below to recover <target> and <name> --
-#               the escape hatch for a claim whose id and test name are
-#               long enough together that even this short an invocation
-#               still overflows the 100-column wrap (measured, not
-#               assumed: verified against every marker with `treefmt`
-#               before landing). Add an entry here rather than reaching
-#               for a two-line marker, which rustfmt truncates silently.
+#
+# Why the two-arg form is barred from markers, measured rather than
+# assumed: of the seven markers on this surface, only two fit the
+# 100-column comment wrap in the two-arg form. The other five wrapped --
+# and rustfmt's truncated command still ran and still reported `pass`,
+# which is the silent-failure class this wrapper exists to close. The id
+# form is not shorter, it is BOUNDED: `// docket: <id> :: docket-test
+# <id>` is 35 + 2*len(id) characters regardless of how long the Rust test
+# name happens to be, and test names change for reasons that have nothing
+# to do with documentation. Rename a test under the id form and the stale
+# CLAIMS entry names a nonexistent test, which `docket run` reports as
+# exit 4 (Vacuous). Loud beats silent.
+#
+# The two-arg form stays callable because it is what the table expands to
+# and it is useful at a terminal. Its exclusion from markers is enforced
+# by scripts/docket-marker-lint, not by this comment -- an unenforced
+# instruction inside the artifact implementing the rule is exactly the
+# failure this paragraph replaces.
 set -euo pipefail
 
-# claim id -> "target name", for ids that don't fit `docket-test <target>
-# <name>` on one comment line. Keep entries only for ids that actually need
-# it (checked with treefmt) -- most claims should use the two-arg form
-# directly in their marker, which stays self-explaining at the call site.
+# claim id -> "target name". Every claim whose `evaluator` is `test` has
+# exactly one entry here, and every entry names a registered claim;
+# scripts/docket-marker-lint checks both directions.
 declare -A CLAIMS=(
   [signon-honest-refusal]="keyless_matrix keyless_login_and_challenge_share_the_same_rejection"
   [signon-disowned-key]="naked_revoke revoked_key_refused_at_login_sibling_survives"
   [signon-token-kind-binding]="lib verify_rejects_valid_signature_with_wrong_typ"
   [signon-claimed-principal]="login login_binds_key_to_claimed_principal_not_thumbprint"
   [signon-key-active-in-principal]="login login_rejects_key_revoked_in_claimed_principal"
+  [signon-replay-bound]="login login_rejects_replayed_challenge"
+  [signon-audience-binding]="login login_rejects_mismatched_audience"
 )
 
 if [ "$#" -eq 1 ]; then

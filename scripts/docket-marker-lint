@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Check `docket:` evaluator markers against this repository's conventions.
+
+Three checks, all mechanical:
+
+  width  Every marker line fits rs/.rustfmt.toml's 100-column comment
+         wrap. This is the check with teeth: a marker rustfmt wraps is
+         truncated at the fold, the truncated command still runs, and
+         `docket run` still reports `pass`. An overflow is a silent
+         failure rather than a loud one, so it is caught here instead.
+
+  shape  Every marker's command is `scripts/docket-test <claim-id>` and
+         nothing else. The wrapper's two-arg form stays callable by hand
+         but is barred from markers, because its width depends on how
+         long a Rust test name happens to be -- owned by the test suite,
+         and changing for reasons unrelated to documentation. This check
+         is what makes that rule enforceable rather than advisory.
+
+  table  Every `evaluator: test` claim has exactly one CLAIMS entry in
+         scripts/docket-test, and every CLAIMS entry names a registered
+         claim. Catches drift in both directions as documents and tests
+         are added and removed.
+
+Run from anywhere; paths resolve against the repository root. Exits 0
+when clean and 1 on any violation, listing every one rather than the
+first.
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_COLUMNS = 100
+
+MARKER = re.compile(r"docket:\s*(?P<id>[a-z0-9][a-z0-9-]*)(?P<exempt>!?)\s*::\s*(?P<cmd>.+?)\s*$")
+MARKER_SHAPE = re.compile(r"^scripts/docket-test\s+[a-z0-9][a-z0-9-]*$")
+CLAIM_HEADING = re.compile(r"^#+\s*\[(?P<id>[a-z0-9][a-z0-9-]*)\]\s*$")
+CLAIMS_ENTRY = re.compile(r"^\s*\[(?P<id>[a-z0-9][a-z0-9-]*)\]=")
+GENRE_PATH = re.compile(r'path\s*=\s*"(?P<glob>[^"]+)"')
+
+
+def repo_root() -> Path:
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(out.stdout.strip())
+
+
+def tracked_files(root: Path) -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+    )
+    return out.stdout.splitlines()
+
+
+def genre_globs(root: Path) -> list[str]:
+    """Read the scanned trees out of docket.ncl rather than hardcoding them,
+    so adding a genre does not silently narrow this check."""
+    text = (root / "docket.ncl").read_text()
+    return [m.group("glob") for m in GENRE_PATH.finditer(text)]
+
+
+def matches_genre(path: str, globs: list[str]) -> bool:
+    # `**` must span directory separators, which fnmatch does not do.
+    for glob in globs:
+        pattern = re.escape(glob).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        if re.fullmatch(pattern, path):
+            return True
+    return False
+
+
+def registered_test_claims(root: Path, files: list[str], globs: list[str]) -> set[str]:
+    """Claim ids whose `evaluator` is `test`, read from the fenced claim
+    block following each bracketed heading."""
+    found: set[str] = set()
+    for rel in files:
+        if not rel.endswith(".md") or not matches_genre(rel, globs):
+            continue
+        lines = (root / rel).read_text().splitlines()
+        current = None
+        in_block = False
+        for line in lines:
+            heading = CLAIM_HEADING.match(line)
+            if heading:
+                current = heading.group("id")
+                in_block = False
+                continue
+            if line.startswith("```claim"):
+                in_block = True
+                continue
+            if in_block and line.startswith("```"):
+                in_block = False
+                current = None
+                continue
+            if in_block and current and re.match(r"\s*evaluator:\s*test\s*$", line):
+                found.add(current)
+    return found
+
+
+def claims_table(root: Path) -> set[str]:
+    text = (root / "scripts/docket-test").read_text()
+    body = text.split("declare -A CLAIMS=(", 1)[1].split("\n)", 1)[0]
+    return {m.group("id") for line in body.splitlines() if (m := CLAIMS_ENTRY.match(line))}
+
+
+def main() -> int:
+    root = repo_root()
+    files = tracked_files(root)
+    globs = genre_globs(root)
+    problems: list[str] = []
+
+    marker_ids: set[str] = set()
+    for rel in files:
+        path = root / rel
+        try:
+            lines = path.read_text().splitlines()
+        except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+            continue
+        for n, line in enumerate(lines, 1):
+            if "docket:" not in line:
+                continue
+            m = MARKER.search(line)
+            if not m:
+                continue
+            marker_ids.add(m.group("id"))
+            if len(line) > MAX_COLUMNS:
+                problems.append(
+                    f"{rel}:{n}: width {len(line)} > {MAX_COLUMNS} -- rustfmt will "
+                    f"truncate this marker and the truncated command still reports pass"
+                )
+            if not MARKER_SHAPE.match(m.group("cmd")):
+                problems.append(
+                    f"{rel}:{n}: shape -- marker command must be "
+                    f"`scripts/docket-test <claim-id>`, got `{m.group('cmd')}`"
+                )
+
+    claims = claims_table(root)
+    registered = registered_test_claims(root, files, globs)
+
+    for claim in sorted(registered - claims):
+        problems.append(
+            f"scripts/docket-test: claim `{claim}` declares `evaluator: test` "
+            f"but has no CLAIMS entry"
+        )
+    for claim in sorted(claims - registered):
+        problems.append(
+            f"scripts/docket-test: CLAIMS entry `{claim}` names no claim "
+            f"registered with `evaluator: test`"
+        )
+
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        print(f"\n{len(problems)} marker violation(s)", file=sys.stderr)
+        return 1
+
+    print(
+        f"docket markers clean: {len(marker_ids)} marker(s), "
+        f"{len(claims)} CLAIMS entries, {len(registered)} test-evaluator claims"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
