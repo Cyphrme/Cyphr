@@ -214,8 +214,14 @@ naturally write them:
 ```
 
 ```
-422 {"error":"protocol: invalid signature"}
+422  payload.error: "protocol: invalid signature"
 ```
+
+Every error the server returns arrives in the same envelope the successful
+responses use — `payload` carrying an `error` string and a `now`, and
+`statement` unsigned. Only the message differs, so this guide quotes the
+message and gives the path to it; the `404` and `500` bodies further down
+show the shape in full.
 
 The same fields, signed over the alphabetically sorted form:
 
@@ -645,12 +651,8 @@ curl -s -X POST http://127.0.0.1:4101/push \
 A single server does refuse the second branch. Send the other commit to
 the server that already took one and it is a `409`:
 
-```json
-{
-  "v": 1,
-  "payload": { "error": "protocol: state root mismatch" },
-  "statement": { "kind": "unsigned" }
-}
+```
+409  payload.error: "protocol: state root mismatch"
 ```
 
 That refusal is local bookkeeping, not fork detection. The server rejects
@@ -849,7 +851,7 @@ the other. That much works. Building a third commit on the branch server
 
 ```
 4101  201
-4100  409  {"error":"protocol: state root mismatch"}
+4100  409  payload.error: "protocol: state root mismatch"
 ```
 
 The chosen branch advances and the abandoned one is stuck, which is the
