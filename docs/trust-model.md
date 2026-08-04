@@ -5,11 +5,29 @@ a claim — the three axes a claim is measured on, the cells those axes produce,
 kinds that cure a failing axis, and the cures available when a claim stops being true as
 the record grows. Every term those documents borrow from the model is defined here.
 
-The vocabulary comes from a formal trust taxonomy developed outside this project: the
-Factoring Trust model, built in a separate repository (`nrdxp/factoring-trust`) with its
-central results mechanized in Lean. That work is not part of this repository, so nothing
-below defers to it — the definitions stand on their own, and where this project extends
-the model's vocabulary rather than restating it, the text says so.
+The vocabulary comes from a formal trust taxonomy developed in a separate repository:
+
+> Timothy DeHerrera, _Factoring Trust: A Machine-Checked Characterization of Where
+> Verification Must End_, Cyphrpunk LLC, 2026.
+> <https://github.com/nrdxp/factoring-trust>
+
+That work is not part of this repository, but it is public, so every attribution below can
+be checked against it. Its author is the same person as this repository's: a separate
+repository does not mean an arm's-length one.
+
+**What stands on its own here, and what does not.** The definitions below are
+self-contained — a reader who never opens the source can type a claim with them. The
+_results_ are not. That exactly three axes exhaust the failure modes, that two of the eight
+nominal cells are empty, and that a non-monotone claim admits no offline, non-expiring,
+present-tense certificate are the source's theorems, and this document defers to them
+rather than re-deriving them. Where the text extends the model's vocabulary rather than
+restating it, it says so.
+
+**How a claim made here can be checked.** The source's Lean mechanization is frozen under
+its `rc1` tag; its written paper is a work-in-progress draft that is not. So a mechanized
+result is cited by its Lean theorem name, which is stable, and a point of prose is quoted
+rather than cited by section — a section number in an unfrozen draft is the same unstable
+handle this repository refuses for `SPEC.md`.
 
 **Scope.** This is a lens for reasoning about what a Cyphr deployment trusts. It is not
 part of the Cyphr protocol and not a proposal to one; `SPEC.md` is the normative source
