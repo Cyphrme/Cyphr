@@ -269,6 +269,11 @@ names the principal, and the server checks that this key is active in _that_
 principal specifically. Your client therefore has to remember which principal
 it is signing in as. Store it next to the key.
 
+`cyphr key generate` left your test key in `./cyphr-keys.json`, keyed by
+thumbprint: `{"<tmb>": {"alg", "pub_key", "prv_key"}}`, both key fields
+base64url without padding over raw bytes. Base64url-decode them into the
+`prv`/`pub` the signing code below expects.
+
 The signing code, in full:
 
 ```js
@@ -441,7 +446,8 @@ not a value derived from the key material. On a server with open admission,
 that namespace is open to anyone. If your deployment cares — and if you are
 using someone else's Cyphr server, it should — run the server yourself with
 `[admission] policy = "invite"` or `"pow"`, or scope your account table to the
-specific server that vouched for the principal.
+specific server that vouched for the principal. `invite` also needs a
+`tokens_path` set alongside it; the policy alone will not parse.
 
 ## The rejections you have to handle
 
@@ -483,6 +489,13 @@ This is the ordinary case and the one to design for. The user had a backup key
 intact. Their client signs a `key/create` transaction with the surviving key,
 adding the new one. The principal is the same principal. `pr` does not change.
 Your account row does not change.
+
+The same surviving key can also push a `key/delete` naming the lost device's
+key, removing it from the principal outright; afterward it fails login
+exactly like a key the server has never seen. This exists at the protocol
+level — the CLI does not expose it yet (`cyphr key` has generate, add,
+revoke, and list, no delete), so pushing one means building the Coz payload
+by hand, the same way the naked-revoke request below does.
 
 But your Cyphr server does not know yet. It reconstructs each principal from
 the commits it has been given, so until the client pushes that new commit, the
@@ -559,7 +572,11 @@ function nakedRevoke({ prv, pub }) {
 }
 ```
 
+Save that as `revoke.js`, ending with `console.log(nakedRevoke({ prv, pub }))`,
+then run it and send the body straight through:
+
 ```sh
+REVOKE_BODY=$(node revoke.js)
 curl -s -X POST http://127.0.0.1:3999/revoke \
   -H 'content-type: application/json' -d "$REVOKE_BODY"
 ```
@@ -582,9 +599,10 @@ or principal state is involved:
 -> 401 {"error":"signing key was naked-revoked"}
 ```
 
-It is signed by the dying key itself, so the user needs to still hold it — this
-is for "my laptop was stolen and I have the backup", not for a key that is
-simply gone.
+It is signed by the dying key itself, so what you need is a copy of that
+exact key — the stolen device's own key, saved somewhere before it was
+stolen — not a different backup key. This is for "I still have that exact
+key," not for a key that is simply gone.
 
 **One sharp limitation.** The server only accepts this for a key it has
 indexed, which in practice means a key introduced by a `key/create`
@@ -662,11 +680,10 @@ them here:
   ES256 for principals you create with the CLI. The server itself handles
   Ed25519 keys fine, and its own signing key in the examples above is Ed25519.
 - **`cyphr key revoke` only self-revokes.** It requires `--key` to equal
-  `--signer`, so you cannot use a surviving key to revoke a lost one from the
-  command line. For the lost-device case — where the whole point is that you
-  no longer hold the key you want to kill — this is the one operation you most
-  need and cannot perform with shipped tooling. The protocol permits it; the
-  CLI does not implement it.
+  `--signer`, and that is not a CLI shortcoming — non-self revoke is refused
+  at the protocol level, full stop. Removing a key you no longer hold is
+  `key/delete`'s job, not revoke's, and the CLI has no `delete` subcommand
+  (`cyphr key` has generate, add, revoke, and list).
 - **`POST /revoke` cannot kill a genesis key**, as above.
 - **No permissions.** Every token carries `["read","write"]`.
 - **No token revocation.** Expiry only, 15 minutes.
