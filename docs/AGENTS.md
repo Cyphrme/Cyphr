@@ -41,12 +41,15 @@ sites; Netlify builds on push.
 
 ## docket — claim registration (`docket.ncl`)
 
-The repository root's `docket.ncl` registers `docs/architecture/**` as the
-one genre permitted to carry `requirement` claims — fenced `claim` blocks
-that a Nickel contract validates, checked via docket
-(ssh://git@github.com/axiosoph/docket.git). No other tree is declared: an
-undeclared genre is a slot docket leaves unscanned, not a gap, and each
-tree is declared only once it actually carries a claim.
+The repository root's `docket.ncl` declares two genres, checked via docket
+(ssh://git@github.com/axiosoph/docket.git). `docs/architecture/**` is the
+one tree permitted to carry `requirement` claims — fenced `claim` blocks
+that a Nickel contract validates. `docs/trust-model.md` is declared with an
+empty `kinds`, which bars claim blocks there outright; that is the second
+reason to declare a tree, and it is what gives "this document must not read
+as protocol" a real evaluator, via docket's `normative-prose` check. So a
+tree is declared either because it carries claims or because it must never
+carry one. An undeclared tree is a slot docket leaves unscanned, not a gap.
 
 A claim id is declared by a heading whose text is exactly a bracketed
 kebab-case token (`## [my-id]`, at any heading level); a heading with
@@ -55,13 +58,24 @@ matched by a prose link to the same id, and that link must use the anchor
 form (`[my-id](#my-id)`) — the bare form docket's own fixtures use is
 rejected by the pre-commit link audit. A claim whose `evaluator` is `test`
 needs a `docket:` marker comment at the test naming the command that runs
-it. A Rust evaluator invokes `scripts/docket-test <target> <name>` rather
-than `cargo test` directly — the wrapper resolves `rs/Cargo.toml`'s path
-regardless of the marker's working directory and always scopes to
-`cyphr-server`, so `--lib` cannot fall through to the whole nine-member
-workspace. Where `<target> <name>` still overflows `rs/.rustfmt.toml`'s
-100-column comment wrap, use `scripts/docket-test <claim-id>` instead — see
-the script's header comment for the id lookup table this falls back to.
+it. A Rust evaluator invokes `scripts/docket-test <claim-id>` — always the
+id form, never `<target> <name>`, which stays callable by hand but is
+barred from markers and rejected by `scripts/docket-marker-lint`. The
+wrapper resolves `rs/Cargo.toml`'s path regardless of the marker's working
+directory and always scopes to `cyphr-server`, so `--lib` cannot fall
+through to the whole nine-member workspace; its header comment holds the id
+lookup table.
+
+**The claim-id budget.** A marker is
+`// docket: <id> :: scripts/docket-test <id>`, which is 35 + 2×len(id)
+characters against `rs/.rustfmt.toml`'s 100-column comment wrap. **A claim
+id must therefore be at most 32 characters, or 30 where the marker is
+indented** — `signon-key-active-in-principal` is exactly 30. This pushes
+against corpus-wide uniqueness: claim ids are unique across the whole
+corpus, and further documents will want qualifying prefixes (`pathb-`,
+`pathc-`) spending the same 30 characters. Both constraints are mechanical,
+so a document that cannot satisfy both fails loudly — a docket error or a
+lint error — rather than silently truncating a marker.
 
 docket's checkout is not vendored — its contract is passed by path at
 invocation, so this repository carries no copy that could drift against
