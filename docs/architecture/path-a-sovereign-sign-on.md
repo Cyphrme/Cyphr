@@ -269,8 +269,11 @@ trusted party at all. Every row carries a requirement or a note saying why it ha
 
 **Rows 2 and 3 are [Row-1 claims](../trust-model.md#row-1-claims)**: determined,
 certifiable and monotone, discharged by running something rather than by trusting someone.
-Row 1 is not one — it sits `below the floor`, before the axes apply — but all three name no
-party.
+Row 1 is not one — it sits `below the floor`, where "the message carries everything the
+check needs" and there is no trust residue to type — but all three name no party. Row 1
+carries no requirement of its own, and deliberately: verifying a signature over the bytes
+presented is the precondition every path shares, and what this document has to say about it
+is that satisfying it is not enough — which is what the exchange rows say.
 
 **Row 2 is undischarged, and that is a defect rather than a design choice.** The storage
 engine holds both the derived genesis and the identifier a record is filed under at the
