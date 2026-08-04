@@ -267,10 +267,17 @@ party filling that role here. Mapping a deployment's participants onto the model
 categories is what the model is for rather than a reading imposed on it: every cell of its
 table names the anchor a claim rests on and the minimal cure that discharges it.
 
-The distinction from a witness is load-bearing: `SPEC.md` §2.2.16 defines a witness as a
-client that keeps _a_ copy of an external principal's state. One copy faces the
-monotonicity failure like any other single holder; what cures it is a party holding more
-than one.
+The distinction from a witness is load-bearing, and it does not turn on the singular
+article. `SPEC.md` defines a witness as "a client that keeps a copy of an external
+principal's state and communicates state through gossip" — and gossip is one of the two
+liveness-holder instances the model names, so the definition does reach a named cure.
+What the model names, though, is a collective: a witness _quorum_, or a gossip
+_protocol_. A participant in a gossip protocol is not the protocol. A single gossiping
+witness can receive information that leaves its view less stale, but it cannot detect
+that its own view _is_ stale — detecting staleness means comparing two views, and the
+comparison is a property of the protocol rather than of any client running it. So a
+witness as the specification defines it is a participant in a cure rather than an
+instance of one; the watcher is the party that holds the comparison.
 
 ## Curing a non-monotone claim
 
