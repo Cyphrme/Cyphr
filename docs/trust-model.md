@@ -155,7 +155,8 @@ one.
 
 This repository's claim tables carry two labels the axes do not produce. They mark claims
 that fall outside the taxonomy, and they are this project's labels rather than the
-model's.
+model's. A claim carrying one has no axis outcomes to report: its determination,
+certifiability, and monotonicity columns are each written `—`.
 
 **below the floor** — the claim is settled by a computation over the artifact presented,
 before any question about the record arises. Verifying a signature over a message is the
@@ -163,10 +164,24 @@ standard case: the message carries everything the check needs. The axes ask how 
 depends on the record and on unseen context; a claim with neither dependence sits below
 where the taxonomy starts, and there is no trust residue to type.
 
-**elective** — the claim's truth is fixed by a party's own choice rather than by any state
+The source has a **floor** too, and it means something else: the two physical residuals
+every cell already stands on, a commitment's binding and a verifier's fidelity. Signature
+verification lands at both floors, for different reasons — below this project's because
+the check needs nothing but the message, at the source's because the scheme's forgery
+resistance is granted rather than proved. The shared word is a collision, not an
+agreement.
+
+**decision** — the claim's truth is fixed by a party's own choice rather than by any state
 of the world. Whether a principal is allowed to perform some operation is the relying
-party's policy: nothing to determine, certify, or preserve under growth, and nobody
+party's own rule: nothing to determine, certify, or preserve under growth, and nobody
 trusted for it beyond the party making the decision.
+
+This label is not the source's **elective**, and the two are easy to conflate. The source
+reserves that word for trust a verifier could discharge but declines to: "the trichotomy
+characterizes trust that is _forced_ — no scheme exists, at any stratum, for the claim in
+question. It says nothing about _elective_ trust, where a verifier could check but chooses
+reliance for cost or convenience." A `decision` claim is neither forced nor elective,
+because no scheme is being declined — there is no fact of the matter to check.
 
 ## Party kinds
 
