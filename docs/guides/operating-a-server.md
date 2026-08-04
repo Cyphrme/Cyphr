@@ -277,6 +277,15 @@ login with a `500`. Configure both or neither.
 Pick the host your users' clients actually address — `login.example.com`,
 not `Example Inc`.
 
+**Turning on login turns on one permission level, not a model.** Every
+bearer token issued at login carries `["read", "write"]`, unconditionally --
+there is no narrower grant for a client that only needs to read. In
+practice this gates little: `POST /push` is the only route that checks a
+presented token at all, and only to confirm it names the principal being
+written to. Every other route, reads included, takes no token. Setting
+`--audience` is a decision to start issuing tokens, not a decision about
+what those tokens will be trusted to do.
+
 ## What lives in the data directory
 
 After a keyed server has run once:
@@ -300,6 +309,13 @@ and it decides your backup policy:
 | `observations/`         | No                            | Every key declared dead comes back to life. |
 | `admission/`            | No                            | Every spent invite token becomes reusable.  |
 | `server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
+
+**The invite tokens file belongs in your backup plan even though it is not
+in this table.** Under `policy = "invite"` it does not have to live inside
+the data directory -- the example above uses `./invites.txt` -- and it is
+not rebuildable. Lose it and every outstanding, unspent invite is dead; the
+`data/admission/` spent-set backs up the tokens already used, not the ones
+still good.
 
 **`observations/` is separate precisely so a rebuild cannot erase it.** A
 key declared dead by its holder is not recorded on anyone's chain — a naked
@@ -353,9 +369,15 @@ jq -n --arg pg "SHA-512:$TMB" --arg pub "$PUB" --arg tmb "$TMB" \
   > data/server-principal.json
 ```
 
-That restores the original PG and the server starts. Back the file up
-anyway — this reconstruction leans on the genesis key still being the
-current key, which stops being true after a rotation.
+That restores the original PG and the server starts, on one condition: the
+index already has this principal's tip. If you are restoring from a
+blobs-only backup, run `rebuild-index` first -- starting with a stale or
+empty index makes the sidecar load fail with a different error,
+`server principal genesis record does not match the configured key or its
+chain`, because the server cannot confirm the chain it just described is
+actually there. Back the sidecar file up anyway — this reconstruction also
+leans on the genesis key still being the current key, which stops being
+true after a rotation.
 
 **Back up the signing key somewhere other than the data directory.** It is
 the only irreplaceable thing you hold: with it and an empty disk you can
@@ -495,7 +517,9 @@ The work binds to one principal identifier and one UTC hour, so a solution
 cannot be amortized: the same nonce presented for a different principal is
 refused. Solutions from the previous hour still verify, so a client that
 solves just before the boundary is not punished; anything older is stale.
-The server holds no state for any of this and runs one hash per check.
+The server holds no state for any of this, and a check costs up to two
+hashes -- one for the current hour and, since a solution from the previous
+hour still verifies, one for that hour too.
 
 **But no shipped client can compute that nonce.** The preimage — a domain
 tag, the principal id length-prefixed, then the hour and nonce as
@@ -535,7 +559,9 @@ peer address, which a client cannot choose or spoof at the TCP layer:
 }
 ```
 
-`429`, with no `Retry-After` and no indication of which bucket fired.
+`429`, with no `Retry-After` and no indication of which bucket fired -- the
+`per_second`/`burst` pair above is the only knob either side has; there is
+nothing computed for a client to back off against.
 
 There is deliberately no per-principal rate bucket. Keying a rate limit on
 the principal named in an unverified push body would let anyone throttle a
@@ -543,11 +569,14 @@ victim by naming them in a flood of garbage — the name is attacker-chosen
 and unauthenticated at the point a fence would read it. The peer address
 cannot be chosen that way, so that is what the write path is keyed on.
 
-The limiter's own memory is bounded at 100,000 resident keys, evicting the
-coldest when full. An evicted key gets a fresh bucket on its next request,
-which only ever loosens; a key being actively hammered is by definition not
-cold, so a flood of distinct addresses cannot wash out the limiter entry for
-the address doing the flooding.
+Each bucket's own memory is bounded at 100,000 resident keys, evicting the
+coldest when full -- and that ceiling is per bucket. There are five buckets
+(`per_ip`, `read`, `push`, `login`, `revoke`), each tracking its own set of
+addresses, so size for five times that, not one. An evicted key gets a
+fresh bucket on its next request, which only ever loosens; a key being
+actively hammered is by definition not cold, so a flood of distinct
+addresses cannot wash out the limiter entry for the address doing the
+flooding.
 
 **Size**, one cap for every route:
 
@@ -589,6 +618,23 @@ growth, it does not enforce an exact ceiling.
 requests against a server with a burst of one — four of them refused —
 added zero lines. Budget for that when you plan monitoring; it is covered
 below.
+
+## TLS and reverse proxies
+
+There is no TLS in the server itself -- no certificate configuration, and
+`axum::serve` runs on a bare `TcpListener`. A real deployment terminates TLS
+in front of it, in nginx, Caddy, an ALB, or similar, and forwards plain HTTP
+to `cyphr-server`.
+
+The server does not read `X-Forwarded-For` or any other proxy header. Every
+bucket in the rate table above is keyed on the connection's peer address,
+and behind a proxy that address is the proxy's, not the client's. The
+moment TLS terminates in front of it, all five buckets collapse onto that
+one address: the default `per_ip` 100/s stops bounding one client and starts
+bounding everyone behind the proxy collectively, and the resulting `429`s
+are invisible at the default log level, as covered above. Size the fences
+for the proxy's aggregate traffic, not for a single client, and turn on
+request logging before you rely on them.
 
 ## Witness mode
 
@@ -856,8 +902,12 @@ failure and its handler's own log lines join up.
 Use `GET /server` as a liveness probe. It reads memory only, writes nothing,
 touches no store, and its `tier` doubles as a check that the server came up
 in the configuration you intended — a probe that starts answering
-`repository` on a server you deployed as an attestor has told you the
-signing key did not load.
+`repository` on a server you deployed as an attestor is telling you that
+`signing_key_path` was never _seen_, not that it failed to load: a key file
+that exists but is broken takes the whole server down at startup, so a live
+server missing its key means the setting itself never reached the process --
+the TOML wasn't in the working directory the server started from, or the
+environment variable was left unset.
 
 For anything beyond liveness you are counting log lines. The signals worth
 extracting, given what is and is not emitted:
@@ -893,10 +943,11 @@ directory is locked exclusively, a rolling restart of two processes against
 one directory is not possible — the second refuses to start. A blue-green
 deployment needs two data directories and a resync, not a shared one.
 
-Two pieces of state do not survive a restart, both by design:
+Three things interact with a restart in ways worth planning for:
 
 - **Login challenges** are in-memory and per-process. A client mid-login when you restart gets `login challenge is unknown, already used, or expired` and needs a fresh challenge. Harmless — clients retry — but it is a burst of login failures at every restart.
 - **Witness registrations** (`POST /witness/register`) are in-memory. Every witness registered for push fanout is forgotten on restart and must register again. If you depend on fanout, that is a re-registration step in your restart procedure, not something the server recovers on its own.
+- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart, the same as the two hazards above.
 
 `rebuild-index` is the one maintenance command that exists. It reconstructs
 `index/` entirely from `blobs/`; use it after restoring a partial backup, or
@@ -931,8 +982,9 @@ any single user's contribution, and at its default of a million commits it
 is not a storage plan.
 
 The one hard number the server enforces on itself is the rate limiter's
-100,000 resident keys. Everything else — memory per principal, disk per
-commit, throughput per core — is unmeasured.
+per-bucket ceiling of 100,000 resident keys -- five buckets, so 500,000
+resident keys in the worst case, not 100,000. Everything else — memory per
+principal, disk per commit, throughput per core — is unmeasured.
 
 ## What is not there yet
 
