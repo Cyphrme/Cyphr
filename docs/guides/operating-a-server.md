@@ -657,9 +657,11 @@ and behind a proxy that address is the proxy's, not the client's. The
 moment TLS terminates in front of it, all five buckets collapse onto that
 one address: the default `per_ip` 100/s stops bounding one client and starts
 bounding everyone behind the proxy collectively, and the resulting `429`s
-are invisible at the default log level, as covered above. Size the fences
-for the proxy's aggregate traffic, not for a single client, and turn on
-request logging before you rely on them.
+are invisible to request logging at any level, as covered above -- no
+`RUST_LOG` setting recovers them. Size the fences for the proxy's aggregate
+traffic, not for a single client, and count them at the proxy: it is the
+one component in front of the server that actually sees the status codes
+returned.
 
 ## Witness mode
 
