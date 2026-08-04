@@ -217,11 +217,10 @@ naturally write them:
 422  payload.error: "protocol: invalid signature"
 ```
 
-Every error the server returns arrives in the same envelope the successful
-responses use — `payload` carrying an `error` string and a `now`, and
-`statement` unsigned. Only the message differs, so this guide quotes the
-message and gives the path to it; the `404` and `500` bodies further down
-show the shape in full.
+Every error arrives in the envelope every response uses: the message and a
+`now` under `payload`, and an unsigned `statement`. Only the message
+differs between them, so this guide quotes the message with the path to
+it; the `404` and `500` bodies further down show one in full.
 
 The same fields, signed over the alphabetically sorted form:
 
@@ -556,12 +555,12 @@ single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
 **Steps 4 and 5 have no portable implementation, and what blocks them is
-getting the chain in, not replaying it.** Replay ships: `cyphr tx verify
---identity=<pr>` loads a principal out of a local store, replays every
-commit through Cyphr's own validation — each signature checked against the
-keys active at that point — and compares the principal root it derives
-with the one the store recorded. That is step 4, running today, against a
-chain that is already local.
+getting the chain in, not replaying it.** Replay ships.
+`cyphr tx verify --identity=<pr>` loads a principal out of a local store,
+replays every commit through Cyphr's own validation — each signature
+checked against the keys active at that point — and compares the principal
+root it derives with the one the store recorded. That is step 4, running
+today, against a chain that is already local.
 
 Getting a server's chain to be local is the part with no route. Converting
 the server's `/patch` response into the shape `cyphr import` reads, with
@@ -574,9 +573,9 @@ error: cannot determine genesis keys from storage
 `import` has two ways to find a genesis key — your local keystore, or key
 material embedded in the chain's first commit — and a server's chain
 offers neither, the same gap that breaks its own tip report. There is no
-flag that feeds a genesis key in. And `import`
-does not round-trip `export` either — `cyphr export`'s own output for an
-ordinary two-key principal, imported into an empty store, gets
+flag that feeds a genesis key in. And `import` does not round-trip
+`export` either — `cyphr export`'s own output for an ordinary two-key
+principal, imported into an empty store, gets
 `error: protocol error: duplicate key`.
 
 So a watcher today has two honest options. Link `cyphr` and
@@ -751,16 +750,6 @@ function checkEquivocation(a, aPub, b, bPub) {
 }
 ```
 
-Compare the roots one named field at a time. A whole-object comparison —
-`JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)` — is
-sensitive to the order the keys happen to sit in, so two honest reports
-that serialise `roots` differently come out `Proven`: an accusation
-against a server that did nothing. The server's own predicate compares
-four separately parsed values, which no serialisation order can disturb.
-`roots.cr` is an empty string on a principal with no data commit yet, and
-the `??` keeps an absent `cr` from reading as a difference against an
-empty one.
-
 `aPub` and `bPub` are the public keys those two receipts were signed with,
 established the way the previous section describes — from a replay of the
 server's chain if you did steps 4 and 5, or from `GET /server`'s `pub` if
@@ -784,6 +773,16 @@ differ. A server's identity is its chain, not any single key, so two
 receipts either side of a key rotation are still two statements by the
 same server. Passing one key twice is the ordinary case, not the general
 one.
+
+**Compare the roots one named field at a time.** A whole-object
+comparison — `JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)`
+— is sensitive to the order the keys happen to sit in, so two honest
+reports that serialise `roots` differently come out `Proven`: an
+accusation against a server that did nothing. The server's own predicate
+compares four separately parsed values, which no serialisation order can
+disturb. `roots.cr` is an empty string on a principal with no data commit
+yet, and the `??` keeps an absent `cr` from reading as a difference
+against an empty one.
 
 Two comparisons in that sketch are still looser than the version inside
 the server, and they fail in opposite directions. The server parses
@@ -894,16 +893,17 @@ reading them here:
   fetch it back — and a signed receipt attesting the unchanged tip anyway.
 - **No agreement about what a signature covers.** `/push` verifies over
   the payload's recursively key-sorted form and `/auth/login` verifies
-  over the key order as sent. Two verification paths in one server disagree,
-  the divergence is stated nowhere else, and the failure it produces is a
-  bare `protocol: invalid signature`.
-- **No way to get a server's chain into the verifier that ships.** `cyphr
-tx verify` replays a local principal and re-derives its root, so the
-  replay half is real; what is missing is the path in. `cyphr import`
-  cannot ingest a server's chain (`cannot determine genesis keys from
-storage`) and cannot even re-import `cyphr export`'s own output
-  (`protocol error: duplicate key`). The six steps end to end exist in
-  full only as an integration test.
+  over the key order as sent. Two verification paths in one server
+  disagree, the divergence is stated nowhere else, and the failure it
+  produces is a bare `protocol: invalid signature`.
+- **No way to get a server's chain into the verifier that ships.**
+  `cyphr tx verify` replays a local principal and re-derives its root, so
+  the replay half is real; what is missing is the path in. `cyphr import`
+  cannot ingest a server's chain — it fails with
+  `cannot determine genesis keys from storage` — and cannot even
+  re-import `cyphr export`'s own output, which fails with
+  `protocol error: duplicate key`. The six steps end to end exist in full
+  only as an integration test.
 - **No reachable equivocation checking.** The predicate, the all-pairs
   sweep, and the evidence formatter are implemented and tested in
   `cyphr-server`'s library, with no route, no command, and no caller
