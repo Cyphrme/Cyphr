@@ -185,29 +185,57 @@ because no scheme is being declined — there is no fact of the matter to check.
 
 ## Party kinds
 
-When an axis fails, the model names the kind of party whose admission cures it. Two kinds
-appear in this repository's documents. A participant trusted for nothing carries neither —
-its claims are discharged by an evaluator instead.
+When an axis fails, the model names the kind of party whose admission cures it. That name
+is the axis's **cure name**: what the model calls the party, as distinct from any role
+name a Cyphr specification gives a component. There are three, one per axis. A participant
+trusted for nothing carries none of them — its claims are discharged by an evaluator
+instead.
 
-**attestor** — cures a determination failure. Its word cannot be reproduced: no check
+**attestor** — cures a determination failure (T1). Its word cannot be reproduced: no check
 anyone runs would arrive at the same answer independently, which is what makes it a
-trusted party rather than an input.
+trusted party rather than an input. The source's umbrella term for this party kind is
+**witness of history**, with "an admitted signer or attestor" as its instances.
 
-This repository uses "attestor" in that one sense. Two others circulate and neither is
-meant here. This repository's own server specifications use `attestor` for a keyed,
-bootstrapped server tier that signs receipts (`docs/specs/server-identity.md`,
-`docs/specs/receipts.md`). The industry sense (RATS, TPM, SPIFFE) means evidence a system
-produces about itself, which _is_ reproducible and is therefore the exact inverse of the
-sense used here.
+The name `attestor` is overloaded, and the collisions are near rather than distant. This
+repository's own server specifications use `attestor` for a keyed, bootstrapped server
+tier that signs receipts (`docs/specs/server-identity.md`, `docs/specs/receipts.md`) — a
+role name, not a cure name. The industry sense (RATS, TPM, SPIFFE) means evidence a system
+produces about itself, and that sense is not the opposite of the cure name: those
+frameworks address the _same_ failure. The source names them for exactly that reason,
+observing that "provenance and attestation frameworks exist precisely because genuineness
+is not recoverable from an artifact's bytes alone." What differs is the means. Industry
+attestation produces evidence another party can re-run; the cure-name attestor's word
+cannot be re-run, and that is what makes it trust rather than evidence. Two adjacent
+things doing similar work under one word are harder to keep apart than two opposite ones,
+which is why this collision is the dangerous kind.
 
-**watcher** — cures a monotonicity failure by holding more than one view of the same
-subject over time. A point observation cures nothing, no matter who signs it, because
-staleness is precisely what a single view cannot detect in itself.
+**voucher** — cures a certifiability failure (T2) with "an admitted judgment" standing in
+for a check no procedure can perform; the alternative is restricting the claim to a
+decidable subclass. No claim in this repository's documents carries this cure today. It is
+defined here because the model's inventory of cure parties is three rather than two, and
+because a claim that an artifact's behaviour agrees with its source sits in cell 3 and
+will need it.
+
+This repository reserves **vouch** and **corroboration** for two species of _evidence_,
+and the source draws the same line: "A corroboration is an admitted party's
+re-verification of an artifact against its own committed content — a check anyone else
+could re-run. A vouch is an admitted party's keyed judgment binding the artifact to the
+principal it names — testimony, which no one can re-run." A _voucher_ is a party kind and
+a _vouch_ is an evidence species; the shared root is not a shared referent.
+
+**watcher** — cures a monotonicity failure (T3) by holding more than one view of the same
+subject over time. A point observation cures nothing, no matter who signs it, and the
+source says why: divergence between two views, once it exists, is permanent, so
+_equivocation_ is affirmable — evidence of it endures once obtained — while _honesty_ is
+only refutable, falsifiable at the next check and never provable forever. A single view
+obtains neither.
 
 The model's own name for the watcher's role is **liveness holder**, and it offers witness
-quorums and gossip protocols as instances. "Watcher" is this repository's name for the
-party filling that role here, and the mapping from this system's participants onto the
-model's cure categories is this project's reading rather than something the model states.
+quorums and gossip protocols as instances; "watcher" is this repository's name for the
+party filling that role here. Mapping a deployment's participants onto the model's cure
+categories is what the model is for rather than a reading imposed on it: every cell of its
+table names the anchor a claim rests on and the minimal cure that discharges it.
+
 The distinction from a witness is load-bearing: `SPEC.md` §2.2.16 defines a witness as a
 client that keeps _a_ copy of an external principal's state. One copy faces the
 monotonicity failure like any other single holder; what cures it is a party holding more
