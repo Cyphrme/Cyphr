@@ -432,7 +432,11 @@ evaluator: test
 A relying party MUST refuse a sign-in whose key is not active in the claimed principal, and
 MUST refuse a principal that is not in an active lifecycle state. The principal checked is
 the one the signer named, per
-[signon-claimed-principal](#signon-claimed-principal). Traces to row 4.
+[signon-claimed-principal](#signon-claimed-principal). Traces to row 4. The marker
+registers the first conjunct, via `login_rejects_key_revoked_in_claimed_principal`; the
+second is closed by `login_rejects_frozen_principal`
+(`rs/cyphr-server/tests/login.rs:815`) and `login_rejects_deleted_principal` (`:853`),
+neither of which carries a marker of its own.
 
 ```claim
 kind: requirement
@@ -457,7 +461,10 @@ because: [signon-key-active-in-principal]
 ### [signon-replay-bound]
 
 A relying party MUST bound signature replay, by a single-use challenge or by a bounded
-acceptance window on the signed timestamp. Traces to row 1.
+acceptance window on the signed timestamp. Traces to rows 9 and 10 — one row per mechanism,
+because the two do not land in the same cell. The marker registers the challenge arm; the
+window arm is closed by `login_rejects_out_of_window_timestamp`
+(`rs/cyphr-server/tests/login.rs:612`), which carries no marker of its own.
 
 ```claim
 kind: requirement
@@ -467,7 +474,7 @@ evaluator: test
 ### [signon-token-kind-binding]
 
 A session token MUST be bound to its kind inside the signature, so that no other message
-the relying party signs can be presented as a session. Traces to row 7.
+the relying party signs can be presented as a session. Traces to row 11.
 
 ```claim
 kind: requirement
@@ -478,7 +485,7 @@ evaluator: test
 
 A relying party that cannot complete sign-on MUST decline it, and MUST decline every step
 leading to it with the same error, rather than completing early steps that cannot be
-redeemed. Traces to row 7.
+redeemed. Traces to row 12.
 
 ```claim
 kind: requirement
