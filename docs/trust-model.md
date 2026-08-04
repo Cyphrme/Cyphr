@@ -137,15 +137,19 @@ are looking at the other numbering — do not "fix" either to match the other.
 
 A **Row-1 claim** occupies cell 1: determined, certifiable, and monotone. It names an
 evaluator and no party. One self-contained certificate serves forever, offline, with no
-coordination between anyone — that is what all three axes holding buys.
+coordination between anyone — that is what all three axes holding buys. "Row-1 claim" is
+this project's name for the position; the source's verdict word for that cell is
+**verifiable**.
 
-A Row-1 claim left undischarged is **indefensible**, and the word is precise rather than
-rhetorical. Every other cell buys its answer by giving something up: a party whose word
-cannot be re-run, a claim narrowed to a moment, or an accepted expiry. Cell 1 gives up
-nothing — the check is computable by anyone, from the record, once, and stays true
-afterwards. So a Row-1 claim nobody runs has nothing on the other side of the ledger: no
-party that was trusted, no bound that was accepted, no cost that was paid. Naming what a
-system trusts is a defence; leaving a free check unrun is not one.
+A Row-1 claim left undischarged is **indefensible**. That word is this project's coinage
+rather than the source's, and it is precise rather than rhetorical. Every other cell buys
+its answer by giving something up: a party whose word cannot be re-run, a claim narrowed
+to a moment, or an accepted expiry. Cell 1 gives up nothing _beyond the floor every cell
+has already granted_ — the check is computable by anyone, from the record, once, and stays
+true afterwards. So a Row-1 claim nobody runs has nothing on the other side of the ledger
+past that shared floor: no party that was trusted, no bound that was accepted, no cost
+that was paid. Naming what a system trusts is a defence; leaving a free check unrun is not
+one.
 
 ### Labels outside the model
 
