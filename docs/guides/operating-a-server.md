@@ -592,7 +592,7 @@ actively hammered is by definition not cold, so a flood of distinct
 addresses cannot wash out the limiter entry for the address doing the
 flooding.
 
-**Size**, one cap for every route:
+**Size**, one cap for every route, refused by the fence like this:
 
 ```json
 {
@@ -607,6 +607,15 @@ the bytes actually read — a chunked body cannot lie its way past the header
 check. The default is 2 MiB. Raise it if your users push large commit
 bundles; it is the same number an active admission policy uses when it
 buffers a push to peek at the principal id, so there is one cap, not two.
+
+The cap is universal; that body is not. The fence weighs the declared
+`Content-Length` on every route and the buffered bytes on `/push`, and both
+produce the `limit_bytes` shape above. A chunked request that declares no
+`Content-Length` to any route other than `/push` slips past the fence and
+is stopped further in, by the framework's own limit, which answers `413`
+with an `error` and a `now` and no `limit_bytes` field. Same code, same
+cap, one field short. Most clients send `Content-Length`, so this is the
+uncommon path — but do not key a client on that field always being there.
 
 **Commit quota**, per principal:
 
