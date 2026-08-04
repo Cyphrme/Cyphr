@@ -59,7 +59,7 @@ not the one keeping the record.
 ## Part 1 — the relying party that exists
 
 `rs/cyphr-server/src/auth/` is a working relying party, routed at
-`rs/cyphr-server/src/lib.rs:256-258` as `POST /auth/challenge` and `POST /auth/login`. It
+`rs/cyphr-server/src/lib.rs:254-258` as `POST /auth/challenge` and `POST /auth/login`. It
 is described here to fix a concrete referent, so that Part 2 is a delta rather than an
 invention.
 
@@ -106,13 +106,12 @@ state it does not have at all.
 
 **It bounds replay.** Either a single-use nonce or a ±60-second timestamp window,
 selected by whether the payload carries a challenge (`login.rs:457-466`). `SPEC.md` §17.3
-gives both:
+gives both, as a two-row table reproduced here as it stands:
 
-> **Challenge nonce** — Service issues unique 256-bit nonce per login attempt — Requires
-> round-trip
->
-> **Timestamp window** — `now` must be within ±N seconds of server time — Clock sync
-> required
+| Mechanism            | How it works                                          | Trade-off           |
+| -------------------- | ----------------------------------------------------- | ------------------- |
+| **Challenge nonce**  | Service issues unique 256-bit nonce per login attempt | Requires round-trip |
+| **Timestamp window** | `now` must be within ±N seconds of server time        | Clock sync required |
 
 A separated relying party **inherits** this unchanged: both mechanisms are local to the
 exchange and need no record.
@@ -142,10 +141,11 @@ rather than serve a session that silently means less than it appears to.
 
 **The identifier survives key rotation.** A principal's genesis identifier does not change
 when its keys do; rotation extends the chain and leaves the genesis untouched
-(`docs/specs/server-identity.md:207-210`):
+(`docs/specs/server-identity.md:205-211`):
 
-> **The PG is rotation-stable** … rotation extends the chain with a `key/replace` commit
-> and leaves the genesis untouched. **The current key is NOT the identity — the chain is.**
+> **The PG is rotation-stable.** … rotation extends the chain with a `key/replace` commit
+> and leaves the genesis untouched … and, at the next list item, **The current key is NOT
+> the identity -- the chain is.**
 
 A separated relying party **inherits** this, and it is what makes a durable account
 binding possible at all.
@@ -162,8 +162,8 @@ not more.
 
 ## Part 2 — what breaks when the relying party is separated
 
-Everything in this part follows from three lines
-(`rs/cyphr-server/src/auth/login.rs:433-441`):
+Everything in this part follows from three calls
+(`rs/cyphr-server/src/auth/login.rs:432-442`):
 
 ```rust
 let genesis = state
