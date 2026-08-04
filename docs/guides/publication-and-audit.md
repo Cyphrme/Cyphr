@@ -189,8 +189,9 @@ Notice what the receipt does not carry: `blob_hashes`. It attests a chain
 position, not the specific bytes you uploaded. For a commit that is a
 distinction without a difference — `commit_id` and the roots are derived
 from those exact transactions, so a different bundle could not produce
-them. It stops being a distinction without a difference in the next
-section.
+them. It stops being a distinction without a difference two sections
+down, where a push moves the chain nowhere at all and the receipt says so
+without saying so.
 
 ### Signing a payload `/push` will accept
 
@@ -304,7 +305,7 @@ identical to what the principal already had before the push. Nothing
 moved. The receipt is a true, signed statement about a chain position your
 content is not in.
 
-Nor can anyone fetch it back:
+The tip agrees that nothing happened:
 
 ```sh
 curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
@@ -320,8 +321,8 @@ curl -s "http://127.0.0.1:4101/tip?pr=$PR" | jq -c '.payload
 ```
 
 Unchanged, `last_updated` included. `GET /patch?pr=$PR` returns the same
-two entries it did before. And the content-addressed lookup does not find
-it:
+two entries it did before. And nobody can fetch the content back — the
+content-addressed lookup does not find it:
 
 ```sh
 curl -s "http://127.0.0.1:4101/e/SHA-256:Sea6fBxGvclh1KlA9SVcOSc6gyRRmg_JkKYwT5Xf4rY"
@@ -473,8 +474,8 @@ Six steps, and they are worth walking because the shape of the answer is
 6. Verify the signature using the public key from that replayed chain.
 
 Steps 1, 3, and 6 you can do in any language. Step 6, for an Ed25519
-server key, is the same shape as verifying a bearer token — sign over the
-SHA-512 digest of the compact `pay`:
+server key, is the same shape as verifying a bearer token — check the
+signature against the SHA-512 digest of the compact `pay`:
 
 ```js
 const crypto = require("crypto");
@@ -500,11 +501,17 @@ rather than hard-coding either.
 
 Step 2 is portable for the common case and not in general. A server whose
 principal has exactly one genesis key has a PG that is just that key's
-thumbprint with its hash algorithm prefixed — `SHA-512:` plus
-`genesis.tmb` above, which you can recompute from `genesis.alg` and
-`genesis.pub` with a hash. That shortcut stops holding the moment a
-principal has more than one genesis key, where the root is a tree over all
-of them rather than a single thumbprint.
+thumbprint with its hash algorithm prefixed — `SHA-512:` followed by
+`genesis.tmb` in the discovery payload above. Recompute the thumbprint by
+hashing the canonical string `{"alg":"<alg>","pub":"<pub>"}` built from
+`genesis.alg` and `genesis.pub`, with the algorithm's own hash: SHA-512
+for Ed25519 and ES512, SHA-256 for ES256, SHA-384 for ES384. For the
+attestor above that reproduces `wWKaBAIF…` exactly.
+
+That shortcut stops holding the moment a principal has more than one
+genesis key, where the root is a tree over all of them rather than a
+single thumbprint. If you cannot rule that out for the servers you watch,
+do step 2 properly or do not claim you did it.
 
 **Steps 4 and 5 have no portable implementation, and no shipped tool
 performs them.** Replaying a chain means running Cyphr's own commit
@@ -525,11 +532,10 @@ two-key principal, imported into an empty store, gets
 So a watcher today has two honest options. Link `cyphr` and
 `cyphr-storage` and do the replay properly — a few dozen lines against
 `StorageEngine` with an in-memory blob store and indexer, `submit_commit`,
-`load_principal`, and `is_key_active`. Or skip steps 4 and 5 and verify
-the signature against
-the key `GET /server` publishes — and be clear with yourself that you have
-then trusted the server's claim about its own current key, which is
-exactly what those two steps exist to avoid.
+`load_principal`, and `is_key_active`. Or skip steps 4 and 5, verify the
+signature against the key `GET /server` publishes, and be clear with
+yourself that you have then trusted the server's claim about its own
+current key, which is exactly what those two steps exist to avoid.
 
 The second option is not worthless. It still catches a forged receipt from
 a third party and still detects a server signing two conflicting things
@@ -573,12 +579,18 @@ cyphr --output json key add --identity="$PR" --signer="$PR"
 cyphr export --identity="$PR" --output ./export-y.jsonl
 ```
 
-Two commits with the same predecessor and different contents. Send one to
-each server and both take it:
+Two commits with the same predecessor and different contents. Run each
+export through the same `jq` that built `push.json` earlier, taking
+`.[-1]` so only the newest commit goes out, and send one to each server.
+Both take it:
 
 ```sh
-curl -s -X POST http://127.0.0.1:4100/push -H 'content-type: application/json' -d @push-x.json
-curl -s -X POST http://127.0.0.1:4101/push -H 'content-type: application/json' -d @push-y.json
+curl -s -X POST http://127.0.0.1:4100/push \
+  -H 'content-type: application/json' -d @push-x.json \
+  | jq -c '{sequence: .payload.sequence, commit_id: .payload.commit_id}'
+curl -s -X POST http://127.0.0.1:4101/push \
+  -H 'content-type: application/json' -d @push-y.json \
+  | jq -c '{sequence: .payload.sequence, commit_id: .payload.commit_id}'
 ```
 
 ```json
@@ -682,7 +694,10 @@ function checkEquivocation(a, aPub, b, bPub) {
 }
 ```
 
-Run against the two reports above:
+`aPub` and `bPub` are the public keys those two receipts were signed with,
+established the way the previous section describes — from a replay of the
+server's chain if you did steps 4 and 5, or from `GET /server`'s `pub` if
+you did not. Run it against the two reports above:
 
 ```
 a signature verifies: true
@@ -714,9 +729,9 @@ cannot read as a difference; comparing the strings works only because a
 stock server emits one canonical spelling. Tighten both if you accept
 reports from a source you did not write.
 
-There is a Rust implementation of exactly this predicate, plus an
-all-pairs sweep across a set of reports and a formatter that renders the
-conflicting pair as an evidence document. It lives in `cyphr-server`'s
+There is a Rust implementation of this predicate, plus an all-pairs sweep
+across a set of reports and a formatter that renders the conflicting pair
+as an evidence document. It lives in `cyphr-server`'s
 library and has no HTTP route, no CLI subcommand, and no caller in the
 server itself — every caller in the workspace is a test. To use it you
 link the server crate; to avoid that, write the predicate above.
@@ -750,18 +765,29 @@ server's own published identity, so anyone can check it. This is the
 pressure the design actually relies on, and it needs somewhere to be
 published — which is your problem, not the protocol's.
 
-**Compare more servers.** Two servers proving a conflict tells you the
-identity equivocated. Three or more tells you which view is the outlier.
-The all-pairs sweep in `cyphr-server`'s library does exactly this, and it
-returns the first conflicting pair it finds rather than a full map — enough
-to prove misbehaviour, not enough to adjudicate between branches.
+**Compare more servers.** Two conflicting reports tell you the identity
+equivocated but not which answer is the odd one out. A third report
+breaks the tie for you, by ordinary majority — nothing in Cyphr does that
+reasoning. The all-pairs sweep in `cyphr-server`'s library returns the
+first conflicting pair it finds and stops, so it proves misbehaviour
+without mapping it; if you want the shape of the disagreement across a
+set, collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
 publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. That works today in the sense that the chosen branch's server
-will accept the next commit and the abandoned one will not — but it is a
-convention between you and the user, with nothing in the server marking
-the outcome.
+the other. That much works. Building a third commit on the branch server
+`4101` holds and pushing it to both:
+
+```
+4101  201
+4100  409  {"error":"protocol: state root mismatch"}
+```
+
+The chosen branch advances and the abandoned one is stuck, which is the
+outcome you want. But it is a convention between you and the user, not
+something the server participates in: neither server records that a fork
+happened, that one branch won, or that the other was abandoned. The `409`
+looks the same as any stale push.
 
 ### Watching, in practice
 
@@ -793,9 +819,11 @@ reading them here:
 - **No content publishing.** A bundle with no chain transaction is stored
   and forgotten: no commit, no root movement, no index entry, no way to
   fetch it back — and a signed receipt attesting the unchanged tip anyway.
-- **No documented signing rule for `/push`.** The payload has to be signed
-  over its alphabetically key-sorted form, which no document states and
-  which is the opposite of what `/auth/login` requires.
+- **No agreement about what a signature covers.** `/push` verifies over
+  the payload's alphabetically key-sorted form and `/auth/login` verifies
+  over the bytes as sent. Two verification paths in one server disagree,
+  the divergence is stated nowhere else, and the failure it produces is a
+  bare `protocol: invalid signature`.
 - **No offline verifier you can run.** The six-step procedure exists in
   full, as an integration test. `cyphr import` cannot replay a server's
   chain (`cannot determine genesis keys from storage`) and cannot even
