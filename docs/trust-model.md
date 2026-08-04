@@ -51,9 +51,17 @@ side of the world a verifier has no access to.
 
 ## The three axes
 
-A claim is measured on three independent axes. The factoring is a machine-checked
-biconditional rather than a taxonomy someone proposed, so there is no fourth failure mode
-waiting to be discovered.
+A claim is measured on three axes, and they are asked in order rather than independently.
+
+Determination is asked first. Certifiability is asked only of a determined claim: it is a
+property of the record-only predicate a determined claim projects to, and where
+determination fails there is no such predicate for it to range over. Monotonicity is
+defined on the claim directly and is asked of every claim, determined or not — in the
+source's words, it "is free everywhere."
+
+The factoring is a machine-checked biconditional rather than a taxonomy someone proposed,
+so there is no fourth failure mode waiting to be discovered
+(`trichotomy_ALL_iff`, `snapshot_characterization`).
 
 ### Determination (T1)
 
@@ -78,7 +86,8 @@ someone who does not already hold the whole record.
 
 _Does the claim stay true as the record grows?_
 
-A monotone claim, once true, is never refuted by an append. A non-monotone claim can be
+Asked of every claim, whether or not the earlier axes hold. A monotone claim, once true,
+is never refuted by an append. A non-monotone claim can be
 true when it is checked and false immediately after, with nothing in the record announcing
 the change — because the thing that changed it is the append the checker has not seen.
 "This is the current head" is the standard case: determined, certifiable, and refuted by
@@ -90,14 +99,39 @@ A claim's **cell** is its position once the three axis outcomes are fixed. The c
 what the claim needs — an evaluator, a trusted party, or an accepted bound — and the
 architecture documents cite it in a `cell` column.
 
-Read the notation `n / Tk` as _cell n of the model's tabulation, where axis Tk is the one
-that fails_. The failing axis carries the meaning; the number is an index into the table.
+An **evaluator** is a check anyone can run over the artifact presented, arriving at the
+same answer independently. It is what discharges a claim without naming a trusted party,
+and it is what a certificate is checked by. The architecture documents use the word in two
+jobs: in prose, for that check, and as a machine-read `evaluator:` field naming the
+concrete test that runs it. The second is an instance of the first.
 
-| cell             | determination | certifiability | monotonicity | what discharges it                                     |
-| :--------------- | :------------ | :------------- | :----------- | :----------------------------------------------------- |
-| `1 — verifiable` | holds         | holds          | holds        | an evaluator, and no trusted party                     |
-| `2 / T3`         | holds         | holds          | **fails**    | one of [the three cures](#curing-a-non-monotone-claim) |
-| `5 / T1`         | **fails**     | not asked      | not asked    | an [attestor](#party-kinds)                            |
+Read the notation `n / Tk` as _cell n of the source's tabulation, where axis Tk is the one
+that fails_. The failing axis carries the meaning; the number is an index into the table
+below.
+
+Three binary axes give eight nominal combinations. Six are inhabited; the last two are
+empty by theorem, because a claim the record does not determine admits no evidence scheme
+at any stratum, and those two rows posit one anyway (`undetermined_cell_empty`).
+
+| cell             | determination | certifiability | monotonicity | what discharges it                                                |
+| :--------------- | :------------ | :------------- | :----------- | :---------------------------------------------------------------- |
+| `1 — verifiable` | holds         | holds          | holds        | an evaluator, and no trusted party                                |
+| `2 / T3`         | holds         | holds          | **fails**    | one of [the three cures](#curing-a-non-monotone-claim)            |
+| `3 / T2`         | holds         | **fails**      | holds        | a [voucher](#party-kinds), or restriction to a decidable subclass |
+| `4 / T2+T3`      | holds         | **fails**      | **fails**    | a voucher, plus a freshness mechanism                             |
+| `5 / T1`         | **fails**     | —              | holds        | an [attestor](#party-kinds)                                       |
+| `6 / T1+T3`      | **fails**     | —              | **fails**    | an attestor, plus a freshness mechanism                           |
+| 7                | **fails**     | posited        | holds        | empty by theorem                                                  |
+| 8                | **fails**     | posited        | **fails**    | empty by theorem                                                  |
+
+Certifiability is written `—` where determination fails: there is no record-only predicate
+for the axis to range over. Monotonicity is asked everywhere, which is why cells 5 and 6
+are distinct — they differ in nothing else.
+
+**A hazard for anyone checking against the mechanization.** The Lean development numbers
+the six inhabited cells in a different order than the written paper does. This repository's
+documents use the paper's numbering. If you followed a theorem name to reach a result, you
+are looking at the other numbering — do not "fix" either to match the other.
 
 ### Row-1 claims
 
