@@ -298,7 +298,9 @@ verifies the signature against the principal's active keys, answers `201`,
 and signs a receipt. Then the content vanishes.
 
 Push a bundle containing only that `example.com/note/create` cozy from
-above, against a principal already sitting at sequence 1:
+above. Everything in this section runs against `4101`, whose copy of the
+principal is already at sequence 1 — the same tip the split-view section
+below reports in full, so the numbers here and there match on purpose:
 
 ```json
 {
