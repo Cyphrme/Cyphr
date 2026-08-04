@@ -248,35 +248,49 @@ rather than designed here; see [what this document does not cover](#what-this-do
 
 ## The claim table
 
-Every claim crossing between participants on this path. **Det/Cert/Mono** are the three
-properties a claim may have; the **cell** is its position in the trust model. A claim
-that is verifiable in all three needs an evaluator and no trusted party at all.
+Every claim crossing between participants on this path, in two groups: claims about the
+**record** — what a relying party concludes about a principal — and claims about the
+**exchange** — what it concludes about the request in front of it. **Det/Cert/Mono** are
+the three axes; a claim's **cell** is ["its position once the three axis outcomes are
+fixed"](../trust-model.md#cells). A claim that holds on all three needs an evaluator and no
+trusted party at all. Every row carries a requirement or a note saying why it has none.
 
-| #   | claim                                                            |              Det               | Cert |  Mono  | cell            | trusted party                                                                                                   | a bad one yields                                                  |
-| :-- | :--------------------------------------------------------------- | :----------------------------: | :--: | :----: | :-------------- | :-------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------- |
-| 1   | This request was signed by key _K_                               |               —                |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, `login.rs:226`                                                            | a forged sign-in is accepted                                      |
-| 2   | This chain derives to identifier _P_                             |              yes               | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note                                                        | a record is served under an identifier it does not belong to      |
-| 3   | _P_'s identifier is the same one as last session                 |              yes               | yes  |  yes   | 1 — verifiable  | none — evaluator: `rotation_preserves_pg_and_swaps_active_key`, `rs/cyphr-server/tests/server_principal.rs:243` | the account silently becomes a different account after a rotation |
-| 4   | _K_ is an active key of principal _P_                            |              yes               | yes  | **no** | 2 / T3          | **watcher** — none exists                                                                                       | a revoked or lost key still signs in                              |
-| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |              yes               | yes  | **no** | 2 / T3          | **watcher** — none exists                                                                                       | a split or frozen view is served indefinitely                     |
-| 6   | The person presenting _K_ is the person this account is for      |             **no**             |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter                                                     | the account is served to the wrong human                          |
-| 7   | _P_ may perform operation _X_                                    | the relying party's own policy |      |        | elective        | the relying party itself                                                                                        | over-authorization                                                |
+### Claims about the record
 
-**Rows 1–3 are Row-1 claims and name no party**, as the trust model requires: each is
-discharged by running something, not by trusting someone.
+| #   | claim                                                            |  Det   | Cert |  Mono  | cell            | trusted party                                               | a bad one yields                                                  |
+| :-- | :--------------------------------------------------------------- | :----: | :--: | :----: | :-------------- | :---------------------------------------------------------- | :---------------------------------------------------------------- |
+| 1   | This request was signed by key _K_                               |   —    |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, `login.rs:226`        | a forged sign-in is accepted                                      |
+| 2   | This chain derives to identifier _P_                             |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note    | a record is served under an identifier it does not belong to      |
+| 3   | _P_'s identifier is the same one as last session                 |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note    | the account silently becomes a different account after a rotation |
+| 4   | _K_ is an active key of principal _P_                            |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists                                   | a revoked or lost key still signs in                              |
+| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists                                   | a split or frozen view is served indefinitely                     |
+| 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter | the account is served to the wrong human                          |
+| 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                    | over-authorization                                                |
+
+**Rows 2 and 3 are [Row-1 claims](../trust-model.md#row-1-claims)**: determined,
+certifiable and monotone, discharged by running something rather than by trusting someone.
+Row 1 is not one — it sits `below the floor`, before the axes apply — but all three name no
+party.
 
 **Row 2 is undischarged, and that is a defect rather than a design choice.** The storage
 engine holds both the derived genesis and the identifier a record is filed under at the
-moment of the write and does not compare them. Its own documentation says so
-(`rs/cyphr-storage/src/engine/mod.rs:403-406`):
+moment of the write, and does not compare them; its own documentation names the same gap on
+the read path — "storage never binds a derived genesis to the identifier it is filed under"
+(`rs/cyphr-storage/src/engine/mod.rs:403-406`). That comment sends the reader elsewhere in
+its own file for the tracking issue and nothing is there, so the durable handle is the issue
+number, #154. A Row-1 claim left undischarged is
+[indefensible](../trust-model.md#row-1-claims) — the check is free and nobody is running it.
+Discharging it at every writer is a system-wide task beyond this path; the requirement here
+is only that a relying party must not assume it.
 
-> This is the identity-binding gap #154 already tracks elsewhere in this file (storage
-> never binds a derived genesis to the identifier it is filed under); this is a third
-> instance of that same structural gap, not a distinct defect.
-
-A Row-1 claim left undischarged is indefensible on the trust model's own terms — the check
-is free and nobody is running it. Discharging it at every writer is a system-wide task
-beyond this path; the requirement here is only that a relying party must not assume it.
+**Row 3 has no evaluator, and the nearest candidate is about a different principal.**
+`rotation_preserves_pg_and_swaps_active_key`
+(`rs/cyphr-server/tests/server_principal.rs:243`) does assert that a genesis identifier
+survives rotation, but it drives `ServerPrincipal::bootstrap` and `sp.rotate` — the
+**server's** own chain. A person's principal rotates through the ordinary write path, and
+the two golden fixtures that exercise `key/replace` both leave `pg` empty, which
+`rs/cyphr/tests/golden_fixtures.rs:206` skips. Nothing checks that a person's identifier
+survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
 set going stale; row 5 is about the whole view being non-canonical. Both are cured by a
@@ -287,28 +301,55 @@ evaluator decides that a human is a particular human. At enrollment the person's
 assertion is taken on faith; after a device loss the recovery agent's out-of-band
 verification is taken on faith, and the specification deliberately declines to fix the
 method. Naming this honestly is the entire value of typing it: a relying party that
-believes row 6 is verifiable has misunderstood what it bought.
+believes row 6 is verifiable has misunderstood what it bought. Typing it `5 / T1` is a
+modeling choice this project makes rather than a result the framework hands down: that
+undetermined claims exist is mechanized, but reading a particular binding claim as one of
+them is ["an explicit modeling hypothesis about the fiber over the record, never a
+theorem"](../trust-model.md#determination-t1).
+
+**Row 7 has no requirement, and that is a scope decision rather than an oversight.** Its
+label is [`decision`](../trust-model.md#labels-outside-the-model) — "the claim's truth is
+fixed by a party's own choice rather than by any state of the world" — so the action it
+calls for is that the relying party decides, and this document does not. Such a claim
+reports no axis outcomes, which is why all three columns read `—`. It is not the source's
+`elective`, a claim a verifier could check and declines to: nothing is declined here,
+because there is no fact of the matter to check, and this document uses "forced" in that
+word's paired sense under [the forcing case](#the-forcing-case).
+
+### Claims about the exchange
+
+Row 1 — _this request was signed by key K_ — is **true of a relayed login and of a replayed
+one**. The attack succeeds with the row satisfied, so what those attacks defeat is not a
+claim about the record at all. Four requirements trace here rather than to rows 1 and 7.
+
+| #   | claim                                        | Det | Cert |  Mono  | cell           | trusted party                                                                                                           | a bad one yields                                               |
+| :-- | :------------------------------------------- | :-: | :--: | :----: | :------------- | :---------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------- |
+| 8   | This assertion was made _to me_              | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_mismatched_audience`, `rs/cyphr-server/tests/login.rs:636`                             | a login signed for one service is relayed to another           |
+| 9   | This assertion is _fresh_ — challenge        | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `login_rejects_replayed_challenge`, `rs/cyphr-server/tests/login.rs:578`                              | a captured login is replayed                                   |
+| 10  | This assertion is _fresh_ — timestamp window | yes | yes  | **no** | 2 / T3         | none — an accepted expiry, plus clock agreement                                                                         | a captured login is replayed inside the window                 |
+| 11  | This artifact _is a session token I issued_  | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `verify_rejects_valid_signature_with_wrong_typ`, `rs/cyphr-server/src/auth/token.rs:412`              | another message the service signed is presented as a session   |
+| 12  | A challenge I issue can be redeemed          | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `keyless_login_and_challenge_share_the_same_rejection`, `rs/cyphr-server/tests/keyless_matrix.rs:431` | a person completes a challenge that can never become a session |
+
+**Rows 9 and 10 are one claim under two mechanisms, and the two do not land in the same
+cell.** A single-use challenge checks state the relying party issued and holds, so freshness
+is determined, certifiable and monotone. A timestamp window is [an accepted
+expiry](../trust-model.md#curing-a-non-monotone-claim) — the third of the three cures for a
+non-monotone claim — resting additionally on clock agreement nothing in the record
+establishes. One row cannot carry two cells without prose in an axis column, the defect row
+7 just lost. **No exchange row names a trusted party**: rows 8, 9, 11 and 12 name
+evaluators, and row 10 is discharged by an accepted bound rather than by a watcher — the one
+exchange claim a relying party pays for instead of checking.
 
 ## The forcing case
 
 _She loses her device._
 
-At Level 3+ this does not end the account. `SPEC.md` §14.2:
-
-> Level 1 doesn't support recovery. Any recovery is accomplished through sideband.
-> Level 2 supports recovery but only atomic swaps. The recovery key can replace the
-> existing key.
-> Level 3+ supports recovery and can add new keys.
-
-A designated recovery agent signs a `key/create` for her, and that commit is valid despite
-no key of hers signing it (`docs/specs/recovery.md:98-100`):
-
-> A designated recovery agent's `key/create` MUST be accepted as valid even though no
-> regular user key signed it — the agent's authority derives from the `recovery/create`
-> delegation.
-
-Her identifier survives; at Level 1 it would not, and `SPEC.md` §14.1 says so — _"Note
-that sideband recovery results in a new Principal identity."_ The account continues.
+**This section grounds the typing of rows 4, 5 and 6** — it is where determination and
+monotonicity are forced rather than chosen. At Level 3+ a designated recovery agent signs a
+`key/create` for her and the account survives, because _"the agent's authority derives from
+the `recovery/create` delegation"_ (`docs/specs/recovery.md:98-100`). Those mechanics are
+here only to make the participant table's two recovery rows legible; they produce no
+requirements.
 
 **Is the case forced?** Yes, and at two layers, which is the honest reading rather than
 one clean answer.
