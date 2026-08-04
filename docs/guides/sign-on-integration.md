@@ -349,7 +349,10 @@ surprise:
 JSON of `pay` with its fields in the order you wrote them. Serialize once and
 send those exact bytes. Whitespace does not matter — the server re-compacts —
 but if anything reorders your keys between signing and sending, the signature
-will not verify.
+will not verify. That is true here and for the naked-revoke request later in
+this guide, both of which verify the bytes exactly as sent. `POST /push` is
+the exception: it sorts `pay`'s keys recursively before verifying, so a
+payload you push is fine regardless of the order you built it in.
 
 **ECDSA signatures have to be low-S.** A P-256 signature `(r, s)` is equally
 valid as `(r, n − s)`, and Node picks whichever the RNG lands on. The server
@@ -495,7 +498,10 @@ key, removing it from the principal outright; afterward it fails login
 exactly like a key the server has never seen. This exists at the protocol
 level — the CLI does not expose it yet (`cyphr key` has generate, add,
 revoke, and list, no delete), so pushing one means building the Coz payload
-by hand, the same way the naked-revoke request below does.
+by hand, the same way the naked-revoke request below does — except this one
+goes through `POST /push`, which sorts fields before verifying, so the
+field-order rule above does not apply to it the way it applies to that
+revoke request.
 
 But your Cyphr server does not know yet. It reconstructs each principal from
 the commits it has been given, so until the client pushes that new commit, the
