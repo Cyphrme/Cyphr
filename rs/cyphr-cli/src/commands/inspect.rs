@@ -1,39 +1,16 @@
 //! Identity inspection command.
 
-use cyphr_storage::load_principal_from_commits;
+use cyphr::StateDigest;
 
-use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
-};
-use crate::keystore::{JsonKeyStore, KeyStore};
+use super::common::{CliPrincipal, load_principal_from_engine, parse_store};
+use crate::keystore::JsonKeyStore;
 use crate::{Cli, OutputFormat};
 
 /// Run the inspect command.
 pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
+    let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    // Try to load commits from store
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Check if identity is in keystore (implicit genesis indicator)
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    let principal = if commits.is_empty() {
-        // No commits - try to reconstruct from keystore (genesis state)
-        let key = load_key_from_keystore(&keystore, identity)?;
-        cyphr::Principal::implicit(key)?
-    } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with cozies
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = cyphr_storage::Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
     match cli.output {
         OutputFormat::Json => {
@@ -52,7 +29,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 
             let output = serde_json::json!({
                 "pr": format_pr(&principal),
-                "ps": format_ps(&principal),
+                "pg": format_pg(&principal),
                 "ks": format_ks(&principal),
                 "as": format_as(&principal),
                 "active_keys": active_keys,
@@ -61,11 +38,11 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
         OutputFormat::Table => {
-            println!("Identity: {}", format_pr(&principal));
+            println!("Identity: {}", format_pg(&principal));
             println!();
             println!("State:");
             println!("  PR: {}", format_pr(&principal));
-            println!("  PS: {}", format_ps(&principal));
+            println!("  PG: {}", format_pg(&principal));
             println!("  KS: {}", format_ks(&principal));
             println!("  AS: {}", format_as(&principal));
             println!();
@@ -91,7 +68,7 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 // ============================================================================
 
 /// Format KeyRoot for display.
-fn format_ks(principal: &cyphr::Principal) -> String {
+fn format_ks(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let ks = principal.key_root();
@@ -103,7 +80,7 @@ fn format_ks(principal: &cyphr::Principal) -> String {
 }
 
 /// Format AuthRoot for display.
-fn format_as(principal: &cyphr::Principal) -> String {
+fn format_as(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let auth_root = principal.auth_root();
@@ -116,26 +93,26 @@ fn format_as(principal: &cyphr::Principal) -> String {
 }
 
 /// Format PrincipalRoot for display.
-fn format_ps(principal: &cyphr::Principal) -> String {
+fn format_pr(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
-    let ps = principal.pr();
+    let pr = principal.pr();
     let hash_alg = principal.hash_alg();
 
-    ps.get(hash_alg)
+    pr.get(hash_alg)
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<no variant>".to_string())
 }
 
 /// Format PrincipalGenesis for display.
-fn format_pr(principal: &cyphr::Principal) -> String {
+fn format_pg(principal: &CliPrincipal) -> String {
     use base64ct::{Base64UrlUnpadded, Encoding};
 
     let hash_alg = principal.hash_alg();
 
     principal
         .pg()
-        .and_then(|pr| pr.get(hash_alg))
+        .and_then(|pg| pg.get(hash_alg))
         .map(Base64UrlUnpadded::encode_string)
         .unwrap_or_else(|| "<none>".to_string())
 }

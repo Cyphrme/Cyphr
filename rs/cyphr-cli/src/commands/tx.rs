@@ -1,11 +1,12 @@
 //! ParsedCoz commands.
 
-use cyphr_storage::{Genesis, load_principal_from_commits};
+use cyphr::StateDigest;
 
 use super::common::{
-    extract_genesis_from_commits, load_key_from_keystore, parse_principal_genesis, parse_store,
+    CliPrincipal, get_commits_from_engine, load_key_from_keystore, load_principal_from_engine,
+    parse_store,
 };
-use crate::keystore::{JsonKeyStore, KeyStore};
+use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat, TxCommands};
 
 /// Run a tx subcommand.
@@ -72,12 +73,15 @@ fn list(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Verify coz chain integrity for an identity.
-fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
+pub fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
+    let store = parse_store(cli)?;
 
-    // Load commits from store
-    let commits = store.get_commits(&pr).unwrap_or_default();
+    // Load commits from store. A real storage error here (corrupted
+    // index, missing blob, etc.) must propagate -- collapsing it into an
+    // empty Vec would make this indistinguishable from a genuine
+    // zero-commit genesis identity and falsely report "OK, genesis state
+    // verified" over data that actually failed to load.
+    let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
         // Genesis state - verify by reconstructing from keystore
@@ -85,18 +89,18 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
         let key = load_key_from_keystore(&keystore, identity)?;
         let principal = cyphr::Principal::implicit(key)?;
 
-        // Verify PR matches (L1 has no PR)
-        if let Some(pr) = principal.pg() {
+        // Verify PG matches (L1 has no PG)
+        if let Some(pg) = principal.pg() {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let computed_pr = pr
+            let computed_pg = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-            if computed_pr != identity {
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+            if computed_pg != identity {
                 return Err(Error::Storage(format!(
-                    "PR mismatch: computed {} != {}",
-                    computed_pr, identity
+                    "PG mismatch: computed {} != {}",
+                    computed_pg, identity
                 )));
             }
         }
@@ -125,31 +129,20 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 
     // Detect implicit genesis: if identity (PR) is in keystore, it's an implicit genesis identity
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let is_implicit_genesis = keystore.get(identity).is_ok();
+    let principal = load_principal_from_engine(&store, &keystore, identity)?;
 
-    let principal = if is_implicit_genesis {
-        // Implicit genesis with commits: use keystore key as genesis
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        load_principal_from_commits(genesis, &commits)?
-    } else {
-        // Explicit genesis: extract from commits
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        load_principal_from_commits(genesis, &commits)?
-    };
-
-    // Verify PR matches
+    // Verify PG matches
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    if let Some(pr) = principal.pg() {
-        let computed_pr = pr
+    if let Some(pg) = principal.pg() {
+        let computed_pg = pg
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
-        if computed_pr != identity {
+            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
+        if computed_pg != identity {
             return Err(Error::Storage(format!(
-                "PR mismatch: computed {} != expected {}",
-                computed_pr, identity
+                "PG mismatch: computed {} != expected {}",
+                computed_pg, identity
             )));
         }
     }
@@ -158,20 +151,24 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
     let Some(last_commit) = commits.last() else {
         return Ok(());
     };
-    let computed_ps = principal
+    let computed_pr = principal
         .pr()
         .as_multihash()
         .first_variant()
         .map(Base64UrlUnpadded::encode_string)
-        .map_err(|e| Error::Storage(format!("PS empty: {e}")))?;
+        .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
 
-    // Parse stored ps which may be in "alg:digest" format
-    let stored_ps_digest = last_commit.pr.split(':').last().unwrap_or(&last_commit.pr);
+    // Parse stored pr which may be in "alg:digest" format
+    let stored_pr_digest = last_commit
+        .pr
+        .split(':')
+        .next_back()
+        .unwrap_or(&last_commit.pr);
 
-    if computed_ps != stored_ps_digest {
+    if computed_pr != stored_pr_digest {
         return Err(Error::Storage(format!(
-            "PS mismatch: computed {} != stored {}",
-            computed_ps, stored_ps_digest
+            "PR mismatch: computed {} != stored {}",
+            computed_pr, stored_pr_digest
         )));
     }
 
@@ -184,7 +181,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
                 "status": "OK",
                 "commits_verified": commits.len(),
                 "transactions_verified": tx_count,
-                "computed_ps": computed_ps,
+                "computed_pr": computed_pr,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         },
@@ -193,7 +190,7 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
             println!("  Identity: {identity}");
             println!("  Commits: {} verified", commits.len());
             println!("  Transactions: {} verified", tx_count);
-            println!("  PS: {}", computed_ps);
+            println!("  PR: {}", computed_pr);
         },
     }
 
@@ -201,28 +198,8 @@ fn verify(cli: &Cli, identity: &str) -> crate::Result<()> {
 }
 
 /// Load identity from storage or keystore.
-fn load_identity(cli: &Cli, identity: &str) -> crate::Result<cyphr::Principal> {
-    let store = parse_store(&cli.store)?;
+fn load_identity(cli: &Cli, identity: &str) -> crate::Result<CliPrincipal> {
+    let store = parse_store(cli)?;
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let pr = parse_principal_genesis(identity)?;
-
-    let commits = store.get_commits(&pr).unwrap_or_default();
-
-    // Check if identity is in keystore (implicit genesis indicator)
-    let is_implicit_genesis = keystore.get(identity).is_ok();
-
-    if commits.is_empty() {
-        // Genesis state - reconstruct from keystore
-        let key = load_key_from_keystore(&keystore, identity)?;
-        Ok(cyphr::Principal::implicit(key)?)
-    } else if is_implicit_genesis {
-        // Has commits + in keystore = implicit genesis with cozies
-        let genesis_key = load_key_from_keystore(&keystore, identity)?;
-        let genesis = Genesis::Implicit(genesis_key);
-        Ok(load_principal_from_commits(genesis, &commits)?)
-    } else {
-        // Not in keystore = explicit genesis (key embedded in commits)
-        let genesis = extract_genesis_from_commits(&commits, None)?;
-        Ok(load_principal_from_commits(genesis, &commits)?)
-    }
+    load_principal_from_engine(&store, &keystore, identity)
 }

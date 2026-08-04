@@ -1,6 +1,10 @@
 {
   "name": "key_thumbprint_sort_order",
-  "principal": ["alice", "bob", "carol"],
+  "principal": [
+    "alice",
+    "bob",
+    "carol"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -27,6 +31,8 @@
     "ar": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
     "pr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
     "sr": "SHA-256:lfyEU2xRWD-KGCxoeMiQk_yAJXGwpI5k5u3-kLpmS1s",
-    "pg": ""
+    "pg": "",
+    "deleted": false,
+    "frozen": false
   }
 }

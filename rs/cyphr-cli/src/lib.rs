@@ -52,10 +52,6 @@ pub enum Error {
     #[error("{0}")]
     Storage(String),
 
-    /// File store error.
-    #[error("{0}")]
-    FileStore(#[from] cyphr_storage::FileStoreError),
-
     /// Load error (importing/replaying commits).
     #[error("{0}")]
     Load(#[from] cyphr_storage::LoadError),
@@ -75,6 +71,10 @@ pub struct Cli {
     /// Storage backend URI (e.g., file:./data)
     #[arg(long, default_value = "file:./cyphr-data")]
     pub store: String,
+
+    /// Force a total index rebuild on startup instead of incremental update
+    #[arg(long, default_value_t = false)]
+    pub total_check: bool,
 
     /// Path to private key storage
     #[arg(long, default_value = "./cyphr-keys.json")]

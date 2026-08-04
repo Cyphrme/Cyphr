@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e501eda4f12bb0f605f3e49e6f60e3d6d94f8245c97ab5efd1f165f2d171ecab # shrinks to (genesis_key_idx, steps) = (0, [CreateKey { target_idx: 0, signer_idx: 0, finalize_commit: false }])
+cc fc74cfb7ff06bfd9f67c0549774257a3de87c58d2eedb6367171567fe218bb21 # shrinks to (genesis_key_idx, steps) = (0, [CreateKey { target_idx: 0, signer_idx: 0, finalize_commit: false }])
+cc 118d9bc66cea2729857988e08807d35febc1a1300fa1ae8ecd58bafa92ad8c4f # shrinks to (genesis_key_idx, steps) = (0, [CreateKey { target_idx: 15118460657871027562, signer_idx: 0, finalize_commit: false }, CreateKey { target_idx: 0, signer_idx: 0, finalize_commit: false }])
+cc cd2ad33f78ba5738e92476fe1b56c89fe22bbf437e158396f8983e6ddc99b12a # shrinks to (genesis_key_idx, steps) = (0, [AddAction { signer_idx: 0, msg_idx: 0 }, CreateKey { target_idx: 0, signer_idx: 0, finalize_commit: false }, CreateKey { target_idx: 0, signer_idx: 0, finalize_commit: false }])

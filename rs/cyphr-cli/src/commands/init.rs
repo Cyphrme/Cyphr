@@ -1,9 +1,11 @@
 //! Identity initialization command.
 
-use cyphr::Principal;
-use cyphr_storage::export_commits;
+use cyphr::{Principal, StateDigest};
 
-use super::common::{generate_key, load_key_from_keystore, parse_store};
+use super::common::{
+    generate_key, get_principal_id_from_principal, load_key_from_keystore, parse_store,
+    save_principal_to_engine,
+};
 use crate::keystore::{JsonKeyStore, KeyStore};
 use crate::{Cli, Error, OutputFormat};
 
@@ -56,32 +58,40 @@ pub fn run(
         },
     };
 
-    // Get identity string for output: PR if available, else PS
+    // Get identity string for output: PG if available, else PR
     let identity_str = {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
-        if let Some(pr) = principal.pg() {
-            pr.as_multihash()
+        if let Some(pg) = principal.pg() {
+            pg.as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?
         } else {
             principal
                 .pr()
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PS empty: {e}")))?
+                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?
         }
     };
 
-    // Store the identity (only if PR is set — L3+ explicit genesis)
-    let store = parse_store(&cli.store)?;
-    if let Some(pr_ref) = principal.pg() {
-        let commits = export_commits(&principal)?;
-        for commit in &commits {
-            store.append_commit(pr_ref, commit)?;
-        }
+    // Explicit multi-key genesis has no key of its own equal to its
+    // identity digest (unlike implicit genesis, where identity == the sole
+    // key's thumbprint), and it produces no commit -- and thus no stored
+    // tip -- until some later operation happens. Without a local record of
+    // which keys compose it, it would be unrecoverable to any subsequent
+    // command in this same store/keystore, including the very `key add`
+    // that would otherwise anchor it in storage.
+    if principal.genesis_keys().len() > 1 {
+        let principal_id = get_principal_id_from_principal(&principal, &keystore)?;
+        let key_tmbs = principal.active_keys().map(|k| k.tmb.to_b64()).collect();
+        keystore.record_genesis(&principal_id, key_tmbs)?;
     }
+
+    // Store the identity
+    let store = parse_store(cli)?;
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     // Output result
     match cli.output {

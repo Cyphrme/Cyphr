@@ -1,0 +1,61 @@
+{
+  "name": "principal_delete_transitions_to_deleted",
+  "principal": [
+    "golden"
+  ],
+  "genesis_keys": [
+    {
+      "alg": "ES256",
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    }
+  ],
+  "commits": [
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "id": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/principal/delete"
+          },
+          "sig": "1YFozZOtZRA2MMIfQrzXE_7QGXrYmlq8k_gJRSqw3Zw3SSeWQPzoTjqlLj7m_hbgvC29u5uzbiD-yPsIrghUXw"
+        },
+        {
+          "pay": {
+            "alg": "ES256",
+            "arrow": "SHA-256:6JeQtxfdWMpOt6KO95-Plx8lrij1mH7cGoY5mvHy_7w",
+            "now": 1700000000,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/cyphr/commit/create"
+          },
+          "sig": "EmcuKLPcN56Gd0hIWSOf7tF1_ofE743JENjoZNwzK1xDQNl9QxJGV4u_tUs8Eaz3JOYli50Z57ZFRcDYk5-GcQ"
+        }
+      ],
+      "keys": [],
+      "commit_id": "SHA-256:sijtsjtauknFzDOxlTbAZFwN6zJ1BAA-li9LCh19Evg",
+      "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "pr": "SHA-256:fDe8ghCdDissOC4BlP7zvQsXoMrbggCA4fS8yNtrads"
+    }
+  ],
+  "digests": [
+    "0JDwkMdEiBOBFT7CVNlzo8hWfF4Wnbv5OnYn42nW1DY",
+    "vRQigN4hZY4XzMS7Bs88k8d4N2SYw83M_UnGgli2TsU"
+  ],
+  "expected": {
+    "key_count": 1,
+    "level": 3,
+    "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pr": "SHA-256:fDe8ghCdDissOC4BlP7zvQsXoMrbggCA4fS8yNtrads",
+    "cr": "SHA-256:sijtsjtauknFzDOxlTbAZFwN6zJ1BAA-li9LCh19Evg",
+    "tr": "SHA-256:sijtsjtauknFzDOxlTbAZFwN6zJ1BAA-li9LCh19Evg",
+    "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "pg": "",
+    "deleted": true,
+    "frozen": false
+  }
+}

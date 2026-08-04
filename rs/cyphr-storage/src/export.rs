@@ -3,8 +3,10 @@
 //! These functions bridge the `cyphr` Principal type with the storage layer,
 //! enabling faithful round-trip serialization of identity state.
 
-use crate::{CommitEntry, Entry, KeyEntry, Store};
-use cyphr::Principal;
+use cyphr::state::StateDigest;
+use cyphr::{Principal, eml};
+
+use crate::{CommitEntry, Entry, KeyEntry};
 
 /// Errors that can occur during export.
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +73,7 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 /// - `commit_id`: Commit ID (Merkle root of coz czds, base64url)
 /// - `as`: Auth State (base64url)
 /// - `sr`: State Root (base64url)
-/// - `ps`: Principal State (base64url)
+/// - `pr`: Principal Root (base64url)
 ///
 /// **Note**: Actions are not included in commits; they are stored separately
 /// or handled by the caller.
@@ -89,7 +91,9 @@ pub fn export_entries(principal: &Principal) -> Result<Vec<Entry>, ExportError> 
 ///     file.write_line(&commit.to_json()?)?;
 /// }
 /// ```
-pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportError> {
+pub fn export_commits<S: eml::Storage>(
+    principal: &Principal<S>,
+) -> Result<Vec<CommitEntry>, ExportError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let mut commit_entries = Vec::new();
@@ -116,91 +120,28 @@ pub fn export_commits(principal: &Principal) -> Result<Vec<CommitEntry>, ExportE
         }
 
         // Get state digests as algorithm-prefixed strings (alg:digest format)
-        // Use first_variant() for deterministic, fallible access
-        let tr_bytes = commit.tr().0.first_variant()?;
-        let tr_alg = commit
-            .tr()
-            .0
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let commit_id = format!("{}:{}", tr_alg, Base64UrlUnpadded::encode_string(tr_bytes));
-
-        let as_bytes = commit.auth_root().as_multihash().first_variant()?;
-        let as_alg = commit
+        let commit_id = commit.tr().0.tagged_first()?.to_string();
+        let auth_root = commit
             .auth_root()
             .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let auth_root = format!("{}:{}", as_alg, Base64UrlUnpadded::encode_string(as_bytes));
+            .tagged_first()?
+            .to_string();
+        let sr = commit.sr().as_multihash().tagged_first()?.to_string();
+        let pr = commit.pr().as_multihash().tagged_first()?.to_string();
 
-        let sr_bytes = commit.sr().as_multihash().first_variant()?;
-        let sr_alg = commit
-            .sr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let sr = format!("{}:{}", sr_alg, Base64UrlUnpadded::encode_string(sr_bytes));
-
-        let ps_bytes = commit.pr().as_multihash().first_variant()?;
-        let ps_alg = commit
-            .pr()
-            .as_multihash()
-            .algorithms()
-            .next()
-            .ok_or(cyphr::Error::EmptyMultihash)?;
-        let ps = format!("{}:{}", ps_alg, Base64UrlUnpadded::encode_string(ps_bytes));
-
-        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, ps));
+        commit_entries.push(CommitEntry::new(cozies, keys, commit_id, auth_root, sr, pr));
     }
 
     Ok(commit_entries)
 }
 
-/// Export entries and persist them to storage.
-///
-/// This is a convenience function that combines export and storage.
-///
-/// # Errors
-///
-/// Returns `NoPrincipalGenesis` if the principal has no PR (Level 1/2).
-pub fn persist_entries<S: Store>(
-    store: &S,
-    principal: &Principal,
-) -> Result<usize, PersistError<S::Error>> {
-    let entries = export_entries(principal).map_err(PersistError::Export)?;
-    let pg = principal.pg().ok_or(PersistError::NoPrincipalGenesis)?;
-    let count = entries.len();
-    for entry in entries {
-        store
-            .append_entry(pg, &entry)
-            .map_err(PersistError::Store)?;
-    }
-    Ok(count)
-}
-
-/// Errors from persist_entries (combines export and store errors).
-#[derive(Debug, thiserror::Error)]
-pub enum PersistError<E: std::error::Error> {
-    /// Export failed.
-    #[error("export: {0}")]
-    Export(#[from] ExportError),
-    /// Store operation failed.
-    #[error("store: {0}")]
-    Store(E),
-    /// Principal has no PrincipalGenesis (Level 1/2 cannot be persisted).
-    #[error("persist_entries requires a Level 3+ principal with PrincipalGenesis")]
-    NoPrincipalGenesis,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use coz::Thumbprint;
     use cyphr::Key;
     use serde_json::json;
+
+    use super::*;
 
     fn make_test_key(id: u8) -> Key {
         Key {

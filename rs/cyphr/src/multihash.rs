@@ -51,15 +51,33 @@ impl MultihashDigest {
         if variants.is_empty() {
             return Err(crate::error::Error::EmptyMultihash);
         }
+        for (&alg, digest) in &variants {
+            let expected = crate::state::TaggedDigest::expected_len(alg);
+            if digest.len() != expected {
+                return Err(crate::error::Error::DigestLengthMismatch {
+                    alg,
+                    expected,
+                    actual: digest.len(),
+                });
+            }
+        }
         Ok(Self { variants })
     }
 
     /// Create from a single-algorithm digest.
-    #[must_use]
-    pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> Self {
+    pub fn from_single(alg: HashAlg, digest: impl Into<Box<[u8]>>) -> crate::error::Result<Self> {
+        let digest_box = digest.into();
+        let expected = crate::state::TaggedDigest::expected_len(alg);
+        if digest_box.len() != expected {
+            return Err(crate::error::Error::DigestLengthMismatch {
+                alg,
+                expected,
+                actual: digest_box.len(),
+            });
+        }
         let mut variants = BTreeMap::new();
-        variants.insert(alg, digest.into());
-        Self { variants }
+        variants.insert(alg, digest_box);
+        Ok(Self { variants })
     }
 
     /// Get the digest for a specific algorithm.
@@ -103,20 +121,70 @@ impl MultihashDigest {
         self.variants
     }
 
-    /// Get digest for a specific algorithm, falling back to the first available variant.
+    /// Get the digest for a specific algorithm, or a clear error if this
+    /// multihash has no variant for it.
     ///
-    /// This is the fallible replacement for the common pattern:
-    /// ```ignore
-    /// mh.get(alg).or_else(|| mh.variants().values().next().map(AsRef::as_ref)).expect("...")
-    /// ```
+    /// Deliberately does **not** fall back to a different algorithm's bytes:
+    /// a caller asking for one algorithm's digest and silently receiving
+    /// another algorithm's bytes is a masked error, not a fallback worth
+    /// having at a trust boundary. Mirrors [`Self::tagged`]'s contract.
     ///
     /// # Errors
     ///
-    /// Returns `EmptyMultihash` if no variants exist.
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
     pub fn get_or_err(&self, alg: HashAlg) -> crate::error::Result<&[u8]> {
         self.get(alg)
-            .or_else(|| self.variants.values().next().map(AsRef::as_ref))
-            .ok_or(crate::error::Error::EmptyMultihash)
+            .ok_or(crate::error::Error::MissingVariant(alg))
+    }
+
+    /// Get the digest bytes for Arrow's algorithm-fallback rule.
+    ///
+    /// This is the component-conversion rule normatively fixed by SPEC.md
+    /// §2.2.10 (Singleton Promotion) and resolved in full by
+    /// `docs/specs/state-tree.md`'s `[conversion]` clause (settled
+    /// 2026-07-08), whose POST is marked
+    /// `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+    /// — i.e. this exact function. The requested-`alg` bytes come from
+    /// exactly one of three mechanisms:
+    ///
+    /// 1. **Exact match**: `alg` already has a native variant — return it directly, unconverted.
+    /// 2. **Genesis promotion** (`len == 1`): the degenerate, single-variant case of the fold,
+    ///    which `[conversion]` defines as "a degenerate case of the fold ... not a separate
+    ///    conversion step" and SPEC.md §2.2.10 defines as elevating a lone node value to its parent
+    ///    slot "without additional hashing". If this multihash has exactly one variant, its raw
+    ///    bytes are returned for any requested `alg`. A component with only one active algorithm
+    ///    thus contributes that algorithm's digest regardless of the signer's — e.g. a sole active
+    ///    key replaced by one of a different algorithm in the same commit, leaving pre/fwd with
+    ///    zero shared algorithms — rather than erroring.
+    /// 3. **Fold** (`len >= 2`, no match): with two or more variants and none matching `alg`, fold
+    ///    ALL currently-available variants together — sort, concatenate raw bytes, and hash once
+    ///    under `alg` — mirroring [`crate::state::hash_sorted_concat_bytes`] and
+    ///    `polydigest::root::combined_root`'s general fold. Mismatched- algorithm variants are
+    ///    never individually re-hashed under `alg` before folding; their raw bytes participate as
+    ///    fold inputs as-is.
+    ///
+    /// A no-op when this multihash already has `alg`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if this multihash has zero variants.
+    pub fn arrow_component_bytes(
+        &self,
+        alg: HashAlg,
+    ) -> crate::error::Result<std::borrow::Cow<'_, [u8]>> {
+        if let Some(bytes) = self.get(alg) {
+            return Ok(std::borrow::Cow::Borrowed(bytes));
+        }
+        if self.len() == 1 {
+            return self.first_variant().map(std::borrow::Cow::Borrowed);
+        }
+        if self.is_empty() {
+            return Err(crate::error::Error::EmptyMultihash);
+        }
+        let all_variants: Vec<&[u8]> = self.variants.values().map(AsRef::as_ref).collect();
+        Ok(std::borrow::Cow::Owned(
+            crate::state::hash_sorted_concat_bytes(alg, &all_variants),
+        ))
     }
 
     /// Get the first available variant's bytes.
@@ -131,6 +199,53 @@ impl MultihashDigest {
             .map(AsRef::as_ref)
             .ok_or(crate::error::Error::EmptyMultihash)
     }
+
+    /// Build the tagged wire-format digest (`alg:base64digest`) for a
+    /// specific algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MissingVariant` if `alg` has no variant in this multihash.
+    pub fn tagged(&self, alg: HashAlg) -> crate::error::Result<crate::state::TaggedDigest> {
+        let bytes = self
+            .get(alg)
+            .ok_or(crate::error::Error::MissingVariant(alg))?;
+        crate::state::TaggedDigest::new(alg, bytes.to_vec())
+    }
+
+    /// Build the tagged wire-format digest (`alg:base64digest`) for the
+    /// first available algorithm variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmptyMultihash` if no variants exist.
+    pub fn tagged_first(&self) -> crate::error::Result<crate::state::TaggedDigest> {
+        let alg = self
+            .algorithms()
+            .next()
+            .ok_or(crate::error::Error::EmptyMultihash)?;
+        self.tagged(alg)
+    }
+
+    /// Check if this multihash matches another on all common algorithms.
+    ///
+    /// Returns true if there is at least one common algorithm and all common
+    /// algorithms have matching digests.
+    #[must_use]
+    pub fn matches(&self, other: &Self) -> bool {
+        let mut common = false;
+        for alg in self.algorithms() {
+            if let Some(d1) = self.get(alg) {
+                if let Some(d2) = other.get(alg) {
+                    if d1 != d2 {
+                        return false;
+                    }
+                    common = true;
+                }
+            }
+        }
+        common
+    }
 }
 
 // ============================================================================
@@ -143,8 +258,8 @@ mod tests {
 
     #[test]
     fn from_single_creates_one_variant() {
-        let digest = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, digest.clone());
+        let digest = vec![0xDE; 32];
+        let mh = MultihashDigest::from_single(HashAlg::Sha256, digest.clone()).unwrap();
 
         assert_eq!(mh.len(), 1);
         assert!(mh.contains(HashAlg::Sha256));
@@ -167,6 +282,13 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_invalid_lengths() {
+        let mut variants = BTreeMap::new();
+        variants.insert(HashAlg::Sha256, vec![0u8; 31].into_boxed_slice());
+        assert!(MultihashDigest::new(variants).is_err());
+    }
+
+    #[test]
     fn algorithms_iterates_in_order() {
         let mut variants = BTreeMap::new();
         variants.insert(HashAlg::Sha512, vec![0u8; 64].into_boxed_slice());
@@ -181,15 +303,15 @@ mod tests {
 
     #[test]
     fn get_returns_none_for_missing() {
-        let mh = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]);
+        let mh = MultihashDigest::from_single(HashAlg::Sha256, vec![0u8; 32]).unwrap();
         assert!(mh.get(HashAlg::Sha384).is_none());
     }
 
     #[test]
     fn equality_checks_all_variants() {
-        let mh1 = MultihashDigest::from_single(HashAlg::Sha256, vec![1, 2, 3]);
-        let mh2 = MultihashDigest::from_single(HashAlg::Sha256, vec![1, 2, 3]);
-        let mh3 = MultihashDigest::from_single(HashAlg::Sha256, vec![4, 5, 6]);
+        let mh1 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
+        let mh2 = MultihashDigest::from_single(HashAlg::Sha256, vec![1; 32]).unwrap();
+        let mh3 = MultihashDigest::from_single(HashAlg::Sha256, vec![4; 32]).unwrap();
 
         assert_eq!(mh1, mh2);
         assert_ne!(mh1, mh3);

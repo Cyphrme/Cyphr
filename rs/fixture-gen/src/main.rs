@@ -243,10 +243,14 @@ fn generate_recursive(input_dir: &PathBuf, output_dir: &Path, pool: &test_fixtur
         };
 
         // Create subdirectory based on intent file basename
-        let intent_stem = toml_path
+        let intent_stem_raw = toml_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
+        let intent_stem = match intent_stem_raw {
+            "witness_register" => "witness",
+            other => other,
+        };
         let subdir = output_dir.join(intent_stem);
 
         if let Err(e) = std::fs::create_dir_all(&subdir) {

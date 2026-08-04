@@ -1,0 +1,24 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "cyphr-index-fjall"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[dependencies]
+cyphr         = { path = "../cyphr", version = "0.1.0" }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0" }
+fjall         = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+tokio         = { workspace = true, features = ["sync", "rt"] }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+blake3 = { workspace = true }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0", features = [
+  "conformance-tests",
+] }
+tempfile = "3"

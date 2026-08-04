@@ -1,4 +1,5 @@
 use std::fs;
+
 use test_fixtures::{Intent, Pool, generate};
 
 fn main() {

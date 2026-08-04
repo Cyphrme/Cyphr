@@ -8,7 +8,8 @@
 //! Actions use `[[test.action]]`.
 //! See `.sketches/2026-02-18-fixture-format-alignment.md` for design rationale.
 
-use std::{path::Path, str::FromStr};
+use std::path::Path;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -92,9 +93,6 @@ pub struct SetupIntent {
 /// Override fields for error tests.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OverrideIntent {
-    /// Override `pre` field value (for InvalidPrior tests).
-    #[serde(default)]
-    pub pre: Option<String>,
     /// Override `tmb` field value (for UnknownKey tests).
     #[serde(default)]
     pub tmb: Option<String>,
@@ -104,10 +102,8 @@ pub struct OverrideIntent {
     /// Force-inject a `pre` field onto actions (for [data-action-no-pre] tests).
     #[serde(default)]
     pub inject_pre: Option<bool>,
-    /// Omit the `pre` field from non-genesis cozies (for [transaction-pre-required] tests).
-    #[serde(default)]
-    pub omit_pre: Option<bool>,
-    /// Bypass the empty commit validation to force an empty commit generation (for [commit-one-or-more] tests).
+    /// Bypass the empty commit validation to force an empty commit generation (for
+    /// [commit-one-or-more] tests).
     #[serde(default)]
     pub empty_commit: Option<bool>,
 }
@@ -124,6 +120,9 @@ pub struct ActionIntent {
     /// Optional message content.
     #[serde(default)]
     pub msg: Option<String>,
+    /// Optional payload ID (e.g. for witness/register/*).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// Expected assertions after test execution.
@@ -153,6 +152,12 @@ pub struct ExpectedAssertions {
     /// Expected error (for error tests).
     #[serde(default)]
     pub error: Option<String>,
+    /// Expected `Principal::is_deleted()` (SPEC.md §11.1 `Deleted`).
+    #[serde(default)]
+    pub deleted: Option<bool>,
+    /// Expected `Principal::is_frozen()` (SPEC.md §11.1 `Frozen`).
+    #[serde(default)]
+    pub frozen: Option<bool>,
 }
 
 impl Intent {

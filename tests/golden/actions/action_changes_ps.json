@@ -1,6 +1,8 @@
 {
   "name": "action_changes_ps",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -25,19 +27,23 @@
       "keys": [],
       "commit_id": "",
       "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
-      "pr": "cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw"
+      "sr": "TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
+      "pr": "TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0"
     }
   ],
-  "digests": ["MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"],
+  "digests": [
+    "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4"
+  ],
   "expected": {
     "key_count": 1,
     "level": 4,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
-    "sr": "SHA-256:cmSFV69fzyHA6fi0qiAXp4EIngUFVKYjKZTlnACwqiw",
+    "pr": "SHA-256:TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
+    "sr": "SHA-256:TVl1NQeYVQeW9enB7aG-HyzDnqbEzsBY9G745Z6-nh0",
     "dr": "MDysJnIKSmGSGuOoO4awid_auCK2OKyDSLzVMBuxLi4",
-    "pg": ""
+    "pg": "",
+    "deleted": false,
+    "frozen": false
   }
 }

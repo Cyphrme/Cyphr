@@ -1,6 +1,8 @@
 {
   "name": "action_timestamp_past_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -25,8 +27,8 @@
       "keys": [],
       "commit_id": "",
       "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      "sr": "EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4",
-      "pr": "EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4"
+      "sr": "dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg",
+      "pr": "dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg"
     },
     {
       "txs": [
@@ -57,10 +59,12 @@
     "level": 4,
     "kr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "ar": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    "pr": "SHA-256:EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4",
-    "sr": "SHA-256:EiDRpb7riIyaFYcyeuYUss9wrXpqQUjRzKvFM2FzEb4",
+    "pr": "SHA-256:dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg",
+    "sr": "SHA-256:dmxf3XdyXCI7oraJuQK4cvys_6DMGXNNyyvwzZPzyxg",
     "dr": "PRvGYsC5BcfyNwAEjIhSv50Qs3MD8z_XVhmb-Fya1iE",
     "pg": "",
-    "error": "TimestampPast"
+    "error": "TimestampPast",
+    "deleted": false,
+    "frozen": false
   }
 }

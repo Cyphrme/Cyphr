@@ -1,6 +1,8 @@
 {
   "name": "multiple_actions_sorted",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -60,6 +62,8 @@
     "pr": "SHA-256:BUOEfMJrz2wdeGqyz46jf5VF1U2QrouFdbcV3bgj_So",
     "sr": "SHA-256:BUOEfMJrz2wdeGqyz46jf5VF1U2QrouFdbcV3bgj_So",
     "dr": "vCGXOZWCxrRMGxPAQzlU5k99XPyjrBiL1c3E69Y3ohc",
-    "pg": ""
+    "pg": "",
+    "deleted": false,
+    "frozen": false
   }
 }

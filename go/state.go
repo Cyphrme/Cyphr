@@ -32,19 +32,13 @@ type StateRoot struct {
 }
 
 // DataRoot (DS) is the state of user actions (SPEC §7.4).
-// Currently single-algorithm (Cad-based), per Rust implementation.
 type DataRoot struct {
-	digest coz.B64
+	MultihashDigest
 }
 
-// NewDataRoot creates a DataRoot from a digest.
-func NewDataRoot(digest coz.B64) DataRoot {
-	return DataRoot{digest: slices.Clone(digest)}
-}
-
-// Bytes returns the raw digest bytes.
-func (d DataRoot) Bytes() coz.B64 {
-	return d.digest
+// NewDataRoot creates a DataRoot from a MultihashDigest.
+func NewDataRoot(mh MultihashDigest) DataRoot {
+	return DataRoot{MultihashDigest: mh}
 }
 
 // PrincipalRoot (PR) is the current top-level state: MR(SR, CR?, embedding?) (SPEC §3.7.1).
@@ -186,7 +180,7 @@ func (s KeyRoot) String() string          { return s.First().String() }
 func (s TransactionRoot) String() string  { return s.First().String() }
 func (s AuthRoot) String() string         { return s.First().String() }
 func (s StateRoot) String() string        { return s.First().String() }
-func (s DataRoot) String() string         { return s.digest.String() }
+func (s DataRoot) String() string         { return s.First().String() }
 func (s PrincipalRoot) String() string    { return s.First().String() }
 func (s PrincipalGenesis) String() string { return s.First().String() }
 
@@ -322,9 +316,25 @@ func ComputeKR(thumbprints []coz.B64, nonce coz.B64, algs []HashAlg) (KeyRoot, e
 	}
 
 	// Implicit promotion: single key, no nonce
-	// Use first algorithm for single-variant multihash
 	if len(thumbprints) == 1 && len(nonce) == 0 {
-		return KeyRoot{FromSingleDigest(algs[0], thumbprints[0])}, nil
+		sourceAlg := inferAlgFromLen(len(thumbprints[0]))
+		variants := make(map[HashAlg]coz.B64, len(algs))
+		for _, targetAlg := range algs {
+			if sourceAlg == targetAlg {
+				variants[targetAlg] = slices.Clone(thumbprints[0])
+			} else {
+				res, err := coz.Hash(coz.HshAlg(targetAlg), thumbprints[0])
+				if err != nil {
+					return KeyRoot{}, err
+				}
+				variants[targetAlg] = res
+			}
+		}
+		mh, err := NewMultihashDigest(variants)
+		if err != nil {
+			return KeyRoot{}, err
+		}
+		return KeyRoot{mh}, nil
 	}
 
 	// Collect all components
@@ -438,7 +448,7 @@ func ComputeSR(ar AuthRoot, dr *DataRoot, embedding coz.B64, algs []HashAlg) (St
 
 		components := [][]byte{arBytes}
 		if dr != nil {
-			components = append(components, dr.Bytes())
+			components = append(components, dr.GetOrFirst(alg))
 		}
 		if len(embedding) > 0 {
 			components = append(components, embedding)
@@ -457,35 +467,107 @@ func ComputeSR(ar AuthRoot, dr *DataRoot, embedding coz.B64, algs []HashAlg) (St
 	return StateRoot{mh}, nil
 }
 
-// ComputeDR computes Data State from action czds (SPEC §7.4).
+// ComputeDR computes Data State from actions (SPEC §7.4).
 // If only one action with no nonce, DS = czd (implicit promotion).
 // Returns nil DS if no actions.
-// DataRoot is currently single-algorithm (per Rust).
-func ComputeDR(czds []coz.B64, nonce coz.B64, alg HashAlg) (*DataRoot, error) {
-	if len(czds) == 0 {
+func ComputeDR(actions []*Action, nonce coz.B64, algs []HashAlg) (*DataRoot, error) {
+	if len(actions) == 0 && len(nonce) == 0 {
 		return nil, nil // No actions = nil DS
 	}
 
 	// Implicit promotion: single action, no nonce
-	if len(czds) == 1 && len(nonce) == 0 {
-		dr := NewDataRoot(czds[0])
+	if len(actions) == 1 && len(nonce) == 0 {
+		czd := actions[0].Czd
+		sourceAlg := inferAlgFromLen(len(czd))
+		variants := make(map[HashAlg]coz.B64, len(algs))
+		for _, targetAlg := range algs {
+			if sourceAlg == targetAlg {
+				variants[targetAlg] = slices.Clone(czd)
+			} else {
+				res, err := coz.Hash(coz.HshAlg(targetAlg), czd)
+				if err != nil {
+					return nil, err
+				}
+				variants[targetAlg] = res
+			}
+		}
+		mh, err := NewMultihashDigest(variants)
+		if err != nil {
+			return nil, err
+		}
+		dr := NewDataRoot(mh)
 		return &dr, nil
 	}
 
-	components := make([][]byte, 0, len(czds)+1)
-	for _, c := range czds {
-		components = append(components, c)
-	}
-	if len(nonce) > 0 {
-		components = append(components, nonce)
+	// Sort components: actions by Now then Czd, non-actions by digest bytes
+	type drComponent struct {
+		bytes []byte
+		now   int64
 	}
 
-	digest, err := hashSortedConcatBytes(alg, components...)
+	components := make([]drComponent, 0, len(actions)+1)
+	for _, a := range actions {
+		components = append(components, drComponent{
+			bytes: a.Czd,
+			now:   a.Now,
+		})
+	}
+	if len(nonce) > 0 {
+		components = append(components, drComponent{
+			bytes: nonce,
+			now:   9223372036854775807, // i64::MAX
+		})
+	}
+
+	sort.Slice(components, func(i, j int) bool {
+		if components[i].now != components[j].now {
+			return components[i].now < components[j].now
+		}
+		return bytes.Compare(components[i].bytes, components[j].bytes) < 0
+	})
+
+	variants := make(map[HashAlg]coz.B64, len(algs))
+	for _, alg := range algs {
+		var buf []byte
+		for _, comp := range components {
+			sourceAlg := inferAlgFromLen(len(comp.bytes))
+			if sourceAlg == alg {
+				buf = append(buf, comp.bytes...)
+			} else {
+				res, err := coz.Hash(coz.HshAlg(alg), comp.bytes)
+				if err != nil {
+					return nil, err
+				}
+				buf = append(buf, res...)
+			}
+		}
+
+		digest, err := coz.Hash(coz.HshAlg(alg), buf)
+		if err != nil {
+			return nil, err
+		}
+		variants[alg] = digest
+	}
+
+	mh, err := NewMultihashDigest(variants)
 	if err != nil {
 		return nil, err
 	}
-	dr := NewDataRoot(digest)
+	dr := NewDataRoot(mh)
 	return &dr, nil
+}
+
+func inferAlgFromLen(length int) HashAlg {
+	switch length {
+	case 32:
+		return HashSha256
+	case 48:
+		return HashSha384
+	case 64:
+		return HashSha512
+	default:
+		return HashSha256
+	}
 }
 
 // ComputePR computes Principal Root (SPEC §3.7.1).

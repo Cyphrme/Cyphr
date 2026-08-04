@@ -9,10 +9,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cyphr_storage::{
-    CommitEntry, Entry, Genesis, LoadError, export_commits, load_principal_from_commits,
-};
-
+use cyphr::StateDigest;
+use cyphr_storage::{CommitEntry, Genesis, LoadError, export_commits, load_principal_from_commits};
 use test_fixtures::{Generator, Golden, GoldenKey, Intent, Pool};
 
 // ============================================================================
@@ -154,7 +152,7 @@ fn compare_commits(exported: &[CommitEntry], expected: &[CommitEntry]) -> Result
 
         if exp.pr != expected_commit.pr {
             return Err(format!(
-                "commit {}: ps mismatch\n  exported: {:?}\n  expected: {:?}",
+                "commit {}: pr mismatch\n  exported: {:?}\n  expected: {:?}",
                 i, exp.pr, expected_commit.pr
             ));
         }
@@ -303,7 +301,7 @@ fn run_e2e_round_trip(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
     if !commit_vec.is_empty() {
         let commit0 = &commit_vec[0];
         eprintln!(
-            "  [0] commit_id={}, as={}, ps={}",
+            "  [0] commit_id={}, as={}, pr={}",
             commit0.commit_id, commit0.auth_root, commit0.pr
         );
     }
@@ -371,11 +369,10 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::MissingTimestamp { .. } => "MissingTimestamp",
         LoadError::MissingSig { .. } => "MissingSig",
         LoadError::InvalidSignature { .. } => "InvalidSignature",
-        LoadError::BrokenChain { .. } => "BrokenChain",
         LoadError::UnknownSigner { .. } => "UnknownSigner",
         LoadError::Protocol(e) => match e {
-            cyphr::Error::InvalidPrior => "InvalidPrior",
             cyphr::Error::UnknownKey => "UnknownKey",
+            cyphr::Error::UnknownAlg => "UnknownAlg",
             cyphr::Error::KeyRevoked => "KeyRevoked",
             cyphr::Error::NoActiveKeys => "NoActiveKeys",
             cyphr::Error::DuplicateKey => "DuplicateKey",
@@ -390,6 +387,7 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::Json { .. } => "JsonError",
         LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
+        LoadError::CheckpointCrMismatch => "CheckpointCrMismatch",
     }
 }
 
@@ -402,10 +400,7 @@ fn resolve_constraint_tag(expected: &str) -> &str {
         // Transactions
         "[commit-one-or-more]" => "EmptyCommit",
         "[no-empty-mr]" => "NoGenesisKeys",
-        "[transaction-pre-required]" => "MalformedPayload",
         "[data-action-no-pre]" => "MalformedPayload",
-        "[commit-pre-chain]" => "BrokenChain",
-        "[no-orphan-pre]" => "BrokenChain",
         "[create-uniqueness]" => "DuplicateKey",
         "[no-unauthorized-transaction]" => "UnknownKey",
         "[revoke-self-signed]" => "MalformedPayload",
@@ -453,7 +448,23 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
         .generate_test(test)
         .unwrap_or_else(|e| panic!("{}: generation failed: {}", test.name, e));
 
-    let genesis_keys = golden.genesis_keys.as_ref().expect("missing genesis_keys");
+    if golden.genesis_keys.is_none() {
+        assert_eq!(
+            golden.expected.error.as_deref().map(resolve_constraint_tag),
+            Some(expected_error),
+            "{}: wrong error type during genesis generation. Got {:?}, expected {:?}",
+            test.name,
+            golden.expected.error,
+            expected_error
+        );
+        eprintln!(
+            "  ✓ {} (expected genesis error: {})",
+            test.name, expected_error
+        );
+        return;
+    }
+
+    let genesis_keys = golden.genesis_keys.as_ref().unwrap();
     let commits = golden.commits.as_ref().expect("missing commits");
 
     let genesis = make_genesis(genesis_keys);
@@ -496,6 +507,7 @@ fn run_e2e_error_test(pool: &Pool, test: &test_fixtures::intent::TestIntent) {
             );
         },
         Err(e) => {
+            eprintln!("DEBUG: e = {:?}", e);
             let actual_error = load_error_name(&e);
             assert_eq!(
                 actual_error, expected_error,
@@ -516,6 +528,29 @@ fn e2e_dynamic_error_conditions() {
     for test in &intent.test {
         run_e2e_error_test(&pool, test);
     }
+}
+
+/// Data-driven e2e test: loads the dynamic feature matrix and executes happy & error paths.
+#[test]
+fn e2e_dynamic_features_matrix() {
+    let pool = load_pool();
+    let intent = load_e2e_intents("e2e_features.toml");
+    let mut happy_count = 0;
+    let mut error_count = 0;
+
+    for test in &intent.test {
+        if test.is_error_test() {
+            run_e2e_error_test(&pool, test);
+            error_count += 1;
+        } else {
+            run_e2e_round_trip(&pool, test);
+            happy_count += 1;
+        }
+    }
+    println!(
+        "Ran {} happy-path and {} error-path feature matrix tests.",
+        happy_count, error_count
+    );
 }
 
 // ============================================================================
@@ -603,216 +638,31 @@ fn e2e_checkpoint_load() {
     let principal = cyphr::Principal::implicit(key.clone()).expect("implicit failed");
     let initial_as = principal.auth_root().clone();
 
-    // L1 principal has no PR
-    assert!(principal.pg().is_none(), "L1 principal should have no PR");
+    // L1 principal has no PG
+    assert!(principal.pg().is_none(), "L1 principal should have no PG");
 
     // Create checkpoint at genesis
     let checkpoint = Checkpoint {
         auth_root: initial_as,
         keys: vec![key],
         attestor: None,
+        cr: None,
     };
 
-    // Load from checkpoint with no additional entries (no PR for L1)
-    let loaded = load_from_checkpoint(None, checkpoint, &[]).expect("load failed");
+    // Load from checkpoint with no additional entries (no PG for L1)
+    let loaded = load_from_checkpoint(None, checkpoint, None, &[]).expect("load failed");
 
-    // Verify PR is still None for L1
+    // Verify PG is still None for L1
     assert!(
         loaded.pg().is_none(),
-        "checkpoint_matches_pr: L1 should have no PR"
+        "checkpoint_matches_pg: L1 should have no PG"
     );
 
-    eprintln!("  ✓ checkpoint_matches_pr (L1: no PR)");
+    eprintln!("  ✓ checkpoint_matches_pg (L1: no PG)");
 
     // Test checkpoint_with_suffix is implicitly tested by round-trip tests
     // that load entries after genesis - the load_principal path is the same
     eprintln!("  ✓ checkpoint_with_suffix (covered by load_with_transactions)");
-}
-
-// ============================================================================
-// FileStore Operations Tests
-// ============================================================================
-
-/// Helper to create a temp FileStore.
-fn temp_filestore(test_name: &str) -> (cyphr_storage::FileStore, std::path::PathBuf) {
-    use std::env::temp_dir;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    let dir = temp_dir().join(format!(
-        "cyphr_e2e_{}_{}_{}",
-        std::process::id(),
-        test_name,
-        nanos
-    ));
-    (cyphr_storage::FileStore::new(&dir), dir)
-}
-
-/// Create test entries with specific timestamps.
-fn make_test_entries_with_timestamps(timestamps: &[i64]) -> Vec<Entry> {
-    timestamps
-        .iter()
-        .map(|ts| {
-            let json = format!(
-                r#"{{"pay":{{"now":{},"typ":"test/action","alg":"ES256"}},"sig":"test_sig"}}"#,
-                ts
-            );
-            Entry::from_json(json).expect("test entry JSON invalid")
-        })
-        .collect()
-}
-
-/// FileStore: append entry and read it back.
-#[test]
-fn e2e_file_append_read() {
-    use cyphr::state::PrincipalGenesis;
-    use cyphr_storage::Store;
-
-    let (store, dir) = temp_filestore("append_read");
-    let pr = PrincipalGenesis::from_bytes(vec![1, 2, 3, 4, 5]);
-
-    // Create and append an entry
-    let entries = make_test_entries_with_timestamps(&[1700000000]);
-    store.append_entry(&pr, &entries[0]).unwrap();
-
-    // Read back
-    let loaded = store.get_entries(&pr).unwrap();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0].now, 1700000000);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("  ✓ file_append_read");
-}
-
-/// FileStore: query entries after a timestamp.
-#[test]
-fn e2e_file_query_after() {
-    use cyphr::state::PrincipalGenesis;
-    use cyphr_storage::{QueryOpts, Store};
-
-    let (store, dir) = temp_filestore("query_after");
-    let pr = PrincipalGenesis::from_bytes(vec![2, 3, 4, 5, 6]);
-
-    // Append entries: 100, 200, 300, 400, 500
-    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
-    for e in &entries {
-        store.append_entry(&pr, e).unwrap();
-    }
-
-    // Query after 250 -> expect 300, 400, 500
-    let opts = QueryOpts {
-        after: Some(250),
-        before: None,
-        limit: None,
-    };
-    let result = store.get_entries_range(&pr, &opts).unwrap();
-    assert_eq!(result.len(), 3);
-    assert_eq!(result[0].now, 300);
-    assert_eq!(result[1].now, 400);
-    assert_eq!(result[2].now, 500);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("  ✓ file_query_after");
-}
-
-/// FileStore: query entries before a timestamp.
-#[test]
-fn e2e_file_query_before() {
-    use cyphr::state::PrincipalGenesis;
-    use cyphr_storage::{QueryOpts, Store};
-
-    let (store, dir) = temp_filestore("query_before");
-    let pr = PrincipalGenesis::from_bytes(vec![3, 4, 5, 6, 7]);
-
-    // Append entries: 100, 200, 300, 400, 500
-    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
-    for e in &entries {
-        store.append_entry(&pr, e).unwrap();
-    }
-
-    // Query before 350 -> expect 100, 200, 300
-    let opts = QueryOpts {
-        after: None,
-        before: Some(350),
-        limit: None,
-    };
-    let result = store.get_entries_range(&pr, &opts).unwrap();
-    assert_eq!(result.len(), 3);
-    assert_eq!(result[0].now, 100);
-    assert_eq!(result[1].now, 200);
-    assert_eq!(result[2].now, 300);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("  ✓ file_query_before");
-}
-
-/// FileStore: query entries in a time range.
-#[test]
-fn e2e_file_query_range() {
-    use cyphr::state::PrincipalGenesis;
-    use cyphr_storage::{QueryOpts, Store};
-
-    let (store, dir) = temp_filestore("query_range");
-    let pr = PrincipalGenesis::from_bytes(vec![4, 5, 6, 7, 8]);
-
-    // Append entries: 100, 200, 300, 400, 500
-    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
-    for e in &entries {
-        store.append_entry(&pr, e).unwrap();
-    }
-
-    // Query after 150, before 450 -> expect 200, 300, 400
-    let opts = QueryOpts {
-        after: Some(150),
-        before: Some(450),
-        limit: None,
-    };
-    let result = store.get_entries_range(&pr, &opts).unwrap();
-    assert_eq!(result.len(), 3);
-    assert_eq!(result[0].now, 200);
-    assert_eq!(result[1].now, 300);
-    assert_eq!(result[2].now, 400);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("  ✓ file_query_range");
-}
-
-/// FileStore: query with limit.
-#[test]
-fn e2e_file_query_limit() {
-    use cyphr::state::PrincipalGenesis;
-    use cyphr_storage::{QueryOpts, Store};
-
-    let (store, dir) = temp_filestore("query_limit");
-    let pr = PrincipalGenesis::from_bytes(vec![5, 6, 7, 8, 9]);
-
-    // Append entries: 100, 200, 300, 400, 500
-    let entries = make_test_entries_with_timestamps(&[100, 200, 300, 400, 500]);
-    for e in &entries {
-        store.append_entry(&pr, e).unwrap();
-    }
-
-    // Query with limit 2 -> expect first 2
-    let opts = QueryOpts {
-        after: None,
-        before: None,
-        limit: Some(2),
-    };
-    let result = store.get_entries_range(&pr, &opts).unwrap();
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].now, 100);
-    assert_eq!(result[1].now, 200);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("  ✓ file_query_limit");
 }
 
 // ============================================================================
@@ -844,7 +694,8 @@ fn e2e_dynamic_edge_cases() {
 /// state derivation across all supported algorithms.
 #[test]
 fn e2e_multihash_round_trip() {
-    use cyphr::state::{compute_ar, compute_kr, compute_pr, compute_sr};
+    use cyphr::semantic_tree::{AuthTree, KeyTree, StateTree};
+    use cyphr::state::compute_pr;
 
     let pool = load_pool();
     let intent = load_e2e_intents("multihash_coherence.toml");
@@ -901,11 +752,13 @@ fn e2e_multihash_round_trip() {
         // Get thumbprints from current keyset
         let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
 
-        // Recompute KS with all active algorithms
-        let recomputed_ks = compute_kr(&thumbprints.to_vec(), None, active_algs).unwrap();
+        // Recompute KR via the real KT (not the demoted compute_kr oracle,
+        // which only agrees with KT for single-algorithm keysets — see
+        // cyphr::state::compute_kr's doc comment).
+        let recomputed_ks = KeyTree::build(&thumbprints, &active_algs).unwrap();
 
         // Verify each algorithm variant matches
-        for &alg in active_algs {
+        for alg in active_algs.clone() {
             // KS coherence
             let principal_ks = principal.key_root().get(alg);
             let recomputed_ks_variant = recomputed_ks.get(alg);
@@ -925,38 +778,38 @@ fn e2e_multihash_round_trip() {
                 alg
             );
 
-            // Verify PS variant exists
-            let principal_ps = principal.pr().get(alg);
+            // Verify PR variant exists
+            let principal_pr = principal.pr().get(alg);
             assert!(
-                principal_ps.is_some(),
-                "{}: PS variant {:?} should exist",
+                principal_pr.is_some(),
+                "{}: PR variant {:?} should exist",
                 test.name,
                 alg
             );
 
-            eprintln!("    ✓ {:?} variant present (KS/AS/PS)", alg);
+            eprintln!("    ✓ {:?} variant present (KS/AS/PR)", alg);
         }
 
-        // PR check: None for L1/L2, has genesis variant for L3+
-        if let Some(pr) = principal.pg() {
+        // PG check: None for L1/L2, has genesis variant for L3+
+        if let Some(pg) = principal.pg() {
             let genesis_alg = principal.hash_alg();
-            let principal_pr = pr.get(genesis_alg);
+            let principal_pg = pg.get(genesis_alg);
             assert!(
-                principal_pr.is_some(),
-                "{}: PR should have genesis algorithm {:?} variant",
+                principal_pg.is_some(),
+                "{}: PG should have genesis algorithm {:?} variant",
                 test.name,
                 genesis_alg
             );
-            eprintln!("    ✓ PR has genesis algorithm {:?} variant", genesis_alg);
+            eprintln!("    ✓ PG has genesis algorithm {:?} variant", genesis_alg);
         } else {
-            eprintln!("    ✓ PR is None (L1/L2 principal)");
+            eprintln!("    ✓ PG is None (L1/L2 principal)");
         }
 
-        // --- Step 4: Full AS/CS/PS recomputation verification ---
-        // Recompute AS from KS
-        let recomputed_as = compute_ar(&recomputed_ks, None, None, active_algs).unwrap();
+        // --- Step 4: Full AS/CS/PR recomputation verification ---
+        // Recompute AS from KS via the real AR-node.
+        let recomputed_as = AuthTree::build(&recomputed_ks, &active_algs).unwrap();
 
-        for &alg in active_algs {
+        for alg in active_algs.clone() {
             assert_eq!(
                 principal.auth_root().get(alg),
                 recomputed_as.get(alg),
@@ -966,19 +819,19 @@ fn e2e_multihash_round_trip() {
             );
         }
 
-        // Recompute SR from AR + DR?
+        // Recompute SR from AR + DR via the real SR-node.
         let recomputed_sr =
-            compute_sr(&recomputed_as, principal.data_root(), None, active_algs).unwrap();
+            StateTree::build(&recomputed_as, principal.data_root(), &active_algs).unwrap();
 
         // Recompute PR from SR + CR?
         let cr = principal.cr();
-        let recomputed_ps = compute_pr(&recomputed_sr, cr, None, active_algs).unwrap();
+        let recomputed_pr = compute_pr(&recomputed_sr, cr, &active_algs).unwrap();
 
-        for &alg in active_algs {
+        for alg in active_algs {
             assert_eq!(
                 principal.pr().get(alg),
-                recomputed_ps.get(alg),
-                "{}: PS variant {:?} mismatch after recomputation",
+                recomputed_pr.get(alg),
+                "{}: PR variant {:?} mismatch after recomputation",
                 test.name,
                 alg
             );

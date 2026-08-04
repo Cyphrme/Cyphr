@@ -1,6 +1,8 @@
 {
   "name": "action_unknown_signer_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -29,7 +31,9 @@
       "pr": ""
     }
   ],
-  "digests": ["zTBHI2ZDPqIjWD9oENk4VvigCrGEo36jROKNfL7SxHE"],
+  "digests": [
+    "zTBHI2ZDPqIjWD9oENk4VvigCrGEo36jROKNfL7SxHE"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
@@ -38,6 +42,8 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "UnknownKey"
+    "error": "UnknownKey",
+    "deleted": false,
+    "frozen": false
   }
 }

@@ -17,7 +17,8 @@
 (PoP), bearer tokens, login flows, and Mutual State Synchronization (MSS). Also
 covers embedding and conjunctive authorization for delegated identity.
 
-**Target System:** `SPEC.md` §12 (Embedding), §14 (Authentication), §16 (MSS).
+**Target System:** `SPEC.md` §10 (Embedding), §17 (Authentication), §13.1
+(MSS). All citations verified current as of 2026-07-14.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -32,6 +33,38 @@ verification and access control.
 — lifecycle gate for authentication.
 [`state-tree.md`](./state-tree.md)
 — Merkle tree structure for embeddings.
+
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
+"implemented."** The Verification table's uniform 24/24 `pass` reflects
+SPEC-internal consistency, not implementation status. The following
+revisions apply post-campaign:
+
+- **Implemented**: login, both challenge-response and timestamp-based
+  (`rs/cyphr-server/src/auth/login.rs`, real HTTP routes wired in
+  `build_router`), bearer token issuance/verification with a bound `typ`
+  (`rs/cyphr-server/src/auth/token.rs`), the audience+principal binding
+  and lifecycle gate (rejects Frozen/Deleted/unknown principals), replay
+  prevention (single-use challenge store, timestamp window) -- all tested
+  end to end with real signed HTTP requests in
+  `rs/cyphr-server/tests/login.rs` (12 tests). Also: signature-based PoP,
+  checkpoint restore (`Principal::from_checkpoint`/`from_checkpoint_with_trees`
+  in `rs/cyphr/src/principal.rs`, covering [checkpoint-self-contained] and
+  [checkpoint-genesis-foundational]), and chain-replay verification.
+- **Still unimplemented (correctly out of campaign scope)**: MSS push,
+  Principal Embedding -- `rs/cyphr/src/state.rs`'s own doc comments say
+  embedding "is reserved for future use; pass `None`," confirming
+  [embedding-weight-default] through [embedding-pinning] (5 constraints)
+  have no working code behind them. There is no `checkpoint/create`
+  declarative transaction `typ`, so [checkpoint-declarative] specifically
+  remains unimplemented.
+
+`docs/protocol/constraint_coverage.md`'s Authentication section (1 TESTED,
+12 STRUCTURAL, 10 OOS, 1 RUNTIME) reflects this breakdown; the login/bearer
+constraints moved from OOS to STRUCTURAL (verified by real integration
+tests, not the narrower `errors.toml`/`error_conditions.toml` TESTED
+category) once N05/N06/N07 landed.
 
 ## Constraints
 
@@ -197,32 +230,37 @@ keys are the sole authentication factor, verifiable by any party.
 
 ## Verification
 
+> See "Implementation Status" above: `pass` below means SPEC-internal
+> consistency, not implementation. Login, bearer tokens, MSS push, and
+> Principal Embedding are unimplemented; checkpoint restore and
+> signature-based PoP are implemented.
+
 | Constraint                        | Method      | Result | Detail                             |
 | :-------------------------------- | :---------- | :----- | :--------------------------------- |
-| [pop-via-signature]               | agent-check | pass   | Explicit in SPEC.md §14.1          |
-| [pop-types]                       | agent-check | pass   | Explicit in SPEC.md §14.1          |
-| [login-challenge-response]        | agent-check | pass   | Explicit in SPEC.md §14.2 Option A |
-| [login-timestamp-based]           | agent-check | pass   | Explicit in SPEC.md §14.2 Option B |
-| [login-lifecycle-gate]            | agent-check | pass   | Explicit in SPEC.md §14.2          |
-| [replay-prevention]               | agent-check | pass   | Explicit in SPEC.md §14.3          |
-| [bearer-token-service-signed]     | agent-check | pass   | Explicit in SPEC.md §14.4          |
-| [bearer-token-fields]             | agent-check | pass   | Explicit in SPEC.md §14.4          |
-| [embedding-weight-default]        | agent-check | pass   | Explicit in SPEC.md §12            |
-| [embedding-cyclic-stop]           | agent-check | pass   | Explicit in SPEC.md §12            |
-| [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §12.2          |
-| [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §12.1          |
-| [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §12.4          |
-| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §16.2          |
-| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §16.2          |
+| [pop-via-signature]               | agent-check | pass   | Explicit in SPEC.md §17.1          |
+| [pop-types]                       | agent-check | pass   | Explicit in SPEC.md §17.1          |
+| [login-challenge-response]        | agent-check | pass   | Explicit in SPEC.md §17.2 Option A |
+| [login-timestamp-based]           | agent-check | pass   | Explicit in SPEC.md §17.2 Option B |
+| [login-lifecycle-gate]            | agent-check | pass   | Explicit in SPEC.md §17.2          |
+| [replay-prevention]               | agent-check | pass   | Explicit in SPEC.md §17.3          |
+| [bearer-token-service-signed]     | agent-check | pass   | Explicit in SPEC.md §17.4          |
+| [bearer-token-fields]             | agent-check | pass   | Explicit in SPEC.md §17.4          |
+| [embedding-weight-default]        | agent-check | pass   | Explicit in SPEC.md §10            |
+| [embedding-cyclic-stop]           | agent-check | pass   | Explicit in SPEC.md §10            |
+| [embedding-conjunctive-auth]      | agent-check | pass   | Explicit in SPEC.md §10.5          |
+| [embedding-tip-retrieval]         | agent-check | pass   | Explicit in SPEC.md §10.7          |
+| [embedding-pinning]               | agent-check | pass   | Explicit in SPEC.md §10.7          |
+| [verification-replay]             | agent-check | pass   | Explicit in SPEC.md §13.2          |
+| [verification-timestamp-order]    | agent-check | pass   | Explicit in SPEC.md §13.2          |
 | [checkpoint-self-contained]       | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-genesis-foundational] | agent-check | pass   | Explicit in SPEC.md §8.2           |
 | [checkpoint-declarative]          | agent-check | pass   | Explicit in SPEC.md §8.3           |
-| [mss-bidirectional]               | agent-check | pass   | Explicit in SPEC.md §16            |
-| [mss-push-on-mutation]            | agent-check | pass   | Explicit in SPEC.md §16.3          |
-| [no-login-non-active]             | agent-check | pass   | Follows from §14.2                 |
-| [no-unsigned-bearer]              | agent-check | pass   | Follows from §14.4                 |
-| [aaa-over-bearer]                 | agent-check | pass   | Explicit in SPEC.md §14            |
-| [sso-without-centralization]      | agent-check | pass   | Explicit in SPEC.md §14.5          |
+| [mss-bidirectional]               | agent-check | pass   | Explicit in SPEC.md §13.1          |
+| [mss-push-on-mutation]            | agent-check | pass   | Explicit in SPEC.md §13.1          |
+| [no-login-non-active]             | agent-check | pass   | Follows from §17.2                 |
+| [no-unsigned-bearer]              | agent-check | pass   | Follows from §17.4                 |
+| [aaa-over-bearer]                 | agent-check | pass   | Explicit in SPEC.md §17            |
+| [sso-without-centralization]      | agent-check | pass   | Explicit in SPEC.md §17.5          |
 
 ## Implications
 

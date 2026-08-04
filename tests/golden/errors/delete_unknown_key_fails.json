@@ -1,6 +1,8 @@
 {
   "name": "delete_unknown_key_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -16,11 +18,10 @@
             "alg": "ES256",
             "id": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "now": 1700000000,
-            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/cyphr/key/delete"
           },
-          "sig": "XTdxyo393MP0f3_odGzQ_LKgjwWP_z1jxd5pMcA4lsVVY9quvW8-eof1YCgq_FhW6DUHap7HVADRfFKiHnqO8Q"
+          "sig": "xZg9D_KtO4Pj728bDFZ7jkx8VdNtxRsnz4As_TQwG3dqf9PxrT151fPrajYHHgvMyMNULGgSWr3YhSXFiIg8Ag"
         }
       ],
       "keys": [
@@ -36,7 +37,9 @@
       "pr": ""
     }
   ],
-  "digests": ["RtBoRVdt9n4o80GZRxVIBJksi0kJPSYkvD3KWHRDA94"],
+  "digests": [
+    "nFHyd4dtvyao-4W8cE7CREFCXWNMiXrNXHw1BbnW13o"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
@@ -45,6 +48,8 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "UnknownSigner"
+    "error": "UnknownSigner",
+    "deleted": false,
+    "frozen": false
   }
 }

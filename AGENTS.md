@@ -1,153 +1,172 @@
-# Cyphr Agent Configuration
+# Cyphr — Agent Orientation
 
-## Predicate System
+Cyphr is a self-certifying identity and state protocol: every principal is
+an append-only, signed commit chain whose state roots are Merkle-derived,
+verifiable by anyone from published roots. This repository holds the
+protocol specification, a language-agnostic test corpus, and the
+implementations.
 
-This project uses [predicate](https://github.com/nrdxp/predicate) for agent configuration.
+## Goal
 
-> [!IMPORTANT]
-> You **must** review [.agent/PREDICATE.md](.agent/PREDICATE.md) and follow its instructions before beginning work.
+Deliver a production-ready **Rust** implementation of the Cyphr Protocol:
+the `rs/cyphr` protocol core, the durable storage stack (content-addressed
+blob store + rebuildable index + eml commit log), and the `cyphr-server`
+HTTP authority — hardened to the point that the server can be implemented
+cleanly, with all protocol behavior pinned by the shared golden corpus.
 
-**Active Personas:**
+**Status: WIP.** The server-readiness campaign CLOSEd 2026-07-10 (25 DAG
+nodes, meta-PR #43 merged); the server-receipts campaign CLOSEd 2026-07-20
+(response envelope, signed receipts, equivocation evidence; PR #90 merged
+into `server`, follow-ups tracked under issue #88). The durable record
+lives in `.ledger/log/` and forge issues #16/#23/#41; PR #23's Roadmap
+section is the unscoped candidate list for what's next. Deferred scope (per I6, live in
+`.scratch/server-readiness/PLAN.md`'s "Deferred" list, not `docs/plans/`):
+auth (SPEC §17), replay-cost caching (F25/U2/U3), the cross-process
+per-principal lease (#27's full scope), EMT→EML conversion (#40), and go/
+revival.
 
-- `go.md` — Go idioms for the `go/` implementation
-- `rust.md` — Rust idioms for the `rs/` implementation
-- `depmap.md` — DepMap MCP server for dependency-aware code exploration
-- `personalization.md` — User naming preferences
+## Structure
 
----
+| Path       | Role                                                                                    |
+| :--------- | :-------------------------------------------------------------------------------------- |
+| `SPEC.md`  | Protocol specification (see Invariants: ownership)                                      |
+| `rs/`      | Rust workspace — **all active work happens here** (`rs/AGENTS.md`)                      |
+| `go/`      | Go implementation — deprioritized, reference only (`go/AGENTS.md`)                      |
+| `login/`   | Isolated Go module; design reference for SPEC §17 auth, unwired                         |
+| `docs/`    | Specs, ADRs, models — read `docs/AGENTS.md` before trusting any of it                   |
+| `tests/`   | Language-agnostic corpus: `intents/*.toml` → `golden/**/*.json` (see `tests/README.md`) |
+| `.ledger/` | Predicate flight recorder (sub-repo); campaign history lives here                       |
 
-## Project Overview
+## Working in this repo
 
-**Cyphr** is a self-sovereign identity protocol built on cryptographic state trees. It replaces passwords with public key cryptography, enabling:
+- **Toolchain:** nix + direnv (`.envrc` → `use nix`) provides formatters
+  and tooling; Rust pinned by `rs/rust-toolchain.toml`.
+- **Entrypoint gate:** `cd rs && cargo test --workspace` (green, ~3 min).
+- **Formatting:** `treefmt` from the repo root (nix shell) — covers
+  rs/go/toml/md/json/yaml/nix/sh. CI enforces
+  `nix-shell --run "treefmt --fail-on-change"`. `treefmt` is authoritative
+  for Rust because it runs under the project's pinned nightly toolchain
+  (`rs/rust-toolchain.toml`), which is what makes `rs/.rustfmt.toml`'s
+  nightly-only options (import grouping, comment wrapping, etc.) take
+  effect. A stable `cargo fmt --check` agrees with it today (forge #28,
+  resolved by a full workspace reformat) but only warns-and-skips those
+  nightly-only rules rather than enforcing them on new code — see
+  `rs/AGENTS.md`.
+- **CI** (`.github/workflows/ci.yml`): rust build/test/clippy(-D warnings),
+  go build/test/vet (see `go/AGENTS.md` for expected state), treefmt,
+  rustsec audit, `cargo check --all-features`. Releases:
+  `release-{rs,go}.yml` on tags.
+- **Commits:** conventional commits, enforced by the installed hooks
+  (message validation + doc-link audit); commit at logical boundaries.
 
-- Secure multi-device authentication
-- Key rotation and revocation
-- Individually-signed atomic actions
-- No central authority required
+## Spec authority and the contradiction procedure
 
-The protocol is specified in `SPEC.md` and has dual implementations in **Go** (`go/`) and **Rust** (`rs/`), both currently supporting Levels 1-4 (single key through authenticated actions).
+`SPEC.md` (this directory) is the protocol's sole normative source. The
+machine specs (`docs/specs/*.md`) and the reference implementation are
+downstream: they can and do encode stale draft designs, and their
+constraint tags and MUST language make them look more authoritative than
+they are. When artifacts disagree, the default reading is "downstream is
+stale" — never amend SPEC.md to match downstream. Full design tenets:
+`docs/AGENTS.md` "Protocol model".
 
-All cryptographic operations use the [Coz](https://github.com/Cyphrme/Coz) JSON messaging specification.
+Procedure when a contradiction surfaces during any work:
 
----
+1. **Clear contradiction** (SPEC.md plainly says X, a machine spec or the
+   implementation says not-X): fix it in the downstream artifact if it is
+   in scope for your task; otherwise schedule the fix, or at minimum open
+   a forge issue so it is tracked for visibility. Silent tolerance is the
+   only wrong move.
+2. **Non-obvious or unresolvable contradiction** (ambiguous prose, two
+   plausible intents, or a case where SPEC.md itself may be wrong):
+   escalate to the human operator. Do not resolve unilaterally and do not
+   propose SPEC.md changes to make it match downstream; SPEC.md questions
+   go to its author.
 
-## Build & Commands
+## Requirements
 
-### Go Implementation (`go/`)
+- **R1 — Server readiness.** Portable third-party proof verification,
+  sound crash recovery, typed error surface, per-principal write
+  serialization must exist before the real server is built.
+  Grounding: forge issues #19/#23/#27/#31/#32.
+  Signpost: satisfied when the server-readiness campaign CLOSEs with those
+  findings mitigated.
+- **R2 — Corpus-pinned behavior.** Every protocol behavior change
+  regenerates and commits the golden corpus (`rs/fixture-gen` from
+  `tests/intents/`); Rust is the canonical generator.
+  Grounding: `tests/README.md`, `rs/cyphr/tests/golden_fixtures.rs`.
+  Signpost: a protocol-touching diff without a corpus regen is a defect.
+- **R3 — KV index.** The query index is to be replaced with arbitrary KV
+  index tables over the durable store plus a meta-table tracking them,
+  behind the existing `Indexer` trait seam.
+  Grounding: human operator decision 2026-07-06 (forge #18/#23 comments).
+  Signpost: defeated only if the human operator reverses it; in-repo docs recording the
+  older KV→SQLite decision are superseded, not authority.
 
-```bash
-# Run tests
-go test ./...
+## Invariants
 
-# Run specific package tests
-go test ./principal/...
-```
+- **I1 — Source of truth.** The BLAKE3 content-addressed blob store is the
+  sole source of truth; the eml Merkle log and the index are rebuildable
+  caches. Grounding: forge issue #26. Signpost: any design that makes log
+  or index authoritative violates this.
+- **I2 — Single-writer per principal.** Within one principal, history is a
+  strongly-ordered, single-writer signed chain; a fork is detected, never
+  merged. Across principals there are no relationships; multi-master is an
+  anti-goal. Grounding: #26/#27. Signpost: any reconciliation/merge logic
+  for concurrent same-principal writes violates this.
+- **I3 — SPEC.md ownership.** `SPEC.md` is Zamicol's; changes go only via
+  PR to the `zami` branch (currently PR #5, open/draft — the in-tree
+  working copy may be checked out to that branch's version for reference;
+  do not commit or merge it). Other `docs/specs/*.md` are not his.
+  Grounding: standing rule; campaign ledger. Signpost: the human operator says otherwise.
+- **I4 — Core stays consumer-agnostic.** `rs/cyphr` gains protocol-shaped
+  API (e.g. portable proofs), never server-specific hacks.
+  Grounding: original server-plan constraint, reaffirmed by survey.
+  Signpost: a `cyphr` change motivated only by one consumer's convenience.
+- **I5 — No unjustified panics.** Production code must not panic at
+  runtime without an explicit, stated justification. Grounding: forge #37.
+  Signpost: any new `.unwrap()`/`.expect()` in non-test code without a
+  justification comment.
+- **I6 — Plans are legacy.** `docs/plans/*.md` are never plan-of-record;
+  the campaign workflow (forge issues + `.ledger/`) supersedes them.
+  Grounding: human operator directive 2026-07-06. Signpost: n/a — do not update them as plans.
 
-### Rust Implementation (`rs/`)
+## Unknowns
 
-```bash
-# Build all crates
-cargo build
+- **U1 — RESOLVED (2026-07-06): order retention is implementation work.**
+  The wire format already carries intra-commit order (`txs` array); the
+  storage engine discards it at ingest and brute-forces it back during
+  reindex — that is a storage bug, not a spec gap (spec author's ruling,
+  closed PR #39; tenets in `docs/AGENTS.md`). Fix: retain order at ingest,
+  verify against `arrow` on replay, error on absent order, delete the
+  permutation search (`rs/cyphr-storage/src/engine/mod.rs`). Both
+  follow-up questions were answered by the spec author on the same
+  thread: sequential visibility within a commit is ratified (see
+  `docs/AGENTS.md` two-authorization-contexts tenet), and per-mutation
+  `pre` in signed pays is a rejected old draft slated for removal (see
+  `rs/AGENTS.md` traps).
+- **U2 — Live-principal concurrency.** `CloneableLog` is sound only under
+  fresh-`Principal`-per-call; the server's shape (long-lived principals,
+  concurrent requests) needs either external per-principal serialization
+  or a genuinely async chain. Resolution: API-sufficiency design node.
+  Grounding: `rs/cyphr/src/commit_root.rs` (`CloneableLog` design note).
+- **U3 — Replay cost.** Every write replays full principal history from
+  cold storage; caching strategy undecided. Resolution: same node as U2.
+  Grounding: `load_principal` in `rs/cyphr-storage/src/engine/mod.rs`.
+- **U4 — RESOLVED (2026-07-06): auth is the next campaign.** SPEC §17
+  authentication (login, bearer tokens, server principal) is new code
+  surface and begins when server implementation begins; the current
+  campaign is foundation hardening only. Grounding: human operator
+  ruling 2026-07-06.
+- **U5 — RESOLVED (2026-07-06): EMT→EML conversion is tracked feature
+  work.** One-way, permanent conversion of the PT's EMT to an EML is a
+  supported-mode design goal, deferred to a future feature campaign.
+  Grounding: forge issue #40.
 
-# Run all tests
-cargo test
+## Spec Pointers
 
-# Run specific crate tests
-cargo test -p cyphr-storage
-```
-
-### Test Fixtures
-
-```bash
-# Regenerate golden fixtures
-cargo run -p fixture-gen
-```
-
----
-
-## Code Style
-
-- **Go:** Follow standard Go conventions; see `go/README.md`
-- **Rust:** Follow Rust idioms; see `rs/README.md`
-- **Formatting:** Use `treefmt` (configured in `treefmt.toml`)
-- **Naming:** Use canonical terminology from `SPEC.md` (Principal Root, Auth State, Data State, etc.)
-- **Error handling:** Library code must not panic; use `Result` propagation. `unwrap()`/`expect()` are acceptable only in test code.
-
----
-
-## Architecture
-
-```
-Cyphr/
-├── SPEC.md                 # Protocol specification (source of truth)
-├── docs/                   # Project documentation
-│   ├── models/             # Formal domain models
-│   └── plans/              # Durable implementation plans
-├── go/                     # Go implementation
-│   ├── cyphr/              # Core Principal logic
-│   ├── storage/            # Storage backends
-│   └── testfixtures/       # Test fixture loading
-├── rs/                     # Rust implementation
-│   ├── cyphr/              # Core crate (Principal, state, multihash)
-│   ├── cyphr-storage/      # Storage crate (FileStore, export/import)
-│   ├── cyphr-cli/          # CLI binary
-│   ├── test-fixtures/      # Golden fixture definitions
-│   └── fixture-gen/        # Fixture generation binary
-└── tests/                  # Language-agnostic test vectors
-    ├── golden/             # Pre-computed golden fixtures
-    └── e2e/                # End-to-end intent files
-```
-
-Key abstractions:
-
-- **Principal** — Identity container (PR + state tree)
-- **Transaction** — Signed state mutation (key/create, key/revoke, etc.)
-- **Commit** — Atomic bundle of transactions with finality marker
-- **State types** — `AuthRoot = MR(KR, RR?)`, `StateRoot = MR(AR, DR?, embedding?)` — the hierarchical Merkle tree that derives the observable `PR`
-
----
-
-## Testing
-
-- **Shared fixtures:** Cross-language test vectors in `tests/`
-- **Golden tests:** Pre-computed expected outputs for deterministic operations
-- **E2E tests:** Intent-driven scenarios exercising full principal lifecycle
-- **Parity:** Both implementations must pass identical test vectors
-
----
-
-## Security
-
-- **Never commit secrets or private keys**
-- **Cryptographic operations:** Use Coz library exclusively
-- **Key material:** Handle with care; zeroize after use in Rust
-- **Validation:** Verify all signatures before accepting transactions
-- **Audit history:** See `ai_audit.txt` for previous security reviews
-
----
-
-## Configuration
-
-- **Nix:** Development shell via `shell.nix`
-- **direnv:** Auto-load with `.envrc`
-- **VS Code:** Workspace settings in `.vscode/`
-
----
-
-## Stability
-
-- **Status:** Currently pre-alpha; the specification is experimental and in flux
-- **Correctness over compatibility:** We are striving for a correct and working spec, experimenting toward it
-- **Backwards compatibility is not a concern:** We may move in a direction, then decide to abandon it; there is no concern for supporting these codepaths until we reach stability
-- **SPEC alignment:** The specification is the source of truth. If you sense a contradiction in it, please alert us, but otherwise consider it authoritative
-
----
-
-## Workflow
-
-- **C.O.R.E. interaction:** We follow a consistent pattern of crafting an implementation plan, building a task list, and then using the C.O.R.E. workflow over multiple rounds for coherently iterating through our task list
-- **Well-scoped work:** You do not need to capture the entire implementation plan or task list in a single round of C.O.R.E.; rather, C.O.R.E. is useful for focusing in and finishing a collection of tasks at well-defined boundaries. We typically move through several rounds of C.O.R.E. to complete a single task list and plan.
-- **Commit strategy:** We are in a mono-repo, so be sure to add necessary context to commits (e.g. `feat(rs/transaction): ...`), specifying what implementation and concern we are working on
-- **C.O.R.E. compliance:** C.O.R.E. tries to specify its steps are strict and not to be liberally modified, but I'll just reiterate that point. Follow the outlined procedure as precisely as possible without adding steps or extending it.
-- **Socratic primacy:** We are a team. All the rules, C.O.R.E., and everything else is written to reinforce a spirit of collaboration over rushed implementation. If you are unsure or unclear, always bias toward stopping to clarify. Never make assumptions or make unilateral design decisions without consulting.
-- **Never commit:** Outlined in C.O.R.E. already, but just to clarify: it is absolutely imperative that you do not make commits yourself, but only report a commit message for your changes and allow your human partner to commit on your behalf. This means you need to always STOP and report at commit boundaries as outlined in C.O.R.E.
+- Protocol: `SPEC.md` (§1–12 canonical; §13+ partly aspirational — see
+  `docs/AGENTS.md`)
+- Machine specs: `docs/specs/*.md`; ADR: `docs/adr/0001-*.md`
+- Test corpus pipeline: `tests/README.md`
+- Process law: predicate rules/ambient via `.ledger/` installation
+  (hooks in `.git/hooks` → `nrdxp/predicate`)

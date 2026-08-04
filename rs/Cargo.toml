@@ -2,9 +2,13 @@
 members = [
   "cyphr",
   "cyphr-storage",
+  "cyphr-blob-fjall",
+  "cyphr-index-fjall",
+  "cyphr-server",
   "cyphr-cli",
   "test-fixtures",
   "fixture-gen",
+  "fuzz",
 ]
 resolver = "2"
 
@@ -19,6 +23,15 @@ rust-version = "1.85"
 # Core crypto - from coz-rs (re-exports digest, sha2)
 coz = { package = "coz-rs", version = "0.4.1" }
 
+# Storage
+blake3            = "1"
+cyphr-blob-fjall  = { path = "cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-fjall = { path = "cyphr-index-fjall", version = "0.1.0" }
+eml               = { version = "0.11" }
+fjall             = "3"
+polydigest        = { version = "0.1" }
+storage-fjall     = { package = "polydigest-storage-fjall", version = "0.1" }
+
 # Serialization
 base64ct   = { version = "1", features = ["alloc"] }
 indexmap   = { version = "2", features = ["serde"] }
@@ -27,7 +40,23 @@ serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 toml       = "0.8"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+# Server
+axum               = "0.8"
+figment            = { version = "0.10", features = ["toml", "env"] }
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http         = { version = "0.6", features = ["trace"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid               = { version = "1", features = ["v4"] }
 
 # Error handling
+futures   = "0.3"
 thiserror = "2"
+
+# Testing
+proptest = { version = "1.6.0", default-features = false, features = [
+  "std",
+  "alloc",
+] }

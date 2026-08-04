@@ -1,7 +1,7 @@
-use crate::multihash::MultihashDigest;
-use crate::state::hash_concat_bytes;
-use crate::state::{HashAlg, TaggedCzd};
 use std::collections::BTreeMap;
+
+use crate::multihash::MultihashDigest;
+use crate::state::{HashAlg, TaggedCzd, hash_concat_bytes};
 
 /// The Transaction Mutation Root (TMR)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -28,11 +28,15 @@ pub fn compute_tx(czds: &[TaggedCzd<'_>], algs: &[HashAlg]) -> Option<MultihashD
         return None;
     }
 
-    // Implicit promotion: single czd
+    // Implicit promotion: single czd.
+    // Convert to all active target algorithms.
     if czds.len() == 1 {
-        let target_alg = algs.first().copied().unwrap_or(HashAlg::Sha256);
-        let converted = czds[0].convert_to(target_alg);
-        return Some(MultihashDigest::from_single(target_alg, converted));
+        let mut variants = BTreeMap::new();
+        for &target_alg in algs {
+            let converted = czds[0].convert_to(target_alg);
+            variants.insert(target_alg, converted.into_boxed_slice());
+        }
+        return MultihashDigest::new(variants).ok();
     }
 
     let mut variants = BTreeMap::new();

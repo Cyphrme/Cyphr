@@ -12,12 +12,16 @@ in
 with pkgs;
 mkShell {
   RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+    pkgs.stdenv.cc.cc.lib
+  ];
   packages = [
     go
     gopls
     go-tools
     treefmt
     toolchain
+    cargo-fuzz
     shfmt
     nixfmt
     taplo

@@ -9,8 +9,6 @@
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
   document are to be interpreted as described in BCP 14 (RFC 2119, RFC 8174) when,
   and only when, they appear in all capitals, as shown here.
-
-  See: .agent/workflows/spec.md for the full protocol specification.
 -->
 
 ## Domain
@@ -49,7 +47,7 @@ TYPE MultihashId  = Map<HashAlg, Digest>             -- one variant per supporte
 TYPE PG = Digest    -- Principal Genesis (immutable, first PR)
 TYPE PR = Digest    -- Principal Root (top-level, evolves per commit)
 TYPE SR = Digest    -- State Root (intermediate: MR(AR, DR?))
-TYPE CR = Digest    -- Commit Root (MALTR of commit tree)
+TYPE CR = Digest    -- Commit Root (EMLR of commit tree)
 TYPE AR = Digest    -- Auth Root
 TYPE KR = Digest    -- Key Root
 TYPE RR = Digest    -- Rule Root (Level 5+)
@@ -78,11 +76,19 @@ encodings MUST be rejected.
 as b64ut, providing both addressing and integrity of the reference.
 `VERIFIED: agent-check`
 
-**[mr-sort-order]**: When computing a Merkle root for state tree nodes (KR, AR,
-SR, PR, DR), child digests MUST be sorted in lexical byte order (opaque byte
-comparison). **Exception:** Commit tree (CT) uses MALT ordering (append-only,
-array order). See `transactions.md` [commit-finality-arrow].
-`VERIFIED: agent-check — updated 2026-03-09 per array-order decision`
+**[mr-sort-order]**: Cyphr's state digests split into two ordering classes.
+**Fixed two-cell nodes** — Principal Root (PR, root of PT), Auth Root (AR,
+root of AT), and State Root (SR, root of ST) — are each computed over a tree
+whose shape never varies (always exactly two cells) and MUST use fixed
+positional role order, never lexical sort: PT cell 0 = SR, cell 1 = CR; AT
+cell 0 = KR, cell 1 = RR; ST cell 0 = AR, cell 1 = DR. **Variable-width
+nodes** keep their own already-defined order instead: Key Root (KR, root of
+KT) MUST sort lexically (opaque byte comparison); Data Root (DR) MUST sort by
+`now` then `czd` (DR is a flat computed value, not yet backed by a real tree
+instance — see SPEC.md §3.7.8). Commit tree (CT) is an Epoch Merkle Log (EML)
+and uses append-only (array) order, not lexical sort. See `transactions.md`
+[commit-finality-arrow].
+`VERIFIED: agent-check, updated 2026-07-03 per two-class ordering correction`
 
 **[pg-immutable]**: The Principal Genesis (PG) MUST NOT change after genesis
 (Level 3+). PG is the first PR computed at genesis commit. No operation MAY
@@ -155,17 +161,44 @@ chain or a PG.
   component digests.
   `VERIFIED: agent-check`
 
-**[conversion]**: When a child node uses a different hash algorithm than the
-target algorithm H being computed, the child's digest value MUST be converted:
-the child's raw digest bytes are fed into H to produce an H-length digest. This
-conversion happens at the node level; the parent node is NOT REQUIRED to know
-the child's original algorithm.
+**[conversion]**: SUPERSEDED 2026-07-08 — see resolution note below. No
+per-child re-hashing step exists. A component's H-variant is produced by
+exactly one of two mechanisms:
 
-- **PRE**: Child digest exists, computed under some algorithm H_child where
-  H_child ≠ H.
-- **POST**: Converted digest = H(child_digest_bytes). The converted digest
-  participates in the parent's Merkle root computation under H.
-  `VERIFIED: agent-check`
+1. **Exact match**: if a native H-variant of the component already exists,
+   it is used directly, unconverted.
+2. **Fold**: otherwise, ALL existing variants of the component (regardless of
+   their native algorithm) have their raw digest bytes concatenated in a
+   defined sort order, and the concatenation is hashed **once**, under H.
+   Mismatched-algorithm children are never individually re-hashed into a
+   pretend-native H digest before folding — their raw bytes simply
+   participate as one of potentially several inputs to the single fold hash.
+
+A **degenerate case** of the fold (not a separate conversion step): if the
+component has exactly one existing variant total (of any algorithm), that
+variant's raw bytes are returned as-is for any requested H — genesis
+promotion, no hashing at all.
+
+- **PRE**: A component's H-variant is requested; the component has one or
+  more existing variants, possibly under algorithms other than H.
+- **POST**: The H-variant is either the existing native H digest (exact
+  match), the single existing variant's raw bytes (genesis promotion, len==1),
+  or `H(concat(sorted raw variant bytes))` (general fold, len>1). No
+  intermediate per-child re-hash under H ever occurs.
+  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+
+> [!NOTE]
+> **Resolution (2026-07-08, settled)**: This constraint previously required
+> re-hashing a mismatched-algorithm child under the target algorithm before
+> folding it into a parent digest. That is superseded: confirmed directly
+> against the `eml` sibling repo's `polydigest::root::combined_root` /
+> `nary_mr` (commit `2bde639`) and the spec author's ruling on forge issue
+> #51, the actual rule folds each component's raw, un-converted variant
+> bytes together under whichever algorithm is requested — there is no
+> standalone per-child conversion sub-step, and no requirement that the
+> target algorithm match any existing variant. `rs/cyphr/src/multihash.rs`'s
+> `arrow_component_bytes` (landed via PRs #52 and #56) implements this
+> general fold, not merely the single-variant degenerate case.
 
 **[mhmr-computation]**: For each supported hash algorithm H at a given commit,
 implementations MUST compute an MHMR variant for every state node:
@@ -209,11 +242,12 @@ entirely, not represented as empty.)
 > (Level 4, Level 5) still need confirmation from Zami.
 
 **[no-circular-state]**: The state computation dependency graph MUST be acyclic.
-KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (MALTR of TRs),
-PR = MR(SR, CR). AR and SR MUST NOT depend on TR or CR. The `arrow` field in
-the commit transaction covers `MR(pre, fwd, TMR)` where `fwd` is SR, not PR,
-precisely because PR depends on CR which depends on TR which includes the commit.
-`VERIFIED: agent-check — rewritten 2026-03-09 per B-4, §4.2/§3.3`
+KR → AR → SR (excludes CR), TR (from transaction cozies) → CR (EMLR of TRs),
+PR = EMT-root(SR, CR) [cell 0 = SR, cell 1 = CR]. AR and SR MUST NOT depend on
+TR or CR. The `arrow` field in the commit transaction covers `MR(pre, fwd,
+TMR)` where `fwd` is SR, not PR, precisely because PR depends on CR which
+depends on TR which includes the commit.
+`VERIFIED: agent-check, rewritten 2026-07-02 per EMT/EML realignment, B-4, §4.2/§3.3`
 
 **[no-non-canonical-b64ut]**: A b64ut string that uses padding characters (`=`),
 non-URL-safe characters (`+`, `/`), or non-canonical encoding MUST be rejected.
@@ -239,12 +273,19 @@ AR → {KR, RR}), promotion recurses at most through the tree height.
   `VERIFIED: agent-check`
 
 **[mhmr-no-rehash-children]**: When computing an MHMR, inner child digests MUST
-be fed directly into the parent hash function as raw bytes, without re-hashing
-under the target algorithm, UNLESS the child requires conversion (per
-[conversion]), in which case the child's digest is hashed once under the target H.
+be fed directly into the parent hash function as raw bytes, without any
+per-child pre-hashing step — including children whose native algorithm
+differs from the target H. The one and only hash operation is the single
+fold hash over the concatenated raw bytes of all children (per [conversion]);
+there is no separate "convert this one mismatched child first" step.
 
 - **Type**: Safety
-  `VERIFIED: agent-check`
+  `VERIFIED: rs/cyphr/src/multihash.rs — MultihashDigest::arrow_component_bytes`
+
+> [!NOTE]
+> **Resolution (2026-07-08)**: Previously phrased as an exception carve-out
+> for converted children (implying a distinct per-child re-hash sub-step).
+> Superseded alongside [conversion] — see that constraint's resolution note.
 
 ## State Formulas
 
@@ -253,12 +294,15 @@ constrained by the invariants and transitions above.
 
 ```
 KR       = MR(tmb₀, tmb₁?, embedding?, nonce?, ...)
-AR       = MR(KR, RR?, embedding?, ...)                -- nil components excluded
-SR       = MR(AR, DR?, embedding?, ...)                 -- State Root (non-commit state)
-DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`
+AR       = MR(KR, RR)                                    -- Auth Root: AT's root, cell 0 = KR, cell 1 = RR (positional); RR absent at Level < 5 (Singleton Promotion: AR = KR)
+AR_alg   = H(KR_alg ∥ RR_alg)                            -- when RR is present (cells 0-1 both populated)
+SR       = MR(AR, DR)                                    -- State Root: ST's root, cell 0 = AR, cell 1 = DR (positional); DR absent at Level < 4 (Singleton Promotion: SR = AR)
+SR_alg   = H(AR_alg ∥ DR_alg)                            -- when DR is present (cells 0-1 both populated)
+DR       = MR(czd₀, czd₁, ..., nonce?)                 -- Level 4+, sorted by `now` then `czd`; flat computed value, not yet a real tree instance
 TR       = MR(TMR, TCR)                                 -- Transaction Root (commit ID)
-CR       = MALTR(TR₀, TR₁, ...)                         -- Commit Root (MALT of commit tree)
-PR       = MR(SR, CR, embedding?, ...)                   -- CR absent at Level 1-2
+CR       = EMLR(TR₀, TR₁, ...)                          -- Commit Root (EML root of commit tree)
+PR       = EMT(SR, CR, ...)                             -- Principal Root: PT's EMT root; cell 0 = SR, cell 1 = CR (positional; cells ≥ 2 are PT embeddings); CR absent at Level 1-2
+PR_alg   = H(SR_alg ∥ CR_alg)                            -- when only cells 0-1 are populated (no embeddings)
 PG       = first PR at genesis commit (Level 3+ only, immutable)
 ```
 
@@ -304,29 +348,29 @@ governance is delegated to Coz").
 
 ## Verification
 
-| Constraint                        | Method      | Result | Detail                                                         |
-| :-------------------------------- | :---------- | :----- | :------------------------------------------------------------- |
-| [digest-encoding]                 | agent-check | pass   | b64ut requirement is explicit in SPEC.md §2.2.2                |
-| [identifier-is-cid]               | agent-check | pass   | Explicit in SPEC.md §2.2.3                                     |
-| [mr-sort-order]                   | agent-check | pass   | SPEC.md §9.1 step 2; commit exception per array-order decision |
-| [pg-immutable]                    | agent-check | pass   | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                       |
-| [alg-alignment]                   | agent-check | pass   | Explicit in SPEC.md §2.2.2, §4.1.0                             |
-| [digest-alg-from-coz]             | agent-check | pass   | Explicit in SPEC.md §2.2.2                                     |
-| [nonce-bit-length]                | agent-check | pass   | Explicit in SPEC.md §2.2.8                                     |
-| [nonce-indistinguishable]         | agent-check | pass   | Explicit in SPEC.md §2.2.8, §4.6                               |
-| [mhmr-equivalence]                | agent-check | pass   | Explicit in SPEC.md §20.4, §20.6                               |
-| [implicit-promotion]              | agent-check | pass   | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2          |
-| [level-1-2-identity]              | agent-check | pass   | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)                      |
-| [state-computation]               | agent-check | pass   | Explicit in SPEC.md §9.1 (four-step algorithm)                 |
-| [conversion]                      | agent-check | pass   | Explicit in SPEC.md §20.2                                      |
-| [mhmr-computation]                | agent-check | pass   | Explicit in SPEC.md §20.5                                      |
-| [alg-set-evolution]               | agent-check | pass   | Explicit in SPEC.md §20.6                                      |
-| [no-empty-mr]                     | agent-check | pass   | Inferred from SPEC.md §9.1 (collect requires ≥1)               |
-| [no-circular-state]               | agent-check | pass   | Follows from §4.2 CR/PR definitions                            |
-| [no-non-canonical-b64ut]          | agent-check | pass   | Explicit in SPEC.md §2.2.2 ("errors on non-canonical")         |
-| [deterministic-state]             | agent-check | pass   | Follows from sort + promotion + MR rules                       |
-| [promotion-recursive-termination] | agent-check | pass   | Follows from finite tree depth                                 |
-| [mhmr-no-rehash-children]         | agent-check | pass   | Explicit in SPEC.md §20.5 step 3, Important Properties         |
+| Constraint                        | Method      | Result     | Detail                                                                                                                                                                                                          |
+| :-------------------------------- | :---------- | :--------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [digest-encoding]                 | agent-check | pass       | b64ut requirement is explicit in SPEC.md §2.2.2                                                                                                                                                                 |
+| [identifier-is-cid]               | agent-check | pass       | Explicit in SPEC.md §2.2.3                                                                                                                                                                                      |
+| [mr-sort-order]                   | agent-check | pass       | SPEC.md §9.1 step 2; commit exception per array-order decision; PT/AT/ST use positional order (SPEC.md §3.7 step 2, §3.7.1, §3.7.2, §3.7.5, §12.2.1); KT/DR keep their own order                                |
+| [pg-immutable]                    | agent-check | pass       | SPEC.md §2.3.2, §9.2 (Level 3+ per §5.1)                                                                                                                                                                        |
+| [alg-alignment]                   | agent-check | pass       | Explicit in SPEC.md §2.2.2, §4.1.0                                                                                                                                                                              |
+| [digest-alg-from-coz]             | agent-check | pass       | Explicit in SPEC.md §2.2.2                                                                                                                                                                                      |
+| [nonce-bit-length]                | agent-check | pass       | Explicit in SPEC.md §2.2.8                                                                                                                                                                                      |
+| [nonce-indistinguishable]         | agent-check | pass       | Explicit in SPEC.md §2.2.8, §4.6                                                                                                                                                                                |
+| [mhmr-equivalence]                | agent-check | pass       | Explicit in SPEC.md §20.4, §20.6                                                                                                                                                                                |
+| [implicit-promotion]              | agent-check | pass       | Explicit in SPEC.md §2.2.5, §9.1 step 3, §20.5 step 2                                                                                                                                                           |
+| [level-1-2-identity]              | agent-check | pass       | SPEC.md §5.1, §3.1, §3.2 (no PR per §5.1)                                                                                                                                                                       |
+| [state-computation]               | agent-check | pass       | Explicit in SPEC.md §9.1 (four-step algorithm)                                                                                                                                                                  |
+| [conversion]                      | agent-check | superseded | Citation was stale (§20.2 is now "Golden Message" post-renumbering); corrected rule verified against SPEC.md §12.2.1 (MHMR, "Important Properties") and `rs/cyphr/src/multihash.rs` — see resolution note above |
+| [mhmr-computation]                | agent-check | pass       | SPEC.md §12.2.1 (citation corrected; §20.5 no longer exists)                                                                                                                                                    |
+| [alg-set-evolution]               | agent-check | pass       | SPEC.md §12.2 (citation corrected; §20.6 no longer exists)                                                                                                                                                      |
+| [no-empty-mr]                     | agent-check | pass       | Inferred from SPEC.md §9.1 (collect requires ≥1)                                                                                                                                                                |
+| [no-circular-state]               | agent-check | pass       | Follows from §4.2 CR/PR definitions                                                                                                                                                                             |
+| [no-non-canonical-b64ut]          | agent-check | pass       | Explicit in SPEC.md §2.2.2 ("errors on non-canonical")                                                                                                                                                          |
+| [deterministic-state]             | agent-check | pass       | Follows from sort + promotion + MR rules                                                                                                                                                                        |
+| [promotion-recursive-termination] | agent-check | pass       | Follows from finite tree depth                                                                                                                                                                                  |
+| [mhmr-no-rehash-children]         | agent-check | superseded | Citation was stale (§20.5 no longer exists); corrected rule verified against SPEC.md §12.2.1 step 3 and `rs/cyphr/src/multihash.rs` — see resolution note above                                                 |
 
 ## Implications
 
@@ -338,9 +382,12 @@ governance is delegated to Coz").
 - **Implicit promotion**: Implementations MUST handle the single-child case
   before computing any Merkle root. This is a common source of bugs — the
   single-key Level 1/2 case where `tmb` promotes all the way to PG.
-- **Conversion order**: [conversion] specifies H(child_bytes), not
-  H(H(child_bytes)). Double-hashing during conversion is a specification
-  violation.
+- **No per-child conversion step**: [conversion] does not re-hash individual
+  mismatched-algorithm children before folding. A component with 2+ existing
+  variants folds ALL of their raw bytes together in one single hash operation
+  under the target H; a component with exactly one existing variant (any
+  algorithm) promotes its raw bytes directly for any requested H. There is no
+  intermediate H(child_bytes) step performed on a single child in isolation.
 - **MHMR variants per commit**: At each commit, the implementation must
   enumerate the active algorithm set and compute all variants. The algorithm
   set is determined post-mutation (after the commit's key changes are applied).

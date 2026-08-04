@@ -7,10 +7,11 @@
 //! Supports both legacy flat format (one cz per line) and commit-based format
 //! (one commit bundle per line).
 
-use crate::{CommitEntry, Entry, KeyEntry};
 use coz::Thumbprint;
 use cyphr::state::{AuthRoot, PrincipalGenesis};
-use cyphr::{Key, Principal};
+use cyphr::{CommitRoot, CommitTrees, Key, Principal};
+
+use crate::{CommitEntry, Entry, KeyEntry};
 
 // ============================================================================
 // Types
@@ -25,7 +26,7 @@ pub enum Genesis {
     /// Implicit genesis: single key, no coz required.
     ///
     /// Per SPEC §5.1: "Identity emerges from first key possession"
-    /// - `PS = AS = KS = tmb` (PR is None at L1/L2)
+    /// - `PR = AR = KR = tmb` (PG is None at L1/L2)
     Implicit(Key),
 
     /// Explicit genesis: multiple keys established at creation.
@@ -55,6 +56,14 @@ pub struct Checkpoint {
     ///
     /// Not currently verified; included for forward compatibility.
     pub attestor: Option<Thumbprint>,
+    /// The trusted Commit Root at checkpoint, if the checkpoint carries MALT
+    /// proof-generation state (a value, like `auth_root`, not a tree).
+    ///
+    /// When `Some`, the caller must also pass the matching [`CommitTrees`] to
+    /// [`load_from_checkpoint`] — this field alone cannot reconstruct the
+    /// tree, it only lets the restored principal's CR be checked against the
+    /// value the checkpoint's issuer attested to.
+    pub cr: Option<CommitRoot>,
 }
 
 /// Errors that can occur during import.
@@ -76,10 +85,6 @@ pub enum LoadError {
     #[error("invalid signature at index {index}: {message}")]
     InvalidSignature { index: usize, message: String },
 
-    /// ParsedCoz pre field doesn't match expected AS.
-    #[error("broken chain at index {index}: pre mismatch")]
-    BrokenChain { index: usize },
-
     /// Unknown signer key.
     #[error("unknown signer at index {index}: {tmb}")]
     UnknownSigner { index: usize, tmb: String },
@@ -96,6 +101,11 @@ pub enum LoadError {
         source: serde_json::Error,
     },
 
+    /// The provided `trees` produced a CR that does not match the trusted
+    /// checkpoint's `cr` field.
+    #[error("checkpoint CR mismatch: trees produced a different CR than the trusted checkpoint")]
+    CheckpointCrMismatch,
+
     /// Unsupported cryptographic algorithm.
     #[error("unsupported algorithm")]
     UnsupportedAlgorithm,
@@ -107,10 +117,16 @@ pub enum LoadError {
 
 /// Determine if a typ string represents a transaction (not an action).
 ///
-/// Transactions are: key/*, principal/create, commit/create
-/// Everything else is an action.
-fn is_transaction_typ(typ: &str) -> bool {
-    typ.contains("/key/") || typ.contains("/principal/create") || typ.contains("/commit/create")
+/// Transactions are: key/*, principal/create, principal/delete,
+/// freeze/create, freeze/delete, commit/create. Everything else is an
+/// action.
+pub(crate) fn is_transaction_typ(typ: &str) -> bool {
+    typ.contains("/key/")
+        || typ.contains("/principal/create")
+        || typ.contains("/principal/delete")
+        || typ.contains("/freeze/create")
+        || typ.contains("/freeze/delete")
+        || typ.contains("/commit/create")
 }
 
 // ============================================================================
@@ -130,7 +146,6 @@ fn is_transaction_typ(typ: &str) -> bool {
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -173,6 +188,10 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///
 /// * `expected_pr` - The expected Principal Root (for security validation)
 /// * `checkpoint` - Trusted state to start from
+/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint carries MALT
+///   proof-generation state. `None` yields a principal with no CR, matching pre-checkpoint-CR
+///   behavior. When `Some` and `checkpoint.cr` is also `Some`, the CR computed from `trees` is
+///   verified against `checkpoint.cr` before it's trusted.
 /// * `entries` - Entries after the checkpoint to replay
 ///
 /// # Example
@@ -182,23 +201,33 @@ pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, 
 ///     auth_root: trusted_as,
 ///     keys: current_keys,
 ///     attestor: Some(service_tmb),
+///     cr: trusted_cr,
 /// };
 /// let entries = store.get_entries_range(&pr, &QueryOpts { after: Some(cp_time), .. })?;
-/// let principal = load_from_checkpoint(pr, checkpoint, &entries)?;
+/// let principal = load_from_checkpoint(pr, checkpoint, trusted_trees, &entries)?;
 /// ```
 pub fn load_from_checkpoint(
     expected_pr: Option<PrincipalGenesis>,
     checkpoint: Checkpoint,
+    trees: Option<CommitTrees>,
     entries: &[Entry],
 ) -> Result<Principal, LoadError> {
     if checkpoint.keys.is_empty() {
         return Err(LoadError::NoGenesisKeys);
     }
 
+    let expected_cr = checkpoint.cr.clone();
+
     // Construct principal at checkpoint state
     // We use the first key to determine hash algorithm, then add remaining keys
     let mut principal =
-        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys)?;
+        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys, trees)?;
+
+    if let Some(expected) = expected_cr {
+        if principal.cr() != Some(&expected) {
+            return Err(LoadError::CheckpointCrMismatch);
+        }
+    }
 
     // Replay entries from checkpoint
     replay_entries(&mut principal, entries)?;
@@ -220,7 +249,6 @@ pub fn load_from_checkpoint(
 ///
 /// Returns `LoadError` if:
 /// - Signature verification fails
-/// - ParsedCoz chain is broken (pre mismatch)
 /// - Unknown signer key
 ///
 /// # Example
@@ -275,14 +303,14 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
             .map_err(|_| LoadError::MissingTimestamp { index })?;
 
         // Determine if this is a coz or action by typ prefix
-        let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+        let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
 
-        if is_transaction_typ(typ) {
+        if is_transaction_typ(&header.typ) {
             // ParsedCoz: extract key material if present
             let new_key = extract_key_from_entry(&raw);
 
             // Compute czd for this entry
-            let czd = compute_czd(&pay_json, &sig, principal)?;
+            let czd = compute_czd(&pay_json, &sig)?;
 
             // Apply coz
             principal
@@ -292,20 +320,15 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                         index,
                         message: "signature verification failed".into(),
                     },
-                    cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
         } else {
             // Action: compute czd and record
-            let czd = compute_czd(&pay_json, &sig, principal)?;
+            let czd = compute_czd(&pay_json, &sig)?;
 
             principal
                 .verify_and_record_action(&pay_json, &sig, czd)
@@ -316,11 +339,7 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
                     },
                     cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                         index,
-                        tmb: pay
-                            .get("tmb")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("?")
-                            .into(),
+                        tmb: header.tmb.to_b64(),
                     },
                     other => LoadError::Protocol(other),
                 })?;
@@ -330,83 +349,207 @@ fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), Lo
     Ok(())
 }
 
-/// Replay commit bundles onto a principal (commit-based format).
-///
-/// Each commit bundle contains multiple cozies that form an atomic unit.
-/// Uses `CommitScope` to properly group cozies into commits.
-/// Key material is read from the commit-level `keys[]` array, not from
-/// per-cz embedded fields.
-fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<(), LoadError> {
+pub(crate) fn canonicalize_value(val: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = val {
+        map.sort_keys();
+        for (_, v) in map.iter_mut() {
+            canonicalize_value(v);
+        }
+    } else if let serde_json::Value::Array(arr) = val {
+        for v in arr {
+            canonicalize_value(v);
+        }
+    }
+}
+
+pub(crate) fn replay_commits<S: cyphr::eml::Storage>(
+    principal: &mut Principal<S>,
+    commits: &[CommitEntry],
+) -> Result<(), LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     for (commit_idx, commit) in commits.iter().enumerate() {
-        // Collect actions to replay after the commit scope is finalized.
-        // Actions don't participate in the commit lifecycle but may appear
-        // in the same bundle.
-        let mut deferred_actions: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
+        if commit.cozies.is_empty() {
+            return Err(LoadError::Protocol(cyphr::Error::EmptyCommit));
+        }
 
-        // Create a commit scope for this bundle's cozies
-        let mut scope = principal.begin_commit();
-        let mut applied_tx_count = 0;
+        // 1. Find the first transaction cozy index
+        let mut first_tx_idx = None;
+        for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
+            let pay = tx_value.get("pay").ok_or(LoadError::MissingTimestamp {
+                index: commit_idx * 1000 + tx_idx,
+            })?;
+            let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
+            if is_transaction_typ(&header.typ) {
+                first_tx_idx = Some(tx_idx);
+                break;
+            }
+        }
 
-        // Iterator over commit-level keys — consumed by key-introducing cozies
         let mut key_iter = commit.keys.iter();
 
-        for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
-            let index = commit_idx * 1000 + tx_idx; // Composite index for error messages
+        if let Some(idx) = first_tx_idx {
+            // 2. Process pre-actions (before the first transaction)
+            for tx_idx in 0..idx {
+                let tx_value = &commit.cozies[tx_idx];
+                let index = commit_idx * 1000 + tx_idx;
 
-            let pay = tx_value
-                .get("pay")
-                .ok_or(LoadError::MissingTimestamp { index })?;
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
 
-            let sig_b64 = tx_value
-                .get("sig")
-                .and_then(|s| s.as_str())
-                .ok_or(LoadError::MissingSig { index })?;
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
 
-            let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
-                LoadError::InvalidSignature {
-                    index,
-                    message: "invalid base64 signature".into(),
-                }
-            })?;
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
 
-            // Serialize pay for verification (bit-perfect for stored data)
-            let pay_json =
-                serde_json::to_vec(pay).map_err(|e| LoadError::Json { index, source: e })?;
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
 
-            // Determine if this is a coz or action by typ prefix
-            let typ = pay.get("typ").and_then(|t| t.as_str()).unwrap_or("");
+                let czd = compute_czd(&pay_json, &sig)?;
 
-            if is_transaction_typ(typ) {
-                // ParsedCoz: consume next key from commit-level keys if this
-                // is a key-introducing type (key/create, key/replace)
-                let new_key = if is_key_introducing_typ(typ) {
-                    key_iter.next().map(key_entry_to_key).transpose()?
-                } else {
-                    None
-                };
-
-                // Compute czd via the scope's hash algorithm
-                let alg = match scope.principal_hash_alg() {
-                    cyphr::state::HashAlg::Sha256 => "ES256",
-                    cyphr::state::HashAlg::Sha384 => "ES384",
-                    cyphr::state::HashAlg::Sha512 => "ES512",
-                };
-                let cad = coz::canonical_hash_for_alg(&pay_json, alg, None)
-                    .ok_or(LoadError::UnsupportedAlgorithm)?;
-                let czd =
-                    coz::czd_for_alg(&cad, &sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-                // Verify and apply within the scope
-                scope
-                    .verify_and_apply(&pay_json, &sig, czd, new_key)
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
                     .map_err(|e| match e {
                         cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
                             index,
                             message: "signature verification failed".into(),
                         },
-                        cyphr::Error::InvalidPrior => LoadError::BrokenChain { index },
+                        other => LoadError::Protocol(other),
+                    })?;
+            }
+
+            // 3. Open commit scope and process transactions and deferred actions
+            let mut deferred_actions = Vec::new();
+            let mut scope = principal.begin_commit();
+            let mut applied_tx_count = 0;
+
+            for tx_idx in idx..commit.cozies.len() {
+                let tx_value = &commit.cozies[tx_idx];
+                let index = commit_idx * 1000 + tx_idx;
+
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
+
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
+
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
+
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
+
+                let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
+
+                if is_transaction_typ(&header.typ) {
+                    let new_key = if is_key_introducing_typ(&header.typ) {
+                        key_iter.next().map(key_entry_to_key).transpose()?
+                    } else {
+                        None
+                    };
+
+                    let alg = pay
+                        .get("alg")
+                        .and_then(|a| a.as_str())
+                        .ok_or(LoadError::UnsupportedAlgorithm)?;
+                    let czd = cyphr::compute_czd(&pay_json, &sig, alg)
+                        .ok_or(LoadError::UnsupportedAlgorithm)?;
+
+                    scope
+                        .verify_and_apply(&pay_json, &sig, czd, new_key)
+                        .map_err(|e| match e {
+                            cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                                index,
+                                message: "signature verification failed".into(),
+                            },
+                            cyphr::Error::UnknownKey => LoadError::UnknownSigner {
+                                index,
+                                tmb: header.tmb.to_b64(),
+                            },
+                            other => LoadError::Protocol(other),
+                        })?;
+                    applied_tx_count += 1;
+                } else {
+                    let tmb = header.tmb.to_b64();
+                    deferred_actions.push((index, pay_json, sig, tmb));
+                }
+            }
+
+            if applied_tx_count > 0 {
+                scope.finalize().map_err(LoadError::Protocol)?;
+            } else {
+                drop(scope);
+            }
+
+            // 4. Replay deferred actions on the principal
+            for (index, pay_json, sig, tmb) in deferred_actions {
+                let czd = compute_czd(&pay_json, &sig)?;
+
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
+                    .map_err(|e| match e {
+                        cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
+                        cyphr::Error::UnknownKey => LoadError::UnknownSigner { index, tmb },
+                        other => LoadError::Protocol(other),
+                    })?;
+            }
+        } else {
+            // Action-only bundle
+            for (tx_idx, tx_value) in commit.cozies.iter().enumerate() {
+                let index = commit_idx * 1000 + tx_idx;
+
+                let pay = tx_value
+                    .get("pay")
+                    .ok_or(LoadError::MissingTimestamp { index })?;
+
+                let sig_b64 = tx_value
+                    .get("sig")
+                    .and_then(|s| s.as_str())
+                    .ok_or(LoadError::MissingSig { index })?;
+
+                let sig = Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| {
+                    LoadError::InvalidSignature {
+                        index,
+                        message: "invalid base64 signature".into(),
+                    }
+                })?;
+
+                let mut pay_val = pay.clone();
+                canonicalize_value(&mut pay_val);
+                let pay_json = serde_json::to_vec(&pay_val)
+                    .map_err(|e| LoadError::Json { index, source: e })?;
+
+                let czd = compute_czd(&pay_json, &sig)?;
+
+                principal
+                    .verify_and_record_action(&pay_json, &sig, czd)
+                    .map_err(|e| match e {
+                        cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
+                            index,
+                            message: "signature verification failed".into(),
+                        },
                         cyphr::Error::UnknownKey => LoadError::UnknownSigner {
                             index,
                             tmb: pay
@@ -417,38 +560,7 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
                         },
                         other => LoadError::Protocol(other),
                     })?;
-                applied_tx_count += 1;
-            } else {
-                // Action: defer until after scope is finalized
-                deferred_actions.push((index, pay_json, sig));
             }
-        }
-
-        if applied_tx_count > 0 {
-            // Finalize the commit scope
-            scope.finalize().map_err(LoadError::Protocol)?;
-        } else {
-            // Drop scope without finalize — no cozies were applied
-            drop(scope);
-        }
-
-        // Replay deferred actions on the principal (outside the scope)
-        for (index, pay_json, sig) in deferred_actions {
-            let czd = compute_czd(&pay_json, &sig, principal)?;
-
-            principal
-                .verify_and_record_action(&pay_json, &sig, czd)
-                .map_err(|e| match e {
-                    cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                        index,
-                        message: "signature verification failed".into(),
-                    },
-                    cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                        index,
-                        tmb: "?".into(),
-                    },
-                    other => LoadError::Protocol(other),
-                })?;
         }
     }
 
@@ -456,12 +568,13 @@ fn replay_commits(principal: &mut Principal, commits: &[CommitEntry]) -> Result<
 }
 
 /// Returns true if a coz type introduces new key material.
-fn is_key_introducing_typ(typ: &str) -> bool {
-    typ.contains("/key/create") || typ.contains("/key/replace")
-}
+///
+/// Canonical implementation lives in `cyphr::parsed_coz::typ` -- this is a
+/// thin re-export so existing call sites don't need to change.
+pub(crate) use cyphr::parsed_coz::typ::is_key_introducing as is_key_introducing_typ;
 
 /// Convert a commit-level KeyEntry to a Principal Key.
-fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
+pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let pub_key = Base64UrlUnpadded::decode_vec(&entry.pub_key).map_err(|e| {
@@ -492,7 +605,7 @@ fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
 /// Used by `replay_entries()` (legacy flat format) where key material
 /// is embedded in each coz entry. For commit-based format,
 /// use `key_entry_to_key()` with commit-level `keys[]` instead.
-fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
+pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
     let key_obj = raw.get("key")?;
@@ -516,26 +629,19 @@ fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
 
 /// Compute Coz digest for an entry.
 ///
-/// Uses coz library's canonical_hash_for_alg and czd_for_alg to ensure
-/// consistent hash computation matching the signing path.
-fn compute_czd(pay_json: &[u8], sig: &[u8], principal: &Principal) -> Result<coz::Czd, LoadError> {
-    use cyphr::state::HashAlg;
+/// Delegates to `cyphr::compute_czd` to ensure consistent hash computation
+/// matching the signing path.
+pub(crate) fn compute_czd(pay_json: &[u8], sig: &[u8]) -> Result<coz::Czd, LoadError> {
+    let pay: serde_json::Value = serde_json::from_slice(pay_json).map_err(|e| LoadError::Json {
+        index: 0,
+        source: e,
+    })?;
+    let alg = pay
+        .get("alg")
+        .and_then(|a| a.as_str())
+        .ok_or(LoadError::UnsupportedAlgorithm)?;
 
-    // Map principal's hash algorithm to coz algorithm name
-    let alg = match principal.hash_alg() {
-        HashAlg::Sha256 => "ES256",
-        HashAlg::Sha384 => "ES384",
-        HashAlg::Sha512 => "ES512",
-    };
-
-    // Compute cad using canonical hash (compacts JSON first)
-    let cad =
-        coz::canonical_hash_for_alg(pay_json, alg, None).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    // Compute czd using canonical {"cad":"...","sig":"..."} format
-    let czd = coz::czd_for_alg(&cad, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)?;
-
-    Ok(czd)
+    cyphr::compute_czd(pay_json, sig, alg).ok_or(LoadError::UnsupportedAlgorithm)
 }
 
 // ============================================================================
@@ -565,8 +671,8 @@ mod tests {
 
         let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
 
-        // Implicit genesis: PR is None at L1
-        assert!(principal.pg().is_none(), "PR should be None at L1");
+        // Implicit genesis: PG is None at L1
+        assert!(principal.pg().is_none(), "PG should be None at L1");
         assert_eq!(principal.active_key_count(), 1);
     }
 
@@ -578,10 +684,10 @@ mod tests {
         let principal =
             load_principal(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[]).unwrap();
 
-        // Explicit genesis: PR is None (needs principal/create)
+        // Explicit genesis: PG is None (needs principal/create)
         assert!(
             principal.pg().is_none(),
-            "PR should be None before principal/create"
+            "PG should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
         assert!(principal.is_key_active(&key1.tmb));
@@ -594,22 +700,76 @@ mod tests {
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 
+    /// F29: an entry whose pay is missing `typ` must be rejected outright
+    /// during replay, not silently misclassified. Before the fix,
+    /// replay_entries's hand-rolled extraction defaulted a missing `typ`
+    /// to `""`, and `is_transaction_typ("")` is false -- so a malformed
+    /// coz could be silently routed to `verify_and_record_action` instead
+    /// of being rejected. `now` must still be present here: `Entry`
+    /// construction itself already validates that field independently, so
+    /// this test isolates the `typ` gap `CozHeader::parse` closes.
+    #[test]
+    fn load_principal_rejects_entry_missing_typ() {
+        let key = make_test_key(0xAA);
+        let tmb_b64 = key.tmb.to_b64();
+
+        let malformed = serde_json::json!({
+            "pay": {
+                "alg": "ES256",
+                "tmb": tmb_b64,
+                "now": 1000
+                // "typ" deliberately omitted
+            },
+            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        });
+        let entry = crate::Entry::from_value(&malformed).expect("entry construction");
+
+        let result = load_principal(Genesis::Implicit(key), &[entry]);
+        assert!(
+            matches!(
+                result,
+                Err(LoadError::Protocol(cyphr::Error::MalformedPayload))
+            ),
+            "an entry missing 'typ' must be rejected as malformed, not silently misclassified as \
+             an action, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn is_key_introducing_typ_delegates_to_canonical_predicate() {
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/create"));
+        assert!(is_key_introducing_typ("cyphr.me/cyphr/key/replace"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/key/delete"));
+        assert!(!is_key_introducing_typ("cyphr.me/cyphr/commit/create"));
+    }
+
+    /// F25: `is_transaction_typ` must recognize the three lifecycle
+    /// transaction typs N03 added to the core protocol crate, or a signed
+    /// lifecycle commit is silently misfiled as a deferred data action
+    /// instead of being applied through `verify_and_apply`.
+    #[test]
+    fn is_transaction_typ_recognizes_lifecycle_typs() {
+        assert!(is_transaction_typ("cyphr.me/cyphr/principal/delete"));
+        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/create"));
+        assert!(is_transaction_typ("cyphr.me/cyphr/freeze/delete"));
+    }
+
     #[test]
     fn checkpoint_empty_keys_fails() {
         use cyphr::multihash::MultihashDigest;
         use cyphr::state::HashAlg;
 
-        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]);
+        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]).unwrap();
         let checkpoint = Checkpoint {
-            auth_root: AuthRoot(MultihashDigest::from_single(
-                HashAlg::Sha256,
-                vec![0xBB; 32],
-            )),
+            auth_root: AuthRoot(
+                MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap(),
+            ),
             keys: vec![],
             attestor: None,
+            cr: None,
         };
 
-        let result = load_from_checkpoint(Some(pr), checkpoint, &[]);
+        let result = load_from_checkpoint(Some(pr), checkpoint, None, &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 }

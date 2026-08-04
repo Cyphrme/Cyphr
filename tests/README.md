@@ -17,6 +17,8 @@ Implementors in any language can consume the golden JSON files directly. The int
 tests/
 ├── keys/
 │   └── pool.toml         # Shared key pool (public + private keys)
+├── intents/
+│   └── *.toml            # Source intent files that regenerate golden/ fixtures
 ├── e2e/
 │   └── *.toml            # Human-readable test definitions (intent files)
 ├── golden/
@@ -55,25 +57,32 @@ For each JSON file in `golden/`:
     {
       "txs": [
         {
-          "pay": {"typ": "cyphr.me/key/create", "now": 1700000000, ...},
+          "pay": {"typ": "cyphr.me/cyphr/key/create", "now": 1700000000, ...},
           "sig": "<base64url>",
           "key": {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>"}
         }
       ],
-      "cs": "<alg:base64url>"
+      "keys": [
+        {"alg": "ES256", "pub": "<base64url>", "tmb": "<base64url>", "tag": "...", "now": 0}
+      ],
+      "commit_id": "<alg:base64url>",
+      "ar": "<alg:base64url>",
+      "sr": "<alg:base64url>",
+      "pr": "<alg:base64url>"
     }
   ],
   "digests": ["<czd_base64url>"],
   "expected": {
     "key_count": 2,
     "level": 3,
-    "ks": "<alg:base64url>",
-    "as": "<alg:base64url>",
-    "cs": "<alg:base64url>",
-    "ps": "<alg:base64url>",
-    "commit_id": "<alg:base64url>",
+    "kr": "<alg:base64url>",
+    "ar": "<alg:base64url>",
+    "sr": "<alg:base64url>",
     "pr": "<alg:base64url>",
-    "ds": "<base64url>",
+    "tr": "<alg:base64url>",
+    "cr": "<alg:base64url>",
+    "dr": "<base64url>",
+    "pg": "<alg:base64url>",
     "error": "ErrorName"
   }
 }
@@ -81,28 +90,44 @@ For each JSON file in `golden/`:
 
 #### Field Descriptions
 
-| Field          | Description                                                                |
-| -------------- | -------------------------------------------------------------------------- |
-| `principal`    | Key names from pool (for reference)                                        |
-| `genesis_keys` | Full key material for genesis creation                                     |
-| `commits`      | Atomic commit bundles, each containing `txs[]` and a computed `cs` digest  |
-| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification     |
-| `expected`     | Expected state after all commits applied (includes `ks`, `as`, `cs`, `ps`) |
+| Field          | Description                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| `principal`    | Key names from pool (for reference)                                                                       |
+| `genesis_keys` | Full key material for genesis creation                                                                    |
+| `commits`      | Atomic commit bundles, each containing `txs[]`, `keys[]`, and computed `commit_id`/`ar`/`sr`/`pr` digests |
+| `digests`      | Coz digests (czd) parallel to flattened transactions, for verification                                    |
+| `expected`     | Expected state after all commits applied — see Expected State Fields below                                |
+
+#### Expected State Fields
+
+| Field                                            | Description                                                                                                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key_count`                                      | Number of active keys after all commits                                                                                                                         |
+| `level`                                          | Principal level (1-4) after all commits                                                                                                                         |
+| `kr`                                             | Key Root digest (`alg:base64url`)                                                                                                                               |
+| `ar`                                             | Auth Root digest (`alg:base64url`)                                                                                                                              |
+| `sr`                                             | State Root digest (`alg:base64url`); promotes from AR when no Data Root is present, otherwise the tree root over AR and DR                                      |
+| `pr`                                             | Principal Root digest (`alg:base64url`)                                                                                                                         |
+| `tr`                                             | Commit ID digest of the final commit (`alg:base64url`; accepts legacy alias `ts`)                                                                               |
+| `cr`                                             | Commit Root digest (`alg:base64url`); not yet present in the persisted fixture corpus, exercised by `test_fixtures::golden::tests::test_generate_single_commit` |
+| `dr`                                             | Data Root digest (Level 4, base64url, single algorithm)                                                                                                         |
+| `pg`                                             | Principal Genesis digest (`alg:base64url`); empty string when there is no prior genesis state                                                                   |
+| `error`                                          | Expected error name, if the last transaction is expected to fail                                                                                                |
+| `multihash_kr` / `multihash_ar` / `multihash_pr` | Per-algorithm KR/AR/PR variants, present for multi-algorithm principals (SPEC §14)                                                                              |
 
 ### Test Categories
 
-| Category                     | Path                                 | Description                                          |
-| ---------------------------- | ------------------------------------ | ---------------------------------------------------- |
-| `mutations`                  | `golden/mutations/`                  | Transaction mutations (key/add, key/delete, etc.)    |
-| `multi_key`                  | `golden/multi_key/`                  | Multi-key principal operations                       |
-| `algorithm_diversity`        | `golden/algorithm_diversity/`        | Cross-algorithm key management                       |
-| `state_computation`          | `golden/state_computation/`          | State digest verification (KS, CommitID, AS, CS, PS) |
-| `edge_cases`                 | `golden/edge_cases/`                 | Ordering, idempotency, combined operations           |
-| `actions`                    | `golden/actions/`                    | Level 4 action recording                             |
-| `errors`                     | `golden/errors/`                     | Error condition rejection tests                      |
-| `authentication_constraints` | `golden/authentication_constraints/` | Constraints verifying authentication rules           |
-| `data_action_constraints`    | `golden/data_action_constraints/`    | Constraints over data actions                        |
-| `structural_constraints`     | `golden/structural_constraints/`     | Structural validation algorithms                     |
+| Category                  | Path                              | Description                                          |
+| ------------------------- | --------------------------------- | ---------------------------------------------------- |
+| `mutations`               | `golden/mutations/`               | Transaction mutations (key/add, key/delete, etc.)    |
+| `multi_key`               | `golden/multi_key/`               | Multi-key principal operations                       |
+| `algorithm_diversity`     | `golden/algorithm_diversity/`     | Cross-algorithm key management                       |
+| `state_computation`       | `golden/state_computation/`       | State digest verification (KR, CommitID, AR, SR, PR) |
+| `edge_cases`              | `golden/edge_cases/`              | Ordering, idempotency, combined operations           |
+| `actions`                 | `golden/actions/`                 | Level 4 action recording                             |
+| `errors`                  | `golden/errors/`                  | Error condition rejection tests                      |
+| `data_action_constraints` | `golden/data_action_constraints/` | Constraints over data actions                        |
+| `structural_constraints`  | `golden/structural_constraints/`  | Structural validation algorithms                     |
 
 ### Setup Modifiers
 
@@ -115,15 +140,14 @@ Some tests require setup before the main operation:
 
 Tests with `expected.error` verify that operations are correctly rejected:
 
-| Error                  | Trigger                                    |
-| ---------------------- | ------------------------------------------ |
-| `InvalidPrior`         | Transaction `pre` doesn't match current CS |
-| `UnknownKey`           | Signer not in principal's key set          |
-| `KeyRevoked`           | Signer key is revoked                      |
-| `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)    |
-| `DuplicateKey`         | Adding key already in KS                   |
-| `TimestampPast`        | Transaction timestamp older than previous  |
-| `UnsupportedAlgorithm` | Genesis with unsupported algorithm         |
+| Error                  | Trigger                                   |
+| ---------------------- | ----------------------------------------- |
+| `UnknownKey`           | Signer not in principal's key set         |
+| `KeyRevoked`           | Signer key is revoked                     |
+| `NoActiveKeys`         | Self-revoke of last key (Level 1 guard)   |
+| `DuplicateKey`         | Adding key already in KR                  |
+| `TimestampPast`        | Transaction timestamp older than previous |
+| `UnsupportedAlgorithm` | Genesis with unsupported algorithm        |
 
 ---
 
@@ -181,7 +205,7 @@ name      = "key_add_increases_count"
 principal = ["golden"]
 
 [[test.commit]]
-tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
+tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create"}]]
 
 [test.expected]
 key_count = 2
@@ -196,10 +220,10 @@ name      = "transaction_sequence_replay"
 principal = ["golden"]
 
 [[test.commit]]
-tx = [[{now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
+tx = [[{now = 1700000001, signer = "golden", target = "key_a", typ = "cyphr.me/cyphr/key/create"}]]
 
 [[test.commit]]
-tx = [[{now = 1700000002, signer = "golden", target = "key_b", typ = "cyphr.me/key/create"}]]
+tx = [[{now = 1700000002, signer = "golden", target = "key_b", typ = "cyphr.me/cyphr/key/create"}]]
 
 [test.expected]
 key_count = 3
@@ -238,7 +262,7 @@ name      = "action_after_key_add"
 principal = ["alice"]
 
 [[test.commit]]
-tx = [[{now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/key/create"}]]
+tx = [[{now = 1700000001, signer = "alice", target = "bob", typ = "cyphr.me/cyphr/key/create"}]]
 
 [[test.action]]
 msg    = "Action signed by newly added key"
@@ -263,7 +287,7 @@ revoke_key = "key_a"
 revoke_at  = 1699999999
 
 [[test.commit]]
-tx = [[{now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/key/delete"}]]
+tx = [[{now = 1700000000, signer = "key_a", target = "golden", typ = "cyphr.me/cyphr/key/delete"}]]
 
 [test.expected]
 error = "KeyRevoked"
@@ -273,17 +297,17 @@ error = "KeyRevoked"
 
 ```toml
 [[test]]
-name      = "pre_mismatch_fails"
+name      = "err_empty_commit"
 principal = ["golden"]
 
 [[test.commit]]
-tx = [[{now = 1700000000, signer = "golden", target = "key_a", typ = "cyphr.me/key/create"}]]
+tx = []
 
 [test.override]
-pre = "SHA-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+empty_commit = true
 
 [test.expected]
-error = "InvalidPrior"
+error = "[commit-one-or-more]"
 ```
 
 ### Intent Field Reference
@@ -301,7 +325,6 @@ error = "InvalidPrior"
 | `action[].now`       | i64      | Action timestamp                                    |
 | `action[].signer`    | string   | Action signer key name                              |
 | `action[].msg`       | string   | Action message content                              |
-| `override.pre`       | string   | Override `pre` field (for InvalidPrior tests)       |
 | `override.tmb`       | string   | Override `tmb` field (for UnknownKey tests)         |
 | `expected.key_count` | int      | Expected active key count                           |
 | `expected.level`     | int      | Expected principal level (1-4)                      |
@@ -326,19 +349,18 @@ cargo run -p fixture-gen -- \
 
 ### Golden Tests (Pre-Computed Fixtures)
 
-| Category                   | Tests  |
-| -------------------------- | ------ |
-| mutations                  | 6      |
-| multi_key                  | 4      |
-| algorithm_diversity        | 2      |
-| state_computation          | 9      |
-| edge_cases                 | 4      |
-| actions                    | 5      |
-| errors                     | 13     |
-| authentication_constraints | 1      |
-| data_action_constraints    | 1      |
-| structural_constraints     | 2      |
-| **Total**                  | **47** |
+| Category                | Tests  |
+| ----------------------- | ------ |
+| mutations               | 6      |
+| multi_key               | 4      |
+| algorithm_diversity     | 2      |
+| state_computation       | 9      |
+| edge_cases              | 4      |
+| actions                 | 5      |
+| errors                  | 12     |
+| data_action_constraints | 1      |
+| structural_constraints  | 2      |
+| **Total**               | **45** |
 
 ---
 
@@ -354,14 +376,15 @@ In addition to golden tests, `tests/e2e/` contains **intent files** that are par
 
 ### E2E Intent Files
 
-| File                       | Tests  | Description                                |
-| -------------------------- | ------ | ------------------------------------------ |
-| `round_trip.toml`          | 5      | Export/import round-trip verification      |
-| `genesis_load.toml`        | 4      | Genesis creation and initial state         |
-| `edge_cases.toml`          | 4      | Algorithm diversity, large history, timing |
-| `error_conditions.toml`    | 6      | Error rejection (broken chain, revoked)    |
-| `multihash_coherence.toml` | 2      | Multi-algorithm state coherence (SPEC §14) |
-| **Total**                  | **21** |                                            |
+| File                       | Tests   | Description                                                                                    |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `round_trip.toml`          | 5       | Export/import round-trip verification                                                          |
+| `genesis_load.toml`        | 4       | Genesis creation and initial state                                                             |
+| `edge_cases.toml`          | 4       | Algorithm diversity, large history, timing                                                     |
+| `error_conditions.toml`    | 9       | Error rejection (revoked, timestamp order)                                                     |
+| `multihash_coherence.toml` | 2       | Multi-algorithm state coherence (SPEC §14)                                                     |
+| `e2e_features.toml`        | 179     | Generated feature-coverage matrix: 16 features across 4 tiers (see `generate_e2e_features.py`) |
+| **Total**                  | **203** |                                                                                                |
 
 ### Running E2E Tests
 
@@ -379,10 +402,10 @@ cd rs && cargo test -p cyphr-storage --test e2e
 
 ---
 
-## Grand Total: 61 Integration Tests
+## Grand Total: 257 Integration Tests
 
-| Type         | Tests  |
-| ------------ | ------ |
-| Golden       | 47     |
-| E2E          | 21     |
-| **Combined** | **68** |
+| Type         | Tests   |
+| ------------ | ------- |
+| Golden       | 47      |
+| E2E          | 210     |
+| **Combined** | **257** |

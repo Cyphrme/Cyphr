@@ -1,6 +1,9 @@
 {
   "name": "revoked_key_fails",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "setup": {
     "revoke_key": "key_a",
     "revoke_at": 1699999999
@@ -25,11 +28,10 @@
             "alg": "ES256",
             "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "now": 1700000000,
-            "pre": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
             "tmb": "xgJu8GsEGOVZCjbVUXn_D4gs4aulifY-VQG2FMlJaHE",
             "typ": "cyphr.me/cyphr/key/delete"
           },
-          "sig": "SZ9YTNs-ldxpwc-bGRtwAYom2yLXibt2Yl7bYwPrzdUI0HrkXjZ-H0fIzT8FR0kSR3fmJSCJpaKGSRtrg3mB2Q"
+          "sig": "d9wJdthoeDlZTJ7f_O87SdRZjwls9y5VeVlvZEBa7bo6pa8GibsE6KuXek7S58QN23u5aSRdGpegafz0rj8E7w"
         }
       ],
       "keys": [
@@ -45,7 +47,9 @@
       "pr": ""
     }
   ],
-  "digests": ["LoWnA__D4VfR2IZsGENK0E1Hll978GUm4MV832j_8RY"],
+  "digests": [
+    "r9TEGvkM5Dx-PR9R1oB7GoXlMHyvN_si50N3FPneqF0"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
@@ -54,6 +58,8 @@
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": "",
-    "error": "KeyRevoked"
+    "error": "KeyRevoked",
+    "deleted": false,
+    "frozen": false
   }
 }

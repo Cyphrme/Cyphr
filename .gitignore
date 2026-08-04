@@ -2,4 +2,7 @@
 target
 Cargo.lock
 .repomap*
-.sketches/
+.ledger/
+.meetings
+.scratch
+.grepai/

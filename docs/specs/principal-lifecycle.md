@@ -17,8 +17,9 @@
 determine capability, the lifecycle states a principal can occupy, and the
 principal-level operations (close, merge, fork) that alter identity.
 
-**Target System:** `SPEC.md` §3 (Feature Levels), §11 (Principal Lifecycle
-States), §19 (Close, Merge, Fork).
+**Target System:** `SPEC.md` §3.0 (Feature Levels), §11 (Principal
+Lifecycle States), §11.4-11.5 (Close, Merge, Fork), §14.9 (Freeze). All
+citations verified current as of 2026-07-14.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -31,6 +32,39 @@ out of their identities.
 — transaction semantics that produce lifecycle transitions.
 [`state-tree.md`](./state-tree.md)
 — state computation underlying level-dependent structures.
+
+## Implementation Status (re-verified 2026-07-08)
+
+**`VERIFIED: agent-check` / `pass` below means "explicit in SPEC.md," not
+"implemented."** The table's uniform 25/25 `pass` reflects SPEC-internal
+consistency, not implementation status. The following revisions apply post-campaign:
+
+**Implemented by N01 (lifecycle-state), N03 (lifecycle-transactions):**
+
+- LifecycleState enum with full derivation from five boolean conditions (Active,
+  Frozen, Deleted, Zombie, Dead, Nuked), orthogonal Errored flag —
+  `rs/cyphr/src/lifecycle.rs:derive_lifecycle_state` with exhaustive property test
+- Three lifecycle transactions: principal/delete, freeze/create, freeze/delete,
+  all parsed, applied, and tested via `tests/intents/lifecycle.toml` (4 golden
+  scenarios with fixture-backed assertions), `tests/golden/lifecycle/*.json`
+- Frozen/Deleted/Zombie/Dead/Nuked states now reach real code paths; all lifecycle
+  gates enforced (mutual-exclusivity, no-mutations-on-frozen, Deleted subsumes
+  Frozen per F5 ruling)
+
+**Still unimplemented (correctly out of campaign scope):**
+
+- principal/merge and principal/fork/create (no transactions, no tests)
+- Level 5+ weighted-key thresholds and CanMutateAR non-monotonicity
+- Errored state detection (flag always false in v1; CommitMismatch is candidate
+  future source per findings F8)
+
+**Partially implemented or with known limitations:**
+
+- `Principal::level()` still cannot return `Level::L2` —
+  `rs/cyphr/src/principal.rs` comment: "For now, single key with no commits = Level 1"
+- Nuked vs Dead distinguishability: KeyDelete erases keys; SelfRevoke preserves
+  them in revoked set — both trace back to deletion state, making Nuked/Dead
+  separation not externally observable (findings F11, deferred refinement)
 
 ## Constraints
 
@@ -148,9 +182,20 @@ that having active keys implies the ability to mutate AR.
 principal. This transition is irreversible.
 
 - **PRE**: Principal is Active or Frozen. Signing key MUST be active.
-- **POST**: `IsDeleted` = true. No transactions or actions (including data
-  actions) are possible. PR MAY be reused for a new principal only if the keys
-  were not revoked.
+
+  _Ruling note (SPEC F5)_: SPEC.md §11.2 states Freeze permits "no mutations until
+  unfrozen" (unqualified), while §14.9 discretionarily restricts Freeze to key
+  mutations. The architect ruling (findings.yaml F5) permits principal/delete from
+  both Active and Frozen states. When signed by a Frozen principal, the resulting
+  Deleted state subsumes Frozen (per §11.2 mutual-exclusivity): POST sets both
+  `IsDeleted` = true and `IsFrozen` = false.
+
+- **POST**: `IsDeleted` = true. `IsFrozen` = false (if previously Frozen).
+  The three lifecycle transactions (principal/delete, freeze/create, freeze/delete)
+  each carry their own individual checks rejecting AlreadyDeleted; however, no
+  blanket gate rejects all other transaction types against a Deleted principal.
+  This narrow gate is tracked as a follow-up gap (findings.yaml F23 / GitHub issue #65).
+  PR MAY be reused for a new principal only if the keys were not revoked.
   `VERIFIED: agent-check`
 
 **[nuke-sequence]**: To ensure no aspect of a deleted principal can be reused,
@@ -281,6 +326,10 @@ keys once all are revoked/deleted and no recovery path exists.
 
 ## Verification
 
+> See "Implementation Status" above: `pass` below means SPEC-internal
+> consistency, not implementation. No lifecycle state machine, freeze,
+> merge, or fork exists; `level()` cannot return `L2`.
+
 | Constraint                      | Method      | Result | Detail                               |
 | :------------------------------ | :---------- | :----- | :----------------------------------- |
 | [level-1-static]                | agent-check | pass   | SPEC.md §3.1, §5.1 (no chain)        |
@@ -293,22 +342,22 @@ keys once all are revoked/deleted and no recovery path exists.
 | [errored-orthogonal]            | agent-check | pass   | Explicit in SPEC.md §11.1            |
 | [deleted-frozen-exclusive]      | agent-check | pass   | Explicit in SPEC.md §11.2            |
 | [canmutate-non-monotonic]       | agent-check | pass   | Explicit in SPEC.md §11.3            |
-| [principal-delete]              | agent-check | pass   | Explicit in SPEC.md §19.1            |
-| [nuke-sequence]                 | agent-check | pass   | Explicit in SPEC.md §19.1            |
-| [merge-requires-ack]            | agent-check | pass   | Explicit in SPEC.md §19.2            |
-| [merge-implicit]                | agent-check | pass   | Explicit in SPEC.md §19.2            |
-| [merge-key-transfer]            | agent-check | pass   | Explicit in SPEC.md §19.2            |
-| [fork-creates-new-pg]           | agent-check | pass   | Explicit in SPEC.md §19.3            |
-| [fork-equivalent-to-genesis]    | agent-check | pass   | Explicit in SPEC.md §19.3            |
-| [key-sharing-across-principals] | agent-check | pass   | Explicit in SPEC.md §19.3            |
-| [freeze-blocks-mutations]       | agent-check | pass   | Inferred from SPEC.md §11.2, §18.9   |
+| [principal-delete]              | agent-check | pass   | Explicit in SPEC.md §11.4            |
+| [nuke-sequence]                 | agent-check | pass   | Explicit in SPEC.md §11.4            |
+| [merge-requires-ack]            | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [merge-implicit]                | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [merge-key-transfer]            | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [fork-creates-new-pg]           | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [fork-equivalent-to-genesis]    | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [key-sharing-across-principals] | agent-check | pass   | Explicit in SPEC.md §11.5            |
+| [freeze-blocks-mutations]       | agent-check | pass   | Inferred from SPEC.md §11.2, §14.9   |
 | [unfreeze]                      | agent-check | pass   | Inferred from SPEC.md §11.2          |
 | [no-deleted-and-frozen]         | agent-check | pass   | Explicit in SPEC.md §11.2            |
-| [no-transactions-on-deleted]    | agent-check | pass   | Explicit in SPEC.md §19.1            |
+| [no-transactions-on-deleted]    | agent-check | pass   | Explicit in SPEC.md §11.4            |
 | [no-mutations-on-frozen]        | agent-check | pass   | Explicit in SPEC.md §11.2            |
 | [no-level-1-recovery]           | agent-check | pass   | Explicit in SPEC.md §3.1             |
 | [lifecycle-deterministic]       | agent-check | pass   | Follows from condition-derived state |
-| [delete-irreversible]           | agent-check | pass   | Explicit in SPEC.md §19.1            |
+| [delete-irreversible]           | agent-check | pass   | Explicit in SPEC.md §11.4            |
 | [dead-terminal]                 | agent-check | pass   | Follows from §11.2, §11.3            |
 
 ## Implications

@@ -190,6 +190,40 @@ fn test_export_import_roundtrip() {
 }
 
 #[test]
+fn test_exported_commits_carry_real_auth_root_and_state_root() {
+    // Regression test: exported CommitEntry lines used to hardcode empty
+    // "ar" (auth_root) and "sr" (state root) placeholders even though the
+    // indexer already computes and stores real values for both -- the
+    // export just never wired them through. An exported JSONL file
+    // claiming a full commit record should not silently drop two of its
+    // core digest fields.
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+
+    let export_path = cli.temp_dir.path().join("export.jsonl");
+    let output_path_arg = format!("--output={}", export_path.to_str().unwrap());
+    cli.run_ok(&["export", &identity_arg, &output_path_arg]);
+
+    let content = std::fs::read_to_string(&export_path).expect("read export file");
+    let line = content.lines().next().expect("at least one commit line");
+    let entry: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+
+    assert!(
+        !entry["ar"].as_str().unwrap_or("").is_empty(),
+        "exported commit's auth_root (ar) must not be an empty placeholder"
+    );
+    assert!(
+        !entry["sr"].as_str().unwrap_or("").is_empty(),
+        "exported commit's state root (sr) must not be an empty placeholder"
+    );
+}
+
+#[test]
 fn test_keystore_list() {
     let cli = CliTest::new();
 
@@ -254,9 +288,9 @@ fn test_inspect_genesis() {
     let identity_arg = format!("--identity={genesis_tmb}");
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // At genesis, PR is not yet established
-    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
-    assert_eq!(inspect["ps"].as_str().unwrap(), genesis_tmb);
+    // At genesis, PG is not yet established
+    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
+    assert_eq!(inspect["pr"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["ks"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["as"].as_str().unwrap(), genesis_tmb);
     assert_eq!(inspect["commit_count"], 0);
@@ -282,8 +316,8 @@ fn test_inspect_after_transactions() {
     // Inspect after coz
     let inspect = cli.run_json(&["inspect", &identity_arg]);
 
-    // PR is still <none> until a principal/create coz establishes it
-    assert_eq!(inspect["pr"].as_str().unwrap(), "<none>");
+    // PG is still <none> until a principal/create coz establishes it
+    assert_eq!(inspect["pg"].as_str().unwrap(), "<none>");
     assert_ne!(
         inspect["ks"].as_str().unwrap(),
         genesis_tmb,
@@ -293,6 +327,142 @@ fn test_inspect_after_transactions() {
 
     let keys = inspect["active_keys"].as_array().unwrap();
     assert_eq!(keys.len(), 2, "should have 2 keys after add");
+}
+
+#[test]
+fn test_explicit_multi_key_genesis_reload() {
+    // An identity created with explicit genesis (multiple keys) must be
+    // reloadable before any commit has ever been made against it -- e.g.
+    // before it has been pushed to a server. Regression test for a bug
+    // where the load path unconditionally treated a never-yet-committed
+    // identity as implicit (single-key) genesis, so it tried to look up
+    // the combined multi-key digest as if it were a single key's
+    // thumbprint in the keystore, and failed with a confusing
+    // "key not found" error even though both genesis keys were present
+    // locally.
+    let cli = CliTest::new();
+
+    let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
+    let key1_tmb = key1["tmb"].as_str().unwrap().to_string();
+    let key2 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k2"]);
+    let key2_tmb = key2["tmb"].as_str().unwrap().to_string();
+
+    let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
+    let init = cli.run_json(&["init", &keys_arg]);
+    let pr = init["pr"].as_str().unwrap().to_string();
+
+    // Reload without ever having pushed anywhere -- same store, same
+    // keystore, brand new process invocation.
+    let identity_arg = format!("--identity={pr}");
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
+
+    assert_eq!(inspect["commit_count"], 0);
+    let active_keys: Vec<_> = inspect["active_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["tmb"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        active_keys.len(),
+        2,
+        "explicit genesis must reload with both original keys, not silently drop one"
+    );
+    assert!(active_keys.contains(&key1_tmb));
+    assert!(active_keys.contains(&key2_tmb));
+}
+
+#[test]
+fn test_explicit_multi_key_genesis_accepts_commits() {
+    // F40 regression: a genuinely fresh explicit multi-key genesis (2+
+    // keys, zero prior commits) must accept commits signed on top of it --
+    // not just reload (test_explicit_multi_key_genesis_reload, above).
+    //
+    // Root cause: `save_principal_to_engine` (cyphr-cli/src/commands/
+    // common.rs) reconstructed the `Genesis` it handed to
+    // `StorageEngine::submit_commit` from only `genesis_keys().first()`,
+    // silently collapsing a multi-key explicit genesis down to a
+    // single-key implicit one. The resubmitted commit's signer then didn't
+    // match the (wrongly narrowed) reconstructed principal's active key
+    // set, so `submit_commit`'s independent `load_principal` replay
+    // diverged from what the CLI had actually signed the arrow against --
+    // `finalize_commit`'s arrow-verification check (the sole surviving
+    // chain-integrity guard) correctly rejected the divergence with a
+    // "state root mismatch" error. A second, related bug at the same site
+    // affected only the second-and-later commit (this test's `key add`
+    // #2/#3): genesis was only supplied for the first commit, so later
+    // commits fell back to `StorageEngine::submit_commit`'s own
+    // server-side genesis reconstruction, which can only recover a
+    // *single* key from stored blob material and has no wire
+    // representation for a multi-key genesis at all.
+    let cli = CliTest::new();
+
+    let key1 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k1"]);
+    let key1_tmb = key1["tmb"].as_str().unwrap().to_string();
+    let key2 = cli.run_json(&["key", "generate", "--algo", "ES256", "--tag", "k2"]);
+    let key2_tmb = key2["tmb"].as_str().unwrap().to_string();
+
+    let keys_arg = format!("--keys={key1_tmb},{key2_tmb}");
+    let init = cli.run_json(&["init", &keys_arg]);
+    let pr = init["pr"].as_str().unwrap().to_string();
+    let identity_arg = format!("--identity={pr}");
+    let signer_arg = format!("--signer={key1_tmb}");
+
+    // Commit #1 on top of the fresh multi-key genesis -- the exact F40
+    // scenario ("a second commit is signed on top of it", counting
+    // genesis itself as the first "commit").
+    let add1 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key3_tmb = add1["added_key"].as_str().unwrap().to_string();
+
+    // Commit #2: reload (replaying the one stored commit) and resubmit.
+    let add2 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key4_tmb = add2["added_key"].as_str().unwrap().to_string();
+
+    // Commit #3, for good measure -- proves this isn't merely "the second
+    // commit specifically" but genuinely fixed for the general case.
+    let add3 = cli.run_json(&["key", "add", &identity_arg, &signer_arg]);
+    let key5_tmb = add3["added_key"].as_str().unwrap().to_string();
+
+    let inspect = cli.run_json(&["inspect", &identity_arg]);
+    assert_eq!(inspect["commit_count"], 3);
+    let active_keys: Vec<_> = inspect["active_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["tmb"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(active_keys.len(), 5, "genesis's 2 keys plus 3 added keys");
+    for tmb in [&key1_tmb, &key2_tmb, &key3_tmb, &key4_tmb, &key5_tmb] {
+        assert!(
+            active_keys.contains(tmb),
+            "expected key {tmb} to be active after 3 commits on a multi-key genesis"
+        );
+    }
+}
+
+#[test]
+fn test_unresolvable_identity_fails_loudly() {
+    // An identity that matches neither a keystore key, a recorded
+    // explicit genesis, nor any stored commit must fail with a clear
+    // error -- not silently misinterpret it as some other identity's
+    // genesis.
+    let cli = CliTest::new();
+
+    // Never generated, never initialized: a syntactically valid but
+    // otherwise unknown base64url digest.
+    let bogus = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let identity_arg = format!("--identity={bogus}");
+
+    let result = cli.run(&["inspect", &identity_arg]);
+    assert!(
+        result.is_err(),
+        "reload of an unresolvable identity must fail, not silently succeed"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("cannot resolve genesis"),
+        "error should honestly explain genesis could not be resolved, got: {err}"
+    );
 }
 
 #[test]
@@ -396,10 +566,51 @@ fn test_tx_verify_after_transactions() {
     cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
 
     // Verify coz chain - THIS IS THE CRITICAL TEST
-    // If PS Mismatch bug exists, this will fail
+    // If PR Mismatch bug exists, this will fail
     let verify = cli.run_json(&["tx", "verify", &identity_arg]);
 
     assert_eq!(verify["status"], "OK", "tx verify should succeed");
     assert_eq!(verify["commits_verified"], 1);
     assert_eq!(verify["transactions_verified"], 2);
+}
+
+#[test]
+fn test_tx_verify_reports_storage_errors_instead_of_false_success() {
+    // Regression test: `tx verify` used to collapse any storage error
+    // while loading commits into an empty list via `unwrap_or_default()`,
+    // making a real failure (corrupted index, missing blob, etc.)
+    // indistinguishable from a legitimate zero-commit genesis identity --
+    // and then reporting "OK, genesis state verified" over data that
+    // actually failed to load.
+    let cli = CliTest::new();
+
+    let genesis = cli.run_json(&["key", "generate", "--algo", "ES256"]);
+    let genesis_tmb = genesis["tmb"].as_str().unwrap();
+    let identity_arg = format!("--identity={genesis_tmb}");
+    let signer_arg = format!("--signer={genesis_tmb}");
+
+    // Create a real commit so this identity is NOT legitimately empty.
+    cli.run_ok(&["key", "add", &identity_arg, &signer_arg]);
+    let verify_before = cli.run_json(&["tx", "verify", &identity_arg]);
+    assert_eq!(verify_before["status"], "OK");
+    assert_eq!(verify_before["commits_verified"], 1);
+
+    // Simulate real data loss: wipe the blob store contents while
+    // leaving the index's references to them intact, so retrieving this
+    // identity's commits now genuinely fails instead of finding nothing.
+    let blobs_dir = cli.store_path().join("blobs");
+    std::fs::remove_dir_all(&blobs_dir).expect("remove blobs dir");
+    std::fs::create_dir_all(&blobs_dir).expect("recreate empty blobs dir");
+
+    let result = cli.run(&["tx", "verify", &identity_arg]);
+    assert!(
+        result.is_err(),
+        "tx verify must fail loudly when the underlying commit data cannot be read, not silently \
+         report genesis-state success"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("not found"),
+        "error should surface the real storage failure, got: {err}"
+    );
 }

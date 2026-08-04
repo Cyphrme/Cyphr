@@ -2,8 +2,11 @@
 
 Protocol Specification
 
-**Version**: Draft v0.1 - Work in Progress
-**Authors**: Zamicol and nrdxp
+ - **Authors**: Zamicol and nrdxp
+ - **Version**: Draft v0.1 - Work in Progress
+
+**Editorial note**: The first 12 sections are canonical. Sections 13 plus are
+less complete, less critical, or entirely auxiliary to the core protocol.
 
 Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
@@ -11,15 +14,18 @@ Built on [Coz v1.0](https://github.com/Cyphrme/Coz)
 
 ## 1. Introduction
 
-Cyphr is a self-sovereign identity and authentication protocol. It provides
-a decentralized authentication layer for the Internet. Briefly, it enables:
+Cyphr is a self-sovereign identity and authentication protocol. It provides a
+decentralized authentication layer for the Internet. Briefly, it enables:
 
 - Password-free and email-free authentication via public key cryptography
 - Authenticated Atomic Actions (AAA): individually signed, independently
   verifiable user actions
 - Cryptographic primitive agnosticism (via Coz and MultiHash Merkle Root)
-- Multi-device key management with revocation
+- Multi-device key management with revocation and recovery
 - Data provenance
+
+Importantly, a user’s entire identity (**authentication state**, **action
+history**, and **arbitrary data**) collapses into a single cryptographic digest.
 
 | Feature            | Cyphr                            | Legacy Passwords/SSO |
 | ------------------ | -------------------------------- | -------------------- |
@@ -28,10 +34,9 @@ a decentralized authentication layer for the Internet. Briefly, it enables:
 | **Verification**   | Signatures and Merkle Trees      | Centralized Database |
 | **Trust**          | Cryptographic Verification       | Trusted Service      |
 | **Recovery**       | Revoke/Rotation, Social Recovery | Admin-reset or Email |
-| **State Tracking** | Push/Pull - Bidirectional(MSS)   | Centralized Service  |
-
-Importantly, Cyphr enables an entire identity, both authentication and
-data, to be represented by a single digest.
+| **State Tracking** | Push/Pull - Bidirectional (MSS)  | Centralized Service  |
+| **Durability**     | Time-durable (survives service)  | Lost with service    |
+| **Portability**    | Circumvents walled gardens       | Walled Gardens       |
 
 ---
 
@@ -39,8 +44,19 @@ data, to be represented by a single digest.
 
 ### 2.1 Levels and State Tree
 
-The **principal tree** (PT) consists of nodes representing the complete state of
-a principal (identity) including authentication components and user data.
+In Cyphr, a **principal** is a user identity.
+
+The **principal tree** (PT) is the hierarchical representation of a principal’s
+complete state and contains three primary components: **authentication**,
+**commit history**, and **arbitrary user data**. The PT is an Epoch Merkle Tree
+(EMT, [§2.2.12](#2212-emt)): a mutable, positionally addressed tree whose cell
+0 is the State Root (SR) and cell 1 is the Commit Root (CR). See [Principal
+Root and Principal Genesis](#371-principal-root-and-principal-genesis).
+
+The **principal root** (PR) is the root of the PT (its EMT root) and is
+calculated at each commit. The first PR is the **principal genesis** (PG)
+which is an immutable principal identifier.
+
 
 ```text
 Principal Tree (PT)
@@ -52,31 +68,18 @@ Principal Tree (PT)
 │   │   ├── Key Tree (KT) ─────────── [Public Keys]
 │   │   │
 │   │   └── Rule Tree (RT) ────────── [Permissions & Thresholds]
-|   │
+│   │
 │   └─── Data Tree (DT) ───────────── [Data Actions]
 │
 └── Commit Tree (CT) ──────────────── [State Mutations]
 ```
 
-The **principal root** (PR) is a hierarchical structure of cryptographic Merkle
-roots representing components of the PT calculated for each commit. The first PR
-is the **principal genesis** (PG).
-
-```text
-Principal Root (PR)
-│
-├── State Root (SR) ───────────────── [State]
-│   │
-│   ├── Auth Root (AR) ────────────── [Authentication]
-│   │   │
-│   │   ├── Key Root (KR) ─────────── [Public Keys]
-│   │   │
-│   │   └── Rule Root (RR) ────────── [Permissions & Thresholds]
-|   │
-│   └─── Data Root (DR) ───────────── [Data Actions]
-│
-└── Commit Root (CR) ──────────────── [State Mutations]
-```
+ST and AT are themselves small, fixed-two-cell trees with the same
+positional structure as PT, not a different mechanism: ST's cell 0 is AT's
+root, cell 1 is DR; AT's cell 0 is KR, cell 1 is RR. KT (and RT, DT once
+built) are the hierarchy's dynamic-width trees, each keeping its own
+already-defined member order instead of a fixed cell assignment. See
+[§3.7](#37-root-calculation) for the full rule.
 
 The **commit chain**, tracks the principal root over time. Each commit mutates
 the principal tree (PT) and references the prior principal root (PR) and the
@@ -84,13 +87,13 @@ forward state tree (ST).
 
 ```text
   Genesis, State 0              State 1                   State 2
- +----------------+        +----------------+        +---------------+
- |                | Commit |                | Commit |               |  (Future)
- |    PG(SR)      | =====> |    PR(SR, CR)  | =====> |   PR(SR, CR)  | ==>
- |                |        |            |   |        |           |   |
- +----------------+        +------------V---+        +-----------V---+
-                 ^                      |  ^                     |
-                 + <--(pre)-------------+  + <--(pre)------------+
+ ┏━━━━━━━━━━━━━━━━┓        ┏━━━━━━━━━━━━━━━━┓        ┏━━━━━━━━━━━━━━━━┓
+ ┃                ┃ Commit ┃                ┃ Commit ┃                ┃ (Future)
+ ┃     PG(SR)     ┃ =====> ┃    PR(SR, CR)  ┃ =====> ┃    PR(SR, CR)  ┃ =====>
+ ┃                ┃        ┃            ↓   ┃        ┃            ↓   ┃
+ ┗━━━━━━━━━━━━━━━━┛        ┗━━━━━━━━━━━━━━━━┛        ┗━━━━━━━━━━━━━━━━┛
+                 ↑                      |  ↑                      |
+                 └─────────(pre)────────┘  └─────────(pre)────────┘
 ```
 
 ### 2.2 Terminology
@@ -99,118 +102,158 @@ forward state tree (ST).
 
 | Term                  | Abv | Definition                                     |
 | --------------------- | --- | ---------------------------------------------- |
-| **Principal**         | -   | An identity in Cyphr, replaces "account"       |
+| **Principal**         | P   | An identity in Cyphr, replaces "account"       |
+| **Commit**            | C   | Finalized atomic bundle of transactions        |
 | **Principal Genesis** | PG  | The initial, permanent principal identifier    |
-| **Principal Root**    | PR  | Top-level digest. `MR(SR, CR?, ...)`           |
-| **State Root**        | SR  | Principal non-commit state. `MR(AR, DR, ...)`  |
-| **Auth Root**         | AR  | Authentication state `MR(KR, RR, ...)`         |
+| **Principal Root**    | PR  | Root of the PT (an EMT). `EMT(SR, CR)`, cell 0 = SR, cell 1 = CR |
+| **State Root**        | SR  | Root of ST. `MR(AR, DR)`, cell 0 = AR, cell 1 = DR |
+| **Auth Root**         | AR  | Root of AT. `MR(KR, RR)`, cell 0 = KR, cell 1 = RR |
 | **Key Root**          | KR  | Merkle root of keys `MR(tmb₁, tmb₂, ...)`      |
 | **Rule Root**         | RR  | Merkle root of rules `MR(rule₁, rule₂, ...)`   |
 | **Data Root**         | DR  | Merkle root of user data actions               |
-| **Commit Root**       | CR  | MALTR of transactions `MALTR(TR₀, TR₁?, ...)`  |
+| **Commit Root**       | CR  | EML root of transactions. `EMLR(TR₀, TR₁?, ...)` |
 | **Tip**               | -   | The latest PR (digest identifier)              |
+| **Trust Anchor**      | TA  | Last known valid state for a principal         |
 | **Action**            | -   | A signed coz identified by `typ`, basis of AAA |
-| **trust anchor**      | -   | Last known valid state for a principal         |
 
-PG, PR, SR, AR, KR, RR, DR, and CR are all MultiHash Merkle Root (MHMR) digest
-values. Each digest identifier corresponds to a tree datastructure: Principal
-Tree (PT), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT) and the
-Commit Tree (CT) (PT, AT, KT, RT, DT, CT).
-
-Cozies that authorize operations are actions, and as such, "action" is the
-hypernym of "transaction" and "data action". Concrete resources such as keys,
-rules, user comments, and binary files are not actions.
+PG, PR, SR, AR, KR, RR, DR, and CR are Merkle root (MR) digest values. Each
+digest identifier corresponds to a tree datastructure: Principal Tree (PT),
+State Tree (ST), Auth Tree (AT), Key Tree (KT), Rule Tree (RT), Data Tree (DT)
+and the Commit Tree (CT) (PT, ST, AT, KT, RT, DT, CT).
 
 #### 2.2.2 Digest
 
-A digest is the binary output of a cryptographic hashing algorithm. Digest
+A **digest** is the binary output of a cryptographic hashing algorithm. Digest
 values are encoded as **b64ut** ("Base64 URI canonical Truncated", RFC 4648
 base64 URL alphabet and encoding method, errors on non-canonical encodings, and
-no padding). All digest values are opaque bytes; byte sequences are treated
-as a whole unit without internal structural or meaning.
+no padding). All digest values are opaque bytes treated as a whole unit without
+internal meaning.
 
 #### 2.2.3 Identifier
 
-All identifiers are cryptographic digest Content IDentifiers (CID's) encoded as
-b64ut and provide addressing and integrity of the reference. Following Coz
-semantics, all digest identifiers inside a coz must aligned with algorithm
-(`alg`) in `pay` unless explicitly labeled. For example, the algorithm for the
-`id` of the new key must be `SHA256`, aligning with alg `ES256`.
+An **identifier** is a cryptographic digest Content IDentifier (CID), encoded
+as b64ut, that provides addressing and integrity verification for a referenced
+object. Following Coz semantics, all digest identifiers inside a coz must
+aligned with algorithm (`alg`) in `pay` unless explicitly labeled. For example,
+the algorithm for the `id` of the new key must be `SHA256`, aligning with alg
+`ES256`.
 
-#### 2.2.4 Nonce
+#### 2.2.4 Action 
 
-A **nonce** is a unique, high-entropy value used to add entropy, obscure
-content, and/or ensure uniqueness. See section Nonce.
+An **action** is a cryptographically authorized operation that represents
+principal intent denoted by type. For example, a principal adding a key signs a
+`key/add` action. Actions are implemented as signed coz messages.
 
-#### 2.2.5 Merkle Root
+#### 2.2.5 Authenticated Atomic Action
 
-A **Merkle tree** (MT) is a binary hash tree where each leaf is a hash of data
-and each non-leaf node is the hash of its two children, culminating in a single
-**Merkle root** (MR). CT uses a verifiable data structure, specifically a
-Merkle, Append-Only, Log Tree, (**MALT**), with left, dense filling. See section
-Commit.
-
-#### 2.2.6 Commit
-
-A commit is a finalized bundle of transaction cozies that mutate PT and result
-in a new PR. See section commit.
-
-#### 2.2.7 Implicit Promotion
-
-A value is **implicitly promoted** to the parent without additional hashing when
-a tree component has only one node. Promotion is recursive; items deep in a tree
-can be promoted to the root level. For example:
-
-- Single key: `tmb` is promoted to KR, then AR, then PR, which equals PG on
-  genesis.
-- No DR present: AR is promoted to PR.
-- Only KR present (no RR): KR is promoted to AR.
-
-#### 2.2.8 Authenticated Atomic Action
-
-Authenticated Atomic Action (AAA) is an individual, self-verifiable, discrete
+**Authenticated Atomic Action (AAA)** is an individual, self-verifiable, discrete
 operation. AAA supersedes trust traditionally delegated to centralized services.
 See section [Authenticated Atomic Action](#71-authenticated-atomic-action).
 
-#### 2.2.9 Embedding
+#### 2.2.6 Resource
 
-An **embedded node** is an external tree reference. Its value may be a `tmb`,
-KR, AR, PR, nonce, or other node value. An **embedded principal** is a full
-Cyphr identity embedded into another principal. See section
-[Embedding](#10-embedding).
+A **resource** is an addressable data object that is not an action.  For
+example, resources include keys, rules, user comments, images, binary files,
+documents or records.
 
-#### 2.2.10 Reveal
+#### 2.2.7 Node
+
+A **node** is a discrete unit within a tree structure. A node represents a
+logical component such as a key, rule, data action, or subtree root and is
+addressable by digest. In a Merkle tree, a node is either a leaf node where it
+is the hash of a concrete value (e.g. a `tmb`), or an internal node which is the
+hash of its two child nodes. The root of a tree is itself a node.  Nodes may be
+embedded (a digest referencing external content) or opaque (see sections on
+[Embedding](#10-embedding) and [Reveal](#2215-reveal)).
+
+#### 2.2.8 Nonce
+
+A **nonce** is a unique, high-entropy value used to add entropy, obscure
+content, and/or ensure uniqueness. See section [Nonce](#102-nonce).
+
+#### 2.2.9 Merkle Tree
+
+A **Merkle tree** (MT) is a hash tree where each leaf is a hash and each
+non-leaf node is the hash of its children, culminating in a single **Merkle
+root** (MR). More specifically, Cyphr uses a specific n-ary, arbitrarily
+structured Merkle tree (**NMT**). See section [Commit](#4-commit)
+
+#### 2.2.10 Singleton Promotion
+
+**Singleton promotion** is the elevation of a Merkle tree node digest to a
+parent slot without additional hashing when a tree component has only one node
+value.
+
+**Collapse** When children are of equal value, the parent assumes the value of
+the children without re-hashing.
+
+Promotion an collapse are recursive; items deep in a tree can be promoted to the
+root level. For example, when a principal has only a single key, the key's `tmb`
+is promoted to KR without additional hashing.
+
+For EML and EMT, a node may be null, and if children are null their null value
+is collapsed and promoted to the parent.  This results in the **null
+boundary**, there non-null values are rooted with nulls.
+"log" vs "tree" TODO Merkle Logs are append only, trees are  Spine is the linear path to the proof.
+
+#### 2.2.11 EML
+
+An **Epoch Merkle Log (EML)** is a multihash, n-ary, append only, unbalanced
+(non-symmetrical), left filled Merkle tree, supporting multiple hashes over
+distinct time frames (epochs). EML is the **append-only** peer of EMT. The
+Commit Tree (CT) is an EML.  See section [Commit](#4-commit).
+
+#### 2.2.12 EMT
+
+An **Epoch Merkle Tree (EMT)** is the **mutable** epoch peer of EML: a
+multihash, positionally addressed Merkle tree whose cells are set/get rather
+than only appended, supporting the same multihash, promotion, and collapse
+mechanics as EML. The Principal Tree (PT) is an EMT; see [Principal Root and
+Principal Genesis](#371-principal-root-and-principal-genesis).
+
+#### 2.2.13 Commit
+
+A **commit** is a finalized bundle of transaction cozies that mutate PT and
+result in a new PR. See section [Commit](#4-commit).
+
+#### 2.2.14 Embedding
+
+An **embedded node** is a digest with external reference. Its value may be a
+`tmb`, PR, SR, KR, AR, nonce, or other Cyphr node type. An **embedded
+principal** is a full Cyphr identity embedded into another principal. See
+section [Embedding](#10-embedding).
+
+#### 2.2.15 Reveal
 
 **Reveal** is the process by which obfuscated structures, i.e. opaque nodes, are
 made transparent. Public keys must be revealed for verification; embeddings,
 nonces, and other data structures may also need revealing during commits or
 other signing operations.
 
-#### 2.2.11 Witnesses
+#### 2.2.16 Witnesses
 
 A **witness** is a client that keeps a copy of an external principal's state and
 communicates state through gossip.
 
 An **oracle** is a witness with some degree of delegated trust by external
 clients. For example, a client may delegate some processing to an oracle for
-state jumping, where the oracle is trusted that the commits in the jump were
-appropriately processed.
+state jumping, where the oracle is trusted for transitory commits.
 
-#### 2.2.12 Unrecoverable Principal
+#### 2.2.17 Unrecoverable Principal
 
-A principal with no keys capable of meaningfully mutating AT and no viable
-recovery path within the protocol. See section [Unrecoverable](#Unrecoverable).
+An **unrecoverable principal** is a principal with no keys capable of meaningfully
+mutating AT and no viable recovery path within the protocol. See section
+[Unrecoverable](#113-unrecoverable).
 
 ### 2.3 Core Protocol Constraints
 
 #### 2.3.1 Coz Required Fields
 
-Cyphr requires specific fields for Coz messages. All cozies must have the
-fields:
+Cyphr requires specific Coz semantics. All cozies must have the fields:
 
-- `alg`: Following Coz semantics, `alg` is the algorithm of the signing key and
-  a paired hashing algorithm, and also denotes the algorithm for other values
-  contained in `pay` unless explicitly denoted otherwise.
+- `alg`: Algorithm of the signing key and a paired hashing algorithm. Also
+  denotes the algorithm for other values contained in `pay` unless explicitly
+  denoted otherwise.
 - `tmb`: Thumbprint of the signing key.
 - `now`: The timestamp of the current time.
 - `typ`: Denotes the intent of the coz.
@@ -218,15 +261,29 @@ fields:
 #### 2.3.2 Protocol Guarantees
 
 1. **Commits are append-only**: Commits are never removed from the chain and
-   implicit forks are prohibited by the protocol. See section Implicit Forks.
+   implicit forks are prohibited by the protocol. See section
+   [Fork](#1152-fork).
 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
+
+Authorization is determined by which state components exist.  Authorization has
+three conditions:
+
+1. **Antecedent Authorization Gate**: Every authentication component required to
+   apply an action (keys, rules) must already be active before the transaction
+   is applied.
+2. **Capability gate**: The principal must have the components required for an
+   operation. For example, principal genesis is required for commits, data
+   actions require DT commit inclusion. The Rule Tree (RT) may define additional
+   constraints such as weight thresholds, timelocks, or other conditions.
+3. **Lifecycle gate**: The principal's current lifecycle state must permit the
+   operation. For example, a frozen principal rejects mutations; a deleted
+   principal rejects everything. (See section [Lifecycle](#11-lifecycle).)
 
 #### 2.3.3 AT/DT Duality
 
 Auth Tree (AT) and Data Tree (DT) have fundamentally different structural
 properties. AT has protocol defined rules while DT is a general-purpose data
-action ledger. While not defined by this protocol, applications (authorities)
-may impose additional structure on DT.
+action ledger. See section [Data Tree](#482-data-tree).
 
 | Property     | Auth Tree (AT)                  | Data Tree (DT)              |
 | :----------- | :------------------------------ | :-------------------------- |
@@ -236,16 +293,19 @@ may impose additional structure on DT.
 | State type   | Monotonic sequence of commits   | Non-monotonic               |
 | Semantics    | Full protocol semantics         | None (application-defined)  |
 
+
 ---
+
 
 ## 3 State
 
 ### 3.0 Feature Levels
 
-Cyphr has six operational levels. Each level increases complexity and each
-level builds on the previous level; level 2 has the same semantics as level 1
-with the addition of key replacement. Clients may choose to remain compatible
-with a particular level.
+Cyphr has six operational levels.  Each level extends the complexity of the
+previous level; level 2 has the same semantics as level 1 with the addition of
+key replacement. Clients may limit compatibility to a maximum level to limit
+implementation and deployment complexity. A principal's level is not an
+authorization input.
 
 | Level | Description       | Components             |
 | ----- | ----------------- | ---------------------- |
@@ -256,29 +316,11 @@ with a particular level.
 | **5** | Rules             | Rule Tree (RT)         |
 | **6** | Programmable      | VM execution           |
 
-Principal levels describe increasing complexity of a principal's state
-composition and are not an authorization input. Authorization is determined by
-which state components exist and what rules govern them. A transaction is
-authorized if and only if all three conditions hold:
-
-1. **Antecedent Authorization Gate**: Every authentication component required to
-   apply an action (signing key, target key, rule, etc.) must already be
-   active in the principal's current state before the transaction is applied.
-2. **Lifecycle gate**: The principal's current lifecycle state must permit the
-   operation. For example, a frozen principal rejects mutations; a deleted
-   principal rejects everything. (See section Lifecycle.)
-3. **Capability gate**: The principal must have the state components required
-   for the operation. Principal genesis is required for commits. Data actions
-   require DT to exist and data actions require inclusion. Rule operations
-   require RT to exist. For Level 5+, Rule Tree (RT) may define additional
-   constraints; weight thresholds, timelocks, or other conditions that must be
-   satisfied for the transaction to proceed.
-
 ### 3.1 Level 1: Static Key
 
 - Single key, never changes
 - No commit
-- `tmb` == KR == AR == PR
+- `tmb` is implicitly promoted to PR; `tmb` == KR == AR == SR == PR
 - Self-revoke results in permanent lockout (in lieu of sideband intervention)
 
 ### 3.2 Level 2: Key Replacement
@@ -288,8 +330,14 @@ authorized if and only if all three conditions hold:
 ### 3.3 Level 3: Commit (Multi-Key)
 
 - Introduces the Commit Tree (CT) and Principal Genesis (PG).
+- The PT is an EMT ([§2.2.12](#2212-emt)): cell 0 = SR, cell 1 = CR. PR is the
+  EMT root over those cells; PR_alg = H(SR_alg ∥ CR_alg) (§3.7.1, §12.2.1).
+- On genesis the CT (and therefore cell 1) is empty, so the PT has a single
+  populated cell. By Singleton Promotion ([§2.2.10](#2210-singleton-promotion)),
+  the size-1 EMT root equals cell 0 without hashing: PR = SR, which is equal
+  to PG. For all subsequent commits, CR exists, occupies cell 1, and
+  PR = H(SR ∥ CR).
 - Multiple concurrent keys with equal authority
-- Initial PR is equal to PG. PR = MR(SR, CR), CR = MR(TMR, TCR)
 - Any key can `key/create`, `key/delete`, or `key/revoke` any other key
 - Standard for multi-device users
 
@@ -311,8 +359,8 @@ authorized if and only if all three conditions hold:
 
 ### 3.6 Level 6: VM
 
-- Introduces programmable virtual machine (VM) rule execution.
-- Rules are executable bytecode stored in RT.
+- Introduces programmable **virtual machine** (VM) rule execution.
+- Rules are executable bytecode referenced in RT.
 - VM execution produces a deterministic state transition.
 - Enables complex conditional logic and programmable policies like smart
   contracts and complex organizational policies.
@@ -321,218 +369,284 @@ authorized if and only if all three conditions hold:
 
 Canonical Root Algorithm:
 
-1. **Collect** component digests (including embedding/nonce if present). If no
-   component exists, a digest is not calculated (empty components are not
-   hashed).
-2. **Sort** lexicographically (byte comparison) unless otherwise defined. If
-   sort order is defined, lexical is the tie breaker.
-3. **Implicitly Promote** without hashing if only one digest component exists.
-4. **Merkle Root** Calculate the Merkle root of a binary Merkle tree. If order
-   is not otherwise given, lexical byte order is used.
-
+1. **Collect** component digests (including embedding/nonce if present). Empty
+   components are omitted.
+2. **Order** children per the level's own rule. PT, AT, and ST are fixed
+   two-cell trees whose shape never varies; for these three, cell position
+   is the order and cells are never re-sorted (see §3.7.1, §3.7.2, §3.7.5 for
+   each level's cell assignment). Every other tree in this document (KT
+   today; RT and DT are the remaining named trees, RT not yet implemented
+   and DT still a flat formula) has a variable number of children and keeps
+   its own already-defined order: lexical byte order for KT, chronological
+   (`now` then `czd`) order for DR. Lexical byte order is the tie breaker
+   wherever this document does not otherwise define an order.
+3. **Promote** without hashing if only one digest component exists, including
+   null promotion.  Collapse if all children are of equal value, the parent's
+   value is collapsed to also be equal without hashing.
+4. **Merkle Root** Calculate the Merkle root by hashing. 
 ```
 Root = MR(d₀, d₁?, ...)
 ```
 
-MALT applies a specific, strict implementation of the Canonical Root Algorithm;
-A MALTR is a MR but not all MR are MALTRs.
-
 #### 3.7.1 Principal Root and Principal Genesis
 
-The Principal Root (PR) is the current top-level identity digest of a principal.
+The **Principal Tree (PT)** is an Epoch Merkle Tree (EMT, [§2.2.12](#2212-emt)):
+a mutable, positionally addressed tree. Cell 0 is SR and cell 1 is CR, in that
+fixed positional order; cells ≥ 2, when present, hold PT embeddings (see
+[Embedding §10.1](#101-nonce-embedding-and-opaque-node-pathing)). Positional
+role order (§3.7 step 2) applies here because PT is a fixed two-cell tree.
+AT and ST are the same kind of fixed two-cell tree and use the identical
+positional rule at their own levels ([§3.7.5](#375-auth-root),
+[§3.7.2](#372-state-root)). KT, by contrast, is a variable-width tree and
+keeps its own lexical order ([§3.7.3](#373-key-root)).
 
-For levels 3+, the Principal Genesis (PG) is the first PR computed at creation
+The **Principal Root (PR)** is the current top-level digest of a principal,
+the root of the PT.
+
+For levels 3+, the **Principal Genesis (PG)** is the first PR computed at creation
 and remains immutable. Subsequent principal mutations, for example by adding a
-second key, update only the current PR.
+second key, updates only the current PR.
 
 ```
-  PR = MR(SR, CR?, embedding?, ...)
-  PG = Genesis Root (Level 3+)
+  PR = EMT(SR, CR, ...)         -- cell 0 = SR, cell 1 = CR; cells ≥ 2 are embeddings
+  PR_alg = H(SR_alg ∥ CR_alg)   -- when only cells 0-1 are populated (no embeddings)
+  PG = Genesis Root (Level 3+), equal to the first PR.
 ```
 
 #### 3.7.2 State Root
 
-State Root (SR) is calculated as:
+**State Root (SR)** is the root of the State Tree (ST), a fixed two-cell
+tree: cell 0 is AR, cell 1 is DR when present. Cell position is the order,
+not lexical sort (§3.7 step 2). When DR is absent, SR promotes from AR alone
+(Singleton Promotion, [§2.2.10](#2210-singleton-promotion)):
 
 ```
-  SR = MR(AT, DT?, embedding?, ...)
+  SR     = MR(AR, DR)              -- when DR is present, cell 0 = AR, cell 1 = DR
+  SR_alg = H(AR_alg ∥ DR_alg)      -- per-algorithm formula when DR is present
+  SR     = AR                       -- when DR is absent (Singleton Promotion)
 ```
+
+ST's cell arity is fixed at two today; unlike PT, ST has no implemented or
+planned capacity for embedding cells beyond its two role cells.
 
 #### 3.7.3 Key Root
 
-Key Root (KR) is calculated as:
+**Key Root (KR)** is calculated as:
 
 ```
   KR = MR(tmb₀, tmb₁?, embedding?, ...)
 ```
 
-#### 3.7.3 Rule Root
+KT (the tree KR is the root of) is a variable-width, dense collection of one
+leaf per active key thumbprint, lexically sorted by raw digest bytes (§3.7
+step 2). A thumbprint's raw byte length is native to its own signing key's
+algorithm (e.g. an ES256 thumbprint is 32 bytes, an Ed25519 thumbprint is 64
+bytes), so a keyset spanning multiple key algorithms does not have
+same-width siblings by default. Folding same-width-only children (§12.2.1)
+requires each non-native thumbprint to be converted to the target hash
+algorithm's canonical digest first — the same conversion mechanism §12.3
+defines for other nodes — before it participates in KR's fold for that
+algorithm. A single-algorithm keyset is unaffected: every thumbprint is
+already native, so conversion is a no-op.
 
-Rule Root (RR) is calculated as:
+KT's collection arity is bounded at 256 members; behavior beyond that
+boundary is untested and not yet a settled part of this specification.
+
+#### 3.7.4 Rule Root
+
+**Rule Root (RR)** is calculated as:
 
 ```
   RR = MR(rule₀, rule₁?, ...)
 ```
 
-#### 3.7.4 Auth Root
+#### 3.7.5 Auth Root
 
-Auth Root (AR) combines authentication-related trees:
+**Auth Root (AR)** is the root of the Auth Tree (AT), a fixed two-cell tree:
+cell 0 is KR, cell 1 is RR when present. RR (Rule Root, Level 5+) is not yet
+implemented, so this cell is permanently unset today. Cell position is the
+order, not lexical sort (§3.7 step 2). When RR is absent, AR promotes from KR
+alone (Singleton Promotion, [§2.2.10](#2210-singleton-promotion)):
 
 ```
-  AR = MR(KR, RR?,  embedding?)      # nil components excluded from sort
+  AR     = MR(KR, RR)              -- when RR is present, cell 0 = KR, cell 1 = RR
+  AR_alg = H(KR_alg ∥ RR_alg)      -- per-algorithm formula when RR is present
+  AR     = KR                       -- when RR is absent (Singleton Promotion)
 ```
 
-### 3.7.5 Transaction Root
+AT's cell arity is fixed at two today; unlike PT, AT has no implemented or
+planned capacity for embedding cells beyond its two role cells.
 
-Transaction Root (TR) (Level 3+) is the MR of all transactions in a commit
-structured as MR(TMR, TCR), where TMR is transaction mutation root and TCR is
-the transaction commit root. See section Commit.
+#### 3.7.6 Transaction Root
+
+A transaction identifier (TX) is the MR of all its contained `czd`'s in order
+as given by the principal. Transaction Root (TR) is the MR of all transactions
+in a commit, in order as given by the principal, and the commit transaction
+appearing last.  Mutation transactions digests are denoted as TXₘ₀, TXₘ₁,
+etc..., and the commit transaction is denoted as TX꜀. 
+
+As additional identifiers, transaction
+mutation root (TMR) and transaction commit root (TCR) are defined. If no
+mutation transactions are present, TMR is null and TCR is promoted to TR. See
+section [Commit](#4-commit).
 
 ```
   TX  = MR(czd₀, czd₁?, ...)
-  TMR = MR(TX₀, TX₁?, ...)
-  TCR = MR(czd₀, czd₁?, ...)
-  TR  = MR(TMR, TCR)
+  TR  = MR(TXₘ₀?, TXₘ₁?, ..., TX꜀)
+
+  TMR = MR(TXₘ₀?, TXₘ₁?, ...)
+  TCR = TX꜀
 ```
 
-#### 3.7.6 Commit Root
+#### 3.7.7 Commit Root
 
-Commit Root (CR) is the the MALT root (MALTR) of the commit tree (CT). Each
-node in the CT is a TR.
+Commit Root (CR) is the EML root (EMLR) of the commit tree (CT). Each
+node in the CT is a transaction root (TR).
 
 ```
-  CR = MALTR(TR₀, TR₁?, ...)
+  CR = EMLR(TR₀, TR₁?, ...)
 ```
 
-#### 3.7.7 Data Root
+#### 3.7.8 Data Root
 
-Data Root (DR) (Level 4+) is the digest of all data action `czd`s. DR is
+Data Root (DR) (Level 4+) is the digest of all data actions `czd`s. DR is
 sorted by `now` and secondarily `czd`.
 
 ```
-DR = MR(czd₀, czd₁?, ..., embedding?)
+DR = MR(czd₀, czd₁?, embedding?, ...)
 ```
+
+DR is not currently backed by a real Data Tree (DT) instance the way KR, AR,
+and SR are backed by real tree instances (KT, AT, ST) — it remains a flat,
+directly-computed value, embedded into ST as an opaque leaf at cell 1
+(§3.7.2). This means there is no per-action inclusion proof for individual
+data actions today, unlike the key-membership proof in §13.2.
+
 
 ---
 
+
 ## 4 Commit
 
-A **commit** is an ordered, finalized atomic bundle that mutates PT. A commit
-consist of one to many transactions, denoted by `typ`, and transactions
-themselves consist of one to many cozies. Many mutations may occur per commit
-and are applied one-by-one using a given order as dictated by the principal.
-Unlike other systems, there are no minting fees, gas, or need for a global
-ledger.
+A **commit** is an ordered, finalized atomic bundle that mutates the Principal
+Tree (PT). A commit consist of one to many transactions, denoted by `typ`, and
+transactions themselves consist of one to many cozies. Many mutations may occur
+per commit and are applied one-by-one using a given order as dictated by the
+principal. Unlike other systems, there are no minting fees, gas, or need for a
+global ledger.
 
 For example, a commit may have three transactions: one transaction for
 `key/replace`, signed by two keys and consisting of two cozies, one for
 `key/create`, signed by one key and consisting of one coz, and a
 `commit/create`, finalizing the commit.
 
+### Merkle Trees:  Multihash, N-ary
+A **MAL** (Merkle Append only Log, RFC 9162) is is an ordered, append only
+(forward mutable), dense left filled, and unbalanced Merkle tree.  A more
+advanced form of MAL is the Epoch Merkle Log (**EML**), which supports multiple
+hashes over distinct time frames (epochs), n-arity, promotion, and collapse.
+
+Implementations should not that Cyphr has append only components (CT) as well as
+components that may run in mutable mode (ST, AT, RT, DT).  An implementation's
+Merkle tree primitive must be able to support arity.
+
+
+
 ### 4.1 Transaction
 
 A transaction consists of one or more signed cozies that results in a mutation
-of the Principal Tree (PT). All cozies for a particular transaction contain an
-identical `typ`, which defines intent. Clients verify transactions based on the
-principal's auth tree (AT).
+of PT. All cozies for a particular transaction contain an identical `typ`, which
+defines intent. Clients verify transactions based on the principal's auth tree
+(AT).
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    typ: "cyphr.me/key/create",
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Existing key
-    id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // New key's tmb
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "typ": "cyphr.me/key/create",
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Existing key
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // New key's tmb
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
-The identifier for each transaction is the MR of its `czd`s. The transaction
-mutation root, TMR, is the MR of all mutation transactions in a commit. The
-transaction commit root, TCR, is the commit `czd` MR. Unlike TMR, there are no
-intermediate TCR roots since there is only one commit transaction per commit.
-
 The wire format for transactions, labeled by the field `txs`, is a list of
-lists, where each list item is a transaction, and each transaction contains one
-to many cozies. Transactions and cozies are ordered as specified by the
-principal with the condition of the commit transaction appearing last.
+lists, where each list item is a transaction.  Each transaction contains one to
+many cozies. Transactions and cozies are ordered as specified by the principal
+with the condition of the commit transaction appearing last.
 
-Transaction order is suggested by the sequence in `txs`
-(implementation-dependent) and is explicitly denoted by `txs_order`. Although
-inter-transaction coz ordering is not relevant for principal mutation,
-transaction order may potentially impact principal mutation.
+Transaction order is the sequence of `txs` and is explicitly denoted by the
+`txs_order`. Although inter-transaction coz ordering is not relevant for
+principal mutation, it is relevant for identifier calculation. Transactions
+order itself is mutation relevant.
 
 ### 4.2 Arrow
 
 On commit the field `arrow` is the MR of three components: the prior PR, given
 the name `pre`, the forward SR, given the name `fwd`, and TMR. `arrow` is all
 principal components, prior, forward, and mutations, excluding the commit
-transaction. Commits form a chain via `pre`. After a commit is finalized, the
-new PR is calculated.
+transaction itself. Commits form a chain via `pre`. After a commit is finalized,
+the new PR is calculated.
 
-A commit cannot refer to itself (a signature cannot sign itself), so instead its
-signature covers all principal components except the commit transaction itself.
-For the same reason, `pre` refers to PR while `fwd` refers to ST; a "forward PR"
-isn't calculable inside of a commit as it would create a circular reference.
+A commit cannot refer to itself (a signature cannot sign itself), so instead the
+commit transaction covers all principal components except the commit transaction
+itself. For the same reason, `pre` refers to PR while `fwd` refers to ST; a
+"forward PR" isn't calculable inside of the commit itself.
 
 ### 4.3 Commit Finality
 
-Commits are chained by reference to prior principal roots, the forward tree,
-and are finalized by a commit transaction.
+A commit is chained by reference to prior principal root(s) `pre`, the forward
+state tree `fwd`, and are finalized by a commit transaction. A commit is
+finalized with a commit transaction, `commit/create`, with the field
+`"arrow":<MR(pre, fwd, TMR)>`.
 
-A commit's id is equal to TR, however instead of the field `id` being used in a
-commit transaction, `commit/create` uses the field `arrow` since the `id` of the
-commit itself is only calculable after commit and cannot have a cyclic reference
-to itself.
+A commit's id is equal to TR, however `commit/create` uses the field `arrow`
+instead of `id` since the identifier of a commit is only calculable after
+finalization.
 
 ```json5
 {
-  txs: [
-    [
-      {
-        // Commit transaction (last entry in `txs`)
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/commit/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          arrow: "<b64ut>", // Transition arrow: MR(pre, fwd, TMR)
+  "txs": [[{ // Commit transaction (last entry in `txs`)
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/commit/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "arrow": "<b64ut>" // Transition arrow: MR(pre, fwd, TMR)
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-}
+        "sig": "<b64ut>"
+}]]}
 ```
+
+To discourage client misbehavior, inconsistencies in finality may be used as a
+proof of error (see section [Proof of Error](#152-proof-of-error)).
 
 ### 4.4 Commit Tree
 
-The Commit Tree (CT) is a MALT. New commits are appended sequentially from the
-left, maintaining a dense prefix with no gaps, following the growth pattern used
-in RFC 9162.
+The **Commit Tree (CT)** consists of all principal commits. Commit Root (CR) is
+the EML root (EMLR, [§3.7.7](#377-commit-root)) of all commits: the append
+only Merkle root over the CT's transaction roots (TR). Clients obtain
+inclusion and consistency proofs for specific commits.
 
-Commits are ordered. The Merkle root after incorporating commit N becomes the
-Commit Root(CR) for that commit (CR_N). Clients obtain inclusion proofs for
-specific commits and consistency proofs between known roots using standard
-Merkle path proofs. To prevent client misbehavior, finality may be used as a
-proof of error (see section Proof of Error).
+### 4.5 Trust Anchor
 
-Commit Root (CR) is the MALTR of all commits. A commit is finalized with a
-commit transaction, `commit/create` with the field `"arrow":<MR(pre, fwd,
-TMR)>`. When CT exists (level 3+), PR is the MR of PT including the last commit
-(commit id), so that PR = MR(SR, CR).
+For a Cyphr client, the last known trusted state for a particular principal
+is the **trust anchor**, and points to an auth root ARₐ. The ordered sequence of
+transactions linking two known Auth Roots ARₐ → ARₓ is called the **`tx_path`**.
+The transactions that must actually be fetched and verified to move from ARₐ to
+ARₓ form the `tx_patch` (Δ). (See also section Checkpoint and State Jumping.)
 
-### 4.5 JSON Wire Format
+### 4.6 JSON Wire Format
 
-#### 4.5.1 Plurals
+#### 4.6.1 Plurals
 
-For various components, JSON components are labeled. If a plural is possibly
-valid, the plural is always used ensuring only one payload representation.
+There are JSON labels for various components. If a plural is possibly valid, the
+plural is always used ensuring only one canonical representation.
 
 **Singular**:
-// For use inside a `coz`
+For use inside a `coz`:
 
 - `pay`
 - `sig`
@@ -544,15 +658,15 @@ valid, the plural is always used ensuring only one payload representation.
 
 **Prohibited**:
 
-- `key` // Use keys
-- `tx` // Use txs
+- `key` - Use `keys`
+- `tx`  - Use `txs`
 
-#### 4.5.2 Fields
+#### 4.6.2 Fields
 
 Transaction order, coz order, and intermediate roots are required for
 calculating MR's and verification, however depending on JSON implementation this
 information isn't always explicitly available. Metadata may be enumerated as a
-sibling to `txs` in the field `txs_meta`, for example
+sibling to the field `txs` in the field `txs_meta`, for example
 `{"txs":[[{...}]],"txs_meta":...}`.
 
 Wire Format:
@@ -568,44 +682,59 @@ Wire Format:
   an identifier `czd`.
 - `keys`: [key₀, key₁?, ...] Full public keys referred to by cozies in `txs`.
 
-#### 4.5.3 JSON Meta Fields
+#### 4.6.3 JSON Meta Fields
+Any of the following fields may be enumerated in `txs_meta`
 
+Transaction:
 - `arrow`: <b64ut> (Principal transition) MR(pre, fwd, TMR)
-- `pre`: <b64ut> The prior Principal Root (PR), the state being mutate.
-- `fwd`: <b64ut> The forward State Tree Root (SR), the state after mutation.
-
-- `TX`: <b64ut> MR(czd₀, czd₁?, ...)
-- `TMR`: <b64ut> MR(txm₀?, txm₁?, ...)
-- `TCR`: <b64ut> MR(txc)
-- `TR`: <b64ut> MR(TMR, TCR)
-
-- `SR`: <b64ut> The state tree root after commit.
-- `CR`: <b64ut> MALTR(TR₀, TR₁?, ...)
-- `CT`: <b64ut> MALT(TR₀, TR₁?, ...)
-
+- `pre`:   <b64ut> The prior Principal Root (PR), the state being mutated.
+- `fwd`:   <b64ut> The forward State Tree Root (SR), the state after mutation.
+- `TX`:    <b64ut> MR(czd₀, czd₁?, ...)
+- `TR`:    <b64ut> MR(TXₘ₀?, TXₘ₁?, ..., TX꜀)
+- `TMR`:   <b64ut> MR(txm₀?, txm₁?, ...)
+- `TCR`:   <b64ut> TCR = TX꜀
 - `txs_order`: [TX₀, TX₁?, ...] An array of transaction MR identifiers (TX ids),
   enumerating transaction order.
 - `txs_czds`: [`czd₀`, ...] An array `czd`s enumerating cozie order for the
   entire commit.
-- `txs_tree`: {"TX₀":[`czd₀`: <b64ut>, ...], ...} An object with an array of
-  `czd`s in order for the transaction.
+- `txs_tree`: {"TX₀":[`czd₀`: <b64ut>, ...], ...} An object with each
+  transaction labeled which contains an array of `czd`s in order for the
+  transaction.
 
-### 4.6 Comparison to `git`
+State meta:
+- `pre_CT`: <b64ut> MT(TR₀, TR₁?, ...) the tree before the commit.
+- `pre_CR`: <b64ut> MR(TR₀, TR₁?, ...) the root before the commit.
+- `pre_SR`: <b64ut> The state tree root before commit.
+- `pre_AR`: <b64ut> The key tree root before commit.
+- `pre_KR`: <b64ut> The auth tree root before commit.
+- `pre_RR`: <b64ut> The rule tree root before commit.
+- `pre_DR`: <b64ut> The data tree root before commit.
 
-In git, commits are digest of metadata objects, including fields like author and
-date, but critically parent and commit tree a design similar to Cyphr's.
+- `fwd_SR`: <b64ut> The state tree root after commit.
+- `fwd_AR`: <b64ut> The auth tree root after commit.
+- `fwd_KR`: <b64ut> The key tree root after commit.
+- `fwd_RR`: <b64ut> The rule tree root after commit.
+- `fwd_DR`: <b64ut> The data tree root after commit.
+
+Note that `fwd_CR` and `fwd_CT` do not exist since such values would require
+signature self-reference.
+
+### 4.7 Comparison to `git`
+
+In git, commits are digest of metadata objects and includes fields like "author"
+and "date". Critically git's parent and commit tree share similarities to Cyphr.
 
 - `"arrow":<pre, fwd, TMR>` is equivalent to the git tree root, which is
   referenced in the git commit.
 - `"pre":<PR>` is equivalent to parent in git. `pre` is implemented as a
   Merkle DAG (instead of a simple binary Merkle tree) where `pre` is a list of
-  parents (see section Explicit Fork).
+  parents (see section [Fork](#1152-fork)).
 
-### 4.7 Data
+### 4.8 Data
 
-#### 4.7.1 Data Action
+#### 4.8.1 Data Action
 
-Data Actions are stateless signed messages representing principal action. Data
+Data Actions are atomic signed messages representing principal action. Data
 actions are signed by an authorized key, are not chained, and are recorded in
 DT. Data actions are not transactions and do not mutate AT. Actions are
 lightweight for common use cases (comments, posts, etc.).
@@ -613,27 +742,32 @@ lightweight for common use cases (comments, posts, etc.).
 - DR is computed from action `czd`s.
 - Ordered by `now` and if needed lexical as tie-breaker.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/comment/create",
-    msg: "Hello, world!",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/comment/create",
+    "msg": "Hello, world!"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
-#### 4.7.2 Data Tree
+#### 4.8.2 Data Tree
 
 Data Tree (DT) is a binary Merkle Tree that stores user actions. DT allows tree
 reorganization, node deletion, and node omission; a broad design allowing
 implementations to accommodate diverse applications, although particular
 principals may implement more strictly. Tree nodes may represent various
-applications. Various data `typ`s may define their own required fields as
-defined by an authority.
+applications. As defined by an authority, various data `typ`s may define their
+own required fields .  At the protocol level, DT is stateless, however,
+authorities may require state.
+
+DT does not contain resources.  Both DT and CT contain exclusively actions
+while AT contains authentication resources.  DT resources are resolved
+externally may be stored locally by clients in a separate data structure.
 
 **Data Tree Inclusion**: Like all nodes, DT/DR is first set to empty, causing AR
 to be implicitly promoted to PR. To explicitly include DR into PR, a DR
@@ -652,29 +786,39 @@ transaction is signed, which updates the value of DR in the PR tree:
 }
 ```
 
-#### 4.7.3 DT Organization
+#### 4.8.3 DT Organization
 
-As a Merkle Tree, DT provides broad flexibility. Nodes may represent Merkle
-DAGs, Map/Trie-Based Structures (e.g., Sorted Merkle Maps, Merkle Patricia
-Tries, Verkle Trees), Sparse Merkle Trees, History/Versioned Merkle Trees, or
-hybrid/pluggable approaches. Principal may construct DT in MALT mode as an
-append only, verifiable data structure. Clients may maintain subtrees per
-application or per account, and handle deletion via tombstones or direct
-removal. DT organization for specific applications is beyond the scope of this
-document.
+As a Merkle Tree, DT provides broad flexibility. Principal may construct DT in
+append only mode. Nodes may represent Merkle DAGs, Map/Trie-Based Structures
+(e.g., Sorted Merkle Maps, Merkle Patricia Tries, Verkle Trees), Sparse Merkle
+Trees, History/Versioned Merkle Trees, or hybrid/pluggable approaches. Clients
+may maintain subtrees per application or per account, and handle deletion via
+tombstones or direct removal. DT organization for specific applications is
+beyond the scope of this document.
 
-### 4.8 Trust Anchor
+While not strictly defined by this protocol, applications (authorities) may
+impose additional structure and rules on DT.  Principals are free to comply or
+disregard such rules, however non-compliance with a particular authority may
+result in non-consensus.
 
-For a Cyphr client, the last known trusted state for a particular principal
-is the **trust anchor**, and points to an auth root ARₐ. The ordered sequence of
-transactions linking two known Auth Roots ARₐ → ARₓ is called the **`tx_path`**.
-The transactions that must actually be fetched and verified to move from ARₐ to
-ARₓ form the `tx_patch` (Δ). (See also section Checkpoint and State Jumping.)
+
+#### 4.9 Tombstones 
+
+When ST is organized as an append-only datastructure, existing nodes cannot be
+physically removed or altered. A **tombstone** is a marker value used to
+represent a deleted, logically removed, or otherwise mutated element without
+physically removing it from the underlying immutable structure. Tombstoning is
+semantic, not syntactic. Mutations are applied through a normal coz using a
+standard typ (e.g. `*/delete` or `*/update`) that points to the prior action or
+resource via the `id` field. Clients maintain an internal index that follows
+tombstone pointer chains to resolve the latest valid state for a given item.
+This provides performant lookups while preserving the full immutable history for
+verification and auditability. Clients may prune superseded content as desired.
 
 ---
 
-## 5. Genesis
 
+## 5. Genesis
 ### 5.1 Genesis Commit
 
 A principal is created through **genesis**. Levels 1 and 2 are created
@@ -684,101 +828,79 @@ implicitly, while Levels 3 and above use an explicit genesis commit.
 
 - Multikey is not supported. The principal exists with a single key.
 - No commit or PG exists.
-- `PR` == `tmb` of the single key (via implicit promotion, `tmb` == KR == AR ==
+- `PR` == `tmb` of the single key (via singleton promotion, `tmb` == KR == AR ==
   PR).
 
 **Genesis Commit (Levels 3+)**
 A genesis commit explicitly creates a stateful principal. Genesis uses a
-bootstrap model, gracefully upgrading from levels 1 and 2 to level 3. genesis)
+bootstrap model, gracefully upgrading from levels 1 and 2 to level 3.
 
 1. The **genesis key** (the first key) is explicitly added.
-2. Adding additional keys, rules, or any other AR component requires an
-   additional transaction for each.
-3. `principal/create` finalizes the genesis commit. This establishes PG and
+2. Adding additional keys, rules, or any other AR components require additional
+   transactions.
+3. `principal/create` finalizes principal genesis. This establishes PG and
    denotes principal creation. `id` is equal to the future `SR`, `fwd`.
 4. The commit is finalized with the standard `commit/create`. As a component of
    `arrow`, `pre` references the genesis key and `fwd` is equal to the future
    `SR`.
-5. After commit, the Principal immediately has a new PR, where PR = MR(SR, CR)
+5. After commit, the Principal immediately has a new PR: the PT's EMT root
+   over cell 0 = SR and cell 1 = CR, PR = H(SR ∥ CR)
 
 A principal may reuse authentication components with an nonce embedding for a
 unique PG.
 
 ### 5.2 Single Key Genesis
 
-The following is an example single key genesis. Note that outside of the cozies
-is `key`, which is the unsigned public key material, but `tmb` is signed within
-the coz.
+In the following example note that `keys` is unsigned public key material
+outside of the transactions with only `tmb` signed within the coz.
 
 ```json5
 {
-  txs: [
-    // Transaction array
+  "txs": [ // Transaction array
     // Mutation transactions
-    [
-      // TX0
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The `tmb` of the new key.  In this case, itself.
+    [{// TX0
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        // TX1
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/principal/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // ID == PG == SR (No Commit, no CR)
+        "sig": "<b64ut>"
+      }],[{ // TX1
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/principal/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // ID == PG == SR (No Commit, no CR)
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      // Commit transaction
-      {
-        // TX2
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/commit/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          arrow: "<b64ut>",
+        "sig": "<b64ut>"
+      }],[{// Commit transaction, TX2
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/commit/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
-    {
-      // key public material
-      tag: "User Key 0",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-    },
-  ],
-}
-```
+        "sig": "<b64ut>"
+  }]],
+  "keys": [{
+      // key public material, provided so client may validate payload.
+      "tag": "User Key 0",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g"
+  }],
+  "txs_meta":{
+    "pre": ["<b64ut>"], // prior (source) PR
+    "fwd": "<b64ut>", // forward tree, MR(ST)
+    "TMR": "<b64ut>",  // MR(TXₘ₀?, TXₘ₁?, ...)
+    "TCR": "<b64ut>", // TX꜀
+    "CR":  "<b64ut>", // Previous commit root
 
-Accompanying the `txs` object, clients may also send a `txs_meta` object:
-
-```json5
-{"txs_meta":{
-    "pre": "<b64ut>", // prior (source) PR
-    "fwd": "<b64ut>", // forward tree, MR(PT)
-    "TMR": "<b64ut>",  // ordered MR(txm)
-    "TCR": "<b64ut>", // Ordered MR(txc)
-    "CR":  "<b64ut>", // CR = MR(TMR, TCR)
-    "fwd": "<b64ut>", // Forward principal root.
     "txs_order": [TX₀, TX₁, TX₂],
     "txs_tree":{
       "TX₀": [czd₀],
@@ -789,89 +911,101 @@ Accompanying the `txs` object, clients may also send a `txs_meta` object:
     // Information from `txs` may also be repeated.
     // This may be useful for debugging or other reasons.
     "arrow": "<b64ut>"
+}
+}
+```
+
+Accompanying `txs`, clients should send `txs_meta` (see [JSON Wire
+Format](#46-json-wire-format)).  
+
+```json5
+{"txs_meta":{
+    "pre": ["<b64ut>"], // prior (source) PR
+    "fwd": "<b64ut>", // forward state tree, MR(ST)
+    "TMR": "<b64ut>", // MR(TXₘ₀?, TXₘ₁?, ...)
+    "TCR": "<b64ut>", // TX꜀
+    "CR":  "<b64ut>", // Previous commit root
+
+    "txs_order": [TX₀, TX₁, TX₂],
+    "txs_tree":{
+      "TX₀": [czd₀],
+      "TX₁": [czd₀],
+      "TX₂": [czd₀]
+    },
+
+    "nxt_commit":"", // Once the next commit is made, this field may be retroactively populated as stored on disk by clients. 
+
+    // Information from `txs` may also be repeated.
+    // This may be useful for debugging or other reasons.
+    "arrow": "<b64ut>"
 }}
 ```
+
+In the above wire format order is given.  If using a different wire format where
+order is not provided, clients should throw error `TRANSACTION_ORDER_UNKNOWN`.
+A principal may purposely omit order to intentionally obfuscate authentication
+by witnesses; solving transaction order is 0(n!), and so with sufficient
+complexity, commit authentication is obfuscated.
 
 ### 5.3 Multi-Key Genesis
 
 - A genesis key constructs AT by adding itself and other components.
 - At genesis there are no prior commits, so AR is promoted to PR via implicit
-  promotion. AR = MR(KR) when only keys are present, or MR(KR, RR) if rules
-  exist. For example, with two keys: AR = MR(tmb₀, tmb₁).
-- Finally, the principal is created by `principal/create`.
+  promotion.
+- Finally, the principal is created by `principal/create` and the commit
+  finalized by `commit/create`.
 
 ```json5
 {
-  txs: [
-    [
-      {
-        // TX0: First Key
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The `tmb` of the new key.  In this case, itself.
+  "txs": [
+    [{ // TX0: First Key
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Signing `tmb`
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // The `tmb` of the new key.  In this case, itself.
+        }}],[{ // TX1: Second Key
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "typ": "cyphr.me/cyphr/key/create",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
+          "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key's `tmb`
         },
-      },
-    ],
-    [
-      {
-        // TX1: Second Key
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          typ: "cyphr.me/cyphr/key/create",
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The genesis key
-          id: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
+        "sig": "<b64ut>"
+      }],[{ // TX2: Principal Declaration
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/principal/create",
+          "id": "<b64ut>" // ID == PG == SR
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        // TX2: Principal Declaration
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/principal/create",
-          id: "<b64ut>", // ID == PG
+        "sig": "<b64ut>"
+      }],[{  // TX3: Commit (finality)
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/commit/create",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        // TX3: Commit (finality)
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/commit/create",
-          arrow: "<b64ut>",
-        },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
-    {
-      // Public keys material
-      tag: "User Key 0",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    },
-    {
-      tag: "User Key 1",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-      tmb: "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-    },
-  ],
+        "sig": "<b64ut>"
+      }]],
+  "keys": [{// Public key material
+      "tag": "User Key 0",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+    },{
+      "tag": "User Key 1",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+      "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+    }]
 }
 ```
 
@@ -887,12 +1021,12 @@ Example private Coz key with standard fields:
 
 ```json5
 {
-  tag: "User Key 0", // Optional human label, non-programmatic.
-  tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
-  alg: "ES256", // Key algorithm.
-  now: 1623132000, // Creation timestamp
-  pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
-  prv: "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA", // Private component, never transmitted
+  "tag": "User Key 0", // Optional human label, non-programmatic.
+  "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // Key's thumbprint
+  "alg": "ES256", // Key algorithm.
+  "now": 1623132000, // Creation timestamp
+  "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g", // Public component
+  "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
 }
 ```
 
@@ -910,13 +1044,12 @@ Example public key:
 
 #### 6.1 `key/create` - Add a Key (Level 3+)
 
-The following example adds a new key to KR for an existing principal. Note that
-`key` is included in the JSON payload, but not the signed payload, as reference
-for client. The key may be transmitted through sideband or known previously. The
-construction of sending the public key along with the `key/create` is good
-practice. Also note, this example includes `txs`. For brevity, this example does
-not include the commit, and future example include only the transaction, but
-transaction should be included in `txs`.
+The following example adds a new key to an existing principal. The construction
+of sending the public key along with the `key/create` is good practice.  Note
+that `key` is included in the JSON payload, but not in the signed payload, as
+reference for clients. The key may also be transmitted through sideband or known
+previously. Also note, this example includes `txs`. For brevity, this example
+does not include the commit.
 
 ```json5
 {
@@ -944,51 +1077,44 @@ transaction should be included in `txs`.
 
 #### 6.2 `key/delete` - Remove a Key (Level 3+)
 
-`key/delete` removes a key from KT without marking it as compromised. Unlike
-`key/revoke`, `key/delete` does not invalidate the key itself, it only removes
-it from KT, which is useful for graceful key retirement (e.g., decommissioning a
-device) when the key was never compromised.
+Unlike `key/revoke`, `key/delete` removes a key from KT without marking it as
+compromised and may be used for graceful key retirement (e.g., decommissioning a
+device) when the key was never compromised. Clients should store the public key
+of deleted keys that signed at least one action so that the client can
+cryptographically verify its own chain.
 
-If a key is deleted, any action signed with that key after it has been removed
-from the principal is ignored. Only actions that were signed while the key was
-still active in KT are interpreted. Past signatures from previous active periods
-remain valid even after the key is no longer active, provided they were created
-while the key was in KR.
-
-There is no effective cryptographic difference between a key that was deleted
-and one that was never added except that a deleted key may have a duration of
-legitimate past signatures that remain valid, whereas a never-added key never
-had any legitimate signatures for this principal.
-
-Deleted keys can be re-added later (via `key/create`), and, if desired, deleted
-again afterward. Implementations should store the public key of deleted keys
-that signed at least one action so that the client can cryptographically verify
-its own chain.
+When a key is deleted, actions signed after it has been removed are ignored.
+Only actions signed while a ley is active in KT are interpreted. Past signatures
+from previous active periods remain valid even after the key is no longer
+active.There is no effective cryptographic difference between a key that was
+deleted and one that was never added except that a deleted key may have a
+duration of legitimate past signatures.  Deleted keys may be re-added later (via
+`key/create`), and, if desired, deleted again afterward. 
 
 The **key active period** is the time span during which a key is present and
-active in the Key Root (KR), and therefore authorized to sign new actions, for
-the principal. A key may have multiple successive active periods if it is
-deleted and later re-added (each re-addition starts a new active period).
+active in the KT, and is therefore authorized to sign new actions. A key may
+have multiple successive active periods if it is deleted and later re-added.
+([See The Key Timeline Table](#65-key-timeline-table))
 
 - `id`: `tmb` of the key being removed
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/delete",
-    id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/key/delete",
+    "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
 #### 6.3 `key/replace` - Atomic Key Swap (Level 2+)
 
-`key/replace` removes the signing key and adds a new key atomically. Maintains
-single-key invariant for Level 2 devices.
+`key/replace` removes the signing key and adds a new key atomically, maintaining
+single-key invariance for Level 2.
 
 ```json5
 {
@@ -998,7 +1124,7 @@ single-key invariant for Level 2 devices.
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // The existing key.
     "typ": "cyphr.me/cyphr/key/replace",
-    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M", // The second key's `tmb`
+    "id": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M" // The second key's `tmb`
   },
     "sig": "<b64ut>"}],
   [{...}]// commit transaction
@@ -1008,9 +1134,8 @@ single-key invariant for Level 2 devices.
   "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
   "alg": "ES256",
   "now": 1623132000,
-  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-}],
-}
+  "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ"
+}]}
 ```
 
 #### 6.4 `key/revoke` - Revoke a Key (Level 1+)
@@ -1029,105 +1154,124 @@ Revoke is built into the Coz standard:
 > IEEE754 minus one. Revoke checks must error if `rvk` is not an integer or
 > larger than 2^53 - 1.
 
-Example Naked Revoke:
+A **naked revoke** is a revoke signed outside of a commit. Example Naked Revoke:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/revoke",
-    rvk: 1623132000,
-    msg: "Private key was uploaded to Github repo: cyphrme/cyphr",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/key/revoke",
+    "rvk": 1623132000,
+    "msg": "Private key was uploaded to Github repo: cyphrme/cyphr"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
-Note that a commit is not required for a revoke. This is termed a **naked
-revoke**. Third parties may sign the revoke, declaring the key compromised,
-without any other knowledge of the principal root, and Cyphr must
-appropriately interpret this event.
+Note that a commit is not required for a naked revoke.  Third parties may sign a
+naked revoke, declaring a key compromised, without any other knowledge of the
+principal. Cyphr must appropriately interpret this event. A naked revoke puts the principal in an error state and an uncommitted naked
+revoke does not mutate PR. When a principal receives a naked revoke, it should
+sign a standard revoke, a subsequent `key/delete` to remove the key, and commit. A client
+may include `msg` detailing why the key was revoked. See section
+[Consensus](#15-consensus) and [Recovery](#14-recovery).
 
-A naked revoke, or a revoke without a subsequent `delete`, puts the principal in
-an error state. An uncommitted revoke does not mutate PR. See section
-"Consensus" and "Recovery" for error recovery, but in sort, when a principal
-receives a naked revoke, it should sign a revoke, a subsequent `key/delete` to
-remove the key from, and commit. A client may include `msg` detailing why the
-key was revoked.
+#### 6.5 Key Timeline Table
+Although PT remains the the source of truth, without indexing lookups are not
+performant.  The **key timeline table** is an index derived from the PT that is
+useful for performant client lookups by associating keys valid for particular
+time range during the life of the principal.  The key timeline table answers the
+question, "was a particular key authorized for this principal at a particular
+timestamp?". Alternatively, the datastructure may be constructed as the
+isomorphic **key timerange table**, where multiple time ranges are associated
+with a single key. With the addition of rules (Level 5+), weights may be added
+to the tables.
 
-```json5
-{
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/key/revoke",
-    rvk: 1623132000,
-    msg: "Private key was uploaded to Github repo: cyphrme/cyphr",
-  },
-  sig: "<b64ut>",
-}
-```
+
+
+
 
 ---
+
 
 ## 7 Action
 
 ### 7.1 Authenticated Atomic Action
 
-Authenticated Atomic Action (AAA) is a self-contained, cryptographically signed,
-and independently verifiable message that proves discrete intent.
+***Authenticated Atomic Action (AAA)** is a self-contained, cryptographically
+signed, and independently verifiable message that proves discrete intent.
 
 Applied, AAA is simply a signed coz whose `typ` corresponds to a meaningful
 application-level action (comment, post, vote, bookmark, reaction, like, etc.)
-and whose signature is produced by a key currently authorized in the principal's
-Key Tree (KT).
+and whose signature is produced by a key authorized in the KT.
 
-AAA supersedes trust traditionally delegated to centralized services.
-Historically, services depended upon centralized bearer tokens. Third parties,
-such as other users, have no way to verify user actions without trusting the
-integrity of the centralized service. There are countless examples of that
-trust being abused.
+AAA supersedes trust traditionally delegated to centralized services. Third parties,
+such as other users, have no ability to verify user actions without trusting the
+integrity of the centralized service. There are countless examples of that trust
+being abused. AAA precludes such abuse and promotes a new design for
+authentication.
 
-AAA precludes such abuse and promotes a new design pattern for authentication.
 Instead of authenticating to a centralized login service which provides a bearer
-token for user action, users may sign individual actions directly. Each atomic
-action may be trustlessly authenticated by anyone, irrespective of centralized
-services. For example, instead of logging in to make a comment, a user signs a
-comment directly which is then verifiable by anyone. In this model, centralized
-services that maintain user identity are irrelevant and should be actively
-deprecated.
+token for user action and then is recorded in a trusted centralized ledger,
+users sign individual actions directly. The concept of "login" itself is
+superseded by authenticated, discrete operations. For example, instead of
+logging in to make a comment, a user signs a comment directly which is then
+verifiable by anyone, including services.  Independent ledgers may relay user
+state. Replay, forgery, and repudiation are cryptographically precluded.
 
-No mutable server-side context is needed to determine whether the action was
-authorized. Replay, forgery, and repudiation are cryptographically prevented or
-strongly deterred. Messages remain meaningful after creation and verifiable
-by third parties as long as the message exists, even if the original service
-disappears.
+**Temporal durability** is the property that user data remains fully verifiable,
+meaningful, and usable independent of external service, website, or external
+infrastructure, as long as any copy of it exists.
+
+**Platform portability** is the property that user data can move freely between
+any number of services, clients, platforms, or archives without losing its
+cryptographic verifiability, authorship proof, or semantic meaning.
+
+Because every AAA is a self-contained Coz message, actions possesses both
+temporal durability and platform portability. Actions remain verifiable
+and meaningful for as long as any copy exists, even decades later and long after
+related services have disappeared. At the same time, use messages are not trapped
+inside any walled garden: users can export their actions as a simple JSON file
+and carry their complete, cryptographically provable history to any other
+compatible service, client, or archive.  This dual property directly counters
+link rot, service extinction, and the enclosure of user data in proprietary
+platforms.
+
+**Sovereign portability** is the property that user data remains fully under the
+control of the user, independent of any third-party infrastructure, combining
+temporal durability and platform portability.  User data is not merely hosted by
+a service, but exists in a form that is self-contained, cryptographically
+protected, and independent. Whether a platform thrives, changes hands, or
+vanishes entirely, the owner can continue to access, verify, export, and reuse
+their records without permission or assistance from any intermediary. This
+stands in opposition to fragile, service-bound traditional web platforms.
+
 
 ### 7.2 `typ`
 
-Cyphr follows a `typ` grammar system, denoting a cozies' action, consisting
-of these core components: `auth` (authority), `act` (action), `noun`, and
-`verb`.
+Cyphr follows a `typ` grammar system, denoting a coz's action, consisting of
+four core components: `auth` (authority), `act` (action), `noun`, and `verb`.
 
 ```
 <typ> = <auth>/<action>
 <act> = <noun>[/<noun>...]/<verb>
+<noun> = A resource type
 <verb>   = create | read | update | upsert | delete
 ```
 
-- **auth** (authority): The first unit. Typically a domain name or a Principal
-  Root.
-- **act** (action): Everything after the authority.
+- **auth** (authority): The first path unit.
+- **act** (action): All path units after the authority. Action is the hypernym of
+  noun and verb, although sometimes the authority may be required for
+  disambiguation. 
 - **noun**: One or more path units between authority and verb, representing the
   resource or subject of the action. Multiple units form a **compound noun**
   (e.g., `user/image`).
 - **verb**: The final unit, the operation to perform.
 
-Cyphr recommends that the authority be either a domain or a PG/PR. When a
-domain is used as authority, that domain should provide a Cyphr identity.
+Cyphr recommends that the authority be either a domain or a PR. When a domain is
+used as authority, that domain should provide a Cyphr identity.
 
 Example: `"cyphr.me/user/image/create"`
 
@@ -1144,54 +1288,81 @@ Other Examples:
 - `cyphr.me/comment/create`
 
 **Required fields for verbs**
-Unless otherwise noted, verbs need an object for their intent denoted by `id`.
+Unless otherwise noted, the object of verb intent is labeled `id`.
 
-- `id`: The identifier for the noun the verb is acting upon. It is always
-  required for `delete`, `read`, `create`, `update`, `upsert`.
+- `id`: The noun identifier for the verb. Required for `delete`,
+  `read`, `create`, `update`, `upsert`.
 
-For example, for `key/create`, `tmb` is the identifier for keys so `id` is equal
-to `tmb`.
+For example, for `key/create`, `id` is equal to `tmb` since `tmb` is the
+identifier for a key.
 
-### 7.3 Special verbs
+### 7.3 Authority
+
+Outside of the core protocol, Cyphr does not define behaviour for various
+`typ`s. An **authority** is the entity governing the semantics, rules, and
+acceptance criteria for a given type. These rules may be enforced by a consensus
+mechanism like a blockchain, a VM, a centralized or decentalized service, a
+protocol such as `cyphr`, or other processes.
+
+In this document where `cyphr.me/cyphr/*` is used, `cyphr.me` is the authority,
+signifying that `cyphr.me` is enforcing `cyphr` protocol requirements.
+Alternatively, if only `cyphr/*` was used as an authority, it is expected that
+the protocol directly is governing the `typ`.
+
+### 7.4 Authority and Noun Properties
+
+An authority defines the semantic and behavioral rules for every noun it
+governs. These rules are expressed as noun properties, a set of constraints that
+determine what operations are permitted on resources of that noun type.  Authorities may define their own noun properties.
+
+Noun properties provide a clear, machine-readable contract between the authority
+participants. They enable consistent enforcement, reduce ambiguity, and allow
+third parties to validate actions without custom per-application logic.
+
+| Property     | Description                          | Example `typ`        |
+|--------------|--------------------------------------|----------------------|
+| Creatable    | New instances may be created.        | `comment/create`     |
+| Updatable    | Existing instances may be modified.  | `comment/update`     |
+| Deletable    | Instances may be logically removed   | `comment/delete`     |
+| Ownable      | The noun has a natural owner         | `comment`, `post`    |
+| Transferable | Ownership may be transferred.        | `asset/transfer`     |
+
+For upsert, properties applying to `create` apply only on creation, and
+properties applying to `update` apply only on update.
+
+A noun may have any combination of noun properties. For example, a `comment` may
+be creatable, updatable, deletable, and ownable, but not transferable.
+
+### 7.5 Special Verbs
 
 In addition to the standard CRUD-like verbs (`create`, `read`, `update`,
-`upsert`, `delete`), Cyphr defines the following special verbs for
-protocol-level operations. See the relevant sections for more detail.
+`upsert`, `delete`), Cyphr defines special verbs for protocol-level operations.
 
-- `key/revoke` (Terminal, inherited from Coz)
-- `cyphr/key/replace` (Atomicity)
-- `cyphr/principal/merge` (Merge)
-- `cyphr/principal/merge-ack` (Merge Acknowledgement)
+Examples:
+- `key/revoke` - Terminal revoke, inherited from Coz
+- `cyphr/key/replace` - Atomicity
+- `cyphr/principal/merge` - Merge
+- `cyphr/principal/merge-ack` - Merge Acknowledgement
 
-### 7.4 Authority and `typ`
+### 7.6 Idempotency, Uniqueness and Reuse
 
-The authority defines the acceptance rules for a type. These rules may be
-enforced by a consensus mechanism like a blockchain, a VM, a centralized
-service, or other processes. Although Cyphr itself agnosticly does not set
-permissions outside of the core authentication rules, Cyphr acknowledges
-that rules must be implemented by an authority (like`cyphr.me`).
+All actions are idempotent. For data actions, replaying an previously applied
+coz is ignored and produces no state change. For transactions, coz reuse by a
+particular principal is prohibited and results in error `COZ_REUSE`. The first
+inclusion of a transaction coz is considered authoritative.
 
-### 7.5 Authority and Noun Properties
+Although reuse is prohibited for a particular principal, there is no mechanism
+in the protocol stopping multiple independent principals from reusing a mutation
+or transaction coz when principals share keys. Since `arrow` mixes all principal
+state from genesis, commits reference a unique principal, but individual cozies
+do not necessarily include reference to a particular principal.
 
-Nouns have properties as set by an authority:
+`create` operations  enforce uniqueness. If a target resource (e.g., key, rule,
+principal) already exists, the operation fails with error `DUPLICATE`.
 
-- Creatable - Items that are able to be created, like `comment/create`
-- Updatable - Items that are able to be mutated after the fact. `comment/update`
-- Deletable - Items that can be deleted. `comment/delete`
-- Ownable - Items that reserve some rights only to owner. `comment`
-- Transferable - Items that are able to be transferred.
-
-For upsert, properties applying to `create` apply to upsert only on creation,
-and properties applying to `update` apply to upsert only on update.
-
-### 7.6 Idempotency and Uniqueness Enforcement
-
-Cyphr transaction mutations are idempotent. Replaying an already applied coz
-is ignored and produces no state change.
-
-All `create` operations in Cyphr enforce uniqueness. If the target item
-(e.g., key, rule, principal) already exists, the operation returns error
-`DUPLICATE`.
+Levels 1 and 2 clients may not track principal history meaning reuse and
+idempotency may not be practical to enforce.  Tight time tolerances can help
+limit abuse.
 
 ### 7.7 Atomic Orthogonality
 
@@ -1224,15 +1395,13 @@ declarative are isomorphic.
 
 ### 8.1 Client Principal JSON Dump
 
-The following is a client principal JSON dump, which includes meta values and
-values that would be secrete only to the client. This represents the client's
-internal state of a principal, and includes fields useful for client
-calculation. Witnesses in the same way keep a similar data structure without
-the secretes.
+The following is a client principal JSON dump and includes metadata and client
+secrete values. This dump represents the client's internal state of a principal.
+Witnesses keep a similar data structure without secret values.
 
 ```json5
 {
-  "Principal_Tag":"Example Account",
+  "Principal_Tag":"Cyphr Spec Example Account",
   "PG":   "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",   // PG (permanent genesis digest)
   "PR":   "dYkP9mL2vNx8rQjW7tYfK3cB5nJHs6vPqRtL8xZmA2k=", // Current Principal Root
 
@@ -1245,25 +1414,26 @@ the secretes.
 
 // The actual Principal Tree, at the point of this commit
 "PT":{
-  "AT":{   // Auth Root
-    "KT": {
-      "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
-        "tag": "User Key 0",
-        "alg": "ES256",
-        "now": 1623132000,
-        "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-        "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
-        "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
-        },
-      "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M":{
-        "tag": "User Key 1",
-        "alg": "ES256",
-        "now": 1623132000,
-        "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-        "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
-        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
-        }
-    },
+  "ST":{
+    "AT":{   // Auth Root
+      "KT": {
+        "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
+          "tag": "User Key 0",
+          "alg": "ES256",
+          "now": 1623132000,
+          "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+          "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA",
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+          },
+        "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M":{
+          "tag": "User Key 1",
+          "alg": "ES256",
+          "now": 1623132000,
+          "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
+          "prv": "dRlV0LjnJOVfK_hNl_6rjVKutZWTHNL-Vs4_dVZ0bls",
+          "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
+          }
+    }}},
     "CT":[ // Commit tree
       {
       "pay": {
@@ -1290,7 +1460,7 @@ the secretes.
         "now": 1623132000,
         "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
         "typ": "cyphr.me/cyphr/key/create",
-        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg", // genesis key tmb
+        "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg" // genesis key tmb
       },
       "sig": "<b64ut>"
     }
@@ -1303,21 +1473,23 @@ the secretes.
 
 ### 8.2 Declarative Transaction
 
-Instead of imperatively mutating or creating principal root, state may be
-exhaustively declared in JSON. All client secretes are stripped before signing.
+In addition to imperatively creating or mutating a principal, state may be
+exhaustively declared in JSON. All client secrets are stripped before signing.
 (The Go/Rust implementation accomplishes this by using types that preclude
-secretes.)
+secrets.)
 
-Since declarative transactions enumerate the full principal root, they
-inherently act as checkpoints (see section Checkpoint). As always, the
-declarative structure is compactified according to Coz.
+Since declarative transactions enumerate the full principal tree, they
+inherently act as checkpoints (see section [Checkpoint](#83-checkpoint)). During
+transit the declarative structure is compactified according to Coz but is
+enumerated here with spaces for readability. Note that `checkpoint/create`
+contains `id` where the value is the forward SR, `fwd`.
 
 Example declarative principal:
 
-```json5
+```json
 {
-"PT":{ // The actual Principal Tree, at the point of this commit
-  "AT":{   // Auth Tree
+"ST":{
+  "AT":{
     "KT": {
       "keys": [{
         "tag": "User Key 0",
@@ -1330,59 +1502,60 @@ Example declarative principal:
         "alg": "ES256",
         "now": 1623132000,
         "pub": "iYGklzRf1A1CqEfxXDgrgcKsZca6GZllIJ_WIE4Pve5cJwf0IyZIY79B_AHSTWxNB9sWhYUPToWF-xuIfFgaAQ",
-        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M",
+        "tmb": "CP7cFdWJnEyxobbaa6O5z-Bvd9WLOkfX5QkyGFCqP_M"
         }
-      ],
-    },
-  }
-}
+]}}}}
 ```
 
 Embedded into a `cyphr/principal/checkpoint/create` transaction:
 
 ```JSON
 {
+  "txs":[[{
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphr/checkpoint/create",
-    "id": "<b64UT>", // The computed AR of the declared state
-    "PT": {...}
+    "id": "<b64UT>", // The computed SR of the declared state 
   },
   "sig": "<b64ut>"
+  }],
+  [...] // commit transaction
+  ],
+  "ST": {...} // ST is an external structure, referred to by SR.
 }
 ```
 
-### 8.3 Checkpoints
+### 8.3 Checkpoint
 
-**Checkpoints** are self-contained snapshots of the authentication-relevant
-state at a particular point in the chain, and once verified, allows verification
-from the checkpoint forward without needing to fetch or replay earlier parts of
+A **Checkpoint** is a self-contained snapshots of the authentication-relevant
+principal state at a particular point in the chain. Once verified a checkpoint
+allows forward verification without needing to fetch or replay earlier parts of
 the history.
 
-For a particular commit, each state digest (PR, AR) encapsulates the full state
-tree (PT, AT). Checkpoints do not rely on prior history to reconstruct AT
-as all required material is included. Genesis is the foundational checkpoint;
-services should cache later checkpoints to reduce chain length for verification.
+Checkpoints do not rely on prior history to reconstruct PT as all required
+digests are included. Clients should cache checkpoints to reduce chain length
+for verification and may prune previous principal states as desired.
+
 
 ---
 
+
 ## 9 Rule Root
 
-Level 5 introduces the Rule Root (RR), which denotes **weighs** and
-**timelocks**. Level 6 introduces virtual machine (**VM**) execution, where
+Level 5 introduces the Rule Root (RR), enabling weighs, timelocks, and
+delegation. Level 6 introduces virtual machine (**VM**) execution, where
 rules may be defined in bytecode and executed by a designated virtual machine.
 
+Rules are identified by a canonical digest.
+
 ### 9.1 Weights
+A **weight** is a positive integer assigned to keys, rules, or actions. It
+represents their relative authority and is used to calculate whether a set of
+signatures meets the required threshold for an operation.
 
-Unless otherwise defined, each key, action, and transaction weight is implicitly
-
-1.
-
-Weights:
-
-- Every key and every action has a weight score default of `1`.
+- Keys, actions, and rules have a default weight of `1`.
 - Actions require meeting a threshold weight.
 - Enables tiered permissions (e.g., admin keys vs. limited keys)
 
@@ -1395,10 +1568,10 @@ be signed by independent keys of weight 1 for the transaction to be valid.
 
 First, rules are defined:
 
-```json5
-"weights":{
+```json
+{"weights":{
   "cyphr/key/create": 2,
-}
+}}
 ```
 
 The rule is added to RR via a `rule/create` transaction.
@@ -1410,6 +1583,7 @@ The rule is added to RR via a `rule/create` transaction.
     "now": 1623132000,
     "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "cyphr.me/cyphr/rule/create",
+    "id": "<rule-digest>",
     "rule": {
       "weights": {
         "cyphr/key/create": 2
@@ -1420,36 +1594,33 @@ The rule is added to RR via a `rule/create` transaction.
 }
 ```
 
-Once the rule is applied, to add a new key, the following two key cozies must be
-signed for a valid total transaction:
+Once the rule is applied, to add a new key, two cozies sign by two different
+keys must be signed for a valid transaction:
 
 ```json5
 {
-  txs: [
-    [
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing key tmb>", // First Existing key
-          typ: "<authority>/cyphr/key/create",
-          id: "<new keys tmb>",
+  "txs": [[{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing key tmb>", // First Existing key
+          "typ": "<authority>/cyphr/key/create",
+          "id": "<new keys tmb>"
         },
-        sig: "<b64ut>",
-      },
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing key tmb>", // Second Existing key
-          typ: "<authority>/cyphr/key/create",
-          id: "<new keys tmb>",
+        "sig": "<b64ut>"
+      },{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing key tmb>", // Second Existing key
+          "typ": "<authority>/cyphr/key/create",
+          "id": "<new keys tmb>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-  ],
-  keys: [
+        "sig": "<b64ut>"
+      }],
+      [{...}] //Commit Transaction
+      ],
+  "keys": [
     {
       /* new key */
     },
@@ -1457,22 +1628,24 @@ signed for a valid total transaction:
 }
 ```
 
+
+
 ### 9.2 Timelocks
 
-A timelock is a delay until a transaction takes effect. This allows principals
+A **timelock** is a delay until a transaction takes effect. This allows principals
 time to undo or otherwise address actions that may have security implications,
 such as adding or removing a key. Timelocks are defined the rules where the
 value is the time in seconds.
 
 ```json5
 {
-  timelock: {
-    "cyphr/key/create": 604800, // 604800 seconds is 7 days.
+  "timelock": {
+    "cyphr/key/create": 604800 // 604800 seconds is 7 days.
   },
 }
 ```
 
-```json
+```json5
 {
   "pay": {
     "alg": "ES256",
@@ -1489,21 +1662,29 @@ value is the time in seconds.
 }
 ```
 
-To cancel a transaction in a timelock, a principal signs a `timelock/cancel`
+To delete a transaction in a timelock, a principal signs a `timelock/delete`
 where id denotes the `czd`s of the transaction.
 
-### 9.3 VM
+### 9.3 Delegation
 
-Level 6 introduces virtual machine (**VM**) execution, where rules may be
-defined in bytecode and executed by a designated virtual machine.
+### 9.3 Rules, Opaqueness, and Reveal
+Unlike other nodes, all top level rules must be content-revealed.  Top level
+rules cannot be opaque, although nested rules may be unknown.  For example, a
+rule may have a weight of 1 which is known, but the node determining the rule
+may be opaque. This allows the system to make actionable decisions without
+necessarily understanding the mechanism.
 
-Virtual machine may or may not be Turing complete.
+### 9.4 VM
+
+Level 6 introduces virtual machine (**VM**) execution, where rules are defined
+by bytecode and executed by a designated virtual machine. Virtual machines may
+or may not be Turing complete.
 
 ```json5
-"VM":{
+{"VM":{
   "machine":<digest value>,
   "rule":<digest value>
-}
+}}
 ```
 
 ---
@@ -1514,7 +1695,7 @@ An embedding is a digest reference to an external node, such as a principal (PR)
 key, or key tree. Embedding is the mechanism by which Cyphr achieves
 hierarchy, delegation, and selective opacity (using nonces and digests).
 
-The default weight of an embedded node is one, regardless of how man children
+The default weight of an embedded node is one, regardless of how many children
 that node contains. Like all nodes, an embedded node may be assigned a different
 weight by a rule. For example, a principal embedded into KR by default has
 a weight of one regardless of how nodes are weighed for the embedded principal.
@@ -1524,12 +1705,33 @@ infinite recursion. For example, when principal A embeds principal B, and B
 embeds A, verifying A includes B's members but does not recursively resolve B's
 embedding of A.
 
-### 10.1 Nonce, Embedding, and Opaque Nodes
+### 10.1 Nonce, Embedding, and Opaque Node Pathing
 
-Cyphr permits nonces, embeddings, or otherwise opaque nodes anywhere in the
-Principal Tree. Embeddings are indistinguishable from other digest values unless
-revealed by the client. One or more nonces may be included at any level of the
-state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
+Cyphr permits nonces, embeddings, or otherwise opaque nodes at multiple
+points in the state hierarchy, though the underlying mechanism differs by
+level. At the PT root specifically, cell 0 and cell 1 are reserved
+positionally for SR and CR (§3.7.1); cells ≥ 2 are reserved for future PT
+embeddings — today this is design intent, not an implemented capability,
+since the PT root's cell arity is fixed at exactly two. AT and ST (§3.7.5,
+§3.7.2) are likewise fixed two-cell trees, with no cells ≥ 2 capability at
+their levels, implemented or planned. KT (§3.7.3), by contrast, is a
+variable-width collection, where a nonce or embedding is simply added as
+another member/leaf — the one level with implemented room for this today.
+Embeddings are indistinguishable from other digest values unless revealed by
+the client. To delete an embedding or nonce, a `*/nonce/delete` is signed.
+
+Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
+state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
+`id` == nonce removes the nonce.
+
+Example pathing (the AT-rooted and KT-rooted paths below are design intent —
+today's fixed-two-cell AT has no free cell for a nonce; only the KT-rooted
+path has an implemented insertion point, at a KT member):
+ - `cyphr/nonce/create` - Principal Root
+ - `cyphr/AT/nonce/create`  - Nonce is inserted at the root of AT.
+ - `cyphr/AT/KT/nonce/create` - Nonce is inserted at the root of KT.
+
+Example `nonce/create`:
 
 ```json
 {
@@ -1544,21 +1746,11 @@ state tree. To delete a embedding or nonce, a `*/nonce/delete` is signed.
 }
 ```
 
-#### 10.1.1 Embedding path
-
-Nonces, embeddings, or otherwise opaque nodes may be inserted anywhere in the
-state tree. `typ` specifies the path for insertion. A `nonce/delete`, where
-`id` == nonce removes the nonce.
-
-`cyphr/nonce/create` // Principal Genesis
-`cyphr/AT/nonce/create` // Nonce is inserted at the root of AT.
-`cyphr/AT/KT/nonce/create` // Nonce is inserted at the root of KT.
-
 ### 10.2 Nonce
 
 Although used with a slightly different connotation in the broader industry, in
-Cyphr a **nonce** is a unique, high-entropy value. Unless explicitly labeled
-or revealed, Cyphr is unable to distinguish a nonce from any other node type
+Cyphr a **nonce** is a unique, high-entropy value. Unless explicitly labeled or
+revealed, the protocol is unable to distinguish a nonce from any other node type
 such as an embedding. Nonces serve a few purposes:
 
 - **Obfuscation**: Nonces are indistinguishable from key thumbprints and
@@ -1609,7 +1801,10 @@ Typical uses for principal embedding are identity encapsulation, external
 recovery authorities, social recovery, organizational delegation, and disaster
 recovery. (See section Recovery.)
 
-An example of embedding multiple external principal's KR's into KR:
+An example of embedding multiple external principal's KR's into KR. This
+specific capability — embedding an external principal's KR directly as an
+additional KT member — is design intent, not yet implemented: KT accepts
+key thumbprints only today.
 
 ```text
 Principal Tree (PT0)
@@ -1627,9 +1822,9 @@ Embedded nodes use b64ut digest as the JSON name in tree structure. For example:
 
 ```json5
 {
-  PT: {
-    AT: {
-      KT: {
+  "PT": {
+    "AT": {
+      "KT": {
         "SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8": "", // External Embedding
       },
     },
@@ -1640,8 +1835,8 @@ Embedded nodes use b64ut digest as the JSON name in tree structure. For example:
 Principal's Keys labeled as an embedding
 
 ````json5
-```json5
-{"PT":{
+{
+  "PT":{
     "AT":{
       "KT": {
         "SHA256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg":{
@@ -1686,13 +1881,13 @@ principal's own items.
 Example external opaque embedding:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":"", // Opaque External Embedding.  Unknown type.
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":""} // Opaque External Embedding.  Unknown type.
 ```
 
 Example external non-opaque embedding:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{"keys":[...]}, // Non-opaque External Embedding.
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{"keys":[...]}} // Non-opaque External Embedding.
 ```
 
 ### 10.5 Conjunctive Authorization
@@ -1719,16 +1914,12 @@ enforceable due to opaqueness.
 
 ### 10.7 Pinning
 
-For PG, PR, and AR exclusively, embedded references trigger tip retrieval on
-authentication, but synchronization isn't always desired. Pinned identifiers
-denote static states that prohibit updates, ensuring immutable authorization
-rules.
-
-A pin prefixes the digest value (`PIN:<alg>:<value:`):
-
-```
-PIN:ES256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg
-```
+For PG and PR exclusively, embedded references trigger tip retrieval at the time
+of authentication. Pinned identifiers, SR, AR, KR, and RR, are static states
+that prohibit automatic updates, ensuring immutable authorization rules. SR and
+CR (PT cells 0 and 1, [§3.7.1](#371-principal-root-and-principal-genesis)) are
+not themselves embeddings and are unaffected by this section; pinning applies
+to embedded references, which at the PT level occupy cells ≥ 2 ([§10.1](#101-nonce-embedding-and-opaque-node-pathing)).
 
 ---
 
@@ -1808,16 +1999,16 @@ recovered; no transactions or actions are possible on a closed account. However,
 the protocol does not prevent a user from creating a new principal reusing the
 existing keys (unless those keys were revoked).
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<target signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/delete",
-    id: "<target PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/delete",
+    "id": "<target PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1834,11 +2025,11 @@ gains awareness for principal history preservation.
 
 Fork / Merge Terminology
 
-- **Explicit fork** : Protocol-level, history-preserving fork operation
+- **Explicit fork**  : Protocol-level, history-preserving fork operation
 - **Explicit merge** : Protocol-level, history-preserving merge operation
-- **Implicit fork** : Out-of-band fork via AT component transfer
+- **Implicit fork**  : Out-of-band fork via AT component transfer
 - **Implicit merge** : Out-of-band merge via AT component consolidation
-- **Invalid fork** : Forbidden chain divergence that violates protocol
+- **Invalid fork**   : Forbidden chain divergence that violates protocol
   append-only & single-tip rules (prohibited)
 
 Related to merging is **full delegation** is where the source account deletes
@@ -1864,33 +2055,33 @@ inactive.
 
 Example source principal merge transaction:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<source signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/merge",
-    merge_from: "<list of source's PRs>",
-    merge_to_pr: "<target Principal Root>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<source signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/merge",
+    "merge_from": "<list of source's PRs>",
+    "merge_to_pr": "<target Principal Root>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
 And the merge acknowledgement by the target principal:
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<target signing key tmb>",
-    typ: "cyphr.me/cyphr/principal/merge-ack",
-    merge_from: "<list of source's PRs>",
-    merge_to_pr: "<target Principal Root>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<target signing key tmb>",
+    "typ": "cyphr.me/cyphr/principal/merge-ack",
+    "merge_from": "<list of source's PRs>",
+    "merge_to_pr": "<target Principal Root>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -1906,58 +2097,56 @@ original PG and a new PG for the target. A fork is created by signing
 `cyphr/principal/fork/create`, `cyphr/principal/create` (for atomic
 orthogonality), and adding at least one key. This transaction bundle is
 equivalent to a genesis transaction. For "bad faith" forking (invalid fork), see
-section "Consensus".
+section [Consensus](#15-consensus).
 
 Example principal fork, consisting of two transactions:
 
-```json5
+```json
 {
-  txs: [
+  "txs": [[{
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/key/create",
+          "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
+        },
+        "sig": "<b64ut>"
+      }
+    ],
     [
       {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/key/create",
-          id: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+          "typ": "cyphr.me/cyphr/principal/create",
+          "id": "<b64ut>"
         },
-        sig: "<b64ut>",
+        "sig": "<b64ut>"
       },
     ],
     [
       {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-          typ: "cyphr.me/cyphr/principal/create",
-          id: "<b64ut>",
+        "pay": {
+          "alg": "ES256",
+          "now": 1623132000,
+          "tmb": "<signing tmb>",
+          "typ": "cyphr.me/cyphr/principal/fork/create",
+          "fork_pr": "<fresh PG digest, which in this case is just KR>",
+          "arrow": "<b64ut>"
         },
-        sig: "<b64ut>",
-      },
-    ],
-    [
-      {
-        pay: {
-          alg: "ES256",
-          now: 1623132000,
-          tmb: "<signing tmb>",
-          typ: "cyphr.me/cyphr/principal/fork/create",
-          fork_pr: "<fresh PG digest, which in this case is just KR>",
-          arrow: "<b64ut>",
-        },
-        sig: "<b64ut>",
+        "sig": "<b64ut>"
       },
     ],
   ],
-  keys: [
+  "keys": [
     {
-      tag: "User Key 0",
-      alg: "ES256",
-      now: 1623132000,
-      pub: "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
-      tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+      "tag": "User Key 0",
+      "alg": "ES256",
+      "now": 1623132000,
+      "pub": "2nTOaFVm2QLxmUO_SjgyscVHBtvHEfo2rq65MvgNRjORojq39Haq9rXNxvXxwba_Xj0F5vZibJR3isBdOWbo5g",
+      "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg"
     },
   ],
 }
@@ -1971,9 +2160,11 @@ Example principal fork, consisting of two transactions:
 
 A **multihash identifier** is a set of digests that addresses content. Multihash
 identifiers are calculated on a per commit basis for each hash algorithm
-referenced by the principal in KT at the time of commit.
+referenced by the principal in KT at the time of commit.  MultiHash Merkle Root
+(MHMR), Epoch Merkle Logs (EML), and Epoch Merkle Trees (EMT) are used in this
+document.
 
-In Cyphr, cryptographic algorithms are pluggable: no single cryptographic
+Cyphr supports pluggable cryptographic algorithms; no single cryptographic
 primitive is exclusively authoritative or tightly coupled to the architecture.
 This abstraction enables flexibility in algorithm choice, security upgrades, and
 rapid removal of broken algorithms. No single algorithm is canonical. All
@@ -1982,7 +2173,7 @@ security judgments are out-of-scope.
 
 In summary:
 
-- PG, PR, AR, KR and nodes in the Merkle trees are referenced by multihash
+- PR, SR, AR, KR and nodes in the Merkle trees are referenced by multihash
   identifiers, with one variant per hash algorithm.
 - Digests are computed for all hashing algorithms referenced in KT (keys,
   embeddings).
@@ -2002,7 +2193,7 @@ specification for an exhaustive list of supported hashing algorithms.
 | ES512         | SHA-512        | 64 bytes    | 512-bit           |
 | Ed25519       | SHA-512        | 64 bytes    | 512-bit           |
 
-### 12.2 MultiHash Merkle Root (MHMR)
+### 12.2.1 MultiHash Merkle Root (MHMR)
 
 The **MultiHash Merkle Root (MHMR)** algorithm computes digests for all nodes in
 a state tree. Each MHMR variant is computed with respect to a **target hash** H.
@@ -2015,7 +2206,14 @@ in KT, its MHMR variant is no longer generated for new commits.
 Given an ordered list of child digests (each child is a binary digest value
 computed under some hash algorithm):
 
-1. **Sort** the child digests in lexical byte order unless order is otherwise given.
+1. **Order** the child digests per the node's rule (§3.7 step 2). PT, AT, and
+   ST are fixed two-cell trees and use positional role order, never lexical
+   sort: PT's cell 0 = SR, cell 1 = CR ([§3.7.1](#371-principal-root-and-principal-genesis));
+   AT's cell 0 = KR, cell 1 = RR ([§3.7.5](#375-auth-root)); ST's cell 0 = AR,
+   cell 1 = DR ([§3.7.2](#372-state-root)). KT and DR are variable-width and
+   keep their own already-defined order (lexical byte order for KT, `now`
+   then `czd` for DR); lexical byte order remains the tie breaker wherever
+   this document does not otherwise define an order.
 2. **Implicit promotion**:  
    If there is exactly one child digest, the MHMR_H for any target H is simply
    the bytes of that child digest (no hashing occurs). Promotion is recursive.
@@ -2069,7 +2267,7 @@ identifier for that hashing algorithm.
                       |
           ┌───────────┼───────────┐
           │                       │
-          │               SHA-384(Node B)
+          │               SHA-384(Node B) <- Conversion step
           │                       │
    ┌─────────────┐         ┌─────────────┐
    │   Node A    │         │   Node B    │
@@ -2084,13 +2282,13 @@ different hashing algorithm), the node is converted into a SHA384 node.
 The ES256 Key node:
 
 ```json
-"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{<key data>}
+{"SHA256:T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8":{<key data>}}
 ```
 
 The ES256 key node is converted to SHA384:
 
 ```json
-"SHA384:NLDDkOyBHNVG4H6yHwSf8AwvI82B-tRhleeuBhYR4LCdvP9Is2-HjXMbllTv0NJk":""
+{"SHA384:NLDDkOyBHNVG4H6yHwSf8AwvI82B-tRhleeuBhYR4LCdvP9Is2-HjXMbllTv0NJk":""}
 ```
 
 **Conversion Security Considerations**
@@ -2114,7 +2312,9 @@ Compatibility is strictly required only for operations where the service must
 verify or interpret the cryptographic material. If such an operation is
 attempted using an unsupported algorithm, the services are incompatible.
 
+
 ---
+
 
 # Extended
 
@@ -2127,7 +2327,66 @@ protocol/document/repo.
 
 ---
 
-## 13 Mutual State Synchronization (MSS)
+
+## 13 State Synchronization and Gossip // TODO
+`tip`, `patch`, and `push`
+### Trust Anchor Algorithm
+Thin client update/sync: State update from PR:
+1. Inclusion proof that the server's view of AT is in the local clients's TA
+   (PR)
+2. Server gives relevant AT components (`tmb`s and keys) for commit update.
+ - So if a commit is signed by two keys, those two keys need to be sent to the
+   thin client.
+3. If commit is valid
+4. Update TA
+5. Delete ephemeral components.
+6. If progressing multiple commits, steps 1-5 need to be done for each commit.
+   A server may send multiple commit updates at a time to a thin client to
+   progress the client rapidly.
+
+
+Only Thin Client Update
+
+Alternatively, a thin client may use a trusted oracle and state jump. However,
+note that the distinction between a fetch and a jump is that a jump is trusted.
+
+### 13.7 Gossip
+
+Unlike existing gossip protocols where there is no authority on a particular
+piece of data, Principals are the authority over their own state.
+
+// TODO
+**Prover** 
+**Verifier**
+
+**Client levels**
+The minimal light weight client is pointed to an oracle and depends on the oracle for everything
+- A digest per principal: the PR.  A more full client may have the roots, PR, AR, KR, RR, DR, and CR.
+- AT, CT, and DT.  Since a principal may use DT extensively, especially for things like blobs, AT and CT are expected to be sainer choices
+
+
+**Audit**
+
+An audit is a full replay from genesis.
+
+Mindful, for each supported hashing algorithm, the whole datastructure must be re-hashed. 
+
+
+
+Clients may periodically query or exchange state details with other clients for
+specific principals. This helps detect divergences, ensure consistency, and
+propagate changes. For example, a client might check the tip against multiple
+sources to verify integrity before accepting updates. Clients may check
+registration through `GET /tip?pr=<principal-root>`, which should return empty
+if the principal isn't registered.
+
+Clients may have an principal identity separate from the principal itself in
+that a principal's primary client may be registered as a witness itself.
+
+
+
+
+## 13.1 Mutual State Synchronization (MSS)
 
 Cyphr enables symmetric, bidirectional state awareness that eliminates the
 one-sided dependency inherent in traditional password-based or federated
@@ -2144,24 +2403,23 @@ failure and control. Programmatic key rotation or bulk recovery is typically
 impossible without service cooperation.
 
 Cyphr inverts and symmetrizes these concerns through Mutual State
-Synchronization (MSS):
+Synchronization (MSS) and directly addresses stale state concerns.:
 
 - Services and users are represented as Cyphr principals and maintain
   independent, cryptographically verifiable views of each other's state.
-- Cyphr clients push state mutations to registered services after local
-  application.
-- During authentication, services verify these pushes against the principal's
-  current chain, reducing round-trips.
+- Cyphr clients push mutations to registered services after local application.
+- During authentication, services verify against the principal's current chain,
+  reducing round-trips.
 
-MSS directly addresses concerns about stale distributed state. This practice is
-similar to double entry accounting, where instead of one entry in a ledger being
-depended upon as a single source of truth, two entries are cross-checked.
+MSS bidirectionally is similar to double entry accounting, where instead of one
+ledger entry serving as a single source of truth, two entries are cross-checked.
 
 Although Cyphr provides single-sign-on semantics, it differs from historic
 systems by eliminating passwords, email dependency, and unidirectional state
 tracking. MSS addresses centralization risks in legacy SSO (passwords + email as
-de facto recovery root) and bearer-token models (service as sole state oracle).
-By making state mutual, verifiable, and push-capable, Cyphr enables:
+de facto recovery root) and bearer-token models where the service as acts as the
+sole state oracle. By making state mutual, verifiable, and push-capable, Cyphr
+enables:
 
 - Low-latency authentication flows.
 - Independence from email/CA choke points.
@@ -2182,7 +2440,8 @@ By making state mutual, verifiable, and push-capable, Cyphr enables:
 
 To verify a principal's current state:
 
-1. **Identify Trust Anchor**: the claimed root (PG) or transitive state (PR).
+1. **Identify Trust Anchor**: the claimed root (PR).  TA is typically cached by
+   witnesses.
 2. **Obtain transaction history**: ordered list of transactions from trust
    anchor to tip.
 3. **Replay transactions**:
@@ -2193,10 +2452,33 @@ To verify a principal's current state:
      - Principal lifecycle state permits the operation
      - `now` is after previous transaction
      - Transaction is well-formed for its `typ`
-   - Apply mutation to derive new AR
-4. **Compare**: final computed KR/AR/PR should match claimed current state
+   - Apply mutation to derive new PR
+4. **Compare**: final computed roots, KR/AR/SR/PR, must match claimed state
 
-### 13.3 Recommended Usage
+Thin clients are assumed to have a PR, which acts as their trust anchor for a
+particular principal. 
+
+0. Request inclusion proof that AT and previous CR is in PR.  The content of CT
+   and DT isn't required, but CR and DR is required for the proof. This is a
+   two-step, two-hop verification with no composite proof type: (a) TR-leaf
+   inclusion in CT (EML) against CR, and (b) CR-leaf inclusion in PT (EMT)
+   against PR; each hop is verified independently against its own root.
+1. Advancement relevant authentication components must be given to the thin
+   client.  For example, any keys that signed 
+2. To additionally verify that a specific key is currently active, request a
+   key-membership inclusion proof: thumbprint → KT → AT → ST → PT (4 hops),
+   each hop verified independently against its own root, the same pattern as
+   step 0's 2-hop CR-in-PR check. This chain is verified against the
+   client's own already-trusted KR/AR/SR/PR — it is an internal
+   consistency/staleness check, confirming a claimed key is included under
+   roots the client already trusts, not a portable proof a third party could
+   verify unassisted from only a published PR and a thumbprint. A portable
+   proof format (one that also binds the target leaf itself, so an untrusted
+   verifier could check it standalone) would reuse this same 4-hop chain
+   structure but is separate, future design work.
+
+
+### 13.1.3 MSS Recommended Usage
 
 MSS makes authentication quicker by allowing clients to push state to services
 before authentication. When a client mutates their own state, they may push the
@@ -2208,9 +2490,19 @@ mutations to all registered third parties.
 - **On-demand sync**: Before high-value actions, client queries service tip and
   reconciles if needed.
 
-### 13.4 MSS API
+### 13.3 API (Non-Normative)
 
-(Non-Normative)
+### 13.8 Suggested API
+
+
+Good practice for digest identifiers is prepending with Coz algorithm
+identifier, e.g. `SHA256:<B64-value>`, which integrity protects the query.
+
+Since cryptographic digests are suitable, all `GETS` may simply be looked up by
+digest.
+
+- `GET /<digest-value>`
+
 
 Cyphr's `typ` system builds a ready to use API. However, there are a few
 endpoints not enumerated by `typ`, such as synchronization. Services should
@@ -2218,18 +2510,20 @@ expose an interface for MSS (like HTTP API). Services may of course limit depth
 and have other rate limits. A gossip communication layer may be used to keep
 clients in sync. See also section `API`.
 
-**tip**
+**Fetch**
 
 - `GET /tip?pr=<principal-root>`
-  Returns the service's view of the tip (or latest known AR/PR digest) for the principal.
+  Returns the service's view of tip for the principal.  `pr` may be `pg`.
+
+  // TODO iterative tip fetch
 
 **patch** - Returns the service's view for the principal.
 
-- `GET /patch?pr=<principal-root>&from=<ps>&to=<target-ps>` - Full form
-- `GET /patch?from=<ps>` - From PR to current
+- `GET /patch?pr=<principal-root>&from=<pr>&to=<target-pr>` - Full form
+- `GET /patch?from=<pr>` - From PR to current
 - `GET /patch?pr=<principal-root>` from PG to current
-- `GET /patch?pr=<principal-root>from=<ps>` from PR, for particular PG, to current
-- `GET /patch?from=<ps>&to=<target-ps-or-empty>` - Range
+- `GET /patch?pr=<principal-root>&from=<pr>` from PR, for particular PG, to current
+- `GET /patch?from=<pr>&to=<target-pr-or-empty>` - Range
 
 `to` is optional and on omission is `tip`.
 `pr` is optional since it should be included in patch. May be explicit for debugging.
@@ -2242,6 +2536,55 @@ clients in sync. See also section `API`.
 
 - If service-reported tip equals the client's local PR, state is synced.
 - On mismatch, client pushes delta or service requests missing patch.
+
+
+### 13. Resync
+
+**Resync** lets a witness advance from a known good trust anchor to the current
+tip by fetching and verifying the delta (tx_patch) and may be triggered manually
+or automatically.
+
+1. **Select Trust Anchor** Select trust anchor (trusted PR, AR, or PG).
+2. **Fetch Delta (Patch)** Request minimal patch with GET
+   /patch?from=<anchor-PR>&to=<tip-or-empty> or GET
+   /patch?pr=<PG>&from=<anchor-PR>.
+3. **Verify Patch** Independently verify the patch for valid pre chaining,
+   signing keys that were active with no revocation in path, computed
+   intermediate and final PR that match claims, correct timestamps, thresholds
+   (Level 5+), and no forks.
+4. **Apply and Progress Trust Anchor** On success, apply patch, update local
+   state, and promote new PR to trust anchor.
+
+Witnesses should use an exponential backoff cooldown for repeated resync
+attempts to prevent denial-of-service. Clients should gossip tip to other
+clients to ensure a uniformed presentation of the principal, especially after
+long offline periods.
+
+Many transient errors resolve via resync. Persistent failure escalates to
+errored state or ignore.
+
+### 13. Resync PoP
+
+A principal may re-iterate an existing state as authoritative without mutating
+PR/AR through a resync POP.
+
+- **PoP Confirmation**: To accelerate resync or confirm intent, the principal
+  may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
+  `typ: "cyphr.me/cyphr/resync/create"`) with an active key. This helps
+  distinguish transient errors from genuine issues.
+
+Resync PoP is also useful for expired timestamps. When a client has been
+offline, but the principal issue a transaction a while ago, a Resync PoP may
+confirm current possession without mutating PR. Clients should also gossip
+these timestamps to other clients that were online to verify integrity.
+
+Local clients track their own last operation timestamp (written to disk) to
+detect offline periods and decide when a Resync PoP is needed. Local clients
+should also add their own timestamps to the receipt of principal messages.
+
+For record keeping, a resysnc PoP may be included by a principal into DT, but it
+must not be used for after-the-fact authentication.
+
 
 ### 13.5.1 Witness Registration
 
@@ -2281,35 +2624,6 @@ receipt. If external witness timestamps are out of expected range, clients
 should also record external witness timestamps. This allows MSS to detect
 conflict, dishonest behavior, and bugs.
 
-### 13.7 Gossip
-
-Unlike existing gossip protocols, like Cassandra, where there is no authority on
-a particular piece of data, Principals are the authority over their own state.
-
-Clients may periodically query or exchange state details with other clients for
-specific principals. This helps detect divergences, ensure consistency, and
-propagate changes. For example, a client might check the tip against multiple
-sources to verify integrity before accepting updates. Clients may check
-registration through `GET /tip?pr=<principal-root>`, which should return empty
-if the principal isn't registered.
-
-Clients may have an principal identity separate from the principal itself in
-that a principal's primary client may be registered as a witness itself.
-
-### 13.8 Suggested API
-
-See also section "MSS" for `tip`, `patch`, and `push` endpoint definitions.
-
-Good practice for digest identifiers is prepending with Coz algorithm
-identifier, e.g. `SHA256:<B64-value>`.
-
-Since cryptographic digests are suitable, all `GETS` may simply be looked up by digest.
-
-- `GET /<diget-value>`
-
-- Alternatively, `e` for everything is suggest:
-
-- `GET /e/<diget-value>`
 
 ---
 
@@ -2347,12 +2661,12 @@ Level 3+ supports recovery and can add new keys.
 
 ### 14.3 Self-Recovery Mechanisms
 
-| Mechanism         | Description                            | Trust Model  |
-| ----------------- | -------------------------------------- | ------------ |
-| **Backup Key**    | Backup key stored in a secure location | User custody |
-| **Paper wallet**  | Backup key printed/stored offline      | User custody |
-| **Hardware key**  | Hardware key device (U2F-Zero, solo1)  | User custody |
-| **Airgapped key** | Cold storage, never online             | User custody |
+| Mechanism         | Description                            |
+| ----------------- | -------------------------------------- |
+| **Backup Key**    | Backup key stored in a secure location |
+| **Paper wallet**  | Backup key printed/stored offline      |
+| **Hardware key**  | Hardware key device (U2F-Zero, solo1)  |
+| **Airgapped key** | Cold storage, never online             |
 
 #### 14.4.1 Recovery Validity
 
@@ -2370,19 +2684,19 @@ of the attempted recovery.
 
 Registers a recovery agent (backup key, service, or social contacts).
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/recovery/create",
-    recovery: {
-      agent: "<recovery agent PG or tmb>",
-      threshold: 1,
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/recovery/create",
+    "recovery": {
+      "agent": "<recovery agent PG or tmb>",
+      "threshold": 1,
     },
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2395,18 +2709,18 @@ Registers a recovery agent (backup key, service, or social contacts).
 
 Removes a previously designated recovery agent.
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/recovery/delete",
-    recovery: {
-      agent: "<recovery agent PG or tmb>",
-    },
+ "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/recovery/delete",
+    "recovery": {
+      "agent": "<recovery agent PG or tmb>",
+    }
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2426,17 +2740,17 @@ the Recovery Authority's recovery transaction.
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<recovery agent tmb>",
-    typ: "<authority>/key/create",
-    id: "<new user key tmb>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<recovery agent tmb>",
+    "typ": "<authority>/key/create",
+    "id": "<new user key tmb>"
   },
-  key: {
+  "key": {
     /* new user key */
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2462,6 +2776,9 @@ For social recovery, multiple contacts signs the same `key/create` transaction.
 When `threshold` signatures are collected, the transaction is valid. For
 example, 3-of-5 social recovery requires 3 contacts to sign the `key/create`.
 
+For principals delegated social recovery, a fat client should be employed.
+Otherwise, dataloss may result in principal unrecoverability. 
+
 ### 14.9 Freeze
 
 A **freeze** is a global protocol state where valid transactions are temporarily
@@ -2478,14 +2795,14 @@ A user may initiate a freeze if they suspect their keys are compromised but do n
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/freeze/create",
-    id: "<targeted PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/freeze/create",
+    "id": "<targeted PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2503,14 +2820,14 @@ To unfreeze an account, a `cyphr/freeze/delete` is signed:
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<signing key tmb>",
-    typ: "<authority>/cyphr/freeze/delete",
-    id: "<targeted PR>",
+  "pay: {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<signing key tmb>",
+    "typ": "<authority>/cyphr/freeze/delete",
+    "id": "<targeted PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2574,11 +2891,11 @@ The design accommodates diverse implementations (including smart-contract
 clients on external hosted blockchains) and accepts that incompatibility between
 clients can be an intentional choice. This consensus model also permits logical
 deduction. Retained errors and timestamps serve as transparent signals of client
-honesty. It represents a fundamentally different philosophy: consensus emerges
-from what actually occurred and who published what when, not strictly from
-coordinated rule enforcement or majority vote, and opens the door for
-intelligent agents to detect violations through reasoning instead of strict rule
-matching.
+honesty (proof of error). It represents a fundamentally different philosophy:
+consensus emerges from what actually occurred and who published what when, not
+strictly from coordinated rule enforcement or majority vote, and opens the door
+for intelligent agents to detect violations through reasoning instead of strict
+rule matching.
 
 Although outside of the scope of this document, consensus rules attempt to
 accommodate a wide set of circumstances and implementation, and should assume
@@ -2603,52 +2920,7 @@ improved from game theory or novel mechanisms. Exhaustive detailing is outside
 the scope of this document, but the authors acknowledge its potential in
 security distributed systems.
 
-### 15.3 Resync
 
-**Resync** lets a witness advance from a known good trust anchor to the current
-tip by fetching and verifying the delta (tx_patch) and may be triggered manually
-or automatically.
-
-1. **Select Trust Anchor** Select trust anchor (trusted PR, AR, or PG).
-2. **Fetch Delta (Patch)** Request minimal patch with GET
-   /patch?from=<anchor-PR>&to=<tip-or-empty> or GET
-   /patch?pr=<PG>&from=<anchor-PR>.
-3. **Verify Patch** Independently verify the patch for valid pre chaining,
-   signing keys that were active with no revocation in path, computed
-   intermediate and final PR that match claims, correct timestamps, thresholds
-   (Level 5+), and no forks.
-4. **Apply and Progress Trust Anchor** On success, apply patch, update local
-   state, and promote new PR to trust anchor.
-
-Witnesses should use an exponential backoff cooldown for repeated resync
-attempts to prevent denial-of-service. Clients should gossip tip to other
-clients to ensure a uniformed presentation of the principal, especially after
-long offline periods.
-
-Many transient errors resolve via resync. Persistent failure escalates to
-errored state or ignore.
-
-#### 15.4 Resync PoP
-
-A principal may re-iterate an existing state as authoritative without mutating
-PR/AR through a resync POP.
-
-- **PoP Confirmation**: To accelerate resync or confirm intent, the principal
-  may perform a Proof of Possession (PoP) by signing a challenge message (e.g.,
-  `typ: "cyphr.me/cyphr/resync/create"`) with an active key. This helps
-  distinguish transient errors from genuine issues.
-
-Resync PoP is also useful for expired timestamps. When a client has been
-offline, but the principal issue a transaction a while ago, a Resync PoP may
-confirm current possession without mutating PR. Clients should also gossip
-these timestamps to other clients that were online to verify integrity.
-
-Local clients track their own last operation timestamp (written to disk) to
-detect offline periods and decide when a Resync PoP is needed. Local clients
-should also add their own timestamps to the receipt of principal messages.
-
-For record keeping, a resysnc PoP may be included by a principal into DT, but it
-must not be used for after-the-fact authentication.
 
 ### 15.5 Principal Consensus States
 
@@ -2730,7 +3002,7 @@ violating this assumption.
 Rejection is auditable: Witnesses log the reason (e.g., INVALID_SIGNATURE) and
 may broadcast it via gossip for other witnesses to confirm.
 
-### 17.5 Invalid Forks, Fork Detection, and Duplicitous Behavior
+### 15.7.1 Invalid Forks, Fork Detection, and Duplicitous Behavior
 
 An invalid fork occurs when two or more commits reference the same pre,
 violating the single-chain rule. Quick succession (e.g., within timestamp
@@ -2782,33 +3054,33 @@ rather than absolute trusted time.
 
 ## 16. Storage
 
-### 16.1 Client/Principal Storage
+### Principal Store
+Principals require two types of storage: resource and actions. 
 
-Cyphr distinguishes between several storage contexts. Clients are
-categorized as **thin**, **fat**, or **full**, based on storage capacity:
+Resources, such as keys
 
-**Thin clients** rely on services for state resolution and only the private key
-is essential. **Fat clients** store exhaustive auth history. **Full clients**
-store exhaustive auth history and action data for offline verification and
-maximum sovereignty.
+### 16.1 Client/Principal Storage // TODO
 
-Storing PG, public keys, and Tip is good practice to store locally,
-but could be retrieved from a service.
+Cyphr distinguishes between several storage contexts. Clients are categorized as
+**thin**, **fat**, or **full**. Thin clients rely on services for state
+resolution and only store PR. Fat clients store exhaustive auth history. Full
+clients store exhaustive commit chain, actions, and resources for offline
+verification.  Additionally, client may store external or local principals. 
 
 **Thin Client** (browser, IoT):
 
 | Data         | Required | Notes                |
 | ------------ | -------- | -------------------- |
-| Private keys | ✓        | Never transmitted    |
+| PR           | ✓        | Retreivale  |
 | Transactions | Optional | Full audit trail     |
-| Actions      | Optional | Application-specific |
+| Data Actions | Optional | Application-specific |
 
 **Fat Client** (desktop app, trusted device):
 
 | Data         | Required | Notes                |
 | ------------ | -------- | -------------------- |
 | Private keys | ✓        | Never transmitted    |
-| Transactions | ✓        | Full audit trail     |
+| Commit Chain | ✓        | Full audit trail     |
 | Actions      | Optional | Application-specific |
 
 **Full Client** (desktop app, trusted device):
@@ -2818,6 +3090,7 @@ but could be retrieved from a service.
 | Private keys | ✓        | Never transmitted    |
 | Transactions | ✓        | Full audit trail     |
 | Actions      | ✓        | Application-specific |
+| Resources    
 
 ### 16.2 Third-Party Service Storage
 
@@ -2869,9 +3142,53 @@ authentication transactions; all others are data actions.
 Past entries are not modified (unless invalid fork or data action removal) and
 each line is a complete, signed Coz message.
 
-### 16.3.2 Blob Store
+### 16.3.2 Two-Tier Decoupled Storage (Non-Normative)
 
-#### 16.3.3 Storage Capabilities
+Implementations SHOULD separate storage into two independent layers:
+
+**Layer 0 — Blob Store (Content-Addressed):**
+
+A key-value store mapping content digests to raw Coz wire-format bytes.
+Algorithm-agnostic: the BlobStore computes its own digest (e.g., SHA-256) for
+addressing, independent of the principal's hash algorithm set. Blobs are
+immutable once stored.
+
+**Layer 1 — Indexer (Relational):**
+
+A relational index storing principal metadata, commit chain topology,
+transaction history, and digest mappings. The indexer is fully rebuildable from
+the BlobStore — if the index is lost or corrupted, it can be reconstructed by
+replaying all blobs through the protocol engine.
+
+**Separation of Concerns:**
+
+The protocol engine (Principal, CommitScope, state computation) operates
+exclusively on in-memory types and MUST NOT have any awareness of storage
+backends. Storage layers load data and hand it to the protocol engine for
+validation; the protocol engine returns validated state which storage layers then
+persist. This is the **validate-first write path**: all cryptographic
+verification (signatures, state chains, Merkle roots) occurs in-memory before
+any persistence. Failure during write is recoverable via re-indexing.
+
+**Digest Index:**
+
+A generalized digest index maps tagged digest variants (PG, PR, AR, KR, etc.) to
+their corresponding entities, enabling O(1) lookup by any algorithm variant. This
+supports the multihash nature of the protocol — a single principal state has
+digests under multiple hash algorithms, and any of them may be used as a lookup
+key.
+
+#### 16.3.3 Per-Principal Sharding
+
+Implementations SHOULD support per-principal sharding from the outset. Each
+principal's data (blobs, index entries) is partitioned by PG. This enables
+horizontal scaling of storage backends and simplifies access control — a
+principal's data is self-contained within its shard.
+
+Inter-principal sharding (partitioning across multiple storage nodes) is
+deferred but the per-principal model lays the foundation for it.
+
+#### 16.3.4 Storage Capabilities
 
 Storage backends provide:
 
@@ -2892,6 +3209,31 @@ as regulatory record-keeping or forensic analysis. This may be implemented as a
 truly append only data structure or as a mutatable data structure, where events
 like forks, requiring chain selection, may be deleted (mutatable) or marked as
 discarded (immutable implementation).
+
+#### Private Keys: Storage and generation (Non-Normative)
+
+Although outside the scope of this document, protecting private keys is vital to
+the security of a principal.
+
+ - Hardware security keys / HSMs 
+ - OS secure enclaves or keychains
+ - Air-gapped devices
+ - Paper wallets, metal wallets, using QR codes or simply strings of characters.
+ - Passphrase-derived, determinism like key derivation function (KDF)
+ - Browser extension
+ - Offline private keys may be generated using dice and base conversion. For
+   example, a 20 sided dice (a DND dice) requires 59 rolls to produce 256 bits
+   of entropy.
+   - https://convert.zamicol.com/#?inAlph=DND%253A20&in=1819190414060415190112200120041505091204141705172014080316031905161612150503091407170902031407021416150520010109061215&outAlph=Hex
+   which may then be directly input into Ed25519:
+   https://cyphr.me/ed25519_tool/ed.html#?alg_type=Msg&msg_enc=Text&msg=Hello%20World!&key_enc=Hex&seed=725AE4E429FBA91F67B8024433E91BEF09D9F80F5F36C0B91747BB67BB32B2BA&key=E021546C9EC654675E3409A99B2B5BEEB4C72660EAF048FEA5AD8B786A1B731E&sig=CC48B607C363B6CAC3CB03945032A4E04164E1F2D352D7E908388C6B93EA936C92268B127C59EDBB49D3590953026E3F6D090461EE2A0AAB4D71918985601406&verify
+   - The web pages may be loaded via usb drive to an air gapped machine for
+     calculation.
+
+// TODO
+
+---
+
 
 ## 17. Authentication
 
@@ -2929,14 +3271,14 @@ To authenticate to a service:
 
 ```json5
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
-    typ: "cyphr.me/cyphr/auth/login",
-    challenge: "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8", // 256 bit nonce from service.
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+    "typ": "cyphr.me/cyphr/auth/login",
+    "challenge": "T0T1HFBxNFbhjLC10sJTuzrdSJz060qIme1DKytDML8" // 256 bit nonce from service.
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -2956,7 +3298,7 @@ To authenticate to a service:
   "pay": {
     "alg": "ES256",
     "now": 1623132000,
-    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg,
+    "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "typ": "<authority>/<service>/auth/login"
   },
   "sig": "<b64ut>"
@@ -2985,18 +3327,18 @@ After successful PoP, the service issues a bearer token:
 - Contains: principal PG, authorized permissions, expiry
 - Used for subsequent requests (avoids re-signing each request)
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<service key tmb>",
-    typ: "<service>/auth/token",
-    pr: "<principal genesis>",
-    exp: 1623132000,
-    perms: ["read", "write"],
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<service key tmb>",
+    "typ": "<service>/auth/token",
+    "pr": "<principal genesis>",
+    "exp": 1623132000,
+    "perms": ["read", "write"]
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -3104,17 +3446,17 @@ Verification rules for the jump transaction:
 
 ### 18.2 Example State Jump Transaction
 
-```json5
+```json
 {
-  pay: {
-    alg: "ES256",
-    now: 1623132000,
-    tmb: "<active key tmb from anchor>",
-    typ: "cyphr.me/cyphr/principal/state_jump/create",
-    pre: "<old trust anchor PR>",
-    jump_to_ps: "<tip PR>",
+  "pay": {
+    "alg": "ES256",
+    "now": 1623132000,
+    "tmb": "<active key tmb from anchor>",
+    "typ": "cyphr.me/cyphr/principal/state_jump/create",
+    "pre": "<old trust anchor PR>",
+    "jump_to_ps": "<tip PR>"
   },
-  sig: "<b64ut>",
+  "sig": "<b64ut>"
 }
 ```
 
@@ -3174,18 +3516,20 @@ _responses_ (HTTP codes, messages, retry behavior) are implementation-defined.
 
 ### 19.1 Transaction Errors
 
-| Error               | Condition                                        | Level |
-| ------------------- | ------------------------------------------------ | ----- |
-| `INVALID_SIGNATURE` | Signature does not verify against claimed key    | All   |
-| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in current KR | All   |
-| `UNKNOWN_ALG`       | Client doesn't know or support the algorithm     | All   |
-| `TIMESTAMP_PAST`    | `now` < latest known PR timestamp                | All   |
-| `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                  | All   |
-| `MALFORMED_PAYLOAD` | Missing required fields for transaction type     | All   |
-| `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                    | All   |
-| `INVALID_PRIOR`     | `pre` does not match current AR                  | 2+    |
-| `DUPLICATE_KEY`     | `key/create` for key already in KR               | 3+    |
-| `THRESHOLD_NOT_MET` | Signing keys do not meet required weight         | 5+    |
+| Error               | Condition                                      | Level |
+| ------------------- | ----------------------------------------------  | ---- |
+| `INVALID_SIGNATURE` | Signature does not verify against claimed key   | All  |
+| `UNKNOWN_KEY`       | Referenced key (`tmb` or `id`) not in KR        | All  |
+| `UNKNOWN_ALG`       | Client doesn't know or support the algorithm    | All  |
+| `TRANSACTION_ORDER_UNKNOWN` | Unknown commit transaction order        | 3+   |
+| `COZ_REUSE`         | A coz was attempted to be reused                | 3+   |
+| `TIMESTAMP_PAST`    | `now` < PR timestamp or outside tolerance       | All  |
+| `TIMESTAMP_FUTURE`  | `now` > server time + tolerance                 | All  |
+| `MALFORMED_PAYLOAD` | Missing required fields for transaction type    | All  |
+| `KEY_REVOKED`       | Signing key has `rvk` ≤ `now`                   | All  |
+| `INVALID_PRIOR`     | `pre` does not match current AR                 | 2+   |
+| `DUPLICATE_KEY`     | `key/create` for key already in KR              | 3+   |
+| `THRESHOLD_NOT_MET` | Signing keys do not meet required weight        | 5+   |
 
 ### 19.2 Recovery Errors
 
@@ -3306,6 +3650,7 @@ Computed digests, where
 
 ### Cyphr Applications
 
+- Software Signing for Supply Chain Security
 - Cryptographically verifiable, internet-wide, web archive service.
 - Unstoppable, internet-wide user comments
 - "Bittorrent for social media".
@@ -3351,6 +3696,8 @@ should warn and appropriately and remove support for deprecated algorithms.
 - SSL/TLS
 - SSHSIG and signify (OpenBSD)
 - Secure Quick Reliable Login (SQRL) (https://www.grc.com/sqrl/sqrl.htm)
+- Snix (a nix related project) https://snix.dev/docs/components/castore/blobstore-protocol-/-composition
+- BLAKE3 https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf
 
 ### Appendix 3: See also
 
@@ -3358,29 +3705,54 @@ should warn and appropriately and remove support for deprecated algorithms.
 - Merkle-tree-based verifiable logs (A merkle tree where new nodes are added to only one side.)
 - Keybase
 - Protocol Labs (Multiformats)
+- Balloon: A Forward-Secure Append-Only Persistent Authenticated Data Structure - https://eprint.iacr.org/2015/007.pdf
 
-### Appendix 4: Exposition
+### Appendix 4: External Tools and Projects
 
-### Action
+ - O(logN) Hash Transitions: Algorithm-Independent Verification in Append-Only
+   Logs (EML): https://eml-paper.netlify.app
+   - Related: Certificate Transparency V2 9162
+   -  History Tree (Precursor to certificate transparency/MAL, from "Efficient
+   Data Structures for Tamper-Evident Logging", Crosby, Wallach)
+   https://static.usenix.org/event/sec09/tech/full_papers/crosby.pdf
+ - Fjall - Nosql key-value storage engine https://github.com/fjall-rs/fjall
+
+
+### Appendix 5: Exposition
+
+#### Action
 
 As stated, an action is an authorization to perform an operation; "action" is to
 perform a state change. An action's type is denoted by the `typ` field of the
 coz. For example, a `cyphr.me/comment/create` is colloquially named a "comment
 action".
 
-### Sharing Keys
+#### Sharing Keys
 
 Nothing in Cyphr stops various principals from sharing keys,
 as long as genesis does not result in the same PG. Any set of keys that has not
 been revoked may be used to create a new PG, this includes reusing keys from the
 source principal. The fork may declare new keys or reuse existing keys.
 
-### MALT as a modern transparency log
+#### RFC 9162 Merkle Append only Log (MAL) and Epoch Merkle Log (EML)
+
+A **MAL** (Merkle Append only Log) as defined by RFC 9162 is an ordered, append
+only (forward mutable), dense left filled, and unbalanced Merkle tree.  A more
+advanced, n-ary form is the Epoch Merkle Log (**EML**, [§2.2.11](#2211-eml)),
+which supports multiple hashes over distinct time frames (epochs) and supports
+promotion and collapse. (EML was previously referred to as NEML; the name was
+shortened since n-arity is inherent to EML, not a separate qualifier.)
+"Certificate Transparency Tree" is avoided as the datastructure is more
+generalized than certificate transparency.
 
 Implementations may choose to expose the commit tree (CT) via tiled static
 storage for efficiency.
 
-### Digest Labeling
+Although the specific MT datastructure may enforce various properties,
+properties as specified by this document should be enfored by the Cyphr client.
+(That itself may be enforced by the MT primitive or at the client level. 
+
+#### Digest Labeling
 
 When referred to alone outside a coz, good practice for digest identifiers is
 prepending with the Coz algorithm identifier, e.g. `SHA256:<b64ut_value>`.
@@ -3389,7 +3761,7 @@ supported hashing algorithm. Systems may leverage previously identified digests
 from being misinterpreted or reused; explicit algorithm prefixes may not always
 be strictly required in practice.
 
-### HTTP and `typ`: Unified Intent + Resource + Verb Descriptor
+#### HTTP and `typ`: Unified Intent + Resource + Verb Descriptor
 
 Cyphr's `typ` is an alternative to HTTP semantics. `typ` is not just a
 naming convention, it's a deliberate design choice that rethinks invoking
@@ -3432,96 +3804,22 @@ verifiable forever, not just during a session.
 
 ### Where Cyphr Diverges from Being a Full HTTP Replacement
 
-Cyphr's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers an **alternative interaction model**:
+Cyphr's `typ` + Coz model isn't a wire replacement for HTTP. Instead it offers
+an alternative interaction model:
 
-| Aspect           | HTTP                       | Cyphr `typ` + Coz Model                                 |
-| ---------------- | -------------------------- | ------------------------------------------------------- |
-| Addressing       | URL + method               | `typ` string (authority + noun/verb)                    |
-| Authentication   | Headers / tokens / cookies | Embedded PoP (signature over the whole intent)          |
-| State management | Server-side sessions       | Client + service mutual sync of auth chain              |
-| Mutability model | CRUD on resources          | Append-only transactions + signed actions               |
-| Verifiability    | Mostly server-trusted      | Anyone can verify any action historically               |
-| Transport        | Usually TLS + HTTP         | Can be sent any way (TLS, HTTP, IPFS, email, gossip...) |
-| Response model   | Status + body              | Tip, another signed Coz                                 |
+| Aspect           | Cyphr Type Model                     | HTTP               |
+|------------------|--------------------------------------|--------------------|
+| Addressing       | `typ` string (authority + noun/verb) | URL + method       |
+| Authentication   | Embedded PoP (signature over intent) | Tokens / cookies   |
+| State management | Mutual synchronization               | Server sessions    |
+| Mutability model | Append-only signed actions           | CRUD on resources  |
+| Verifiability    | Anyone can verify actions            | Trusted Server     |
+| Transport        | Any way (TLS, HTTP, IPFS, gossip...) | TLS + HTTP         |
+| Response model   | Tip, another signed Coz              | Status + body      |
 
 ---
 
-## Ownership
 
-In Cyphr, transferable is cryptographically implementable via key change,
-but recording such changes in a ledger potentially results in human unreadable
-transactions. Also, authorities may prohibit key updates to keys outside of the
-principal, making transfer impossible.
-
-Transfer ambiguity: For example, a comment could be updated to be signed by a
-new key, but that would be ambiguous: was is a transfer or just as a result of a
-key update? For that reason, updates with new keys outside of principal should
-fail and transfer explicitly used for transfer.
-
-### Self-Sovereign Philosophy
-
-#### Self-Ownership Philosophy in a Cryptographic System
-
-There are three main categories of ownership:
-
-1. Possess the private keys (Private Key Possession)
-2. Possess the data (Data Possession)
-3. Right to mutate state: `create`, `delete`, `update` (Right)
-
-These three can be summarized as three points: **Keys, Data, Right**. The
-protocol seeks to maximize user ownership across all three dimensions:
-
-Keys → Self-custody, multi-device, revocation, recovery paths.
-Data → Portable exports, optional self-hosting, minimal service lock-in (via MSS).
-Rights → AAA replaces bearer tokens; verifiable authorship/actions without centralized session state.
-
-**Private Key Possession** is important in cryptography. Cryptographic systems
-are implemented using key possession. (Not your keys, not your crypto.)
-
-**Data Possession** - For non-encrypted data: Possession generally equates to
-ownership, as anyone with access can read/copy/use it.
-For encrypted data: Ownership is tied to possession of decryption keys (which
-may overlap with Private Key Possession). Encrypted data hosted by third parties
-(e.g., for availability/security) does not imply loss of ownership if keys
-remain user-controlled.
-
-**Right** is relevant for authorship (comments, user history) and where
-ownership is tracked on a ledger (e.g., bitcoin). Right is proven in a
-cryptographic system using private keys and PoP.
-
-Cyphr seeks to help users own their keys, data, and rights.
-
-### Natural Ownership
-
-The originating Principal is the **natural owner** of its actions. For example,
-the principal that creates a comment `comment/create` is the natural owner of
-that comment, and has exclusive rights for future mutations: `comment/update`,
-`comment/delete`, and `comment/upsert`. Systems implementing AAA must give
-special attention to items with natural ownership properties.
-
-#### Ownership Right Semantics
-
-TODO Perhaps:
-ownership is proven by the latest valid transfer chain. Ownership = latest valid transfer chain
-
-`typ`s:
-
-```
-cyphr.me/ownership/claim/create
-cyphr.me/ownership/transfer
-ownership/transfer-ack
-```
-
-TODO multiownership
-
-Perhaps an item itself can be represented as a Principal. Abstract things themselves have a chain.
-
-"smart contracts" are supported by level 5+
-Verifiable without full blockchain, Off-chain data friendly
-No native "minting fee" or gas
-No miner, validator race, or fee market
-Revocable/revocable keys
-Soulbound-like: set transferable=false
 
 ---
 
@@ -3542,15 +3840,16 @@ Soulbound-like: set transferable=false
 - DO NOT USE EM DASH OR DASH. Use period, comma, semi-colon, and other sentence
   construction appropriately.
 - DO NOT USE uppercase MAY, SHOULD, or MUST. This isn't an IETF RFC.
-- JSON example should be in valid json, not json5 **EXCEPT** for examples with
+- JSON example should be in valid JSON, not JSON5 **EXCEPT** for examples with
   JSON comments. ONLY for examples with JSON comments should be markdown JSON5,
   all other examples should be markdown JSON. (Use `json5` on the markdown so
-  that the comments are valid.)
+  that the comments are valid.)  JSON5 examples, other than comments, should be
+  valid JSON.  NO trailing commas, NO omitting quotes on JSON key values!  THIS
+  IS VERY IMPORTANT.
 
 # TODO
 
-- Tombstones
-- Ownership
+- Ownership.md
 - Define Opaque reveal authorization semantics better
 - ZAMI finish Login
 - In JSON, State is upper case, plural is lower case.
@@ -3561,5 +3860,15 @@ Soulbound-like: set transferable=false
   - hash bypass
   - Degenerate case (Less preferred by related: Degenerate Identity)
   - Singleton Bypass
+  - Singleton promotion
 - Discuss general MR algo for JSON, conform embedding with objects/array to that
   MR structure, especially declarative.
+- I think we can remove pinning
+- Historical Mode - past hashing algos that are no longer supported, the trust
+  of the payloads should not depend upon the hashes themselves. This property should likely be generic anyway, so 
+- DDOS and not providing Meta
+- Define bounded sizes (e.g. a node cannot be larger than 1 MB for clients,
+  helps protect)
+- high precision time `now`
+
+

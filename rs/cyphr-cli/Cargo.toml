@@ -21,11 +21,15 @@ base64ct.workspace   = true
 clap.workspace       = true
 coz.workspace        = true
 cyphr                = { path = "../cyphr", version = "0.1.0" }
+cyphr-blob-fjall     = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-index-fjall    = { path = "../cyphr-index-fjall", version = "0.1.0" }
 cyphr-storage        = { path = "../cyphr-storage", version = "0.1.0" }
+fjall.workspace      = true
 indexmap             = { version = "2", features = ["serde"] }
 serde.workspace      = true
 serde_json.workspace = true
 thiserror.workspace  = true
+tokio.workspace      = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -70,9 +70,9 @@ func TestLoadIntentDir(t *testing.T) {
 		t.Fatalf("LoadIntentDir failed: %v", err)
 	}
 
-	// Should load all 5 intent files
-	if len(intents) != 5 {
-		t.Errorf("expected 5 intent files, got %d", len(intents))
+	// Should load all 6 intent files
+	if len(intents) != 6 {
+		t.Errorf("expected 6 intent files, got %d", len(intents))
 	}
 }
 

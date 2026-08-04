@@ -1,6 +1,9 @@
 {
   "name": "action_revoked_key_fails",
-  "principal": ["golden", "key_a"],
+  "principal": [
+    "golden",
+    "key_a"
+  ],
   "setup": {
     "revoke_key": "key_a",
     "revoke_at": 1699999999
@@ -38,7 +41,9 @@
       "pr": ""
     }
   ],
-  "digests": ["qQGn6-nt69nu8k67DpNSA7tEOUtsG61mDlLG_0OAyOc"],
+  "digests": [
+    "qQGn6-nt69nu8k67DpNSA7tEOUtsG61mDlLG_0OAyOc"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
@@ -47,6 +52,8 @@
     "pr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "sr": "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI",
     "pg": "",
-    "error": "KeyRevoked"
+    "error": "KeyRevoked",
+    "deleted": false,
+    "frozen": false
   }
 }

@@ -1,6 +1,8 @@
 {
   "name": "duplicate_key_fails",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -16,11 +18,10 @@
             "alg": "ES256",
             "id": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "now": 1700000000,
-            "pre": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
             "typ": "cyphr.me/cyphr/key/create"
           },
-          "sig": "gjW-8-_glVu4iDLn6Sz192OZSg8sNKhfZkBDc7m2vgUPbNh5Hvqyo-64FT6OR897hjdZkFZXYaT8nldfXvGGkQ"
+          "sig": "-FCNYXlZfktL0Ap8gLRbKUoYxm2H_mP1QH5sHf9eRE5OOEnMb8WO4H1c_ikF4cLrc2Rwxz9h4XysrHLCrArSwA"
         }
       ],
       "keys": [
@@ -36,7 +37,9 @@
       "pr": ""
     }
   ],
-  "digests": ["a4cycuF4IjBJsrIXlTgSuArYp02KYooSt7pCRmew9II"],
+  "digests": [
+    "bw1uwrvH0G_YM6DftXUREAuyCpmgJagKRTHjmBMn10I"
+  ],
   "expected": {
     "key_count": 1,
     "level": 1,
@@ -45,6 +48,8 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "DuplicateKey"
+    "error": "DuplicateKey",
+    "deleted": false,
+    "frozen": false
   }
 }

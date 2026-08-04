@@ -5,7 +5,9 @@ use crate::parsed_coz::VerifiedCoz;
 #[derive(Debug, Clone)]
 pub struct Transaction(pub Vec<VerifiedCoz>);
 
-/// The commit transaction is a specialized sequence of cozies containing the finality marker.
-/// The commit transaction MUST be the exact last transaction in the commit.
-#[derive(Debug, Clone)]
-pub struct CommitTransaction(pub Vec<VerifiedCoz>);
+impl Transaction {
+    /// Returns true if this transaction contains a commit finalizer cozy.
+    pub fn is_commit(&self) -> bool {
+        self.0.iter().any(|cz| cz.arrow().is_some())
+    }
+}

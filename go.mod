@@ -8,6 +8,8 @@ require github.com/cyphrme/coz v1.0.0
 
 require github.com/pelletier/go-toml/v2 v2.2.4
 
+require github.com/zamicol/gitversion v0.1.0 // indirect
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/cyphrme/malt v0.1.0

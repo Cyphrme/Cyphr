@@ -4,19 +4,21 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
+use cyphr::StateDigest;
 use cyphr_storage::{CommitEntry, Genesis, load_principal_from_commits};
 
-use super::common::{extract_genesis_from_commits, parse_principal_genesis, parse_store};
+use super::common::{
+    block_on, extract_genesis_from_commits, get_commits_from_engine, get_principal_id, parse_store,
+    save_principal_to_engine,
+};
 use crate::keystore::JsonKeyStore;
 use crate::{Cli, Error, OutputFormat};
 
 /// Run the export command.
 pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
-    let store = parse_store(&cli.store)?;
-    let pr = parse_principal_genesis(identity)?;
-
+    let store = parse_store(cli)?;
     // Get commits from storage
-    let commits = store.get_commits(&pr)?;
+    let commits = get_commits_from_engine(&store, identity)?;
 
     if commits.is_empty() {
         return Err(Error::Storage(
@@ -56,7 +58,7 @@ pub fn export(cli: &Cli, identity: &str, output: &Path) -> crate::Result<()> {
 /// Run the import command.
 pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
     let keystore = JsonKeyStore::open(&cli.keystore)?;
-    let store = parse_store(&cli.store)?;
+    let store = parse_store(cli)?;
 
     // Read commits from JSONL file
     let file = File::open(input)?;
@@ -82,49 +84,49 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
 
     // Verify by loading the principal (this replays and verifies all cozies)
     let principal = load_principal_from_commits(genesis.clone(), &commits)?;
-    // For Level 2 identities (no PR established), use the genesis thumbprint
-    let pr = match principal.pg() {
-        Some(pr) => pr.clone(),
+    // For Level 2 identities (no PG established), use the genesis thumbprint
+    let pg = match principal.pg() {
+        Some(pg) => pg.clone(),
         None => match &genesis {
-            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec()),
+            Genesis::Implicit(k) => cyphr::PrincipalGenesis::from_bytes(k.tmb.as_bytes().to_vec())?,
             Genesis::Explicit(_) => {
                 return Err(Error::Storage(
-                    "explicit genesis must establish a PR".into(),
+                    "explicit genesis must establish a PG".into(),
                 ));
             },
         },
     };
 
     // Check if identity already exists in storage
-    let existing = store.get_commits(&pr).unwrap_or_default();
-    if !existing.is_empty() {
+    let pg_id = get_principal_id(&pg)?;
+    let tip = block_on(async { store.get_tip(&pg_id).await })?
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    if tip.is_some() {
         use base64ct::{Base64UrlUnpadded, Encoding};
-        let pr_b64 = pr
+        let pg_b64 = pg
             .as_multihash()
             .first_variant()
             .map(Base64UrlUnpadded::encode_string)
-            .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+            .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
         return Err(Error::Storage(format!(
             "identity {} already exists in storage",
-            pr_b64
+            pg_b64
         )));
     }
 
     // Store commits
-    for commit in &commits {
-        store.append_commit(&pr, commit)?;
-    }
+    save_principal_to_engine(&store, &keystore, &principal)?;
 
     match cli.output {
         OutputFormat::Json => {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pr_b64 = pr
+            let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
             let result = serde_json::json!({
-                "identity": pr_b64,
+                "identity": pg_b64,
                 "input": input.display().to_string(),
                 "commits": commits.len(),
                 "verified": true,
@@ -133,13 +135,13 @@ pub fn import(cli: &Cli, input: &Path) -> crate::Result<()> {
         },
         OutputFormat::Table => {
             use coz::base64ct::{Base64UrlUnpadded, Encoding};
-            let pr_b64 = pr
+            let pg_b64 = pg
                 .as_multihash()
                 .first_variant()
                 .map(Base64UrlUnpadded::encode_string)
-                .map_err(|e| Error::Storage(format!("PR empty: {e}")))?;
+                .map_err(|e| Error::Storage(format!("PG empty: {e}")))?;
             println!("Imported identity from {}", input.display());
-            println!("  identity: {}", pr_b64);
+            println!("  identity: {}", pg_b64);
             println!("  commits: {}", commits.len());
             println!("  verified: OK");
         },

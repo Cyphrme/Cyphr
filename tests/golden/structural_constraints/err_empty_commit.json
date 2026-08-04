@@ -1,6 +1,8 @@
 {
   "name": "err_empty_commit",
-  "principal": ["golden"],
+  "principal": [
+    "golden"
+  ],
   "genesis_keys": [
     {
       "alg": "ES256",
@@ -27,6 +29,8 @@
     "pr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "sr": "SHA-256:U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
     "pg": "",
-    "error": "[commit-one-or-more]"
+    "error": "[commit-one-or-more]",
+    "deleted": false,
+    "frozen": false
   }
 }

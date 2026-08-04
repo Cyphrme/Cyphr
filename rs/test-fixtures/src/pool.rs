@@ -59,11 +59,14 @@ impl PoolKey {
                 }
             })?;
 
-        coz::compute_thumbprint_for_alg(&self.alg, &pub_bytes).ok_or_else(|| {
-            Error::PoolValidation {
-                message: format!("key '{}': unsupported algorithm '{}'", self.name, self.alg),
-            }
-        })
+        if let Some(tmb) = coz::compute_thumbprint_for_alg(&self.alg, &pub_bytes) {
+            Ok(tmb)
+        } else {
+            // Fallback for unsupported algorithms (e.g., RS256 for error testing)
+            // so we can still generate test fixtures. The transaction will fail
+            // with UnsupportedAlgorithm during replay.
+            Ok(coz::Thumbprint::from_bytes(pub_bytes))
+        }
     }
 
     /// Compute thumbprint as base64url string.
@@ -157,6 +160,16 @@ impl Pool {
         for key in &self.pool.key {
             if let Err(e) = key.compute_tmb() {
                 errors.push(e.to_string());
+            }
+        }
+
+        // Validate each key's algorithm is supported
+        for key in &self.pool.key {
+            if coz::Alg::from_str(&key.alg).is_none() {
+                errors.push(format!(
+                    "key '{}': unsupported algorithm: {}",
+                    key.name, key.alg
+                ));
             }
         }
 

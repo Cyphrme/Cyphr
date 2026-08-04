@@ -4,10 +4,9 @@
   Formal domain model of the Cyphr Principal, produced by the /model
   workflow in Apply mode against SPEC.md (Draft v0.1).
 
-  See: .agent/workflows/model.md for the full protocol specification.
-  See: .agent/personas/sdma.md for the applied modeling toolkit.
-  See: .agent/axioms/formal-foundations.md for the mathematical foundations.
-  See: .sketches/2026-02-13-spec-formal-model.md for the exploratory sketch.
+  Exploratory sketch (2026-02-13) that preceded this document is no longer
+  in the repository. The workflow/persona/axiom tooling this was produced
+  under is agent-harness configuration, not repository content.
 -->
 
 ## Domain Classification
@@ -22,7 +21,9 @@ unstated invariants in `SPEC.md` (Draft v0.1, 3182 lines).
 
 - **Evolving state with hidden variables** — a principal's internal state
   (key set, chain, data) is not fully observable; external parties see only
-  the Merkle root (PS).
+  the Merkle root (PR, Principal Root — SPEC.md's term; this document
+  previously used a fabricated "PS" abbreviation, corrected 2026-07-08 per
+  the naming-coherence finding that "PS" appears nowhere in SPEC.md).
 - **Multi-party protocols** — login, MSS synchronization, resync, and state
   jumping involve structured message exchange between clients, services, and
   witnesses.
@@ -314,12 +315,24 @@ This is the **converse** of standard bisimulation: equal observations imply
 behavioral equivalence (an observation-collapse, not an observation-
 preservation property). Promotion intentionally collapses distinct internal
 states into the same Merkle root. The observation functor is **not
-injective** — this is a privacy property by design, but it means PS alone
+injective** — this is a privacy property by design, but it means PR alone
 is insufficient to reconstruct internal state.
 
 ---
 
 ### 2. Session Type Protocols
+
+> [!NOTE]
+> **Login Error Taxonomy:** The error cases in the login session types below
+> (§2.1, §2.2) represent a design-phase proposal, not SPEC.md normative text.
+> SPEC.md §17.2 specifies only prose verification steps and §19 (Error Conditions)
+> does not enumerate login-specific errors. The actual implementation in
+> `rs/cyphr-server/src/auth/login.rs` uses a different taxonomy with distinct
+> variant names (Malformed, MissingField, NotALogin, AudienceMissing,
+> AudienceMismatch, InvalidSignature, KeyNotActive, PrincipalNotActive,
+> TimestampOutOfWindow, ChallengeInvalid), reflecting design choices made
+> during implementation. For authoritative error semantics, refer to the
+> implementation's `LoginError` enum.
 
 #### 2.1 Login (Challenge-Response)
 
@@ -486,7 +499,7 @@ The Principal Root is the genesis digest, preserved by all transitions
 ```
 
 Promotion collapses distinct internal states into the same observable.
-Privacy property — PS alone cannot reconstruct internal state.
+Privacy property — PR alone cannot reconstruct internal state.
 
 #### I6. Fork Detection is Local
 
@@ -597,7 +610,7 @@ Seven remediation patches were drafted (see sketch `CONNECT` section):
 - **I1** (pre-state auth) — testable by attempting mutations with keys
   added/removed in the same commit.
 - **I5** (observation congruence) — testable by constructing states with
-  different internals that produce the same PS.
+  different internals that produce the same PR.
 - **I6** (fork detection) — testable by presenting conflicting commits to
   witnesses with different observation histories.
 

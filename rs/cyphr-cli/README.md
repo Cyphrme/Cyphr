@@ -12,24 +12,48 @@ cargo install cyphr-cli
 
 ## Basic Usage
 
+### Generate a keypair
+
+```bash
+cyphr key generate --algo ES256 --tag my-key
+```
+
 ### Initialize a new Principal
 
 ```bash
-cyphr new --alg es256
+cyphr init --algo ES256
 ```
 
-This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and saves the state to your local storage directory.
+This generates a new ECDSA keypair, creates an implicit Level 1 Principal, and stores both the keypair and Principal state to your local storage directory.
 
-### Sign a payload
+### View Principal keys
 
 ```bash
-cyphr sign --payload '{"action":"login"}'
+cyphr key list --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
 ```
 
-### View Principal State
+### Add a key to a Principal
 
 ```bash
-cyphr status
+cyphr key add --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \
+             --signer KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
+```
+
+### Inspect Principal state
+
+```bash
+cyphr inspect --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc
+```
+
+### Export and import
+
+```bash
+# Export a principal to JSONL
+cyphr export --identity KPmtN3BqeOROzcuL4xfs86o9TPpba0ujA2scXzX2XBc \
+            --output backup.jsonl
+
+# Import a principal from JSONL
+cyphr import --input backup.jsonl
 ```
 
 For full documentation and all available commands, run:
@@ -37,6 +61,10 @@ For full documentation and all available commands, run:
 ```bash
 cyphr --help
 ```
+
+### Demo Script
+
+A complete working walkthrough is provided in [`demo.sh`](./demo.sh), demonstrating key generation, identity creation, key addition, revocation, and export/import operations.
 
 ## Documentation
 

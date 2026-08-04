@@ -1,0 +1,103 @@
+# Lifecycle transaction test vectors (SPEC §11 Close, §14.9 Freeze)
+#
+# These declare the target PRE/POST scenarios for the three lifecycle
+# transactions RED-tested at the parse boundary
+# (rs/cyphr/tests/lifecycle_transactions.rs) and implemented by N03:
+# principal/delete, freeze/create, freeze/delete.
+#
+# Unlike key/create, key/delete, etc., these transactions target the
+# signing principal's own PR rather than a distinct key, so `target`
+# (a key alias) is omitted here.
+
+# Test: principal/delete transitions Active -> Deleted (SPEC.md:1994-2013)
+[[test]]
+name      = "principal_delete_transitions_to_deleted"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/delete" },
+  ],
+]
+
+[test.expected]
+deleted   = true
+frozen    = false
+key_count = 1
+level     = 3
+
+# Test: freeze/create transitions Active -> Frozen (SPEC.md:2782-2801)
+[[test]]
+name      = "freeze_create_transitions_to_frozen"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/freeze/create" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = true
+key_count = 1
+level     = 3
+
+# Test: freeze/delete (Thaw) transitions Frozen -> Active (SPEC.md:2803-2818)
+[[test]]
+name      = "freeze_delete_thaws_to_active"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/freeze/create" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/freeze/delete" },
+  ],
+]
+
+[test.expected]
+deleted   = false
+frozen    = false
+key_count = 1
+level     = 3
+
+# Test: Deleted and Frozen are mutually exclusive (SPEC.md:1974-1978)
+# [no-both-deleted-and-frozen] — a principal that has signed
+# principal/delete can never also be Frozen. Per SPEC.md §11.4, a closed
+# (Deleted) principal permits no further transactions at all
+# ([no-transactions-on-deleted]), so the freeze/create commit below is
+# expected to be REJECTED once N03 implements both transactions, not
+# silently applied.
+[[test]]
+name      = "freeze_after_delete_is_rejected"
+principal = ["golden"]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000000, signer = "golden", typ = "cyphr.me/cyphr/principal/delete" },
+  ],
+]
+
+[[test.commit]]
+tx = [
+  [
+    { now = 1700000001, signer = "golden", typ = "cyphr.me/cyphr/freeze/create" },
+  ],
+]
+
+[test.expected]
+# freeze/create's own PRE check rejects a signer against an
+# already-Deleted principal (SPEC.md §11.4/§14.9.1); lifecycle_state()
+# stays Deleted, never becomes Frozen.
+error     = "AlreadyDeleted"
+key_count = 1
