@@ -627,6 +627,13 @@ participant that keeps another principal's state:
 > A **witness** is a client that keeps a copy of an external principal's state and
 > communicates state through gossip.
 
-A witness holds one copy and faces this same gap; what closes it is a party that holds
-more than one. Naming that requirement is this document's job. Designing that party is
-not.
+The gossip clause has to be answered rather than passed over: gossip is one of the two
+instances [the trust model](../trust-model.md#party-kinds) gives for the party that cures a
+monotonicity failure. What the model names, though, is a **collective** — a witness _quorum_
+or a gossip _protocol_ — and a participant in a gossip protocol is not the protocol. A
+single gossiping witness can receive information that leaves its view less stale, but it
+cannot detect that its own view _is_ stale: detecting staleness means comparing two views,
+and the comparison belongs to the protocol rather than to any client running it. So a
+witness is a participant in a cure rather than an instance of one, and what closes the gap
+is the party holding the comparison. Naming that requirement is this document's job.
+Designing that party is not.
