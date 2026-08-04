@@ -893,10 +893,13 @@ reading them here:
   and forgotten: no commit, no root movement, no index entry, no way to
   fetch it back — and a signed receipt attesting the unchanged tip anyway.
 - **No agreement about what a signature covers.** `/push` verifies over
-  the payload's recursively key-sorted form and `/auth/login` verifies
-  over the key order as sent. Two verification paths in one server
-  disagree, the divergence is stated nowhere else, and the failure it
-  produces is a bare `protocol: invalid signature`.
+  the payload's recursively key-sorted form. `/push` is the only endpoint
+  that canonicalizes before checking a signature — every other
+  signature-verifying path, `/auth/login`, naked `/revoke`, and the
+  witness-registration envelope among them, verifies over the key order
+  as sent. Hand-build a payload against one assumption and post it to a
+  path that holds the other, and the divergence is stated nowhere else:
+  the failure it produces is a bare `protocol: invalid signature`.
 - **No way to get a server's chain into the verifier that ships.**
   `cyphr tx verify` replays a local principal and re-derives its root, so
   the replay half is real; what is missing is the path in. `cyphr import`
