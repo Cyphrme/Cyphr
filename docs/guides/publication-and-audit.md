@@ -547,20 +547,28 @@ genesis key, where the root is a tree over all of them rather than a
 single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
-**Steps 4 and 5 have no portable implementation, and no shipped tool
-performs them.** Replaying a chain means running Cyphr's own commit
-validation, and the only implementation lives in this workspace's Rust
-crates. The CLI does not substitute for it. Converting the server's
-`/patch` response into the shape `cyphr import` reads, with the genesis
-key from the discovery hint supplied alongside, gets:
+**Steps 4 and 5 have no portable implementation, and what blocks them is
+getting the chain in, not replaying it.** Replay ships: `cyphr tx verify
+--identity=<pr>` loads a principal out of a local store, replays every
+commit through Cyphr's own validation — each signature checked against the
+keys active at that point — and compares the principal root it derives
+with the one the store recorded. That is step 4, running today, against a
+chain that is already local.
+
+Getting a server's chain to be local is the part with no route. Converting
+the server's `/patch` response into the shape `cyphr import` reads, with
+the genesis key from the discovery hint supplied alongside, gets:
 
 ```
 error: cannot determine genesis keys from storage
 ```
 
-There is no flag that feeds a genesis key in. And `import` does not
-round-trip `export` either — `cyphr export`'s own output for an ordinary
-two-key principal, imported into an empty store, gets
+`import` has two ways to find a genesis key — your local keystore, or key
+material embedded in the chain's first commit — and a server's chain
+offers neither, the same gap that breaks its own tip report. There is no
+flag that feeds a genesis key in. And `import`
+does not round-trip `export` either — `cyphr export`'s own output for an
+ordinary two-key principal, imported into an empty store, gets
 `error: protocol error: duplicate key`.
 
 So a watcher today has two honest options. Link `cyphr` and
@@ -885,10 +893,13 @@ reading them here:
   over the key order as sent. Two verification paths in one server disagree,
   the divergence is stated nowhere else, and the failure it produces is a
   bare `protocol: invalid signature`.
-- **No offline verifier you can run.** The six-step procedure exists in
-  full, as an integration test. `cyphr import` cannot replay a server's
-  chain (`cannot determine genesis keys from storage`) and cannot even
-  re-import `cyphr export`'s own output (`protocol error: duplicate key`).
+- **No way to get a server's chain into the verifier that ships.** `cyphr
+tx verify` replays a local principal and re-derives its root, so the
+  replay half is real; what is missing is the path in. `cyphr import`
+  cannot ingest a server's chain (`cannot determine genesis keys from
+storage`) and cannot even re-import `cyphr export`'s own output
+  (`protocol error: duplicate key`). The six steps end to end exist in
+  full only as an integration test.
 - **No reachable equivocation checking.** The predicate, the all-pairs
   sweep, and the evidence formatter are implemented and tested in
   `cyphr-server`'s library, with no route, no command, and no caller
