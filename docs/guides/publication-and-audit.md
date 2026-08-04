@@ -678,6 +678,15 @@ under their own key, both have to name the same principal and the same
 sequence, and they have to differ in `commit_id` or in any root:
 
 ```js
+function sameRoots(a, b) {
+  return (
+    a.pr === b.pr &&
+    a.sr === b.sr &&
+    a.ar === b.ar &&
+    (a.cr ?? "") === (b.cr ?? "")
+  );
+}
+
 function checkEquivocation(a, aPub, b, bPub) {
   const TIP = "cyphr-server/receipt/tip";
   if (a.pay.typ !== TIP || b.pay.typ !== TIP) return "WrongTyp";
@@ -687,12 +696,22 @@ function checkEquivocation(a, aPub, b, bPub) {
   if (a.pay.sequence !== b.pay.sequence) return "DifferentSequence";
   if (
     a.pay.commit_id === b.pay.commit_id &&
-    JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)
+    sameRoots(a.pay.roots, b.pay.roots)
   )
     return "IdenticalClaims";
   return "Proven";
 }
 ```
+
+Compare the roots one named field at a time. A whole-object comparison —
+`JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)` — is
+sensitive to the order the keys happen to sit in, so two honest reports
+that serialise `roots` differently come out `Proven`: an accusation
+against a server that did nothing. The server's own predicate compares
+four separately parsed values, which no serialisation order can disturb.
+`roots.cr` is an empty string on a principal with no data commit yet, and
+the `??` keeps an absent `cr` from reading as a difference against an
+empty one.
 
 `aPub` and `bPub` are the public keys those two receipts were signed with,
 established the way the previous section describes — from a replay of the
@@ -718,16 +737,22 @@ receipts either side of a key rotation are still two statements by the
 same server. Passing one key twice is the ordinary case, not the general
 one.
 
-Two comparisons in that sketch are looser than the version inside the
-server, and both matter if you are checking receipts from something other
-than a stock `cyphr-server`. It parses `sequence` from either a JSON
-number or a string of decimal digits before comparing, so `1` and `"1"`
-are the same position; the JavaScript above reads them as different, which
-would report `DifferentSequence` on a genuine conflict. And it decodes
+Two comparisons in that sketch are still looser than the version inside
+the server, and they fail in opposite directions. The server parses
+`sequence` from either a JSON number or a string of decimal digits, so `1`
+and `"1"` are one position; the JavaScript reads them as different and
+returns `DifferentSequence` on a genuine conflict. The server also decodes
 each digest to bytes before comparing, so two spellings of one digest
-cannot read as a difference; comparing the strings works only because a
-stock server emits one canonical spelling. Tighten both if you accept
-reports from a source you did not write.
+cannot read as a difference; the JavaScript compares the strings, and two
+spellings of one root come out `Proven`.
+
+Those two costs are not the same. A missed conflict leaves you where you
+started. A false `Proven` is an accusation you publish about a server that
+never equivocated, which any careful reader can take apart — and which
+costs you the credit you need the next time you are right. String
+comparison holds only because a stock server emits one canonical spelling
+of every digest. Decode before comparing, and accept both spellings of
+`sequence`, if you take reports from a source you did not write.
 
 There is a Rust implementation of this predicate, plus an all-pairs sweep
 across a set of reports and a formatter that renders the conflicting pair
