@@ -163,10 +163,12 @@ are looking at the other numbering — do not "fix" either to match the other.
 ### Row-1 claims
 
 A **Row-1 claim** occupies cell 1: determined, certifiable, and monotone. It names an
-evaluator and no party. One self-contained certificate serves forever, offline, with no
-coordination between anyone — that is what all three axes holding buys. "Row-1 claim" is
-this project's name for the position; the source's verdict word for that cell is
-**verifiable**.
+evaluator and no party. In the source's words, "one self-contained certificate serves
+forever, offline, with no coordination between anyone" — that is what all three axes
+holding buys. The source names the position too: "Row 1 is inclusion" in its prose, and
+its Lean development heads that cell "Row 1 — (D, C, M), the verifiable cell", with
+**verifiable** as the verdict word. Only the hyphenated compound "Row-1 claim" is this
+project's.
 
 A Row-1 claim left undischarged is **indefensible**. That word is this project's coinage
 rather than the source's, and it is precise rather than rhetorical. Every other cell buys
@@ -228,11 +230,13 @@ repository's own server specifications use `attestor` for a keyed, bootstrapped 
 tier that signs receipts (`docs/specs/server-identity.md`, `docs/specs/receipts.md`) — a
 role name, not a cure name. The industry sense (RATS, TPM, SPIFFE) means evidence a system
 produces about itself, and that sense is not the opposite of the cure name: those
-frameworks address the _same_ failure. The source names them for exactly that reason,
+frameworks address the _same_ failure. The source makes that point over a list of its
+own — SLSA, in-toto, C2PA, PROV-DM and RFC 9334, the last being the RATS architecture —
 observing that "provenance and attestation frameworks exist precisely because genuineness
-is not recoverable from an artifact's bytes alone." What differs is the means. Industry
-attestation produces evidence another party can re-run; the cure-name attestor's word
-cannot be re-run, and that is what makes it trust rather than evidence. Two adjacent
+is not recoverable from an artifact's bytes alone." TPM and SPIFFE are this repository's
+own examples of the same sense; the source does not name them. What differs is the
+means. Industry attestation produces evidence another party can re-run; the cure-name
+attestor's word cannot be re-run, and that is what makes it trust rather than evidence. Two adjacent
 things doing similar work under one word are harder to keep apart than two opposite ones,
 which is why this collision is the dangerous kind.
 
