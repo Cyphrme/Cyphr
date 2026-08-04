@@ -371,15 +371,21 @@ direction. The relying party is not merely under-informed; it is confidently wro
 its confidence is well-founded on everything it can see. Every signature verifies, every
 commit chains, the view is internally consistent. There is no error to handle.
 
-**What the party does when the answer is bad.** Co-located, the answer is already correct
-and the exposure is bounded by the token: her session on the lost device survives at most
-fifteen minutes past the revocation, because there is no revocation list and expiry is the
-only invalidation (`token.rs:9-13`). This is checkable rather than argued —
+**What the party does when the answer is bad.** Co-located, the answer is already correct.
+That a revoked key stops signing in is checkable, and is checked:
 `revoked_key_refused_at_login_sibling_survives`
-(`rs/cyphr-server/tests/naked_revoke.rs:938`) asserts the whole sequence: the key signs in
+(`rs/cyphr-server/tests/naked_revoke.rs:939`) asserts the whole sequence — the key signs in
 first, so the baseline is empirical rather than assumed; the revocation is accepted; the
 key is then refused; and a sibling key of the same principal still signs in, so the
 refusal is scoped to the key and not the account.
+
+**The exposure bound is argued, not checked.** A session already issued survives at most one
+token lifetime past the revocation — fifteen minutes by default, expiry being the only
+invalidation (`token.rs:9-13`, `:19-24`). That is read from the code, not exercised:
+`verify_token` (`rs/cyphr-server/src/auth/token.rs:125-149`) checks the signature, `typ` and
+`exp` and nothing else, never reloading the principal or consulting the death-set, and no
+test issues a token and verifies it across a revocation. The security-relevant half of this
+paragraph is the un-evaluated half.
 
 Separated, there is no such bound. The stale view never expires on its own, the fifteen
 minutes restart on every fresh sign-in with the lost key, and the correct behaviour — the
@@ -390,14 +396,20 @@ event that has been handled.
 ## Requirements
 
 Each is traceable to a row of [the claim table](#the-claim-table). Requirements in the
-first group are satisfied by the relying party in this repository and name the test that
-closes them. Requirements in the second group are satisfied by nothing here.
+first group are satisfied by the relying party in this repository. The binding to a test
+runs the other way round: a requirement never names a test, and a `docket:` marker comment
+at the test names the requirement. Requirements in the second group are satisfied by
+nothing here.
 
 ### [signon-audience-binding]
 
 A relying party MUST verify that the audience named inside the signed login payload is its
 own identity, and MUST NOT take the audience from any unsigned transport detail. Traces to
-row 1.
+row 8. The MUST NOT clause is closed structurally rather than by a test, which is higher on
+the evaluator hierarchy than one: `parse_login` derives the audience from the signed
+payload's `typ` (`login.rs:171-173`) and compares it to the configured `server_audience`
+(`login.rs:177`), so no transport value reaches the comparison and there is no path a test
+could exercise.
 
 ```claim
 kind: requirement
