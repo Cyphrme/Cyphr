@@ -350,7 +350,9 @@ _She loses her device._
 **This section grounds the typing of rows 4, 5 and 6** — it is where determination and
 monotonicity are forced rather than chosen. At Level 3+ a designated recovery agent signs a
 `key/create` for her and the account survives, because _"the agent's authority derives from
-the `recovery/create` delegation"_ (`docs/specs/recovery.md:98-100`). Those mechanics are
+the `recovery/create` delegation"_ (`docs/specs/recovery.md:98-100`). Her identifier
+survives; at Level 1 it would not, and `SPEC.md` §14.1 says so — _"Note that sideband
+recovery results in a new Principal identity."_ The account continues. Those mechanics are
 here only to make the participant table's two recovery rows legible; they produce no
 requirements.
 
