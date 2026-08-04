@@ -61,7 +61,21 @@ source's words, it "is free everywhere."
 
 The factoring is a machine-checked biconditional rather than a taxonomy someone proposed,
 so there is no fourth failure mode waiting to be discovered
-(`trichotomy_ALL_iff`, `snapshot_characterization`).
+(`trichotomy_ALL_iff`, `snapshot_characterization`). Three qualifications travel with that
+result and are easy to lose:
+
+- **It holds above a floor.** The source grants two physical residuals rather than proving
+  them: that the commitment binds, and that the verifier being run is the one that was
+  specified. Everything below is stated above that floor.
+- **The polynomial stratum is not proved.** The biconditional is stated across a tower of
+  verifier strata and holds at the oracle and computable ones. At the polynomial stratum it
+  is an open conjecture — not weakly proved, not proved under extra hypotheses, but not
+  proved at all, with no predicate in the mechanization even encoding the time and size
+  bounds it would need.
+- **At the oracle stratum certifiability is vacuous.** Every record predicate satisfies it
+  there, so at that stratum the characterization collapses to determination alone. The
+  axis has effective content at the computable stratum, which is where a real verifier
+  lives.
 
 ### Determination (T1)
 
@@ -73,25 +87,35 @@ she says she is". No evaluator settles an undetermined claim at any effort, beca
 information it needs is not in the artifact being checked. The only remaining move is to
 name a party and rest on their word.
 
+Two things need keeping apart. That undetermined claims exist at all is unconditional and
+mechanized. That a _particular_ genuineness or binding claim is one of them is not: the
+source calls that reading "an explicit modeling hypothesis about the fiber over the
+record, never a theorem." Typing a claim as undetermined is an assumption a design makes
+and should state, not a result it inherits.
+
 ### Certifiability (T2)
 
-_Can a true instance be exhibited by a finite artifact a verifier checks?_
+_Is the record-only predicate semi-decidable at the verifier's computational power?_
 
-Asked of a determined claim. A certifiable claim admits a certificate: something finite
-that a verifier runs a bounded check against. A determined claim that is not certifiable
-is settled by the record as a matter of fact, with no artifact that demonstrates it to
+Asked of a determined claim. A certifiable claim admits a certificate: something a
+verifier runs a bounded check against. A determined claim that is not certifiable is
+settled by the record as a matter of fact, with no artifact that demonstrates it to
 someone who does not already hold the whole record.
+
+The axis is relative to a stratum, and the constraint it imposes is on what the verifier
+may consult — a committed value and a certificate, never the record or the context — not
+on how large that certificate may be. Size bounds belong to the polynomial stratum, which
+the source describes and does not mechanize.
 
 ### Monotonicity (T3)
 
 _Does the claim stay true as the record grows?_
 
 Asked of every claim, whether or not the earlier axes hold. A monotone claim, once true,
-is never refuted by an append. A non-monotone claim can be
-true when it is checked and false immediately after, with nothing in the record announcing
-the change — because the thing that changed it is the append the checker has not seen.
-"This is the current head" is the standard case: determined, certifiable, and refuted by
-the very next append.
+is never refuted by an append. A non-monotone claim can be true when it is checked and
+false immediately after, with nothing in the record announcing the change — because the
+thing that changed it is the append the checker has not seen. "This is the current head"
+is the standard case: determined, certifiable, and refuted by the very next append.
 
 ## Cells
 
@@ -244,14 +268,16 @@ than one.
 ## Curing a non-monotone claim
 
 A non-monotone claim admits **no offline, non-expiring, present-tense certificate** — not
-as a matter of expense but as a matter of impossibility. A design wants three properties
-at once, and at most two of them are available together:
+as a matter of expense but as a matter of impossibility
+(`eon_trilemma_impossibility`). A design wants three properties at once, and at most two
+of them are available together:
 
 - **Offline** — checked from the certificate alone, with no further interaction.
 - **Eternal** — that certificate never expiring.
 - **Now** — the claim being about the record's present state.
 
-Three cures follow, and the model names these three and no others.
+Three cures follow, one per property surrendered, and the source's cell table names these
+three:
 
 1. **A liveness holder** — a witness quorum or a gossip protocol: real ongoing
    coordination between parties, not a single signer. This gives up _offline_.
@@ -261,22 +287,38 @@ Three cures follow, and the model names these three and no others.
 3. **An accepted expiry** — a window past which the certificate is no longer treated as
    saying anything about the present. This gives up _eternal_.
 
-Each cure surrenders exactly one of the three properties, and there is no fourth property
-to surrender. That is why the list is complete rather than merely long: anything that
-looks like a fourth cure has either taken one of these three or claimed the corner the
-impossibility rules out.
+**The three are not symmetric.** Cures 2 and 3 land on corners the model realizes:
+offline-and-eternal, and offline-and-present. Cure 1 lands on the corner the model has no
+way to express, because it builds the offline constraint into the verifier's type — real
+coordination is a cure the model can point at but cannot itself model.
 
-The consequence for design is narrow and sharp. A single party signing a statement about
-the present, with no expiry and no scoping, produces an artifact shaped like the corner
-that does not exist. What makes such an artifact unsound is not that it fails to prove
-currency — nothing proves currency alone — but that it does not disclose which of the two
-reachable corners it actually occupies.
+**The list's completeness is an argument, not a theorem.** Each cure surrenders exactly
+one of the three properties and there is no fourth property to surrender, so anything
+resembling a fourth cure has either taken one of these three or claimed the corner the
+impossibility rules out. That reasoning is this document's. What the source proves is
+adjacent but different: it enumerates four _coordinate moves_ a repair can make —
+re-expressing the claim over a different alphabet, strengthening the verifier or the
+commitment, narrowing the claim, or admitting a new trusted fact — and grades their
+exhaustiveness explicitly as model-relative, accounting "for every repair this model's
+mechanized verdicts distinguish, not for every repair any model could admit."
+
+The consequence for design is one the source states outright: whether a guarantee needs a
+consensus mechanism is settled by where its claim sits, not by argument. A system with a
+nameable authority can serve eternal offline evidence and needs no coordination for it,
+while every "is this current" question is a coordination problem no artifact retires. So a
+single party signing a statement about the present, with no expiry and no scoping,
+produces an artifact shaped like the corner that does not exist. What makes such an
+artifact unsound is not that it fails to prove currency — nothing proves currency alone —
+but that it does not disclose which of the two reachable corners it actually occupies.
 
 ## What the model does not settle
 
-The model bounds the design space without choosing within it. It establishes that a
-currency claim needs one of the three cures and that a bare unscoped signature is not one
-of them. It does not establish:
+Two lists, answering different questions. The first is what the model declines to choose;
+the second is what it has not proved.
+
+**What it leaves to the engineer.** The model bounds the design space without choosing
+within it. It establishes that a currency claim needs one of the three cures and that a
+bare unscoped signature is not one of them. It does not establish:
 
 - **Which cure to adopt.** Real liveness, "as of t" scoping, and an accepted expiry are
   all legitimate under the model; choosing between them is an engineering decision.
@@ -284,13 +326,20 @@ of them. It does not establish:
   purpose.
 - **Anything below the axis level.** The model has no wire format, no protocol message,
   and no notion of a sequence number, a threshold, or a resync. It is a taxonomy over an
-  abstract append-only record.
+  append-only record and the structures built from it — including, in one of its worked
+  instances, a chain of key events whose genesis is a single binding commitment, which is
+  this repository's own subject matter. Of that instance the source proves that "the trust
+  surface of a chain is exactly the genesis binding and nothing else," and the chain it
+  mechanizes is structural, "with no hash function in it," so what the instance exercises
+  is the accounting rather than the cryptography.
 - **What a trust failure costs.** The model factors the residue by cause; it does not
   quantify what any particular failure is worth.
 
 Each of those sits with `SPEC.md` and with this repository's own designs.
 
-## Where this vocabulary is used
-
-`docs/architecture/path-a-sovereign-sign-on.md` types every claim crossing between
-participants on the sign-on path, using the axes, cells, and party kinds defined here.
+**What the source declares open.** These are not choices left to a designer but results
+the model does not have, in its own words: "the polynomial stratum, the source-integrity
+instance's frontier tightness results, and the floor's two residuals, which concern
+physical realization rather than the model." Nothing in this repository closes any of
+them. A design leaning on polynomial-time certifiability, or on the floor holding, is
+leaning on something unproved rather than on something settled.
