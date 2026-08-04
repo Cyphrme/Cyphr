@@ -703,8 +703,27 @@ asks about is never synced, and the first read after an upstream change
 pays the latency of the fetch.
 
 Each entry is validated in memory against the ordinary storage rules before
-anything is persisted, and a delta that fails is rejected whole rather than
-applied in part.
+anything is persisted, and each entry stands on its own: one that fails to
+decode or fails verification is skipped and counted, and the sync moves to
+the next. That is deliberate. Aborting the whole response on the first bad
+entry would make every genuine entry behind it permanently unreachable — a
+witness keeps no progress marker, so the next read would refetch the same
+response and fail on the same entry, forever.
+
+The consequence is that **a witness can end up partially applied.** Nothing
+unverifiable is ever persisted; every entry that lands passed the same
+chain checks a direct push would. But the witness can be left short of the
+authority's tip, and `GET /tip` serves whatever it holds without saying so.
+The counts are in the log, at `cyphr_server=debug`: a
+`witness sync applied entries` line carrying the principal alongside an
+`applied` and a `rejected` count.
+
+A non-zero `rejected` is the signal that this witness's answer is not the
+authority's whole story. With an `[authority_identity]` configured, the
+post-apply check compares what the witness now holds against what the
+authority signed for, and fails the sync when they differ — but the entries
+that already applied stay applied. Failing the sync does not roll anything
+back.
 
 ### Authenticating the upstream
 
@@ -938,7 +957,7 @@ For anything beyond liveness you are counting log lines. The signals worth
 extracting, given what is and is not emitted:
 
 - `server principal established` with its `pg`, at every keyed start. A `pg` that changed is the loudest possible alarm — every client that pinned you will refuse.
-- `witness sync failed` and `witness sync authenticated-channel check failed`, which are the only evidence a witness is serving stale or empty state.
+- `witness sync failed` and `witness sync authenticated-channel check failed`, which say a witness's last sync did not complete. They do not cover the quieter case: a sync that succeeded with entries skipped, which is `witness sync applied entries` with a non-zero `rejected` at `cyphr_server=debug`. Watch that one too if you care whether a witness is complete, not merely alive.
 - `configuration error:` on stderr with exit 1, which is a start that never happened.
 - Response status counts from `tower_http=debug`, which covers every status a route handler produces — including a witness's `403` write refusal. It does not cover the fences; see below.
 
