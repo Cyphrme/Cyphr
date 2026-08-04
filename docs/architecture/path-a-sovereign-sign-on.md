@@ -19,27 +19,28 @@ the normative source is `SPEC.md`.
 ## Participants
 
 Each is described by what it is trying to accomplish. The **kind** column is the party
-kind the trust model assigns: an **attestor** cures a determination failure and its word
-cannot be reproduced; a **watcher** cures a monotonicity failure by holding more than one
-view over time. A participant trusted for nothing carries no kind — its claims are
-discharged by an evaluator instead.
+kind [the trust model](../trust-model.md#party-kinds) assigns — a **cure name**, "what the
+model calls the party, as distinct from any role name a Cyphr specification gives a
+component": an **attestor** cures a determination failure and its word cannot be
+reproduced; a **watcher** cures a monotonicity failure by holding more than one view over
+time. A participant trusted for nothing carries no kind — its claims are discharged by an
+evaluator instead.
 
-| participant                | what it is trying to accomplish                                                                                                            | kind                                                                                                |
-| :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| **The person**             | Prove she controls her account without a password and without an identity provider standing between her and the site.                      | **attestor** at enrollment — see below                                                              |
-| **The relying party**      | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                           | none — it is the party doing the trusting                                                           |
-| **The record authority**   | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**     | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says.                  | **attestor** (cure-name sense)                                                                      |
-| **The recovery authority** | Designate who may act as a recovery agent, without acting itself.                                                                          | **attestor** (cure-name sense), delegating                                                          |
-| **The watcher**            | Establish that the view of a principal one party holds is not a stale or partial one. **No such participant exists in this system today.** | **watcher**                                                                                         |
+| participant                | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                           | kind                                                                                                |
+| :------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| **The person**             | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
+| **The relying party**      | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
+| **The record authority**   | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
+| **The recovery agent**     | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says.                                                                                                                                                                                                                                                                                                                 | **attestor** (cure-name sense)                                                                      |
+| **The recovery authority** | Hold permissions delegated to it as an external account, and exercise them: initiate a freeze, and sign the recovery transaction that links a new Principal Root to the original genesis. `SPEC.md` §14.2: _"**External Recovery** Where some permissions are delegated to an external account, a **Recovery Authority**."_ §14.6: the new PR is _"manually linked to the original PG by the Recovery Authority's recovery transaction."_ | **attestor** (cure-name sense)                                                                      |
+| **The watcher**            | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                             | **watcher**                                                                                         |
 
-"Attestor" is used in this document in exactly one sense: the party whose admission cures
-a determination failure and whose word cannot be re-run. Two other senses are in
-circulation and neither is meant here. This repository's server specifications use
-`attestor` for a **server tier** — a keyed, bootstrapped server that signs receipts — in
-`docs/specs/server-identity.md` and `docs/specs/receipts.md`. The industry sense (RATS,
-TPM, SPIFFE) means evidence a system produces about itself, which _is_ reproducible and
-is therefore the exact inverse of the sense used here.
+"Attestor" here is the cure name only — not the **server tier** this repository's own
+specifications call `attestor` (`docs/specs/server-identity.md`, `docs/specs/receipts.md`),
+and not the industry sense (RATS, TPM, SPIFFE), which addresses the _same_ failure by a
+different means, its evidence being re-runnable where an attestor's word is not, so
+["two adjacent things doing similar work under one word are harder to keep apart than two
+opposite ones, which is why this collision is the dangerous kind"](../trust-model.md#party-kinds).
 
 **Why the person is an attestor for her own account.** At enrollment nothing establishes
 that the human presenting a key is the human the account is meant for. The relying party
