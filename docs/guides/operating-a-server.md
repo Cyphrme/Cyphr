@@ -356,16 +356,24 @@ ERROR cyphr_server: server exited with error error=server principal storage: pro
 The message does not name the file, so this reads as a corrupt store when it
 is a missing sidecar. You can rebuild it by hand from two values: the public
 key, which is `pub_key` in your signing key file, and the genesis
-thumbprint, which is your PG with the `SHA-512:` prefix stripped. The server
-cannot tell you the second one — it will not start — so it has to come from
-something you kept: the `server principal established pg=…` line in an old
-log, or the value a client pinned.
+thumbprint, which is your PG with its hash-algorithm prefix stripped. The
+server cannot tell you the second one — it will not start — so it has to
+come from something you kept: the `server principal established pg=…` line
+in an old log, or the value a client pinned.
+
+The recipe below is written for an Ed25519 server key, which is why the
+prefix is `SHA-512:` and the `alg` field is `Ed25519`. Neither is a fixed
+value — both come from the key's own algorithm, sitting right there in
+`jq -r .alg signing-key.json` next to the `pub_key` line above. The prefix
+tracks that algorithm's hash: SHA-256 for ES256, SHA-384 for ES384, and
+SHA-512 for ES512 as well as Ed25519.
 
 ```sh
 TMB=Aq8NJWSDFrFsjmcxQjFAZz5hKv4mtQ3u_RU25jX3Vay9sD_FgGs114dOBu4CXU4GfwIhDJfERsYSITvsWFJqHw
 PUB=$(jq -r .pub_key signing-key.json)
-jq -n --arg pg "SHA-512:$TMB" --arg pub "$PUB" --arg tmb "$TMB" \
-  '{pg:$pg, genesis_key:{alg:"Ed25519", pub_key:$pub, tmb:$tmb, first_seen:0}}' \
+ALG=$(jq -r .alg signing-key.json)
+jq -n --arg pg "SHA-512:$TMB" --arg pub "$PUB" --arg tmb "$TMB" --arg alg "$ALG" \
+  '{pg:$pg, genesis_key:{alg:$alg, pub_key:$pub, tmb:$tmb, first_seen:0}}' \
   > data/server-principal.json
 ```
 
