@@ -220,7 +220,8 @@ naturally write them:
 Every error arrives in the envelope every response uses: the message and a
 `now` under `payload`, and an unsigned `statement`. Only the message
 differs between them, so this guide quotes the message with the path to
-it; the `404` and `500` bodies further down show one in full.
+it. The failed entity lookup and the failed tip report further down are
+shown whole.
 
 The same fields, signed over the alphabetically sorted form:
 
