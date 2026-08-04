@@ -161,9 +161,32 @@ not more.
 
 ## Part 2 — what breaks when the relying party is separated
 
-An ordinary deployment is a website that is not the record authority. It must obtain the
-principal's key set over a channel it does not control. Nothing in this repository
-implements this, and nothing tests it.
+Everything in this part follows from three lines
+(`rs/cyphr-server/src/auth/login.rs:433-441`):
+
+```rust
+let genesis = state
+    .engine
+    .resolve_genesis(&parsed.pr, &[])
+    .await
+    .map_err(map_load_error)?;
+let principal = state
+    .engine
+    .load_principal(&parsed.pr, genesis)
+    .await
+    .map_err(map_load_error)?;
+authorize_login(&parsed, &principal)?;
+```
+
+Those are local calls. Every check Part 1 describes that needs the principal's key set —
+activity, lifecycle, and the checks layered on them — reaches it through them, into
+storage the relying party owns. An ordinary deployment is a website that
+is not the record authority, and it is defined by the fact that it **cannot make that
+call**. It must obtain the same key set over a channel it does not control.
+
+This is the one thing the co-located relying party does that a separated one cannot, and
+every difference between the two is downstream of it. Nothing in this repository
+implements the separated case, and no test addresses it.
 
 ### How it would obtain the key set
 
@@ -311,9 +334,10 @@ and the exposure is bounded by the token: her session on the lost device survive
 fifteen minutes past the revocation, because there is no revocation list and expiry is the
 only invalidation (`token.rs:9-13`). This is checkable rather than argued —
 `revoked_key_refused_at_login_sibling_survives`
-(`rs/cyphr-server/tests/naked_revoke.rs:938`) establishes an empirical baseline that the
-key logs in, performs the revocation, and asserts the refusal, while a sibling key of the
-same principal still works.
+(`rs/cyphr-server/tests/naked_revoke.rs:938`) asserts the whole sequence: the key signs in
+first, so the baseline is empirical rather than assumed; the revocation is accepted; the
+key is then refused; and a sibling key of the same principal still signs in, so the
+refusal is scoped to the key and not the account.
 
 Separated, there is no such bound. The stale view never expires on its own, the fifteen
 minutes restart on every fresh sign-in with the lost key, and the correct behaviour — the
