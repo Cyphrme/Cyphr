@@ -134,16 +134,20 @@ commits M..N of principal P, in order — one contiguous range:
 For a reader whose instinct is `WHERE principal_id = ? ORDER BY
 sequence`: the key layout _is_ that query's index. Read the access
 column top to bottom and the required operation set is exactly
-`get(key)` plus one ordered `scan(range)` — a sorted key-value store's
-whole interface. Nothing in the taxonomy asks for more.
+`get(key)` plus one ordered `scan(range)` — bounded for
+`index_commits`, unbounded for `index_principals`'s listing — a sorted
+key-value store's whole interface. Nothing in the taxonomy asks for
+more.
 
 ### 2.3 What relational would buy, stated fairly
 
 What a relational engine would buy here is real: joins across entities,
 and ad-hoc query planning — a new question answered by a new `WHERE`
 clause rather than a new keyspace. This index asks for neither: no read
-joins across keyspaces — every lookup starts from a key the caller
-already holds — and the query set is small and fixed.
+joins across index keyspaces — every index lookup starts from a key the
+caller already holds (the one index→blob-store hop shown in §3.4's read
+diagram is a fixed single-hop dereference, not a caller-composed
+join) — and the query set is small and fixed.
 
 The cost of the key-value shape is the mirror image: keys are designed
 for the queries you intend, so a new query shape means a new keyspace.
