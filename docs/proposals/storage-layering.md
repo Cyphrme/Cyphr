@@ -1,15 +1,15 @@
 # Proposal: layer durable storage by authority
 
 **Status: proposal.** This document decides nothing. It argues for a change
-to how the server's durable storage is layered, for discussion and a
-yes/no answer (§6). It is not a specification — four documents already
+to how the server's durable storage is layered, for discussion and
+three yes/no answers (§6). It is not a specification — four documents already
 constrain this subject — and it adds no requirements.
 
 **How to read it.** Each section can be refused on its own: §1 states what
 exists today and is wrong only if a cited fact is wrong; §2 names the harm
 the current layout produces; §3 proposes a different cut and names the
 alternatives it rejects; §4 derives what the cut buys; §5 prices it; §6
-asks the question. "I accept through §3 and reject §4" is a coherent
+asks the questions. "I accept through §3 and reject §4" is a coherent
 position, and so is refusing at any other numbered step.
 
 **Scope.** The server's on-disk layout and the index's write discipline.
@@ -58,7 +58,7 @@ are `serde_json` encodings of the named struct
 | `blobs/`                | per-principal EML triplets, scoped by sanitized `principal_id` prefix (`rs/cyphr-blob-fjall/src/lib.rs:99-105`) | positional leaf/node keys, defined by the external `storage-fjall` crate (`lib.rs:74-77`)                                                                                              | EML commit-tree nodes                                                                                                         | append/read via the principal's commit tree                                               |
 | `index/`                | `index_meta`                                                                                                    | the literal bytes `index-meta` (`rs/cyphr-index-fjall/src/lib.rs:49`)                                                                                                                  | JSON `{version: 1, partitions: [five names]}` (`lib.rs:174-187`)                                                              | written once at first open; only ever read as an existence check (`lib.rs:174`)           |
 | `index/`                | `index_tips`                                                                                                    | `principal_id` UTF-8 bytes — a tagged digest string, `"ALG:base64url"`                                                                                                                 | JSON `TipState` `{principal_id, pr, sr, ar, cr, commit_id, commit_count, last_updated}` (`types.rs:86-104`)                   | exact key (`lib.rs:239`)                                                                  |
-| `index/`                | `index_principals`                                                                                              | `principal_id` UTF-8 bytes                                                                                                                                                             | JSON `PrincipalSummary` `{principal_id, pr, commit_count, created, last_updated}` (`types.rs:170-181`)                        | exact key; full scan for `list_principals` (`lib.rs:296-302`)                             |
+| `index/`                | `index_principals`                                                                                              | `principal_id` UTF-8 bytes                                                                                                                                                             | JSON `PrincipalSummary` `{principal_id, pr, commit_count, created, last_updated}` (`types.rs:170-181`)                        | exact key (`lib.rs:408-412`); full scan for `list_principals` (`lib.rs:296-302`)                             |
 | `index/`                | `index_commits`                                                                                                 | `u32` big-endian length of `principal_id` ++ `principal_id` bytes ++ `u64` big-endian sequence (`lib.rs:85-92`)                                                                        | JSON `CommitRef` `{commit_id, sequence, pre, pr, sr, ar, cr, blob_hashes}` (`types.rs:112-129`)                               | **range scan** over one principal's sequence interval (`lib.rs:259-266`)                  |
 | `index/`                | `index_digests`                                                                                                 | UTF-8 string bytes, two families: a tagged digest (`"ALG:base64url"`) or a 64-char lowercase-hex BLAKE3 hash (`lib.rs:468, 482-489`; hex per `rs/cyphr-storage/src/blob/mod.rs:40-47`) | JSON `EntityRef` `{digest, blob_hash, entity_type, sequence}` (`types.rs:136-152`)                                            | exact key (`lib.rs:280-287, 337-341`)                                                     |
 | `index/`                | `index_public_keys`                                                                                             | key thumbprint bytes                                                                                                                                                                   | JSON `PublicKeyInfo` `{thumbprint, algorithm, public_key}` (`types.rs:72-79`)                                                 | exact key (`lib.rs:352-357`)                                                              |
@@ -243,7 +243,7 @@ only the implementer sees protects only the implementer.
 
 ## 4. What follows mechanically
 
-Four consequences. Each is stated with the decision it changes; a
+Three consequences. Each is stated with the decision it changes; a
 consequence that changes no decision does not appear here.
 
 ### 4.1 Index membership becomes a test, not a judgment
@@ -339,14 +339,18 @@ flowchart LR
     C --> B
     C --> T
     C --> M
-    M --> D{{deriver}}
+    C --> D{{deriver}}
     D --> I
 ```
 
 Blobs land first, then the manifest — the durable commit point
-(`engine/mod.rs:498-537`) — and the index entry is derived from the
-manifest's content. One inbound arrow into the index; it originates at the
-record.
+(`engine/mod.rs:498-537`). The manifest write and the deriver are two
+consumers of one value: the deriver is handed the same in-memory commit
+content the manifest durably records (`engine/mod.rs:587-601`); it never
+reads the manifest back off disk — only rebuild does (`:637-664`), which
+is the honest difference between this diagram and the rebuild one. One
+inbound arrow into the index, and the content it carries is record
+content — the manifest's own.
 
 **Read** — a lookup consults the derived layer for location and the
 record for content; a key-liveness check consults the record directly and
@@ -395,23 +399,6 @@ record rather than a delta — which is what makes §4.1's membership test
 meaningful: if `apply(one event)` and `derive(whole record)` are ever
 different functions, the system holds two answers to one question, and
 rebuild-and-compare is the only thing that will say so.
-
-### 4.4 Ordered keys are a requirement, read off §1's table
-
-For each hot read, from §1.1's access column: `get_tip` — exact key.
-`resolve_digest` — exact key. `get_key` — exact key. `list_principals` —
-full scan either way. `get_commit_chain` — **a range scan** over one
-principal's contiguous sequence interval (`lib.rs:259-266`), and it is the
-read that serves every patch request. One hot read needs ordered
-iteration; a pure hash-map store forecloses it, and the foreclosure is
-invisible until someone needs a range.
-
-_Decision changed:_ the engine class. "Key-value" understates the
-requirement; the store the index needs is an **ordered** key-value store,
-and the choice should be narrowed deliberately rather than by the accident
-of which engine shipped first. (The shipped engine is ordered; this
-consequence records _why_ that property is load-bearing, so no future
-swap treats it as incidental.)
 
 ## 5. Costs
 
@@ -462,24 +449,55 @@ exactly where the record is largest.
 
 ## 6. The decision
 
-**Shall the server's durable storage be layered by authority — a record
-layer holding everything the server is told (blobs, death-set, spent
-invite tokens, its own principal record) and a derived layer holding everything
-it works out (the index), with the index written only by a deriver that is
-a function of record events?**
+Three questions, each answerable yes or no on its own. They are ordered
+by dependency — 2 presupposes a yes to 1, and 3 presupposes a yes to 2 —
+but they are separable: "yes to the regrouping, no to the enforcement"
+is a coherent vote, and so is any other prefix. This proposal's own
+position is that the three are strongest taken together, because §4's
+consequences chain through all of them; the vote is still per question.
 
-Answering **yes** commits to: the §3.1 regrouping, including the
-death-set move; removing any index write path that is not the deriver
-(§4.3); the registry as derivation output plus rebuild-and-compare as its
-check (§4.1–4.2); the EML co-location exception, named and standing
-(§5); and amending the documents listed below to describe the result.
+**Question 1 — the regrouping.** Shall durable storage be cut by
+authority — a `record/` layer holding everything the server is told
+(blobs, death-set, spent invite tokens, its own principal record) and a
+`derived/` layer holding everything it works out (the index), per §3.1?
 
-Answering **no** commits to: the current layout stands; the operator
-guide's table remains the sole defense against §2's deletion and backup
-errors; index membership remains a per-store judgment argued in module
-docs; the write-path discipline of §4.3 remains a habit any future
-feature may break; and the two undocumented record stores remain
-invisible to the specification layer unless documented where they lie.
+One condition attaches to a yes: the EML commit-tree keyspaces remain
+inside the record's blob database — the named co-location exception of
+§3.1 and §5. It is a condition, not a fourth question, because refusing
+it means demanding those keyspaces move to the derived layer, which §5
+prices as paying for coordinated atomicity across databases — the one
+cost this proposal declines to pay.
+
+Answering **yes** commits to the §3.1 layout, including migrating the
+death-set — the least-regenerable data in the system — and amending the
+documents listed below. Answering **no** commits to: the current layout
+stands; the operator guide's table remains the sole defense against
+§2's deletion and backup errors; and the two undocumented record stores
+remain invisible to the specification layer unless documented where
+they lie.
+
+**Question 2 — sole-writer enforcement.** Shall the deriver — a pure
+function from record events to index entries — be the only write path
+into the index, removing the raw accessors that bypass it (§4.3)?
+
+Answering **yes** commits to deleting the bypass surface
+(`engine/mod.rs:297-300`) and accepting §5's standing tax: no durable
+memoisation outside the record, ever. Answering **no** commits to: the
+discipline the code already follows stays a habit, not a rule; any
+future feature may write the index directly and nothing structural
+stops it; and §4.1's membership test becomes the only line of defense,
+catching violations after they land instead of making them unwritable.
+
+**Question 3 — the generated registry.** Shall the index registry be
+the deriver's generated output, checked by rebuild-and-compare,
+replacing the hand-maintained `index_meta` partition list (§4.1–4.2)?
+
+Answering **yes** commits to building rebuild-and-compare and running
+it on the schedule §5 concedes it needs, and to retiring the hardcoded
+list. Answering **no** commits to: `index_meta` remains a write-once
+list nothing reads; a table added without editing it is tracked by
+nothing and noticed by nothing; and index membership remains a
+per-store judgment argued in module docs rather than a runnable test.
 
 ## Relation to existing documents
 
