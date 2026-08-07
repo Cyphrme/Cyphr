@@ -1,12 +1,12 @@
 # Proposal: layer durable storage by authority
 
 The server's durable storage is grouped by which database a thing lives
-in. It should be grouped by whether the server was **told** it or
-**worked it out** — and that is the difference between data you can
-delete and data you cannot get back.
+in. It should be grouped by **authority** — whether the server was
+**told** it or **worked it out** — and that is the difference between
+data you can delete and data you cannot get back.
 
 **Status and scope.** This is a proposal, not a specification: it adds
-no requirements and asks for three yes/no answers (§5). Scope: the
+no requirements and asks for three yes/no answers (§6). Scope: the
 server's on-disk layout and the index's write discipline; nothing here
 touches the wire format, protocol semantics, or the client. Every claim
 about current behavior was checked against source at the revision this
@@ -15,8 +15,8 @@ it — the two have diverged, and where they have, this document says so.
 
 ## 1. The proposed cut
 
-Split the durable store by **authority** — what the server is _told_
-versus what it _works out_ — instead of by storage technology.
+Split the durable store by **authority** instead of by storage
+technology.
 
 Everything the server is told is irreplaceable by definition: it arrived
 from outside and no replay recreates it. Everything the server works out
@@ -47,7 +47,7 @@ data_dir/
 ├── record/                 what the server was told; losing any of it
 │   │                       is irreversible
 │   ├── blobs/                  (+ derived EML keyspaces inside, unchanged
-│   │                              — the one flagged exception, see §4)
+│   │                              — the one flagged exception, see §5)
 │   ├── observations/
 │   ├── admission/
 │   └── server-principal.json
@@ -61,14 +61,111 @@ regrouped, not changed), the contents of every database, and the EML
 keyspaces. The EML keyspaces stay co-located inside the `blobs/`
 database for the one-WAL atomicity the engine gets from sharing it
 (`rs/cyphr-blob-fjall/src/lib.rs:70-82`) — derived state inside the
-record layer, carried as a named exception and priced in §4.
+record layer, carried as a named exception and priced in §5.
 
-## 2. What follows mechanically
+## 2. What the index holds, and why it is a key-value store
+
+The cut says which layer a thing lives in; this section says how the
+derived layer is built.
+
+### 2.1 What is indexed
+
+Six keyspaces, each answering one question. The access patterns are
+read off the table below.
+
+- `index_tips` — where does a principal's chain currently end? One
+  `TipState` per principal; exact key by `principal_id`.
+- `index_principals` — which principals does this server hold? One
+  `PrincipalSummary` per principal; exact key, full scan to list them
+  all.
+- `index_commits` — what is commit _N_ of a principal's chain? One
+  `CommitRef` per (principal, sequence); **range scan** over one
+  principal's sequence interval.
+- `index_digests` — which blob holds the entity with this digest? Exact
+  key.
+- `index_public_keys` — is this key thumbprint known, and what key is
+  it? Exact key.
+- `index_meta` — the partition registry of §3.2; written once, read
+  only as an existence check.
+
+One row per keyspace, as the bytes appear on disk. Values marked _JSON_
+are `serde_json` encodings of the named struct
+(`rs/cyphr-index-fjall/src/lib.rs:107-113`,
+`rs/cyphr-storage/src/index/types.rs`).
+
+| Store                   | Keyspace                                                                                                        | Key, as on disk                                                                                                                                                                        | Value, as on disk                                                                                                             | Access pattern                                                                            |
+| :---------------------- | :-------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------- |
+| `blobs/`                | `blobs`                                                                                                         | 32 raw bytes: BLAKE3 of content (`rs/cyphr-blob-fjall/src/lib.rs:175-179`)                                                                                                             | raw coz JSON bytes, or a commit-manifest JSON (`kind` + full `IndexableCommit`; `rs/cyphr-storage/src/engine/mod.rs:123-141`) | exact-key get/exists; full scan only at rebuild (`engine/mod.rs:637-664`)                 |
+| `blobs/`                | per-principal EML triplets, scoped by sanitized `principal_id` prefix (`rs/cyphr-blob-fjall/src/lib.rs:99-105`) | positional leaf/node keys, defined by the external `storage-fjall` crate (`lib.rs:74-77`)                                                                                              | EML commit-tree nodes                                                                                                         | append/read via the principal's commit tree                                               |
+| `index/`                | `index_meta`                                                                                                    | the literal bytes `index-meta` (`rs/cyphr-index-fjall/src/lib.rs:49`)                                                                                                                  | JSON `{version: 1, partitions: [five names]}` (`lib.rs:174-187`)                                                              | written once at first open; only ever read as an existence check (`lib.rs:174`)           |
+| `index/`                | `index_tips`                                                                                                    | `principal_id` UTF-8 bytes — a tagged digest string, `"ALG:base64url"`                                                                                                                 | JSON `TipState` `{principal_id, pr, sr, ar, cr, commit_id, commit_count, last_updated}` (`types.rs:86-104`)                   | exact key (`lib.rs:239`)                                                                  |
+| `index/`                | `index_principals`                                                                                              | `principal_id` UTF-8 bytes                                                                                                                                                             | JSON `PrincipalSummary` `{principal_id, pr, commit_count, created, last_updated}` (`types.rs:170-181`)                        | exact key (`lib.rs:408-412`); full scan for `list_principals` (`lib.rs:296-302`)                             |
+| `index/`                | `index_commits`                                                                                                 | `u32` big-endian length of `principal_id` ++ `principal_id` bytes ++ `u64` big-endian sequence (`lib.rs:85-92`)                                                                        | JSON `CommitRef` `{commit_id, sequence, pre, pr, sr, ar, cr, blob_hashes}` (`types.rs:112-129`)                               | **range scan** over one principal's sequence interval (`lib.rs:259-266`)                  |
+| `index/`                | `index_digests`                                                                                                 | UTF-8 string bytes, two families: a tagged digest (`"ALG:base64url"`) or a 64-char lowercase-hex BLAKE3 hash (`lib.rs:468, 482-489`; hex per `rs/cyphr-storage/src/blob/mod.rs:40-47`) | JSON `EntityRef` `{digest, blob_hash, entity_type, sequence}` (`types.rs:136-152`)                                            | exact key (`lib.rs:280-287, 337-341`)                                                     |
+| `index/`                | `index_public_keys`                                                                                             | key thumbprint bytes                                                                                                                                                                   | JSON `PublicKeyInfo` `{thumbprint, algorithm, public_key}` (`types.rs:72-79`)                                                 | exact key (`lib.rs:352-357`)                                                              |
+| `observations/`         | `observations`                                                                                                  | raw thumbprint digest bytes of the revoked key (`rs/cyphr-server/src/observation.rs:91`)                                                                                               | the naked-revoke coz JSON, as received (`observation.rs:92-93`)                                                               | exact key; insert is fsynced (`observation.rs:96-102`)                                    |
+| `admission/`            | `admission`                                                                                                     | 32 raw bytes: `sha256(token)` (`rs/cyphr-server/src/admission.rs:513-515, 541`)                                                                                                        | one byte, `R` (reserved) or `C` (consumed) (`admission.rs:53-55`)                                                             | exact key; reserve/consume fsynced, refund is an unsynced delete (`admission.rs:541-585`) |
+| `server-principal.json` | —                                                                                                               | —                                                                                                                                                                                      | pretty-printed JSON `GenesisRecord` `{pg, genesis_key}` (`rs/cyphr-server/src/auth/principal.rs:178-182`)                     | read at boot                                                                              |
+
+### 2.2 The key layout is the index
+
+The prefix structure is visible in the key column: **exactly one table has
+composite, ordered keys** — `index_commits`, whose length-prefixed
+encoding exists so that one principal's chain is a contiguous key range no
+other principal's keys can bleed into (`lib.rs:60-92`). A chain read is
+therefore a range scan; every other read in the system is an exact-key
+lookup. No table keys on time: a time-bounded read of one principal's
+history is a value filter applied over its sequence-range scan, and any
+cross-principal time query is a full walk of `index_commits`.
+
+```text
+index_commits key, as on disk:
+
+┌────────────────┬─────────────────────┬────────────────┐
+│ u32 big-endian │ principal_id bytes  │ u64 big-endian │
+│ pid length     │ (variable length)   │ sequence       │
+└────────────────┴─────────────────────┴────────────────┘
+╰───── one prefix per principal ──────╯ ╰─ orders chain ─╯
+
+commits M..N of principal P, in order — one contiguous range:
+    scan( len(P) ++ P ++ M  ..=  len(P) ++ P ++ N )
+```
+
+For a reader whose instinct is `WHERE principal_id = ? ORDER BY
+sequence`: the key layout _is_ that query's index. Read the access
+column top to bottom and the required operation set is exactly
+`get(key)` plus one ordered `scan(range)` — a sorted key-value store's
+whole interface. Nothing in the taxonomy asks for more.
+
+### 2.3 What relational would buy, stated fairly
+
+What a relational engine would buy here is real: joins across entities,
+and ad-hoc query planning — a new question answered by a new `WHERE`
+clause rather than a new keyspace. This index asks for neither: no read
+joins across keyspaces — every lookup starts from a key the caller
+already holds — and the query set is small and fixed.
+
+The cost of the key-value shape is the mirror image: keys are designed
+for the queries you intend, so a new query shape means a new keyspace.
+That is the same fact §3.2 prices — "the query set is the part of this
+design least likely to be right early" — and the generated registry is
+what makes being wrong about it cheap: one rebuild, no schema
+migration.
+
+The main specification calls this layer "a relational index"
+(`SPEC.md:3156`, repeated at `docs/specs/storage-engine.md:73-76`); the
+shipped implementation retired that design — there is no SQL engine
+anywhere in the workspace, and the index's own module documentation
+reads "never a relational database"
+(`rs/cyphr-index-fjall/src/lib.rs:1-6`) — because nothing in the access
+pattern asks a relational question.
+
+## 3. What follows mechanically
 
 Three consequences. Each is stated with the decision it changes; a
 consequence that changes no decision does not appear here.
 
-### 2.1 Index membership becomes a test, not a judgment
+### 3.1 Index membership becomes a test, not a judgment
 
 Under the authority cut the index's definition is: **a thing belongs in
 the index exactly when replaying the record produces it.** That is a
@@ -91,7 +188,7 @@ and had to be recovered — which is why the commit manifest exists at all
 (`engine/mod.rs:127-141`). The manifest is the retained form of the
 ingest; the test is anchored to it.
 
-### 2.2 The table registry becomes the deriver's output, never a declaration
+### 3.2 The table registry becomes the deriver's output, never a declaration
 
 Today's `index_meta` keyspace is a hardcoded list of five partition names,
 written once at first open and never read again — its only read is an
@@ -115,7 +212,7 @@ new check to write. Being wrong about a table therefore costs one
 rebuild — which matters, because the query set is the part of this
 design least likely to be right early.
 
-### 2.3 One writer, and it is a function of record events
+### 3.3 One writer, and it is a function of record events
 
 The strongest consequence does not check the property — it removes the
 API that could violate it: **the index has exactly one writer, and that
@@ -137,11 +234,11 @@ from writing the index directly.
 _Decision changed:_ the index's public write surface — from "callers are
 trusted to route writes through the deriver" to "the deriver is the only
 write path that exists." This is the move from checking to structure:
-§2.1's test finds a violation after it lands; this makes it unwritable.
+§3.1's test finds a violation after it lands; this makes it unwritable.
 The test stays worth running — it is what catches a deriver that is
 itself wrong, which structure cannot.
 
-### 2.4 The three data flows
+### 3.4 The three data flows
 
 Write and rebuild share the deriver box deliberately: rebuild is not a
 repair procedure, it is the same derivation applied to the whole record
@@ -217,12 +314,12 @@ flowchart LR
 ```
 
 Beside the write flow this is visibly the same derivation over the whole
-record rather than a delta — which is what makes §2.1's membership test
+record rather than a delta — which is what makes §3.1's membership test
 meaningful: if `apply(one event)` and `derive(whole record)` are ever
 different functions, the system holds two answers to one question, and
 rebuild-and-compare is the only thing that will say so.
 
-## 3. The defect the current cut produces
+## 4. The defect the current cut produces
 
 One row per durable store; the grid shows mixed authority at every level
 of the layout.
@@ -231,7 +328,7 @@ of the layout.
 | :----------------------- | :-------------------------------------- | :---------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `blobs/` (blob keyspace) | commit/coz content and commit manifests | told                                            | no — this is the record                                                                                                                                |
 | `blobs/` (EML keyspaces) | each principal's commit-tree state      | worked out from the chain                       | replay reconstructs principals from blobs (`engine/mod.rs:670-720`); a byte-level regeneration path for a lost EML keyspace is not documented anywhere |
-| `index/`                 | six keyspaces (appendix)                | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              |
+| `index/`                 | six keyspaces (§2.1)                    | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              |
 | `observations/`          | the key death-set                       | told (arrives out of band; no chain records it) | **no**                                                                                                                                                 |
 | `admission/`             | spent invite tokens                     | told                                            | **no**                                                                                                                                                 |
 | `server-principal.json`  | the server's own genesis record         | told                                            | by hand, from the signing key                                                                                                                          |
@@ -263,7 +360,7 @@ hand-maintained table in the operator guide
 (`operating-a-server.md:305-311`), and a guide table is not consulted by
 `rm -rf`.
 
-### 3.1 The case for the current cut, stated fairly
+### 4.1 The case for the current cut, stated fairly
 
 The current technology cut is not an accident: one directory per
 embedded database means failure domains map one-to-one onto paths
@@ -275,21 +372,21 @@ database and its own failure domain; only the grouping above it
 changes. And the defect above is the evidence that "meaning belongs in
 documentation" has already failed once, at the layout's own expense.
 
-### 3.2 Alternatives considered and rejected
+### 4.2 Alternatives considered and rejected
 
 The alternative closest to this proposal is to **cut by regenerability
 instead of authority** — the same partition today, rejected for the
 causal direction: regenerability classifies stores by an outcome, so it
 can say what to back up but cannot say what may be _written_ where;
 authority yields regenerability as a theorem and a write rule besides
-(§2.3).
+(§3.3).
 
 The remaining alternatives:
 
 - **Keep the layout; add checks and documentation.** Rejected: a check
   catches the violation after it lands and a table informs only the
   operator who reads it — as the _only_ move they harden the symptom and
-  leave the cause (the checks are worth having; §2 keeps both).
+  leave the cause (the checks are worth having; §3 keeps both).
 - **Fold the death-set into the record store as content-addressed
   blobs.** Rejected: the refusal check would ride a derived projection —
   a window in which a dead key answers as alive
@@ -303,7 +400,7 @@ The remaining alternatives:
   sees, and documentation that only the implementer sees protects only
   the implementer.
 
-## 4. Costs, and where a reasonable no lives
+## 5. Costs, and where a reasonable no lives
 
 Priced against the fact that this system has no deployed users: migrating
 the death-set — a move of exactly the data that cannot be regenerated if
@@ -333,7 +430,7 @@ external fact — the design says no: it goes into the record layer with a
 real durability story, or it does not exist. That is the point, and it
 will chafe on every such feature forever. This is a standing tax on
 future work, and grounds a reasonable no from anyone who weighs
-convenience across the system's lifetime above the enforceability §2.3
+convenience across the system's lifetime above the enforceability §3.3
 buys.
 
 **The membership test forecloses a class of accelerator.** "Reproducible
@@ -341,7 +438,7 @@ from the retained record" excludes any structure whose contents depend on
 randomness or construction order — a seeded bloom filter, a
 sampling-based sketch. If one is ever wanted, the honest repair is to
 weaken the index's definition to "derived _or_ disposable-nondeterministic",
-which gives back a piece of what §2.1 bought. No such structure is needed
+which gives back a piece of what §3.1 bought. No such structure is needed
 today; the cost is carried by the future.
 
 **Rebuild-and-compare grows with the record, without bound.** As a
@@ -350,13 +447,13 @@ realistic shape is a fixture-corpus run per commit and a full-corpus run
 on a schedule, which means the strongest content check runs least often
 exactly where the record is largest.
 
-## 5. The decision
+## 6. The decision
 
 Three questions, each answerable yes or no on its own. They are ordered
 by dependency — 2 presupposes a yes to 1, and 3 presupposes a yes to 2 —
 but they are separable: "yes to the regrouping, no to the enforcement"
 is a coherent vote, and so is any other prefix. This proposal's own
-position is that the three are strongest taken together, because §2's
+position is that the three are strongest taken together, because §3's
 consequences chain through all of them; the vote is still per question.
 
 **Question 1 — the regrouping.** Shall durable storage be cut by
@@ -366,8 +463,8 @@ authority — a `record/` layer holding everything the server is told
 
 One condition attaches to a yes: the EML commit-tree keyspaces remain
 inside the record's blob database — the named co-location exception of
-§1.1 and §4. It is a condition, not a fourth question, because refusing
-it means demanding those keyspaces move to the derived layer, which §4
+§1.1 and §5. It is a condition, not a fourth question, because refusing
+it means demanding those keyspaces move to the derived layer, which §5
 prices as paying for coordinated atomicity across databases — the one
 cost this proposal declines to pay.
 
@@ -378,28 +475,28 @@ documents listed below, and recording the EML co-location exception in
 reads as a known exception rather than a violation. Answering **no**
 commits to: the current layout
 stands; the operator guide's table remains the sole defense against
-§3's deletion and backup errors; and the two undocumented record stores
+§4's deletion and backup errors; and the two undocumented record stores
 remain invisible to the specification layer unless documented where
 they lie.
 
 **Question 2 — sole-writer enforcement.** Shall the deriver — a pure
 function from record events to index entries — be the only write path
-into the index, removing the raw accessors that bypass it (§2.3)?
+into the index, removing the raw accessors that bypass it (§3.3)?
 
 Answering **yes** commits to deleting the bypass surface
-(`engine/mod.rs:297-300`) and accepting §4's standing tax: no durable
+(`engine/mod.rs:297-300`) and accepting §5's standing tax: no durable
 memoisation outside the record, ever. Answering **no** commits to: the
 discipline the code already follows stays a habit, not a rule; any
 future feature may write the index directly and nothing structural
-stops it; and §2.1's membership test becomes the only line of defense,
+stops it; and §3.1's membership test becomes the only line of defense,
 catching violations after they land instead of making them unwritable.
 
 **Question 3 — the generated registry.** Shall the index registry be
 the deriver's generated output, checked by rebuild-and-compare,
-replacing the hand-maintained `index_meta` partition list (§2.1–2.2)?
+replacing the hand-maintained `index_meta` partition list (§3.1–3.2)?
 
 Answering **yes** commits to building rebuild-and-compare and running
-it on the schedule §4 concedes it needs, and to retiring the hardcoded
+it on the schedule §5 concedes it needs, and to retiring the hardcoded
 list. Answering **no** commits to: `index_meta` remains a write-once
 list nothing reads; a table added without editing it is tracked by
 nothing and noticed by nothing; and index membership remains a
@@ -437,39 +534,6 @@ data_dir/
 ```
 
 Each directory is a separate fjall database (an LSM key-value store) with
-its own write-ahead log, opened at its own path. There is no SQL engine
-anywhere in the workspace; the specification text calling Layer 1 "a
-relational index" (`SPEC.md:3156`, repeated at
-`docs/specs/storage-engine.md:73-76`) describes a design that was retired —
-the implementation's own module documentation reads "never a relational
-database" (`rs/cyphr-index-fjall/src/lib.rs:1-6`).
-
-### Key/value shapes
-
-One row per keyspace, as the bytes appear on disk. Values marked _JSON_
-are `serde_json` encodings of the named struct
-(`rs/cyphr-index-fjall/src/lib.rs:107-113`,
-`rs/cyphr-storage/src/index/types.rs`).
-
-| Store                   | Keyspace                                                                                                        | Key, as on disk                                                                                                                                                                        | Value, as on disk                                                                                                             | Access pattern                                                                            |
-| :---------------------- | :-------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------- |
-| `blobs/`                | `blobs`                                                                                                         | 32 raw bytes: BLAKE3 of content (`rs/cyphr-blob-fjall/src/lib.rs:175-179`)                                                                                                             | raw coz JSON bytes, or a commit-manifest JSON (`kind` + full `IndexableCommit`; `rs/cyphr-storage/src/engine/mod.rs:123-141`) | exact-key get/exists; full scan only at rebuild (`engine/mod.rs:637-664`)                 |
-| `blobs/`                | per-principal EML triplets, scoped by sanitized `principal_id` prefix (`rs/cyphr-blob-fjall/src/lib.rs:99-105`) | positional leaf/node keys, defined by the external `storage-fjall` crate (`lib.rs:74-77`)                                                                                              | EML commit-tree nodes                                                                                                         | append/read via the principal's commit tree                                               |
-| `index/`                | `index_meta`                                                                                                    | the literal bytes `index-meta` (`rs/cyphr-index-fjall/src/lib.rs:49`)                                                                                                                  | JSON `{version: 1, partitions: [five names]}` (`lib.rs:174-187`)                                                              | written once at first open; only ever read as an existence check (`lib.rs:174`)           |
-| `index/`                | `index_tips`                                                                                                    | `principal_id` UTF-8 bytes — a tagged digest string, `"ALG:base64url"`                                                                                                                 | JSON `TipState` `{principal_id, pr, sr, ar, cr, commit_id, commit_count, last_updated}` (`types.rs:86-104`)                   | exact key (`lib.rs:239`)                                                                  |
-| `index/`                | `index_principals`                                                                                              | `principal_id` UTF-8 bytes                                                                                                                                                             | JSON `PrincipalSummary` `{principal_id, pr, commit_count, created, last_updated}` (`types.rs:170-181`)                        | exact key (`lib.rs:408-412`); full scan for `list_principals` (`lib.rs:296-302`)                             |
-| `index/`                | `index_commits`                                                                                                 | `u32` big-endian length of `principal_id` ++ `principal_id` bytes ++ `u64` big-endian sequence (`lib.rs:85-92`)                                                                        | JSON `CommitRef` `{commit_id, sequence, pre, pr, sr, ar, cr, blob_hashes}` (`types.rs:112-129`)                               | **range scan** over one principal's sequence interval (`lib.rs:259-266`)                  |
-| `index/`                | `index_digests`                                                                                                 | UTF-8 string bytes, two families: a tagged digest (`"ALG:base64url"`) or a 64-char lowercase-hex BLAKE3 hash (`lib.rs:468, 482-489`; hex per `rs/cyphr-storage/src/blob/mod.rs:40-47`) | JSON `EntityRef` `{digest, blob_hash, entity_type, sequence}` (`types.rs:136-152`)                                            | exact key (`lib.rs:280-287, 337-341`)                                                     |
-| `index/`                | `index_public_keys`                                                                                             | key thumbprint bytes                                                                                                                                                                   | JSON `PublicKeyInfo` `{thumbprint, algorithm, public_key}` (`types.rs:72-79`)                                                 | exact key (`lib.rs:352-357`)                                                              |
-| `observations/`         | `observations`                                                                                                  | raw thumbprint digest bytes of the revoked key (`rs/cyphr-server/src/observation.rs:91`)                                                                                               | the naked-revoke coz JSON, as received (`observation.rs:92-93`)                                                               | exact key; insert is fsynced (`observation.rs:96-102`)                                    |
-| `admission/`            | `admission`                                                                                                     | 32 raw bytes: `sha256(token)` (`rs/cyphr-server/src/admission.rs:513-515, 541`)                                                                                                        | one byte, `R` (reserved) or `C` (consumed) (`admission.rs:53-55`)                                                             | exact key; reserve/consume fsynced, refund is an unsynced delete (`admission.rs:541-585`) |
-| `server-principal.json` | —                                                                                                               | —                                                                                                                                                                                      | pretty-printed JSON `GenesisRecord` `{pg, genesis_key}` (`rs/cyphr-server/src/auth/principal.rs:178-182`)                     | read at boot                                                                              |
-
-The prefix structure is visible in the key column: **exactly one table has
-composite, ordered keys** — `index_commits`, whose length-prefixed
-encoding exists so that one principal's chain is a contiguous key range no
-other principal's keys can bleed into (`lib.rs:60-92`). A chain read is
-therefore a range scan; every other read in the system is an exact-key
-lookup. No table keys on time: a time-bounded read of one principal's
-history is a value filter applied over its sequence-range scan, and any
-cross-principal time query is a full walk of `index_commits`.
+its own write-ahead log, opened at its own path. The key/value shape of
+every keyspace, and the access pattern each serves, is the table in
+§2.1.
