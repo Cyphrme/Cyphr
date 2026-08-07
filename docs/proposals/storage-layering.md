@@ -58,9 +58,9 @@ data_dir/
 What moved: `observations/`, `admission/`, and `server-principal.json`
 moved beside `blobs/` under `record/`. What did not move: `index/` (it is
 regrouped, not changed), the contents of every database, and the EML
-keyspaces, which stay co-located inside the `blobs/` database for the
-one-WAL atomicity the engine gets from sharing it
-(`rs/cyphr-blob-fjall/src/lib.rs:70-82`) — a derived structure inside the
+keyspaces. The EML keyspaces stay co-located inside the `blobs/`
+database for the one-WAL atomicity the engine gets from sharing it
+(`rs/cyphr-blob-fjall/src/lib.rs:70-82`) — derived state inside the
 record layer, carried as a named exception and priced in §4.
 
 ## 2. What follows mechanically
@@ -111,9 +111,9 @@ table, remember to edit a list nothing reads, and hope. Under the cut: add
 a derivation rule; the registry updates because it is the derivation's
 output, and rebuild-and-compare covers the new table because it compares
 whatever the deriver produces. No registry edit, no schema migration, no
-new check to write — which also makes being wrong about a table cheap
-(one rebuild), and the query set is the part of this design least likely
-to be right early.
+new check to write. Being wrong about a table therefore costs one
+rebuild — which matters, because the query set is the part of this
+design least likely to be right early.
 
 ### 2.3 One writer, and it is a function of record events
 
@@ -141,9 +141,11 @@ write path that exists." This is the move from checking to structure:
 The test stays worth running — it is what catches a deriver that is
 itself wrong, which structure cannot.
 
-The three data flows. Write and rebuild share the deriver box
-deliberately: rebuild is not a repair procedure, it is the same derivation
-applied to the whole record instead of one event.
+### 2.4 The three data flows
+
+Write and rebuild share the deriver box deliberately: rebuild is not a
+repair procedure, it is the same derivation applied to the whole record
+instead of one event.
 
 **Write** — a commit passes in-memory validation, then:
 
@@ -166,13 +168,11 @@ flowchart LR
 ```
 
 Blobs land first, then the manifest — the durable commit point
-(`engine/mod.rs:498-537`). The manifest write and the deriver are two
-consumers of one value: the deriver is handed the same in-memory commit
-content the manifest durably records (`engine/mod.rs:587-601`); it never
-reads the manifest back off disk — only rebuild does (`:637-664`), which
-is the honest difference between this diagram and the rebuild one. One
-inbound arrow into the index, and the content it carries is record
-content — the manifest's own.
+(`engine/mod.rs:498-537`). The deriver is handed the same in-memory
+commit content the manifest durably records (`engine/mod.rs:587-601`);
+only rebuild reads manifests back off disk (`:637-664`). One inbound
+arrow into the index, and the content it carries is record content —
+the manifest's own.
 
 **Read** — a lookup consults the derived layer for location and the
 record for content; a key-liveness check consults the record directly and
@@ -227,14 +227,14 @@ rebuild-and-compare is the only thing that will say so.
 One row per durable store; the grid shows mixed authority at every level
 of the layout.
 
-| Store                    | Holds                                   | Authority                                       | Regenerable                                                                                                                                            | Documented by                                                                                                                                                                                                  |
-| :----------------------- | :-------------------------------------- | :---------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `blobs/` (blob keyspace) | commit/coz content and commit manifests | told                                            | no — this is the record                                                                                                                                | `SPEC.md:3149` (§16.3.2), `docs/specs/blob-store.md`, `docs/specs/blob-store-fjall.md`, `docs/guides/operating-a-server.md:305-311`                                                                            |
-| `blobs/` (EML keyspaces) | each principal's commit-tree state      | worked out from the chain                       | replay reconstructs principals from blobs (`engine/mod.rs:670-720`); a byte-level regeneration path for a lost EML keyspace is not documented anywhere | `docs/specs/blob-store-fjall.md:61-85` (co-location mandate; its fjall-1 vocabulary is stale)                                                                                                                  |
-| `index/`                 | six keyspaces (appendix)                | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              | `SPEC.md:3156`, `docs/specs/storage-engine.md`, `docs/specs/indexer.md`                                                                                                                                        |
-| `observations/`          | the key death-set                       | told (arrives out of band; no chain records it) | **no**                                                                                                                                                 | nothing under `docs/specs/` — `git grep -ilE 'observation\|death.set\|admission\|spent' docs/specs/` returns no matches; only the operator guide (`:309, :320-324`) and the module doc (`observation.rs:1-17`) |
-| `admission/`             | spent invite tokens                     | told                                            | **no**                                                                                                                                                 | nothing under `docs/specs/` (same grep); operator guide only (`:310`)                                                                                                                                          |
-| `server-principal.json`  | the server's own genesis record         | told                                            | by hand, from the signing key                                                                                                                          | operator guide (`:311, :348`)                                                                                                                                                                                  |
+| Store                    | Holds                                   | Authority                                       | Regenerable                                                                                                                                            |
+| :----------------------- | :-------------------------------------- | :---------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blobs/` (blob keyspace) | commit/coz content and commit manifests | told                                            | no — this is the record                                                                                                                                |
+| `blobs/` (EML keyspaces) | each principal's commit-tree state      | worked out from the chain                       | replay reconstructs principals from blobs (`engine/mod.rs:670-720`); a byte-level regeneration path for a lost EML keyspace is not documented anywhere |
+| `index/`                 | six keyspaces (appendix)                | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              |
+| `observations/`          | the key death-set                       | told (arrives out of band; no chain records it) | **no**                                                                                                                                                 |
+| `admission/`             | spent invite tokens                     | told                                            | **no**                                                                                                                                                 |
+| `server-principal.json`  | the server's own genesis record         | told                                            | by hand, from the signing key                                                                                                                          |
 
 Reading down the _Authority_ column against the layout: three stores
 holding what the server was told — two of them invisible to the
@@ -270,22 +270,26 @@ embedded database means failure domains map one-to-one onto paths
 (`rs/cyphr-server/src/lib.rs:112-127`), and the opposing position in one
 sentence is _the split by database is the physically true one, and what
 a directory means belongs in documentation, not in the path._ The
-answer: the physical truth is preserved — each store remains its own
-database, its own failure domain; only the grouping above it changes —
-and the defect above is the evidence that "meaning belongs in
-documentation" has already failed once at the layout's own expense.
+answer: the physical truth is preserved. Each store remains its own
+database and its own failure domain; only the grouping above it
+changes. And the defect above is the evidence that "meaning belongs in
+documentation" has already failed once, at the layout's own expense.
 
 ### 3.2 Alternatives considered and rejected
+
+The alternative closest to this proposal is to **cut by regenerability
+instead of authority** — the same partition today, rejected for the
+causal direction: regenerability classifies stores by an outcome, so it
+can say what to back up but cannot say what may be _written_ where;
+authority yields regenerability as a theorem and a write rule besides
+(§2.3).
+
+The remaining alternatives:
 
 - **Keep the layout; add checks and documentation.** Rejected: a check
   catches the violation after it lands and a table informs only the
   operator who reads it — as the _only_ move they harden the symptom and
   leave the cause (the checks are worth having; §2 keeps both).
-- **Cut by regenerability instead of authority.** Same partition today,
-  rejected for the causal direction: regenerability classifies stores by
-  an outcome, so it can say what to back up but cannot say what may be
-  _written_ where; authority yields regenerability as a theorem and a
-  write rule besides (§2.3).
 - **Fold the death-set into the record store as content-addressed
   blobs.** Rejected: the refusal check would ride a derived projection —
   a window in which a dead key answers as alive
@@ -299,7 +303,7 @@ documentation" has already failed once at the layout's own expense.
   sees, and documentation that only the implementer sees protects only
   the implementer.
 
-## 4. Costs
+## 4. Costs, and where a reasonable no lives
 
 Priced against the fact that this system has no deployed users: migrating
 the death-set — a move of exactly the data that cannot be regenerated if
@@ -368,8 +372,11 @@ prices as paying for coordinated atomicity across databases — the one
 cost this proposal declines to pay.
 
 Answering **yes** commits to the §1.1 layout, including migrating the
-death-set — the least-regenerable data in the system — and amending the
-documents listed below. Answering **no** commits to: the current layout
+death-set — the least-regenerable data in the system — amending the
+documents listed below, and recording the EML co-location exception in
+`docs/specs/storage-engine.md`, so that derived state inside `record/`
+reads as a known exception rather than a violation. Answering **no**
+commits to: the current layout
 stands; the operator guide's table remains the sole defense against
 §3's deletion and backup errors; and the two undocumented record stores
 remain invisible to the specification layer unless documented where
@@ -406,7 +413,7 @@ proposal would imply; this document itself changes none of them.
 | Document                            | Disposition if accepted                                                                                                                                                                                                    |
 | :---------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SPEC.md` §16                       | untouched by this proposal — its §16.3.2 "relational" label (`SPEC.md:3156`) is contradicted by the shipped implementation under either answer; amending it is its owner's call, and this proposal supplies the motivation |
-| `docs/specs/storage-engine.md`      | amended — two-layer separation survives; the "relational" noun, the layout description, and the registry's role change                                                                                                     |
+| `docs/specs/storage-engine.md`      | amended — two-layer separation survives; the "relational" noun, the layout description, and the registry's role change; gains the EML co-location exception                                                                |
 | `docs/specs/indexer.md`             | amended — gains the membership test, the one-writer contract, and the generated registry; its rebuildability claims survive unchanged                                                                                      |
 | `docs/specs/blob-store.md`          | untouched — the record layer keeps the trait as it stands                                                                                                                                                                  |
 | `docs/specs/blob-store-fjall.md`    | untouched by this proposal — the physical layout does not change (its pre-existing staleness is reported separately, not smuggled in here)                                                                                 |
