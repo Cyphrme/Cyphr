@@ -5,19 +5,13 @@ in. It should be grouped by whether the server was **told** it or
 **worked it out** — and that is the difference between data you can
 delete and data you cannot get back.
 
-**Status, scope, and how to read this.** This is a proposal, not a
-specification: it adds no requirements and asks for three yes/no answers
-(§5). Scope: the server's on-disk layout and the index's write
-discipline; nothing here touches the wire format, protocol semantics, or
-the client. Every claim about current behavior was checked against
-source at the revision this proposal was written against, not against
-the specifications describing it — the two have diverged, and where they
-have, this document says so. Each section can be refused on its own: §1
-proposes the cut and names the alternatives it rejects; §2 shows the
-mixture that exists today and the harm it produces, and is wrong only if
-a cited fact is wrong; §3 derives what the cut buys; §4 prices it; §5
-asks the questions. "I accept through §2 and reject §3" is a coherent
-position, and so is refusing at any other numbered step.
+**Status and scope.** This is a proposal, not a specification: it adds
+no requirements and asks for three yes/no answers (§5). Scope: the
+server's on-disk layout and the index's write discipline; nothing here
+touches the wire format, protocol semantics, or the client. Every claim
+about current behavior was checked against source at the revision this
+proposal was written against, not against the specifications describing
+it — the two have diverged, and where they have, this document says so.
 
 ## 1. The proposed cut
 
@@ -69,86 +63,12 @@ one-WAL atomicity the engine gets from sharing it
 (`rs/cyphr-blob-fjall/src/lib.rs:70-82`) — a derived structure inside the
 record layer, carried as a named exception and priced in §4.
 
-The current technology cut is not an accident: one directory per
-embedded database means failure domains map one-to-one onto paths
-(`rs/cyphr-server/src/lib.rs:112-127`), and the opposing position in one
-sentence is _the split by database is the physically true one, and what
-a directory means belongs in documentation, not in the path._ The
-answer: the physical truth is preserved — each store remains its own
-database, its own failure domain; only the grouping above it changes —
-and §2 is the evidence that "meaning belongs in documentation" has
-already failed once at the layout's own expense.
-
-### 1.2 Alternatives considered and rejected
-
-- **Keep the layout; add checks and documentation.** Rejected: a check
-  catches the violation after it lands and a table informs only the
-  operator who reads it — as the _only_ move they harden the symptom and
-  leave the cause (the checks are worth having; §3 keeps both).
-- **Cut by regenerability instead of authority.** Same partition today,
-  rejected for the causal direction: regenerability classifies stores by
-  an outcome, so it can say what to back up but cannot say what may be
-  _written_ where; authority yields regenerability as a theorem and a
-  write rule besides (§3.3).
-- **Fold the death-set into the record store as content-addressed
-  blobs.** Rejected: the refusal check would ride a derived projection —
-  a window in which a dead key answers as alive
-  (`observation.rs:110-116`), where today's store acknowledges a death
-  only after its own fsync (`observation.rs:96-102`); spent-token
-  entries mutate where immutable blobs cannot (`admission.rs:541-585`);
-  and the blob store's declared scope is protocol messages
-  (`docs/specs/blob-store.md`), which a spent-token hash is not.
-- **Do nothing; the module docs already explain it.** They do
-  (`observation.rs:1-17`) — in a `//!` comment only the implementer
-  sees, and documentation that only the implementer sees protects only
-  the implementer.
-
-## 2. The defect the current cut produces
-
-One row per durable store.
-
-| Store                    | Holds                                   | Authority                                       | Regenerable                                                                                                                                            | Documented by                                                                                                                                                                                                  |
-| :----------------------- | :-------------------------------------- | :---------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `blobs/` (blob keyspace) | commit/coz content and commit manifests | told                                            | no — this is the record                                                                                                                                | `SPEC.md:3149` (§16.3.2), `docs/specs/blob-store.md`, `docs/specs/blob-store-fjall.md`, `docs/guides/operating-a-server.md:305-311`                                                                            |
-| `blobs/` (EML keyspaces) | each principal's commit-tree state      | worked out from the chain                       | replay reconstructs principals from blobs (`engine/mod.rs:670-720`); a byte-level regeneration path for a lost EML keyspace is not documented anywhere | `docs/specs/blob-store-fjall.md:61-85` (co-location mandate; its fjall-1 vocabulary is stale)                                                                                                                  |
-| `index/`                 | six keyspaces (appendix)                | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              | `SPEC.md:3156`, `docs/specs/storage-engine.md`, `docs/specs/indexer.md`                                                                                                                                        |
-| `observations/`          | the key death-set                       | told (arrives out of band; no chain records it) | **no**                                                                                                                                                 | nothing under `docs/specs/` — `git grep -ilE 'observation\|death.set\|admission\|spent' docs/specs/` returns no matches; only the operator guide (`:309, :320-324`) and the module doc (`observation.rs:1-17`) |
-| `admission/`             | spent invite tokens                     | told                                            | **no**                                                                                                                                                 | nothing under `docs/specs/` (same grep); operator guide only (`:310`)                                                                                                                                          |
-| `server-principal.json`  | the server's own genesis record         | told                                            | by hand, from the signing key                                                                                                                          | operator guide (`:311, :348`)                                                                                                                                                                                  |
-
-Reading down the _Authority_ column against the layout: three stores
-holding what the server was told — two of them invisible to the
-specification layer — sit as siblings of the one store that is
-explicitly safe to delete.
-
-Deleting the index to force a rebuild is a documented, supported operation
-— the operator guide prints the exact command
-(`docs/guides/operating-a-server.md:327-333`):
-
-```sh
-rm -rf data/index
-cyphr-server rebuild-index --data-dir ./data
-```
-
-`observations/` sits directly beside `index/`: same parent directory, same
-kind of fjall directory tree inside. An operator who has internalized "these directories are the
-server's databases, and the index one is disposable" and deletes one
-directory too many has silently revived every key whose holder declared it
-dead — the guide's own words: "Every key declared dead comes back to life"
-(`operating-a-server.md:309`). Nothing about the path, the name, or the
-layout distinguishes the disposable database from the unrecoverable one —
-and the same is true at the level where backup tooling operates, paths.
-The knowledge that separates them exists in exactly one place: a
-hand-maintained table in the operator guide
-(`operating-a-server.md:305-311`), and a guide table is not consulted by
-`rm -rf`.
-
-## 3. What follows mechanically
+## 2. What follows mechanically
 
 Three consequences. Each is stated with the decision it changes; a
 consequence that changes no decision does not appear here.
 
-### 3.1 Index membership becomes a test, not a judgment
+### 2.1 Index membership becomes a test, not a judgment
 
 Under the authority cut the index's definition is: **a thing belongs in
 the index exactly when replaying the record produces it.** That is a
@@ -171,7 +91,7 @@ and had to be recovered — which is why the commit manifest exists at all
 (`engine/mod.rs:127-141`). The manifest is the retained form of the
 ingest; the test is anchored to it.
 
-### 3.2 The table registry becomes the deriver's output, never a declaration
+### 2.2 The table registry becomes the deriver's output, never a declaration
 
 Today's `index_meta` keyspace is a hardcoded list of five partition names,
 written once at first open and never read again — its only read is an
@@ -195,7 +115,7 @@ new check to write — which also makes being wrong about a table cheap
 (one rebuild), and the query set is the part of this design least likely
 to be right early.
 
-### 3.3 One writer, and it is a function of record events
+### 2.3 One writer, and it is a function of record events
 
 The strongest consequence does not check the property — it removes the
 API that could violate it: **the index has exactly one writer, and that
@@ -217,7 +137,7 @@ from writing the index directly.
 _Decision changed:_ the index's public write surface — from "callers are
 trusted to route writes through the deriver" to "the deriver is the only
 write path that exists." This is the move from checking to structure:
-§3.1's test finds a violation after it lands; this makes it unwritable.
+§2.1's test finds a violation after it lands; this makes it unwritable.
 The test stays worth running — it is what catches a deriver that is
 itself wrong, which structure cannot.
 
@@ -297,10 +217,87 @@ flowchart LR
 ```
 
 Beside the write flow this is visibly the same derivation over the whole
-record rather than a delta — which is what makes §3.1's membership test
+record rather than a delta — which is what makes §2.1's membership test
 meaningful: if `apply(one event)` and `derive(whole record)` are ever
 different functions, the system holds two answers to one question, and
 rebuild-and-compare is the only thing that will say so.
+
+## 3. The defect the current cut produces
+
+One row per durable store; the grid shows mixed authority at every level
+of the layout.
+
+| Store                    | Holds                                   | Authority                                       | Regenerable                                                                                                                                            | Documented by                                                                                                                                                                                                  |
+| :----------------------- | :-------------------------------------- | :---------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blobs/` (blob keyspace) | commit/coz content and commit manifests | told                                            | no — this is the record                                                                                                                                | `SPEC.md:3149` (§16.3.2), `docs/specs/blob-store.md`, `docs/specs/blob-store-fjall.md`, `docs/guides/operating-a-server.md:305-311`                                                                            |
+| `blobs/` (EML keyspaces) | each principal's commit-tree state      | worked out from the chain                       | replay reconstructs principals from blobs (`engine/mod.rs:670-720`); a byte-level regeneration path for a lost EML keyspace is not documented anywhere | `docs/specs/blob-store-fjall.md:61-85` (co-location mandate; its fjall-1 vocabulary is stale)                                                                                                                  |
+| `index/`                 | six keyspaces (appendix)                | worked out                                      | yes — `rm -rf data/index` plus rebuild is a documented, supported operation (`docs/guides/operating-a-server.md:327-333`)                              | `SPEC.md:3156`, `docs/specs/storage-engine.md`, `docs/specs/indexer.md`                                                                                                                                        |
+| `observations/`          | the key death-set                       | told (arrives out of band; no chain records it) | **no**                                                                                                                                                 | nothing under `docs/specs/` — `git grep -ilE 'observation\|death.set\|admission\|spent' docs/specs/` returns no matches; only the operator guide (`:309, :320-324`) and the module doc (`observation.rs:1-17`) |
+| `admission/`             | spent invite tokens                     | told                                            | **no**                                                                                                                                                 | nothing under `docs/specs/` (same grep); operator guide only (`:310`)                                                                                                                                          |
+| `server-principal.json`  | the server's own genesis record         | told                                            | by hand, from the signing key                                                                                                                          | operator guide (`:311, :348`)                                                                                                                                                                                  |
+
+Reading down the _Authority_ column against the layout: three stores
+holding what the server was told — two of them invisible to the
+specification layer — sit as siblings of the one store that is
+explicitly safe to delete.
+
+Deleting the index to force a rebuild is a documented, supported operation
+— the operator guide prints the exact command
+(`docs/guides/operating-a-server.md:327-333`):
+
+```sh
+rm -rf data/index
+cyphr-server rebuild-index --data-dir ./data
+```
+
+`observations/` sits directly beside `index/`: same parent directory, same
+kind of fjall directory tree inside. An operator who has internalized "these directories are the
+server's databases, and the index one is disposable" and deletes one
+directory too many has silently revived every key whose holder declared it
+dead — the guide's own words: "Every key declared dead comes back to life"
+(`operating-a-server.md:309`). Nothing about the path, the name, or the
+layout distinguishes the disposable database from the unrecoverable one —
+and the same is true at the level where backup tooling operates, paths.
+The knowledge that separates them exists in exactly one place: a
+hand-maintained table in the operator guide
+(`operating-a-server.md:305-311`), and a guide table is not consulted by
+`rm -rf`.
+
+### 3.1 The case for the current cut, stated fairly
+
+The current technology cut is not an accident: one directory per
+embedded database means failure domains map one-to-one onto paths
+(`rs/cyphr-server/src/lib.rs:112-127`), and the opposing position in one
+sentence is _the split by database is the physically true one, and what
+a directory means belongs in documentation, not in the path._ The
+answer: the physical truth is preserved — each store remains its own
+database, its own failure domain; only the grouping above it changes —
+and the defect above is the evidence that "meaning belongs in
+documentation" has already failed once at the layout's own expense.
+
+### 3.2 Alternatives considered and rejected
+
+- **Keep the layout; add checks and documentation.** Rejected: a check
+  catches the violation after it lands and a table informs only the
+  operator who reads it — as the _only_ move they harden the symptom and
+  leave the cause (the checks are worth having; §2 keeps both).
+- **Cut by regenerability instead of authority.** Same partition today,
+  rejected for the causal direction: regenerability classifies stores by
+  an outcome, so it can say what to back up but cannot say what may be
+  _written_ where; authority yields regenerability as a theorem and a
+  write rule besides (§2.3).
+- **Fold the death-set into the record store as content-addressed
+  blobs.** Rejected: the refusal check would ride a derived projection —
+  a window in which a dead key answers as alive
+  (`observation.rs:110-116`), where today's store acknowledges a death
+  only after its own fsync (`observation.rs:96-102`); spent-token
+  entries mutate where immutable blobs cannot (`admission.rs:541-585`);
+  and the blob store's declared scope is protocol messages
+  (`docs/specs/blob-store.md`), which a spent-token hash is not.
+- **Do nothing; the module docs already explain it.** They do
+  (`observation.rs:1-17`) — in a `//!` comment only the implementer
+  sees, and documentation that only the implementer sees protects only
+  the implementer.
 
 ## 4. Costs
 
@@ -332,7 +329,7 @@ external fact — the design says no: it goes into the record layer with a
 real durability story, or it does not exist. That is the point, and it
 will chafe on every such feature forever. This is a standing tax on
 future work, and grounds a reasonable no from anyone who weighs
-convenience across the system's lifetime above the enforceability §3.3
+convenience across the system's lifetime above the enforceability §2.3
 buys.
 
 **The membership test forecloses a class of accelerator.** "Reproducible
@@ -340,7 +337,7 @@ from the retained record" excludes any structure whose contents depend on
 randomness or construction order — a seeded bloom filter, a
 sampling-based sketch. If one is ever wanted, the honest repair is to
 weaken the index's definition to "derived _or_ disposable-nondeterministic",
-which gives back a piece of what §3.1 bought. No such structure is needed
+which gives back a piece of what §2.1 bought. No such structure is needed
 today; the cost is carried by the future.
 
 **Rebuild-and-compare grows with the record, without bound.** As a
@@ -355,7 +352,7 @@ Three questions, each answerable yes or no on its own. They are ordered
 by dependency — 2 presupposes a yes to 1, and 3 presupposes a yes to 2 —
 but they are separable: "yes to the regrouping, no to the enforcement"
 is a coherent vote, and so is any other prefix. This proposal's own
-position is that the three are strongest taken together, because §3's
+position is that the three are strongest taken together, because §2's
 consequences chain through all of them; the vote is still per question.
 
 **Question 1 — the regrouping.** Shall durable storage be cut by
@@ -374,25 +371,25 @@ Answering **yes** commits to the §1.1 layout, including migrating the
 death-set — the least-regenerable data in the system — and amending the
 documents listed below. Answering **no** commits to: the current layout
 stands; the operator guide's table remains the sole defense against
-§2's deletion and backup errors; and the two undocumented record stores
+§3's deletion and backup errors; and the two undocumented record stores
 remain invisible to the specification layer unless documented where
 they lie.
 
 **Question 2 — sole-writer enforcement.** Shall the deriver — a pure
 function from record events to index entries — be the only write path
-into the index, removing the raw accessors that bypass it (§3.3)?
+into the index, removing the raw accessors that bypass it (§2.3)?
 
 Answering **yes** commits to deleting the bypass surface
 (`engine/mod.rs:297-300`) and accepting §4's standing tax: no durable
 memoisation outside the record, ever. Answering **no** commits to: the
 discipline the code already follows stays a habit, not a rule; any
 future feature may write the index directly and nothing structural
-stops it; and §3.1's membership test becomes the only line of defense,
+stops it; and §2.1's membership test becomes the only line of defense,
 catching violations after they land instead of making them unwritable.
 
 **Question 3 — the generated registry.** Shall the index registry be
 the deriver's generated output, checked by rebuild-and-compare,
-replacing the hand-maintained `index_meta` partition list (§3.1–3.2)?
+replacing the hand-maintained `index_meta` partition list (§2.1–2.2)?
 
 Answering **yes** commits to building rebuild-and-compare and running
 it on the schedule §4 concedes it needs, and to retiring the hardcoded
