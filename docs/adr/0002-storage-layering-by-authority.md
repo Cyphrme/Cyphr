@@ -198,13 +198,20 @@ attested.)
 The index has no such property: no principal-signed content references
 it. It remains the sole derived-class member.
 
-### Decision 7 — Correction against proposal §4 and §5
+### Decision 7 — Correction against proposal §1.1, §4, and §5
 
-This ADR corrects two places where `docs/proposals/storage-layering.md`
+This ADR corrects three places where `docs/proposals/storage-layering.md`
 (left unedited at 2121304 per this PR's scope) misclassifies the EML
 commit tree, so the correction is recorded here rather than silently
 inherited:
 
+- **§1.1's diagram and surrounding prose** label the EML keyspaces
+  "derived EML keyspaces" and describe their co-location inside
+  `blobs/` as "derived state inside the record layer, carried as a
+  named exception." A reader who starts at §1.1 — the proposal's first
+  substantive section — meets this misclassification before reaching
+  §4 or §5; Decision 6 corrects it here too: the EML tree is record
+  data, not derived state placed in the record layer by exception.
 - **§4's table** lists the EML keyspaces' authority as "worked out from
   the chain," with a Regenerable note ("replay reconstructs principals
   from blobs"). This is true of the bytes and wrong as an authority
@@ -220,6 +227,10 @@ inherited:
   Decision 4 still prices *why* it stays co-located in `blobs/` rather
   than moving to its own database — that is a real, separately-argued
   atomicity trade-off — but it is not payment for an exemption.
+
+A reader of the proposal alongside this ADR should treat every "derived"
+or "exception" reference to the EML keyspaces in §1.1, §4, and §5 as
+superseded by Decision 6, not as a live characterization.
 
 The proposal's Q1 condition ("the EML commit-tree keyspaces remain
 inside the record's blob database") stands unchanged as *policy* — this
