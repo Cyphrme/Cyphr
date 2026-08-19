@@ -21,6 +21,50 @@ Markdown is formatted by `treefmt` (prettier) from the repo root; the
 pre-commit hook audits local links in touched files. Follow the
 predicate documentation conventions when editing prose.
 
+## Docket — the documentation claim gate
+
+`docket` binds a claim in prose to the code it describes and refuses a
+claim nothing checks; the root `docket.ncl` registers which genres of
+`docs/` may carry which kind of claim (see that file for the reasoning).
+Registration currently covers only the genres being born:
+`docs/architecture/**` (`requirement`) and `docs/use/**` (`constraint`).
+`docs/specs/` and `docs/guides/` are not registered yet.
+
+docket is a **sibling checkout**, never vendored into this repository.
+Pin: commit `0854eca`. Run from the repository root:
+
+```sh
+<docket>/target/release/docket check --corpus .
+```
+
+`<docket>` is wherever that checkout lives on disk — there is no
+in-repo default, so set it to your own checkout's path (or export
+`DOCKET_BIN` to the `docket` binary itself, the convention
+`scripts/docket-fixtures/run` uses, if scripting against it). The
+command above uses docket's own embedded default register; passing
+`--register <docket>/contracts/register.ncl` is equivalent and explicit.
+**There is no `--contract` flag on this tip** — an invocation carrying
+one is stale and will fail with `unexpected argument '--contract' found`
+(exit 2), reading like a real failure rather than a removed flag.
+
+A `@docket:` marker whose evaluator is a claim needing more than one
+command names `scripts/docket-run <claim-id>` rather than inlining the
+commands: it is the bounded id-indirection wrapper, and its `CLAIMS`
+table holds a real list per id, all required green. See the script's own
+header for why a marker is bounded-length regardless of how long or how
+many the underlying commands are.
+
+`scripts/docket-fixtures/run` is the acceptance suite for the gate's own
+wiring — a fixture per failure mode the gate must catch (a malformed
+marker, an exempt marker's silent pass, a stale registration, a renamed
+test behind a green marker) plus `scripts/docket-run`'s list-valued
+behavior. Run it after any change to `docket.ncl`, `scripts/docket-run`,
+or the pinned docket commit; it is not wired into CI (none exists on this
+repository yet) — run it by hand.
+
+Any docket shortfall a fixture reveals is filed upstream against
+`axiosoph/docket`, never patched or forked locally.
+
 ## Doc sites (`sites/`)
 
 Two static sites built with **sukr** (https://sukr.io), deployed via

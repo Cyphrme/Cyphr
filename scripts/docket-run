@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Bounded id-indirection runner for docket claims whose `@docket:` marker
+# names this script plus a claim id — successor to the earlier
+# `docket-test` shape, whose CLAIMS table mapped one claim id to exactly
+# one test invocation. A conjunctive requirement needing several tests
+# to jointly close it had no way to register more than one there.
+#
+# Here CLAIMS_INDEX maps a claim id to the name of a real bash ARRAY
+# (via nameref, below) — not a single joined shell string (`a && b`),
+# which would satisfy a black-box exit code without the underlying data
+# actually being list-shaped. Every command in the array runs, in
+# order; the claim only passes if every one of them exits 0.
+#
+# The other half of the bound this preserves from `docket-test`: a
+# marker naming this script plus a short id is fixed-length regardless
+# of how long the underlying commands are or how many a claim needs —
+# `// docket: <id> :: scripts/docket-run <id>` never risks a comment's
+# column-wrap limit the way inlining a raw multi-command invocation
+# would.
+#
+# Usage: docket-run <claim-id>
+set -uo pipefail
+
+# claim id -> name of the bash array holding its command list. Bash
+# variable names cannot contain '-', so the index translates each
+# hyphenated claim id to its array's underscored name; a new claim adds
+# one line here plus the array it names.
+declare -A CLAIMS_INDEX=(
+  [list-valued-both-green]="_claim_list_valued_both_green"
+  [list-valued-one-failing]="_claim_list_valued_one_failing"
+)
+
+# scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
+# entries, proving the list-valued mechanism itself rather than any
+# project claim. Real entries join this table as docs/architecture and
+# docs/use gain markers that reference them.
+_claim_list_valued_both_green=(
+  "true"
+  "true"
+)
+_claim_list_valued_one_failing=(
+  "true"
+  "false"
+)
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: docket-run <claim-id>" >&2
+  exit 2
+fi
+
+id="$1"
+arrname="${CLAIMS_INDEX[$id]:-}"
+if [ -z "$arrname" ]; then
+  echo "docket-run: no CLAIMS entry for claim id '$id'" >&2
+  exit 2
+fi
+
+declare -n cmds="$arrname"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root" || exit 2
+
+failures=0
+for cmd in "${cmds[@]}"; do
+  if ! bash -c "$cmd"; then
+    echo "docket-run: '$id' command failed: $cmd" >&2
+    failures=1
+  fi
+done
+
+exit "$failures"
