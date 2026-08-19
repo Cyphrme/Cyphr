@@ -407,6 +407,20 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 /// interleaved into one stream: each kind installs its own OS handler, and
 /// nothing here needs to distinguish which one fired beyond selecting on
 /// both.
+///
+/// **What this closes, and what it does not.** `tokio::signal::unix::signal`
+/// registers synchronously with the OS, so calling it as the first
+/// statement of [`serve`] completes registration before anything else in
+/// the process runs -- the registration-timing race described above is
+/// closed, not narrowed; this has been checked against the runtime's own
+/// source, not just observed to stop reproducing. A separate, unexplained
+/// failure mode remains under sustained CPU load: the process can
+/// acknowledge the terminating signal at the OS level and still fail to
+/// complete shutdown within a test's time budget, reproduced at roughly 4
+/// in 100 runs under heavy oversubscription (once requiring a kill to
+/// clear). No mechanism is claimed for that residual -- not the scheduler,
+/// not the async runtime, not this crate's own shutdown path -- pending
+/// investigation. Tracked as issue #190.
 #[cfg(unix)]
 struct UnixShutdownSignals {
     interrupt: tokio::signal::unix::Signal,
