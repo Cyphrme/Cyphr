@@ -119,13 +119,13 @@ fn roots_a() -> Roots {
         pr: digest(0xa1),
         sr: digest(0xa2),
         ar: digest(0xa3),
-        cr: digest(0xa4),
+        cr: Some(digest(0xa4)),
     }
 }
 
 fn roots_b() -> Roots {
     Roots {
-        cr: digest(0xa5),
+        cr: Some(digest(0xa5)),
         ..roots_a()
     }
 }

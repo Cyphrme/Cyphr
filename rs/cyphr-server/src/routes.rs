@@ -234,6 +234,19 @@ pub async fn tip(
     }
 }
 
+/// The accepted commit's 0-indexed sequence position: `commit_count`'s
+/// checked predecessor (#98/#156). `commit_count == 0` can only mean a
+/// desynchronized or corrupted tip -- `MemoryIndexer::index_commit`
+/// computes `commit_count` as the chain's own length, so `get_tip` never
+/// returns `0` for an existing principal today -- but nothing in the TYPE
+/// enforces that invariant, so a caller-reachable zero is treated as an
+/// internal error rather than trusted to never wrap a plain subtraction.
+fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
+    commit_count
+        .checked_sub(1)
+        .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
+}
+
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
 /// the claim set `/tip` and `/patch` both need (identity, entry/root
 /// binding, `now`), factored out so `/patch`'s envelope signing (K10) reuses
@@ -263,13 +276,17 @@ async fn sign_tip_attestation(
         pr: derived.pr,
         sr: derived.sr,
         ar: derived.ar,
-        cr: derived.cr,
+        // Storage's own re-derivation still reports "no commit root yet"
+        // as an empty string (cyphr-storage, out of this node's surface)
+        // -- this is the boundary where that sentinel becomes the
+        // receipt's typed absence (#147).
+        cr: (!derived.cr.is_empty()).then_some(derived.cr),
     };
     let coz = receipt::tip_report(
         identity,
         crate::auth::server_now(),
         t.principal_id.clone(),
-        t.commit_count - 1,
+        commit_sequence(t.commit_count)?,
         t.commit_id.clone(),
         &roots,
         t.commit_count,
@@ -442,6 +459,24 @@ pub async fn push(
         crate::auth::server_now(),
     )?;
 
+    // #168: an attestor server refuses to sign a post-commit receipt for a
+    // non-canonical `principal_id` (`receipt::commit_receipt`'s own
+    // `parse_genesis_id_str` gate) -- refusing HERE, before any durable
+    // write, keeps that refusal from being discovered only after
+    // `submit_commit` (below) has already landed the commit, which
+    // previously left a durable write standing behind a reported `500`.
+    // Scoped to attestor mode: a keyless or keyed-but-unbootstrapped
+    // server never attempts to sign a receipt, so it stays free to accept
+    // any storage-key-shaped `principal_id`, exactly as before.
+    if state.attestor_identity().is_some()
+        && receipt::parse_genesis_id_str(&request.principal_id).is_err()
+    {
+        return Err(AppError::bad_request(format!(
+            "principal_id is not a canonical genesis identifier: {}",
+            request.principal_id
+        )));
+    }
+
     // Decode base64url blobs back to raw bytes.
     let raw_blobs: Vec<Vec<u8>> = request
         .blobs
@@ -518,7 +553,7 @@ pub async fn push(
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
         commit_id: t.commit_id.clone(),
-        sequence: t.commit_count - 1,
+        sequence: commit_sequence(t.commit_count)?,
         roots: PushRoots {
             pr: t.pr.clone(),
             sr: t.sr.clone(),
@@ -548,13 +583,16 @@ pub async fn push(
                 pr: derived.pr,
                 sr: derived.sr,
                 ar: derived.ar,
-                cr: derived.cr,
+                // See `sign_tip_attestation`'s identical conversion: the
+                // empty-string sentinel becomes the receipt's typed
+                // absence at this boundary (#147).
+                cr: (!derived.cr.is_empty()).then_some(derived.cr),
             };
             let coz = receipt::commit_receipt(
                 identity,
                 crate::auth::server_now(),
                 t.principal_id,
-                t.commit_count - 1,
+                commit_sequence(t.commit_count)?,
                 t.commit_id,
                 &roots,
             )
@@ -944,4 +982,370 @@ pub async fn witness_register_get(
     let env = crate::envelope::Envelope::unsigned(payload);
 
     Ok((StatusCode::OK, Json(env)))
+}
+
+// ========================================================================
+// #98/#156: `commit_count - 1` must never silently wrap
+// ========================================================================
+
+/// White-box coverage for #98/#156: three sites in this file compute a
+/// receipt/response `sequence` as `t.commit_count - 1` on a plain `u64`,
+/// with no check. Issue #98's own text: "It's safe today ... the safety
+/// rests on that invariant holding at every call site indefinitely, with
+/// no compiler or runtime signal if a future change ... ever violated
+/// it." Issue #156 confirms the invariant is genuinely unreachable via
+/// the ordinary commit-ingestion path today (a `TipState` is only ever
+/// recorded after indexing at least one commit -- `MemoryIndexer`'s own
+/// `commit_count` is a freshly-computed chain length, never a caller
+/// -supplied value), so this suite exercises the vulnerable call sites
+/// directly with a hand-constructed [`TipState`] rather than via HTTP --
+/// the same white-box pattern `sync.rs`'s own
+/// `resulting_tip_matches_report_accepts_legitimate_empty_commit_root`
+/// test already uses.
+///
+/// Only `sign_tip_attestation` (this file's :272, shared by `/tip` and
+/// `/patch`) is independently callable this way; `push`'s own two sites
+/// (:521 payload, :557 receipt) fetch their `TipState` from the live,
+/// concretely-typed `FjallIndexer`-backed engine inline and cannot be fed
+/// a corrupted value without either refactoring production code (out of
+/// this role's scope) or a storage-layer corruption this crate's test
+/// surface has no API to perform -- see
+/// `no_unchecked_commit_count_arithmetic_remains_in_routes` below, which
+/// covers all three sites structurally instead.
+#[cfg(test)]
+mod commit_count_underflow_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::auth::principal::ServerPrincipal;
+    use crate::config::ServerConfig;
+
+    /// A keyed, bootstrapped [`AppState`] -- mirrors
+    /// `tests/common/mod.rs::attestor_server()`, duplicated here (rather
+    /// than reused) because that helper lives in a separate
+    /// integration-test crate and cannot see `sign_tip_attestation`,
+    /// which is private to this module.
+    async fn attestor_state() -> (Arc<AppState>, TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_path = dir.path().join("signing-key.json");
+        let kp = coz::Alg::Ed25519.generate_keypair();
+        let file = serde_json::json!({
+            "alg": kp.alg.name(),
+            "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+            "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+        });
+        std::fs::write(&key_path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let config = ServerConfig {
+            data_dir: dir.path().join("data"),
+            signing_key_path: Some(key_path.clone()),
+            ..Default::default()
+        };
+        let mut state = AppState::new(config).expect("keyed AppState opens");
+        let identity = state.identity.clone().expect("keyed state has identity");
+
+        // `state.attestor_identity()` (what `sign_tip_attestation` gates
+        // on) requires BOTH `identity` and `principal` to be `Some` --
+        // bootstrap the server's own principal purely to satisfy that
+        // gate. The fixture tip each test below actually signs comes from
+        // a SEPARATE, purpose-built genesis push (`push_test_genesis`),
+        // not the server's own chain: `rederive_roots`'s auto-detection
+        // (`resolve_genesis` -> `genesis_from_raw_blobs`) requires the
+        // genesis key embedded on the CLOSING `commit/create` cozy, a wire
+        // shape `build_genesis` (used here) does not produce -- it hands
+        // `submit_commit` an already-resolved `Genesis::Explicit`
+        // directly, bypassing that auto-detection entirely. A test push
+        // must go through the same auto-detecting shape a real client
+        // request does.
+        let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+            .await
+            .expect("bootstrap the server principal");
+        state.principal = Some(Arc::new(sp));
+
+        (Arc::new(state), dir)
+    }
+
+    /// Push a minimal, data-free genesis commit for `principal_id` through
+    /// the engine directly -- an implicit-genesis key closed by a
+    /// `commit/create` introducing one further key, the genesis key
+    /// embedded on the CLOSING cozy exactly as `submit_commit`'s
+    /// auto-detection (`genesis_from_raw_blobs`) requires. Mirrors
+    /// `tests/common/mod.rs::build_genesis_push_body` +
+    /// `sign_key_create_commit`'s wire shape, duplicated here (with a
+    /// freshly generated keypair rather than the shared `test_fixtures`
+    /// pool) because that helper lives in the separate integration-test
+    /// crate this unit-test module cannot depend on.
+    async fn push_test_genesis(state: &AppState, principal_id: &str, now: i64) {
+        let golden_kp = coz::Alg::Ed25519.generate_keypair();
+        let golden_tmb = golden_kp
+            .alg
+            .compute_thumbprint(&golden_kp.pub_bytes)
+            .expect("golden thumbprint");
+        let golden_key = cyphr::Key {
+            alg: golden_kp.alg.name().to_string(),
+            tmb: golden_tmb.clone(),
+            pub_key: golden_kp.pub_bytes.clone(),
+            first_seen: 0,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        };
+
+        let new_kp = coz::Alg::Ed25519.generate_keypair();
+        let new_tmb = new_kp
+            .alg
+            .compute_thumbprint(&new_kp.pub_bytes)
+            .expect("new-key thumbprint");
+        let new_tmb_b64 = Base64UrlUnpadded::encode_string(new_tmb.as_bytes());
+        let golden_tmb_b64 = Base64UrlUnpadded::encode_string(golden_tmb.as_bytes());
+
+        let pay_value = serde_json::json!({
+            "alg": golden_kp.alg.name(),
+            "id": new_tmb_b64,
+            "now": now,
+            "tmb": golden_tmb_b64,
+            "typ": "cyphr.me/cyphr/key/create",
+        });
+        let mut pay_obj = pay_value.clone();
+        pay_obj.as_object_mut().unwrap().sort_keys();
+        let pay_vec = serde_json::to_vec(&pay_obj).unwrap();
+
+        let (sig_bytes, cad) = coz::sign_json(
+            &pay_vec,
+            golden_kp.alg.name(),
+            &golden_kp.prv_bytes,
+            &golden_kp.pub_bytes,
+        )
+        .expect("signing supported for Ed25519");
+        let czd = coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
+
+        let new_key = cyphr::Key {
+            alg: new_kp.alg.name().to_string(),
+            tmb: new_tmb,
+            pub_key: new_kp.pub_bytes.clone(),
+            first_seen: now,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        };
+
+        let mut principal =
+            cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
+        let mut scope = principal.begin_commit();
+        scope
+            .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key))
+            .expect("key/create verifies against the starting principal state");
+        scope
+            .finalize_with_arrow(
+                golden_kp.alg.name(),
+                &golden_kp.prv_bytes,
+                &golden_kp.pub_bytes,
+                &golden_tmb,
+                now,
+                "cyphr.me",
+            )
+            .expect("commit finalizes");
+
+        let entries = cyphr_storage::export_commits(&principal).expect("export the new commit");
+        let commit = entries.last().expect("at least one commit after finalize");
+
+        let mut key_idx = 0;
+        let blobs: Vec<Vec<u8>> = commit
+            .cozies
+            .iter()
+            .map(|v| {
+                let mut coz = v.clone();
+                let typ = coz["pay"]["typ"].as_str().unwrap_or("");
+                if cyphr::parsed_coz::typ::is_key_introducing(typ) && key_idx < commit.keys.len() {
+                    let key = &commit.keys[key_idx];
+                    coz.as_object_mut().unwrap().insert(
+                        "key".to_string(),
+                        serde_json::json!({
+                            "alg": key.alg,
+                            "pub": key.pub_key,
+                            "tmb": key.tmb,
+                        }),
+                    );
+                    key_idx += 1;
+                }
+                serde_json::to_vec(&coz).expect("cozy serializes")
+            })
+            .collect();
+
+        // The genesis key is embedded on the CLOSING `commit/create` cozy
+        // (`resolve_genesis`'s auto-detection wire contract for a
+        // never-before-seen principal), not on the `key/create` cozy above.
+        let closing_idx = blobs.len() - 1;
+        let mut closing: serde_json::Value = serde_json::from_slice(&blobs[closing_idx]).unwrap();
+        closing.as_object_mut().unwrap().insert(
+            "key".to_string(),
+            serde_json::json!({
+                "alg": golden_key.alg,
+                "pub": Base64UrlUnpadded::encode_string(&golden_key.pub_key),
+                "tmb": golden_tmb_b64,
+            }),
+        );
+        let closing_blob = serde_json::to_vec(&closing).unwrap();
+
+        let mut all_blobs = blobs;
+        let last = all_blobs.len() - 1;
+        all_blobs[last] = closing_blob;
+
+        let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
+        state
+            .engine
+            .submit_commit(principal_id, None, &blob_refs)
+            .await
+            .expect("genesis push succeeds");
+    }
+
+    /// Positive control: proves this suite's harness genuinely exercises
+    /// `sign_tip_attestation`'s real signing path. A *legitimate*
+    /// `commit_count == 1` tip must sign a receipt whose `sequence` claim
+    /// is `0`. If this control fails, the red test below is not
+    /// trustworthy -- it could be "failing" for an unrelated harness
+    /// reason rather than the zero-commit-count defect.
+    #[tokio::test]
+    async fn sign_tip_attestation_legitimate_tip_signs_correct_sequence() {
+        let (state, _dir) = attestor_state().await;
+        let principal_id = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
+        push_test_genesis(&state, &principal_id, 1_700_200_000).await;
+
+        let tip = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("a real tip exists after the genesis push");
+        assert_eq!(
+            tip.commit_count, 1,
+            "sanity: a fresh genesis push has exactly one commit"
+        );
+
+        let coz = sign_tip_attestation(&state, &tip)
+            .await
+            .expect("legitimate commit_count must sign without error")
+            .expect("a keyed, bootstrapped server must sign");
+        assert_eq!(
+            coz.pay["sequence"],
+            serde_json::json!(0),
+            "commit_count=1 must yield sequence=0: {:?}",
+            coz.pay
+        );
+    }
+
+    /// RED: a [`TipState`] reporting `commit_count == 0` -- unreachable
+    /// via the real commit-ingestion path today, but nothing in the TYPE
+    /// enforces that, which is exactly #98/#156's complaint -- must never
+    /// let `sign_tip_attestation` sign a receipt at all, and must never
+    /// panic doing so.
+    ///
+    /// Mutation this binds: today's bare `t.commit_count - 1` at :272.
+    /// Once fixed with a checked computation, this test passes either
+    /// because the call returns an explicit error or because it falls
+    /// back to unsigned (`Ok(None)`) -- either is an acceptable "typed
+    /// absence" per this node's IBC, which leaves the exact
+    /// representation delegated; only signing a receipt at all is
+    /// disallowed.
+    ///
+    /// Driven through `tokio::spawn` (not an in-place `.await`) so a
+    /// debug-mode overflow panic is CAUGHT as a `JoinError` rather than
+    /// aborting the test process outright -- this must fail loudly under
+    /// plain `cargo test` (the debug profile most contributors run), not
+    /// only under `--release`, binding both consequences the issues name
+    /// (a debug panic and a release-mode `u64::MAX` wrap) under one
+    /// property.
+    #[tokio::test]
+    async fn sign_tip_attestation_zero_commit_count_never_wraps_or_panics() {
+        let (state, _dir) = attestor_state().await;
+        let principal_id = Base64UrlUnpadded::encode_string(&[0x62u8; 32]);
+        push_test_genesis(&state, &principal_id, 1_700_200_100).await;
+
+        let real_tip = state
+            .engine
+            .get_tip(&principal_id)
+            .await
+            .expect("get_tip")
+            .expect("a real tip exists after the genesis push");
+
+        // A hand-corrupted copy of a REAL, otherwise-consistent tip: every
+        // root still matches what `rederive_roots` independently
+        // recomputes (so the desync guard at the top of
+        // `sign_tip_attestation` does not short-circuit before the
+        // subtraction runs), with only `commit_count` forced to the
+        // claimed-unreachable value.
+        let mut corrupted = real_tip.clone();
+        corrupted.commit_count = 0;
+
+        let state_for_task = Arc::clone(&state);
+        let outcome = tokio::spawn(async move {
+            sign_tip_attestation(&state_for_task, &corrupted).await
+        })
+        .await;
+
+        match outcome {
+            Err(join_err) => panic!(
+                "commit_count == 0 must not panic (a debug-mode u64 underflow trap): {join_err}"
+            ),
+            Ok(Ok(Some(coz))) => {
+                let sequence = coz.pay["sequence"].clone();
+                panic!(
+                    "commit_count == 0 must never produce a signed receipt at all (a typed \
+                     absence is required, not a value) -- got a signed sequence claim: \
+                     {sequence}"
+                );
+            },
+            Ok(Ok(None)) | Ok(Err(_)) => {
+                // Acceptable: refused to sign, one way or the other -- the
+                // exact representation is this node's delegated call.
+            },
+        }
+    }
+
+    /// Structural companion to the behavioral test above: this file's
+    /// three call sites (`sign_tip_attestation`'s :272, `push`'s payload
+    /// :521, `push`'s receipt :557) must ALL move off the bare
+    /// `commit_count - 1` expression, not just the one the test above can
+    /// reach behaviorally (`c-no-wrap`).
+    ///
+    /// Scoped to code lines only -- the doc comment on
+    /// `PushResponse::sequence` that describes the relationship in prose
+    /// is not arithmetic and is not this constraint's target. Scoped to
+    /// THIS file only -- `sync.rs:479`'s own `commit_count - 1` is already
+    /// guarded by an explicit `tip.commit_count == 0 ||` short-circuit
+    /// before it runs (the "codebase already contains the correct pattern
+    /// once" the IBC cites), a different file, and out of this check's
+    /// scope by construction; a whole-crate literal-text grep would flag
+    /// it too despite it already being safe.
+    #[test]
+    fn no_unchecked_commit_count_arithmetic_remains_in_routes() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes.rs");
+        let src = std::fs::read_to_string(&path).expect("read routes.rs");
+        // Scan only the PRODUCTION portion of the file, up to this test
+        // module's own opening line -- this test module's source text
+        // necessarily quotes the literal pattern it is checking for (in
+        // doc comments, filter closures, and the assertion message
+        // itself), which would otherwise self-match.
+        let module_marker = "mod commit_count_underflow_tests {";
+        let production_src = src
+            .split_once(module_marker)
+            .map(|(before, _)| before)
+            .unwrap_or(&src);
+        let offenders: Vec<(usize, &str)> = production_src
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim_start().starts_with("//"))
+            .filter(|(_, line)| line.contains("commit_count - 1"))
+            .map(|(i, line)| (i + 1, line))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "unchecked `commit_count - 1` arithmetic remains in routes.rs (c-no-wrap): \
+             {offenders:?}"
+        );
+    }
 }
