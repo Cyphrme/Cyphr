@@ -347,14 +347,18 @@ curl -s -X POST http://127.0.0.1:3000/push -H 'content-type: application/json' -
 
 **`server-principal.json` is the file nobody expects to matter.** It holds
 the PG and the genesis key record. Delete it while leaving the blob store
-intact and the server refuses to start:
+intact, and the server refuses to start — but now names the problem:
 
 ```
-ERROR cyphr_server: server exited with error error=server principal storage: protocol: state mismatch
+ERROR cyphr_server: server exited with error error=missing data/server-principal.json for an already-established server principal (pg=SHA-256:…); see docs/guides/operating-a-server.md for the recovery procedure
 ```
 
-The message does not name the file, so this reads as a corrupt store when it
-is a missing sidecar. You can rebuild it by hand from two values: the public
+That detection only works before the signing key's first rotation — it
+recomputes the genesis key from the *current* key to check whether the
+engine already has a chain there, which is the genesis key only pre-rotation.
+After a rotation, a missing sidecar goes undetected: the server assumes a
+fresh boot and creates a second, unrelated principal instead of erring.
+Either way, you rebuild the sidecar by hand from two values: the public
 key, which is `pub_key` in your signing key file, and the genesis
 thumbprint, which is your PG with its hash-algorithm prefix stripped. The
 server cannot tell you the second one — it will not start — so it has to
@@ -989,22 +993,18 @@ live. There is nowhere inside the server to put it.
 
 ## Restarting and upgrading
 
-**Stop with SIGINT, not SIGTERM.** The server drains connections on
-`Ctrl-C`:
+**Stop with SIGINT or SIGTERM — both drain connections.** `Ctrl-C`,
+`systemctl stop`, `docker stop`, and a bare `kill` all reach the same path:
 
 ```
 INFO cyphr_server: shutdown signal received, draining connections
 INFO cyphr_server: server stopped
 ```
 
-SIGTERM — what `systemctl stop`, `docker stop`, and a bare `kill` send —
-is not handled. The process dies immediately with requests in flight and
-logs neither line. If you run under systemd, set `KillSignal=SIGINT` in the
-unit; otherwise every restart severs whatever was in progress.
-
-The store itself is resilient to the hard kill: a server restarted after a
-SIGTERM opens its directory cleanly with no stale lock and no recovery step.
-The cost is borne by in-flight requests, not by the data.
+A `kill -9` (SIGKILL) still bypasses this — no signal handler can catch
+it — but the store is resilient to that hard kill too: a server restarted
+after one opens its directory cleanly with no stale lock and no recovery
+step. The cost of a hard kill is borne by in-flight requests, not the data.
 
 An upgrade is therefore: stop the old process and wait for it to exit,
 start the new binary against the same data directory. Nothing is versioned
@@ -1061,7 +1061,7 @@ principal, disk per commit, throughput per core — is unmeasured.
 Named plainly, because finding these out during an incident is worse than
 reading them here:
 
-- **No SIGTERM handling.** Graceful shutdown is SIGINT only, despite the process being a normal service in every other respect.
+- **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No key rotation you can perform.** The capability exists in the codebase and has no command, endpoint, or signal attached to it. A server whose signing key is compromised has no move except a new identity — which breaks every client's pin, because the `pg` changes with the genesis key.
 - **No usable proof-of-work admission.** The policy works; nothing that could talk to it exists or is documented.
 - **No metrics, no health endpoint, no access log by default.**
