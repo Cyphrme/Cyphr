@@ -1009,11 +1009,12 @@ step. The cost of a hard kill is borne by in-flight requests, not the data.
 **Under sustained heavy CPU load, a stop can still take longer than
 expected.** The signal is received — logs and OS-level process state both
 confirm it — but shutdown has been observed, under heavy oversubscription,
-to not complete within a short budget one time in roughly twenty-five, and
-once needed a hard kill to clear. The cause is not established; nothing
-here is known to be at fault. If a supervised restart hangs past its usual
-few seconds, do not assume a stuck request — it may be this. Tracked as
-issue #190.
+to not complete within a short budget roughly 4 in 100 times, and once
+needed a hard kill to clear. The cause is not established, and no one
+component — the scheduler, the async runtime, this crate's own shutdown
+path — is implicated over another. If a supervised restart hangs past its
+usual few seconds, do not assume a stuck request — it may be this. Tracked
+as issue #190.
 
 An upgrade is therefore: stop the old process and wait for it to exit,
 start the new binary against the same data directory. Nothing is versioned
