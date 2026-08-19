@@ -104,10 +104,18 @@ Procedure when a contradiction surfaces during any work:
 
 ## Invariants
 
-- **I1 — Source of truth.** The BLAKE3 content-addressed blob store is the
-  sole source of truth; the eml Merkle log and the index are rebuildable
-  caches. Grounding: forge issue #26. Signpost: any design that makes log
-  or index authoritative violates this.
+- **I1 — Source of truth.** The BLAKE3 content-addressed blob store,
+  including each principal's EML commit-tree keyspaces, is the record —
+  the sole source of truth. The EML commit tree is record structure with
+  a tested reconstruction property (disaster recovery from blob content,
+  not disposability): its bytes can be rebuilt if lost, but losing them
+  is a recovery event, not a routine operation, unlike the index. The
+  index alone is a rebuildable cache: the sole derived-class member,
+  safely and routinely disposable. Grounding: ADR-0002 (`SPEC.md:114`,
+  `:333-339`, `:587-588`), superseding forge issue #26's framing.
+  Signpost: any design that makes the index authoritative, or that
+  treats deleting the EML keyspaces as a routine operation, violates
+  this.
 - **I2 — Single-writer per principal.** Within one principal, history is a
   strongly-ordered, single-writer signed chain; a fork is detected, never
   merged. Across principals there are no relationships; multi-master is an
