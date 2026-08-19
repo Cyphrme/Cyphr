@@ -239,18 +239,23 @@ cache, it is record structure. I1 is rewritten to:
 > **I1 — Source of truth.** The BLAKE3 content-addressed blob store,
 > including each principal's EML commit-tree keyspaces, is the record —
 > the sole source of truth. The EML commit tree is record structure
-> with a tested reconstruction property (disaster recovery from blob
-> content, not disposability): its bytes can be rebuilt if lost, but
-> losing them is a recovery event, not a routine operation, unlike the
-> index. The index alone is a rebuildable cache: the sole derived-class
-> member, safely and routinely disposable. Grounding: ADR-0002
-> (`SPEC.md:114`, `:333-339`, `:587-588`). Signpost: any design that
-> makes the index authoritative, or that treats deleting the EML
-> keyspaces as a routine operation, violates this.
+> with a claimed reconstruction property, not yet covered by a test
+> (disaster recovery from blob content, not disposability): its bytes
+> are meant to be rebuildable if lost, but losing them is a recovery
+> event, not a routine operation, unlike the index. The index alone is
+> a rebuildable cache: the sole derived-class member, safely and
+> routinely disposable. Grounding: ADR-0002 (`SPEC.md:114`, `:333-339`,
+> `:587-588`). Signpost: any design that makes the index authoritative,
+> or that treats deleting the EML keyspaces as a routine operation,
+> violates this.
 
-The distinction the rewrite draws — *reconstructible in principle* vs.
+The distinction the rewrite draws — *meant to be reconstructible* vs.
 *disposable in practice* — is why the EML keyspaces sit in `record/`
 while `index/` remains the one path safe for an operator's `rm -rf`.
+The reconstruction claim is the proposal's own open question (§4:
+"a byte-level regeneration path for a lost EML keyspace is not
+documented anywhere") — this ADR does not close it, only states the
+classification correctly regardless of whether it is closed.
 
 ---
 
