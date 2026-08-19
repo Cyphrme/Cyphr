@@ -387,14 +387,39 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 ///
 /// `axum::serve(..).with_graceful_shutdown(..)` requires a
 /// `Future<Output = ()>`, so there is no `Result` to propagate here even in
-/// principle. `ctrl_c()` only errs if the OS refuses to let the process
-/// install a signal handler at all -- a process-level failure unrelated to
+/// principle. Both signal futures only err if the OS refuses to let the
+/// process install a handler at all -- a process-level failure unrelated to
 /// any request or its input, and one this process cannot meaningfully
 /// recover from (it would run with no way to shut down gracefully).
+///
+/// SIGTERM is handled alongside SIGINT (#172) because it is what every
+/// managed process supervisor sends on a routine stop or restart --
+/// systemd, Docker, and Kubernetes all default to SIGTERM before
+/// escalating to SIGKILL. Left unhandled, its OS default disposition
+/// terminates the process immediately: no drain, no "server stopped" log
+/// line, and a reboot that looks like a crash rather than a restart.
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to listen for shutdown signal");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl_c");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    // Non-Unix targets have no SIGTERM to wait for; ctrl_c alone decides.
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
     tracing::info!("shutdown signal received, draining connections");
 }
 
