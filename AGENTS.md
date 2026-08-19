@@ -32,7 +32,6 @@ revival.
 | `SPEC.md`  | Protocol specification (see Invariants: ownership)                                      |
 | `rs/`      | Rust workspace — **all active work happens here** (`rs/AGENTS.md`)                      |
 | `go/`      | Go implementation — deprioritized, reference only (`go/AGENTS.md`)                      |
-| `login/`   | Isolated Go module; design reference for SPEC §17 auth, unwired                         |
 | `docs/`    | Specs, ADRs, models — read `docs/AGENTS.md` before trusting any of it                   |
 | `tests/`   | Language-agnostic corpus: `intents/*.toml` → `golden/**/*.json` (see `tests/README.md`) |
 | `.ledger/` | Predicate flight recorder (sub-repo); campaign history lives here                       |
