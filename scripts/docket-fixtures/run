@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# DK0's fixture-armed acceptance suite (c-fixtures-red, c-list-valued-map
-# in .scratch/campaign-mvp-close/prompts/DK0-docket-integration.yaml).
+# The docket-wiring acceptance suite: five fixtures proving the gate reds
+# on what it must catch (a malformed marker, an exempt marker's silent
+# pass, a stale registration, a renamed test behind a green marker) plus
+# scripts/docket-run's own list-valued claim table.
 #
 # Five fixtures, four of them ("through the wired gate") exercising the
 # pinned docket binary directly against a self-contained corpus under

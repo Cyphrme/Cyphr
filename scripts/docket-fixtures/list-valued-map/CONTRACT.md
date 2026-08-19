@@ -1,12 +1,10 @@
 # list-valued-map fixture — the contract scripts/docket-run must satisfy
 
-This fixture has no `docket.ncl`/`docs` of its own: `c-list-valued-map`
-(the DAG's DK0 IBC) is a property of `scripts/docket-run` itself — the
-successor to `writing/sovereign-signon-brief:scripts/docket-test`, whose
-single-string `CLAIMS` table is exactly the defect
-`.ledger/tech-debt/2026-08-04-one-claim-cannot-name-several-tests.yaml`
-files: one claim id cannot register the several tests that jointly close
-a conjunctive requirement. The fix, per that record's signpost, is a
+This fixture has no `docket.ncl`/`docs` of its own: this is a property of
+`scripts/docket-run` itself — the successor to the earlier
+`docket-test` shape, whose single-string `CLAIMS` table could not
+express a conjunctive requirement: one claim id could name only one
+test, never the several tests that jointly close it. The fix is a
 `CLAIMS` value that expands to a **list**, run in sequence, all required
 green — not a single joined shell command (`a && b`), which would satisfy
 this fixture's black-box exit codes without the underlying data structure
