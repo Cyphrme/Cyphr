@@ -5,13 +5,18 @@ in. It should be grouped by **authority** — whether the server was
 **told** it or **worked it out** — and that is the difference between
 data you can delete and data you cannot get back.
 
-**Status and scope.** This is a proposal, not a specification: it adds
-no requirements and asks for three yes/no answers (§6). Scope: the
-server's on-disk layout and the index's write discipline; nothing here
-touches the wire format, protocol semantics, or the client. Every claim
-about current behavior was checked against source at the revision this
-proposal was written against, not against the specifications describing
-it — the two have diverged, and where they have, this document says so.
+**Status and scope.** Accepted 2026-08-19; decision recorded in
+[ADR-0002](../adr/0002-storage-layering-by-authority.md), including one
+correction to this document's own authority classification in §4 and
+§5 — read the ADR alongside this proposal, not instead of it. This
+document itself is unedited from the version accepted: a proposal, not
+a specification, that adds no requirements and asks for three yes/no
+answers (§6). Scope: the server's on-disk layout and the index's write
+discipline; nothing here touches the wire format, protocol semantics,
+or the client. Every claim about current behavior was checked against
+source at the revision this proposal was written against, not against
+the specifications describing it — the two have diverged, and where
+they have, this document says so.
 
 ## 1. The proposed cut
 
