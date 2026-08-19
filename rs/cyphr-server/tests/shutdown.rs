@@ -69,6 +69,22 @@ struct Server {
     stderr_lines: Receiver<String>,
 }
 
+impl Drop for Server {
+    /// Best-effort cleanup for the case a test panics (a shutdown timeout,
+    /// an assertion) before it has killed the child itself: an interrupted
+    /// run would otherwise leak a live `cyphr-server` process still holding
+    /// its data directory's exclusive lock, outliving the test binary and
+    /// showing up as an orphan to anything that inspects `ps` afterward.
+    /// Reaping it here, on unwind, closes that regardless of which
+    /// assertion panicked.
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// Spawn `cyphr-server serve` against a keyed, ephemeral data directory and
 /// block until it reports its bound port on stdout. `--config` names a
 /// file that is never created, so resolution falls through to compiled
