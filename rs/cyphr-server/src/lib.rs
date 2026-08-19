@@ -331,6 +331,20 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
 /// Binds to `config.listen`, wires routes, and blocks until
 /// SIGTERM/SIGINT.
 pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    // Install the shutdown signal handler(s) before anything else.
+    // `tokio::signal::unix::signal` registers with the OS synchronously, the
+    // instant this call runs -- unlike constructing it lazily inside the
+    // future `with_graceful_shutdown` is later handed (this crate's first
+    // attempt), which does not run until axum first polls that future,
+    // itself nested behind the listener bind and router setup below. That
+    // gap is a real window in which an early SIGTERM/SIGINT falls through
+    // to the OS default disposition (immediate termination) instead of the
+    // graceful path -- reproduced under a fully-loaded `cargo test
+    // --workspace` run, where scheduler contention widens it enough to
+    // lose the race in practice, not just in principle.
+    #[cfg(unix)]
+    let signals = UnixShutdownSignals::install();
+
     let listen_addr = config.listen.clone();
     let mut state = AppState::new(config)?;
 
@@ -376,21 +390,46 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown_signal(
+        #[cfg(unix)]
+        signals,
+    ))
     .await?;
 
     tracing::info!("server stopped");
     Ok(())
 }
 
+/// Both shutdown signal handlers, registered with the OS the instant
+/// [`install`](Self::install) runs -- see the note in [`serve`] on why that
+/// timing, not the handle itself, is what this type exists to fix. Held as
+/// two separate [`Signal`](tokio::signal::unix::Signal)s rather than
+/// interleaved into one stream: each kind installs its own OS handler, and
+/// nothing here needs to distinguish which one fired beyond selecting on
+/// both.
+#[cfg(unix)]
+struct UnixShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl UnixShutdownSignals {
+    fn install() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        Self {
+            interrupt: signal(SignalKind::interrupt()).expect("failed to install SIGINT handler"),
+            terminate: signal(SignalKind::terminate()).expect("failed to install SIGTERM handler"),
+        }
+    }
+}
+
 /// Wait for a shutdown signal (Ctrl-C / SIGTERM).
 ///
 /// `axum::serve(..).with_graceful_shutdown(..)` requires a
 /// `Future<Output = ()>`, so there is no `Result` to propagate here even in
-/// principle. Both signal futures only err if the OS refuses to let the
-/// process install a handler at all -- a process-level failure unrelated to
-/// any request or its input, and one this process cannot meaningfully
-/// recover from (it would run with no way to shut down gracefully).
+/// principle -- `install()` is where a failure to register a handler
+/// surfaces, deliberately before this future is ever built.
 ///
 /// SIGTERM is handled alongside SIGINT (#172) because it is what every
 /// managed process supervisor sends on a routine stop or restart --
@@ -398,28 +437,22 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
 /// escalating to SIGKILL. Left unhandled, its OS default disposition
 /// terminates the process immediately: no drain, no "server stopped" log
 /// line, and a reboot that looks like a crash rather than a restart.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl_c");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-    // Non-Unix targets have no SIGTERM to wait for; ctrl_c alone decides.
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
+#[cfg(unix)]
+async fn shutdown_signal(mut signals: UnixShutdownSignals) {
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        _ = signals.interrupt.recv() => {},
+        _ = signals.terminate.recv() => {},
     }
+    tracing::info!("shutdown signal received, draining connections");
+}
+
+/// Non-Unix targets have no SIGTERM/SIGINT distinction at the OS level;
+/// `ctrl_c()` is the portable signal tokio exposes there.
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for ctrl_c");
     tracing::info!("shutdown signal received, draining connections");
 }
 
