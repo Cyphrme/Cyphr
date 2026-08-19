@@ -160,6 +160,88 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 }
 
 // ========================================================================
+// #147: absent cr is a sentinel, not a type, at the receipt origin
+// ========================================================================
+
+/// RED (#147): `receipt::Roots.cr` is currently a plain `String`, and
+/// storage's own convention for "no commit root yet" -- a principal that
+/// is key-established but has not finalized a data commit
+/// (`rs/cyphr-storage/src/engine/mod.rs`'s `rederive_roots`, :483-489:
+/// `DerivedRoots.cr: String::new()` when `principal.cr()` is `None`) -- is
+/// a bare empty string, with nothing in the TYPE distinguishing it from
+/// "the empty digest." The consuming side already fixed this in its own
+/// model (`receipt::TipReportRoots.cr: Option<TaggedDigest>`,
+/// `rs/cyphr-server/src/receipt.rs:195-200`) -- the defect is that the
+/// origin type a receipt is actually SIGNED from still isn't.
+///
+/// Constructs `Roots` exactly the way `rederive_roots`'s own `None`
+/// branch does today (`cr: String::new()`), directly -- the same
+/// no-live-server, no-push pattern the golden-vector tests below already
+/// use for `Roots`, since #147 is about the TYPE `sign_receipt` composes
+/// from, not about any specific path that reaches it. (A genuinely empty
+/// `cr` was checked NOT to be reachable via an ordinary genesis push in
+/// this codebase today: `Principal::finalize_commit` unconditionally
+/// appends a leaf and writes a real `cr` for every finalized commit, key-
+/// only or not -- confirmed empirically while drafting this suite. The
+/// one reachable path found, `StorageEngine::heal`'s mock-genesis
+/// reindex recovery at `rs/cyphr-storage/src/engine/mod.rs:1426-1441`,
+/// requires fabricating legacy raw blob-store content and is out of this
+/// node's reasonable test surface; see this node's test deposit.)
+///
+/// Pins the stronger, wire-visible reading of this node's own
+/// `ac-defects-closed` ("genesis receipts carry absent cr, not empty
+/// string"): the signed claim must be JSON `null`.
+///
+/// FLAGGED, not silently assumed: issue #147's own text says "the empty
+/// string CAN remain the wire encoding ... it should stop being how the
+/// value is represented in code" -- i.e. a fix that keeps `""` on the
+/// wire and only changes `Roots.cr`'s Rust-level type to `Option` is
+/// also a legitimate reading of #147 alone, and this node's IBC
+/// (`RN1-receipts-push.yaml`, `reserved`) explicitly anticipates a wire
+/// delta needing disclosure rather than forbidding one. If the
+/// implementation keeps `""` on the wire, this specific assertion needs
+/// the merge gate's explicit consent to relax (never a silent weakening)
+/// -- see this node's test deposit for the full discrepancy note.
+#[test]
+fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() {
+    let (_dir, identity) = fixed_identity();
+    let roots = cyphr_server::receipt::Roots {
+        cr: String::new(), // storage's own sentinel for "no commit root yet"
+        ..vector_roots()
+    };
+    let coz = cyphr_server::receipt::commit_receipt(
+        &identity,
+        1_700_000_000,
+        VECTOR_PR,
+        0,
+        VECTOR_COMMIT_ID,
+        &roots,
+    )
+    .expect(
+        "an empty-string cr must still compose and sign -- today's sentinel is accepted, not \
+         refused (mirrors sign_receipt's own parse_optional_digest_str exemption for cr alone)",
+    );
+
+    // Positive control: the sibling `pr` root is unaffected -- proves
+    // this genuinely reached the roots claim rather than being refused
+    // earlier for an unrelated reason.
+    assert_eq!(
+        coz.pay["roots"]["pr"],
+        serde_json::json!(roots.pr),
+        "positive control: pr must still be the real digest supplied: {:?}",
+        coz.pay
+    );
+
+    assert_eq!(
+        coz.pay["roots"]["cr"],
+        serde_json::Value::Null,
+        "a receipt signed from storage's empty-string cr sentinel must carry typed absence \
+         (JSON null), not the sentinel itself: {:?}",
+        coz.pay
+    );
+}
+
+// ========================================================================
 // Non-attestor configurations stay honestly unsigned (c-attestor-only-signs)
 // ========================================================================
 
