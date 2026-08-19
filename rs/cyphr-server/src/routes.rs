@@ -234,6 +234,19 @@ pub async fn tip(
     }
 }
 
+/// The accepted commit's 0-indexed sequence position: `commit_count`'s
+/// checked predecessor (#98/#156). `commit_count == 0` can only mean a
+/// desynchronized or corrupted tip -- `MemoryIndexer::index_commit`
+/// computes `commit_count` as the chain's own length, so `get_tip` never
+/// returns `0` for an existing principal today -- but nothing in the TYPE
+/// enforces that invariant, so a caller-reachable zero is treated as an
+/// internal error rather than trusted to never wrap a plain subtraction.
+fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
+    commit_count
+        .checked_sub(1)
+        .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
+}
+
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
 /// the claim set `/tip` and `/patch` both need (identity, entry/root
 /// binding, `now`), factored out so `/patch`'s envelope signing (K10) reuses
@@ -263,13 +276,17 @@ async fn sign_tip_attestation(
         pr: derived.pr,
         sr: derived.sr,
         ar: derived.ar,
-        cr: derived.cr,
+        // Storage's own re-derivation still reports "no commit root yet"
+        // as an empty string (cyphr-storage, out of this node's surface)
+        // -- this is the boundary where that sentinel becomes the
+        // receipt's typed absence (#147).
+        cr: (!derived.cr.is_empty()).then_some(derived.cr),
     };
     let coz = receipt::tip_report(
         identity,
         crate::auth::server_now(),
         t.principal_id.clone(),
-        t.commit_count - 1,
+        commit_sequence(t.commit_count)?,
         t.commit_id.clone(),
         &roots,
         t.commit_count,
@@ -442,6 +459,24 @@ pub async fn push(
         crate::auth::server_now(),
     )?;
 
+    // #168: an attestor server refuses to sign a post-commit receipt for a
+    // non-canonical `principal_id` (`receipt::commit_receipt`'s own
+    // `parse_genesis_id_str` gate) -- refusing HERE, before any durable
+    // write, keeps that refusal from being discovered only after
+    // `submit_commit` (below) has already landed the commit, which
+    // previously left a durable write standing behind a reported `500`.
+    // Scoped to attestor mode: a keyless or keyed-but-unbootstrapped
+    // server never attempts to sign a receipt, so it stays free to accept
+    // any storage-key-shaped `principal_id`, exactly as before.
+    if state.attestor_identity().is_some()
+        && receipt::parse_genesis_id_str(&request.principal_id).is_err()
+    {
+        return Err(AppError::bad_request(format!(
+            "principal_id is not a canonical genesis identifier: {}",
+            request.principal_id
+        )));
+    }
+
     // Decode base64url blobs back to raw bytes.
     let raw_blobs: Vec<Vec<u8>> = request
         .blobs
@@ -518,7 +553,7 @@ pub async fn push(
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
         commit_id: t.commit_id.clone(),
-        sequence: t.commit_count - 1,
+        sequence: commit_sequence(t.commit_count)?,
         roots: PushRoots {
             pr: t.pr.clone(),
             sr: t.sr.clone(),
@@ -548,13 +583,16 @@ pub async fn push(
                 pr: derived.pr,
                 sr: derived.sr,
                 ar: derived.ar,
-                cr: derived.cr,
+                // See `sign_tip_attestation`'s identical conversion: the
+                // empty-string sentinel becomes the receipt's typed
+                // absence at this boundary (#147).
+                cr: (!derived.cr.is_empty()).then_some(derived.cr),
             };
             let coz = receipt::commit_receipt(
                 identity,
                 crate::auth::server_now(),
                 t.principal_id,
-                t.commit_count - 1,
+                commit_sequence(t.commit_count)?,
                 t.commit_id,
                 &roots,
             )

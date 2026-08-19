@@ -34,12 +34,15 @@
 //!   four an honest pair (proven or not) can produce -- never that it equals one specific new
 //!   variant name. A new `EquivocationVerdict` variant and a `TipReport::parse` error the caller
 //!   handles are equally valid forms; only the distinctness property is asserted.
-//! - `Roots` stays `String`-typed (unchanged struct) and validates its four fields at the point
-//!   `sign_receipt` consumes them, rather than becoming `TaggedDigest`-typed itself: `Roots` is
-//!   constructed at the `/tip` and `/push` handlers directly from storage's `String` fields, so
-//!   keeping its public shape `String` avoids forcing every call site to parse before it can even
-//!   attempt construction, while `tip_report`/`commit_receipt` still refuse (return `None`) on a
-//!   malformed field.
+//! - `Roots`'s `pr`/`sr`/`ar` stay `String`-typed and validate at the point `sign_receipt` consumes
+//!   them, rather than becoming `TaggedDigest`-typed themselves: `Roots` is constructed at the
+//!   `/tip` and `/push` handlers directly from storage's `String` fields, so keeping their public
+//!   shape `String` avoids forcing every call site to parse before it can even attempt
+//!   construction, while `tip_report`/`commit_receipt` still refuse (return `None`) on a malformed
+//!   field. `cr` alone is `Option<String>` (#147): storage's former empty-string "no commit root
+//!   yet" sentinel is typed absence here, not a `String` a caller could confuse with a genuine
+//!   empty digest -- `routes.rs`'s handlers perform the empty-string-to-`None` conversion at
+//!   construction.
 
 use cyphr::HashAlg;
 use cyphr::state::TaggedDigest;
@@ -163,12 +166,19 @@ fn arb_malformed_shape() -> impl Strategy<Value = MalformedShape> {
     ]
 }
 
+/// `cr: ""` means "absent" (mirrors every existing call site's usage, and
+/// `receipt::Roots.cr`'s own `Option<String>` shape, #147) -- every other
+/// value passes through as `Some`.
 fn roots_from(pr: &str, sr: &str, ar: &str, cr: &str) -> Roots {
     Roots {
         pr: pr.to_string(),
         sr: sr.to_string(),
         ar: ar.to_string(),
-        cr: cr.to_string(),
+        cr: if cr.is_empty() {
+            None
+        } else {
+            Some(cr.to_string())
+        },
     }
 }
 
@@ -436,6 +446,16 @@ proptest! {
         ],
         shape in arb_malformed_shape(),
     ) {
+        // #147 retired the exact combination this property would otherwise
+        // demand here: `roots.cr = null` is no longer a malformed shape --
+        // it is the CANONICAL wire encoding for "no commit root yet"
+        // (`receipt::parse_optional_digest_field`), so `TipReport::parse`
+        // now accepts it and canonicalizes to `None` rather than rejecting
+        // it. `roots.cr` against `ArrayWrapSelf`/`Number`, and `Null`
+        // against every other field, are unaffected and still MUST reject
+        // -- only this one field+shape pair is exempted.
+        prop_assume!(!(malformed_field == "roots.cr" && matches!(shape, MalformedShape::Null)));
+
         let (_dir, identity) = identity_with_seed(0x44);
         let pr_root = digest_string(&pr_bytes);
         let pr = principal_digest(&pr_bytes);
@@ -526,7 +546,7 @@ proptest! {
                 (pr.clone(), commit_id.clone())
             },
             "roots.cr" => {
-                roots.cr = malformed_digest.clone();
+                roots.cr = Some(malformed_digest.clone());
                 (pr.clone(), commit_id.clone())
             },
             _ => unreachable!("prop_oneof exhausts exactly these six field names"),
@@ -546,26 +566,33 @@ proptest! {
 /// `genesis_commit_root_is_accepted`
 ///
 /// A principal that has been key-established but has not yet finalized a
-/// data commit has no commit root: storage's re-derivation returns `""`
-/// for `cr` in exactly that state, while every other root (`pr`/`sr`/`ar`)
-/// already carries a genuine value. `""` is the wire sentinel for "no
-/// commit root yet," not a malformed digest -- `receipt::tip_report`/
-/// `commit_receipt` MUST sign a genesis-stage report rather than refusing
-/// the whole receipt over one legitimately-absent field, and the parse
-/// MUST canonicalize that absence to `None`, never reject it.
+/// data commit has no commit root: storage's re-derivation used to return
+/// `""` for `cr` in exactly that state (routes.rs converts that boundary
+/// sentinel to `None` before constructing `Roots`, #147), while every
+/// other root (`pr`/`sr`/`ar`) already carries a genuine value.
+/// `receipt::tip_report`/`commit_receipt` MUST sign a genesis-stage report
+/// rather than refusing the whole receipt over one legitimately-absent
+/// field, and the parse MUST canonicalize that absence to `None`, never
+/// reject it.
 ///
-/// EMPIRICALLY confirmed RED before this fix: `tip_report` with
-/// `roots.cr == ""` returned `None` under the unmodified `sign_receipt`,
-/// which validated `cr` identically to `pr`/`sr`/`ar` (an unconditional
-/// `TaggedDigest` parse) -- refusing to sign an entirely valid genesis
-/// report.
+/// EMPIRICALLY confirmed RED before #147's fix: `tip_report` with
+/// `roots.cr == Some("")` returned `None` under the unmodified
+/// `sign_receipt`, which validated `cr` identically to `pr`/`sr`/`ar` (an
+/// unconditional `TaggedDigest` parse) -- refusing to sign an entirely
+/// valid genesis report. Post-fix, the wire encoding for absence is JSON
+/// `null`, not `""` -- a genuine wire-shape delta from what this test
+/// pinned before this node landed (`RN1-receipts-push.yaml`'s `reserved`
+/// clause; see `rs/cyphr-server/tests/receipts.rs`'s
+/// `commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string`
+/// for the fuller rationale).
 #[test]
 fn genesis_commit_root_is_accepted() {
     let (_dir, identity) = identity_with_seed(0x66);
     let pr_root = digest_string(&[0x77; 32]);
     let pr = principal_digest(&[0x77; 32]);
     let commit_id = digest_string(&[0x88; 32]);
-    // `cr` empty -- storage's sentinel for "no commit root yet."
+    // `cr` absent -- the typed counterpart of storage's former "no commit
+    // root yet" sentinel.
     let roots = roots_from(&pr_root, &pr_root, &pr_root, "");
 
     let coz = receipt::tip_report(
@@ -581,8 +608,10 @@ fn genesis_commit_root_is_accepted() {
     .expect("tip_report MUST sign a genesis-stage report whose commit root is legitimately absent");
 
     assert_eq!(
-        coz.pay["roots"]["cr"], "",
-        "wire bytes MUST be unchanged -- the empty cr sentinel serializes back as an empty string"
+        coz.pay["roots"]["cr"],
+        serde_json::Value::Null,
+        "an absent cr MUST serialize as JSON null on the wire (#147), not the empty-string \
+         sentinel this test pinned before that fix"
     );
 
     let parsed = TipReport::parse(&coz).expect("a genesis-stage report MUST canonicalize");
