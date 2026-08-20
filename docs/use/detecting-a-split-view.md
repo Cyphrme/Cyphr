@@ -52,8 +52,10 @@ and the word of the server is all anyone has.
 ## What must be possible
 
 Three things, each stated as a claim the system answers for. The
-fenced block under each is its machine-read form: whether a claim is
-delivered is checked, not asserted in prose.
+fenced block under each is its machine-read form: it makes the claim
+bindable to a check that discharges it. None of the three carries
+such a check yet; until one does, a claim here stands as owed, not
+delivered — and this prose asserts nothing beyond that.
 
 ### [keep-the-signed-answer]
 
@@ -133,7 +135,11 @@ Four moves are open to you, in rising order of what they need.
 
 4. **Get it repaired.** The record's owner can end a split: publish
    the next entry on one branch, and the other branch can no longer
-   advance. That much works today. But the repair leaves no mark:
+   advance. That much works today — but the owner must push that
+   entry to each server themselves. Nothing carries the resolution
+   from one server to another, so a server the owner never reaches
+   goes on serving the abandoned branch. And the repair leaves no
+   mark:
    neither server records that a split happened, which branch won, or
    that anything was ever wrong. A reader who arrives later sees a
    record with no history of the incident — and that silence is also
