@@ -11,6 +11,37 @@
 //!
 //! - [`MemoryIndexer`] — `HashMap`-backed (testing)
 //! - `FjallIndexer` (in `cyphr-index-fjall`) — fjall KV-backed (production)
+//!
+//! ## Write invariant (S3a, c-unwritable)
+//!
+//! The index is a strictly DERIVED projection: every write must
+//! originate from the engine's own derivation path (blob-store record →
+//! index entry), never from an out-of-crate caller reaching a write
+//! method directly. That path is `StorageEngine::ingest_commit`,
+//! `StorageEngine::rebuild_index_from_manifests`, and `StorageEngine::reindex`
+//! — all inside `cyphr-storage`'s `engine` module — and nowhere else.
+//!
+//! This is proved, not merely asserted: the call below is exactly what
+//! an out-of-crate feature reaching for a write would write, and it MUST
+//! NOT compile. Today it does — the write half is not yet sealed off
+//! from the read half — so this doctest is a deliberate, tracked
+//! baseline failure: `cargo test -p cyphr-storage --doc` reports it as
+//! "expected this to not compile, but it compiled". Whoever seals the
+//! write surface (S3a's sealing mechanism, delegated in the campaign
+//! IBC) drives this doctest to genuinely fail to compile — updating the
+//! call's exact syntax to match the chosen shape is expected; weakening
+//! or deleting the assertion it makes is not.
+//!
+//! ```compile_fail
+//! use cyphr_storage::index::{Indexer, MemoryIndexer};
+//!
+//! let indexer = MemoryIndexer::new();
+//! // An out-of-crate caller must not be able to reach the index's write
+//! // surface directly -- only the engine's derivation path may call
+//! // `clear` (or `index_commit`). Constructing the call is enough to
+//! // prove reachability; it need not be awaited or executed.
+//! let _write_reachable_from_outside = indexer.clear();
+//! ```
 
 #[cfg(any(test, feature = "conformance-tests"))]
 pub mod conformance;
