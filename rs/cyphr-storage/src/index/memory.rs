@@ -6,7 +6,7 @@ use std::sync::RwLock;
 use cyphr::state::TaggedDigest;
 
 use super::types::*;
-use super::{Indexer, IndexerError};
+use super::{DeriveToken, Indexer, IndexerError, IndexerWrite};
 use crate::blob::Blake3Hash;
 
 /// Internal state for the memory indexer.
@@ -48,9 +48,106 @@ impl Default for MemoryIndexer {
 }
 
 impl Indexer for MemoryIndexer {
+    fn get_tip(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
+        let principal_id = principal_id.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.tips.get(&principal_id).cloned())
+        }
+    }
+
+    fn get_commit_chain(
+        &self,
+        principal_id: &str,
+        from: Option<u64>,
+        to: Option<u64>,
+    ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
+        let principal_id = principal_id.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+
+            let Some(commits) = state.commits.get(&principal_id) else {
+                return Ok(Vec::new());
+            };
+
+            let from_seq = from.unwrap_or(0);
+            let to_seq = to.unwrap_or(u64::MAX);
+
+            let chain: Vec<CommitRef> = commits
+                .iter()
+                .filter(|c| c.sequence >= from_seq && c.sequence <= to_seq)
+                .cloned()
+                .collect();
+
+            Ok(chain)
+        }
+    }
+
+    fn resolve_digest(
+        &self,
+        digest: &TaggedDigest,
+    ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send {
+        let key = digest.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.digest_index.get(&key).cloned())
+        }
+    }
+
+    async fn list_principals(&self) -> Result<Vec<PrincipalSummary>, IndexerError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+        Ok(state.principals.values().cloned().collect())
+    }
+
+    fn is_blob_indexed(
+        &self,
+        hash: &Blake3Hash,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let key = hash.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.digest_index.contains_key(&key))
+        }
+    }
+
+    fn get_key(
+        &self,
+        thumbprint: &str,
+    ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send {
+        let thumbprint = thumbprint.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.public_keys.get(&thumbprint).cloned())
+        }
+    }
+}
+
+impl IndexerWrite for MemoryIndexer {
     fn index_commit(
         &self,
         commit: &IndexableCommit,
+        _token: &DeriveToken,
     ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
         let commit = commit.clone();
         async move {
@@ -194,73 +291,7 @@ impl Indexer for MemoryIndexer {
         }
     }
 
-    fn get_tip(
-        &self,
-        principal_id: &str,
-    ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.tips.get(&principal_id).cloned())
-        }
-    }
-
-    fn get_commit_chain(
-        &self,
-        principal_id: &str,
-        from: Option<u64>,
-        to: Option<u64>,
-    ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
-        let principal_id = principal_id.to_string();
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-
-            let Some(commits) = state.commits.get(&principal_id) else {
-                return Ok(Vec::new());
-            };
-
-            let from_seq = from.unwrap_or(0);
-            let to_seq = to.unwrap_or(u64::MAX);
-
-            let chain: Vec<CommitRef> = commits
-                .iter()
-                .filter(|c| c.sequence >= from_seq && c.sequence <= to_seq)
-                .cloned()
-                .collect();
-
-            Ok(chain)
-        }
-    }
-
-    fn resolve_digest(
-        &self,
-        digest: &TaggedDigest,
-    ) -> impl std::future::Future<Output = Result<Option<EntityRef>, IndexerError>> + Send {
-        let key = digest.to_string();
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.digest_index.get(&key).cloned())
-        }
-    }
-
-    async fn list_principals(&self) -> Result<Vec<PrincipalSummary>, IndexerError> {
-        let state = self
-            .state
-            .read()
-            .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-        Ok(state.principals.values().cloned().collect())
-    }
-
-    async fn clear(&self) -> Result<(), IndexerError> {
+    async fn clear(&self, _token: &DeriveToken) -> Result<(), IndexerError> {
         let mut state = self
             .state
             .write()
@@ -271,33 +302,5 @@ impl Indexer for MemoryIndexer {
         state.digest_index.clear();
         state.public_keys.clear();
         Ok(())
-    }
-
-    fn is_blob_indexed(
-        &self,
-        hash: &Blake3Hash,
-    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
-        let key = hash.to_string();
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.digest_index.contains_key(&key))
-        }
-    }
-
-    fn get_key(
-        &self,
-        thumbprint: &str,
-    ) -> impl std::future::Future<Output = Result<Option<PublicKeyInfo>, IndexerError>> + Send {
-        let thumbprint = thumbprint.to_string();
-        async move {
-            let state = self
-                .state
-                .read()
-                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.public_keys.get(&thumbprint).cloned())
-        }
     }
 }

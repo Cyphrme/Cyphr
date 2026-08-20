@@ -74,7 +74,9 @@ than moving to its own database (single-batch atomicity).
 
 **Yes.** The deriver — a pure function from record events to index
 entries — becomes the only write path into the index; the raw accessors
-that bypass it are removed. No future feature writes the index
+are split by that: their WRITE half, which bypasses the deriver, is
+removed, while their read half stays public, since a reader cannot
+violate a write-path invariant. No future feature writes the index
 directly; anything wanting durable memoization outside the record goes
 into the record layer with a real durability story, or it does not
 exist (proposal §5's standing tax, accepted).

@@ -26,7 +26,9 @@ use cyphr::state::{StateDigest, TaggedDigest};
 pub use error::EngineError;
 
 use crate::blob::{Blake3Hash, BlobStore};
-use crate::index::{CommitRef, IndexableCommit, IndexableCoz, Indexer, TipState};
+use crate::index::{
+    CommitRef, DeriveToken, IndexableCommit, IndexableCoz, Indexer, IndexerWrite, TipState,
+};
 
 /// A commit's metadata paired with its blob contents.
 ///
@@ -193,7 +195,7 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     healed: tokio::sync::OnceCell<()>,
 }
 
-impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
+impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
     /// Create a new engine wrapping the given backends, with each
     /// [`cyphr::Principal`]'s Commit Tree backed by an in-memory
     /// [`cyphr::eml::MemoryStorage`] instance (discarded when the principal
@@ -212,7 +214,7 @@ impl<B: BlobStore, I: Indexer> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
     }
 }
 
-impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
+impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// Create a new engine wrapping the given backends, with `storage_factory`
     /// producing each [`cyphr::Principal`]'s Commit Tree storage backend from
     /// its `principal_id`.
@@ -414,9 +416,16 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// served — no cross-principal data leak — but the POSITION used to
     /// bound them is unverified against which principal it actually names.
     /// Every downstream branch traced fails closed behind N2's post-apply
-    /// authenticated-channel comparison (`EntryCommitmentMismatch`) or the
-    /// chain-verification gap case, so this is defence-in-depth, not a
-    /// demonstrated path to forged or leaked state.
+    /// authenticated-channel comparison (`EntryCommitmentMismatch`) --
+    /// but only when the syncing witness has `authority_identity` (K10)
+    /// configured (`cyphr-server/src/sync.rs`'s `authenticated_report`
+    /// gate: the comparison runs inside `if let Some(report) =
+    /// &authenticated_report`, itself populated only when
+    /// `state.config.authority_identity` is `Some`). A witness with no
+    /// `authority_identity` configured has no downstream check that
+    /// would catch a wrongly-bounded response, so this is
+    /// defence-in-depth for the K10 case only, not a demonstrated path
+    /// to forged or leaked state under every configuration.
     async fn resolve_anchor_position(
         &self,
         principal_id: &str,
@@ -543,7 +552,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
     /// 2. Builds an `IndexableCommit` from the metadata + blob hashes
     /// 3. Stores a durable [`CommitManifest`] recording that `IndexableCommit` (see
     ///    [`Self::store_blobs_and_manifest`]) -- the crash-safe commit point
-    /// 4. Calls the indexer to record relational data
+    /// 4. Calls the indexer to record the commit's index entries
     ///
     /// Returns the BLAKE3 hashes of the stored blobs.
     ///
@@ -592,7 +601,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         let (commit, manifest_hash) = self.store_blobs_and_manifest(blobs, commit).await?;
         let blob_hashes = commit.blob_hashes.clone();
 
-        self.indexer.index_commit(&commit).await?;
+        self.indexer
+            .index_commit(&commit, &DeriveToken::new())
+            .await?;
 
         Ok(IngestResult {
             blob_hashes,
@@ -656,7 +667,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
 
         let mut count = 0;
         for manifest in manifests {
-            self.indexer.index_commit(&manifest.commit).await?;
+            self.indexer
+                .index_commit(&manifest.commit, &DeriveToken::new())
+                .await?;
             count += 1;
         }
 
@@ -1188,7 +1201,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         Ok(crate::Genesis::Implicit(key))
     }
 
-    /// Reindex the relational database from durable content in the BlobStore.
+    /// Reindex the index from durable content in the BlobStore.
     ///
     /// Implements recovery verification/convergance [recovery-reindex] and
     /// [recovery-convergence]. Two independent recovery paths run in the same
@@ -1209,7 +1222,7 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
         use crate::import::is_transaction_typ;
 
         if total_check {
-            self.indexer.clear().await?;
+            self.indexer.clear(&DeriveToken::new()).await?;
         }
 
         let iter = self.blob_store.iter().await?;
@@ -1439,7 +1452,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                 timestamp: mock_coz.now,
                 keys: genesis_keys,
             };
-            self.indexer.index_commit(&genesis_indexable).await?;
+            self.indexer
+                .index_commit(&genesis_indexable, &DeriveToken::new())
+                .await?;
             sequence += 1;
 
             bootstrapped.push((principal, principal_id, sequence));
@@ -1867,7 +1882,9 @@ impl<B: BlobStore, I: Indexer, S: cyphr::eml::Storage> StorageEngine<B, I, S> {
                     timestamp: target_time,
                     keys: commit_keys,
                 };
-                self.indexer.index_commit(&indexable).await?;
+                self.indexer
+                    .index_commit(&indexable, &DeriveToken::new())
+                    .await?;
                 sequence += 1;
 
                 // Remove consumed items from pool

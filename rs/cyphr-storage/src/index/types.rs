@@ -1,4 +1,4 @@
-//! Domain types for the relational index.
+//! Domain types for the index.
 //!
 //! These types live at the storage boundary — they carry serialized
 //! representations of protocol state (strings, blob hashes), not live

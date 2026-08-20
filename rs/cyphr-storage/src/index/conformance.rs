@@ -10,7 +10,7 @@
 
 use cyphr::state::TaggedDigest;
 
-use super::*;
+use super::{DeriveToken, IndexerWrite, *};
 
 /// Build a test commit for indexing.
 pub fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit {
@@ -42,11 +42,11 @@ pub fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCom
     }
 }
 
-pub async fn index_commit_and_get_tip<I: Indexer>(indexer: &I) {
+pub async fn index_commit_and_get_tip<I: Indexer + IndexerWrite>(indexer: &I) {
     let commit = make_commit("alice", 0, 1000);
 
     indexer
-        .index_commit(&commit)
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("index_commit failed");
 
@@ -65,7 +65,7 @@ pub async fn index_commit_and_get_tip<I: Indexer>(indexer: &I) {
     assert_eq!(tip.last_updated, 1000);
 }
 
-pub async fn get_tip_unknown_returns_none<I: Indexer>(indexer: &I) {
+pub async fn get_tip_unknown_returns_none<I: Indexer + IndexerWrite>(indexer: &I) {
     let tip = indexer
         .get_tip("nonexistent")
         .await
@@ -73,13 +73,19 @@ pub async fn get_tip_unknown_returns_none<I: Indexer>(indexer: &I) {
     assert!(tip.is_none(), "unknown principal should return None");
 }
 
-pub async fn tip_updates_on_subsequent_commits<I: Indexer>(indexer: &I) {
+pub async fn tip_updates_on_subsequent_commits<I: Indexer + IndexerWrite>(indexer: &I) {
     indexer
-        .index_commit(&make_commit("alice", 0, 1000))
+        .index_commit(
+            &make_commit("alice", 0, 1000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("first commit");
     indexer
-        .index_commit(&make_commit("alice", 1, 2000))
+        .index_commit(
+            &make_commit("alice", 1, 2000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("second commit");
 
@@ -94,12 +100,15 @@ pub async fn tip_updates_on_subsequent_commits<I: Indexer>(indexer: &I) {
     assert_eq!(tip.last_updated, 2000);
 }
 
-pub async fn index_commit_idempotent<I: Indexer>(indexer: &I) {
+pub async fn index_commit_idempotent<I: Indexer + IndexerWrite>(indexer: &I) {
     let commit = make_commit("alice", 0, 1000);
 
-    indexer.index_commit(&commit).await.expect("first index");
     indexer
-        .index_commit(&commit)
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("first index");
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("duplicate index");
 
@@ -111,10 +120,13 @@ pub async fn index_commit_idempotent<I: Indexer>(indexer: &I) {
     assert_eq!(tip.commit_count, 1, "duplicate should not increase count");
 }
 
-pub async fn get_commit_chain_full<I: Indexer>(indexer: &I) {
+pub async fn get_commit_chain_full<I: Indexer + IndexerWrite>(indexer: &I) {
     for seq in 0..5 {
         indexer
-            .index_commit(&make_commit("alice", seq, 1000 + seq as i64))
+            .index_commit(
+                &make_commit("alice", seq, 1000 + seq as i64),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .expect("index failed");
     }
@@ -129,10 +141,13 @@ pub async fn get_commit_chain_full<I: Indexer>(indexer: &I) {
     }
 }
 
-pub async fn get_commit_chain_range<I: Indexer>(indexer: &I) {
+pub async fn get_commit_chain_range<I: Indexer + IndexerWrite>(indexer: &I) {
     for seq in 0..5 {
         indexer
-            .index_commit(&make_commit("alice", seq, 1000 + seq as i64))
+            .index_commit(
+                &make_commit("alice", seq, 1000 + seq as i64),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .expect("index failed");
     }
@@ -146,7 +161,7 @@ pub async fn get_commit_chain_range<I: Indexer>(indexer: &I) {
     assert_eq!(chain[2].sequence, 3);
 }
 
-pub async fn get_commit_chain_unknown_returns_empty<I: Indexer>(indexer: &I) {
+pub async fn get_commit_chain_unknown_returns_empty<I: Indexer + IndexerWrite>(indexer: &I) {
     let chain = indexer
         .get_commit_chain("nonexistent", None, None)
         .await
@@ -154,10 +169,13 @@ pub async fn get_commit_chain_unknown_returns_empty<I: Indexer>(indexer: &I) {
     assert!(chain.is_empty());
 }
 
-pub async fn resolve_digest_returns_none_for_unknown<I: Indexer>(indexer: &I) {
+pub async fn resolve_digest_returns_none_for_unknown<I: Indexer + IndexerWrite>(indexer: &I) {
     let commit = make_commit("alice", 0, 1000);
 
-    indexer.index_commit(&commit).await.expect("index failed");
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("index failed");
 
     let real_digest: TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
         .parse()
@@ -180,7 +198,7 @@ pub async fn resolve_digest_returns_none_for_unknown<I: Indexer>(indexer: &I) {
 /// `make_commit`'s default `prs` value is a placeholder string, not a
 /// parseable `TaggedDigest`, so this overrides just that field with a real
 /// digest the test can independently resolve by.
-pub async fn resolve_digest_returns_indexed_position<I: Indexer>(indexer: &I) {
+pub async fn resolve_digest_returns_indexed_position<I: Indexer + IndexerWrite>(indexer: &I) {
     let real_pr: TaggedDigest = "SHA-256:U5XUZots-WmQVbUsBK4kVbRbz5IaYfuMYXXv_aqgWpc"
         .parse()
         .expect("parse tagged digest");
@@ -188,7 +206,10 @@ pub async fn resolve_digest_returns_indexed_position<I: Indexer>(indexer: &I) {
     let mut commit = make_commit("alice", 2, 3000);
     commit.prs = vec![real_pr.to_string()];
 
-    indexer.index_commit(&commit).await.expect("index failed");
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("index failed");
 
     let resolved = indexer
         .resolve_digest(&real_pr)
@@ -203,11 +224,14 @@ pub async fn resolve_digest_returns_indexed_position<I: Indexer>(indexer: &I) {
     );
 }
 
-pub async fn indexed_blobs_tracked_in_commit_chain<I: Indexer>(indexer: &I) {
+pub async fn indexed_blobs_tracked_in_commit_chain<I: Indexer + IndexerWrite>(indexer: &I) {
     let commit = make_commit("alice", 0, 1000);
     let blob_hash = commit.blob_hashes[0];
 
-    indexer.index_commit(&commit).await.expect("index failed");
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("index failed");
 
     // Verify blobs are tracked via commit chain (public API).
     let chain = indexer
@@ -219,13 +243,19 @@ pub async fn indexed_blobs_tracked_in_commit_chain<I: Indexer>(indexer: &I) {
     assert_eq!(chain[0].blob_hashes[0], blob_hash);
 }
 
-pub async fn list_principals_returns_all<I: Indexer>(indexer: &I) {
+pub async fn list_principals_returns_all<I: Indexer + IndexerWrite>(indexer: &I) {
     indexer
-        .index_commit(&make_commit("alice", 0, 1000))
+        .index_commit(
+            &make_commit("alice", 0, 1000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("alice");
     indexer
-        .index_commit(&make_commit("bob", 0, 2000))
+        .index_commit(
+            &make_commit("bob", 0, 2000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("bob");
 
@@ -237,13 +267,19 @@ pub async fn list_principals_returns_all<I: Indexer>(indexer: &I) {
     assert!(ids.contains(&"bob"));
 }
 
-pub async fn principal_summary_tracks_creation_time<I: Indexer>(indexer: &I) {
+pub async fn principal_summary_tracks_creation_time<I: Indexer + IndexerWrite>(indexer: &I) {
     indexer
-        .index_commit(&make_commit("alice", 0, 1000))
+        .index_commit(
+            &make_commit("alice", 0, 1000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("genesis");
     indexer
-        .index_commit(&make_commit("alice", 1, 5000))
+        .index_commit(
+            &make_commit("alice", 1, 5000),
+            &DeriveToken::for_conformance_tests(),
+        )
         .await
         .expect("second");
 
@@ -256,7 +292,7 @@ pub async fn principal_summary_tracks_creation_time<I: Indexer>(indexer: &I) {
     assert_eq!(alice.last_updated, 5000, "last_updated should be latest");
 }
 
-pub async fn new_indexer_methods<I: Indexer>(indexer: &I) {
+pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
     let key_info = PublicKeyInfo {
         thumbprint: "tmb123".to_string(),
         algorithm: "ED25519".to_string(),
@@ -273,7 +309,10 @@ pub async fn new_indexer_methods<I: Indexer>(indexer: &I) {
     assert!(indexer.get_key("tmb123").await.unwrap().is_none());
 
     // Index the commit
-    indexer.index_commit(&commit).await.unwrap();
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .unwrap();
 
     // Now, blob is indexed, key is found
     assert!(indexer.is_blob_indexed(&blob_hash).await.unwrap());
@@ -283,7 +322,10 @@ pub async fn new_indexer_methods<I: Indexer>(indexer: &I) {
     // Let's test get_commit_chain
     for seq in 0..5 {
         indexer
-            .index_commit(&make_commit("bob", seq, 1000 + seq as i64))
+            .index_commit(
+                &make_commit("bob", seq, 1000 + seq as i64),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .unwrap();
     }
@@ -303,7 +345,10 @@ pub async fn new_indexer_methods<I: Indexer>(indexer: &I) {
     assert_eq!(range_chain[2].sequence, 3);
 
     // Clear the indexer
-    indexer.clear().await.unwrap();
+    indexer
+        .clear(&DeriveToken::for_conformance_tests())
+        .await
+        .unwrap();
 
     // After clear, blob is not indexed, key is not found, tip is None, chain is empty
     assert!(!indexer.is_blob_indexed(&blob_hash).await.unwrap());

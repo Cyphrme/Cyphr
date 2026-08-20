@@ -2,14 +2,15 @@
 //!
 //! Per the settled KV-not-SQL design (forge #18/#23; root `AGENTS.md` I3):
 //! the production index is arbitrary KV tables plus a meta-table tracking
-//! them, over the durable fjall store — never a relational database.
-//! `cyphr-index-sqlite` was always transitional.
+//! them, over the durable fjall store — never a relational database. The
+//! earlier relational-backed indexer this replaced was always
+//! transitional.
 //!
 //! ## Layout
 //!
 //! One dedicated fjall keyspace ("partition") per logical index, plus a
-//! `meta` partition recording which partitions exist and their schema
-//! version:
+//! `meta` partition recording the deriver's own claim of which partitions
+//! it has produced (S3a, c-registry-generated — see [`FjallIndexer::registry`]):
 //!
 //! - `tips` — `principal_id` bytes → [`TipState`] (point lookup only)
 //! - `principals` — `principal_id` bytes → [`PrincipalSummary`] (point lookup only,
@@ -17,9 +18,9 @@
 //! - `commits` — [`commit_key`] (length-prefixed `principal_id` + big-endian sequence) →
 //!   [`CommitRef`] (ordered range scan by sequence)
 //! - `digests` — tagged-digest or blob-hash string → [`EntityRef`] (point lookup; also backs
-//!   `is_blob_indexed`, mirroring [`MemoryIndexer`]'s single `digest_index` map rather than
-//!   `SqliteIndexer`'s separate `cozies` table, since no `Indexer` method exposes per-coz metadata
-//!   directly)
+//!   `is_blob_indexed` — one shared partition covers both blob hashes and czds, mirroring
+//!   [`MemoryIndexer`]'s single `digest_index` map, since no `Indexer` method exposes per-coz
+//!   metadata directly and a separate per-coz table would serve nothing)
 //! - `public_keys` — thumbprint bytes → [`PublicKeyInfo`] (point lookup)
 //!
 //! `tips` and `principals` key on the raw `principal_id` bytes directly:
@@ -33,11 +34,13 @@
 //!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
+use std::collections::BTreeSet;
+
 use cyphr::state::TaggedDigest;
 use cyphr_storage::blob::Blake3Hash;
 use cyphr_storage::index::{
-    CommitRef, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError, PrincipalSummary,
-    PublicKeyInfo, TipState,
+    CommitRef, DeriveToken, EntityRef, EntityType, IndexableCommit, Indexer, IndexerError,
+    IndexerWrite, PrincipalSummary, PublicKeyInfo, TipState,
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
@@ -48,9 +51,25 @@ const SCHEMA_VERSION: u32 = 1;
 /// record.
 const META_KEY: &[u8] = b"index-meta";
 
-/// The set of logical index partitions this crate maintains, recorded in
-/// the `meta` partition on initialization — the "meta-table tracking
-/// [the] arbitrary KV index tables" the settled design calls for (c5).
+/// The set of index partitions this schema version's derivation produces.
+/// Not a claim about what physically exists on disk (a raw, out-of-band
+/// writer could create an extra keyspace, or a corrupted store could be
+/// missing one) — see [`FjallIndexer::registry`] for the durable claim
+/// the deriver itself records.
+const PARTITION_NAMES: &[&str] = &[
+    "index_tips",
+    "index_principals",
+    "index_commits",
+    "index_digests",
+    "index_public_keys",
+];
+
+/// The `meta` partition's single tracking record — the "meta-table
+/// tracking [the] arbitrary KV index tables" the settled design calls for
+/// (c5). Written atomically, as part of the SAME batch, by every
+/// derivation write (S3a, c-registry-generated) — never a one-time
+/// bootstrap literal independent of whether any derivation has actually
+/// run. See [`FjallIndexer::registry`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct IndexMeta {
     version: u32,
@@ -121,12 +140,13 @@ fn de<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, IndexerError> {
 /// section: fjall itself doesn't need serialization for individual ops,
 /// but computing a principal's next `commit_count`/`created` timestamp is
 /// a read-then-write sequence that must not interleave with a concurrent
-/// writer for the *same* principal — the same guarantee `MemoryIndexer`
-/// gets from one global `RwLock` and `SqliteIndexer` gets from its
-/// single-threaded actor, kept here without reintroducing an actor thread
-/// fjall doesn't need for anything else.
+/// writer for the *same* principal — the same per-principal serialization
+/// guarantee `MemoryIndexer` gets from one global `RwLock`, kept here
+/// without an actor thread fjall doesn't need for anything else.
 pub struct FjallIndexer {
     db: Database,
+    /// The registry claim (S3a, c-registry-generated) — see [`Self::registry`].
+    meta: Keyspace,
     tips: Keyspace,
     principals: Keyspace,
     commits: Keyspace,
@@ -171,23 +191,18 @@ impl FjallIndexer {
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
 
-        if !meta.contains_key(META_KEY).map_err(to_backend_err)? {
-            let record = IndexMeta {
-                version: SCHEMA_VERSION,
-                partitions: vec![
-                    "index_tips".to_string(),
-                    "index_principals".to_string(),
-                    "index_commits".to_string(),
-                    "index_digests".to_string(),
-                    "index_public_keys".to_string(),
-                ],
-            };
-            meta.insert(META_KEY, ser(&record)?)
-                .map_err(to_backend_err)?;
-        }
+        // No bootstrap write here: the registry claim (`index_meta`'s
+        // record) is written only as derivation OUTPUT, atomically
+        // alongside the rows each `index_commit` batch produces (see
+        // `db_index_commit`) -- never as a literal issued unconditionally
+        // at open time, regardless of whether any derivation has run.
+        // `registry()` reports an empty set until the first commit is
+        // indexed, which is the honest answer: nothing has been derived
+        // yet.
 
         Ok(Self {
             db,
+            meta,
             tips,
             principals,
             commits,
@@ -196,38 +211,33 @@ impl FjallIndexer {
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
+
+    /// Report the set of index partitions this store's OWN derivation has
+    /// durably produced.
+    ///
+    /// Reads back the `index_meta` claim written atomically -- as part of
+    /// the SAME fjall batch as the actual rows -- inside every
+    /// [`IndexerWrite::index_commit`] call (see `db_index_commit`).
+    /// Deliberately NOT a live rescan of which fjall keyspaces physically
+    /// exist: a rescan-based implementation would make a registry entry
+    /// present-but-never-produced-by-any-derivation physically
+    /// indistinguishable from an extra keyspace planted directly on disk
+    /// out-of-band, collapsing two of
+    /// `rs/cyphr-storage/tests/rebuild_compare.rs`'s three named
+    /// mutations into one undetectable case. An index with no commits
+    /// derived into it yet reports an empty set, not an error.
+    pub fn registry(&self) -> Result<BTreeSet<String>, IndexerError> {
+        match self.meta.get(META_KEY).map_err(to_backend_err)? {
+            Some(bytes) => {
+                let record: IndexMeta = de(&bytes)?;
+                Ok(record.partitions.into_iter().collect())
+            },
+            None => Ok(BTreeSet::new()),
+        }
+    }
 }
 
 impl Indexer for FjallIndexer {
-    fn index_commit(
-        &self,
-        commit: &IndexableCommit,
-    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let commit = commit.clone();
-        let db = self.db.clone();
-        let tips = self.tips.clone();
-        let principals = self.principals.clone();
-        let commits = self.commits.clone();
-        let digests = self.digests.clone();
-        let public_keys = self.public_keys.clone();
-        async move {
-            let _guard = self.write_lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                db_index_commit(
-                    &db,
-                    &tips,
-                    &principals,
-                    &commits,
-                    &digests,
-                    &public_keys,
-                    &commit,
-                )
-            })
-            .await
-            .map_err(join_err)?
-        }
-    }
-
     fn get_tip(
         &self,
         principal_id: &str,
@@ -306,27 +316,6 @@ impl Indexer for FjallIndexer {
         }
     }
 
-    fn clear(&self) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
-        let tips = self.tips.clone();
-        let principals = self.principals.clone();
-        let commits = self.commits.clone();
-        let digests = self.digests.clone();
-        let public_keys = self.public_keys.clone();
-        async move {
-            let _guard = self.write_lock.lock().await;
-            tokio::task::spawn_blocking(move || {
-                tips.clear().map_err(to_backend_err)?;
-                principals.clear().map_err(to_backend_err)?;
-                commits.clear().map_err(to_backend_err)?;
-                digests.clear().map_err(to_backend_err)?;
-                public_keys.clear().map_err(to_backend_err)?;
-                Ok(())
-            })
-            .await
-            .map_err(join_err)?
-        }
-    }
-
     fn is_blob_indexed(
         &self,
         hash: &Blake3Hash,
@@ -361,29 +350,106 @@ impl Indexer for FjallIndexer {
     }
 }
 
+/// The fjall keyspace handles a write needs, bundled so a write function
+/// takes one argument per logical concern (db, keyspaces, commit) instead
+/// of one per partition.
+#[derive(Clone)]
+struct Keyspaces {
+    meta: Keyspace,
+    tips: Keyspace,
+    principals: Keyspace,
+    commits: Keyspace,
+    digests: Keyspace,
+    public_keys: Keyspace,
+}
+
+impl FjallIndexer {
+    fn keyspaces(&self) -> Keyspaces {
+        Keyspaces {
+            meta: self.meta.clone(),
+            tips: self.tips.clone(),
+            principals: self.principals.clone(),
+            commits: self.commits.clone(),
+            digests: self.digests.clone(),
+            public_keys: self.public_keys.clone(),
+        }
+    }
+}
+
+impl IndexerWrite for FjallIndexer {
+    fn index_commit(
+        &self,
+        commit: &IndexableCommit,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let commit = commit.clone();
+        let db = self.db.clone();
+        let ks = self.keyspaces();
+        async move {
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || db_index_commit(&db, &ks, &commit))
+                .await
+                .map_err(join_err)?
+        }
+    }
+
+    fn clear(
+        &self,
+        _token: &DeriveToken,
+    ) -> impl std::future::Future<Output = Result<(), IndexerError>> + Send {
+        let ks = self.keyspaces();
+        async move {
+            let _guard = self.write_lock.lock().await;
+            tokio::task::spawn_blocking(move || {
+                ks.tips.clear().map_err(to_backend_err)?;
+                ks.principals.clear().map_err(to_backend_err)?;
+                ks.commits.clear().map_err(to_backend_err)?;
+                ks.digests.clear().map_err(to_backend_err)?;
+                ks.public_keys.clear().map_err(to_backend_err)?;
+                // The registry claim is derivation output too: clearing
+                // the derived rows without also retracting what the
+                // deriver claims to have produced would leave a stale
+                // registry asserting partitions no commit has populated
+                // since the clear.
+                ks.meta.remove(META_KEY).map_err(to_backend_err)?;
+                Ok(())
+            })
+            .await
+            .map_err(join_err)?
+        }
+    }
+}
+
 /// Synchronous body of `index_commit`, run inside `spawn_blocking`.
 ///
 /// Mirrors `MemoryIndexer`'s reference semantics (the behavioral baseline
 /// the KV-index migration established): idempotent on an already-indexed
-/// `(principal_id, sequence)` (matching `SqliteIndexer`'s `INSERT OR
-/// IGNORE`-on-primary-key behavior, which the shared conformance suite's
-/// `index_commit_idempotent` test already holds every backend to); tracks
-/// each principal's genesis timestamp as `created`, and folds every
-/// digest variant (commit IDs, PR/SR/AR/CR, per-coz blob hashes and czds)
-/// into one `digests` partition exactly as `MemoryIndexer`'s single
-/// `digest_index` map does — not `SqliteIndexer`'s separate `cozies`
-/// table, since no `Indexer` method reads per-coz metadata directly.
+/// `(principal_id, sequence)` (an idempotent re-index by primary key,
+/// which the shared conformance suite's `index_commit_idempotent` test
+/// holds every backend to); tracks each principal's genesis timestamp as
+/// `created`, and folds every digest variant (commit IDs, PR/SR/AR/CR,
+/// per-coz blob hashes and czds) into one `digests` partition exactly as
+/// `MemoryIndexer`'s single `digest_index` map does, rather than a
+/// separate per-coz table, since no `Indexer` method reads per-coz
+/// metadata directly.
+///
+/// Also writes the `meta` partition's registry claim (S3a,
+/// c-registry-generated) in the SAME atomic batch as the rows below, so
+/// that claim is produced by, and only by, this write-sealed derivation
+/// path -- never a value written independently of it. A write that
+/// bypasses this function entirely (raw fjall access, exactly the class
+/// `IndexerWrite`'s [`DeriveToken`] seals off) can still edit
+/// `index_meta` directly, but doing so no longer matches what
+/// [`FjallIndexer::registry`] reports for a store this function actually
+/// produced, which is the divergence
+/// `rs/cyphr-storage/tests/rebuild_compare.rs`'s m3 mutation asserts.
 fn db_index_commit(
     db: &Database,
-    tips: &Keyspace,
-    principals: &Keyspace,
-    commits: &Keyspace,
-    digests: &Keyspace,
-    public_keys: &Keyspace,
+    ks: &Keyspaces,
     commit: &IndexableCommit,
 ) -> Result<(), IndexerError> {
     let key = commit_key(&commit.principal_id, commit.sequence);
-    if commits.contains_key(&key).map_err(to_backend_err)? {
+    if ks.commits.contains_key(&key).map_err(to_backend_err)? {
         return Ok(());
     }
 
@@ -405,7 +471,8 @@ fn db_index_commit(
     };
 
     let pid_key = commit.principal_id.as_bytes();
-    let existing_summary: Option<PrincipalSummary> = principals
+    let existing_summary: Option<PrincipalSummary> = ks
+        .principals
         .get(pid_key)
         .map_err(to_backend_err)?
         .map(|b| de(&b))
@@ -424,15 +491,30 @@ fn db_index_commit(
 
     // All writes below land in one atomic batch: a crash mid-`index_commit`
     // must never leave `commits` updated without `tips`/`principals`
-    // following (or vice versa) -- matching `SqliteIndexer`'s single
-    // transaction and `MemoryIndexer`'s single lock-guarded mutation, not
-    // a weaker per-keyspace-independent write.
+    // following (or vice versa), landing all writes in one all-or-nothing
+    // transaction -- the same guarantee `MemoryIndexer`'s single
+    // lock-guarded mutation gives, not a weaker per-keyspace-independent
+    // write. The registry claim below (`meta`) rides in the same batch
+    // for the identical reason.
     let mut batch = db.batch();
 
-    batch.insert(commits, key, ser(&commit_ref)?);
+    batch.insert(&ks.commits, key, ser(&commit_ref)?);
+
+    // The registry claim (S3a, c-registry-generated): re-asserted on
+    // every commit, in the same atomic batch as the rows it describes,
+    // so it is durably produced BY this derivation, not merely present
+    // in the store from some earlier or out-of-band write.
+    batch.insert(
+        &ks.meta,
+        META_KEY,
+        ser(&IndexMeta {
+            version: SCHEMA_VERSION,
+            partitions: PARTITION_NAMES.iter().map(|s| s.to_string()).collect(),
+        })?,
+    );
 
     batch.insert(
-        tips,
+        &ks.tips,
         pid_key,
         ser(&TipState {
             principal_id: commit.principal_id.clone(),
@@ -447,7 +529,7 @@ fn db_index_commit(
     );
 
     batch.insert(
-        principals,
+        &ks.principals,
         pid_key,
         ser(&PrincipalSummary {
             principal_id: commit.principal_id.clone(),
@@ -467,7 +549,7 @@ fn db_index_commit(
 
         for digest_key in [coz.blob_hash.to_string(), coz.czd.clone()] {
             batch.insert(
-                digests,
+                &ks.digests,
                 digest_key.as_bytes(),
                 ser(&EntityRef {
                     digest: digest_key.clone(),
@@ -488,7 +570,7 @@ fn db_index_commit(
         .chain(commit.crs.iter())
     {
         batch.insert(
-            digests,
+            &ks.digests,
             variant.as_bytes(),
             ser(&EntityRef {
                 digest: variant.clone(),
@@ -500,7 +582,11 @@ fn db_index_commit(
     }
 
     for key_info in &commit.keys {
-        batch.insert(public_keys, key_info.thumbprint.as_bytes(), ser(key_info)?);
+        batch.insert(
+            &ks.public_keys,
+            key_info.thumbprint.as_bytes(),
+            ser(key_info)?,
+        );
     }
 
     batch.commit().map_err(to_backend_err)
