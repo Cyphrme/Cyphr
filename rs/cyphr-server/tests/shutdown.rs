@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::AppState;
 use cyphr_server::auth::principal::ServerPrincipal;
-use cyphr_server::config::ServerConfig;
+use cyphr_server::config::{RECORD_DIR_NAME, ServerConfig};
 
 /// Locate the compiled `cyphr-server` binary. `CARGO_BIN_EXE_<name>` is set
 /// by cargo itself for integration tests whose package builds that binary
@@ -295,7 +295,7 @@ async fn missing_sidecar_after_established_principal_names_file_and_guide() {
     .await
     .expect("first keyed boot establishes the principal and writes the sidecar");
 
-    let sidecar = data_dir.join("server-principal.json");
+    let sidecar = data_dir.join(RECORD_DIR_NAME).join("server-principal.json");
     assert!(
         sidecar.exists(),
         "the sidecar must exist after a first keyed boot"

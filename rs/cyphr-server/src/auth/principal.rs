@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::ServerIdentity;
+use crate::config::RECORD_DIR_NAME;
 
 /// `first_seen` stamped on the server's genesis key. Fixed (not wall-clock)
 /// so the genesis key — and therefore the PG derived from it — is
@@ -162,13 +163,19 @@ impl ServerPrincipal {
     ///
     /// `identity` is the key currently on disk at `signing_key_path`; the
     /// path is retained so [`rotate`](Self::rotate) can rewrite the file.
+    ///
+    /// `data_dir` is the bare top-level data directory, not the `record/`
+    /// subtree: the sidecar is told state (ADR-0002 Decision 1), so it
+    /// lives at `record/server-principal.json`, and this function joins
+    /// [`RECORD_DIR_NAME`] itself rather than requiring every caller to
+    /// pre-resolve the record path.
     pub async fn bootstrap(
         engine: &ServerEngine,
         identity: Arc<ServerIdentity>,
         signing_key_path: &Path,
         data_dir: &Path,
     ) -> Result<Self, ServerPrincipalError> {
-        let state_path = data_dir.join(STATE_FILE);
+        let state_path = data_dir.join(RECORD_DIR_NAME).join(STATE_FILE);
 
         if state_path.exists() {
             return Self::load(engine, &identity, signing_key_path, &state_path).await;

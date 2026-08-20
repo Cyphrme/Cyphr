@@ -109,9 +109,9 @@ impl AppState {
     /// successfully or construction fails -- a configured-but-broken key
     /// is a startup error, not a silent fallback to no identity.
     pub fn new(config: config::ServerConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let db = fjall::Database::builder(config.data_dir.join("blobs")).open()?;
+        let db = fjall::Database::builder(config.blobs_dir()).open()?;
         let blob_store = FjallBlobStore::from_database(db.clone())?;
-        let indexer = FjallIndexer::open(&config.data_dir.join("index"))?;
+        let indexer = FjallIndexer::open(&config.index_dir())?;
         let engine =
             StorageEngine::with_storage_factory(blob_store, indexer, move |principal_id: &str| {
                 cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), principal_id)
@@ -123,8 +123,7 @@ impl AppState {
             None => None,
         };
 
-        let observations =
-            observation::ObservationStore::open(&config.data_dir.join("observations"))?;
+        let observations = observation::ObservationStore::open(&config.observations_dir())?;
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -281,7 +280,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
 /// body limit layer.
 pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn std::error::Error>> {
     let admission_config = state.config.admission.clone();
-    let admission_data_dir = state.config.data_dir.clone();
+    let admission_record_dir = state.config.record_dir();
     let probe_state = state.clone();
     let resident: admission::ResidentProbe = Arc::new(move |id: String| {
         let state = probe_state.clone();
@@ -312,7 +311,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Result<axum::Router, Box<dyn st
     let mut app = build_router(state);
     if let Some(gate) = admission::layer(
         &admission_config,
-        &admission_data_dir,
+        &admission_record_dir,
         resident,
         limits.max_body_bytes as usize,
     )? {
