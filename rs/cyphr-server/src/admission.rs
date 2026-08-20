@@ -101,9 +101,15 @@ fn backend(e: fjall::Error) -> AdmissionError {
 /// the same single authoritative body cap enforced on every other route --
 /// so a genesis push is bounded by the deployer's own knob, never a private
 /// admission constant.
+///
+/// `record_dir` is the `record/` subtree (ADR-0002 Decision 1), not the bare
+/// data directory: the spent-set is told state the server cannot recover if
+/// lost, so it lives beside `blobs/`, `observations/`, and
+/// `server-principal.json` under `record/`, never beside the disposable
+/// `index/`.
 pub fn layer(
     config: &AdmissionConfig,
-    data_dir: &Path,
+    record_dir: &Path,
     resident: ResidentProbe,
     max_body_bytes: usize,
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
@@ -116,7 +122,7 @@ pub fn layer(
         },
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
-            let spent = SpentSet::open(&data_dir.join("admission"))?;
+            let spent = SpentSet::open(&record_dir.join("admission"))?;
             Policy::Invite { hashes, spent }
         },
     };
