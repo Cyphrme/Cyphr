@@ -240,7 +240,7 @@ fn run_engine_recovery_test<B, I>(
     engine: cyphr_storage::engine::StorageEngine<B, I>,
 ) where
     B: cyphr_storage::blob::BlobStore + 'static,
-    I: cyphr_storage::index::Indexer + 'static,
+    I: cyphr_storage::index::Indexer + cyphr_storage::index::IndexerWrite + 'static,
 {
     let generator = test_fixtures::Generator::new(pool);
     let golden = match generator.generate_test(&intent) {

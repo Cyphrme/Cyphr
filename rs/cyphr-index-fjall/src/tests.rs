@@ -7,7 +7,7 @@
 //! this backend must be held to the identical behavioral bar, not a
 //! hand-picked subset.
 
-use cyphr_storage::index::conformance;
+use cyphr_storage::index::{DeriveToken, IndexerWrite, conformance};
 
 use super::*;
 
@@ -42,9 +42,8 @@ async fn new_indexer_methods() {
 
 /// A durably-reopened `FjallIndexer` (fresh `Database`, not a clone of the
 /// live one) must see everything written before the reopen — otherwise
-/// this backend would be strictly weaker than `SqliteIndexer::open`
-/// against a real file, which the conformance suite (in-memory only)
-/// can't itself catch.
+/// this backend would silently lose durability across a reopen, a
+/// regression the conformance suite (in-memory only) can't itself catch.
 #[tokio::test]
 async fn survives_disk_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -52,7 +51,10 @@ async fn survives_disk_reload() {
     {
         let indexer = FjallIndexer::open(dir.path()).expect("open");
         indexer
-            .index_commit(&conformance::make_commit("alice", 0, 1000))
+            .index_commit(
+                &conformance::make_commit("alice", 0, 1000),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .expect("index");
     }
@@ -143,13 +145,19 @@ async fn multitenancy_prefix_principals_are_isolated() {
 
     for seq in 0..3 {
         indexer
-            .index_commit(&conformance::make_commit("alice", seq, 1000 + seq as i64))
+            .index_commit(
+                &conformance::make_commit("alice", seq, 1000 + seq as i64),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .expect("index alice");
     }
     for seq in 0..2 {
         indexer
-            .index_commit(&conformance::make_commit("alice2", seq, 2000 + seq as i64))
+            .index_commit(
+                &conformance::make_commit("alice2", seq, 2000 + seq as i64),
+                &DeriveToken::for_conformance_tests(),
+            )
             .await
             .expect("index alice2");
     }
