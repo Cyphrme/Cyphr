@@ -20,9 +20,9 @@ and none of what follows applies to one. `GET /server` tells you which
 you have: an attestor answers with `"tier": "attestor"`, a keyless
 server with `"tier": "repository"`. Check that before going further.
 
-This page says who needs that lie caught, what catching it must make
-possible, and what you can do once it has been caught. It states what
-the system owes its users.
+This page says who needs that lie caught, how the system catches and
+delivers it, and what you can do once it has. It states what the system
+owes its users.
 
 ## Who needs this
 
@@ -40,12 +40,15 @@ everyone else another?
 
 Noor is one bearer of the role. The record's owner is another — the
 council member has her own stake in a server that cannot show creditors
-one history and auditors a second. So is a service that watches servers
-on behalf of readers who will not do it themselves, and so is a
-platform that acts on records and answers to its users for those acts.
-What they share is the stake, not a job title: each has done something
-on the strength of a served answer, and each faces an audience that
-will not take their word for what that answer was.
+one history and auditors a second. So is a **relying service** — one
+that answers for a user of its own on the strength of someone else's
+record — and it learns of a conflict the same way anyone else does, by
+[the ordinary answer it already gets](#a-service-relying-on-you-decides),
+not by watching anything. So is a platform that acts on records and
+answers to its users for those acts. What they share is the stake, not a
+job title: each has done something on the strength of a served answer,
+and each faces an audience that will not take their word for what that
+answer was.
 
 ## What is being protected
 
@@ -55,18 +58,61 @@ you the record is the one lying about it.**
 
 For Noor that act is a published story. For the council member it is
 her own name — every statement served under it, to anyone. For the
-watch service and the platform it is the trust their users place in
+relying service and the platform it is the trust their users place in
 them. In every case the threat is the same: without detection, a server
 can arrange for your audience and you to have seen different worlds,
 and the word of the server is all anyone has.
 
-## What must be possible
+## How detection reaches you
 
-Three things, each stated as a claim the system answers for — comparing
-two views for a conflict is server-side work, not a procedure for you to
-run by hand, and each claim below describes what that comparison must
-deliver. The fenced block under each is its machine-read form: it makes
-the claim bindable to a check that discharges it.
+Comparing two views for a conflict is server-side work, not a procedure
+anyone runs by hand — the
+[architecture page](../architecture/equivocation-detection.md#detection-needs-no-watcher)
+states the mechanism; this page states what it means for you. Six
+things happen, in order, and only the fourth is yours to do.
+
+### The server notices
+
+A server compares tip reports it already holds about the same principal
+and sequence — material that witness registration and push fanout
+deliver as a byproduct of work it does anyway
+([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). No one asks
+it to check; no watcher, no schedule, no separate role exists to do that
+asking.
+
+### [fixed-rule-decides-conflict]
+
+**Whether two kept answers about the same position conflict is decided
+by a fixed, offline-checkable rule — never a party's say-so, and only a
+genuine conflict decides as one.** That rule is
+[the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate),
+not a standard anyone applies by feel. A comparison that could call an
+honest server a liar is worse than none: a false accusation is
+checkable by anyone, and being caught making one costs the credibility
+needed the next time an accusation is true.
+
+### You find out without looking
+
+You do not request a check and wait for its result. The next ordinary
+answer a server that holds the finding gives you — about your own
+record if you are its owner, about someone else's if you are relying on
+it — already carries the finding. Reading your own record the way you
+always would is the notice; there is nothing else to go looking for.
+This is a design choice the
+[architecture page states and justifies](../architecture/equivocation-detection.md#the-answer-carries-the-finding):
+the finding rides along in the answer you were already going to get,
+rather than waiting behind a second address you would have to know to
+ask.
+
+### [the-conflict-record]
+
+What you get is not a flag with no contents. The answer carries the two
+tip reports that disagree and the chain segment binding both signing
+keys as active — enough, on its own, to
+[convince a stranger](#convince-a-stranger) who takes nobody's word for
+it. You can hold onto it, hand it to someone else, or verify it
+yourself; nothing about it depends on the server that showed it to you
+staying honest a second time.
 
 ### [keep-the-signed-answer]
 
@@ -80,33 +126,38 @@ before you rely on it: the [publication and audit guide's endpoint
 table](../guides/publication-and-audit.md#where-receipts-come-from)
 names exactly which requests attest and which do not.
 
-```claim
-kind: constraint
-evaluator: example
-```
-
-This is what makes everything below possible, and it costs almost
+This is what makes everything above possible, and it costs almost
 nothing: a kept answer, when it is signed, is the answer that was
 already given — no server cooperation is needed to keep it true. The
 [publication and audit
 guide](../guides/publication-and-audit.md) walks through what a kept
 tip report looks like and how to verify one.
 
-### [a-conflict-is-decided-by-a-fixed-check]
+### What only you can do
 
-**Whether two kept answers about the same position conflict is decided
-by a fixed, offline-checkable rule — never a party's say-so, and only a
-genuine conflict decides as one.** That rule is
-[the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate),
-not a standard anyone applies by feel. A comparison that could call an
-honest server a liar is worse than none: a false accusation is
-checkable by anyone, and being caught making one costs the credibility
-needed the next time an accusation is true.
+If you are the record's owner, resolving the fork is yours alone to do,
+and it takes exactly one act: sign the next entry on the branch you
+choose — a commit whose `pre` names that branch's tip, or a
+`resync/create` re-asserting the current tip
+([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Nobody else can
+do it, and nobody's agreement is needed. Because a resolution is itself
+a commit, it reaches every server you have registered as a witness,
+automatically, the same as any other push — and no other server, since
+fanout only ever reaches a registered witness. Once a server has
+processed your resolving commit, its answers about the resolved sequence
+stop carrying the finding; the two tip reports that proved the conflict
+remain valid proof regardless, for as long as whoever kept them holds
+onto them.
 
-```claim
-kind: constraint
-evaluator: example
-```
+### A service relying on you decides
+
+A service authenticating a user against your identity right now needs
+to know your record is contested, and it learns the same way you do: the
+ordinary answer it was already going to get about your identity carries
+the finding when one exists. What it does with that — refuse the
+authentication, degrade it, ask for a second factor — is its own
+decision, made with its own stakes in mind, not something this system
+makes for it.
 
 ### [convince-a-stranger]
 
@@ -117,11 +168,6 @@ server's bare published identity, which is only a hint toward that
 chain, not a substitute for it. No one's word adds anything to the
 proof, and the server's cooperation is not required. The server can
 decline to explain the two statements. It cannot deny having made them.
-
-```claim
-kind: constraint
-evaluator: example
-```
 
 The chain segment is assembled by replaying the server's chain and
 importing it into the verification tool. Verifying against only the
@@ -137,44 +183,32 @@ way, is a record whose server cannot be caught. Witness registration
 ([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)) is what
 produces the first kind of second view.
 
-## When the answer is bad
+## What to do when the answer is bad
 
 **Detection buys you a proof, and the proof has force only outside the
-system: nothing inside Cyphr accepts it, spreads it, or changes
-because of it.**
+system: nothing inside Cyphr spreads it to anyone who was not already
+going to receive it as part of an ordinary answer.**
 
-Four moves are open to you, in rising order of what they need.
+Three moves are open to you beyond
+[resolving it, if it is yours to resolve](#what-only-you-can-do), in
+rising order of what they need.
 
 1. **Stop relying on that server.** Available immediately, needs
    nothing from anyone. You hold proof it gave two answers; treat its
    answers as no answer at all.
 
 2. **Make it known.** The proof is portable, so any venue works — a
-   court filing, a news story, a page anyone can check. But the venue
-   is yours to find. There is no place inside the system to lodge
-   evidence, no way another reader of the same server learns what you
-   found, and no server behaves differently for having been proven a
-   liar. That is an unmet need this documentation records, not a
-   defect in your proof.
+   court filing, a news story, a page anyone can check. But the venue is
+   yours to find: a server's own future answers about the principal
+   carry a finding only when that server itself made or received it;
+   there is no place inside the system for a stranger's
+   independently-assembled proof to reach servers that never held the
+   material to find it themselves.
 
-3. **Break the tie.** Two conflicting answers convict the server
-   without telling you which history is the honest one. A third view
-   from somewhere else settles that by simple majority — reasoning
-   that is yours to do, not the system's.
-
-4. **Get it repaired.** The record's owner can end a split: publish the
-   next entry on one branch, and the other branch can no longer
-   advance. The repair reaches further than a single server, too —
-   a resolution is itself a commit, so it fans out automatically to
-   every server the owner has registered as a witness, the same as
-   any other push
-   ([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). A server
-   the owner never registered with, or never otherwise reaches, goes on
-   serving the abandoned branch regardless. And the repair leaves no
-   mark: neither server records that a split happened, which branch
-   won, or that anything was ever wrong. A reader who arrives later sees
-   a record with no history of the incident — and that silence is also
-   an unmet need this documentation records.
+3. **Break the tie.** Two conflicting answers convict the server without
+   telling you which history is the honest one. A third view from
+   somewhere else settles that by simple majority — reasoning that is
+   yours to do, not the system's.
 
 ## Before the fact, or after?
 
@@ -190,9 +224,9 @@ any number of checks proves nothing about the next one. No amount of
 diligence at reading time turns a server's answer into a safe one.
 
 What follows from that: the comparing is not a job to time, and it is
-not your job at all — it is server-side work
-([the architecture page](../architecture/equivocation-detection.md#the-comparison)
-states how the comparison works).
+not your job at all — it is server-side work that
+[runs automatically](../architecture/equivocation-detection.md#detection-needs-no-watcher)
+on material the server already has, never on a moment you have to catch.
 [Keeping the signed answer](#keep-the-signed-answer) is what a
 comparison has to work with regardless of when it runs; nothing about
 when or how carefully you read changes whether a conflict is ever
