@@ -20,9 +20,12 @@ independent verifiability over global coordination.
 
 **Target System:** `SPEC.md` §15 (Consensus), §18 (State Jumping), §19
 (Error Conditions). Citation corrected 2026-07-08 — SPEC.md was renumbered
-and these topics previously sat at §17/§23/§24; this document's own
-per-constraint Verification table below still cites the old numbers and
-has not yet been re-audited line-by-line.
+and these topics previously sat at §17/§23/§24; the fork-related rows in
+this document's own per-constraint Verification table below
+([single-chain], [fork-detection], [fork-response], [fork-resolution],
+[no-fork-propagation]) were updated to current numbering, and the
+remainder still cite the superseded scheme, pending a full line-by-line
+re-audit.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -207,16 +210,24 @@ in gossip, inconsistent `/patch` responses, and conflicting signed proofs
 (SPEC.md §15.7.1, unrefined).
 `VERIFIED: agent-check`
 
-**[fork-response]**: On detecting an invalid fork, witnesses MAY respond by
-any of: ignoring the message, escalating (e.g., temporarily freezing the
-principal until resolved), or holding the message as proof of error (SPEC.md
-§15.7, unrefined — the source text there is a bare option list with no
-governing MUST). Witnesses **hold both branches** pending resolution rather
-than rejecting either outright (SPEC.md §15.8, unrefined); holding is not a
-rejection of the principal and does not itself mean a refusal to serve it.
-Witnesses transition the principal's consensus state to Error — a marking of
-the detected divergence, not an ejection (SPEC.md §15.6, unrefined, for the
-state-transition table).
+**[fork-response]**: On detecting an invalid fork, SPEC.md §15.7 (unrefined)
+enumerates three possible responses — ignoring the message, escalating
+(e.g., temporarily freezing the principal until resolved), or holding the
+message as proof of error — as a bare option list with no lead-in verb,
+neither MUST nor MAY; that missing verb is a gap in the source text, not a
+granted permission, so this document does not present the list as witnesses
+MAY do any of the three. Witnesses **hold both branches** pending
+resolution (SPEC.md §15.8, unrefined) rather than rejecting either
+outright. SPEC.md §15.7.1 (unrefined) states instead that "Response
+includes broadcast fork proof and rejection of both branches until
+resolved," directly contradicting §15.8's hold-both-branches treatment in
+the immediately following subsection; this document treats §15.7/§15.8 as
+governing because §15.8 gives the specific resolution mechanics and
+directly conflicts with §15.7.1, and records that contradiction rather
+than silently resolving it in either section's favor. Witnesses transition
+the principal's consensus state to Error (SPEC.md §15.6, unrefined, for
+the state-transition table); per SPEC.md §15.5 (unrefined), Error means no
+new transactions or actions are processed until resolved.
 `VERIFIED: agent-check`
 
 **[fork-resolution]**: An invalid fork (SPEC.md §11.5, refined, for the term;
@@ -333,7 +344,7 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 | [resync-backoff]               | agent-check | pass   | Explicit in SPEC.md §17.2        |
 | [resync-pop]                   | agent-check | pass   | Explicit in SPEC.md §17.2.1      |
 | [fork-detection]               | agent-check | pass   | SPEC.md §15.7.1 (unrefined)      |
-| [fork-response]                | agent-check | pass   | SPEC.md §15.7, §15.8 (unrefined) |
+| [fork-response]                | agent-check | pass   | SPEC.md §15.7, §15.7.1, §15.8 (unrefined) |
 | [fork-resolution]              | agent-check | pass   | Term: §11.5 (refined); mechanics: §15.8 (unrefined) |
 | [state-jump-mechanism]         | agent-check | pass   | Explicit in SPEC.md §23.1        |
 | [state-jump-revocation-check]  | agent-check | pass   | Explicit in SPEC.md §23.3        |
