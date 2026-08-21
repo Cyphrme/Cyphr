@@ -216,18 +216,20 @@ enumerates three possible responses — ignoring the message, escalating
 message as proof of error — as a bare option list with no lead-in verb,
 neither MUST nor MAY; that missing verb is a gap in the source text, not a
 granted permission, so this document does not present the list as witnesses
-MAY do any of the three. Witnesses **hold both branches** pending
-resolution (SPEC.md §15.8, unrefined) rather than rejecting either
-outright. SPEC.md §15.7.1 (unrefined) states instead that "Response
-includes broadcast fork proof and rejection of both branches until
-resolved," directly contradicting §15.8's hold-both-branches treatment in
-the immediately following subsection; this document treats §15.7/§15.8 as
-governing because §15.8 gives the specific resolution mechanics and
-directly conflicts with §15.7.1, and records that contradiction rather
-than silently resolving it in either section's favor. Witnesses transition
-the principal's consensus state to Error (SPEC.md §15.6, unrefined, for
-the state-transition table); per SPEC.md §15.5 (unrefined), Error means no
-new transactions or actions are processed until resolved.
+MAY do any of the three. SPEC.md §15.7.1 (unrefined) gives the response to
+a detected fork as broadcast of fork proof plus rejection of both branches;
+SPEC.md §15.8 (unrefined) gives it as witnesses holding both branches.
+These describe the same disposition, not opposed ones: under SPEC.md
+§15.6's (unrefined) definition of Hold Local — "Message is incorrect, is
+held locally, and not forwarded in the gossip" — rejecting a branch means
+not treating it as canonical, not discarding it. Witnesses **hold both
+branches** pending resolution (SPEC.md §15.8, unrefined): neither branch is
+accepted as canonical, both are retained as proof of error, and witnesses
+may broadcast the fork proof to other witnesses, consistent with
+[proof-of-error] and [no-fork-propagation]. Witnesses transition the
+principal's consensus state to Error (SPEC.md §15.6, unrefined, for the
+state-transition table); per SPEC.md §15.5 (unrefined), Error means no new
+transactions or actions are processed until resolved.
 `VERIFIED: agent-check`
 
 **[fork-resolution]**: An invalid fork (SPEC.md §11.5, refined, for the term;
