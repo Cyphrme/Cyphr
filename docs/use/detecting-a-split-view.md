@@ -169,12 +169,7 @@ Four moves are open to you, in rising order of what they need.
    neither server records that a split happened, which branch won, or
    that anything was ever wrong. A reader who arrives later sees a
    record with no history of the incident — and that silence is also
-   an unmet need this documentation records. It is not a gap more
-   engineering of the same kind would close: no purely offline repair
-   can carry a resolution between servers without some ongoing
-   coordination between them, which is a proven structural limit
-   (`eon_trilemma_impossibility`, factoring-trust's
-   `Core/Corollaries.lean`), not a todo list.
+   an unmet need this documentation records.
 
 ## Before the fact, or after?
 
