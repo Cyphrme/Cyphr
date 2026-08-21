@@ -134,12 +134,19 @@ evaluator: review
 ### [arch-evidence-is-portable]
 
 The evidence a watcher retains is a complete proof on its own: it
-verifies offline, against nothing but the server's published identity,
-by a party that trusts neither the watcher nor the server. Nothing a
-build adds may make a verdict depend on server cooperation, on private
-watcher state, or on trust in the watcher's own word — the user-facing
-form of this requirement is the reader's ability to
-[convince a stranger](../use/detecting-a-split-view.md#convince-a-stranger).
+verifies offline, against exactly
+[what a verifier retains](../specs/receipts.md#what-a-verifier-retains)
+— the two receipts and the chain segment binding both signing keys —
+by a party that trusts neither the watcher nor the server. The
+server's bare published identity is not that segment; per
+`docs/specs/receipts.md` `[receipts-r-genesis-hint]` it is a hint
+toward replaying the chain, not a substitute for having replayed it.
+Nothing a build adds may make a verdict depend on server cooperation,
+on private watcher state, or on trust in the watcher's own word — the
+user-facing form of this requirement is the reader's ability to
+[convince a stranger](../use/detecting-a-split-view.md#convince-a-stranger),
+and that page states where assembling the chain segment is not yet
+possible with shipped tooling.
 
 ```claim
 kind: requirement

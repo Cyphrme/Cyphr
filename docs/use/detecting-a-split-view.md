@@ -8,6 +8,13 @@ and a different version to another, each answer signed, each plausible,
 neither audience aware of the other. The system's own name for that
 lie is **equivocation**; this page uses both words for the same thing.
 
+That signed statement exists only if the server can sign at all. A
+server that is an **attestor** — keyed and bootstrapped — signs a tip
+report over every state it serves; a **keyless** server signs nothing,
+and none of what follows applies to one. `GET /server` tells you which
+you have: an attestor answers with `"tier": "attestor"`, a keyless
+server with `"tier": "repository"`. Check that before going further.
+
 This page says who needs that lie caught, what catching it must make
 possible, and what you can do once you have caught it. It states what
 the system owes its users; where the system does not yet deliver, that
@@ -59,10 +66,16 @@ delivered — and this prose asserts nothing beyond that.
 
 ### [keep-the-signed-answer]
 
-**Every answer a server gives about a record's state can be kept, and
-the kept answer keeps its meaning: it is signed, self-contained, and
-stays verifiable without the server's cooperation, for as long as you
-hold it.**
+**An answer a server signs about a record's state can be kept, and the
+kept answer keeps its meaning: it is signed, self-contained, and stays
+verifiable without the server's cooperation, for as long as you hold
+it.** Not every answer is signed — a bounded patch, a bare discovery
+response, a login, and anything from a keyless server all come back
+unsigned, by design, and keeping one of those keeps nothing. Know
+which you have before you rely on it: the [publication and audit
+guide's endpoint
+table](../guides/publication-and-audit.md#where-receipts-come-from)
+names exactly which requests attest and which do not.
 
 ```claim
 kind: constraint
@@ -70,9 +83,10 @@ evaluator: example
 ```
 
 This is what makes everything below possible, and it costs almost
-nothing: the answer you keep is the answer you were already given. The
-[publication and audit guide](../guides/publication-and-audit.md) walks
-through what a kept tip report looks like and how to verify one.
+nothing: the answer you keep, when it is signed, is the answer you
+were already given. The [publication and audit
+guide](../guides/publication-and-audit.md) walks through what a kept
+tip report looks like and how to verify one.
 
 ### [decide-the-conflict-yourself]
 
@@ -90,11 +104,23 @@ evaluator: example
 
 ### [convince-a-stranger]
 
-**A conflict you found convinces a stranger. The two kept answers and
-the server's published identity are enough; your testimony adds
-nothing to the proof, and the server's cooperation is not required.**
-The server can decline to explain the two statements. It cannot deny
-having made them.
+**A conflict you found convinces a stranger.** What it takes is the
+two kept answers plus the segment of the server's own chain that binds
+both signing keys as active — not the server's bare published
+identity, which is only a hint toward that chain, not a substitute for
+it. Your testimony adds nothing to the proof, and the server's
+cooperation is not required. The server can decline to explain the two
+statements. It cannot deny having made them.
+
+Assembling that chain segment yourself has no shipped path today:
+replaying a server's chain locally works, but there is no way yet to
+get a server's own chain into the tool that would import it. Verifying
+against the server's currently published key instead is the only
+option that works today, and it is weaker — it cannot catch a server
+that rotated its published key to one that never legitimately appeared
+in its own chain. A watcher who cannot assemble the chain segment
+either does the fuller check by hand or is clear with themselves about
+exactly what the shortcut leaves uncovered.
 
 ```claim
 kind: constraint
@@ -143,7 +169,12 @@ Four moves are open to you, in rising order of what they need.
    neither server records that a split happened, which branch won, or
    that anything was ever wrong. A reader who arrives later sees a
    record with no history of the incident — and that silence is also
-   an unmet need this documentation records.
+   an unmet need this documentation records. It is not a gap more
+   engineering of the same kind would close: no purely offline repair
+   can carry a resolution between servers without some ongoing
+   coordination between them, which is a proven structural limit
+   (`eon_trilemma_impossibility`, factoring-trust's
+   `Core/Corollaries.lean`), not a todo list.
 
 ## Before the fact, or after?
 
