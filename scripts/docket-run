@@ -28,6 +28,38 @@ set -uo pipefail
 declare -A CLAIMS_INDEX=(
   [list-valued-both-green]="_claim_list_valued_both_green"
   [list-valued-one-failing]="_claim_list_valued_one_failing"
+
+  # EQ0 (docs/architecture/equivocation-detection.md, unmerged branch
+  # node/eq0-watcher-genre-input) requirement claims. Five have a
+  # verified evaluator today: arch-tip-reports-are-material and
+  # arch-evidence-is-portable resolve against tests already in this
+  # worktree; arch-detection-is-comparison, arch-signing-stays-stateless,
+  # and arch-finding-never-clears resolve against tests written on the
+  # unmerged node/eq1-detector-correctness branch (see
+  # .scratch/campaign-mvp-close/deposits/eq1-red-evaluators.md) and are
+  # not present here yet. The other six name a test that exists nowhere
+  # yet: eq1's own survey found no production code path through which
+  # arch-detection-is-automatic, arch-answer-carries-contested,
+  # arch-evidence-rides-along, or arch-resolution-ends-fork could be
+  # tested at all today; arch-behind-is-not-fork is new since that
+  # survey and untested for the same reason. arch-owner-alone-resolves
+  # is untestable from this crate's equivocation/consistency code (per
+  # that survey it belongs to tests/push.rs's ordinary push-acceptance
+  # suite instead), so its entry points there, not at equivocation.rs
+  # like the rest. Each of these six resolves today to a real cargo
+  # invocation that matches zero tests -- verified empirically, not
+  # assumed.
+  [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
+  [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
+  [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
+  [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
+  [arch-evidence-is-portable]="_claim_arch_evidence_is_portable"
+  [arch-finding-never-clears]="_claim_arch_finding_never_clears"
+  [arch-detection-is-automatic]="_claim_arch_detection_is_automatic"
+  [arch-answer-carries-contested]="_claim_arch_answer_carries_contested"
+  [arch-evidence-rides-along]="_claim_arch_evidence_rides_along"
+  [arch-owner-alone-resolves]="_claim_arch_owner_alone_resolves"
+  [arch-resolution-ends-fork]="_claim_arch_resolution_ends_fork"
 )
 
 # scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
@@ -41,6 +73,41 @@ _claim_list_valued_both_green=(
 _claim_list_valued_one_failing=(
   "true"
   "false"
+)
+
+_claim_arch_detection_is_comparison=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation fewer_than_two_reports_settles_nothing -- --exact"
+)
+_claim_arch_tip_reports_are_material=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
+)
+_claim_arch_behind_is_not_fork=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_behind_is_not_fork -- --exact"
+)
+_claim_arch_signing_stays_stateless=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation signing_is_unaffected_by_running_a_fork_comparison -- --exact"
+)
+_claim_arch_evidence_is_portable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_verifies_offline -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_offline_false_path -- --exact"
+)
+_claim_arch_finding_never_clears=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation conflicting_pair_still_proven_after_unrelated_agreement_evaluated -- --exact"
+)
+_claim_arch_detection_is_automatic=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_detection_is_automatic -- --exact"
+)
+_claim_arch_answer_carries_contested=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_answer_carries_contested -- --exact"
+)
+_claim_arch_evidence_rides_along=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_evidence_rides_along -- --exact"
+)
+_claim_arch_owner_alone_resolves=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test push arch_owner_alone_resolves -- --exact"
+)
+_claim_arch_resolution_ends_fork=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_resolution_ends_fork -- --exact"
 )
 
 if [ "$#" -ne 1 ]; then
