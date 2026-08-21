@@ -7,9 +7,11 @@ defined elsewhere is cited, not restated.
 
 A **fork** is two conflicting, independently signed claims about the
 same principal at the same chain position —
-[SPEC §15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior)'s
-"two or more conflicting commits reference the same pre." A **split
-view** is the same event named for how it looks from outside: one
+[SPEC §15.7](../../SPEC.md#157-consensus-and-witnesses)'s "two or more
+conflicting commits reference the same pre," the condition
+[SPEC §15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior)
+names an invalid fork. A **split view** is the same event named for how
+it looks from outside: one
 identity, two irreconcilable answers, each plausible to whoever received
 it. Fork and split view are one concept under two names, not two
 concepts — a split view is what a fork looks like from outside, and
@@ -64,11 +66,15 @@ than the server that first accepted it — the material the comparison
 above needs.
 
 **The comparison is not wired to it.** `check_cross_witness_consistency`,
-`detect_fork_unverified`, and `format_disagreement_evidence` are `pub`,
-tested, and called from no route, no background job, and nowhere else in
-the server. A witness that receives a conflicting push over fanout has,
-in its own crate, code that would prove the conflict, and nothing that
-runs it.
+`detect_fork_unverified`, and `format_disagreement_evidence` are `pub`
+and tested, and none is called from any route or background job. The
+only in-server call site among the three is
+`check_cross_witness_consistency`'s own use of
+`format_disagreement_evidence` (`rs/cyphr-server/src/consistency.rs:65`)
+— and `check_cross_witness_consistency` itself is called from nowhere
+else in the server, so no live path enters the cluster. A witness that
+receives a conflicting push over fanout has, in its own crate, code that
+would prove the conflict, and nothing that runs it.
 
 So detection today is two built halves with nothing joining them: the
 transport that would carry a second view to a comparing party works; the

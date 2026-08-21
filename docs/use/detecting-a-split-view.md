@@ -145,6 +145,10 @@ arrives that way is not — see
 
 ## When the answer is bad
 
+No shipped path produces this proof today — the comparison it depends
+on [runs nowhere](../architecture/equivocation-detection.md#what-is-built-and-what-runs-nowhere)
+yet — so what follows describes what holding one would let you do.
+
 **Detection buys you a proof, and today the proof has force only
 outside the system: nothing inside Cyphr accepts it, spreads it, or
 changes because of it.**
