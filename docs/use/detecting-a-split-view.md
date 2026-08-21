@@ -139,9 +139,9 @@ produces the first kind of second view.
 
 ## When the answer is bad
 
-**Detection buys you a proof, and today the proof has force only
-outside the system: nothing inside Cyphr accepts it, spreads it, or
-changes because of it.**
+**Detection buys you a proof, and the proof has force only outside the
+system: nothing inside Cyphr accepts it, spreads it, or changes
+because of it.**
 
 Four moves are open to you, in rising order of what they need.
 
@@ -159,15 +159,15 @@ Four moves are open to you, in rising order of what they need.
 
 3. **Break the tie.** Two conflicting answers convict the server
    without telling you which history is the honest one. A third view
-   from somewhere else settles that by simple majority — reasoning you
-   do yourself, because nothing in the system does it for you.
+   from somewhere else settles that by simple majority — reasoning
+   that is yours to do, not the system's.
 
 4. **Get it repaired.** The record's owner can end a split: publish the
    next entry on one branch, and the other branch can no longer
-   advance. That much works today, and it reaches further than a
-   single server — a resolution is itself a commit, so it fans out
-   automatically to every server the owner has registered as a witness,
-   the same as any other push
+   advance. The repair reaches further than a single server, too —
+   a resolution is itself a commit, so it fans out automatically to
+   every server the owner has registered as a witness, the same as
+   any other push
    ([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). A server
    the owner never registered with, or never otherwise reaches, goes on
    serving the abandoned branch regardless. And the repair leaves no
