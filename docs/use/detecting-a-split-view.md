@@ -73,31 +73,38 @@ things happen, in order, and only the fourth is yours to do.
 
 ### The server notices
 
-A server compares tip reports it already holds about the same principal
-and sequence — material that witness registration and push fanout
-deliver as a byproduct of work it does anyway
-([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). No one asks
-it to check; no watcher, no schedule, no separate role exists to do that
-asking.
+A server exchanges tip reports and a consistency proof with a witness
+for the same principal — an exchange that witness registration and push
+fanout trigger as a byproduct of work it does anyway
+([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). Neither side
+needs to fetch or keep the other's chain to run it. No one asks the
+server to check; no watcher, no schedule, no separate role exists to do
+that asking.
 
 ### [fixed-rule-decides-conflict]
 
-**Whether two kept answers about the same position conflict is decided
-by a fixed, offline-checkable rule — never a party's say-so, and only a
-genuine conflict decides as one.** That rule is
-[the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate),
-not a standard anyone applies by feel. A comparison that could call an
-honest server a liar is worse than none: a false accusation is
-checkable by anyone, and being caught making one costs the credibility
-needed the next time an accusation is true.
+**Whether two kept answers conflict is decided by a fixed,
+offline-checkable rule — never a party's say-so, and only a genuine
+conflict decides as one.** For two answers about the identical position,
+that rule is
+[the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate).
+For two answers about different positions, the same fixed-rule guarantee
+holds, decided instead by whether a consistency proof shows the earlier
+position is a genuine ancestor of the later one — the
+[architecture page states which](../architecture/equivocation-detection.md#the-exchange):
+a server merely behind is not a server that lied. A comparison that
+could call an honest server a liar is worse than none: a false
+accusation is checkable by anyone, and being caught making one costs the
+credibility needed the next time an accusation is true.
 
 ### You find out without looking
 
 You do not request a check and wait for its result. The next ordinary
-answer a server that holds the finding gives you — about your own
-record if you are its owner, about someone else's if you are relying on
-it — already carries the finding. Reading your own record the way you
-always would is the notice; there is nothing else to go looking for.
+answer a server whose most recent exchange proved a fork gives you —
+about your own record if you are its owner, about someone else's if you
+are relying on it — already carries the proof. Reading your own record
+the way you always would is the notice; there is nothing else to go
+looking for.
 This is a design choice the
 [architecture page states and justifies](../architecture/equivocation-detection.md#the-answer-carries-the-finding):
 the finding rides along in the answer you were already going to get,
@@ -226,7 +233,8 @@ diligence at reading time turns a server's answer into a safe one.
 What follows from that: the comparing is not a job to time, and it is
 not your job at all — it is server-side work that
 [runs automatically](../architecture/equivocation-detection.md#detection-needs-no-watcher)
-on material the server already has, never on a moment you have to catch.
+on an exchange the witness relationship already delivers, never on a
+moment you have to catch.
 [Keeping the signed answer](#keep-the-signed-answer) is what a
 comparison has to work with regardless of when it runs; nothing about
 when or how carefully you read changes whether a conflict is ever
