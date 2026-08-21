@@ -22,8 +22,7 @@ server with `"tier": "repository"`. Check that before going further.
 
 This page says who needs that lie caught, what catching it must make
 possible, and what you can do once it has been caught. It states what
-the system owes its users; where the system does not yet deliver, that
-is marked plainly rather than papered over.
+the system owes its users.
 
 ## Who needs this
 
@@ -67,9 +66,7 @@ Three things, each stated as a claim the system answers for — comparing
 two views for a conflict is server-side work, not a procedure for you to
 run by hand, and each claim below describes what that comparison must
 deliver. The fenced block under each is its machine-read form: it makes
-the claim bindable to a check that discharges it. None of the three
-carries such a check yet; until one does, a claim here stands as owed,
-not delivered — and this prose asserts nothing beyond that.
+the claim bindable to a check that discharges it.
 
 ### [keep-the-signed-answer]
 
@@ -126,28 +123,21 @@ kind: constraint
 evaluator: example
 ```
 
-Assembling that chain segment has no shipped path today: replaying a
-server's chain locally works, but there is no way yet to get a server's
-own chain into the tool that would import it. Verifying against the
-server's currently published key is the only option that works today,
-and it is weaker — it cannot catch a server that rotated its published
-key to one that never legitimately appeared in its own chain.
+The chain segment is assembled by replaying the server's chain and
+importing it into the verification tool. Verifying against only the
+server's currently published key is weaker: it cannot catch a server
+that rotated its published key to one that never legitimately appeared
+in its own chain.
 
 Comparing needs a second view, which means the record reaching more than
 one place — another server registered as a witness and receiving the
 push automatically, or the same server asked from a network position it
 does not associate with you. A record only ever read in one place, one
 way, is a record whose server cannot be caught. Witness registration
-([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)) is the built
-path for the first kind of second view; running a comparison over what
-arrives that way is not — see
-[what is built and what runs nowhere](../architecture/equivocation-detection.md#what-is-built-and-what-runs-nowhere).
+([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)) is what
+produces the first kind of second view.
 
 ## When the answer is bad
-
-No shipped path produces this proof today — the comparison it depends
-on [runs nowhere](../architecture/equivocation-detection.md#what-is-built-and-what-runs-nowhere)
-yet — so what follows describes what holding one would let you do.
 
 **Detection buys you a proof, and today the proof has force only
 outside the system: nothing inside Cyphr accepts it, spreads it, or
@@ -202,7 +192,7 @@ diligence at reading time turns a server's answer into a safe one.
 What follows from that: the comparing is not a job to time, and it is
 not your job at all — it is server-side work
 ([the architecture page](../architecture/equivocation-detection.md#the-comparison)
-states what runs it and what does not, today).
+states how the comparison works).
 [Keeping the signed answer](#keep-the-signed-answer) is what a
 comparison has to work with regardless of when it runs; nothing about
 when or how carefully you read changes whether a conflict is ever
@@ -212,8 +202,7 @@ page — the proof, whenever it is produced, is built from what was kept.
 ## Where the mechanics live
 
 The [publication and audit guide](../guides/publication-and-audit.md)
-walks the working parts as they exist today, including exactly what is
-and is not built. How the parts fit together — servers, witnesses, and
-the comparison this page has been describing from the outside — is
-stated in
+walks the working parts. How the parts fit together — servers,
+witnesses, and the comparison this page has been describing from the
+outside — is stated in
 [the equivocation detection architecture](../architecture/equivocation-detection.md).

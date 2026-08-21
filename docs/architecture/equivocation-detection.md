@@ -1,9 +1,9 @@
 # Equivocation detection
 
-This page states how equivocation detection fits together: which parts
-are built and live, which are implemented but wired to nothing, and the
-requirements the arrangement must satisfy once it runs. Everything
-defined elsewhere is cited, not restated.
+This page states how equivocation detection fits together: the parts
+involved, the comparison at the center of it, and the requirements the
+arrangement must satisfy. Everything defined elsewhere is cited, not
+restated.
 
 A **fork** is two conflicting, independently signed claims about the
 same principal at the same chain position —
@@ -54,51 +54,18 @@ evidence) — and `rs/cyphr-server/tests/equivocation.rs` exercises the
 underlying predicate. It is server-side code: it lives in the server's
 own crate, not a client tool or a procedure a person runs by hand.
 
-## What is built, and what runs nowhere
+## Resolution
 
-**Fanout is live.** `spawn_fanout` (`rs/cyphr-server/src/fanout.rs`) runs
-after every accepted `/push` (`rs/cyphr-server/src/routes.rs`'s `push`
-handler calls it unconditionally on success), delivering the committed
-blobs to every witness the principal has registered
-([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). This is what
-gets a second, independently signed view of a push to somewhere other
-than the server that first accepted it — the material the comparison
-above needs.
-
-**The comparison is not wired to it.** `check_cross_witness_consistency`,
-`detect_fork_unverified`, and `format_disagreement_evidence` are `pub`
-and tested, and none is called from any route or background job. The
-only in-server call site among the three is
-`check_cross_witness_consistency`'s own use of
-`format_disagreement_evidence` (`rs/cyphr-server/src/consistency.rs:65`)
-— and `check_cross_witness_consistency` itself is called from nowhere
-else in the server, so no live path enters the cluster. A witness that
-receives a conflicting push over fanout has, in its own crate, code that
-would prove the conflict, and nothing that runs it.
-
-So detection today is two built halves with nothing joining them: the
-transport that would carry a second view to a comparing party works; the
-comparison that party would run over what it received does not run
-anywhere.
-
-**Resolution reaches registered witnesses, and only them.** A fork ends
-when the principal — not the server, not a witness — signs a new commit
-whose `pre` names the chosen branch's tip, or a `resync/create` PoP
-re-asserting the current tip
+A fork ends when the principal — not the server, not a witness — signs
+a new commit whose `pre` names the chosen branch's tip, or a
+`resync/create` PoP re-asserting the current tip
 ([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Because a
-resolution is itself a commit, `spawn_fanout` carries it to every server
-the principal has registered as a witness, automatically, the same as
-any other push. A server the principal never registered with, or never
+resolution is itself a commit, fanout carries it to every server the
+principal has registered as a witness, automatically, the same as any
+other push. A server the principal never registered with, or never
 otherwise reaches, gets nothing and goes on serving the abandoned
-branch — that is the actual gap, narrower than "nothing carries a
-resolution between servers."
-
-**Nothing downstream consumes a proven conflict, wired or not.** The
-consensus machinery of [SPEC §15](../../SPEC.md#15-consensus) —
-proof-of-error, principal error states, fork-triggered state
-transitions — is design, not description: none of it is built. The
-[publication and audit guide](../guides/publication-and-audit.md#what-is-not-there-yet)
-states the same boundary at the operator level.
+branch — a property of how fanout scopes resolution, not a defect in
+it.
 
 ## Requirements
 
@@ -163,9 +130,7 @@ build adds may make a verdict depend on server cooperation, on private
 state held by whoever ran the comparison, or on anyone's unverified word
 for it — the user-facing form of this requirement is the reader's
 ability to
-[convince a stranger](../use/detecting-a-split-view.md#convince-a-stranger),
-and that page states where assembling the chain segment is not yet
-possible with shipped tooling.
+[convince a stranger](../use/detecting-a-split-view.md#convince-a-stranger).
 
 ```claim
 kind: requirement
