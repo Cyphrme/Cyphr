@@ -27,8 +27,22 @@ predicate documentation conventions when editing prose.
 claim nothing checks; the root `docket.ncl` registers which genres of
 `docs/` may carry which kind of claim (see that file for the reasoning).
 Registration currently covers only the genres being born:
-`docs/architecture/**` (`requirement`) and `docs/use/**` (`constraint`).
+`docs/architecture/**` (`requirement`) and `docs/use/**` (`kinds = []` —
+registered to carry no claim kind, not left unregistered).
 `docs/specs/` and `docs/guides/` are not registered yet.
+
+`kinds = []` and unregistered are not the same thing: an unregistered
+tree is unscanned outright, while a `kinds = []` tree is scanned and a
+stray claim block in it is a hard `C3` genre violation — the same shape
+`docket.ncl` uses for `docs/trust-model.md` and docket dogfoods on its
+own README. One consequence, verified against the pinned binary: once
+`docs/use/**` is scanned, a heading of the form `### [kebab-id]` used
+purely as a link anchor (docket treats any bracket-kebab-id heading as a
+claim definition regardless of what the genre permits) surfaces as an
+`unregistered-definition` **warning** — `Warn` severity, never fails
+`docket check`, but real noise on every run. The equivocation guide
+(`docs/use/detecting-a-split-view.md`) has several such headings; don't
+be surprised by them.
 
 docket is a **sibling checkout**, never vendored into this repository.
 Pin: commit `0854eca`. Run from the repository root:
