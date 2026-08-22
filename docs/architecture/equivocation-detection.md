@@ -222,8 +222,10 @@ two roots claimed for the identical position, with no direction left in
 which either could extend the other. A check that treats any two
 differing tip reports as a conflict, without regard to whether the
 higher-sequence one is a proven extension of the lower, cannot tell a
-merely-behind witness from a forked one — that confusion is the failure
-this claim rules out.
+merely-behind witness from a forked one. A check that treats any two
+differing sequences as no conflict without attempting that proof cannot
+tell a forked witness from a behind one either — both confusions are
+what this claim rules out.
 
 ```claim
 kind: requirement
