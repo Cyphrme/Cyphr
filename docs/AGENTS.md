@@ -34,9 +34,9 @@ registered to carry no claim kind, not left unregistered).
 `kinds = []` and unregistered are not the same thing: an unregistered
 tree is unscanned outright, while a `kinds = []` tree is scanned and a
 stray claim block in it is a hard `C3` genre violation — the same shape
-`docket.ncl` uses for `docs/trust-model.md` and docket dogfoods on its
-own README. One consequence, verified against the pinned binary: once
-`docs/use/**` is scanned, a heading of the form `### [kebab-id]` used
+docket dogfoods on its own README. One consequence, verified against
+the pinned binary: once `docs/use/**` is scanned, a heading of the
+form `### [kebab-id]` used
 purely as a link anchor (docket treats any bracket-kebab-id heading as a
 claim definition regardless of what the genre permits) surfaces as an
 `unregistered-definition` **warning** — `Warn` severity, never fails
