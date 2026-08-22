@@ -68,8 +68,9 @@ and the word of the server is all anyone has.
 Comparing two views for a conflict is server-side work, not a procedure
 anyone runs by hand — the
 [architecture page](../architecture/equivocation-detection.md#detection-needs-no-watcher)
-states the mechanism; this page states what it means for you. Six
-things happen, in order, and only the fourth is yours to do.
+states the mechanism; this page states what it means for you, in the
+order it happens. Most of it is not yours to do; the sections below say
+which steps are.
 
 ### The server notices
 
