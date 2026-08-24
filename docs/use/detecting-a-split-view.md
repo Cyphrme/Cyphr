@@ -115,12 +115,16 @@ ask.
 ### [the-conflict-record]
 
 What you get is not a flag with no contents. The answer carries the two
-tip reports that disagree and the chain segment binding both signing
-keys as active — enough, on its own, to
-[convince a stranger](#convince-a-stranger) who takes nobody's word for
-it. You can hold onto it, hand it to someone else, or verify it
-yourself; nothing about it depends on the server that showed it to you
-staying honest a second time.
+tip reports that disagree and the consistency proof tying their claimed
+Commit Roots together — the object
+[the architecture page names](../architecture/equivocation-detection.md#what-the-finding-contains).
+You can hold onto it, hand it to someone else, or verify it yourself;
+nothing about it depends on the server that showed it to you staying
+honest a second time. Turning it into something that
+[convinces a stranger](#convince-a-stranger) outright, rather than one
+willing to trust the server's currently published key, takes one
+further step only you can take: replaying the server's chain to bind
+each report's signing key to it.
 
 ### [keep-the-signed-answer]
 
@@ -177,11 +181,12 @@ chain, not a substitute for it. No one's word adds anything to the
 proof, and the server's cooperation is not required. The server can
 decline to explain the two statements. It cannot deny having made them.
 
-The chain segment is assembled by replaying the server's chain and
-importing it into the verification tool. Verifying against only the
-server's currently published key is weaker: it cannot catch a server
-that rotated its published key to one that never legitimately appeared
-in its own chain.
+You assemble the chain segment yourself, by replaying the server's own
+chain — [the publication and audit guide walks the
+steps](../guides/publication-and-audit.md#verifying-a-receipt-without-trusting-the-server-again).
+Verifying against only the server's currently published key is weaker:
+it cannot catch a server that rotated its published key to one that
+never legitimately appeared in its own chain.
 
 Comparing needs a second view, which means the record reaching more than
 one place — another server registered as a witness and receiving the
