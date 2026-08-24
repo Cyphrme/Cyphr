@@ -851,25 +851,16 @@ keys. That is a complete, portable, self-contained proof, and it stays
 valid for as long as the signatures do. The server can decline to explain
 it, but cannot deny making both statements.
 
-What you can do with it, inside Cyphr, is nothing today. No endpoint
-accepts evidence, nothing propagates it, and no server behaves
-differently for having seen it — not because that is how the design
-ends, but because none of it is wired into the running server yet. Per
-the [equivocation detection
-architecture](../architecture/equivocation-detection.md#the-exchange), a
-server that has run the exchange with a registered witness is supposed
-to carry the resulting finding into its next ordinary answer; nothing in
-`rs/cyphr-server` triggers that exchange today, so no server does.
-SPEC's fuller design goes further still — witnesses that detect forks,
-broadcast proof, transition a principal into an error state, and refuse
-both branches until resolved ([SPEC
-§15.7](../../SPEC.md#157-consensus-and-witnesses),
-[§15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior),
-[§15.8](../../SPEC.md#158-fork-resolution)) — and none of that is built
-either. There is no consensus state machine, no proof-of-error
-retention, and no fork detection anywhere in the server. The only piece
-of the resync design that exists is `/patch?from=<digest>`, an anchor
-that lets a caller ask for everything after a state it already holds.
+A server that has run the exchange with a registered witness carries
+the resulting finding into its next ordinary answer about the
+principal — the [equivocation detection
+architecture](../architecture/equivocation-detection.md#the-exchange)
+states the mechanism. The two servers in this guide's setup were never
+registered as each other's witness, so they never run that exchange
+against each other and nothing carries the finding between them:
+gathering and checking the evidence yourself, the way the rest of this
+guide does, is what stands in for a witness relationship neither server
+has.
 
 So the answer to "what do I do with it" is an application question, and
 worth deciding before you need it rather than after:
@@ -886,8 +877,8 @@ published — which is your problem, not the protocol's.
 **Compare more servers.** Two conflicting reports tell you the identity
 equivocated but not which answer is the odd one out. A third report
 breaks the tie for you, by ordinary majority — nothing in Cyphr does that
-reasoning. The all-pairs sweep in `cyphr-server`'s library returns the
-first conflicting pair it finds and stops, so it proves misbehaviour
+reasoning. `cyphr witness check-equivocation`'s all-pairs sweep returns
+the first conflicting pair it finds and stops, so it proves misbehaviour
 without mapping it; if you want the shape of the disagreement across a
 set, collect the verdicts yourself.
 
@@ -896,10 +887,8 @@ publishes a commit whose predecessor is the tip of one branch, abandoning
 the other. That much works, and because a resolving commit is a push
 like any other, `POST /push` fans it out on its own to every server the
 principal has registered as a witness — best-effort and asynchronous, no
-follow-up action needed (`rs/cyphr-server/src/fanout.rs`'s
-`spawn_fanout`, called from the push handler once a commit is accepted;
-the mechanism [the architecture page
-describes](../architecture/equivocation-detection.md#resolution)). A
+follow-up action needed ([the architecture page describes the
+mechanism](../architecture/equivocation-detection.md#resolution)). A
 server the principal never registered with gets nothing and keeps
 serving the abandoned branch — which is exactly `4100` and `4101`'s
 relationship here, so resolving this demo's fork means pushing to both
