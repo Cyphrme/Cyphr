@@ -15,12 +15,15 @@ over what it accepted.
 
 **Auditing** is holding a server to those signatures. A server that tells
 you one thing and someone else another has produced two statements it
-signed and cannot take back, and a watcher who collected both is holding
-proof. That is the entire enforcement mechanism: there is no quorum, no
-consensus round, and nothing that stops a server from lying — only
-evidence, after the fact, in the hands of whoever bothered to keep it.
+signed and cannot take back. That is the entire enforcement mechanism:
+there is no quorum, no consensus round, and nothing that stops a server
+from lying — only evidence, after the fact. Between two servers
+registered as each other's witness, that evidence is exchanged and
+carried along automatically, no watcher needed. Between anyone else — a
+reader, a relying service, a server nobody registered as a witness — it
+exists only if somebody went and collected it.
 
-Both halves work today, up to a point. This guide says where the point is.
+Both halves have real limits. This guide says where they are.
 
 ## Terms
 
@@ -618,29 +621,29 @@ answers about the same principal at the same chain position. Produce one
 with the two servers from the setup, which share a key and share nothing
 else.
 
-By design, a server that has a registered witness for a principal does
-not leave this comparison to a reader: witness registration and push
-fanout already deliver, as a byproduct of work the server does anyway,
-each side's own signed tip report and a consistency proof to exchange
-against — [the architecture page states the
+A server that has a registered witness for a principal does not leave
+this comparison to a reader: witness registration and push fanout
+deliver, as a byproduct of work the server does anyway, each side's own
+signed tip report and a consistency proof to exchange against — [the
+architecture page states the
 mechanism](../architecture/equivocation-detection.md#the-exchange). A
 finding from that exchange rides along in the server's next ordinary
 answer about the principal, so its owner or anyone relying on it [learns
 of a fork without going
 looking](../use/detecting-a-split-view.md#you-find-out-without-looking).
 
-That exchange does not run in the server this guide talks to — nothing
-in `rs/cyphr-server` triggers it yet, a gap the end of this section
-names precisely. And the two servers below were never registered as
-each other's witness in the first place: sharing a signing key and
-nothing else is what lets this setup manufacture a split view without
-that registration. Gathering and checking two answers yourself, the way
-the rest of this section does, is not only a stand-in for a missing
-wire-up — the [pinned predicate](../specs/receipts.md#the-pinned-predicate)
-is verifier-side and stateless by design, so a stranger with no witness
-relationship to either server, [convinced by nothing but the
-bytes](../use/detecting-a-split-view.md#convince-a-stranger), always
-ends up running some form of it.
+The two servers below were never registered as each other's witness —
+sharing a signing key and nothing else is what lets this setup
+manufacture a split view without that registration, and is exactly the
+position a stranger with no witness relationship to either server is
+always in. Gathering and checking two answers by hand, the way the rest
+of this section does, is what that stranger falls back to: the [pinned
+predicate](../specs/receipts.md#the-pinned-predicate) is verifier-side
+and stateless by design, so anyone holding two receipts can run it
+without either server's cooperation. `cyphr witness check-equivocation`
+runs that check as a command (below); the steps here walk what it does,
+by hand, once — read them as that demonstration, not as the routine way
+to do this.
 
 Push the same first commit to both, so they agree. Then build two
 conflicting second commits: snapshot the client's local store, add one key,
@@ -740,11 +743,11 @@ different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
 **Nothing detected this.** Neither server knows the other exists — they
-were never registered as each other's witness — and no component
-anywhere compared them; a registered pair would find nothing either,
-since nothing in the running server triggers that exchange yet (above).
-Detection is a thing a watcher does, with bytes it went and collected,
-entirely outside the system.
+were never registered as each other's witness, and detection is
+exchange-driven: no registration, no exchange, no comparison. Detection
+here is a thing you do yourself, with bytes you went and collected,
+entirely outside the exchange that a registered pair would have run for
+you.
 
 ### Checking the evidence
 
