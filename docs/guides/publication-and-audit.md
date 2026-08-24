@@ -745,10 +745,19 @@ you.
 
 ### Checking the evidence
 
-The predicate is short enough to write in whatever your watcher is written
-in. Both statements have to be tip reports, both signatures have to verify
-under their own key, both have to name the same principal and the same
-sequence, and they have to differ in `commit_id` or in any root:
+`cyphr witness check-equivocation <report-a> <report-b>` runs this check
+and prints the verdict: `Proven`, or the specific reason it is not
+(`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
+`DifferentSequence`, `IdenticalClaims`). Pointed at a directory of kept
+reports instead of two files, it sweeps every pair and stops at the
+first proven conflict.
+
+The predicate itself is short enough to write in whatever your watcher
+is written in, and worth seeing once for what the command is checking
+on your behalf. Both statements have to be tip reports, both signatures
+have to verify under their own key, both have to name the same
+principal and the same sequence, and they have to differ in `commit_id`
+or in any root:
 
 ```js
 function sameRoots(a, b) {
@@ -827,14 +836,13 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
-There is a Rust implementation of this predicate — the same one [pinned
-in the receipts spec](../specs/receipts.md#the-pinned-predicate) — plus
-an all-pairs sweep across a set of reports and a formatter that renders
-the conflicting pair as an evidence document. It lives in
-`cyphr-server`'s library and has no HTTP route, no CLI subcommand, and
-no caller in the server itself — every caller in the workspace is a
-test. To use it you link the server crate; to avoid that, write the
-predicate above.
+Reach for `cyphr witness check-equivocation` on anything you plan to
+act on. It runs the stricter version [pinned in the receipts
+spec](../specs/receipts.md#the-pinned-predicate) — parsing `sequence`
+from either form, decoding digests to bytes before comparing — and,
+given a set of reports, renders a proven pair out as an evidence
+document. Treat the JS above as what the check means, not a substitute
+for running it.
 
 ### What you hold when you find one
 
