@@ -392,7 +392,7 @@ in the index. A bundle carrying no chain transaction takes a separate path
 that writes the blobs and skips indexing entirely, so no commit forms, no
 root moves, and nothing points at what was stored.
 
-**So Cyphr publishes key history, and nothing else, today.** If your
+**So Cyphr publishes key history, and nothing else.** If your
 application needs to publish content, anchor it yourself: hash the
 content, and put the hash somewhere the chain does cover — or keep the
 content and its signature entirely on your own side and use Cyphr for what
@@ -503,8 +503,19 @@ message that reads like store corruption.
 
 ### Verifying a receipt without trusting the server again
 
-Six steps, and they are worth walking because the shape of the answer is
-"most of this is portable, one part is not."
+`cyphr tx verify --identity=<pr> --from-server=<url>` does this whole
+thing in one call: it pins the PG and genesis hint from `GET /server`,
+re-derives the PG from the genesis key, fetches the server's own chain,
+replays it into a fresh engine seeded with that genesis key, confirms
+the receipt's `tmb` is an active key of the replayed chain, and verifies
+the signature — printing `verified`, the replayed principal root, and
+the signing key it checked against, or the exact step that failed and
+why.
+
+What follows is what that command does, walked by hand once, because
+the shape of the answer is worth seeing on its own terms: six steps,
+and every one of them is something you could write yourself, in any
+language.
 
 1. Pin `pg` and the `genesis` object from `GET /server`.
 2. Re-derive the PG from that genesis key alone. If it does not match the
@@ -559,42 +570,25 @@ genesis key, where the root is a tree over all of them rather than a
 single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
-**Steps 4 and 5 have no portable implementation, and what blocks them is
-getting the chain in, not replaying it.** Replay ships.
-`cyphr tx verify --identity=<pr>` loads a principal out of a local store,
-replays every commit through Cyphr's own validation — each signature
-checked against the keys active at that point — and compares the principal
-root it derives with the one the store recorded. That is step 4, running
-today, against a chain that is already local.
+**Steps 4 and 5 are the part worth walking slowly**, because they are
+exactly the two steps `cyphr tx verify --from-server` exists to save
+you from doing by hand. Replaying a chain means loading it into a
+second, independent engine — never the one you are checking — and
+running every commit through the same validation Cyphr always applies:
+each signature checked against the keys active at that point, with the
+resulting principal root compared against what the chain claims. Do
+this yourself as a way to see what the command checks; running the
+calculation by hand against a server you actually rely on trades a
+machine-checked answer for a hand-checked one, for no benefit.
 
-Getting a server's chain to be local is the part with no route. Converting
-the server's `/patch` response into the shape `cyphr import` reads, with
-the genesis key from the discovery hint supplied alongside, gets:
-
-```
-error: cannot determine genesis keys from storage
-```
-
-`import` has two ways to find a genesis key — your local keystore, or key
-material embedded in the chain's first commit — and a server's chain
-offers neither, the same gap that breaks its own tip report. There is no
-flag that feeds a genesis key in. And `import` does not round-trip
-`export` either — `cyphr export`'s own output for an ordinary two-key
-principal, imported into an empty store, gets
-`error: protocol error: duplicate key`.
-
-So a watcher today has two honest options. Link `cyphr` and
-`cyphr-storage` and do the replay properly — a few dozen lines against
-`StorageEngine` with an in-memory blob store and indexer, `submit_commit`,
-`load_principal`, and `is_key_active`. Or skip steps 4 and 5, verify the
-signature against the key `GET /server` publishes, and be clear with
-yourself that you have then trusted the server's claim about its own
-current key, which is exactly what those two steps exist to avoid.
-
-The second option is not worthless. It still catches a forged receipt from
-a third party and still detects a server signing two conflicting things
-with one key. What it cannot catch is a server that rotates its published
-key to one that never appeared in its chain.
+The alternative to all six steps — verify the signature against the key
+`GET /server` publishes right now, and stop there — is weaker in one
+specific way: it trusts the server's claim about its own current key
+instead of the chain that key's history is supposed to answer for. It
+still catches a forged receipt from a third party and still detects a
+server signing two conflicting things with one key. What it cannot catch
+is a server that rotates its published key to one that never appeared
+in its chain — exactly what the full replay exists to rule out.
 
 ### What to keep
 
