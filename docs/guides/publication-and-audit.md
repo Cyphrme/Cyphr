@@ -617,6 +617,30 @@ answers about the same principal at the same chain position. Produce one
 with the two servers from the setup, which share a key and share nothing
 else.
 
+By design, a server that has a registered witness for a principal does
+not leave this comparison to a reader: witness registration and push
+fanout already deliver, as a byproduct of work the server does anyway,
+each side's own signed tip report and a consistency proof to exchange
+against — [the architecture page states the
+mechanism](../architecture/equivocation-detection.md#the-exchange). A
+finding from that exchange rides along in the server's next ordinary
+answer about the principal, so its owner or anyone relying on it [learns
+of a fork without going
+looking](../use/detecting-a-split-view.md#you-find-out-without-looking).
+
+That exchange does not run in the server this guide talks to — nothing
+in `rs/cyphr-server` triggers it yet, a gap the end of this section
+names precisely. And the two servers below were never registered as
+each other's witness in the first place: sharing a signing key and
+nothing else is what lets this setup manufacture a split view without
+that registration. Gathering and checking two answers yourself, the way
+the rest of this section does, is not only a stand-in for a missing
+wire-up — the [pinned predicate](../specs/receipts.md#the-pinned-predicate)
+is verifier-side and stateless by design, so a stranger with no witness
+relationship to either server, [convinced by nothing but the
+bytes](../use/detecting-a-split-view.md#convince-a-stranger), always
+ends up running some form of it.
+
 Push the same first commit to both, so they agree. Then build two
 conflicting second commits: snapshot the client's local store, add one key,
 export; restore the snapshot, add a different key, export.
@@ -714,9 +738,12 @@ Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
-**Nothing detected this.** Neither server knows the other exists, and no
-component anywhere compared them. Detection is a thing a watcher does,
-with bytes it went and collected, entirely outside the system.
+**Nothing detected this.** Neither server knows the other exists — they
+were never registered as each other's witness — and no component
+anywhere compared them; a registered pair would find nothing either,
+since nothing in the running server triggers that exchange yet (above).
+Detection is a thing a watcher does, with bytes it went and collected,
+entirely outside the system.
 
 ### Checking the evidence
 
@@ -802,12 +829,14 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
-There is a Rust implementation of this predicate, plus an all-pairs sweep
-across a set of reports and a formatter that renders the conflicting pair
-as an evidence document. It lives in `cyphr-server`'s
-library and has no HTTP route, no CLI subcommand, and no caller in the
-server itself — every caller in the workspace is a test. To use it you
-link the server crate; to avoid that, write the predicate above.
+There is a Rust implementation of this predicate — the same one [pinned
+in the receipts spec](../specs/receipts.md#the-pinned-predicate) — plus
+an all-pairs sweep across a set of reports and a formatter that renders
+the conflicting pair as an evidence document. It lives in
+`cyphr-server`'s library and has no HTTP route, no CLI subcommand, and
+no caller in the server itself — every caller in the workspace is a
+test. To use it you link the server crate; to avoid that, write the
+predicate above.
 
 ### What you hold when you find one
 
@@ -816,15 +845,25 @@ keys. That is a complete, portable, self-contained proof, and it stays
 valid for as long as the signatures do. The server can decline to explain
 it, but cannot deny making both statements.
 
-What you can do with it, inside Cyphr, is nothing. No endpoint accepts
-evidence, nothing propagates it, and no server behaves differently for
-having seen it. The specification describes witnesses that detect
-forks, broadcast proof, transition a principal into an error state, and
-refuse both branches until resolved; none of that is built. There is no
-consensus state machine, no proof-of-error retention, and no fork
-detection anywhere in the server. The only piece of the resync design that
-exists is `/patch?from=<digest>`, an anchor that lets a caller ask for
-everything after a state it already holds.
+What you can do with it, inside Cyphr, is nothing today. No endpoint
+accepts evidence, nothing propagates it, and no server behaves
+differently for having seen it — not because that is how the design
+ends, but because none of it is wired into the running server yet. Per
+the [equivocation detection
+architecture](../architecture/equivocation-detection.md#the-exchange), a
+server that has run the exchange with a registered witness is supposed
+to carry the resulting finding into its next ordinary answer; nothing in
+`rs/cyphr-server` triggers that exchange today, so no server does.
+SPEC's fuller design goes further still — witnesses that detect forks,
+broadcast proof, transition a principal into an error state, and refuse
+both branches until resolved ([SPEC
+§15.7](../../SPEC.md#157-consensus-and-witnesses),
+[§15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior),
+[§15.8](../../SPEC.md#158-fork-resolution)) — and none of that is built
+either. There is no consensus state machine, no proof-of-error
+retention, and no fork detection anywhere in the server. The only piece
+of the resync design that exists is `/patch?from=<digest>`, an anchor
+that lets a caller ask for everything after a state it already holds.
 
 So the answer to "what do I do with it" is an application question, and
 worth deciding before you need it rather than after:
@@ -848,8 +887,18 @@ set, collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
 publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. That much works. Building a third commit on the branch server
-`4101` holds and pushing it to both:
+the other. That much works, and because a resolving commit is a push
+like any other, `POST /push` fans it out on its own to every server the
+principal has registered as a witness — best-effort and asynchronous, no
+follow-up action needed (`rs/cyphr-server/src/fanout.rs`'s
+`spawn_fanout`, called from the push handler once a commit is accepted;
+the mechanism [the architecture page
+describes](../architecture/equivocation-detection.md#resolution)). A
+server the principal never registered with gets nothing and keeps
+serving the abandoned branch — which is exactly `4100` and `4101`'s
+relationship here, so resolving this demo's fork means pushing to both
+by hand. Building a third commit on the branch server `4101` holds and
+pushing it to both:
 
 ```
 4101  201
@@ -908,17 +957,27 @@ reading them here:
   re-import `cyphr export`'s own output, which fails with
   `protocol error: duplicate key`. The six steps end to end exist in full
   only as an integration test.
-- **No reachable equivocation checking.** The predicate, the all-pairs
-  sweep, and the evidence formatter are implemented and tested in
-  `cyphr-server`'s library, with no route, no command, and no caller
-  outside the test suite.
+- **No automatic cross-witness exchange.** The predicate itself is meant
+  to run this way — [verifier-side and
+  stateless](../specs/receipts.md#equivocation-evidence) — so running it
+  yourself, as this guide does, is not standing in for a missing
+  feature. What is missing is the automation for a registered witness:
+  `rs/cyphr-server/src/consistency.rs`'s
+  `check_cross_witness_consistency`, `detect_fork_unverified`, and
+  `format_disagreement_evidence` have no caller anywhere in the running
+  server, only in its test suite, so [the exchange the architecture page
+  describes](../architecture/equivocation-detection.md#the-exchange)
+  never runs and no finding ever rides along in an answer.
 - **No tip report about the server itself.** `GET /tip` on a server's own
   PG is a permanent `500`, though `/patch` on it works.
-- **No fork detection.** A server refuses a conflicting commit with a
-  `409` and draws no conclusion. No consensus state machine, no
-  proof-of-error retention, no state jumping — the specification describes
-  all of it and none of it is built. The one piece of the resync design
-  that exists is `/patch`'s digest anchor.
+- **No fork detection beyond that predicate.** A server refuses a
+  conflicting commit with a `409` and draws no conclusion. No consensus
+  state machine, no proof-of-error retention, no state jumping — SPEC's
+  own design for it ([§15.7](../../SPEC.md#157-consensus-and-witnesses),
+  [§15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior),
+  [§15.8](../../SPEC.md#158-fork-resolution)) describes all of it and
+  none of it is built. The one piece of the resync design that exists is
+  `/patch`'s digest anchor.
 - **Nowhere to file evidence.** No endpoint accepts it, nothing
   propagates it, and no server behaves differently for having seen it.
 - **No freshness.** A genuinely signed response stays true about its
