@@ -634,7 +634,7 @@ always in. Gathering and checking two answers by hand, the way the rest
 of this section does, is what that stranger falls back to: the [pinned
 predicate](../specs/receipts.md#the-pinned-predicate) is verifier-side
 and stateless by design, so anyone holding two receipts can run it
-without either server's cooperation. `cyphr witness check-equivocation`
+without either server's cooperation. `cyphr audit equivocation`
 runs that check as a command (below); the steps here walk what it does,
 by hand, once — read them as that demonstration, not as the routine way
 to do this.
@@ -745,7 +745,7 @@ you.
 
 ### Checking the evidence
 
-`cyphr witness check-equivocation <report-a> <report-b>` runs this check
+`cyphr audit equivocation <report-a> <report-b>` runs this check
 and prints the verdict: `Proven`, or the specific reason it is not
 (`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
 `DifferentSequence`, `IdenticalClaims`). Pointed at a directory of kept
@@ -836,7 +836,7 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
-Reach for `cyphr witness check-equivocation` on anything you plan to
+Reach for `cyphr audit equivocation` on anything you plan to
 act on. It runs the stricter version [pinned in the receipts
 spec](../specs/receipts.md#the-pinned-predicate) — parsing `sequence`
 from either form, decoding digests to bytes before comparing — and,
@@ -877,7 +877,7 @@ published — which is your problem, not the protocol's.
 **Compare more servers.** Two conflicting reports tell you the identity
 equivocated but not which answer is the odd one out. A third report
 breaks the tie for you, by ordinary majority — nothing in Cyphr does that
-reasoning. `cyphr witness check-equivocation`'s all-pairs sweep returns
+reasoning. `cyphr audit equivocation`'s all-pairs sweep returns
 the first conflicting pair it finds and stops, so it proves misbehaviour
 without mapping it; if you want the shape of the disagreement across a
 set, collect the verdicts yourself.
