@@ -21,7 +21,7 @@ nothing below treats them separately.
 
 | Part              | Contribution                                                                                                                                                                                                    | Defined in                                                                                                                        |
 | :---------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------- |
-| Server (attestor) | Signs a tip report over each state it serves. On every accepted push, fans the committed blobs out to every witness registered for that principal.                                                              | [Server receipts](../specs/receipts.md); [SPEC §13.5.1](../../SPEC.md#1351-witness-registration); `rs/cyphr-server/src/fanout.rs` |
+| Server (attestor) | Signs a tip report over each state it serves. On every accepted push, fans the committed blobs out to every witness registered for that principal.                                                              | [Server receipts](../specs/receipts.md); [SPEC §13.5.1](../../SPEC.md#1351-witness-registration) |
 | Witness           | Registered by the principal to receive fanned-out commits. A witness is itself a server: it independently derives and signs its own tip report over what it receives, rather than merely relaying the sender's. | [SPEC §2.2.16](../../SPEC.md#2216-witnesses); [SPEC §13.5.1](../../SPEC.md#1351-witness-registration)                             |
 
 ## The exchange
@@ -52,11 +52,9 @@ commits" — without restating how one is built or checked: that
 machinery belongs to the EML layer the Commit Tree is built on
 ([SPEC Appendix 4](../../SPEC.md#appendix-4-external-tools-and-projects)'s
 O(logN) Hash Transitions paper, related to RFC 9162's consistency
-proofs for append-only logs), and Cyphr's Commit Tree wires it
-directly: `rs/cyphr/src/commit_root.rs`'s `consistency_proof` and
-`verify_consistency`, and `rs/cyphr/src/principal.rs`'s
-`Principal::consistency_proof`, all built on the `eml` crate that
-implements that layer (`rs/Cargo.toml`). A produced proof verifies
+proofs for append-only logs), and Cyphr's Commit Tree computes and
+verifies that proof directly, over the append-only EML layer just
+described. A produced proof verifies
 standalone against the two claimed roots and sizes alone — the property
 that makes it a substitute for holding the chain rather than a
 compressed copy of it. Those two claimed roots and sizes are exactly
@@ -80,14 +78,12 @@ pure function, pinned in
 [the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate)
 for the case where both sides claim the identical `sequence` — see
 [arch-behind-is-not-fork](#arch-behind-is-not-fork) for the general
-case across differing sequences.
-`rs/cyphr-server/src/consistency.rs` implements the same-sequence case
-three ways — `check_cross_witness_consistency` (an all-pairs sweep over
-a report set), `detect_fork_unverified` (a single pair), and
-`format_disagreement_evidence` (renders a proven pair as evidence) —
-and `rs/cyphr-server/tests/equivocation.rs` exercises the underlying
-predicate. It is server-side code: it lives in the server's own crate,
-not a client tool or a procedure a person runs by hand.
+case across differing sequences. The server runs that predicate three
+ways: over a single pair to settle one exchange, swept all-pairs across
+a set of reports to find the first conflict, and rendered as an
+evidence document once a pair is proven. All three run server-side, as
+part of the exchange itself — never as a client request or a procedure
+a person invokes by hand.
 
 ## Detection needs no watcher
 
@@ -108,8 +104,8 @@ Two designs were possible for how a finding, once made, reaches anyone
 who consumes the server's answers. It could sit behind a dedicated
 status check, at an address separate from the record itself, that a
 client must know to ask for. Or it could ride along inside the answer a
-server was already going to give — the same tip report, receipt, or
-discovery response, carrying one more piece of content.
+server was already going to give — the same tip report or receipt,
+carrying one more piece of content.
 
 This document takes the second option: **a server's ordinary answer
 about a principal carries the fork proof its most recent exchange for
@@ -133,12 +129,18 @@ gotten any other answer about that identity — see
 ## What the finding contains
 
 What rides along is not a bare boolean. The object a carried finding
-holds is the same evidence
-[a stranger needs to be convinced](../use/detecting-a-split-view.md#convince-a-stranger):
-the two disagreeing tip reports, and the chain segment binding both
-signing keys as active. Anyone who receives it can verify the conflict
-offline, without asking the server that showed it to them anything
-further, and without trusting the party that compared them.
+holds is the two disagreeing tip reports and the consistency proof
+between their claimed Commit Roots — exactly what
+[the exchange](#the-exchange) produces on a fork outcome, nothing
+assembled afterward. Anyone who receives it can verify offline that the
+two signed claims conflict, without asking the server that showed it to
+them anything further, and without trusting the party that compared
+them. Turning that into
+[proof a stranger with no prior trust in the server accepts](../use/detecting-a-split-view.md#convince-a-stranger)
+takes one more thing only the receiving party can add: replaying the
+server's own chain to bind each report's signing key to it, the same
+step [verifying any single receipt](../guides/publication-and-audit.md#verifying-a-receipt-without-trusting-the-server-again)
+already requires.
 
 ## Resolution
 
@@ -211,10 +213,19 @@ between their claimed Commit Roots:
 - if the proof demonstrates the CR at `m` is an ancestor of the CR at
   `n`, the lower-sequence server is simply behind — no conflict, and no
   further step follows;
-- if no such proof holds in either direction between the two claimed
-  roots, that is the fork —
+- if a consistency proof is produced and checked, and it demonstrates
+  the CR at `m` is NOT an ancestor of the CR at `n` in either direction,
+  that is the fork —
   [arch-detection-is-comparison](#arch-detection-is-comparison)'s
   comparison resolves as a conflict.
+
+A proof that never runs to completion — a malformed exchange, a
+timeout, an internal error on either side — settles nothing either way:
+it is the absence of a comparison, the same as the single-report case
+[arch-detection-is-comparison](#arch-detection-is-comparison) already
+rules out, never a comparison that came back negative. Only a proof
+actually produced and checked, and found to demonstrate no ancestry in
+either direction, resolves as a fork.
 
 At `m == n` this reduces to
 [arch-tip-reports-are-material](#arch-tip-reports-are-material)'s case:
@@ -224,8 +235,10 @@ differing tip reports as a conflict, without regard to whether the
 higher-sequence one is a proven extension of the lower, cannot tell a
 merely-behind witness from a forked one. A check that treats any two
 differing sequences as no conflict without attempting that proof cannot
-tell a forked witness from a behind one either — both confusions are
-what this claim rules out.
+tell a forked witness from a behind one either. And a check that treats
+a proof attempt which never completed as equivalent to one that
+completed and found no extension manufactures a fork finding out of an
+error condition — all three confusions are what this claim rules out.
 
 ```claim
 kind: requirement
@@ -301,9 +314,9 @@ evaluator: test
 
 ### [arch-answer-carries-contested]
 
-A server's ordinary answer about a principal — a tip report, a receipt,
-a discovery response, anything it would have signed and returned
-regardless — carries the fork proof produced by its most recent
+A server's ordinary answer about a principal — a tip report or a
+receipt, anything it would have signed and returned regardless —
+carries the fork proof produced by its most recent
 exchange for that principal, whenever that exchange's outcome was a
 fork ([arch-behind-is-not-fork](#arch-behind-is-not-fork)). No second
 request and no separate endpoint is needed to learn it; this is
@@ -320,13 +333,15 @@ evaluator: test
 What rides along is not a bare boolean assembled after the fact: it is
 the same object
 [arch-behind-is-not-fork](#arch-behind-is-not-fork)'s exchange produces
-on a fork outcome —
-[the two disagreeing tip reports and the chain segment binding both
-signing keys](#arch-evidence-is-portable) — carried inline, unsummarized,
-so anyone who receives it can verify the conflict without asking the
-server anything further. This is
+on a fork outcome — the two disagreeing tip reports and the consistency
+proof between their claimed Commit Roots — carried inline, unsummarized,
+so anyone who receives it can verify the two claims conflict without
+asking the server anything further. This is
 [what the record's owner sees](../use/detecting-a-split-view.md#the-conflict-record)
-too, not a summary of it.
+too, not a summary of it. Completing it into
+[the evidence a verifier retains](#arch-evidence-is-portable) — binding
+each report's signing key to the server's own chain — is the receiving
+party's own replay step, not something the exchange adds.
 
 ```claim
 kind: requirement
