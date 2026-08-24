@@ -1,7 +1,7 @@
 # Publishing a record and auditing it
 
 A Cyphr server will sign a statement about what it just did, hand it to
-you, and keep no copy. That receipt is the whole trust object. Everything
+you, and keep no copy of it. That receipt is the whole trust object. Everything
 in this guide follows from it: what a publisher can get signed, what a
 watcher can check later without asking the server again, and where the
 chain of "check it yourself" runs out.
@@ -181,9 +181,10 @@ the payload's `commit_id`, `sequence`, and `roots`, stamp them with the
 server's key and clock, and mark them `cyphr-server/receipt/commit`.
 
 **Keep the receipt, byte for byte — `pay` and `sig` together.** The server
-persists nothing to issue one and holds no log of what it signed. If you
-discard it, the fact that this server ever accepted this commit is gone
-from everywhere except your side of the exchange.
+persists nothing to issue one and holds no log of what it signed
+(`docs/specs/receipts.md` `[receipts-r-stateless]`). If you discard it,
+the fact that this server ever accepted this commit is gone from
+everywhere except your side of the exchange.
 
 Notice what the receipt does not carry: `blob_hashes`. It attests a chain
 position, not the specific bytes you uploaded. For a commit that is a
@@ -295,7 +296,7 @@ your own client and you meet it immediately.
 
 You can sign a coz with any `typ` you like and push it. The server
 verifies the signature against the principal's active keys, answers `201`,
-and signs a receipt. Then the content vanishes.
+and signs a receipt. Then the content is stored and forgotten.
 
 Push a bundle containing only that `example.com/note/create` cozy from
 above. Everything in this section runs against `4101`, whose copy of the
