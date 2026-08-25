@@ -88,19 +88,22 @@ that asking.
 
 ### [fixed-rule-decides-conflict]
 
-**Whether two kept answers conflict is decided by a fixed,
-offline-checkable rule — never a party's say-so, and only a genuine
-conflict decides as one.** For two answers about the identical position,
-that rule is
+**Whether two kept answers conflict is decided by a fixed rule — never a
+party's say-so, and only a genuine conflict decides as one.** For two
+answers about the identical position, that rule needs nothing beyond the
+two answers themselves:
 [the receipts specification's pinned predicate](../specs/receipts.md#the-pinned-predicate).
-For two answers about different positions, the same fixed-rule guarantee
-holds, decided instead by whether a consistency proof shows the earlier
-position is a genuine ancestor of the later one — the
-[architecture page states which](../architecture/equivocation-detection.md#the-exchange):
-a server merely behind is not a server that lied. A comparison that
-could call an honest server a liar is worse than none: a false
-accusation is checkable by anyone, and being caught making one costs the
-credibility needed the next time an accusation is true.
+For two answers about different positions, the same guarantee holds, but
+settling it takes one more thing: the higher-sequence side's own claimed
+Commit Root at the lower position, reconstructed and proven — not
+asserted — by a consistency proof over its own history. That
+reconstructed root is what gets checked against what the lower-sequence
+side itself signed for that position — equal means simply behind, never
+a lie; different is the fork — the
+[architecture page states which](../architecture/equivocation-detection.md#arch-behind-is-not-fork).
+A comparison that could call an honest server a liar is worse than
+none: a false accusation is checkable by anyone, and being caught making
+one costs the credibility needed the next time an accusation is true.
 
 ### You find out without looking
 
