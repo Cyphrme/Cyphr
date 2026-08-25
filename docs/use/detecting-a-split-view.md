@@ -156,11 +156,15 @@ and it takes exactly one act: sign the next entry on the branch you
 choose — a commit whose `pre` names that branch's tip, or a
 `resync/create` re-asserting the current tip
 ([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Nobody else can
-do it, and nobody's agreement is needed. Until you do, a server that
-proved the fork itself refuses any further push you send for this
+do it, and nobody's agreement is needed. Until you send that one act, a
+server that proved the fork refuses every OTHER push you send for this
 principal — [SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s
-Error state — while it keeps answering everyone's ordinary queries about
-you, fork proof attached, and presents neither branch as settled. Because
+Error state — while accepting exactly that one: the resolving commit or
+PoP is checked against the fork's own two branch tips rather than
+refused outright, [the same way the architecture page states the
+mechanism](../architecture/equivocation-detection.md#while-a-fork-stands).
+It keeps answering everyone's ordinary queries about you meanwhile, fork
+proof attached, and presents neither branch as settled. Because
 a resolution is itself a commit, it reaches every server you have
 registered as a witness, automatically, the same as any other push — and
 no other server, since fanout only ever reaches a registered witness.

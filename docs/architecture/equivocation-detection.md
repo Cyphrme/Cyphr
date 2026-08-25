@@ -186,8 +186,18 @@ are refused for as long as the fork stands, because the principal's
 consensus state is Error, and
 [SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s Error state
 is explicit: "No new transactions or actions are processed until
-resolved." Only [the principal's own resolving commit](#resolution) —
-never a witness, never the server — lifts that refusal.
+resolved." One push is exempt: [the principal's own resolving
+commit](#resolution) — a commit whose `pre` names the tip of one of the
+fork's own two contested branches, or a `resync/create` PoP re-asserting
+one of those tips. A server checks an incoming push against the two
+branch tips its own proven fork names before applying the Error-state
+refusal to it, so that one shape of push gets through while every other
+push for the principal keeps failing. Accepting it is what lifts the
+refusal: [SPEC §15.8](../../SPEC.md#158-fork-resolution)'s "Witnesses
+transition the principal's consensus state from Error back to Active
+upon observing a valid resolution" names that same act. Only the
+principal's own resolving commit can be that push — never a witness,
+never the server.
 
 Answering queries is a different question, and the answer is no: a
 server does not stop serving a contested principal, and it does not
@@ -208,8 +218,11 @@ a new commit whose `pre` names the chosen branch's tip, or a
 `resync/create` PoP re-asserting the current tip
 ([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Resolving
 introduces no authority beyond what already governs an ordinary push:
-the same signature check accepts or rejects the resolving commit, and
-because a resolution is itself a commit, it reaches only servers the
+the same signature check accepts or rejects the resolving commit —
+checked against the fork's own two branch tips rather than refused
+outright the way every other push for the principal is, [while the fork
+stands](#while-a-fork-stands) — and because a resolution is itself a
+commit, it reaches only servers the
 principal has registered as a witness, by the same fanout as any other
 push. A server the principal never registered with, or never otherwise
 reaches, gets nothing and goes on serving the abandoned branch — a
@@ -426,10 +439,15 @@ depends: [arch-evidence-is-portable]
 ### [arch-fork-blocks-writes]
 
 While a principal's consensus state is Error — a proven fork not yet
-resolved — a server refuses new pushes for that principal:
-[SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s Error state
-is explicit that no new transactions or actions are processed until
-resolved. This is a refusal on writes only:
+resolved — a server refuses every push for that principal except the one
+that resolves the fork itself: a commit whose `pre` names one of the
+fork's own contested branch tips, or a `resync/create` PoP re-asserting
+one of them. [SPEC
+§15.5](../../SPEC.md#155-principal-consensus-states)'s Error state is
+explicit that no new transactions or actions are processed until
+resolved, and [SPEC §15.8](../../SPEC.md#158-fork-resolution) is what
+names the resolving push as the one whose acceptance checks the state
+back to Active. This is a refusal on writes only:
 [arch-answer-carries-contested](#arch-answer-carries-contested) already
 establishes that ordinary answers about the principal keep coming, and
 neither branch is served as settled while the state remains Error —
@@ -446,7 +464,9 @@ because: [arch-answer-carries-contested]
 
 A fork ends only by the principal's own signature: a new commit whose
 `pre` names the chosen branch's tip, or a `resync/create` PoP
-re-asserting the current tip. Resolving introduces no authority beyond
+re-asserting the current tip — the one push shape
+[arch-fork-blocks-writes](#arch-fork-blocks-writes)'s refusal exempts
+while the fork stands. Resolving introduces no authority beyond
 what already governs an ordinary push — the same signature check accepts
 or rejects it — and it reaches only servers the principal has registered
 as a witness, by the same fanout as any other push. A server the
