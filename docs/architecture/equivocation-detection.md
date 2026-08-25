@@ -238,6 +238,33 @@ push. A server the principal never registered with, or never otherwise
 reaches, gets nothing and goes on serving the abandoned branch — a
 property of how fanout scopes resolution, not a defect in it.
 
+Accepting that push and having something to apply it to are different
+questions. When the resolving commit's `pre` names the tip this server
+already signs, applying it is an ordinary state transition: the push
+extends state the server already holds. When it instead names the
+OTHER contested branch's tip — the one this server never held, since
+[detecting the fork required neither side to hold the other's
+chain](#the-exchange) — this server has no state on hand for that `pre`
+to extend, and the resolving commit alone does not supply one: an
+ordinary push's blob list carries only its own new commit, not the
+branch behind it. What supplies the missing branch is a fetch: the
+server retrieves the segment from the fork point forward from the
+witness whose tip report named the chosen tip — the witness [the fork's
+own evidence](#what-the-finding-contains) already identifies by
+signature — and replays it the way [convincing a
+stranger](../use/detecting-a-split-view.md#convince-a-stranger) already
+requires of anyone reconstructing a chain they were not handed, checking
+the replayed root against that witness's signed tip report before
+trusting either. Only once that segment is in hand does the resolving
+commit's `pre` name a root this server can check the push against. A
+server that cannot reach that witness has nothing to apply the resolving
+commit to; the push fails the way [any push that does not match the
+state a server holds
+does](../guides/publication-and-audit.md#detecting-a-split-view) — a
+`409`, `protocol: state root mismatch` — not because the resolution is
+invalid, but because this server has not yet constructed what it would
+apply it to.
+
 Once both sides of a proven fork have processed the resolving commit,
 a fresh exchange between them settles as an extension, never a fork
 again: the resolving commit's `pre` names the chosen tip, so its Commit
