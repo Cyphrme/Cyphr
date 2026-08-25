@@ -195,9 +195,11 @@ refusal to it, so that one shape of push gets through while every other
 push for the principal keeps failing. Accepting it is what lifts the
 refusal: [SPEC §15.8](../../SPEC.md#158-fork-resolution)'s "Witnesses
 transition the principal's consensus state from Error back to Active
-upon observing a valid resolution" names that same act. Only the
-principal's own resolving commit can be that push — never a witness,
-never the server.
+upon observing a valid resolution" names that same act. What clears that
+check is a signature, not an identity: any push signed by the
+principal's currently-active key can be that push — never a witness's
+key, never the server's own. [Resolution](#resolution) states what
+follows when that key is not only the owner's.
 
 Answering queries is a different question, and the answer is no: a
 server does not stop serving a contested principal, and it does not
@@ -264,6 +266,27 @@ does](../guides/publication-and-audit.md#detecting-a-split-view) — a
 `409`, `protocol: state root mismatch` — not because the resolution is
 invalid, but because this server has not yet constructed what it would
 apply it to.
+
+That signature check is where "the principal signs" bottoms out
+throughout this section, and it is worth being precise about what it
+verifies: a signature against the principal's currently-active key, not
+an identity. It has no way to ask whose hand produced the signature. A
+proven fork is often itself evidence that two valid signatures under
+that same key already exist at one position — if the fork traces back to
+a compromised key rather than a client retry, whoever holds the
+compromised key can sign a resolving commit exactly as the record's
+owner can, and this check accepts it exactly the same way. Because a
+resolving commit only reaches the servers it reaches — registered
+witnesses, or a server that separately fetches the segment in, as
+described above — whichever resolving commit arrives first at a
+given server is the one that server acts on: a server that receives the
+owner's resolves to the owner's branch, one that receives an attacker's
+resolves to the attacker's, and neither server's signature check can
+tell the difference. That gap is not closed by anything in detection or
+resolution — the remedy sits outside both, in [key revocation and
+recovery](../../SPEC.md#14-recovery): once the compromised key is
+revoked, the same check that let the attacker resolve the fork stops
+accepting anything signed with it.
 
 Once both sides of a proven fork have processed the resolving commit,
 a fresh exchange between them settles as an extension, never a fork
@@ -500,7 +523,8 @@ because: [arch-answer-carries-contested]
 
 ### [arch-owner-alone-resolves]
 
-A fork ends only by the principal's own signature: a new commit whose
+A fork ends only by a signature verifying under the principal's
+currently-active key: a new commit whose
 `pre` names the chosen branch's tip, or a `resync/create` PoP
 re-asserting the current tip — the one push shape
 [arch-fork-blocks-writes](#arch-fork-blocks-writes)'s refusal exempts

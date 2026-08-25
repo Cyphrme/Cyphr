@@ -151,27 +151,44 @@ tip report looks like and how to verify one.
 
 ### What only you can do
 
-If you are the record's owner, resolving the fork is yours alone to do,
-and it takes exactly one act: sign the next entry on the branch you
-choose — a commit whose `pre` names that branch's tip, or a
-`resync/create` re-asserting the current tip
-([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Nobody else can
-do it, and nobody's agreement is needed. Until you send that one act, a
-server that proved the fork refuses every OTHER push you send for this
-principal — [SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s
-Error state — while accepting exactly that one: the resolving commit or
-PoP is checked against the fork's own two branch tips rather than
-refused outright, [the same way the architecture page states the
+If you are the record's owner, resolving the fork is yours to do, and it
+takes exactly one act: sign the next entry on the branch you choose — a
+commit whose `pre` names that branch's tip, or a `resync/create`
+re-asserting the current tip
+([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Nobody's
+agreement is needed, and no server or witness can produce that signature
+in your place. But the check a server runs on it is a signature check,
+not an identity check: it verifies against your currently-active key,
+not against you, so anyone else who holds that key can sign the same
+resolving commit exactly as you can. When a fork traces back to a
+compromised key rather than a client retry, this is not hypothetical —
+whoever holds the compromised key can resolve the fork in their own
+favor the same way you resolve it in yours, and a server acts on
+whichever resolving commit reaches it first: a server that receives
+yours resolves to your chosen branch, a server that receives the
+attacker's resolves to theirs, and each server's own signature check
+accepts either one without being able to tell you apart. Until one such
+act reaches it, a server that proved the fork refuses every OTHER push
+you send for this principal —
+[SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s Error
+state — while accepting exactly that one: the resolving commit or PoP is
+checked against the fork's own two branch tips rather than refused
+outright, [the same way the architecture page states the
 mechanism](../architecture/equivocation-detection.md#while-a-fork-stands).
 It keeps answering everyone's ordinary queries about you meanwhile, fork
 proof attached, and presents neither branch as settled. Because
 a resolution is itself a commit, it reaches every server you have
 registered as a witness, automatically, the same as any other push — and
 no other server, since fanout only ever reaches a registered witness.
-Once a server has processed your resolving commit, its answers about the
+Once a server has processed a resolving commit, its answers about the
 resolved sequence stop carrying the finding; the two tip reports that
 proved the conflict remain valid proof regardless, for as long as
-whoever kept them holds onto them.
+whoever kept them holds onto them. If the key is what is actually in
+question, resolving the fork this way does not settle that: the remedy
+is revoking the compromised key and recovering the principal onto one
+the attacker does not hold
+([SPEC §14, "Recovery"](../../SPEC.md#14-recovery)) — after that, only a
+commit under the new key passes the same check.
 
 ### A service relying on you decides
 
