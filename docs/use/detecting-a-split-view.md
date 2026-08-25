@@ -107,9 +107,11 @@ credibility needed the next time an accusation is true.
 You do not request a check and wait for its result. The next ordinary
 answer a server whose most recent exchange proved a fork gives you —
 about your own record if you are its owner, about someone else's if you
-are relying on it — already carries the proof. Reading your own record
-the way you always would is the notice; there is nothing else to go
-looking for.
+are relying on it — already carries the proof, once a witness that does
+not depend on this server's goodwill has exchanged views with it and
+found the conflict. Reading your own record the way you always would is
+the notice; running the comparison yourself is not the thing to go do —
+making sure a witness like that is registered is.
 This is a design choice the
 [architecture page states and justifies](../architecture/equivocation-detection.md#the-answer-carries-the-finding):
 the finding rides along in the answer you were already going to get,
