@@ -123,9 +123,16 @@ ask.
 
 ### [the-conflict-record]
 
-What you get is not a flag with no contents. The answer carries the two
-tip reports that disagree and the consistency proof tying their claimed
-Commit Roots together — the object
+What you get is not a flag with no contents. The answer always carries
+the two tip reports that disagree. When the two positions differed, it
+carries one thing more: the higher side's own claimed Commit Root at the
+lower position, authenticated by a consistency proof tying it to that
+same side's claimed root at its current position — both roots belong to
+the higher side alone, never one from each party. That reconstructed
+root at the lower position is the value nothing else in the record
+supplies, and the one the verdict actually turns on: it is what gets
+checked against what the lower side itself signed for that position —
+the object
 [the architecture page names](../architecture/equivocation-detection.md#what-the-finding-contains).
 You can hold onto it, hand it to someone else, or verify it yourself;
 nothing about it depends on the server that showed it to you staying
