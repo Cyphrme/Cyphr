@@ -760,7 +760,8 @@ you.
 `cyphr audit equivocation <report-a> <report-b> [--server=<url>]` runs
 this check and prints the verdict: `Proven`, `Behind`, or the specific
 reason it is neither (`WrongTyp`, `InvalidSignature`,
-`DifferentPrincipal`, `DifferentSequence`, `IdenticalClaims`). Pointed
+`DifferentPrincipal`, `DifferentSequence`, `IdenticalClaims`,
+`Malformed`). Pointed
 at a directory of kept reports instead of two files, it sweeps every
 pair and stops at the first proven conflict.
 
