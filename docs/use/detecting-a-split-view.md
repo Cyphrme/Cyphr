@@ -65,12 +65,16 @@ and the word of the server is all anyone has.
 
 ## How detection reaches you
 
-Comparing two views for a conflict is server-side work, not a procedure
-anyone runs by hand — the
+When a server already has both views — through a witness relationship
+delivering the material automatically — comparing them for a conflict is
+server-side work, not something you ask for; the
 [architecture page](../architecture/equivocation-detection.md#detection-needs-no-watcher)
-states the mechanism; this page states what it means for you, in the
-order it happens. Most of it is not yours to do; the sections below say
-which steps are.
+states that mechanism. The same comparison is also something you can run
+yourself, by hand, over two answers you gathered on your own outside any
+such relationship — [the publication and audit guide](../guides/publication-and-audit.md#checking-the-evidence)
+walks that command. This page states what either path means for you, in
+the order it happens. Most of the automatic path is not yours to do; the
+sections below say which steps are.
 
 ### The server notices
 
@@ -152,14 +156,18 @@ and it takes exactly one act: sign the next entry on the branch you
 choose — a commit whose `pre` names that branch's tip, or a
 `resync/create` re-asserting the current tip
 ([SPEC §13, "Resync PoP"](../../SPEC.md#13-resync-pop)). Nobody else can
-do it, and nobody's agreement is needed. Because a resolution is itself
-a commit, it reaches every server you have registered as a witness,
-automatically, the same as any other push — and no other server, since
-fanout only ever reaches a registered witness. Once a server has
-processed your resolving commit, its answers about the resolved sequence
-stop carrying the finding; the two tip reports that proved the conflict
-remain valid proof regardless, for as long as whoever kept them holds
-onto them.
+do it, and nobody's agreement is needed. Until you do, a server that
+proved the fork itself refuses any further push you send for this
+principal — [SPEC §15.5](../../SPEC.md#155-principal-consensus-states)'s
+Error state — while it keeps answering everyone's ordinary queries about
+you, fork proof attached, and presents neither branch as settled. Because
+a resolution is itself a commit, it reaches every server you have
+registered as a witness, automatically, the same as any other push — and
+no other server, since fanout only ever reaches a registered witness.
+Once a server has processed your resolving commit, its answers about the
+resolved sequence stop carrying the finding; the two tip reports that
+proved the conflict remain valid proof regardless, for as long as
+whoever kept them holds onto them.
 
 ### A service relying on you decides
 

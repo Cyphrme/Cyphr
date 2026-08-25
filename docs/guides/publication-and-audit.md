@@ -503,14 +503,26 @@ message that reads like store corruption.
 
 ### Verifying a receipt without trusting the server again
 
-`cyphr tx verify --identity=<pr> --from-server=<url>` does this whole
-thing in one call: it pins the PG and genesis hint from `GET /server`,
-re-derives the PG from the genesis key, fetches the server's own chain,
-replays it into a fresh engine seeded with that genesis key, confirms
-the receipt's `tmb` is an active key of the replayed chain, and verifies
-the signature — printing `verified`, the replayed principal root, and
-the signing key it checked against, or the exact step that failed and
-why.
+`cyphr tx verify --receipt=<path> --server=<url>` does this whole thing
+in one call, given a receipt you kept and the server it names: it pins
+the PG and genesis hint from `GET /server`, re-derives the PG from the
+genesis key, fetches the server's own chain, replays it into a fresh
+engine seeded with that genesis key, confirms the receipt's `tmb` is an
+active key of the replayed chain, and verifies the signature — printing
+`verified`, the replayed principal root, and the signing key it checked
+against, or the exact step that failed and why.
+
+`--receipt` names the file holding the receipt's `pay`/`sig` pair,
+byte-exact, the way [what to keep](#what-to-keep) describes. `--server`
+names the server whose chain gets replayed to check it against —
+ordinarily the same server the receipt came from, though nothing stops
+pointing this at a different server that shares the same signing
+identity, which is exactly [the setup this guide runs
+on](#the-setup-this-guide-runs-on). This is a different mode from
+`--identity=<pr>`, which verifies a principal's own chain against your
+local store and never touches a receipt or a remote server at all — the
+two flags answer different questions and are never combined in one
+call.
 
 What follows is what that command does, walked by hand once, because
 the shape of the answer is worth seeing on its own terms: six steps,
@@ -571,8 +583,8 @@ single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
 **Steps 4 and 5 are the part worth walking slowly**, because they are
-exactly the two steps `cyphr tx verify --from-server` exists to save
-you from doing by hand. Replaying a chain means loading it into a
+exactly the two steps `cyphr tx verify --receipt --server` exists to
+save you from doing by hand. Replaying a chain means loading it into a
 second, independent engine — never the one you are checking — and
 running every commit through the same validation Cyphr always applies:
 each signature checked against the keys active at that point, with the
@@ -745,12 +757,12 @@ you.
 
 ### Checking the evidence
 
-`cyphr audit equivocation <report-a> <report-b>` runs this check
-and prints the verdict: `Proven`, or the specific reason it is not
-(`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
-`DifferentSequence`, `IdenticalClaims`). Pointed at a directory of kept
-reports instead of two files, it sweeps every pair and stops at the
-first proven conflict.
+`cyphr audit equivocation <report-a> <report-b> [--server=<url>]` runs
+this check and prints the verdict: `Proven`, `Behind`, or the specific
+reason it is neither (`WrongTyp`, `InvalidSignature`,
+`DifferentPrincipal`, `DifferentSequence`, `IdenticalClaims`). Pointed
+at a directory of kept reports instead of two files, it sweeps every
+pair and stops at the first proven conflict.
 
 The predicate itself is short enough to write in whatever your watcher
 is written in, and worth seeing once for what the command is checking
@@ -836,6 +848,45 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
+#### When the two positions differ
+
+The predicate above is [the pinned predicate's](../specs/receipts.md#the-pinned-predicate)
+own case: it requires the identical `sequence` on both sides, and
+`DifferentSequence` is what it returns whenever that requirement is not
+met — including two reports from a genuinely forked server, caught at
+different sequences. A bare `DifferentSequence` there is not an answer;
+it is an unclosed question.
+
+[arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
+states how that question closes: whichever report claims the higher
+`sequence` names a server whose own Commit Tree spans both positions, so
+that server can prove what its own Commit Root was at the lower
+`sequence` and that reconstruction can be checked against the lower
+report's signed one. Point `--server=<url>` at that higher-sequence
+server and `cyphr audit equivocation` fetches its full chain — the same
+`GET /patch?pr=<pg>` [verifying a
+receipt](#verifying-a-receipt-without-trusting-the-server-again) already
+uses — replays it into a second engine the way that same section walks
+by hand, derives the consistency proof from the lower `sequence` to the
+higher one, and compares the reconstructed root at the lower position
+against what the lower-sequence report actually signed:
+
+- Equal roots print `Behind` — the lower-sequence server is behind, not
+  forked, and the pair is settled as no conflict.
+- Differing roots print `Proven` — two independently signed claims at the
+  identical position disagree, the same verdict the base predicate
+  prints for an identical-sequence pair, reached by the general route
+  instead of the direct one.
+
+Without `--server`, `cyphr audit equivocation` prints `DifferentSequence`
+and stops there — not because the pair is cleared, but because nothing
+was given to settle it. Holding two reports at different sequences from
+a server you suspect of forking, rerun the same command naming that
+server's own URL to close it, rather than reading the bare verdict as a
+final one.
+
+#### The evidence document
+
 Reach for `cyphr audit equivocation` on anything you plan to
 act on. It runs the stricter version [pinned in the receipts
 spec](../specs/receipts.md#the-pinned-predicate) — parsing `sequence`
@@ -843,6 +894,51 @@ from either form, decoding digests to bytes before comparing — and,
 given a set of reports, renders a proven pair out as an evidence
 document. Treat the JS above as what the check means, not a substitute
 for running it.
+
+That document is a JSON file, and it holds exactly what makes a proven
+pair checkable and nothing else:
+
+```json
+{
+  "v": 1,
+  "kind": "cyphr-audit/equivocation-evidence",
+  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "sequence": 1,
+  "reports": [
+    { "pay": { "…": "…" }, "sig": "…" },
+    { "pay": { "…": "…" }, "sig": "…" }
+  ]
+}
+```
+
+- `pr` and `sequence` name the principal and the chain position the two
+  claims were found to conflict at — the shared `sequence` for an
+  identical-sequence pair, or the lower report's own `sequence` when the
+  pair was settled across differing sequences by [the general
+  route](#when-the-two-positions-differ).
+- `reports` holds the two disagreeing receipts verbatim — `pay` and `sig`
+  together, byte-exact, exactly as kept, in the order they were given.
+- When the pair was settled across differing sequences, the document
+  also carries the consistency proof that settled it — an opaque object
+  a reader verifies the same way `cyphr audit equivocation --server`
+  verified it, never something to hand-parse.
+
+That is everything a stranger needs. They re-run the same comparison
+over `reports[0]` and `reports[1]` themselves, against the public key
+each server publishes at `GET /server`, or — to reach [convince a
+stranger](../use/detecting-a-split-view.md#convince-a-stranger)'s
+stronger bar — against a replayed chain via [`cyphr tx verify --receipt
+--server`](#verifying-a-receipt-without-trusting-the-server-again)
+pointed at wherever they believe each signing key belongs. Nothing in
+the document depends on the auditor's word: the two signatures inside
+it are the entire proof, the same object [what the finding
+contains](../architecture/equivocation-detection.md#what-the-finding-contains)
+already describes for the automatic case, assembled by hand instead of
+by an exchange.
+
+It prints to stdout as JSON by default — the object above, exactly —
+unless `--out=<path>` is given, in which case it is written there
+instead and nothing prints but a confirmation.
 
 ### What you hold when you find one
 
@@ -910,8 +1006,18 @@ looks the same as any stale push.
 
 A watcher is a loop, and a small one. For each principal you care about
 and each server you are willing to ask, fetch the tip, keep the receipt,
-and compare across servers. Anchoring at the tip you already hold makes
-the steady-state request nearly free — no entries, one signed claim.
+and compare across servers.
+
+`cyphr audit fetch-tip --server=<url> --identity=<pr> --out=<path>` is
+the fetch step: it calls `GET /tip?pr=<pr>` on `<url>` and writes the
+returned receipt, byte-exact, to `<path>` — a file [`cyphr audit
+equivocation`](#checking-the-evidence) can then take directly, alone or
+alongside others in a directory. Anchoring at the tip you already hold
+(the `from=` form [shown earlier](#where-receipts-come-from)) makes the
+steady-state request nearly free — no entries, one signed claim — and a
+watcher's loop is exactly this fetch, repeated per principal and per
+server, feeding what it collects into `cyphr audit equivocation` to
+compare across servers.
 
 Two limits shape how you build it.
 
