@@ -863,13 +863,25 @@ states how that question closes: whichever report claims the higher
 that server can prove what its own Commit Root was at the lower
 `sequence` and that reconstruction can be checked against the lower
 report's signed one. Point `--server=<url>` at that higher-sequence
-server and `cyphr audit equivocation` fetches its full chain — the same
-`GET /patch?pr=<pg>` [verifying a
-receipt](#verifying-a-receipt-without-trusting-the-server-again) already
-uses — replays it into a second engine the way that same section walks
-by hand, derives the consistency proof from the lower `sequence` to the
+server and `cyphr audit equivocation` fetches the CONTESTED PRINCIPAL's
+own full chain — `GET /patch?pr=<pr>`, naming the principal the two
+reports disagree about, never the server's own `pg`. That is the same
+request shape [verifying a
+receipt](#verifying-a-receipt-without-trusting-the-server-again) uses,
+pointed at a different identifier: that section fetches the SERVER's own
+chain, at `pr=<pg>`, to bind a signing key to it — a different question
+from reconstructing a contested principal's own historical root. Having
+fetched the principal's chain, `cyphr audit equivocation` replays it into
+a second engine the way that same section walks by hand for the server's
+chain, derives the consistency proof from the lower `sequence` to the
 higher one, and compares the reconstructed root at the lower position
-against what the lower-sequence report actually signed:
+against what the lower-sequence report actually signed. This is a
+different mechanism from [the architecture page's own
+exchange](../architecture/equivocation-detection.md#the-exchange), which
+never fetches or retains either side's chain at all — the two routes
+reach the same verdict by different means, one a server-to-server proof
+exchange that holds no chain, the other a client's own full replay of
+one:
 
 - Equal roots print `Behind` — the lower-sequence server is behind, not
   forked, and the pair is settled as no conflict.
