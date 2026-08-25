@@ -204,12 +204,22 @@ server does not stop serving a contested principal, and it does not
 pick a side while deciding.
 [The answer carries the finding](#the-answer-carries-the-finding)
 already establishes that ordinary answers keep coming, fork proof
-attached, and
-[SPEC §15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior)
-is explicit that broadcasting the fork proof comes with "rejection of
-both branches until resolved" — neither branch is presented as settled
-truth while the fork stands, and nothing in this arrangement does that
-either.
+attached. Read alone, a signed tip report's own claims name exactly one
+commit and one set of roots — that is one branch, stated as what this
+server currently signs; [SPEC
+§15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior)'s
+"rejection of both branches until resolved" describes what a server does
+with writes while a fork stands (covered above), not a separate claim
+about how it answers reads. What keeps a read from presenting its one
+named branch as settled is the fork proof riding along beside it: a
+signature is a statement about the server that made it, not about the
+world it describes ([what a receipt does and does not
+establish](../guides/publication-and-audit.md#what-the-record-proves-and-what-it-does-not)),
+and the attached proof is what tells the reader this same server has
+also signed the opposite claim about the identical position — so the
+answer can be read only as this server's current position, never as the
+record's settled state, for as long as that proof keeps riding along
+with it.
 
 ## Resolution
 
@@ -450,9 +460,10 @@ names the resolving push as the one whose acceptance checks the state
 back to Active. This is a refusal on writes only:
 [arch-answer-carries-contested](#arch-answer-carries-contested) already
 establishes that ordinary answers about the principal keep coming, and
-neither branch is served as settled while the state remains Error —
-[SPEC §15.7.1](../../SPEC.md#1571-invalid-forks-fork-detection-and-duplicitous-behavior)'s
-rejection of both branches until resolved.
+[what keeps neither branch served as settled](#while-a-fork-stands) is
+the fork proof riding along with those answers — a signature is a
+statement about the server that made it, never about the world — not a
+second refusal layered on top of the one this claim states.
 
 ```claim
 kind: requirement
