@@ -44,7 +44,9 @@ one history and auditors a second. So is a **relying service** — one
 that answers for a user of its own on the strength of someone else's
 record — and it learns of a conflict the same way anyone else does, by
 [the ordinary answer it already gets](#a-service-relying-on-you-decides),
-not by watching anything. So is a platform that acts on records and
+once a witness that does not depend on the answering server's goodwill
+has exchanged views with it and found the conflict — not by watching
+anything. So is a platform that acts on records and
 answers to its users for those acts. What they share is the stake, not a
 job title: each has done something on the strength of a served answer,
 and each faces an audience that will not take their word for what that
@@ -218,7 +220,9 @@ commit under the new key passes the same check.
 A service authenticating a user against your identity right now needs
 to know your record is contested, and it learns the same way you do: the
 ordinary answer it was already going to get about your identity carries
-the finding when one exists. What it does with that — refuse the
+the finding when one exists, once a witness that does not depend on the
+answering server's goodwill has exchanged views with it and found the
+conflict. What it does with that — refuse the
 authentication, degrade it, ask for a second factor — is its own
 decision, made with its own stakes in mind, not something this system
 makes for it.
