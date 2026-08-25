@@ -918,10 +918,36 @@ pair checkable and nothing else:
   route](#when-the-two-positions-differ).
 - `reports` holds the two disagreeing receipts verbatim — `pay` and `sig`
   together, byte-exact, exactly as kept, in the order they were given.
-- When the pair was settled across differing sequences, the document
-  also carries the consistency proof that settled it — an opaque object
-  a reader verifies the same way `cyphr audit equivocation --server`
-  verified it, never something to hand-parse.
+- When the pair was settled across differing sequences, a fifth field,
+  `proof`, is added:
+
+  ```json
+  "proof": {
+    "old_size": 1,
+    "old_root": "SHA-256:…",
+    "new_size": 4,
+    "new_root": "SHA-256:…",
+    "consistency_proof": "…"
+  }
+  ```
+
+  `old_size`/`new_size` name the two positions `m`/`n`; `new_root` is the
+  higher-sequence report's own signed Commit Root, already present in
+  that report's `pay.roots.cr` — `reports` does not guarantee which index
+  holds it, since the two are kept in the order they were given, not
+  sorted by `sequence`. `old_root` is the value the base object above
+  cannot supply from `reports` alone: the higher side's claimed Commit
+  Root at the LOWER position `m` — `CR'ₘ` in
+  [arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
+  — never itself independently signed, authenticated instead by
+  `consistency_proof` binding it to `new_root`. This is the value the
+  verdict actually turns on: a consistency proof takes both the old and
+  new roots as the claims it checks itself against, not values it derives
+  for you, so a reader who leaves `old_root` out and substitutes the
+  lower-sequence report's own signed root in its place is no longer
+  checking whether the higher side's claim at `m` agrees with the lower
+  side's — they are checking the lower side's claim against itself,
+  which settles nothing.
 
 That is everything a stranger needs. They re-run the same comparison
 over `reports[0]` and `reports[1]` themselves, against the public key
@@ -936,9 +962,10 @@ contains](../architecture/equivocation-detection.md#what-the-finding-contains)
 already describes for the automatic case, assembled by hand instead of
 by an exchange.
 
-It prints to stdout as JSON by default — the object above, exactly —
-unless `--out=<path>` is given, in which case it is written there
-instead and nothing prints but a confirmation.
+It prints to stdout as JSON by default — the object above, `proof`
+included whenever the pair crossed sequences — unless `--out=<path>` is
+given, in which case it is written there instead and nothing prints but
+a confirmation.
 
 ### What you hold when you find one
 
