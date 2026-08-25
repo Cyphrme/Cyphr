@@ -113,8 +113,19 @@ about your own record if you are its owner, about someone else's if you
 are relying on it — already carries the proof, once a witness that does
 not depend on this server's goodwill has exchanged views with it and
 found the conflict. Reading your own record the way you always would is
-the notice; running the comparison yourself is not the thing to go do —
-making sure a witness like that is registered is.
+the notice, once that witness relationship exists. Whether you can bring
+that relationship about depends on who you are. If you are the record's
+owner, running the comparison yourself is not the thing to go do; making
+sure a witness is registered is — registering one is a signed act only
+you can take
+([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). If you are
+not the owner — Noor, a relying service, a platform — you cannot
+register a witness on someone else's record, so that act is not yours to
+trigger. Your own move is gathering a second view yourself —
+[the same server asked from a network position it does not associate
+with you](#convince-a-stranger) — and running
+[the comparison](../guides/publication-and-audit.md#checking-the-evidence)
+over what you gathered.
 This is a design choice the
 [architecture page states and justifies](../architecture/equivocation-detection.md#the-answer-carries-the-finding):
 the finding rides along in the answer you were already going to get,
