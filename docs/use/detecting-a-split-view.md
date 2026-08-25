@@ -222,8 +222,12 @@ chain, not a substitute for it. No one's word adds anything to the
 proof, and the server's cooperation is not required. The server can
 decline to explain the two statements. It cannot deny having made them.
 
-You assemble the chain segment yourself, by replaying the server's own
-chain — [the publication and audit guide walks the
+You assemble the chain segment yourself, by replaying a copy of the
+chain — the accused server's own, if it still answers, or any other
+server that shares its signing identity, since a chain proves itself no
+matter which copy you replay, which is exactly why no cooperation from
+the accused party is needed to get one — [the publication and audit
+guide walks the
 steps](../guides/publication-and-audit.md#verifying-a-receipt-without-trusting-the-server-again).
 Verifying against only the server's currently published key is weaker:
 it cannot catch a server that rotated its published key to one that
