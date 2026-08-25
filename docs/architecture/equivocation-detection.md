@@ -521,7 +521,7 @@ evaluator: test
 because: [arch-answer-carries-contested]
 ```
 
-### [arch-owner-alone-resolves]
+### [arch-active-key-resolves]
 
 A fork ends only by a signature verifying under the principal's
 currently-active key: a new commit whose

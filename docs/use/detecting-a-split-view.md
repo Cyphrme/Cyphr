@@ -149,7 +149,7 @@ already given — no server cooperation is needed to keep it true. The
 guide](../guides/publication-and-audit.md) walks through what a kept
 tip report looks like and how to verify one.
 
-### What only you can do
+### Resolving takes a signature, not identity
 
 If you are the record's owner, resolving the fork is yours to do, and it
 takes exactly one act: sign the next entry on the branch you choose — a
@@ -232,7 +232,7 @@ system: nothing inside Cyphr spreads it to anyone who was not already
 going to receive it as part of an ordinary answer.**
 
 Three moves are open to you beyond
-[resolving it, if it is yours to resolve](#what-only-you-can-do), in
+[resolving it, if it is yours to resolve](#resolving-takes-a-signature-not-identity), in
 rising order of what they need.
 
 1. **Stop relying on that server.** Available immediately, needs
