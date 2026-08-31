@@ -14,11 +14,15 @@ is what a fork looks like from outside — and this page uses whichever
 name the sentence needs.
 
 That signed statement exists only if the server can sign at all. A
-server that is an **attestor** — keyed and bootstrapped — signs a tip
-report over every state it serves; a **keyless** server signs nothing,
-and none of what follows applies to one. `GET /server` tells you which
-you have: an attestor answers with `"tier": "attestor"`, a keyless
-server with `"tier": "repository"`. Check that before going further.
+server that is an **attestor** — keyed, with a bootstrapped principal —
+signs a tip report at `/tip` and a commit receipt on every accepted
+push, and nothing else
+([the receipts specification's attestor condition](../specs/receipts.md#the-attestor-condition)).
+A server that is not — **keyless**, or keyed but not yet bootstrapped —
+signs neither, and none of what follows applies to it. `GET /server`
+tells you which you have: an attestor answers with `"tier":
+"attestor"`, anything else with `"tier": "repository"`. Check that
+before going further.
 
 This page says who needs that lie caught, how the system catches and
 delivers it, and what you can do once it has. It states what the system
@@ -126,7 +130,16 @@ that relationship about depends on who you are. If you are the record's
 owner, running the comparison yourself is not the thing to go do; making
 sure a witness is registered is — registering one is a signed act only
 you can take
-([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)). If you are
+([SPEC §13.5.1](../../SPEC.md#1351-witness-registration)) — but SPEC
+places no restriction on what you register there. What gets you
+automatic detection is narrower than what SPEC allows: a witness that
+independently signs its own tip report,
+[the architecture page's own narrower sense of the term, not SPEC
+§2.2.16's](../architecture/equivocation-detection.md#parts). Register a
+server that keeps a copy of your record without signing its own tip
+reports and SPEC calls it a witness too — but you get none of the
+detection above, and nothing tells you that until you need it. Check
+that before you register, not after. If you are
 not the owner — Noor, a relying service, a platform — you cannot
 register a witness on someone else's record, so that act is not yours to
 trigger. Your own move is gathering a second view yourself —
