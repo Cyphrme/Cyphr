@@ -1,7 +1,7 @@
 # Publishing a record and auditing it
 
 A Cyphr server will sign a statement about what it just did, hand it to
-you, and keep no copy. That receipt is the whole trust object. Everything
+you, and keep no copy of it. That receipt is the whole trust object. Everything
 in this guide follows from it: what a publisher can get signed, what a
 watcher can check later without asking the server again, and where the
 chain of "check it yourself" runs out.
@@ -15,12 +15,15 @@ over what it accepted.
 
 **Auditing** is holding a server to those signatures. A server that tells
 you one thing and someone else another has produced two statements it
-signed and cannot take back, and a watcher who collected both is holding
-proof. That is the entire enforcement mechanism: there is no quorum, no
-consensus round, and nothing that stops a server from lying — only
-evidence, after the fact, in the hands of whoever bothered to keep it.
+signed and cannot take back. That is the entire enforcement mechanism:
+there is no quorum, no consensus round, and nothing that stops a server
+from lying — only evidence, after the fact. Between two servers
+registered as each other's witness, that evidence is exchanged and
+carried along automatically, no watcher needed. Between anyone else — a
+reader, a relying service, a server nobody registered as a witness — it
+exists only if somebody went and collected it.
 
-Both halves work today, up to a point. This guide says where the point is.
+Both halves have real limits. This guide says where they are.
 
 ## Terms
 
@@ -181,9 +184,10 @@ the payload's `commit_id`, `sequence`, and `roots`, stamp them with the
 server's key and clock, and mark them `cyphr-server/receipt/commit`.
 
 **Keep the receipt, byte for byte — `pay` and `sig` together.** The server
-persists nothing to issue one and holds no log of what it signed. If you
-discard it, the fact that this server ever accepted this commit is gone
-from everywhere except your side of the exchange.
+persists nothing to issue one and holds no log of what it signed
+(`docs/specs/receipts.md` `[receipts-r-stateless]`). If you discard it,
+the fact that this server ever accepted this commit is gone from
+everywhere except your side of the exchange.
 
 Notice what the receipt does not carry: `blob_hashes`. It attests a chain
 position, not the specific bytes you uploaded. For a commit that is a
@@ -295,7 +299,7 @@ your own client and you meet it immediately.
 
 You can sign a coz with any `typ` you like and push it. The server
 verifies the signature against the principal's active keys, answers `201`,
-and signs a receipt. Then the content vanishes.
+and signs a receipt. Then the content is stored and forgotten.
 
 Push a bundle containing only that `example.com/note/create` cozy from
 above. Everything in this section runs against `4101`, whose copy of the
@@ -388,7 +392,7 @@ in the index. A bundle carrying no chain transaction takes a separate path
 that writes the blobs and skips indexing entirely, so no commit forms, no
 root moves, and nothing points at what was stored.
 
-**So Cyphr publishes key history, and nothing else, today.** If your
+**So Cyphr publishes key history, and nothing else.** If your
 application needs to publish content, anchor it yourself: hash the
 content, and put the hash somewhere the chain does cover — or keep the
 content and its signature entirely on your own side and use Cyphr for what
@@ -499,8 +503,31 @@ message that reads like store corruption.
 
 ### Verifying a receipt without trusting the server again
 
-Six steps, and they are worth walking because the shape of the answer is
-"most of this is portable, one part is not."
+`cyphr tx verify --receipt=<path> --server=<url>` does this whole thing
+in one call, given a receipt you kept and the server it names: it pins
+the PG and genesis hint from `GET /server`, re-derives the PG from the
+genesis key, fetches the server's own chain, replays it into a fresh
+engine seeded with that genesis key, confirms the receipt's `tmb` is an
+active key of the replayed chain, and verifies the signature — printing
+`verified`, the replayed principal root, and the signing key it checked
+against, or the exact step that failed and why.
+
+`--receipt` names the file holding the receipt's `pay`/`sig` pair,
+byte-exact, the way [what to keep](#what-to-keep) describes. `--server`
+names the server whose chain gets replayed to check it against —
+ordinarily the same server the receipt came from, though nothing stops
+pointing this at a different server that shares the same signing
+identity, which is exactly [the setup this guide runs
+on](#the-setup-this-guide-runs-on). This is a different mode from
+`--identity=<pr>`, which verifies a principal's own chain against your
+local store and never touches a receipt or a remote server at all — the
+two flags answer different questions and are never combined in one
+call.
+
+What follows is what that command does, walked by hand once, because
+the shape of the answer is worth seeing on its own terms: six steps,
+and every one of them is something you could write yourself, in any
+language.
 
 1. Pin `pg` and the `genesis` object from `GET /server`.
 2. Re-derive the PG from that genesis key alone. If it does not match the
@@ -555,42 +582,25 @@ genesis key, where the root is a tree over all of them rather than a
 single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
-**Steps 4 and 5 have no portable implementation, and what blocks them is
-getting the chain in, not replaying it.** Replay ships.
-`cyphr tx verify --identity=<pr>` loads a principal out of a local store,
-replays every commit through Cyphr's own validation — each signature
-checked against the keys active at that point — and compares the principal
-root it derives with the one the store recorded. That is step 4, running
-today, against a chain that is already local.
+**Steps 4 and 5 are the part worth walking slowly**, because they are
+exactly the two steps `cyphr tx verify --receipt --server` exists to
+save you from doing by hand. Replaying a chain means loading it into a
+second, independent engine — never the one you are checking — and
+running every commit through the same validation Cyphr always applies:
+each signature checked against the keys active at that point, with the
+resulting principal root compared against what the chain claims. Do
+this yourself as a way to see what the command checks; running the
+calculation by hand against a server you actually rely on trades a
+machine-checked answer for a hand-checked one, for no benefit.
 
-Getting a server's chain to be local is the part with no route. Converting
-the server's `/patch` response into the shape `cyphr import` reads, with
-the genesis key from the discovery hint supplied alongside, gets:
-
-```
-error: cannot determine genesis keys from storage
-```
-
-`import` has two ways to find a genesis key — your local keystore, or key
-material embedded in the chain's first commit — and a server's chain
-offers neither, the same gap that breaks its own tip report. There is no
-flag that feeds a genesis key in. And `import` does not round-trip
-`export` either — `cyphr export`'s own output for an ordinary two-key
-principal, imported into an empty store, gets
-`error: protocol error: duplicate key`.
-
-So a watcher today has two honest options. Link `cyphr` and
-`cyphr-storage` and do the replay properly — a few dozen lines against
-`StorageEngine` with an in-memory blob store and indexer, `submit_commit`,
-`load_principal`, and `is_key_active`. Or skip steps 4 and 5, verify the
-signature against the key `GET /server` publishes, and be clear with
-yourself that you have then trusted the server's claim about its own
-current key, which is exactly what those two steps exist to avoid.
-
-The second option is not worthless. It still catches a forged receipt from
-a third party and still detects a server signing two conflicting things
-with one key. What it cannot catch is a server that rotates its published
-key to one that never appeared in its chain.
+The alternative to all six steps — verify the signature against the key
+`GET /server` publishes right now, and stop there — is weaker in one
+specific way: it trusts the server's claim about its own current key
+instead of the chain that key's history is supposed to answer for. It
+still catches a forged receipt from a third party and still detects a
+server signing two conflicting things with one key. What it cannot catch
+is a server that rotates its published key to one that never appeared
+in its chain — exactly what the full replay exists to rule out.
 
 ### What to keep
 
@@ -616,6 +626,30 @@ A split view is one server identity giving two different, irreconcilable
 answers about the same principal at the same chain position. Produce one
 with the two servers from the setup, which share a key and share nothing
 else.
+
+A server that has a registered witness for a principal does not leave
+this comparison to a reader: witness registration and push fanout
+deliver, as a byproduct of work the server does anyway, each side's own
+signed tip report and a consistency proof to exchange against — [the
+architecture page states the
+mechanism](../architecture/equivocation-detection.md#the-exchange). A
+finding from that exchange rides along in the server's next ordinary
+answer about the principal, so its owner or anyone relying on it [learns
+of a fork without going
+looking](../use/detecting-a-split-view.md#you-find-out-without-looking).
+
+The two servers below were never registered as each other's witness —
+sharing a signing key and nothing else is what lets this setup
+manufacture a split view without that registration, and is exactly the
+position a stranger with no witness relationship to either server is
+always in. Gathering and checking two answers by hand, the way the rest
+of this section does, is what that stranger falls back to: the [pinned
+predicate](../specs/receipts.md#the-pinned-predicate) is verifier-side
+and stateless by design, so anyone holding two receipts can run it
+without either server's cooperation. `cyphr audit equivocation`
+runs that check as a command (below); the steps here walk what it does,
+by hand, once — read them as that demonstration, not as the routine way
+to do this.
 
 Push the same first commit to both, so they agree. Then build two
 conflicting second commits: snapshot the client's local store, add one key,
@@ -714,16 +748,29 @@ Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
-**Nothing detected this.** Neither server knows the other exists, and no
-component anywhere compared them. Detection is a thing a watcher does,
-with bytes it went and collected, entirely outside the system.
+**Nothing detected this.** Neither server knows the other exists — they
+were never registered as each other's witness, and detection is
+exchange-driven: no registration, no exchange, no comparison. Detection
+here is a thing you do yourself, with bytes you went and collected,
+entirely outside the exchange that a registered pair would have run for
+you.
 
 ### Checking the evidence
 
-The predicate is short enough to write in whatever your watcher is written
-in. Both statements have to be tip reports, both signatures have to verify
-under their own key, both have to name the same principal and the same
-sequence, and they have to differ in `commit_id` or in any root:
+`cyphr audit equivocation <report-a> <report-b> [--server=<url>]` runs
+this check and prints the verdict: `Proven`, `Behind`, or the specific
+reason it is neither (`WrongTyp`, `InvalidSignature`,
+`DifferentPrincipal`, `DifferentSequence`, `IdenticalClaims`,
+`Malformed`). Pointed
+at a directory of kept reports instead of two files, it sweeps every
+pair and stops at the first proven conflict.
+
+The predicate itself is short enough to write in whatever your watcher
+is written in, and worth seeing once for what the command is checking
+on your behalf. Both statements have to be tip reports, both signatures
+have to verify under their own key, both have to name the same
+principal and the same sequence, and they have to differ in `commit_id`
+or in any root:
 
 ```js
 function sameRoots(a, b) {
@@ -802,12 +849,136 @@ comparison holds only because a stock server emits one canonical spelling
 of every digest. Decode before comparing, and accept both spellings of
 `sequence`, if you take reports from a source you did not write.
 
-There is a Rust implementation of this predicate, plus an all-pairs sweep
-across a set of reports and a formatter that renders the conflicting pair
-as an evidence document. It lives in `cyphr-server`'s
-library and has no HTTP route, no CLI subcommand, and no caller in the
-server itself — every caller in the workspace is a test. To use it you
-link the server crate; to avoid that, write the predicate above.
+#### When the two positions differ
+
+The predicate above is [the pinned predicate's](../specs/receipts.md#the-pinned-predicate)
+own case: it requires the identical `sequence` on both sides, and
+`DifferentSequence` is what it returns whenever that requirement is not
+met — including two reports from a genuinely forked server, caught at
+different sequences. A bare `DifferentSequence` there is not an answer;
+it is an unclosed question.
+
+[arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
+states how that question closes: whichever report claims the higher
+`sequence` names a server whose own Commit Tree spans both positions, so
+that server can prove what its own Commit Root was at the lower
+`sequence` and that reconstruction can be checked against the lower
+report's signed one. Point `--server=<url>` at that higher-sequence
+server and `cyphr audit equivocation` fetches the CONTESTED PRINCIPAL's
+own full chain — `GET /patch?pr=<pr>`, naming the principal the two
+reports disagree about, never the server's own `pg`. That is the same
+request shape [verifying a
+receipt](#verifying-a-receipt-without-trusting-the-server-again) uses,
+pointed at a different identifier: that section fetches the SERVER's own
+chain, at `pr=<pg>`, to bind a signing key to it — a different question
+from reconstructing a contested principal's own historical root. Having
+fetched the principal's chain, `cyphr audit equivocation` replays it into
+a second engine the way that same section walks by hand for the server's
+chain, derives the consistency proof from the lower `sequence` to the
+higher one, and compares the reconstructed root at the lower position
+against what the lower-sequence report actually signed. This is a
+different mechanism from [the architecture page's own
+exchange](../architecture/equivocation-detection.md#the-exchange), which
+never fetches or retains either side's chain at all — the two routes
+reach the same verdict by different means, one a server-to-server proof
+exchange that holds no chain, the other a client's own full replay of
+one:
+
+- Equal roots print `Behind` — the lower-sequence server is behind, not
+  forked, and the pair is settled as no conflict.
+- Differing roots print `Proven` — two independently signed claims at the
+  identical position disagree, the same verdict the base predicate
+  prints for an identical-sequence pair, reached by the general route
+  instead of the direct one.
+
+Without `--server`, `cyphr audit equivocation` prints `DifferentSequence`
+and stops there — not because the pair is cleared, but because nothing
+was given to settle it. Holding two reports at different sequences from
+a server you suspect of forking, rerun the same command naming that
+server's own URL to close it, rather than reading the bare verdict as a
+final one.
+
+#### The evidence document
+
+Reach for `cyphr audit equivocation` on anything you plan to
+act on. It runs the stricter version [pinned in the receipts
+spec](../specs/receipts.md#the-pinned-predicate) — parsing `sequence`
+from either form, decoding digests to bytes before comparing — and,
+given a set of reports, renders a proven pair out as an evidence
+document. Treat the JS above as what the check means, not a substitute
+for running it.
+
+That document is a JSON file, and it holds exactly what makes a proven
+pair checkable and nothing else:
+
+```json
+{
+  "v": 1,
+  "kind": "cyphr-audit/equivocation-evidence",
+  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
+  "sequence": 1,
+  "reports": [
+    { "pay": { "…": "…" }, "sig": "…" },
+    { "pay": { "…": "…" }, "sig": "…" }
+  ]
+}
+```
+
+- `pr` and `sequence` name the principal and the chain position the two
+  claims were found to conflict at — the shared `sequence` for an
+  identical-sequence pair, or the lower report's own `sequence` when the
+  pair was settled across differing sequences by [the general
+  route](#when-the-two-positions-differ).
+- `reports` holds the two disagreeing receipts verbatim — `pay` and `sig`
+  together, byte-exact, exactly as kept, in the order they were given.
+- When the pair was settled across differing sequences, a fifth field,
+  `proof`, is added:
+
+  ```json
+  "proof": {
+    "old_size": 1,
+    "old_root": "SHA-256:…",
+    "new_size": 4,
+    "new_root": "SHA-256:…",
+    "consistency_proof": "…"
+  }
+  ```
+
+  `old_size`/`new_size` name the two positions `m`/`n`; `new_root` is the
+  higher-sequence report's own signed Commit Root, already present in
+  that report's `pay.roots.cr` — `reports` does not guarantee which index
+  holds it, since the two are kept in the order they were given, not
+  sorted by `sequence`. `old_root` is the value the base object above
+  cannot supply from `reports` alone: the higher side's claimed Commit
+  Root at the LOWER position `m` — `CR'ₘ` in
+  [arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
+  — never itself independently signed, authenticated instead by
+  `consistency_proof` binding it to `new_root`. This is the value the
+  verdict actually turns on: a consistency proof takes both the old and
+  new roots as the claims it checks itself against, not values it derives
+  for you, so a reader who leaves `old_root` out and substitutes the
+  lower-sequence report's own signed root in its place is no longer
+  checking whether the higher side's claim at `m` agrees with the lower
+  side's — they are checking the lower side's claim against itself,
+  which settles nothing.
+
+That is everything a stranger needs. They re-run the same comparison
+over `reports[0]` and `reports[1]` themselves, against the public key
+each server publishes at `GET /server`, or — to reach [convince a
+stranger](../use/detecting-a-split-view.md#convince-a-stranger)'s
+stronger bar — against a replayed chain via [`cyphr tx verify --receipt
+--server`](#verifying-a-receipt-without-trusting-the-server-again)
+pointed at wherever they believe each signing key belongs. Nothing in
+the document depends on the auditor's word: the two signatures inside
+it are the entire proof, the same object [what the finding
+contains](../architecture/equivocation-detection.md#what-the-finding-contains)
+already describes for the automatic case, assembled by hand instead of
+by an exchange.
+
+It prints to stdout as JSON by default — the object above, `proof`
+included whenever the pair crossed sequences — unless `--out=<path>` is
+given, in which case it is written there instead and nothing prints but
+a confirmation.
 
 ### What you hold when you find one
 
@@ -816,15 +987,16 @@ keys. That is a complete, portable, self-contained proof, and it stays
 valid for as long as the signatures do. The server can decline to explain
 it, but cannot deny making both statements.
 
-What you can do with it, inside Cyphr, is nothing. No endpoint accepts
-evidence, nothing propagates it, and no server behaves differently for
-having seen it. The specification describes witnesses that detect
-forks, broadcast proof, transition a principal into an error state, and
-refuse both branches until resolved; none of that is built. There is no
-consensus state machine, no proof-of-error retention, and no fork
-detection anywhere in the server. The only piece of the resync design that
-exists is `/patch?from=<digest>`, an anchor that lets a caller ask for
-everything after a state it already holds.
+A server that has run the exchange with a registered witness carries
+the resulting finding into its next ordinary answer about the
+principal — the [equivocation detection
+architecture](../architecture/equivocation-detection.md#the-exchange)
+states the mechanism. The two servers in this guide's setup were never
+registered as each other's witness, so they never run that exchange
+against each other and nothing carries the finding between them:
+gathering and checking the evidence yourself, the way the rest of this
+guide does, is what stands in for a witness relationship neither server
+has.
 
 So the answer to "what do I do with it" is an application question, and
 worth deciding before you need it rather than after:
@@ -841,15 +1013,23 @@ published — which is your problem, not the protocol's.
 **Compare more servers.** Two conflicting reports tell you the identity
 equivocated but not which answer is the odd one out. A third report
 breaks the tie for you, by ordinary majority — nothing in Cyphr does that
-reasoning. The all-pairs sweep in `cyphr-server`'s library returns the
-first conflicting pair it finds and stops, so it proves misbehaviour
+reasoning. `cyphr audit equivocation`'s all-pairs sweep returns
+the first conflicting pair it finds and stops, so it proves misbehaviour
 without mapping it; if you want the shape of the disagreement across a
 set, collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
 publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. That much works. Building a third commit on the branch server
-`4101` holds and pushing it to both:
+the other. That much works, and because a resolving commit is a push
+like any other, `POST /push` fans it out on its own to every server the
+principal has registered as a witness — best-effort and asynchronous, no
+follow-up action needed ([the architecture page describes the
+mechanism](../architecture/equivocation-detection.md#resolution)). A
+server the principal never registered with gets nothing and keeps
+serving the abandoned branch — which is exactly `4100` and `4101`'s
+relationship here, so resolving this demo's fork means pushing to both
+by hand. Building a third commit on the branch server `4101` holds and
+pushing it to both:
 
 ```
 4101  201
@@ -866,8 +1046,18 @@ looks the same as any stale push.
 
 A watcher is a loop, and a small one. For each principal you care about
 and each server you are willing to ask, fetch the tip, keep the receipt,
-and compare across servers. Anchoring at the tip you already hold makes
-the steady-state request nearly free — no entries, one signed claim.
+and compare across servers.
+
+`cyphr audit fetch-tip --server=<url> --identity=<pr> --out=<path>` is
+the fetch step: it calls `GET /tip?pr=<pr>` on `<url>` and writes the
+returned receipt, byte-exact, to `<path>` — a file [`cyphr audit
+equivocation`](#checking-the-evidence) can then take directly, alone or
+alongside others in a directory. Anchoring at the tip you already hold
+(the `from=` form [shown earlier](#where-receipts-come-from)) makes the
+steady-state request nearly free — no entries, one signed claim — and a
+watcher's loop is exactly this fetch, repeated per principal and per
+server, feeding what it collects into `cyphr audit equivocation` to
+compare across servers.
 
 Two limits shape how you build it.
 
@@ -883,47 +1073,3 @@ confirmation.
 or serves an old view has done nothing you can prove. Only two conflicting
 signatures are provable. Everything else is a reason for suspicion and
 nothing more.
-
-## What is not there yet
-
-Named plainly, because finding these out mid-integration is worse than
-reading them here:
-
-- **No content publishing.** A bundle with no chain transaction is stored
-  and forgotten: no commit, no root movement, no index entry, no way to
-  fetch it back — and a signed receipt attesting the unchanged tip anyway.
-- **No agreement about what a signature covers.** `/push` verifies over
-  the payload's recursively key-sorted form. `/push` is the only endpoint
-  that canonicalizes before checking a signature — every other
-  signature-verifying path, `/auth/login`, naked `/revoke`, and the
-  witness-registration envelope among them, verifies over the key order
-  as sent. Hand-build a payload against one assumption and post it to a
-  path that holds the other, and the divergence is stated nowhere else:
-  the failure it produces is a bare `protocol: invalid signature`.
-- **No way to get a server's chain into the verifier that ships.**
-  `cyphr tx verify` replays a local principal and re-derives its root, so
-  the replay half is real; what is missing is the path in. `cyphr import`
-  cannot ingest a server's chain — it fails with
-  `cannot determine genesis keys from storage` — and cannot even
-  re-import `cyphr export`'s own output, which fails with
-  `protocol error: duplicate key`. The six steps end to end exist in full
-  only as an integration test.
-- **No reachable equivocation checking.** The predicate, the all-pairs
-  sweep, and the evidence formatter are implemented and tested in
-  `cyphr-server`'s library, with no route, no command, and no caller
-  outside the test suite.
-- **No tip report about the server itself.** `GET /tip` on a server's own
-  PG is a permanent `500`, though `/patch` on it works.
-- **No fork detection.** A server refuses a conflicting commit with a
-  `409` and draws no conclusion. No consensus state machine, no
-  proof-of-error retention, no state jumping — the specification describes
-  all of it and none of it is built. The one piece of the resync design
-  that exists is `/patch`'s digest anchor.
-- **Nowhere to file evidence.** No endpoint accepts it, nothing
-  propagates it, and no server behaves differently for having seen it.
-- **No freshness.** A genuinely signed response stays true about its
-  moment forever and can be replayed at a reader or a witness
-  indefinitely.
-- **No key-inclusion proof endpoint.** A third party can verify that a key
-  was included under a principal's root given the four proof hops, but no
-  route serves those hops; whoever holds the chain has to generate them.
