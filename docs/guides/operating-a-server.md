@@ -292,36 +292,42 @@ After a keyed server has run once:
 
 ```
 data/
-├── blobs/           the commits themselves, and each principal's chain
-├── index/           a derived projection, rebuildable from blobs
-├── observations/    the key death-set
-├── admission/       spent invite tokens (only under policy = "invite")
-└── server-principal.json
+├── record/            what the server was told; irrecoverable if lost
+│   ├── blobs/              the commits themselves, and each principal's
+│   │                       chain (including its EML commit-tree keyspaces
+│   │                       -- record data, not a derived projection)
+│   ├── observations/       the key death-set
+│   ├── admission/          spent invite tokens (policy = "invite" only)
+│   └── server-principal.json
+└── index/             what the server works out, rebuildable from record/
 ```
 
-Each directory is a separate embedded database. The split is not arbitrary
-and it decides your backup policy:
+Each of `blobs/`, `observations/`, and `admission/` is a separate embedded
+database; `server-principal.json` is a plain file. The `record/` / `index/`
+split is not arbitrary and it decides your backup policy: everything under
+`record/` is irrecoverable if lost, and `index/` is the only directory you
+may ever `rm -rf`.
 
-| Path                    | Rebuildable?                  | Lose it and…                                |
-| :---------------------- | :---------------------------- | :------------------------------------------ |
-| `blobs/`                | No — this is the data         | Every principal you host is gone.           |
-| `index/`                | Yes, from `blobs/`            | Nothing, after a rebuild.                   |
-| `observations/`         | No                            | Every key declared dead comes back to life. |
-| `admission/`            | No                            | Every spent invite token becomes reusable.  |
-| `server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
+| Path                            | Rebuildable?                  | Lose it and…                                |
+| :------------------------------ | :----------------------------- | :------------------------------------------ |
+| `record/blobs/`                 | No — this is the data         | Every principal you host is gone.           |
+| `index/`                        | Yes, from `record/`           | Nothing, after a rebuild.                   |
+| `record/observations/`          | No                            | Every key declared dead comes back to life. |
+| `record/admission/`             | No                            | Every spent invite token becomes reusable.  |
+| `record/server-principal.json`  | By hand, from the signing key | The server will not start. See below.       |
 
 **The invite tokens file belongs in your backup plan even though it is not
 in this table.** Under `policy = "invite"` it does not have to live inside
 the data directory -- the example above uses `./invites.txt` -- and it is
 not rebuildable. Lose it and every outstanding, unspent invite is dead; the
-`data/admission/` spent-set backs up the tokens already used, not the ones
-still good.
+`data/record/admission/` spent-set backs up the tokens already used, not the
+ones still good.
 
-**`observations/` is separate precisely so a rebuild cannot erase it.** A
-key declared dead by its holder is not recorded on anyone's chain — a naked
-revoke mutates no principal — so if that record lived in the index, the next
-reindex would silently wipe it. Delete the index outright and rebuild it,
-and a key revoked beforehand is still refused afterward.
+**`record/observations/` is separate precisely so a rebuild cannot erase
+it.** A key declared dead by its holder is not recorded on anyone's chain —
+a naked revoke mutates no principal — so if that record lived in the index,
+the next reindex would silently wipe it. Delete the index outright and
+rebuild it, and a key revoked beforehand is still refused afterward.
 
 ```sh
 rm -rf data/index
@@ -345,16 +351,20 @@ curl -s -X POST http://127.0.0.1:3000/push -H 'content-type: application/json' -
 }
 ```
 
-**`server-principal.json` is the file nobody expects to matter.** It holds
-the PG and the genesis key record. Delete it while leaving the blob store
-intact and the server refuses to start:
+**`record/server-principal.json` is the file nobody expects to matter.** It
+holds the PG and the genesis key record. Delete it while leaving the blob
+store intact, and the server refuses to start — but now names the problem:
 
 ```
-ERROR cyphr_server: server exited with error error=server principal storage: protocol: state mismatch
+ERROR cyphr_server: server exited with error error=missing data/record/server-principal.json for an already-established server principal (pg=SHA-256:…); see docs/guides/operating-a-server.md for the recovery procedure
 ```
 
-The message does not name the file, so this reads as a corrupt store when it
-is a missing sidecar. You can rebuild it by hand from two values: the public
+That detection only works before the signing key's first rotation — it
+recomputes the genesis key from the *current* key to check whether the
+engine already has a chain there, which is the genesis key only pre-rotation.
+After a rotation, a missing sidecar goes undetected: the server assumes a
+fresh boot and creates a second, unrelated principal instead of erring.
+Either way, you rebuild the sidecar by hand from two values: the public
 key, which is `pub_key` in your signing key file, and the genesis
 thumbprint, which is your PG with its hash-algorithm prefix stripped. The
 server cannot tell you the second one — it will not start — so it has to
@@ -380,7 +390,7 @@ case "$ALG" in
 esac
 jq -n --arg pg "$HASH:$TMB" --arg pub "$PUB" --arg tmb "$TMB" --arg alg "$ALG" \
   '{pg:$pg, genesis_key:{alg:$alg, pub_key:$pub, tmb:$tmb, first_seen:0}}' \
-  > data/server-principal.json
+  > data/record/server-principal.json
 ```
 
 That restores the original PG and the server starts, on one condition: the
@@ -396,7 +406,7 @@ true after a rotation.
 **Back up the signing key somewhere other than the data directory.** It is
 the only irreplaceable thing you hold: with it and an empty disk you can
 rebuild a server that clients still recognize, and without it you cannot,
-no matter how complete your `blobs/` backup is.
+no matter how complete your `record/blobs/` backup is.
 
 The store is locked exclusively while the server runs, so a file-level
 backup of a live directory is a copy of a moving target. A second process
@@ -494,14 +504,14 @@ curl -s -X POST http://127.0.0.1:3000/push \
 Three behaviors are worth knowing before you hand tokens to users. Single
 use is enforced durably — the same token on a second, different principal
 is refused, and it is still refused after a restart, because the spent set
-lives in `data/admission/`. A token is only spent on success; a push that
-fails for a protocol reason refunds it. And once a principal is resident,
-its later commits need no token at all, so a token buys a user an identity,
-not a subscription.
+lives in `data/record/admission/`. A token is only spent on success; a push
+that fails for a protocol reason refunds it. And once a principal is
+resident, its later commits need no token at all, so a token buys a user an
+identity, not a subscription.
 
-An `invite` server whose `data/admission/` you restore from an older backup
-un-spends every token issued since. There is no expiry and no revocation
-list; a leaked token is live until someone uses it.
+An `invite` server whose `data/record/admission/` you restore from an older
+backup un-spends every token issued since. There is no expiry and no
+revocation list; a leaked token is live until someone uses it.
 
 **`pow` asks for proof of work instead of a secret.**
 
@@ -865,9 +875,9 @@ active in several principals; a death record kills it in all of them. There
 is no un-revoke.
 
 **It survives anything short of losing the disk.** The record lives in
-`data/observations/`, its own store, for the reason given in the backup
-section: it is not derivable from any chain, so an index rebuild must not be
-able to erase it.
+`data/record/observations/`, its own store, for the reason given in the
+backup section: it is not derivable from any chain, so an index rebuild must
+not be able to erase it.
 
 **It cannot kill a genesis key.** The server only accepts a revoke naming a
 key it has indexed, which in practice means a key introduced by a
@@ -989,22 +999,28 @@ live. There is nowhere inside the server to put it.
 
 ## Restarting and upgrading
 
-**Stop with SIGINT, not SIGTERM.** The server drains connections on
-`Ctrl-C`:
+**Stop with SIGINT or SIGTERM — both drain connections.** `Ctrl-C`,
+`systemctl stop`, `docker stop`, and a bare `kill` all reach the same path:
 
 ```
 INFO cyphr_server: shutdown signal received, draining connections
 INFO cyphr_server: server stopped
 ```
 
-SIGTERM — what `systemctl stop`, `docker stop`, and a bare `kill` send —
-is not handled. The process dies immediately with requests in flight and
-logs neither line. If you run under systemd, set `KillSignal=SIGINT` in the
-unit; otherwise every restart severs whatever was in progress.
+A `kill -9` (SIGKILL) still bypasses this — no signal handler can catch
+it — but the store is resilient to that hard kill too: a server restarted
+after one opens its directory cleanly with no stale lock and no recovery
+step. The cost of a hard kill is borne by in-flight requests, not the data.
 
-The store itself is resilient to the hard kill: a server restarted after a
-SIGTERM opens its directory cleanly with no stale lock and no recovery step.
-The cost is borne by in-flight requests, not by the data.
+**Under sustained heavy CPU load, a stop can still take longer than
+expected.** The signal is received — logs and OS-level process state both
+confirm it — but shutdown has been observed, under heavy oversubscription,
+to not complete within a short budget roughly 4 in 100 times, and once
+needed a hard kill to clear. The cause is not established, and no one
+component — the scheduler, the async runtime, this crate's own shutdown
+path — is implicated over another. If a supervised restart hangs past its
+usual few seconds, do not assume a stuck request — it may be this. Tracked
+as issue #190.
 
 An upgrade is therefore: stop the old process and wait for it to exit,
 start the new binary against the same data directory. Nothing is versioned
@@ -1020,10 +1036,10 @@ Three things interact with a restart in ways worth planning for:
 - **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart, the same as the two hazards above.
 
 `rebuild-index` is the one maintenance command that exists. It reconstructs
-`index/` entirely from `blobs/`; use it after restoring a partial backup, or
-if lookups start disagreeing with what you know is stored. Stop the server
-first — it takes the same exclusive lock, so it cannot run against a live
-one.
+`index/` entirely from `record/blobs/`; use it after restoring a partial
+backup, or if lookups start disagreeing with what you know is stored. Stop
+the server first — it takes the same exclusive lock, so it cannot run
+against a live one.
 
 ```sh
 cyphr-server rebuild-index --data-dir ./data
@@ -1061,7 +1077,7 @@ principal, disk per commit, throughput per core — is unmeasured.
 Named plainly, because finding these out during an incident is worse than
 reading them here:
 
-- **No SIGTERM handling.** Graceful shutdown is SIGINT only, despite the process being a normal service in every other respect.
+- **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No key rotation you can perform.** The capability exists in the codebase and has no command, endpoint, or signal attached to it. A server whose signing key is compromised has no move except a new identity — which breaks every client's pin, because the `pg` changes with the genesis key.
 - **No usable proof-of-work admission.** The policy works; nothing that could talk to it exists or is documented.
 - **No metrics, no health endpoint, no access log by default.**

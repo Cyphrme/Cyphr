@@ -91,9 +91,23 @@ bearer tokens already apply.
   post-state roots exactly as the tip payload does. Nested so the root
   `pr` (the post-commit Principal Root) never collides with the
   top-level `pr` claim (the genesis identifier) -- the two are different
-  facts that happen to share a SPEC field name. All four values are
-  tagged digest strings, satisfying SPEC §2.2.3's explicitly-labeled
-  exemption.
+  facts that happen to share a SPEC field name. `pr`, `sr`, and `ar` are
+  always tagged digest strings, satisfying SPEC §2.2.3's explicitly-
+  labeled exemption. `cr` (the Commit Root) alone MAY instead be JSON
+  `null`, for a genesis-stage report: a principal that is key-established
+  but has not yet finalized a data commit has no commit root to attest.
+  `null` there means ABSENCE at genesis, not an unknown value or an error
+  -- a verifier MUST accept it as "no commit root yet," never refuse the
+  receipt over it. (The prior implementation signed an empty string for
+  this same case, itself not a valid tagged digest string either -- `null`
+  corrects the type of an absence that already existed here, not a new
+  gap this document is disclosing.) Pinned in
+  `rs/cyphr-server/src/receipt.rs`'s `Roots.cr: Option<String>` and
+  `sign_receipt`; the genesis-stage case is exercised by
+  `rs/cyphr-server/tests/receipts.rs`'s
+  `commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string`
+  and `rs/cyphr-server/tests/receipt_typed_domain.rs`'s
+  `genesis_commit_root_is_accepted`.
 
 ### Additional claims (tip reports only)
 

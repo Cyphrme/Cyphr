@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::ServerIdentity;
+use crate::config::RECORD_DIR_NAME;
 
 /// `first_seen` stamped on the server's genesis key. Fixed (not wall-clock)
 /// so the genesis key — and therefore the PG derived from it — is
@@ -78,6 +79,17 @@ pub enum ServerPrincipalError {
     /// chain — the data directory and key file have drifted apart.
     #[error("server principal genesis record does not match the configured key or its chain")]
     RecordMismatch,
+
+    /// The sidecar recording file (`server-principal.json`) is absent, but
+    /// the engine already holds a chain at the PG this identity's key
+    /// deterministically derives: the principal is established, only the
+    /// small pointer file `load()` needs to find it again is gone (backup
+    /// restore that missed one file, disk hiccup, operator error). Named
+    /// distinctly from `RecordMismatch` so an operator is pointed at the
+    /// documented, reconstructible cause instead of a raw protocol
+    /// diagnostic from a doomed re-genesis attempt (issue #175).
+    #[error("{0}")]
+    MissingSidecar(String),
 }
 
 /// On-disk record locating the server's own chain between boots.
@@ -151,21 +163,43 @@ impl ServerPrincipal {
     ///
     /// `identity` is the key currently on disk at `signing_key_path`; the
     /// path is retained so [`rotate`](Self::rotate) can rewrite the file.
+    ///
+    /// `data_dir` is the bare top-level data directory, not the `record/`
+    /// subtree: the sidecar is told state (ADR-0002 Decision 1), so it
+    /// lives at `record/server-principal.json`, and this function joins
+    /// [`RECORD_DIR_NAME`] itself rather than requiring every caller to
+    /// pre-resolve the record path.
     pub async fn bootstrap(
         engine: &ServerEngine,
         identity: Arc<ServerIdentity>,
         signing_key_path: &Path,
         data_dir: &Path,
     ) -> Result<Self, ServerPrincipalError> {
-        let state_path = data_dir.join(STATE_FILE);
+        let state_path = data_dir.join(RECORD_DIR_NAME).join(STATE_FILE);
 
         if state_path.exists() {
             return Self::load(engine, &identity, signing_key_path, &state_path).await;
         }
 
-        // First keyed boot: the signing key is the sole genesis key.
+        // No sidecar on disk: either this is a genuinely fresh boot, or the
+        // sidecar was lost while the chain survives. The genesis key (and
+        // therefore the PG) is deterministic from the identity, so it can
+        // be recomputed and checked against the engine before committing to
+        // either story -- re-attempting genesis against an
+        // already-established PG would throw a raw, unnamed protocol error
+        // that reads to an operator as store corruption, not a missing,
+        // reconstructible file (#175).
         let genesis_key = genesis_key_from_identity(&identity)?;
         let (pg, blobs) = build_genesis(&identity, &genesis_key)?;
+
+        if engine.get_tip(&pg).await?.is_some() {
+            return Err(ServerPrincipalError::MissingSidecar(format!(
+                "missing {} for an already-established server principal (pg={pg}); see \
+                 docs/guides/operating-a-server.md for the recovery procedure",
+                state_path.display()
+            )));
+        }
+
         let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
         engine
             .submit_commit(

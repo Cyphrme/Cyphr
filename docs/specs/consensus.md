@@ -20,9 +20,12 @@ independent verifiability over global coordination.
 
 **Target System:** `SPEC.md` §15 (Consensus), §18 (State Jumping), §19
 (Error Conditions). Citation corrected 2026-07-08 — SPEC.md was renumbered
-and these topics previously sat at §17/§23/§24; this document's own
-per-constraint Verification table below still cites the old numbers and
-has not yet been re-audited line-by-line.
+and these topics previously sat at §17/§23/§24; the fork-related rows in
+this document's own per-constraint Verification table below
+([single-chain], [fork-detection], [fork-response], [fork-resolution],
+[no-fork-propagation]) were updated to current numbering, and the
+remainder still cite the superseded scheme, pending a full line-by-line
+re-audit.
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -64,7 +67,7 @@ TYPE ErrorCode      = INVALID_SIGNATURE | UNKNOWN_KEY | UNKNOWN_ALG
                     | MALFORMED_PAYLOAD | KEY_REVOKED | INVALID_PRIOR
                     | DUPLICATE_KEY | THRESHOLD_NOT_MET
                     | STATE_MISMATCH | HASH_ALG_MISMATCH | ALG_INCOMPATIBLE
-                    | CHAIN_BROKEN | FORK | IMPLICIT_FORK | DUPLICATE
+                    | CHAIN_BROKEN | INVALID_FORK | DUPLICATE
                     | JUMP_INVALID
                     | UNRECOVERABLE_PRINCIPAL | RECOVERY_NOT_DESIGNATED
                     | UNAUTHORIZED_ACTION
@@ -78,8 +81,13 @@ TYPE TimestampTolerance = Integer                     -- default ±360s
 #### Chain Integrity
 
 **[single-chain]**: Cyphr assumes a single linear chain per principal. An
-implicit fork occurs when two or more conflicting commits reference the same
-`pre` (prior PR), violating this assumption.
+**invalid fork** occurs when two or more conflicting commits reference the
+same `pre` (prior PR), violating this assumption (SPEC.md §11.5, refined,
+for the term "invalid fork"; §15.7, unrefined, for this description of chain
+divergence). This is distinct from an **explicit fork**
+(`cyphr/principal/fork/create`), which is a sanctioned, history-preserving
+protocol operation, not a violation — see "Fork Detection and Resolution"
+below.
 `VERIFIED: agent-check`
 
 **[proof-of-error]**: Witnesses MAY retain invalid messages as proof of error —
@@ -184,20 +192,56 @@ proves current possession without advancing the chain.
 
 #### Fork Detection and Resolution
 
-**[fork-detection]**: Witnesses MUST detect implicit forks via: mismatched tips
-in gossip, inconsistent `/patch` responses, and conflicting signed proofs.
+> **Fork taxonomy** (SPEC.md §11.5, §11.5.2 — refined): SPEC.md distinguishes
+> three fork classes. An **explicit fork** (`cyphr/principal/fork/create`,
+> bundled with `principal/create` and a new key) is a protocol-level,
+> history-preserving operation equivalent to a genesis transaction — it is
+> provided for by design and is not an error condition. An **implicit fork**
+> (out-of-band AT-component transfer to a new principal) is prohibited by the
+> protocol (SPEC.md §2.3.2, refined). An **invalid fork** — two or more
+> conflicting commits referencing the same `pre` — violates the append-only,
+> single-tip assumption and is prohibited (SPEC.md §11.5, refined). The
+> constraints below concern only invalid-fork detection and resolution; none
+> of them apply to an explicit fork, which is a sanctioned transaction, not a
+> violation.
+
+**[fork-detection]**: Witnesses MUST detect invalid forks via: mismatched tips
+in gossip, inconsistent `/patch` responses, and conflicting signed proofs
+(SPEC.md §15.7.1, unrefined).
 `VERIFIED: agent-check`
 
-**[fork-response]**: On fork detection, witnesses MUST: broadcast fork proof,
-reject both branches until resolved. Witnesses transition the principal's
-consensus state to Error.
+**[fork-response]**: On detecting an invalid fork, SPEC.md §15.7 (unrefined)
+enumerates three possible responses — ignoring the message, escalating
+(e.g., temporarily freezing the principal until resolved), or holding the
+message as proof of error — as a bare option list with no lead-in verb,
+neither MUST nor MAY; that missing verb is a gap in the source text, not a
+granted permission, so this document does not present the list as witnesses
+MAY do any of the three. SPEC.md §15.7.1 (unrefined) gives the response to
+a detected fork as broadcast of fork proof plus rejection of both branches;
+SPEC.md §15.8 (unrefined) gives it as witnesses holding both branches.
+These describe the same disposition, not opposed ones: under SPEC.md
+§15.6's (unrefined) definition of Hold Local — "Message is incorrect, is
+held locally, and not forwarded in the gossip" — rejecting a branch means
+not treating it as canonical, not discarding it. Witnesses **hold both
+branches** pending resolution (SPEC.md §15.8, unrefined): neither branch is
+accepted as canonical, both are retained as proof of error, and witnesses
+may broadcast the fork proof to other witnesses, consistent with
+[proof-of-error] and [no-fork-propagation]. Witnesses transition the
+principal's consensus state to Error (SPEC.md §15.6, unrefined, for the
+state-transition table); per SPEC.md §15.5 (unrefined), Error means no new
+transactions or actions are processed until resolved.
 `VERIFIED: agent-check`
 
-**[fork-resolution]**: An implicit fork is resolved when the principal
-unambiguously selects one branch via either: (1) a new commit whose `pre`
-references the tip of the chosen branch (implicitly abandons the other), or
-(2) a `resync/create` PoP re-asserting the current tip. Abandoned branch
-transactions become permanently invalid.
+**[fork-resolution]**: An invalid fork (SPEC.md §11.5, refined, for the term;
+§15.8, unrefined, for the resolution mechanics below) is resolved when the
+principal unambiguously selects one branch via either: (1) a new commit
+whose `pre` references the tip of the chosen branch (implicitly abandons the
+other), or (2) a `resync/create` PoP re-asserting the current tip. Abandoned
+branch transactions become permanently invalid. Resolution is
+principal-sovereign, consistent with the consensus philosophy that the
+principal is the primary custodian of its own state (SPEC.md §15.1,
+unrefined): witnesses observe the principal's choice and adopt it; they do
+not adjudicate which branch is correct.
 
 - **PRE**: Two conflicting branches exist; consensus state is Error.
 - **POST**: One branch is canonical; abandoned branch retained as proof of
@@ -235,7 +279,10 @@ a key valid at both the jump source and the jump destination.
 ### Forbidden States
 
 **[no-fork-propagation]**: Witnesses MUST NOT propagate either branch of a
-detected fork until the fork is resolved.
+detected invalid fork as canonical until the fork is resolved (SPEC.md
+§15.8, unrefined). This governs canonicalization, not proof-of-error
+sharing — witnesses MAY still share fork proof via gossip per
+[proof-of-error] (SPEC.md §15.2, unrefined).
 `VERIFIED: agent-check`
 
 **[no-backward-timestamp]**: A message with `now` earlier than the latest known
@@ -284,7 +331,7 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 
 | Constraint                     | Method      | Result | Detail                           |
 | :----------------------------- | :---------- | :----- | :------------------------------- |
-| [single-chain]                 | agent-check | pass   | Explicit in SPEC.md §17.4        |
+| [single-chain]                 | agent-check | pass   | Term: SPEC.md §11.5 (refined); mechanics: §15.7 (unrefined) |
 | [proof-of-error]               | agent-check | pass   | Explicit in SPEC.md §17.1        |
 | [timestamp-tolerance]          | agent-check | pass   | Explicit in SPEC.md §17.6        |
 | [timestamp-monotonic]          | agent-check | pass   | Explicit in SPEC.md §17.6        |
@@ -298,14 +345,14 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 | [resync-process]               | agent-check | pass   | Explicit in SPEC.md §17.2        |
 | [resync-backoff]               | agent-check | pass   | Explicit in SPEC.md §17.2        |
 | [resync-pop]                   | agent-check | pass   | Explicit in SPEC.md §17.2.1      |
-| [fork-detection]               | agent-check | pass   | Explicit in SPEC.md §17.5        |
-| [fork-response]                | agent-check | pass   | Explicit in SPEC.md §17.5        |
-| [fork-resolution]              | agent-check | pass   | Explicit in SPEC.md §17.5.1      |
+| [fork-detection]               | agent-check | pass   | SPEC.md §15.7.1 (unrefined)      |
+| [fork-response]                | agent-check | pass   | SPEC.md §15.7, §15.7.1, §15.8 (unrefined) |
+| [fork-resolution]              | agent-check | pass   | Term: §11.5 (refined); mechanics: §15.8 (unrefined) |
 | [state-jump-mechanism]         | agent-check | pass   | Explicit in SPEC.md §23.1        |
 | [state-jump-revocation-check]  | agent-check | pass   | Explicit in SPEC.md §23.3        |
 | [state-jump-optional]          | agent-check | pass   | Explicit in SPEC.md §23          |
 | [state-jump-multi]             | agent-check | pass   | Explicit in SPEC.md §23.4        |
-| [no-fork-propagation]          | agent-check | pass   | Follows from §17.5               |
+| [no-fork-propagation]          | agent-check | pass   | Follows from SPEC.md §15.8 (unrefined) |
 | [no-backward-timestamp]        | agent-check | pass   | Follows from §17.6               |
 | [no-partial-apply]             | agent-check | pass   | Explicit in §24.5                |
 | [no-jump-bypassing-revocation] | agent-check | pass   | Explicit in §23.3                |

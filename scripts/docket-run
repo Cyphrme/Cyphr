@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Bounded id-indirection runner for docket claims whose `@docket:` marker
+# names this script plus a claim id — successor to the earlier
+# `docket-test` shape, whose CLAIMS table mapped one claim id to exactly
+# one test invocation. A conjunctive requirement needing several tests
+# to jointly close it had no way to register more than one there.
+#
+# Here CLAIMS_INDEX maps a claim id to the name of a real bash ARRAY
+# (via nameref, below) — not a single joined shell string (`a && b`),
+# which would satisfy a black-box exit code without the underlying data
+# actually being list-shaped. Every command in the array runs, in
+# order; the claim only passes if every one of them exits 0.
+#
+# The other half of the bound this preserves from `docket-test`: a
+# marker naming this script plus a short id is fixed-length regardless
+# of how long the underlying commands are or how many a claim needs —
+# `// docket: <id> :: scripts/docket-run <id>` never risks a comment's
+# column-wrap limit the way inlining a raw multi-command invocation
+# would.
+#
+# Usage: docket-run <claim-id>
+set -uo pipefail
+
+# claim id -> name of the bash array holding its command list. Bash
+# variable names cannot contain '-', so the index translates each
+# hyphenated claim id to its array's underscored name; a new claim adds
+# one line here plus the array it names.
+declare -A CLAIMS_INDEX=(
+  [list-valued-both-green]="_claim_list_valued_both_green"
+  [list-valued-one-failing]="_claim_list_valued_one_failing"
+
+  # EQ0 (docs/architecture/equivocation-detection.md, unmerged branch
+  # node/eq0-watcher-genre-input) requirement claims. Five have a
+  # verified evaluator today: arch-tip-reports-are-material and
+  # arch-evidence-is-portable resolve against tests already in this
+  # worktree; arch-detection-is-comparison, arch-signing-stays-stateless,
+  # and arch-finding-never-clears resolve against tests written on the
+  # unmerged node/eq1-detector-correctness branch (see
+  # .scratch/campaign-mvp-close/deposits/eq1-red-evaluators.md) and are
+  # not present here yet. The other six name a test that exists nowhere
+  # yet: eq1's own survey found no production code path through which
+  # arch-detection-is-automatic, arch-answer-carries-contested,
+  # arch-evidence-rides-along, or arch-resolution-ends-fork could be
+  # tested at all today; arch-behind-is-not-fork is new since that
+  # survey and untested for the same reason. arch-owner-alone-resolves
+  # is untestable from this crate's equivocation/consistency code (per
+  # that survey it belongs to tests/push.rs's ordinary push-acceptance
+  # suite instead), so its entry points there, not at equivocation.rs
+  # like the rest. Each of these six resolves today to a real cargo
+  # invocation that matches zero tests -- verified empirically, not
+  # assumed.
+  [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
+  [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
+  [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
+  [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
+  [arch-evidence-is-portable]="_claim_arch_evidence_is_portable"
+  [arch-finding-never-clears]="_claim_arch_finding_never_clears"
+  [arch-detection-is-automatic]="_claim_arch_detection_is_automatic"
+  [arch-answer-carries-contested]="_claim_arch_answer_carries_contested"
+  [arch-evidence-rides-along]="_claim_arch_evidence_rides_along"
+  [arch-owner-alone-resolves]="_claim_arch_owner_alone_resolves"
+  [arch-resolution-ends-fork]="_claim_arch_resolution_ends_fork"
+)
+
+# scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
+# entries, proving the list-valued mechanism itself rather than any
+# project claim. Real entries join this table as docs/architecture and
+# docs/use gain markers that reference them.
+_claim_list_valued_both_green=(
+  "true"
+  "true"
+)
+_claim_list_valued_one_failing=(
+  "true"
+  "false"
+)
+
+_claim_arch_detection_is_comparison=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation fewer_than_two_reports_settles_nothing -- --exact"
+)
+_claim_arch_tip_reports_are_material=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation wrong_typ_pair_is_not_equivocation -- --exact"
+)
+_claim_arch_behind_is_not_fork=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_behind_is_not_fork -- --exact"
+)
+_claim_arch_signing_stays_stateless=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation signing_is_unaffected_by_running_a_fork_comparison -- --exact"
+)
+_claim_arch_evidence_is_portable=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_verifies_offline -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_offline_false_path -- --exact"
+)
+_claim_arch_finding_never_clears=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation conflicting_pair_still_proven_after_unrelated_agreement_evaluated -- --exact"
+)
+_claim_arch_detection_is_automatic=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_detection_is_automatic -- --exact"
+)
+_claim_arch_answer_carries_contested=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_answer_carries_contested -- --exact"
+)
+_claim_arch_evidence_rides_along=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_evidence_rides_along -- --exact"
+)
+_claim_arch_owner_alone_resolves=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test push arch_owner_alone_resolves -- --exact"
+)
+_claim_arch_resolution_ends_fork=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_resolution_ends_fork -- --exact"
+)
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: docket-run <claim-id>" >&2
+  exit 2
+fi
+
+id="$1"
+arrname="${CLAIMS_INDEX[$id]:-}"
+if [ -z "$arrname" ]; then
+  echo "docket-run: no CLAIMS entry for claim id '$id'" >&2
+  exit 2
+fi
+
+declare -n cmds="$arrname"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root" || exit 2
+
+failures=0
+for cmd in "${cmds[@]}"; do
+  if ! bash -c "$cmd"; then
+    echo "docket-run: '$id' command failed: $cmd" >&2
+    failures=1
+  fi
+done
+
+exit "$failures"

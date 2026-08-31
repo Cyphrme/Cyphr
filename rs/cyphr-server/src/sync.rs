@@ -1,4 +1,4 @@
-//! Witness mode state synchronization client (`docs/specs/witness-mode.md`).
+//! Witness mode state synchronization client (`docs/guides/operating-a-server.md`, "Witness mode").
 //!
 //! Fetches state deltas (`GET /patch`) from a configured upstream authority
 //! node, validates every commit signature and root in memory using storage

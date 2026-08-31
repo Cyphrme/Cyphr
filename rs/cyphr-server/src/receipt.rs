@@ -34,12 +34,20 @@ pub const TIP_REPORT_TYP: &str = "cyphr-server/receipt/tip";
 /// Root) never collides with the receipt's top-level `pr` claim (the
 /// attested principal's genesis identifier) -- the two are different
 /// facts that happen to share a SPEC field name.
+///
+/// `cr` alone is `Option<String>` (#147): a principal that is
+/// key-established but has not yet finalized a data commit has no commit
+/// root, and that absence is typed here rather than signaled by handing
+/// `sign_receipt` the empty-string sentinel storage used to hand it --
+/// `None` serializes to JSON `null` on the wire ([`Roots::to_value`]),
+/// never `""`. `pr`/`sr`/`ar` are always present once a principal exists,
+/// so they stay mandatory `String`s.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub pr: String,
     pub sr: String,
     pub ar: String,
-    pub cr: String,
+    pub cr: Option<String>,
 }
 
 impl Roots {
@@ -144,12 +152,13 @@ fn sign_receipt(
     roots.pr.parse::<TaggedDigest>().ok()?;
     roots.sr.parse::<TaggedDigest>().ok()?;
     roots.ar.parse::<TaggedDigest>().ok()?;
-    // `cr` alone may legitimately be empty: storage's sentinel for "no
-    // commit root yet" (a principal that is key-established but has not
-    // finalized a data commit). Accept that one value through the same
-    // optional-parse path `TipReport::parse` uses below; any other
-    // malformed string still refuses to sign.
-    parse_optional_digest_str(&roots.cr).ok()?;
+    // `cr` alone may legitimately be absent (#147): a principal that is
+    // key-established but has not finalized a data commit has no commit
+    // root yet. `None` needs no validation; `Some` still must parse as a
+    // `TaggedDigest`, exactly as `pr`/`sr`/`ar` above.
+    if let Some(cr) = &roots.cr {
+        cr.parse::<TaggedDigest>().ok()?;
+    }
 
     let tmb = identity.alg().compute_thumbprint(identity.pub_key())?;
 
@@ -187,10 +196,10 @@ fn sign_receipt(
 /// `String`.
 ///
 /// `cr` alone is `Option`: a principal that is key-established but has not
-/// yet finalized a data commit has no commit root, and storage's
-/// re-derivation reports that absence as an empty wire string -- typed
-/// here as `None` rather than rejected as malformed. `pr`/`sr`/`ar` are
-/// always present once a principal exists, so they stay mandatory.
+/// yet finalized a data commit has no commit root, and a signed receipt
+/// carries that absence as wire `null` (#147) -- typed here as `None`
+/// rather than rejected as malformed. `pr`/`sr`/`ar` are always present
+/// once a principal exists, so they stay mandatory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TipReportRoots {
     pub pr: TaggedDigest,
@@ -311,31 +320,20 @@ fn parse_digest_field(value: &Value) -> Result<TaggedDigest, cyphr::error::Error
         .and_then(|s| s.parse())
 }
 
-/// Parse a `roots.cr`-shaped JSON value: it MUST still be a JSON string
-/// (an array, a number, or `null` is not a digest encoding, exactly as
-/// [`parse_digest_field`]), but an EMPTY string is not malformed -- it is
-/// storage's sentinel for "no commit root yet" (a principal that is
-/// key-established but has not finalized a data commit) -- and parses to
-/// `None`. Any other non-empty string still parses as a [`TaggedDigest`]
-/// or rejects loudly, exactly as every other digest field.
+/// Parse a `roots.cr`-shaped JSON value: unlike every other digest field,
+/// JSON `null` is not rejected here -- it is the wire encoding for "no
+/// commit root yet" (#147: a principal that is key-established but has
+/// not finalized a data commit) -- and parses to `None`. Any other value
+/// must still be a JSON string that parses as a [`TaggedDigest`], exactly
+/// as [`parse_digest_field`]; the empty string this function used to
+/// special-case is no longer accepted -- #147 retires that sentinel in
+/// favor of the type, so `""` is now malformed like any other non-digest
+/// string.
 fn parse_optional_digest_field(value: &Value) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
-    value
-        .as_str()
-        .ok_or(cyphr::error::Error::MalformedDigest(
-            "not a JSON string -- digests are never arrays, numbers, or null",
-        ))
-        .and_then(parse_optional_digest_str)
-}
-
-/// Parse a `cr`-shaped wire string: empty means "no commit root yet"
-/// (`None`); anything else must parse as a [`TaggedDigest`]. Shared by
-/// [`parse_optional_digest_field`] (typed parse) and [`sign_receipt`]
-/// (construction-time validation) so both accept the same one exception.
-fn parse_optional_digest_str(s: &str) -> Result<Option<TaggedDigest>, cyphr::error::Error> {
-    if s.is_empty() {
+    if value.is_null() {
         return Ok(None);
     }
-    s.parse().map(Some)
+    parse_digest_field(value).map(Some)
 }
 
 /// Parse a JSON value as a genesis identifier -- `pr`'s disposition: the
@@ -364,13 +362,19 @@ fn parse_genesis_id(value: &Value) -> Result<coz::Thumbprint, cyphr::error::Erro
 /// `ALG:...` string also fails here, since `:` is outside the b64url
 /// alphabet -- tagging is `commit_id`/`roots`'s exemption, not `pr`'s.
 ///
+/// `pub(crate)`: also `routes::push`'s pre-commit canonicality check
+/// (#168) -- refusing a non-canonical `principal_id` before
+/// `submit_commit` runs, rather than discovering the same refusal only
+/// after the write already landed, when this function later refuses to
+/// sign the receipt.
+///
 /// Length is checked against the codebase's supported digest lengths
 /// (32/48/64 -- SHA-256/384/512 via [`TaggedDigest::expected_len`]), NOT
 /// against the receipt's own `alg`: a receipt's `alg` is the WITNESS
 /// SERVER's signing algorithm, independent of the attested principal's
 /// genesis-key algorithm, so binding `pr`'s length to it would reject
 /// every principal whose algorithm differs from the witness's.
-fn parse_genesis_id_str(s: &str) -> Result<coz::Thumbprint, cyphr::error::Error> {
+pub(crate) fn parse_genesis_id_str(s: &str) -> Result<coz::Thumbprint, cyphr::error::Error> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
     let bytes = Base64UrlUnpadded::decode_vec(s)
         .map_err(|_| cyphr::error::Error::MalformedDigest("invalid base64"))?;

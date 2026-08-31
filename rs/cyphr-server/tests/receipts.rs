@@ -160,6 +160,95 @@ async fn attestor_tip_response_carries_signed_tip_report() {
 }
 
 // ========================================================================
+// #147: absent cr is a sentinel, not a type, at the receipt origin
+// ========================================================================
+
+/// (#147, GREEN under the landed fix): `receipt::Roots.cr` was a plain
+/// `String`, and storage's own convention for "no commit root yet" -- a
+/// principal that is key-established but has not finalized a data commit
+/// (`rs/cyphr-storage/src/engine/mod.rs`'s `rederive_roots`, :483-489:
+/// `DerivedRoots.cr: String::new()` when `principal.cr()` is `None`) -- was
+/// a bare empty string, with nothing in the TYPE distinguishing it from
+/// "the empty digest." The consuming side already fixed this in its own
+/// model (`receipt::TipReportRoots.cr: Option<TaggedDigest>`,
+/// `rs/cyphr-server/src/receipt.rs`) -- the defect was that the origin type
+/// a receipt is actually SIGNED from wasn't. It now is: `Roots.cr` is
+/// `Option<String>`, and `roots.cr = ""` (this test's original RED
+/// construction) no longer even compiles -- the type itself closes the
+/// ambiguity this test used to have to catch behaviorally.
+///
+/// Constructs `Roots` with `cr: None`, the typed counterpart of what
+/// `rederive_roots`'s own no-commit-yet branch used to hand `sign_receipt`
+/// as `cr: String::new()` -- the routes.rs call sites now perform that
+/// empty-string-to-`None` conversion at the boundary (`routes.rs`'s
+/// `sign_tip_attestation`/`push`), so this test exercises the receipt
+/// layer's own half of the contract directly, the same no-live-server,
+/// no-push pattern the golden-vector tests below already use for `Roots`.
+/// (A genuinely empty `cr` was checked NOT to be reachable via an ordinary
+/// genesis push in this codebase today: `Principal::finalize_commit`
+/// unconditionally appends a leaf and writes a real `cr` for every
+/// finalized commit, key-only or not -- confirmed empirically while
+/// drafting this suite. The one reachable path found,
+/// `StorageEngine::heal`'s mock-genesis reindex recovery at
+/// `rs/cyphr-storage/src/engine/mod.rs:1426-1441`, requires fabricating
+/// legacy raw blob-store content and is out of this node's reasonable
+/// test surface; see this node's test deposit.)
+///
+/// Pins the stronger, wire-visible reading of this node's own
+/// `ac-defects-closed` ("genesis receipts carry absent cr, not empty
+/// string"): the signed claim is JSON `null`, never `""`.
+///
+/// RESOLVED (was flagged, not silently assumed): issue #147's own text
+/// permits the weaker reading -- keep `""` on the wire, change only
+/// `Roots.cr`'s Rust-level type -- but the implementer ruled for the
+/// stronger, wire-visible reading (a receipt is signed and verified
+/// offline by third parties; a sentinel a verifier cannot distinguish
+/// from "genuinely empty" without out-of-band knowledge is exactly the
+/// defect class #147 exists to close). `Roots.cr: Option<String>`
+/// serializes `None` to JSON `null` ([`cyphr_server::receipt::Roots`]),
+/// and the wire-reading half of the contract
+/// (`receipt::TipReport::parse`) now accepts `null` as absence and
+/// rejects `""` as a malformed digest like any other non-digest string --
+/// this is a genuine wire-shape delta from what existed before this node,
+/// reported here per this node's IBC `reserved` clause rather than landed
+/// silently.
+#[test]
+fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() {
+    let (_dir, identity) = fixed_identity();
+    let roots = cyphr_server::receipt::Roots {
+        cr: None, // the typed counterpart of storage's former "" sentinel
+        ..vector_roots()
+    };
+    let coz = cyphr_server::receipt::commit_receipt(
+        &identity,
+        1_700_000_000,
+        VECTOR_PR,
+        0,
+        VECTOR_COMMIT_ID,
+        &roots,
+    )
+    .expect("an absent cr must still compose and sign -- absence is accepted, not refused");
+
+    // Positive control: the sibling `pr` root is unaffected -- proves
+    // this genuinely reached the roots claim rather than being refused
+    // earlier for an unrelated reason.
+    assert_eq!(
+        coz.pay["roots"]["pr"],
+        serde_json::json!(roots.pr),
+        "positive control: pr must still be the real digest supplied: {:?}",
+        coz.pay
+    );
+
+    assert_eq!(
+        coz.pay["roots"]["cr"],
+        serde_json::Value::Null,
+        "a receipt signed from an absent cr must carry typed absence (JSON null), never the \
+         empty-string sentinel: {:?}",
+        coz.pay
+    );
+}
+
+// ========================================================================
 // Non-attestor configurations stay honestly unsigned (c-attestor-only-signs)
 // ========================================================================
 
@@ -409,7 +498,7 @@ fn vector_roots() -> cyphr_server::receipt::Roots {
         pr: "SHA-256:GOJBQfC618_bQh9QHQ5ZCWwH1I6tbtDx9-RP1i6Rcjc".to_string(),
         sr: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
         ar: "SHA-256:GX18yag2JnVI-w51geLW-RyoggGMxjmIsBJhuzNfaBI".to_string(),
-        cr: "SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string(),
+        cr: Some("SHA-256:xqpTU08NP55MvCAHpMiZN5BIhRgwvHJ5_waQpeDzNao".to_string()),
     }
 }
 
