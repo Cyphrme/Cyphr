@@ -30,13 +30,18 @@ owes its users.
 about someone's record, and may later have to defend that act to
 someone with no reason to trust you.**
 
-Noor is a reporter. City officials publish their disclosure filings
-under their own records, and a public server serves them. Noor checks a
-council member's record and reports that it contains no filing for a
-paid trip. A week later the member's office says the filing was always
-there — and readers who look now see it. Whether Noor keeps her job
-turns on a question about a server: did it show her one history and
-everyone else another?
+Noor is a reporter. A council member discloses a paid trip by filing a
+report with the city and anchoring it to her own record — a commit
+whose payload carries the filing's hash, so anyone holding a copy of
+the filing can confirm it is the one she vouched for. Noor gets a copy
+of the filing through the city's ordinary public-records process,
+hashes it, and checks the council member's record for a commit
+anchoring that hash. She finds none, and reports that the member never
+disclosed the trip. A week later the member's office says the anchor
+was there all along — and readers who check now find it, in a commit
+dated before Noor's story ran. Whether Noor keeps her job turns on a
+question about a server: did it show her one history and everyone else
+another?
 
 Noor is one bearer of the role. The record's owner is another — the
 council member has her own stake in a server that cannot show creditors
@@ -55,8 +60,9 @@ answer was.
 ## What is being protected
 
 **What equivocation detection protects is your ability to stand behind
-an act you took on someone else's record, when the party that showed
-you the record is the one lying about it.**
+an act you took on the strength of what a server showed you, or a
+record it served under your name to someone else — when the server is
+the one lying about what it showed.**
 
 For Noor that act is a published story. For the council member it is
 her own name — every statement served under it, to anyone. For the
@@ -296,16 +302,21 @@ runs one way: a conflict, once found, is proof forever, but agreement at
 any number of checks proves nothing about the next one. No amount of
 diligence at reading time turns a server's answer into a safe one.
 
-What follows from that: the comparing is not a job to time, and it is
-not your job at all — it is server-side work that
+What follows from that: the comparing is not a job to time. Where a
+witness relationship already exists, it is server-side work that
 [runs automatically](../architecture/equivocation-detection.md#detection-needs-no-watcher)
-on an exchange the witness relationship already delivers, never on a
-moment you have to catch.
+on an exchange that relationship already delivers, never on a moment
+you have to catch. Where none exists,
+[running it yourself](#you-find-out-without-looking) is not tied to a
+moment either — gather the second answer whenever you can get one, and
+a comparison run then catches exactly what a comparison run at read
+time would have.
 [Keeping the signed answer](#keep-the-signed-answer) is what a
-comparison has to work with regardless of when it runs; nothing about
-when or how carefully you read changes whether a conflict is ever
-caught. That is why keeping the signed answer carries the load on this
-page — the proof, whenever it is produced, is built from what was kept.
+comparison has to work with regardless of when it runs, or who runs
+it; nothing about when or how carefully you read changes whether a
+conflict is ever caught. That is why keeping the signed answer carries
+the load on this page — the proof, whenever it is produced, is built
+from what was kept.
 
 ## Where the mechanics live
 
