@@ -21,7 +21,7 @@ nothing below treats them separately.
 
 | Part              | Contribution                                                                                                                                                                                                    | Defined in                                                                                       |
 | :---------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------- |
-| Server (attestor) | Signs a tip report over each state it serves. On every accepted push, fans the committed blobs out to every witness registered for that principal.                                                              | [Server receipts](../specs/receipts.md); [SPEC §13.5.1](../../SPEC.md#1351-witness-registration) |
+| Server (attestor) | Signs a tip report at `/tip` and a commit receipt on every accepted push, and nothing else. On every accepted push, fans the committed blobs out to every witness registered for that principal.                | [Server receipts](../specs/receipts.md); [SPEC §13.5.1](../../SPEC.md#1351-witness-registration) |
 | Witness           | Registered by the principal to receive fanned-out commits. A witness is itself a server: it independently derives and signs its own tip report over what it receives, rather than merely relaying the sender's. | [SPEC §13.5.1](../../SPEC.md#1351-witness-registration)                                          |
 
 SPEC's own definition of a witness —
