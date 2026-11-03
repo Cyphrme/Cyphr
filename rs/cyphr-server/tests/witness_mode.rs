@@ -2043,11 +2043,9 @@ async fn stripped_statement_fails_closed_when_configured() {
 // STRING (e.g. `SHA-256:...`) as `from` -- that fails to parse as a `u64` at
 // all today, so each test's own positive control is what fails for the
 // right reason, not merely a checked-but-vacuous negative. See Zami #140
-// ("Content addressed digest for everything... Sequence is metadata") and
-// the split-view/equivocation analysis in
-// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` ("a sequence cannot
-// bind a history") for why N4.2 constructs a genuine two-branch equivocation
-// rather than asserting the property abstractly.
+// ("Content addressed digest for everything... Sequence is metadata") for
+// why N4.2 constructs a genuine two-branch equivocation rather than
+// asserting the property abstractly.
 
 /// Build a genuinely CHAINING sequence of push bodies for one principal: a
 /// `key/create` genesis (introducing `key_names[0]`, closed under the golden
@@ -2264,10 +2262,8 @@ async fn sync_resumes_from_digest_anchor() {
 /// content digest can. Constructs a genuine equivocation -- two
 /// INDEPENDENTLY built, individually valid commit chains for the same
 /// principal that both claim "sequence 1", but with different content and
-/// therefore different PR digests -- the split-view shape
-/// `nrdxp/factoring-trust:docs/paper/_08-instances.qmd` analyzes ("my
-/// anchor commits a prefix of the canonical record" fails silently if the
-/// anchor cannot actually distinguish which record). The canonical
+/// therefore different PR digests -- the split-view shape, where an anchor
+/// that cannot distinguish two records fails silently. The canonical
 /// authority never held the fork's commit, so the fork's digest must not
 /// resolve to the canonical chain's own sequence-1 position merely because
 /// the two share a sequence number.
