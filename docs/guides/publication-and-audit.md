@@ -17,10 +17,8 @@ over what it accepted.
 you one thing and someone else another has produced two statements it
 signed and cannot take back. That is the entire enforcement mechanism:
 there is no quorum, no consensus round, and nothing that stops a server
-from lying — only evidence, after the fact. Between two servers
-registered as each other's witness, that evidence is exchanged and
-carried along automatically, no watcher needed. Between anyone else — a
-reader, a relying service, a server nobody registered as a witness — it
+from lying — only evidence, after the fact. No server is an authority
+over anyone's record and none collects that evidence on your behalf: it
 exists only if somebody went and collected it.
 
 Both halves have real limits. This guide says where they are.
@@ -503,30 +501,9 @@ message that reads like store corruption.
 
 ### Verifying a receipt without trusting the server again
 
-`cyphr tx verify --receipt=<path> --server=<url>` does this whole thing
-in one call, given a receipt you kept and the server it names: it pins
-the PG and genesis hint from `GET /server`, re-derives the PG from the
-genesis key, fetches the server's own chain, replays it into a fresh
-engine seeded with that genesis key, confirms the receipt's `tmb` is an
-active key of the replayed chain, and verifies the signature — printing
-`verified`, the replayed principal root, and the signing key it checked
-against, or the exact step that failed and why.
-
-`--receipt` names the file holding the receipt's `pay`/`sig` pair,
-byte-exact, the way [what to keep](#what-to-keep) describes. `--server`
-names the server whose chain gets replayed to check it against —
-ordinarily the same server the receipt came from, though nothing stops
-pointing this at a different server that shares the same signing
-identity, which is exactly [the setup this guide runs
-on](#the-setup-this-guide-runs-on). This is a different mode from
-`--identity=<pr>`, which verifies a principal's own chain against your
-local store and never touches a receipt or a remote server at all — the
-two flags answer different questions and are never combined in one
-call.
-
-What follows is what that command does, walked by hand once, because
-the shape of the answer is worth seeing on its own terms: six steps,
-and every one of them is something you could write yourself, in any
+No shipped command verifies a receipt: the `cyphr` CLI has no receipt
+or audit command and never talks to a server. The check is six steps,
+and every one of them is something you can write yourself, in any
 language.
 
 1. Pin `pg` and the `genesis` object from `GET /server`.
@@ -582,16 +559,13 @@ genesis key, where the root is a tree over all of them rather than a
 single thumbprint. If you cannot rule that out for the servers you watch,
 do step 2 properly or do not claim you did it.
 
-**Steps 4 and 5 are the part worth walking slowly**, because they are
-exactly the two steps `cyphr tx verify --receipt --server` exists to
-save you from doing by hand. Replaying a chain means loading it into a
-second, independent engine — never the one you are checking — and
-running every commit through the same validation Cyphr always applies:
-each signature checked against the keys active at that point, with the
-resulting principal root compared against what the chain claims. Do
-this yourself as a way to see what the command checks; running the
-calculation by hand against a server you actually rely on trades a
-machine-checked answer for a hand-checked one, for no benefit.
+**Steps 4 and 5 are the part worth walking slowly.** Replaying a chain
+means loading it into a second, independent engine — never the one you
+are checking — and running every commit through the same validation
+Cyphr always applies: each signature checked against the keys active at
+that point, with the resulting principal root compared against what the
+chain claims. In Rust, the `cyphr` and `cyphr-storage` crates are that
+engine; in any other language, it is code you write or trust.
 
 The alternative to all six steps — verify the signature against the key
 `GET /server` publishes right now, and stop there — is weaker in one
@@ -627,29 +601,17 @@ answers about the same principal at the same chain position. Produce one
 with the two servers from the setup, which share a key and share nothing
 else.
 
-A server that has a registered witness for a principal does not leave
-this comparison to a reader: witness registration and push fanout
-deliver, as a byproduct of work the server does anyway, each side's own
-signed tip report and a consistency proof to exchange against — [the
-architecture page states the
-mechanism](../architecture/equivocation-detection.md#the-exchange). A
-finding from that exchange rides along in the server's next ordinary
-answer about the principal, so its owner or anyone relying on it [learns
-of a fork without going
-looking](../use/detecting-a-split-view.md#you-find-out-without-looking).
+No server runs this comparison for you. A server's tip report claims
+only what that server holds; comparing two of them is the reader's job,
+done with answers the reader kept. The
+[equivocation detection architecture](../architecture/equivocation-detection.md)
+states the model.
 
-The two servers below were never registered as each other's witness —
-sharing a signing key and nothing else is what lets this setup
-manufacture a split view without that registration, and is exactly the
-position a stranger with no witness relationship to either server is
-always in. Gathering and checking two answers by hand, the way the rest
-of this section does, is what that stranger falls back to: the [pinned
-predicate](../specs/receipts.md#the-pinned-predicate) is verifier-side
-and stateless by design, so anyone holding two receipts can run it
-without either server's cooperation. `cyphr audit equivocation`
-runs that check as a command (below); the steps here walk what it does,
-by hand, once — read them as that demonstration, not as the routine way
-to do this.
+The two servers below share a signing key, so they are one server
+identity with two data directories. That is what lets this setup
+produce a split view on demand: it makes one identity sign two
+conflicting views. The steps here gather and check the two answers by
+hand.
 
 Push the same first commit to both, so they agree. Then build two
 conflicting second commits: snapshot the client's local store, add one key,
@@ -748,26 +710,28 @@ Same `tmb`, same `pr`, same `sequence`, different `commit_id` and
 different roots. Two statements one key signed, about one chain position,
 that cannot both be true.
 
-**Nothing detected this.** Neither server knows the other exists — they
-were never registered as each other's witness, and detection is
-exchange-driven: no registration, no exchange, no comparison. Detection
-here is a thing you do yourself, with bytes you went and collected,
-entirely outside the exchange that a registered pair would have run for
-you.
+**Nothing detected this.** Neither server knows the other exists, and
+no server compares its views with anyone's. Detection is a thing you do
+yourself, with bytes you went and collected.
+
+Two faults are present here, and they are different. The principal's
+key signed two commits on the same predecessor: that is a fork in the
+principal's record, and the two commits prove it with no server
+signature involved. And one server identity signed two views that
+cannot both be true: that is the server equivocating, and its two tip
+reports prove it. With two servers that hold different keys, only the
+first would be present — each would be telling the truth about what it
+holds.
 
 ### Checking the evidence
 
-`cyphr audit equivocation <report-a> <report-b> [--server=<url>]` runs
-this check and prints the verdict: `Proven`, `Behind`, or the specific
-reason it is neither (`WrongTyp`, `InvalidSignature`,
-`DifferentPrincipal`, `DifferentSequence`, `IdenticalClaims`,
-`Malformed`). Pointed
-at a directory of kept reports instead of two files, it sweeps every
-pair and stops at the first proven conflict.
-
-The predicate itself is short enough to write in whatever your watcher
-is written in, and worth seeing once for what the command is checking
-on your behalf. Both statements have to be tip reports, both signatures
+No `cyphr` command runs this check. The comparison exists as a Rust
+function, `check_equivocation` in the `cyphr-server` crate's `receipt`
+module, which returns `Proven` or the specific reason a pair is not a
+proven conflict (`WrongTyp`, `InvalidSignature`, `DifferentPrincipal`,
+`DifferentSequence`, `IdenticalClaims`, `Malformed`). Call it from Rust,
+or write the predicate in whatever your watcher is written in. Both
+statements have to be tip reports, both signatures
 have to verify under their own key, both have to name the same
 principal and the same sequence, and they have to differ in `commit_id`
 or in any root:
@@ -816,11 +780,15 @@ having:
 verdict: IdenticalClaims
 ```
 
-**Two keys, not one.** The function takes a key per report, and they may
-differ. A server's identity is its chain, not any single key, so two
+**Two keys, one server.** The function takes a key per report, and they
+may differ. A server's identity is its chain, not any single key, so two
 receipts either side of a key rotation are still two statements by the
-same server. Passing one key twice is the ordinary case, not the general
-one.
+same server. But the function does not check that both keys belong to
+one server; you must, by binding each to the same server's chain as the
+previous section describes. Two reports signed by two different servers
+that hold different branches of a forked record come out `Proven`, and
+neither server lied: each signed what it holds. That pair is evidence of
+a fork in the principal's record, not of either server equivocating.
 
 **Compare the roots one named field at a time.** A whole-object
 comparison — `JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)`
@@ -828,9 +796,8 @@ comparison — `JSON.stringify(a.pay.roots) === JSON.stringify(b.pay.roots)`
 reports that serialise `roots` differently come out `Proven`: an
 accusation against a server that did nothing. The server's own predicate
 compares four separately parsed values, which no serialisation order can
-disturb. `roots.cr` is an empty string on a principal with no data commit
-yet, and the `??` keeps an absent `cr` from reading as a difference
-against an empty one.
+disturb. `roots.cr` is `null` on a principal with no data commit yet,
+and the `??` makes two `null` values compare equal.
 
 Two comparisons in that sketch are still looser than the version inside
 the server, and they fail in opposite directions. The server parses
@@ -851,134 +818,26 @@ of every digest. Decode before comparing, and accept both spellings of
 
 #### When the two positions differ
 
-The predicate above is [the pinned predicate's](../specs/receipts.md#the-pinned-predicate)
-own case: it requires the identical `sequence` on both sides, and
+The predicate above requires the identical `sequence` on both sides, and
 `DifferentSequence` is what it returns whenever that requirement is not
 met — including two reports from a genuinely forked server, caught at
-different sequences. A bare `DifferentSequence` there is not an answer;
-it is an unclosed question.
+different sequences. A bare `DifferentSequence` is not an answer; it is
+an unclosed question, and no shipped tool closes it.
 
 [arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
-states how that question closes: whichever report claims the higher
-`sequence` names a server whose own Commit Tree spans both positions, so
-that server can prove what its own Commit Root was at the lower
-`sequence` and that reconstruction can be checked against the lower
-report's signed one. Point `--server=<url>` at that higher-sequence
-server and `cyphr audit equivocation` fetches the CONTESTED PRINCIPAL's
-own full chain — `GET /patch?pr=<pr>`, naming the principal the two
-reports disagree about, never the server's own `pg`. That is the same
-request shape [verifying a
-receipt](#verifying-a-receipt-without-trusting-the-server-again) uses,
-pointed at a different identifier: that section fetches the SERVER's own
-chain, at `pr=<pg>`, to bind a signing key to it — a different question
-from reconstructing a contested principal's own historical root. Having
-fetched the principal's chain, `cyphr audit equivocation` replays it into
-a second engine the way that same section walks by hand for the server's
-chain, derives the consistency proof from the lower `sequence` to the
-higher one, and compares the reconstructed root at the lower position
-against what the lower-sequence report actually signed. This is a
-different mechanism from [the architecture page's own
-exchange](../architecture/equivocation-detection.md#the-exchange), which
-never fetches or retains either side's chain at all — the two routes
-reach the same verdict by different means, one a server-to-server proof
-exchange that holds no chain, the other a client's own full replay of
-one:
+states how it closes. Take the report with the higher `sequence`, `n`,
+and the one with the lower, `m`. Fetch the principal's chain from the
+higher-sequence server — `GET /patch?pr=<pr>`, naming the principal the
+two reports disagree about — and replay it into an engine of your own,
+the way the previous section replays a server's chain. Check that the
+replayed chain reaches the higher report's signed roots at `n`, then
+read the Commit Root it had at `m`:
 
-- Equal roots print `Behind` — the lower-sequence server is behind, not
-  forked, and the pair is settled as no conflict.
-- Differing roots print `Proven` — two independently signed claims at the
-  identical position disagree, the same verdict the base predicate
-  prints for an identical-sequence pair, reached by the general route
-  instead of the direct one.
-
-Without `--server`, `cyphr audit equivocation` prints `DifferentSequence`
-and stops there — not because the pair is cleared, but because nothing
-was given to settle it. Holding two reports at different sequences from
-a server you suspect of forking, rerun the same command naming that
-server's own URL to close it, rather than reading the bare verdict as a
-final one.
-
-#### The evidence document
-
-Reach for `cyphr audit equivocation` on anything you plan to
-act on. It runs the stricter version [pinned in the receipts
-spec](../specs/receipts.md#the-pinned-predicate) — parsing `sequence`
-from either form, decoding digests to bytes before comparing — and,
-given a set of reports, renders a proven pair out as an evidence
-document. Treat the JS above as what the check means, not a substitute
-for running it.
-
-That document is a JSON file, and it holds exactly what makes a proven
-pair checkable and nothing else:
-
-```json
-{
-  "v": 1,
-  "kind": "cyphr-audit/equivocation-evidence",
-  "pr": "xljCYLjm22sWdMkW9vyGB8-fGLpaI-YjRQ9D4cM2pho",
-  "sequence": 1,
-  "reports": [
-    { "pay": { "…": "…" }, "sig": "…" },
-    { "pay": { "…": "…" }, "sig": "…" }
-  ]
-}
-```
-
-- `pr` and `sequence` name the principal and the chain position the two
-  claims were found to conflict at — the shared `sequence` for an
-  identical-sequence pair, or the lower report's own `sequence` when the
-  pair was settled across differing sequences by [the general
-  route](#when-the-two-positions-differ).
-- `reports` holds the two disagreeing receipts verbatim — `pay` and `sig`
-  together, byte-exact, exactly as kept, in the order they were given.
-- When the pair was settled across differing sequences, a fifth field,
-  `proof`, is added:
-
-  ```json
-  "proof": {
-    "old_size": 1,
-    "old_root": "SHA-256:…",
-    "new_size": 4,
-    "new_root": "SHA-256:…",
-    "consistency_proof": "…"
-  }
-  ```
-
-  `old_size`/`new_size` name the two positions `m`/`n`; `new_root` is the
-  higher-sequence report's own signed Commit Root, already present in
-  that report's `pay.roots.cr` — `reports` does not guarantee which index
-  holds it, since the two are kept in the order they were given, not
-  sorted by `sequence`. `old_root` is the value the base object above
-  cannot supply from `reports` alone: the higher side's claimed Commit
-  Root at the LOWER position `m` — `CR'ₘ` in
-  [arch-behind-is-not-fork](../architecture/equivocation-detection.md#arch-behind-is-not-fork)
-  — never itself independently signed, authenticated instead by
-  `consistency_proof` binding it to `new_root`. This is the value the
-  verdict actually turns on: a consistency proof takes both the old and
-  new roots as the claims it checks itself against, not values it derives
-  for you, so a reader who leaves `old_root` out and substitutes the
-  lower-sequence report's own signed root in its place is no longer
-  checking whether the higher side's claim at `m` agrees with the lower
-  side's — they are checking the lower side's claim against itself,
-  which settles nothing.
-
-That is everything a stranger needs. They re-run the same comparison
-over `reports[0]` and `reports[1]` themselves, against the public key
-each server publishes at `GET /server`, or — to reach [convince a
-stranger](../use/detecting-a-split-view.md#convince-a-stranger)'s
-stronger bar — against a replayed chain via [`cyphr tx verify --receipt
---server`](#verifying-a-receipt-without-trusting-the-server-again)
-pointed at wherever they believe each signing key belongs. Nothing in
-the document depends on the auditor's word: the two signatures inside
-it are the entire proof, the same object [what the finding
-contains](../architecture/equivocation-detection.md#what-the-finding-contains)
-already describes for the automatic case, assembled by hand instead of
-by an exchange.
-
-It prints to stdout as JSON by default — the object above, `proof`
-included whenever the pair crossed sequences — unless `--out=<path>` is
-given, in which case it is written there instead and nothing prints but
-a confirmation.
+- Equal to the lower report's signed `cr`: the lower server is behind,
+  not forked. No conflict.
+- Different: the two reports fork at or before `m`. If one server
+  identity signed both, that server equivocated; if two servers did,
+  the principal's record forked.
 
 ### What you hold when you find one
 
@@ -987,16 +846,9 @@ keys. That is a complete, portable, self-contained proof, and it stays
 valid for as long as the signatures do. The server can decline to explain
 it, but cannot deny making both statements.
 
-A server that has run the exchange with a registered witness carries
-the resulting finding into its next ordinary answer about the
-principal — the [equivocation detection
-architecture](../architecture/equivocation-detection.md#the-exchange)
-states the mechanism. The two servers in this guide's setup were never
-registered as each other's witness, so they never run that exchange
-against each other and nothing carries the finding between them:
-gathering and checking the evidence yourself, the way the rest of this
-guide does, is what stands in for a witness relationship neither server
-has.
+No server carries that proof to anyone. A server's answers say nothing
+about what other servers hold, and nothing in Cyphr today passes
+evidence between servers or readers: whoever gathered it holds it.
 
 So the answer to "what do I do with it" is an application question, and
 worth deciding before you need it rather than after:
@@ -1013,23 +865,19 @@ published — which is your problem, not the protocol's.
 **Compare more servers.** Two conflicting reports tell you the identity
 equivocated but not which answer is the odd one out. A third report
 breaks the tie for you, by ordinary majority — nothing in Cyphr does that
-reasoning. `cyphr audit equivocation`'s all-pairs sweep returns
-the first conflicting pair it finds and stops, so it proves misbehaviour
-without mapping it; if you want the shape of the disagreement across a
-set, collect the verdicts yourself.
+reasoning. If you want the shape of the disagreement across a set,
+collect the verdicts yourself.
 
 **Ask the principal to resolve it.** A fork is resolved when the principal
 publishes a commit whose predecessor is the tip of one branch, abandoning
-the other. That much works, and because a resolving commit is a push
-like any other, `POST /push` fans it out on its own to every server the
-principal has registered as a witness — best-effort and asynchronous, no
-follow-up action needed ([the architecture page describes the
-mechanism](../architecture/equivocation-detection.md#resolution)). A
-server the principal never registered with gets nothing and keeps
-serving the abandoned branch — which is exactly `4100` and `4101`'s
-relationship here, so resolving this demo's fork means pushing to both
-by hand. Building a third commit on the branch server `4101` holds and
-pushing it to both:
+the other. Only the principal can do it, and no server does it for her
+([the architecture page states
+why](../architecture/equivocation-detection.md#arch-principal-resolves)).
+A resolving commit is a push like any other, and no server forwards a
+push to other servers: it reaches exactly the servers the principal
+pushes it to. A server she does not push it to keeps serving whatever
+branch it holds. Building a third commit on the branch server `4101`
+holds and pushing it to both:
 
 ```
 4101  201
@@ -1048,16 +896,14 @@ A watcher is a loop, and a small one. For each principal you care about
 and each server you are willing to ask, fetch the tip, keep the receipt,
 and compare across servers.
 
-`cyphr audit fetch-tip --server=<url> --identity=<pr> --out=<path>` is
-the fetch step: it calls `GET /tip?pr=<pr>` on `<url>` and writes the
-returned receipt, byte-exact, to `<path>` — a file [`cyphr audit
-equivocation`](#checking-the-evidence) can then take directly, alone or
-alongside others in a directory. Anchoring at the tip you already hold
-(the `from=` form [shown earlier](#where-receipts-come-from)) makes the
-steady-state request nearly free — no entries, one signed claim — and a
-watcher's loop is exactly this fetch, repeated per principal and per
-server, feeding what it collects into `cyphr audit equivocation` to
-compare across servers.
+No shipped command runs this loop. The fetch step is
+`curl -s "<url>/tip?pr=<pr>"`, saving the response body byte-exact so
+the receipt under `statement.coz` can be checked later. Anchoring at the
+tip you already hold (the `from=` form [shown
+earlier](#where-receipts-come-from)) makes the steady-state request
+nearly free — no entries, one signed claim. A watcher's loop is this
+fetch, repeated per principal and per server, feeding what it collects
+into [the comparison](#checking-the-evidence).
 
 Two limits shape how you build it.
 
