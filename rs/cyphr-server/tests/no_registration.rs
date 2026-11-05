@@ -46,6 +46,7 @@ fn signed_register_create(pool: &Pool, principal_id: &str, witness_url: &str) ->
     .to_string()
 }
 
+// @docket: arch-verifier-chooses-peers :: scripts/docket-run arch-verifier-chooses-peers
 #[tokio::test]
 async fn register_route_is_gone_and_push_never_dials_out() {
     let (state, _identity, _dir) = attestor_server().await;
