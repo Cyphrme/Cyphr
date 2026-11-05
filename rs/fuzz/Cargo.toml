@@ -63,3 +63,10 @@ doc   = false
 name  = "fuzz_push_bundle"
 path  = "fuzz_targets/fuzz_push_bundle.rs"
 test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_tip_report"
+path  = "fuzz_targets/fuzz_tip_report.rs"
+test  = false
