@@ -65,13 +65,6 @@ pub enum Probe {
     Banner(&'static str),
     /// A path under the workspace root exists.
     WorkspacePath(&'static [&'static str]),
-    /// A cargo test, run with `--ignored`, passes. For a capability whose
-    /// observable form is an already-written red property.
-    IgnoredTest {
-        package: &'static str,
-        test_binary: &'static str,
-        filter: &'static str,
-    },
     /// No observable surface exists yet; reports absent. The named node
     /// replaces this with a real probe when it lands the capability.
     Pending(&'static str),
@@ -143,11 +136,11 @@ impl Capability {
             Self::ClientGossip => Probe::Cli(&["gossip", "--help"], None),
             Self::Audit => Probe::Cli(&["audit", "--help"], None),
             Self::Pinning => Probe::Cli(&["watch", "--help"], None),
-            Self::Idempotency => Probe::IgnoredTest {
-                package: "cyphr",
-                test_binary: "properties",
-                filter: "prop_data_action_replay_is_idempotent",
-            },
+            // The observable form is a replayed data action against a running
+            // peer, which needs the push path N09 and N16 provide. (An earlier
+            // probe ran the library's red property; it read "zero tests run" as
+            // present and never touched a binary.)
+            Self::Idempotency => Probe::Pending("N09"),
             // Needs a hostile peer serving envelope v=99 and a network CLI.
             Self::VersionCheck => Probe::Pending("N13"),
             Self::PeerBackup => Probe::Server(&["backup", "--help"]),
@@ -222,37 +215,6 @@ impl Probe {
                     .iter()
                     .fold(root.to_path_buf(), |p, c| p.join(c))
                     .exists())
-            },
-            Probe::IgnoredTest {
-                package,
-                test_binary,
-                filter,
-            } => {
-                let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-                let out = tokio::process::Command::new(cargo)
-                    .current_dir(env!("CARGO_MANIFEST_DIR"))
-                    .args([
-                        "test",
-                        "--quiet",
-                        "-p",
-                        package,
-                        "--test",
-                        test_binary,
-                        filter,
-                        "--",
-                        "--ignored",
-                    ])
-                    .output()
-                    .await
-                    .map_err(|e| run(e.to_string()))?;
-                // A compile failure also exits non-zero, which would read as
-                // "absent"; cargo's exit 101 covers both, so tell them apart.
-                if !out.status.success()
-                    && String::from_utf8_lossy(&out.stderr).contains("could not compile")
-                {
-                    return Err(run(String::from_utf8_lossy(&out.stderr).into_owned()));
-                }
-                Ok(out.status.success())
             },
             Probe::Pending(_) => Ok(false),
         }
