@@ -19,9 +19,8 @@ the normative source is `SPEC.md`.
 ## Participants
 
 Each is described by what it is trying to accomplish. The **kind** column is the party
-kind [the trust model](../trust-model.md#party-kinds) assigns — a **cure name**, "what the
-model calls the party, as distinct from any role name a Cyphr specification gives a
-component": an **attestor** cures a determination failure and its word cannot be
+kind the framework below assigns — a **cure name**, which names the party by the failure it
+cures, as distinct from any role name a Cyphr specification gives a component: an **attestor** cures a determination failure and its word cannot be
 reproduced; a **watcher** cures a monotonicity failure by holding more than one view over
 time. A participant trusted for nothing carries no kind — its claims are discharged by an
 evaluator instead.
@@ -39,8 +38,8 @@ evaluator instead.
 specifications call `attestor` (`docs/specs/server-identity.md`, `docs/specs/receipts.md`),
 and not the industry sense (RATS, TPM, SPIFFE), which addresses the _same_ failure by a
 different means, its evidence being re-runnable where an attestor's word is not, so
-["two adjacent things doing similar work under one word are harder to keep apart than two
-opposite ones, which is why this collision is the dangerous kind"](../trust-model.md#party-kinds).
+the collision is the dangerous kind: two adjacent things doing similar work under one word
+are harder to keep apart than two opposite ones.
 
 **Why the person is an attestor for her own account.** At enrollment nothing establishes
 that the human presenting a key is the human the account is meant for. The relying party
@@ -251,8 +250,8 @@ rather than designed here; see [what this document does not cover](#what-this-do
 Every claim crossing between participants on this path, in two groups: claims about the
 **record** — what a relying party concludes about a principal — and claims about the
 **exchange** — what it concludes about the request in front of it. **Det/Cert/Mono** are
-the three axes; a claim's **cell** is ["its position once the three axis outcomes are
-fixed"](../trust-model.md#cells). A claim that holds on all three needs an evaluator and no
+the three axes; a claim's **cell** is its position once the three axis outcomes are
+fixed. A claim that holds on all three needs an evaluator and no
 trusted party at all. Every row carries a requirement or a note saying why it has none.
 
 ### Claims about the record
@@ -267,7 +266,7 @@ trusted party at all. Every row carries a requirement or a note saying why it ha
 | 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter | the account is served to the wrong human                          |
 | 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                    | over-authorization                                                |
 
-**Rows 2 and 3 are [Row-1 claims](../trust-model.md#row-1-claims)**: determined,
+**Rows 2 and 3 are Row-1 claims**: determined,
 certifiable and monotone, discharged by running something rather than by trusting someone.
 Row 1 is not one — it sits `below the floor`, where "the message carries everything the
 check needs" and there is no trust residue to type — but all three name no party. Row 1
@@ -282,7 +281,7 @@ the read path — "storage never binds a derived genesis to the identifier it is
 (`rs/cyphr-storage/src/engine/mod.rs:403-406`). That comment sends the reader elsewhere in
 its own file for the tracking issue and nothing is there, so the durable handle is the issue
 number, #154. A Row-1 claim left undischarged is
-[indefensible](../trust-model.md#row-1-claims) — the check is free and nobody is running it.
+indefensible — the check is free and nobody is running it.
 Discharging it at every writer is a system-wide task beyond this path; the requirement here
 is only that a relying party must not assume it.
 
@@ -307,12 +306,12 @@ method. Naming this honestly is the entire value of typing it: a relying party t
 believes row 6 is verifiable has misunderstood what it bought. Typing it `5 / T1` is a
 modeling choice this project makes rather than a result the framework hands down: that
 undetermined claims exist is mechanized, but reading a particular binding claim as one of
-them is ["an explicit modeling hypothesis about the fiber over the record, never a
-theorem"](../trust-model.md#determination-t1).
+them is an explicit modeling hypothesis about the record, never a
+theorem.
 
 **Row 7 has no requirement, and that is a scope decision rather than an oversight.** Its
-label is [`decision`](../trust-model.md#labels-outside-the-model) — "the claim's truth is
-fixed by a party's own choice rather than by any state of the world" — so the action it
+label is `decision` — the claim's truth is
+fixed by a party's own choice rather than by any state of the world — so the action it
 calls for is that the relying party decides, and this document does not. Such a claim
 reports no axis outcomes, which is why all three columns read `—`. It is not the source's
 `elective`, a claim a verifier could check and declines to: nothing is declined here,
@@ -335,9 +334,8 @@ claim about the record at all. Four requirements trace here rather than to rows 
 
 **Rows 9 and 10 are one claim under two mechanisms, and the two do not land in the same
 cell.** A single-use challenge checks state the relying party issued and holds, so freshness
-is determined, certifiable and monotone. A timestamp window is [an accepted
-expiry](../trust-model.md#curing-a-non-monotone-claim) — the third of the three cures for a
-non-monotone claim — resting additionally on clock agreement nothing in the record
+is determined, certifiable and monotone. A timestamp window is an accepted
+expiry — a way of tolerating a non-monotone claim by bounding how long it counts — resting additionally on clock agreement nothing in the record
 establishes. One row cannot carry two cells without prose in an axis column, the defect row
 7 just lost. **No exchange row names a trusted party**: rows 8, 9, 11 and 12 name
 evaluators, and row 10 is discharged by an accepted bound rather than by a watcher — the one
@@ -633,8 +631,8 @@ participant that keeps another principal's state:
 > communicates state through gossip.
 
 The gossip clause has to be answered rather than passed over: gossip is one of the two
-instances [the trust model](../trust-model.md#party-kinds) gives for the party that cures a
-monotonicity failure. What the model names, though, is a **collective** — a witness _quorum_
+instances of the party that cures a monotonicity failure. What that party kind names,
+though, is a **collective** — a witness _quorum_
 or a gossip _protocol_ — and a participant in a gossip protocol is not the protocol. A
 single gossiping witness can receive information that leaves its view less stale, but it
 cannot detect that its own view _is_ stale: detecting staleness means comparing two views,
