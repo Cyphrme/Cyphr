@@ -429,6 +429,33 @@ fn not_send_suspending_signer_finalizes_exactly_once() {
     );
 }
 
+/// CLAIM (c-signer-shape, split API; scenario: yes — full genesis ->
+/// mutation -> prepare/sign/finish): the three-step API lets a caller whose
+/// executor is `futures::executor` (which cannot be nested with the core's
+/// commit-root `block_on`) sign on that executor and still finish: prepare
+/// and finish are synchronous and the signature is awaited between them.
+///
+/// RED IF: prepare or finish become async or require the caller's executor,
+/// prepare mutates the scope, or the signature is awaited inside finish
+/// (finish would then nest `futures` executors and panic).
+#[test]
+fn split_api_works_under_a_futures_executor() {
+    let pool = pool();
+    let signer = OpaqueSigner::from_pool(&pool, "golden");
+    let target = pool.get("key_a").expect("key_a");
+    let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+        .expect("genesis principal");
+    let scope = open_scope(&mut principal, &signer, target);
+
+    let prepared = scope
+        .prepare_commit(&signer, NOW + 1, AUTHORITY)
+        .expect("prepare is synchronous");
+    let sig = futures::executor::block_on(signer.sign(prepared.cad())).expect("sign");
+    let commit = scope.finish_commit(prepared, sig).expect("finish");
+
+    assert_eq!(&commit.commit_tx().0[0].coz().czd().to_b64(), GOLDEN[0].1);
+}
+
 // ============================================================================
 // Claims 3+4: typed errors; single low-S owner
 // ============================================================================

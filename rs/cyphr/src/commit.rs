@@ -5,6 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::parsed_coz::VerifiedCoz;
+use crate::signer::{Signer, SoftwareSigner};
 use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 
 // ============================================================================
@@ -567,41 +568,31 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         claimed_digest == computed_digest.as_slice()
     }
 
-    /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.
-    ///
-    /// This replaces `finalize_with_commit` and splits the mutation from finality.
-    /// The caller MUST have previously applied transactions via `verify_and_apply` or `apply`.
-    ///
-    /// # Arguments
-    ///
-    /// * `alg` - Signer algorithm string (e.g. "ES256")
-    /// * `prv_key` - Private key bytes for signing the Arrow
-    /// * `pub_key` - Public key bytes
-    /// * `tmb` - The thumbprint of the signer key
-    /// * `now` - Timestamp for the commit coz
+    /// Step 1 of the three-step finalize: compute the Arrow and the
+    /// `commit/create` payload for `signer`'s key, without signing and
+    /// without touching the scope. Pass [`PreparedCommit::cad`] to
+    /// [`Signer::sign`] on the caller's own executor, then hand the result to
+    /// [`finish_commit`](Self::finish_commit).
     ///
     /// # Errors
     ///
     /// - `EmptyCommit`: if no mutations exist.
-    pub fn finalize_with_arrow(
-        mut self,
-        alg: &str,
-        prv_key: &[u8],
-        pub_key: &[u8],
-        tmb: &coz::Thumbprint,
+    pub fn prepare_commit<K: Signer + ?Sized>(
+        &self,
+        signer: &K,
         now: i64,
         authority: &str,
-    ) -> crate::error::Result<&'a Commit> {
+    ) -> crate::error::Result<PreparedCommit> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
-        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
         use crate::state::{compute_dr, hash_alg_from_str, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
+        let alg = signer.alg();
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
@@ -624,22 +615,17 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
-        // 2. Compute Arrow = MR(pre, sr, tmr)
-        // Arrow computation requires pre, sr, tmr slices
-        // pre is the principal root of the previous state!
+        // 2. Compute Arrow = MR(pre, sr, tmr); pre is the previous state's principal root.
         let pre = &self.principal.pr;
 
         let pre_bytes = pre.0.arrow_component_bytes(signer_hash_alg)?;
         let sr_bytes = sr.0.arrow_component_bytes(signer_hash_alg)?;
         let tmr_bytes = tmr.0.arrow_component_bytes(signer_hash_alg)?;
 
-        // Arrow = MR(pre, fwd, TMR)
         let arrow_digest = hash_sorted_concat_bytes(
             signer_hash_alg,
             &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
         );
-
-        // Arrow string format
         let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
@@ -653,7 +639,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("alg".to_string(), json!(alg));
         pay.insert("arrow".to_string(), json!(arrow_tagged));
         pay.insert("now".to_string(), json!(now));
-        pay.insert("tmb".to_string(), json!(tmb.to_b64()));
+        pay.insert("tmb".to_string(), json!(signer.tmb().to_b64()));
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
@@ -664,25 +650,153 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         let pay_vec =
             serde_json::to_vec(&pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let (sig, cad) = coz::sign_json(&pay_vec, alg, prv_key, pub_key)
+        let cad = coz::canonical_hash_for_alg(&pay_vec, alg, None)
             .ok_or(crate::error::Error::MalformedPayload)?;
-        let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or(crate::error::Error::MalformedPayload)?;
+
+        Ok(PreparedCommit {
+            alg: alg.to_string(),
+            pub_key: signer.pub_key().to_vec(),
+            signer_hash_alg,
+            pay_obj,
+            pay_vec,
+            cad,
+        })
+    }
+
+    /// Step 3 of the three-step finalize: verify `sig` over the prepared pay
+    /// and append the commit. A signature that does not verify under the
+    /// signer's key (empty, malformed, wrong message, high-S) is
+    /// `InvalidSignature` and the scope is dropped unchanged; the core never
+    /// normalizes S (see [`crate::signer`]).
+    ///
+    /// This is synchronous and reaches the commit-root bridge's
+    /// `futures::executor::block_on`, so it must not run inside a
+    /// `futures` executor until that bridge is removed. Await the signature
+    /// first, then call this outside any such executor.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: `sig` does not verify.
+    pub fn finish_commit(
+        mut self,
+        prepared: PreparedCommit,
+        sig: Vec<u8>,
+    ) -> crate::error::Result<&'a Commit> {
+        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
+
+        let PreparedCommit {
+            alg,
+            pub_key,
+            signer_hash_alg,
+            pay_obj,
+            pay_vec,
+            cad,
+        } = prepared;
+
+        if coz::verify_json(&pay_vec, &sig, &alg, &pub_key) != Some(true) {
+            return Err(crate::error::Error::InvalidSignature);
+        }
+        let czd = coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
 
         let raw = coz::CozJson {
             pay: pay_obj.clone(),
-            sig: sig.clone(),
+            sig,
         };
-
-        let parsed_pay: coz::Pay = serde_json::from_value(pay_obj.clone())
-            .map_err(|_| crate::error::Error::MalformedPayload)?;
+        let parsed_pay: coz::Pay =
+            serde_json::from_value(pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
 
         let arrow_tx = ParsedCoz::from_pay(&parsed_pay, czd, signer_hash_alg, raw)?;
         let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
 
-        // 4. Push commit marker and finalize
+        // Push commit marker and finalize
         self.pending
             .push_tx(crate::transaction::Transaction(vec![arrow_vtx]));
         self.finalize()
+    }
+
+    /// Async convenience over prepare, sign, finish.
+    ///
+    /// Do NOT drive this future with a `futures::executor` (`block_on`,
+    /// `LocalPool`) until W1 removes the commit-root bridge's `block_on`:
+    /// the finish step would nest executors and panic. Tokio and
+    /// wasm-bindgen-futures are fine. Under a `futures` executor, call the
+    /// three steps separately with the sign step awaited there and
+    /// `finish_commit` called after it returns.
+    ///
+    /// # Errors
+    ///
+    /// - `Signer`: the backend failed.
+    /// - `InvalidSignature`: see [`finish_commit`](Self::finish_commit).
+    /// - `EmptyCommit`: if no mutations exist.
+    pub async fn finalize_with_signer<K: Signer + ?Sized>(
+        self,
+        signer: &K,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<&'a Commit> {
+        let prepared = self.prepare_commit(signer, now, authority)?;
+        let sig = signer.sign(prepared.cad()).await?;
+        self.finish_commit(prepared, sig)
+    }
+
+    /// Synchronous finalize for an in-memory [`SoftwareSigner`], which never
+    /// suspends. Safe under any executor.
+    ///
+    /// # Errors
+    ///
+    /// As [`finalize_with_signer`](Self::finalize_with_signer).
+    pub fn finalize_with_software(
+        self,
+        signer: &SoftwareSigner,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<&'a Commit> {
+        let prepared = self.prepare_commit(signer, now, authority)?;
+        let sig = signer.sign_now(prepared.cad())?;
+        self.finish_commit(prepared, sig)
+    }
+
+    /// Legacy raw-key finalize, kept only for out-of-surface test callers
+    /// (`rs/cyphr/tests/fork_evidence.rs`, `negative_vectors.rs`) pending
+    /// their migration to [`finalize_with_software`](Self::finalize_with_software).
+    /// New code must use a [`Signer`].
+    ///
+    /// # Errors
+    ///
+    /// As [`finalize_with_signer`](Self::finalize_with_signer).
+    pub fn finalize_with_arrow(
+        self,
+        alg: &str,
+        prv_key: &[u8],
+        pub_key: &[u8],
+        tmb: &coz::Thumbprint,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<&'a Commit> {
+        self.finalize_with_software(
+            &SoftwareSigner::new(alg, prv_key, pub_key, tmb),
+            now,
+            authority,
+        )
+    }
+}
+
+/// Output of [`CommitScope::prepare_commit`]: the unsigned `commit/create`
+/// payload awaiting a signature over [`cad`](Self::cad).
+#[derive(Debug)]
+pub struct PreparedCommit {
+    alg: String,
+    pub_key: Vec<u8>,
+    signer_hash_alg: crate::state::HashAlg,
+    pay_obj: serde_json::Value,
+    pay_vec: Vec<u8>,
+    cad: coz::Cad,
+}
+
+impl PreparedCommit {
+    /// The canonical hash of the commit pay: the message to sign.
+    pub fn cad(&self) -> &coz::Cad {
+        &self.cad
     }
 }
 

@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The signing backend failed (see [`crate::signer`]).
+    #[error(transparent)]
+    Signer(#[from] crate::signer::SignerError),
+
     // === ParsedCoz errors (§17.1) ===
     /// Signature does not verify against claimed key.
     #[error("invalid signature")]
