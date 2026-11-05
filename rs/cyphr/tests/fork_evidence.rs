@@ -102,11 +102,9 @@ fn replay(p: &mut Principal, wire: &Wire) -> Result<String, Error> {
     scope.finalize().map(|c| format!("{:?}", c.pr()))
 }
 
-// Practice: SPEC.md section 7.6 and AGENTS.md invariant I2: history within a principal is a
-// single-writer chain and a fork is detected, never merged, so each conflicting commit must verify
-// independently against the shared ancestor. Claim F1. Mutation that turns this red: a commit
-// verifier that depends on state outside the ancestor plus the commit's cozies, or one that accepts
-// the second branch on top of the first.
+// Practice: SPEC.md section 15.7.1 and section 15.8: on a fork "witnesses hold both branches and the principal's consensus state is Error" until resolved; with root AGENTS.md invariant I2 ("a fork is detected, never merged"), each conflicting commit must verify independently against the shared ancestor.
+// Claim F1. Mutation that turns this red: a commit verifier that depends on state outside the
+// ancestor plus the commit's cozies, or one that accepts the second branch on top of the first.
 #[test]
 fn fork_branches_verify_from_fresh_ancestors() {
     let (g, a) = (signer("golden"), signer("key_a"));
@@ -131,10 +129,11 @@ fn fork_branches_verify_from_fresh_ancestors() {
     );
 }
 
-// Practice: SPEC.md section 7.6 and AGENTS.md invariant I2: independent branches from one ancestor
-// are how equivocation evidence is produced, so deriving them by cloning the ancestor must not
-// couple them. Claim F2 (RED, owner G0). Mutation that makes this green: `Principal::clone` giving
-// each clone its own commit log instead of sharing the `Arc`.
+// Practice: SPEC.md section 15.7.1 and section 15.8: witnesses must be able to hold both branches
+// of a fork, and root AGENTS.md invariant I2 requires the fork be detected, so deriving the
+// branches by cloning the ancestor must not couple them. Claim F2 (RED, owner G0). Mutation that
+// makes this green: `Principal::clone` giving each clone its own commit log instead of sharing the
+// `Arc`.
 #[test]
 #[ignore = "RED(G0): Principal::clone shares the commit log"]
 fn fork_branches_from_cloned_ancestor() {

@@ -7,7 +7,8 @@
 //! - C2: an Ed25519 signature with non-canonical `s` (`s + L`) is rejected, for the same reason.
 //! - C3: a key removed by `key/delete` cannot sign an accepted data action, whether the action is
 //!   dated inside its old active period, after the delete, or spliced into history before the
-//!   delete commit. The verdict on an already-recorded action never changes after the fact.
+//!   delete commit. An action recorded before the delete stays recorded after it (C3a asserts
+//!   this); only new actions by the deleted key are refused.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::{Error, Key, Principal};
@@ -122,6 +123,8 @@ fn replace_s(sig: &[u8], s: &[u8]) -> Vec<u8> {
 }
 
 // Practice: https://www.bitcoin.org/bip-0062 section "Low S values in signatures" (BIP-0062 rule 5) requires S <= n/2 so an ECDSA signature has one valid encoding; BIP-0062 is secp256k1 and is applied here by analogy to P-256, since SEC 1 v2 itself does not mandate low-S. The attacker is a relay that flips S to n-S: the flipped signature still verifies, but the coz digest `czd` covers `sig`, so the relay mints a second identity for one signed action.
+// The direct source of the rule is the Coz spec's low-S requirement, enforced in coz-rs 0.4.1
+// key.rs (ES256 verify, "Coz spec requires low-S only"); BIP-0062 is the cited external practice.
 // Claim C1. Mutation that turns this red: dropping the low-S check in coz-rs verify (coz-rs key.rs)
 // or swapping to a verifier that accepts both S and n-S.
 #[test]
@@ -224,7 +227,7 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
     p
 }
 
-// Practice: SPEC.md section 6.2 (`key/delete`): "actions signed after it has been removed are ignored" and only actions "signed while a key is active in KT are interpreted". The spec author's stated position, encoded here, is that a replaying verifier never accepts an action by a deleted key, however it is dated, so a verdict on old history cannot change after the fact. SPEC.md 6.2 alone does not say how a verifier places a signer-chosen `now` inside an active period, so this test pins the position, not a reading of that prose.
+// Practice: SPEC.md section 6.2 (`key/delete`) says "actions signed after it has been removed are ignored" and "Only actions signed while a ley is active in KT are interpreted", but also "Past signatures from previous active periods remain valid even after the key is no longer active". The second sentence does not say whether a signer-dated action claiming a past period is accepted on replay, and no public spec-author position exists: forge issue #200 item 1 is open with the spec author. This test therefore pins the implementation's current fail-closed behaviour (rejection by current KT membership, not by `now`), not a ruling of the spec.
 // Claim C3a. Mutation that turns this red: making `verify_and_record_action` check the signer
 // against the key's historical active periods by the payload `now` instead of current KT
 // membership.
@@ -232,7 +235,10 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
 fn deleted_key_action_backdated_into_old_active_period_is_rejected() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let mut p = principal_with_deleted_key(&golden, &key_a);
+    // The genuine pre-delete action is still recorded after the delete.
     let (dr, count) = (p.data_root().cloned(), p.action_count());
+    assert_eq!(count, 1, "genuine pre-delete action stays recorded");
+    assert!(dr.is_some(), "data root still reflects the genuine action");
 
     let r = record(
         &mut p,
@@ -264,15 +270,31 @@ fn deleted_key_action_dated_after_delete_is_rejected() {
     );
 }
 
-// Practice: SPEC.md section 6.2 and the `arrow` binding of SPEC.md section 3.7 (state roots); the
-// delete commit's signed arrow commits to the data root as it stood, so history rewritten to hold a
-// later forged action cannot re-verify. Claim C3c. Mutation that turns this red: excluding the data
-// root (DR) from the PR that `arrow` commits to, or skipping the arrow check in `finalize`.
+// Practice: SPEC.md section 4.2 (`arrow`) with section 3.7.2 (SR = MR(AR, DR)): the delete commit's
+// signed arrow commits to the state root including the data root as it stood, so history rewritten
+// to hold a later forged action cannot re-verify. Claim C3c. Mutation that turns this red:
+// excluding the data root (DR) from the state root that `arrow` commits to, or skipping the arrow
+// check in `finalize`.
 #[test]
 fn forged_action_spliced_before_delete_commit_breaks_replay() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let honest = principal_with_deleted_key(&golden, &key_a);
     let cozies = honest.commits().last().expect("delete commit").all_cozies();
+
+    // Control: an honest replay without the forged action finalizes, so the
+    // failure below comes only from the spliced action.
+    let mut honest_replay =
+        Principal::explicit(vec![domain_key(&golden), domain_key(&key_a)]).expect("principal");
+    record(&mut honest_replay, action(&key_a, 1_700_000_010, "genuine")).expect("genuine");
+    let mut scope = honest_replay.begin_commit();
+    for vc in &cozies {
+        let raw = vc.raw();
+        let bytes = serde_json::to_vec(&raw.pay).expect("serialize pay");
+        scope
+            .verify_and_apply(&bytes, &raw.sig, vc.czd().clone(), None)
+            .expect("coz applies");
+    }
+    scope.finalize().expect("honest replay finalizes");
 
     // Replayer: the same genesis and genuine action, plus a forged action
     // dated inside key_a's active period, inserted before the delete commit.
