@@ -6,6 +6,7 @@ members = [
   "cyphr-index-fjall",
   "cyphr-server",
   "cyphr-cli",
+  "cyphr-scenarios",
   "test-fixtures",
   "fixture-gen",
   "fuzz",
