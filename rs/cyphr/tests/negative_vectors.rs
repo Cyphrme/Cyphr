@@ -214,11 +214,13 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("delete applies");
     scope
-        .finalize_with_arrow(
-            &golden.alg,
-            &golden.prv,
-            &golden.pub_key,
-            &golden.tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &golden.alg,
+                &golden.prv,
+                &golden.pub_key,
+                &golden.tmb,
+            ),
             1_700_000_100,
             "cyphr.me",
         )
