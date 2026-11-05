@@ -79,6 +79,11 @@ async fn s02_partition() {
         "the view's age must have grown with the partition, got {:?}",
         during.freshness.age
     );
+    assert!(
+        during.freshness.age <= last_update.elapsed() + Duration::from_secs(1),
+        "a view cannot be older than the time since its last update, got {:?}",
+        during.freshness.age
+    );
 
     h.proxy.heal("p1", "p2");
     h.proxy.heal("alice", "p2");

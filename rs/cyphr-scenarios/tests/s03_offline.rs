@@ -81,7 +81,10 @@ async fn s03_offline() {
     assert_ne!(rebased, phone_tip, "a rebase adds the laptop's own commit");
     let merged = h.ok(laptop.push(&pr, &both).await).accepted("rebased push");
     for peer in both {
-        let v = h.peer_view(peer, &pr).await.expect("peer holds the chain");
+        let v = h
+            .settled_view(peer, &pr)
+            .await
+            .expect("peer holds the chain");
         assert_eq!(
             (v.tip, v.height),
             (merged.clone(), h0 + 2),
@@ -96,6 +99,10 @@ async fn s03_offline() {
     );
     assert!(v.evidence.is_empty());
     assert_ne!(base, merged);
+
+    // The phone starts case 2 from the merged tip, so the fork below comes
+    // from the partition and not from a stale local view.
+    assert_eq!(h.ok(phone.sync(&pr, &both).await), merged);
 
     // Case 2: the devices commit to different, partitioned peers.
     h.proxy.partition("p1", "p2");
