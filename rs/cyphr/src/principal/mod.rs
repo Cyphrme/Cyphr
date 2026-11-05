@@ -161,13 +161,28 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) errored: bool,
 }
 
-impl<S: eml::Storage> Clone for PrincipalCore<S> {
+impl<S: eml::Storage> PrincipalCore<S> {
+    /// Copy with the commit log aliased, not duplicated; see
+    /// [`crate::commit_root::CloneableLog`].
+    pub(crate) fn share(&self) -> Self {
+        self.with_trees(self.commit_trees.share())
+    }
+}
+
+impl<S: eml::Storage + Clone> Clone for PrincipalCore<S> {
     fn clone(&self) -> Self {
+        self.with_trees(self.commit_trees.clone())
+    }
+}
+
+impl<S: eml::Storage> PrincipalCore<S> {
+    /// Clone every field except the commit log, which the caller supplies.
+    fn with_trees(&self, commit_trees: crate::commit_root::CommitTrees<S>) -> Self {
         Self {
             pr: self.pr.clone(),
             kr: self.kr.clone(),
             tr: self.tr.clone(),
-            commit_trees: self.commit_trees.clone(),
+            commit_trees,
             pt: self.pt.clone(),
             cr: self.cr.clone(),
             sr: self.sr.clone(),
@@ -225,7 +240,19 @@ enum PrincipalKind<S: eml::Storage = eml::MemoryStorage> {
     },
 }
 
-impl<S: eml::Storage> Clone for PrincipalKind<S> {
+impl<S: eml::Storage> PrincipalKind<S> {
+    fn share(&self) -> Self {
+        match self {
+            Self::Nascent(core) => Self::Nascent(core.share()),
+            Self::Established { core, pg } => Self::Established {
+                core: core.share(),
+                pg: pg.clone(),
+            },
+        }
+    }
+}
+
+impl<S: eml::Storage + Clone> Clone for PrincipalKind<S> {
     fn clone(&self) -> Self {
         match self {
             Self::Nascent(core) => Self::Nascent(core.clone()),
@@ -275,7 +302,15 @@ impl<S: eml::Storage> std::fmt::Debug for PrincipalKind<S> {
 /// following assignment; every other method observes it as always `Some`.
 pub struct Principal<S: eml::Storage = eml::MemoryStorage>(Option<PrincipalKind<S>>);
 
-impl<S: eml::Storage> Clone for Principal<S> {
+impl<S: eml::Storage> Principal<S> {
+    /// Copy that aliases this principal's commit log; used by
+    /// [`crate::commit::CommitScope`] to record to its own principal.
+    pub(crate) fn share(&self) -> Self {
+        Self(self.0.as_ref().map(PrincipalKind::share))
+    }
+}
+
+impl<S: eml::Storage + Clone> Clone for Principal<S> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
