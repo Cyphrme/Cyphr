@@ -628,7 +628,12 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
 // Mutation that makes this green: `verify_and_record_action` detecting an already-recorded `czd`
 // and returning the current PR without recording it again.
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(ProptestConfig {
+        cases: 16,
+        // The expected red must not write a regressions file into the tree.
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     #[ignore = "RED(N09): SPEC 7.6"]
