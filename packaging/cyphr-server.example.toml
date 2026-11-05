@@ -9,10 +9,10 @@
 # commits but cannot sign receipts or issue logins. To run keyed, set
 # signing_key_path and audience together (configure both or neither).
 
-listen = "127.0.0.1:3000" # ":0" picks a free port and prints it
-data_dir = "/var/lib/cyphr"
-mode = "authority"
-log_format = "pretty" # "json" for a log pipeline
+data_dir   = "/var/lib/cyphr"
+listen     = "127.0.0.1:3000" # ":0" picks a free port and prints it
+log_format = "pretty"         # "json" for a log pipeline
+mode       = "authority"
 
 # signing_key_path = "/etc/cyphr/signing-key.json"
 # audience = "login.example.com"
@@ -25,10 +25,10 @@ log_format = "pretty" # "json" for a log pipeline
 policy = "open" # or "invite" with tokens_path = "/var/lib/cyphr/invites.txt"
 
 [limits]
+count_quota    = 1000000
+login          = { per_second = 50, burst = 100 }
 max_body_bytes = 2097152
-count_quota = 1000000
-per_ip = { per_second = 100, burst = 200 }
-read = { per_second = 100, burst = 200 }
-push = { per_second = 50, burst = 100 }
-login = { per_second = 50, burst = 100 }
-revoke = { per_second = 50, burst = 100 }
+per_ip         = { per_second = 100, burst = 200 }
+push           = { per_second = 50, burst = 100 }
+read           = { per_second = 100, burst = 200 }
+revoke         = { per_second = 50, burst = 100 }
