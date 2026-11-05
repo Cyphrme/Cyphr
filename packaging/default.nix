@@ -5,9 +5,7 @@
 # rs/rust-toolchain.toml): the server compiles on stable, and release.yml
 # builds it on stable too.
 #
-# Cargo.lock is vendored beside this file because rs/Cargo.lock is
-# git-ignored, and buildRustPackage needs a lockfile to fetch a fixed
-# dependency set. Refresh it from rs/Cargo.lock when dependencies change.
+# rs/Cargo.lock pins the dependency set buildRustPackage fetches.
 let
   pkgs = import (builtins.fetchTarball {
     url = "https://github.com/nixos/nixpkgs/archive/fb7944c166a3b630f177938e478f0378e64ce108.tar.gz";
@@ -22,7 +20,6 @@ let
     fileset = pkgs.lib.fileset.unions [
       ../rs
       ../LICENSE
-      ./Cargo.lock
     ];
   };
 in
@@ -32,8 +29,7 @@ pkgs.rustPlatform.buildRustPackage {
   inherit src;
 
   sourceRoot = "source/rs";
-  cargoLock.lockFile = ./Cargo.lock;
-  postPatch = "cp ${./Cargo.lock} Cargo.lock";
+  cargoLock.lockFile = ../rs/Cargo.lock;
 
   cargoBuildFlags = [
     "-p"

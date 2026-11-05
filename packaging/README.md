@@ -5,7 +5,6 @@ Everything an operator needs to build, check and verify `cyphr-server`.
 | File                        | Purpose                                                          |
 | :-------------------------- | :--------------------------------------------------------------- |
 | `default.nix`               | `nix-build packaging/` builds the server from this repository.   |
-| `Cargo.lock`                | Dependency pin for the nix build (`rs/Cargo.lock` is ignored).   |
 | `cyphr-server.example.toml` | Example config; only options the binary accepts today.           |
 | `smoke.sh`                  | Starts a server on an empty data dir, expects a 404 from `/tip`. |
 
