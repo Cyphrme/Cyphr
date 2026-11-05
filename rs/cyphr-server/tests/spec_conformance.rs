@@ -145,7 +145,7 @@ async fn s6_no_http_response_carries_private_key_material() {
     }
 
     let app = build_router(state);
-    let id = Base64UrlUnpadded::encode_string(&[0x42u8; 32]);
+    let id = common::golden_principal_id(&pool);
     let (status, push) = post_json(
         app.clone(),
         "/push",
