@@ -596,6 +596,8 @@ SPEC 7.6, line 1268. Disposition: `red-new`.
 - spec-text: particular principal is prohibited and results in error `COZ_REUSE`. The first
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected`
+  - `rs/cyphr/tests/spec_conformance.rs::s7_6_reuse_is_typed_and_scoped_to_one_principal`
+  - `rs/cyphr/tests/spec_conformance.rs::multihash_replay_of_an_es384_signed_coz_is_reuse`
 - fails when: a transaction coz already included by a principal is applied again (red today: no reuse check and no `COZ_REUSE` variant).
 
 ```claim
