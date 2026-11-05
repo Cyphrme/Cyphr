@@ -37,7 +37,7 @@ evaluator instead.
 | **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
 | **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
 | **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](../../SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
+| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
 | **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                             | **watcher**                                                                                         |
 
 Recovery agent and Recovery Authority: `SPEC.md` §14.2 names the external account that
@@ -436,18 +436,20 @@ invalidation (`token.rs:9-13`, `:19-24`). That is read from the code, not exerci
 test issues a token and verifies it across a revocation. The security-relevant half of this
 paragraph is the un-evaluated half.
 
-Separated, there is no such bound. The stale view never expires on its own, the fifteen
-minutes restart on every fresh sign-in with the lost key, and the correct behaviour — the
-one this document requires — is to bound the age of the view explicitly, refuse to serve
-past that bound, and treat the refusal as an outage to be fixed rather than a security
-event that has been handled.
+Separated, session lifetime alone is no bound. The stale view never expires on its own,
+the fifteen minutes restart on every fresh sign-in with the lost key, and the correct
+behaviour — the one this document requires — is to bound the age of the view explicitly,
+refuse to serve past that bound, and treat the refusal as an outage to be fixed rather
+than a security event that has been handled. With a view-age bound _v_ and a session
+lifetime _s_, a repudiated key retains access for at most _v_ + _s_ after the
+repudiation; without _v_ there is no finite bound.
 
 ## Requirements
 
 Each is traceable to a row of [the claim table](#the-claim-table). Requirements in the
 first group are satisfied by the relying party in this repository. Each requirement
 carries a fenced `claim` block read by docket, this repository's documentation claim gate
-([`docs/AGENTS.md`](../AGENTS.md#docket--the-documentation-claim-gate)): `kind` is always
+([`docs/AGENTS.md`](../AGENTS.md), section "Docket — the documentation claim gate"): `kind` is always
 `requirement` here, `evaluator` is `test` when an automated test backs the requirement and
 `none` when nothing does, and `because` lists the requirement ids it depends on.
 
@@ -590,7 +592,9 @@ the age of its view explicitly and refuse to serve past that bound. Bounding the
 the view is the accepted-expiry remedy: it gives up an eternal certificate, so past the
 bound the view says nothing about the present and the party refuses. That converts a
 silent wrong answer into a refusal, which is an improvement. What it establishes is a
-bounded claim — the view is no older than the bound — and not that the view is current, so
+bounded claim — the view is no older than the bound, so a repudiation older than the
+bound plus one session lifetime cannot still be honored — and not that the view is
+current, so
 [currency-unmet](#currency-unmet) stays unmet. Traces to row 5.
 
 ```claim
@@ -601,11 +605,13 @@ because: [currency-unmet]
 
 ### [separated-session-window]
 
-A relying party MUST treat session lifetime as the only bound on how long a repudiated key
-retains access, and MUST set it against that exposure rather than against convenience. A
-system with no revocation list has no other mechanism, and under
-[currency-unmet](#currency-unmet) a separated party may never observe the repudiation at
-all. Traces to row 4.
+A relying party MUST treat session lifetime, together with the age bound on its view
+([separated-staleness-not-absence](#separated-staleness-not-absence)), as the only bounds
+on how long a repudiated key retains access, and MUST set the session lifetime against
+that exposure rather than against convenience. A system with no revocation list has no
+other mechanism, and under [currency-unmet](#currency-unmet) a separated party may never
+observe the repudiation at all, so the exposure is the view-age bound plus one session
+lifetime. Traces to row 4.
 
 ```claim
 kind: requirement
