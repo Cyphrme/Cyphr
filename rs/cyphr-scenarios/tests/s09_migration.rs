@@ -3,7 +3,7 @@
 // Alice moves to P3, updates her self-claim; P1 goes away.
 // Must hold: Bob follows the claim to P3; only his verdict's peer list changes.
 //
-// Required capabilities: transport,cli-network,discovery.
+// Required capabilities: transport,cli-network,discovery,evidence.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -25,6 +25,7 @@ async fn s09_migration() {
         Capability::Transport,
         Capability::CliNetwork,
         Capability::Discovery,
+        Capability::Evidence,
     ])
     .await;
 
@@ -72,15 +73,8 @@ async fn s09_migration() {
     )
     .await;
     let after = h.ok(bob.verdict(&pr, &[]).await);
-    h.check_verdict(
-        &after,
-        &pr,
-        &Expect {
-            peers: &["p3"],
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&after, &pr, &Expect::new(&["p3"], &pr.0))
+        .await;
     assert_eq!(after.peers, ["p3"], "Bob follows the claim to P3");
     assert_eq!(after.tip, t2);
     assert_eq!(after.anchor, before.anchor, "only the peer list may change");

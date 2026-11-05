@@ -6,7 +6,7 @@
 // Must hold: Bob and Carol replay to the same tip; each verdict names its anchor,
 // peers and freshness.
 //
-// Required capabilities: transport,cli-network,choices-file,key-pairing,discovery.
+// Required capabilities: transport,cli-network,choices-file,key-pairing,discovery,evidence.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -26,6 +26,7 @@ async fn s01_first_contact() {
         Capability::ChoicesFile,
         Capability::KeyPairing,
         Capability::Discovery,
+        Capability::Evidence,
     ])
     .await;
 
@@ -56,15 +57,8 @@ async fn s01_first_contact() {
     assert_eq!(vb.tip, tip, "Bob must replay to the tip Alice pushed");
     assert_eq!(vc.tip, tip, "Carol must replay to the tip Alice pushed");
     for v in [&vb, &vc] {
-        h.check_verdict(
-            v,
-            &pr,
-            &Expect {
-                peers: &["p1", "p2"],
-                anchor_id: &pr.0,
-            },
-        )
-        .await;
+        h.check_verdict(v, &pr, &Expect::new(&["p1", "p2"], &pr.0))
+            .await;
         assert_eq!(v.standing, Standing::Active);
         assert!(v.evidence.is_empty());
         assert!(pr.same_as(&v.anchor.id), "the anchor is Alice's genesis");

@@ -4,7 +4,7 @@
 // Must hold: during the partition Bob sees "stale, age t", not "current"; after
 // healing, anti-entropy converges; no evidence (prefix).
 //
-// Required capabilities: transport,cli-network,peer-gossip,pinning.
+// Required capabilities: transport,cli-network,evidence,peer-gossip,pinning.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -23,6 +23,7 @@ async fn s02_partition() {
     h.require(&[
         Capability::Transport,
         Capability::CliNetwork,
+        Capability::Evidence,
         Capability::PeerGossip,
         Capability::Pinning,
     ])
@@ -100,15 +101,8 @@ async fn s02_partition() {
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &["p2"]).await);
-    h.check_verdict(
-        &after,
-        &pr,
-        &Expect {
-            peers: &["p2"],
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&after, &pr, &Expect::new(&["p2"], &pr.0))
+        .await;
     assert_eq!(after.standing, Standing::Active);
     assert!(after.evidence.is_empty(), "a strict prefix is not evidence");
 }

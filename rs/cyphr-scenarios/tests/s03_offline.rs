@@ -51,10 +51,17 @@ async fn s03_offline() {
         "the laptop must be offline"
     );
     h.ok(laptop.commit_data(&pr, "laptop, offline").await);
+    let before_offline = h.peer_view("p1", &pr).await.expect("P1 holds the base");
     let offline_push = h.ok(laptop.push(&pr, &["p1"]).await);
-    assert!(
-        matches!(offline_push, PushOutcome::Refused(_)),
-        "an offline device cannot push: {offline_push:?}"
+    assert_eq!(
+        offline_push.refused("push while offline"),
+        RefusalKind::Unreachable,
+        "an offline device cannot reach the peer"
+    );
+    assert_eq!(
+        h.settled_view("p1", &pr).await,
+        Some(before_offline),
+        "an unreachable push must not move P1"
     );
     h.ok(phone.commit_data(&pr, "phone").await);
     let phone_tip = h.ok(phone.push(&pr, &["p1"]).await).accepted("phone push");
@@ -93,15 +100,7 @@ async fn s03_offline() {
         );
     }
     let v = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(
-        &v,
-        &pr,
-        &Expect {
-            peers: &both,
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&v, &pr, &Expect::new(&both, &pr.0)).await;
     assert_eq!(
         v.branches,
         std::slice::from_ref(&merged),
@@ -157,15 +156,8 @@ async fn s03_offline() {
     )
     .await;
     let forked = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(
-        &forked,
-        &pr,
-        &Expect {
-            peers: &both,
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&forked, &pr, &Expect::new(&both, &pr.0))
+        .await;
     let mut seen = forked.branches.clone();
     seen.sort_by(|a, b| a.0.cmp(&b.0));
     let mut want = [lt.clone(), pt.clone()];
@@ -182,15 +174,8 @@ async fn s03_offline() {
     })
     .await;
     let healed = h.ok(observer.verdict(&pr, &both).await);
-    h.check_verdict(
-        &healed,
-        &pr,
-        &Expect {
-            peers: &both,
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&healed, &pr, &Expect::new(&both, &pr.0))
+        .await;
     assert_eq!(healed.standing, Standing::Active);
     assert_eq!(healed.tip, resolved);
     assert!(

@@ -68,15 +68,7 @@ async fn s06_restore() {
     .await;
     // The positive is established; absence of equivocation evidence now counts.
     let v = h.ok(bob.verdict(&pr, &["p2"]).await);
-    h.check_verdict(
-        &v,
-        &pr,
-        &Expect {
-            peers: &["p2"],
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&v, &pr, &Expect::new(&["p2"], &pr.0)).await;
     assert!(
         v.evidence
             .iter()

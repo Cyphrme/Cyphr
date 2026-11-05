@@ -50,7 +50,7 @@ async fn s10_hostile() {
         (
             "under the limit",
             push_body(LIMIT / 2),
-            &[400, 401, 403, 404, 422],
+            &[400, 401, 403, 422],
         ),
         ("oversized", push_body(LIMIT * 4), &[413]),
     ];
@@ -65,6 +65,18 @@ async fn s10_hostile() {
             .send()
             .await
             .unwrap_or_else(|e| panic!("{what} body: no response: {e}"));
+        if what == "under the limit" {
+            // Directly: the limit, not the shape, must not be what refused it.
+            assert_ne!(
+                r.status().as_u16(),
+                413,
+                "an under-limit body was refused as too large"
+            );
+            assert!(
+                r.status().as_u16() < 500,
+                "an under-limit body broke the peer"
+            );
+        }
         assert!(
             want.contains(&r.status().as_u16()),
             "{what} body got {}",

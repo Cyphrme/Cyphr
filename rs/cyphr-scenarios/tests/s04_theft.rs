@@ -75,15 +75,8 @@ async fn s04_theft() {
     )
     .await;
     let forked = h.ok(bob.verdict(&pr, &all).await);
-    h.check_verdict(
-        &forked,
-        &pr,
-        &Expect {
-            peers: &all,
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&forked, &pr, &Expect::new(&all, &pr.0))
+        .await;
     assert!(forked.branches.contains(&at) && forked.branches.contains(&tt));
     assert_eq!(forked.branches.len(), 2);
 
@@ -99,15 +92,8 @@ async fn s04_theft() {
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &all).await);
-    h.check_verdict(
-        &after,
-        &pr,
-        &Expect {
-            peers: &all,
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&after, &pr, &Expect::new(&all, &pr.0))
+        .await;
     assert_eq!(after.standing, Standing::Active);
     assert_eq!(after.tip, rt);
     assert!(
@@ -155,15 +141,7 @@ async fn s04_theft() {
     })
     .await;
     let v = h.ok(bob.verdict(&pr2, &all).await);
-    h.check_verdict(
-        &v,
-        &pr2,
-        &Expect {
-            peers: &all,
-            anchor_id: &pr2.0,
-        },
-    )
-    .await;
+    h.check_verdict(&v, &pr2, &Expect::new(&all, &pr2.0)).await;
     assert_eq!(v.standing, Standing::Error, "the fork is reported in Error");
     assert!(v.evidence.contains(&Evidence::PrincipalFork(pr2.clone())));
     assert!(

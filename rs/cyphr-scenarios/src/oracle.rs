@@ -7,11 +7,14 @@
 //! `RED(<capability>)`, so the oracle can never accept a verdict vacuously.
 //! What the signed `/tip` envelope can already answer is checked for real.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::actions::{Principal, Standing, Verdict};
+use serde_json::Value;
+
+use crate::actions::{Evidence, Principal, Standing, Verdict};
 use crate::capability::Capability;
 use crate::harness::Harness;
+use crate::signed::{self, Keys, Proven};
 
 /// What the scenario chose, against which the verdict is held.
 pub struct Expect<'a> {
@@ -19,6 +22,24 @@ pub struct Expect<'a> {
     pub peers: &'a [&'a str],
     /// The anchor the scenario chose (its genesis handle, any spelling).
     pub anchor_id: &'a str,
+    /// Chosen peers the scenario has itself taken down; every other chosen
+    /// peer must answer the oracle's reads.
+    pub down: &'a [&'a str],
+}
+
+impl<'a> Expect<'a> {
+    pub fn new(peers: &'a [&'a str], anchor_id: &'a str) -> Self {
+        Self {
+            peers,
+            anchor_id,
+            down: &[],
+        }
+    }
+
+    pub fn down(mut self, down: &'a [&'a str]) -> Self {
+        self.down = down;
+        self
+    }
 }
 
 impl Harness {
@@ -39,42 +60,75 @@ impl Harness {
             e.anchor_id
         );
 
-        // tip and branches: each chosen peer's own tip is a branch head the
-        // verdict must carry, and the verdict's tip must be one of them.
+        // Every chosen peer the scenario has not taken down must answer; a
+        // silent skip would let an unreachable peer vouch for nothing.
+        let live: Vec<&str> = e
+            .peers
+            .iter()
+            .copied()
+            .filter(|n| !e.down.contains(n))
+            .collect();
         let mut held = Vec::new();
-        for name in e.peers {
-            if let Some(view) = self.peer_view(name, p).await {
-                assert!(
-                    v.branches.contains(&view.tip),
-                    "peer `{name}` holds {:?}, absent from the verdict's branches {:?}",
-                    view.tip,
-                    v.branches
-                );
-                held.push((*name, view));
-            }
+        for name in &live {
+            let Some(view) = self.peer_view(name, p).await else {
+                panic!("peer `{name}` did not report a tip for the principal");
+            };
+            held.push((*name, view));
         }
-        assert!(v.branches.contains(&v.tip), "tip is not among its branches");
+        assert_eq!(held.len(), live.len());
 
-        // standing: a single branch with no evidence is Active. Anything
-        // else is a fork claim, which only the peers' stored branches can
-        // confirm, and that route (branches with `pre`) does not exist yet.
-        if v.branches.len() == 1 && v.evidence.is_empty() {
-            assert_eq!(v.standing, Standing::Active, "one branch, no evidence");
+        // branches and standing come from the peers' own heads. Several
+        // different heads could be a fork or only one peer lagging; only the
+        // peers' stored branches (with `pre`) can tell, and that route does
+        // not exist yet, so such a verdict ends RED instead of guessing.
+        let heads: BTreeSet<_> = held.iter().map(|(_, t)| t.tip.clone()).collect();
+        let claimed_branches: BTreeSet<_> = v.branches.iter().cloned().collect();
+        assert!(v.branches.contains(&v.tip), "tip is not among its branches");
+        if heads.len() == 1 {
+            assert_eq!(
+                claimed_branches, heads,
+                "verdict branches differ from the peers' observed head"
+            );
+            if v.evidence.is_empty() {
+                assert_eq!(v.standing, Standing::Active, "one head, no evidence");
+            }
         } else {
-            assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
             self.require_route(Capability::BranchStore).await;
+            assert!(
+                heads.is_subset(&claimed_branches),
+                "verdict branches {claimed_branches:?} omit a peer's head from {heads:?}"
+            );
+            assert_eq!(v.standing, Standing::Error, "a fork is reported in Error");
+        }
+        if v.standing == Standing::Active && v.branches.len() > 1 {
+            assert!(
+                v.resolved_by.is_some(),
+                "an Active verdict over several branches must name who resolved it"
+            );
         }
 
         // evidence: re-verified offline from signed items a peer serves.
         // With no such route, even "no evidence" would be an unchecked claim.
         self.require_route(Capability::Evidence).await;
-        let served = self.served_evidence(e.peers, p).await;
+        let proven = self.proven_evidence(&live, p).await;
+        let claimed: BTreeSet<Proven> = v
+            .evidence
+            .iter()
+            .map(|x| match x {
+                Evidence::PrincipalFork(pr) => Proven::PrincipalFork {
+                    pg: pr.bare().to_owned(),
+                },
+                Evidence::PeerEquivocation { peer } => Proven::PeerEquivocation {
+                    pg: p.bare().to_owned(),
+                    peer: peer.clone(),
+                },
+            })
+            .collect();
         assert_eq!(
-            served > 0,
-            !v.evidence.is_empty(),
-            "verdict evidence {:?} disagrees with the {served} item(s) the peers serve",
-            v.evidence
+            claimed, proven,
+            "verdict evidence differs from the items the peers serve"
         );
+
         // freshness: the lag the oracle observes. A newer height at any
         // chosen peer than the verdict's tip means a peer reported newer.
         let verdict_height = held
@@ -89,25 +143,29 @@ impl Harness {
             "freshness.peer_reported_newer disagrees with the peers' heights"
         );
         if let Some((name, _)) = held.iter().find(|(_, t)| t.tip == v.tip) {
-            let age = self.peer_age(name, p).await.expect("peer reported a tip");
-            let diff = (age - v.freshness.age.as_secs() as i64).abs();
+            // The peer's age is whole seconds, so allow its truncation plus
+            // the time between the two reads.
+            let age_ms = self.peer_age(name, p).await.expect("peer reported a tip") * 1000;
+            let diff = (age_ms - v.freshness.age.as_millis() as i64).abs();
             assert!(
-                diff <= 2,
-                "freshness.age {:?} vs observed lag {age}s",
+                diff <= 2500,
+                "freshness.age {:?} vs observed lag {age_ms}ms",
                 v.freshness.age
             );
         }
 
-        // resolved_by: the key that signed the resolution commit, read from
-        // the peer's patch. A fork-keeping store is the supplier of that route.
+        // resolved_by: the key that signed the resolution commit, on every
+        // live chosen peer's chain.
         if let Some(k) = &v.resolved_by {
-            let Some(signer) = self.last_commit_signer(e.peers[0], p).await else {
-                self.red(Capability::BranchStore)
-            };
-            assert_eq!(
-                signer, k.0,
-                "resolved_by is not the key that signed the resolution"
-            );
+            for name in &live {
+                let Some(signer) = self.last_commit_signer(name, p).await else {
+                    self.red(Capability::BranchStore)
+                };
+                assert_eq!(
+                    signer, k.0,
+                    "`{name}`: resolved_by is not the key that signed the resolution"
+                );
+            }
         }
     }
 
@@ -120,32 +178,109 @@ impl Harness {
         }
     }
 
-    /// Items the chosen peers serve at `GET /evidence?pr=`; the item shape
-    /// is provisional until the evidence route exists.
-    async fn served_evidence(&self, peers: &[&str], p: &Principal) -> usize {
-        let mut n = BTreeSet::new();
+    /// Items the chosen peers serve at `GET /evidence?pr=`, each verified
+    /// offline against keys the harness read from the peers themselves. A
+    /// served item that does not verify fails the scenario. PROVISIONAL: the
+    /// item shape is owned by the evidence route.
+    async fn proven_evidence(&self, peers: &[&str], p: &Principal) -> BTreeSet<Proven> {
+        let mut keys = Keys::new();
+        let mut by_peer = BTreeMap::new();
         for name in peers {
-            let addr = self.peers.iter().find(|x| x.name == *name).map(|x| x.addr);
-            let Some(addr) = addr else { continue };
-            let body = self
+            if let Some((id, alg, pub_b64, tmb)) = self.server_key(name).await {
+                keys.insert(tmb.clone(), (alg, pub_b64));
+                by_peer.insert(id, tmb);
+            }
+            keys.extend(self.chain_keys(name, p).await);
+        }
+        let mut out = BTreeSet::new();
+        for name in peers {
+            let Some(addr) = self.peers.iter().find(|x| x.name == *name).map(|x| x.addr) else {
+                continue;
+            };
+            // Every chosen peer must answer 2xx with the expected shape; a
+            // failed read is not "no evidence".
+            let resp = self
                 .http
                 .get(format!("http://{addr}/evidence"))
                 .query(&[("pr", p.0.as_str())])
                 .send()
                 .await
-                .ok();
-            let Some(resp) = body.filter(|r| r.status().is_success()) else {
-                continue;
-            };
-            let Ok(bytes) = resp.bytes().await else {
-                continue;
-            };
-            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
-            for item in v["payload"]["items"].as_array().into_iter().flatten() {
-                n.insert(item.to_string());
+                .unwrap_or_else(|e| panic!("peer `{name}`: evidence read failed: {e}"));
+            let status = resp.status().as_u16();
+            let bytes = resp
+                .bytes()
+                .await
+                .unwrap_or_else(|e| panic!("peer `{name}`: evidence body: {e}"));
+            let items = signed::evidence_items(status, &bytes)
+                .unwrap_or_else(|why| panic!("peer `{name}`: {why}"));
+            for item in &items {
+                match signed::verify_evidence(item, &keys, &by_peer) {
+                    Ok(proven) => {
+                        out.insert(proven);
+                    },
+                    Err(why) => panic!("peer `{name}` served evidence that does not verify: {why}"),
+                }
             }
         }
-        n.len()
+        out
+    }
+
+    /// A peer's identity, algorithm, public key and key thumbprint, from its
+    /// own `GET /server`.
+    async fn server_key(&self, peer: &str) -> Option<(String, String, String, String)> {
+        let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
+        let resp = self
+            .http
+            .get(format!("http://{addr}/server"))
+            .send()
+            .await
+            .ok()?;
+        let v: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+        let t = &v["payload"];
+        Some((
+            t["pg"].as_str()?.to_owned(),
+            t["alg"].as_str()?.to_owned(),
+            t["pub"].as_str()?.to_owned(),
+            t["tmb"].as_str()?.to_owned(),
+        ))
+    }
+
+    /// Keys a peer's chain for `p` has introduced, read from its patch.
+    async fn chain_keys(&self, peer: &str, p: &Principal) -> Keys {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+        let mut keys = Keys::new();
+        let Some(addr) = self.peers.iter().find(|x| x.name == peer).map(|x| x.addr) else {
+            return keys;
+        };
+        let Ok(resp) = self
+            .http
+            .get(format!("http://{addr}/patch"))
+            .query(&[("pr", p.0.as_str())])
+            .send()
+            .await
+        else {
+            return keys;
+        };
+        let Ok(bytes) = resp.bytes().await else {
+            return keys;
+        };
+        let v: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        for entry in v["payload"]["entries"].as_array().into_iter().flatten() {
+            for blob in entry["blobs"].as_array().into_iter().flatten() {
+                let coz: Option<Value> = blob
+                    .as_str()
+                    .and_then(|b| Base64UrlUnpadded::decode_vec(b).ok())
+                    .and_then(|r| serde_json::from_slice(&r).ok());
+                if let Some(k) = coz.as_ref().map(|c| &c["key"]) {
+                    if let (Some(t), Some(a), Some(pk)) =
+                        (k["tmb"].as_str(), k["alg"].as_str(), k["pub"].as_str())
+                    {
+                        keys.insert(t.to_owned(), (a.to_owned(), pk.to_owned()));
+                    }
+                }
+            }
+        }
+        keys
     }
 
     /// Seconds since the tip a peer reports was last updated, by the peer's
@@ -163,11 +298,11 @@ impl Harness {
         Some(v["payload"]["now"].as_i64()? - v["payload"]["last_updated"].as_i64()?)
     }
 
-    /// The thumbprint that signed the last blob of the peer's last commit.
-    /// `None` when the patch route cannot answer, which ends the scenario as
-    /// RED for the branch store that owns it.
+    /// The thumbprint that signed the peer's last `commit/create`, chosen by
+    /// `typ` and verified against the chain's keys. `None` when the patch
+    /// route cannot answer; a signature that fails verification fails the
+    /// scenario. Moves to the branch route once it exists.
     async fn last_commit_signer(&self, peer: &str, p: &Principal) -> Option<String> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
         let addr = self.peers.iter().find(|x| x.name == peer)?.addr;
         let resp = self
             .http
@@ -176,15 +311,10 @@ impl Harness {
             .send()
             .await
             .ok()?;
-        let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        let entry = v["payload"]["entries"].as_array()?.last()?.clone();
-        let blob = entry["blobs"].as_array()?.last()?.as_str()?.to_owned();
-        let coz: serde_json::Value =
-            serde_json::from_slice(&Base64UrlUnpadded::decode_vec(&blob).ok()?).ok()?;
-        let tmb = coz["pay"]["tmb"].as_str().map(str::to_owned);
-        if tmb.is_none() {
-            self.red(Capability::BranchStore);
+        let v: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+        match signed::commit_signer_from_patch(&v) {
+            Ok(tmb) => Some(tmb),
+            Err(why) => panic!("peer `{peer}`'s resolution commit does not verify: {why}"),
         }
-        tmb
     }
 }

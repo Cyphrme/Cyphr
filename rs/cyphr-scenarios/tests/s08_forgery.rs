@@ -5,7 +5,7 @@
 // Must hold: the forgery is rejected by every peer; replays leave state unchanged
 // (SPEC 7.6).
 //
-// Required capabilities: transport,cli-network,idempotency.
+// Required capabilities: transport,cli-network,evidence,idempotency.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -20,6 +20,7 @@ async fn s08_forgery() {
     h.require(&[
         Capability::Transport,
         Capability::CliNetwork,
+        Capability::Evidence,
         Capability::Idempotency,
     ])
     .await;
@@ -46,7 +47,10 @@ async fn s08_forgery() {
         .await
         .expect("P1 holds the principal");
     assert_ne!(applied, pre, "the legitimate action must change P1's state");
-    let p2_before = h.settled_view("p2", &pr).await;
+    let p2_before = h
+        .settled_view("p2", &pr)
+        .await
+        .expect("P2 holds the principal");
 
     // A backdated action from the key we retired with key/delete is refused
     // everywhere as not active, and changes nothing.
@@ -78,19 +82,11 @@ async fn s08_forgery() {
     );
     assert_eq!(
         h.settled_view("p2", &pr).await,
-        p2_before,
+        Some(p2_before),
         "attacks must not move P2"
     );
     let v = h.ok(bob.verdict(&pr, &["p1"]).await);
-    h.check_verdict(
-        &v,
-        &pr,
-        &Expect {
-            peers: &["p1"],
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
     assert_eq!(v.tip, applied.tip);
     assert_eq!(v.standing, Standing::Active);
     assert!(v.evidence.is_empty());
