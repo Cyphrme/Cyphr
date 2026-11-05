@@ -340,3 +340,184 @@ async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
         );
     }
 }
+
+/// Every spelling a principal's PG has: each hash-variant label (`ALG:d`)
+/// and each bare digest.
+fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
+    use cyphr::StateDigest;
+    let mh = p
+        .pg()
+        .expect("established principal has a PG")
+        .as_multihash();
+    let mut out = Vec::new();
+    for alg in mh.algorithms() {
+        let tagged = mh.tagged(alg).expect("variant digest").to_string();
+        let bare = tagged.split_once(':').expect("tagged digest").1.to_string();
+        out.push(tagged);
+        out.push(bare);
+    }
+    out
+}
+
+async fn patch(app: axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
+    let (status, body) = get_json(app, &format!("/patch?pr={}", id.replace(':', "%3A"))).await;
+    let payload = if status == StatusCode::OK {
+        envelope_payload(&body).clone()
+    } else {
+        body
+    };
+    (status, payload)
+}
+
+/// `now` is the response's own clock, not principal state.
+fn without_now(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = v.as_object_mut() {
+        o.remove("now");
+    }
+    v
+}
+
+/// Backs SPEC §12.1 (every PG hash variant names the same principal) and
+/// the no-forged-label rule: a principal whose keys span ES256, ES384 and
+/// Ed25519 (so its PG has SHA-256, SHA-384 and SHA-512 variants) is read
+/// under every variant label and every bare digest with one tip and one
+/// chain, is advanced by a push under a variant other than the one it was
+/// created under, and refuses a label it does not have without creating
+/// anything. Turns red if a variant is not resolved (the read is refused
+/// or reads another principal), if a variant push forks or is refused, or
+/// if a label the PG lacks is accepted. End to end: yes.
+#[tokio::test]
+#[ignore = "RED(AD1): PG hash variants are not resolved to one principal"]
+async fn variant_labels_and_bare_digests_address_one_principal() {
+    let pool = load_pool();
+    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let (d, e) = (kp(&pool, "diana_es384"), kp(&pool, "eve_ed25519"));
+    let add = |signer: &Kp, new: &Kp, now: i64| {
+        sign(
+            signer,
+            serde_json::json!({"alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
+                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        )
+    };
+
+    // genesis(golden, ES256); commit 0 adds diana (ES384); commit 1 adds
+    // eve (Ed25519); commit 2 is principal/create; commit 3 adds key_a.
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(&mut p, &g, add(&g, &d, NOW), Some(key_of(&d)), NOW);
+    commit_one(&mut p, &g, add(&g, &e, NOW + 1), Some(key_of(&e)), NOW + 1);
+    let pr_after_keys = p.pr_tagged().expect("pr");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 2,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW + 2,
+    );
+    commit_one(&mut p, &g, add(&g, &a, NOW + 3), Some(key_of(&a)), NOW + 3);
+
+    let pg_all = pg_spellings(&p);
+    assert_eq!(
+        pg_all.len(),
+        6,
+        "premise: the PG has SHA-256, SHA-384 and SHA-512 variants: {pg_all:?}"
+    );
+    let label = |alg: &str| -> String {
+        pg_all
+            .iter()
+            .find(|s| s.starts_with(&format!("{alg}:")))
+            .unwrap_or_else(|| panic!("premise: PG has a {alg} variant: {pg_all:?}"))
+            .clone()
+    };
+    let (pg256, pg384) = (label("SHA-256"), label("SHA-384"));
+
+    // Created under the genesis-derived id (which the engine accepts today),
+    // so this test isolates PG-variant resolution from PG-as-push-id (the
+    // other RED(AD1) test above).
+    let genesis_id = self::spellings(&pool).1;
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    for i in 0..3 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &genesis_id)).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "commit {i} under {genesis_id}: {body:?}"
+        );
+    }
+
+    // Every spelling reads the same tip and the same chain.
+    let (status, want_tip) = tip(app.clone(), &pg256).await;
+    assert_eq!(status, StatusCode::OK, "tip under {pg256}: {want_tip:?}");
+    let want_tip = without_now(want_tip);
+    let (status, want_chain) = patch(app.clone(), &pg256).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "patch under {pg256}: {want_chain:?}"
+    );
+    for s in &pg_all {
+        let (status, got) = tip(app.clone(), s).await;
+        assert_eq!(status, StatusCode::OK, "tip under {s}: {got:?}");
+        assert_eq!(
+            without_now(got),
+            want_tip,
+            "tip under {s} is another principal"
+        );
+        let (status, got) = patch(app.clone(), s).await;
+        assert_eq!(status, StatusCode::OK, "patch under {s}: {got:?}");
+        assert_eq!(got, want_chain, "chain under {s} is another principal");
+    }
+
+    // A push under a variant other than the creating one extends the one
+    // principal: it lands (201), and every spelling then reads the new tip.
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, &pg384)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "commit 3 under {pg384}: {body:?}"
+    );
+    let (_, new_tip) = tip(app.clone(), &pg256).await;
+    let new_tip = without_now(new_tip);
+    assert_ne!(
+        new_tip, want_tip,
+        "the variant push did not advance the tip"
+    );
+    for s in &pg_all {
+        let (status, got) = tip(app.clone(), s).await;
+        assert_eq!(status, StatusCode::OK, "tip under {s}: {got:?}");
+        assert_eq!(
+            without_now(got),
+            new_tip,
+            "{s} forked off the advanced chain"
+        );
+    }
+
+    // A label the PG does not have is refused and creates nothing: the
+    // SHA-256 digest relabelled SHA-512, and a label no variant carries.
+    let sha256_digest = pg256.split_once(':').expect("tagged").1;
+    for forged in [
+        format!("SHA-512:{sha256_digest}"),
+        format!("SHA3-256:{sha256_digest}"),
+    ] {
+        let (status, body) = tip(app.clone(), &forged).await;
+        assert!(
+            status.is_client_error(),
+            "a label the PG does not have was accepted for read: {forged} {status} {body:?}"
+        );
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, &forged)).await;
+        assert!(
+            status.is_client_error(),
+            "a label the PG does not have was accepted for push: {forged} {status} {body:?}"
+        );
+    }
+    let (_, after) = tip(app, &pg256).await;
+    assert_eq!(
+        without_now(after),
+        new_tip,
+        "a forged label moved the principal"
+    );
+}
