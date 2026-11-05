@@ -45,9 +45,15 @@ form `### [kebab-id]` used
 purely as a link anchor (docket treats any bracket-kebab-id heading as a
 claim definition regardless of what the genre permits) surfaces as an
 `unregistered-definition` **warning** — `Warn` severity, never fails
-`docket check`, but real noise on every run. The equivocation guide
-(`docs/use/detecting-a-split-view.md`) has several such headings; don't
-be surprised by them.
+`docket check`, but real noise on every run. In `docs/use/**`, give a
+link target a plain heading instead.
+
+docket also resolves every `file.md#anchor` link it scans against the
+claim ids and headings of the scanned trees. A link with an anchor into
+an unscanned file (`docs/guides/`, `docs/specs/`, or the in-tree
+`SPEC.md`) reports as a `dangling-reference` warning. Link to the file
+without an anchor and name the section in prose, or, for SPEC, use the
+`be0663f` blob URL.
 
 docket is a **sibling checkout**, never vendored into this repository.
 Pin: commit `0854eca`. Run from the repository root:
@@ -141,7 +147,7 @@ sites; Netlify builds on push.
 - **Section citations are broken repo-wide.** SPEC.md was renumbered
   2026-07-02; most `docs/specs/*.md` headers and some rustdoc cite the old
   §-numbers, and five specs cite dead `.sketches/` paths (content lives in
-  `.ledger/log/`). Check the current `SPEC.md` TOC before following any
+  `.ledger/log/`). Check the `be0663f` TOC before following any
   §-reference.
 - **`docs/plans/` is legacy.** Never plan-of-record (root I6); campaign
   workflow supersedes. Same for `docs/protocol/constraint_coverage.md`
@@ -153,9 +159,14 @@ sites; Netlify builds on push.
   write path's default) has NOT landed: `submit_commit` still replays the
   full chain unconditionally and `PushRequest` carries no proof fields. See
   the ADR's own "Implementation Status" section for the evidence.
-- **`SPEC.md` in-tree ≠ implemented design** until PR #5 lands on `zami`
-  (Principal-Tree-as-EMT amendment). The working copy may be checked out
-  to the PR branch for reference — do not commit it (root I3).
+- **The in-tree `SPEC.md` is a stale reference copy.** The normative
+  text is `SPEC.md` on the spec author's `zami` branch, pinned at
+  `be0663f` (root `AGENTS.md`, "Spec authority"). Read it with
+  `git show be0663f:SPEC.md` and link to its blob URL,
+  `https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md`,
+  never to `../SPEC.md`: the in-tree copy's section numbers differ, and
+  docket reports links to its anchors as dangling references. Do not
+  edit or commit `SPEC.md` (root I3).
 - Decision records here can be superseded by forge rulings: the in-repo
   ledger records KV→SQLite for the index; the settled direction is
   KV-not-SQL (root R3). When docs and forge issues conflict, the forge +
@@ -186,7 +197,8 @@ SPEC.md change:
   when an existing digest already commits to the data. Redundant fields in
   signed pays are bloat, and AI-authored proposals systematically
   underweigh this.
-- **Authority order: SPEC.md prose outranks everything downstream.** The
+- **Authority order: SPEC.md prose (at `be0663f`) outranks everything
+  downstream.** The
   derived specs (`docs/specs/*.md`) and the reference implementation can
   and do encode stale draft designs; their constraint tags and MUST
   language make them LOOK more normative than SPEC.md, and treating them
@@ -231,6 +243,7 @@ agent-check` style claims without an evaluator.
 
 ## Spec Pointers
 
-- Root spec: `/SPEC.md` · machine specs: `docs/specs/` · ADRs: `docs/adr/`
+- Root spec: `SPEC.md` at `be0663f` on `zami` (the in-tree `/SPEC.md` is
+  a stale reference copy) · machine specs: `docs/specs/` · ADRs: `docs/adr/`
 - Corpus/spec traceability: `docs/protocol/constraint_coverage.md`
   (stale — see above)

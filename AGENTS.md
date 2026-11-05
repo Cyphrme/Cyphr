@@ -43,7 +43,7 @@ of PR #23 is the candidate list for what comes after.
 
 | Path       | Role                                                                                    |
 | :--------- | :-------------------------------------------------------------------------------------- |
-| `SPEC.md`  | Protocol specification (see Invariants: ownership)                                      |
+| `SPEC.md`  | Stale reference copy of the protocol spec; the normative text is `zami` at `be0663f`    |
 | `rs/`      | Rust workspace — **all active work happens here** (`rs/AGENTS.md`)                      |
 | `go/`      | Go implementation — deprioritized, reference only (`go/AGENTS.md`)                      |
 | `docs/`    | Specs, ADRs, models — read `docs/AGENTS.md` before trusting any of it                   |
@@ -93,8 +93,14 @@ of PR #23 is the candidate list for what comes after.
 
 ## Spec authority and the contradiction procedure
 
-`SPEC.md` (this directory) is the protocol's sole normative source. The
-machine specs (`docs/specs/*.md`) and the reference implementation are
+The normative protocol specification is `SPEC.md` on the spec author's
+`zami` branch, pinned at commit `be0663f`
+(`git show be0663f:SPEC.md`). The `SPEC.md` in this directory is a stale
+reference copy: it predates `be0663f` and its section numbers differ, so
+never cite it or reason from it. Cite SPEC by its `be0663f` section and
+link to
+`https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md`.
+The machine specs (`docs/specs/*.md`) and the reference implementation are
 downstream: they can and do encode stale draft designs, and their
 constraint tags and MUST language make them look more authoritative than
 they are. When artifacts disagree, the default reading is "downstream is
@@ -252,9 +258,10 @@ Procedure when a contradiction surfaces during any work:
   anti-goal. Grounding: #26/#27. Signpost: any reconciliation/merge logic
   for concurrent same-principal writes violates this.
 - **I3 — SPEC.md ownership.** `SPEC.md` is Zamicol's; changes go only via
-  PR to the `zami` branch (currently PR #5, open/draft — the in-tree
-  working copy may be checked out to that branch's version for reference;
-  do not commit or merge it). Other `docs/specs/*.md` are not his.
+  PR to the `zami` branch (currently PR #5, open/draft). The normative
+  text is that branch pinned at `be0663f`; the in-tree copy is a stale
+  reference copy — do not edit, commit or merge it, and do not cite it.
+  Other `docs/specs/*.md` are not his.
   Grounding: standing rule. Signpost: the human operator says otherwise.
 - **I4 — Core stays consumer-agnostic.** `rs/cyphr` gains protocol-shaped
   API (e.g. portable proofs), never server-specific hacks.
@@ -358,8 +365,9 @@ resolved unilaterally.
 
 ## Spec Pointers
 
-- Protocol: `SPEC.md` (§1–12 canonical; §13+ partly aspirational — see
-  `docs/AGENTS.md`)
+- Protocol: `SPEC.md` at `be0663f` on the `zami` branch (§1–12
+  canonical; §13+ partly aspirational — see `docs/AGENTS.md`); the
+  in-tree `SPEC.md` is a stale reference copy
 - Machine specs: `docs/specs/*.md`; ADR: `docs/adr/0001-*.md`
 - Test corpus pipeline: `tests/README.md`
 - Docs claim gate and doc traps: `docs/AGENTS.md`
