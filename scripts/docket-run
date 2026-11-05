@@ -75,6 +75,7 @@ declare -A CLAIMS_INDEX=(
   [selfcheck-zero-tests]="_claim_selfcheck_zero_tests"
   [selfcheck-env-prefix-zero]="_claim_selfcheck_env_prefix_zero"
   [selfcheck-cd-prefix-zero]="_claim_selfcheck_cd_prefix_zero"
+  [selfcheck-piped-failure]="_claim_selfcheck_piped_failure"
   [selfcheck-real-test]="_claim_selfcheck_real_test"
 )
 
@@ -194,6 +195,12 @@ _claim_selfcheck_env_prefix_zero=(
 _claim_selfcheck_cd_prefix_zero=(
   "cd rs && cargo test -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
 )
+# One target fails (fork_evidence's ignored RED(G0) test, forced by
+# --include-ignored), one passes, and a pipe sits between cargo and the
+# exit code: the failure must still red the claim.
+_claim_selfcheck_piped_failure=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --no-fail-fast --test fork_evidence --test signer_seam -- --include-ignored | cat"
+)
 _claim_selfcheck_real_test=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
 )
@@ -204,9 +211,9 @@ _claim_selfcheck_real_test=(
 # failed.
 if [ "${1:-}" = "--self-check" ]; then
   bad=0
-  for sc in selfcheck-zero-tests selfcheck-env-prefix-zero selfcheck-cd-prefix-zero; do
+  for sc in selfcheck-zero-tests selfcheck-env-prefix-zero selfcheck-cd-prefix-zero selfcheck-piped-failure; do
     if "${BASH_SOURCE[0]}" "$sc" >/dev/null 2>&1; then
-      echo "FAIL  $sc passed though it ran no test" >&2
+      echo "FAIL  $sc passed though it must fail" >&2
       bad=1
     else
       echo "PASS  $sc fails"
@@ -253,10 +260,18 @@ failures=0
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 for cmd in "${cmds[@]}"; do
-  bash -c "$cmd" 2>&1 | tee "$out"
+  # pipefail: a claim command that pipes cargo through another tool
+  # must not let the tool's exit 0 hide cargo's failure.
+  bash -o pipefail -c "$cmd" 2>&1 | tee "$out"
   rc="${PIPESTATUS[0]}"
   if [ "$rc" -ne 0 ]; then
     echo "docket-run: '$id' command failed: $cmd" >&2
+    failures=1
+    continue
+  fi
+  # A FAILED summary line fails the command whatever its exit code said.
+  if grep -q '^test result: FAILED' "$out"; then
+    echo "docket-run: '$id' command reported failing tests: $cmd" >&2
     failures=1
     continue
   fi
