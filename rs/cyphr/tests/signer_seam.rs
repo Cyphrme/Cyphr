@@ -250,10 +250,19 @@ fn open_scope<'p, S: Signer>(
     signer: &S,
     target: &test_fixtures::PoolKey,
 ) -> cyphr::CommitScope<'p> {
+    open_scope_at(principal, signer, target, NOW)
+}
+
+fn open_scope_at<'p, S: Signer>(
+    principal: &'p mut Principal,
+    signer: &S,
+    target: &test_fixtures::PoolKey,
+    now: i64,
+) -> cyphr::CommitScope<'p> {
     let pay = serde_json::json!({
         "alg": signer.alg(),
         "id": target.compute_tmb_b64().expect("target tmb"),
-        "now": NOW,
+        "now": now,
         "tmb": signer.tmb().to_b64(),
         "typ": "cyphr.me/cyphr/key/create",
     });
@@ -594,5 +603,182 @@ proptest! {
         let fault = if use_flip { Fault::BitFlip(flip) } else { Fault::Bytes(bytes) };
         let e = faulty_finalize_err(&pool(), name, fault);
         prop_assert!(matches!(e, Error::InvalidSignature), "got {e:?}");
+    }
+}
+
+// ============================================================================
+// Claim 5: the commit signer must be an ACTIVE key of the principal
+// ============================================================================
+//
+// `finish_commit` verifies the signature against the public key the signer
+// itself reports. A self-consistent signer (own tmb, own pub, own signature)
+// therefore verifies against itself regardless of the principal. The core
+// must bind the signer to the principal: the reported tmb must be an active
+// key, and the signature must verify under THAT key's public bytes.
+
+/// Reports `tmb` while taking alg, public key and signatures from `key`.
+/// With `tmb` = `key`'s own thumbprint it is just a self-consistent foreign
+/// signer; with another key's `tmb` it is an impostor.
+struct ClaimedSigner {
+    tmb: Thumbprint,
+    key: OpaqueSigner,
+}
+
+impl Signer for ClaimedSigner {
+    fn alg(&self) -> &str {
+        self.key.alg()
+    }
+
+    fn pub_key(&self) -> &[u8] {
+        self.key.pub_key()
+    }
+
+    fn tmb(&self) -> &Thumbprint {
+        &self.tmb
+    }
+
+    async fn sign(&self, cad: &Cad) -> Result<Vec<u8>, SignerError> {
+        Ok(self.key.raw_sign(cad))
+    }
+}
+
+fn commit_err(
+    principal: &mut Principal,
+    scope_signer: &OpaqueSigner,
+    target: &str,
+    commit_signer: &impl Signer,
+    pool: &test_fixtures::Pool,
+    what: &str,
+) -> Error {
+    let pr_before = principal.pr_tagged().expect("pr");
+    let scope = open_scope(principal, scope_signer, pool.get(target).expect("target"));
+    let err = match finalize(scope, commit_signer) {
+        Ok(_) => panic!("{what}: commit must not be recorded"),
+        Err(e) => e,
+    };
+    assert_no_commit(principal, &pr_before, what);
+    err
+}
+
+/// CLAIM (signer bound to principal; scenario: yes — full
+/// genesis -> mutation -> finalize on the real chain, genesis in each of
+/// ES256/ES384/Ed25519): a signer holding a perfectly valid key the principal
+/// never added cannot close a commit. Expected: `Error::UnknownKey`.
+///
+/// RED IF: the core accepts any self-consistent signer (checks the signature
+/// only against the key the signer reports), i.e. `finalize` returns `Ok`.
+#[test]
+fn signer_outside_principal_is_unknown_key() {
+    let pool = pool();
+    // (genesis, outsider): the outsider is a real pool key, absent from the principal.
+    for (genesis, outsider) in [
+        ("golden", "alice"),
+        ("diana_es384", "golden"),
+        ("eve_ed25519", "golden"),
+    ] {
+        let what = format!("{genesis}/outsider {outsider}");
+        let honest = OpaqueSigner::from_pool(&pool, genesis);
+        let foreign = OpaqueSigner::from_pool(&pool, outsider);
+        let mut principal = Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+            .expect("genesis principal");
+        let e = commit_err(&mut principal, &honest, "key_a", &foreign, &pool, &what);
+        assert!(
+            matches!(e, Error::UnknownKey),
+            "{what}: expected UnknownKey, got {e:?}"
+        );
+    }
+}
+
+/// CLAIM (tmb bound to key): a signer that reports the principal's real tmb
+/// but holds and signs with a different key cannot close a commit; the
+/// signature must verify under the public key of the key the tmb NAMES, not
+/// under the pub the signer reports. Expected: `Error::InvalidSignature`
+/// (the signature does not verify under the named key; the same-alg impostor
+/// isolates this from any alg check). Cross-alg impostors (ES384/Ed25519
+/// genesis, which have no same-alg sibling in the pool) only pin that no
+/// commit lands and the error is typed; the exact variant there depends on
+/// whether alg or signature is checked first.
+///
+/// RED IF: finalize returns `Ok` (tmb/pub mismatch unchecked).
+#[test]
+fn signer_claiming_anothers_tmb_is_rejected() {
+    let pool = pool();
+    for (genesis, impostor) in [
+        ("golden", "alice"),
+        ("diana_es384", "golden"),
+        ("eve_ed25519", "golden"),
+    ] {
+        let what = format!("{genesis}/impostor {impostor}");
+        let honest = OpaqueSigner::from_pool(&pool, genesis);
+        let claimed = ClaimedSigner {
+            tmb: honest.tmb().clone(),
+            key: OpaqueSigner::from_pool(&pool, impostor),
+        };
+        let mut principal = Principal::implicit(domain_key(pool.get(genesis).expect("genesis")))
+            .expect("genesis principal");
+        let e = commit_err(&mut principal, &honest, "key_a", &claimed, &pool, &what);
+        if genesis == "golden" {
+            assert!(
+                matches!(e, Error::InvalidSignature),
+                "{what}: expected InvalidSignature, got {e:?}"
+            );
+        }
+    }
+}
+
+/// CLAIM (revocation honoured; scenario: yes — two commits): a key that the
+/// principal added and then revoked cannot close a later commit, for revoked
+/// keys of each algorithm. Expected: `Error::KeyRevoked`.
+///
+/// RED IF: the core never consults the principal's revocation state for the
+/// commit signer (finalize returns `Ok`).
+#[test]
+fn revoked_signer_is_key_revoked() {
+    let pool = pool();
+    for revoked_name in ["key_a", "diana_es384", "eve_ed25519"] {
+        let what = format!("revoked {revoked_name}");
+        let genesis = OpaqueSigner::from_pool(&pool, "golden");
+        let revoked = OpaqueSigner::from_pool(&pool, revoked_name);
+        let mut principal = Principal::implicit(domain_key(pool.get("golden").expect("genesis")))
+            .expect("genesis principal");
+
+        // Commit 1: genesis adds the key that will later be revoked.
+        let scope = open_scope(
+            &mut principal,
+            &genesis,
+            pool.get(revoked_name).expect("revoked key"),
+        );
+        finalize(scope, &genesis).expect("commit 1");
+        principal
+            .pre_revoke_key(revoked.tmb(), 1000)
+            .expect("revoke");
+
+        // Commit 2: genesis adds another key, but the revoked key tries to close it.
+        let pr_before = principal.pr_tagged().expect("pr");
+        let commits_before = principal.commits().count();
+        let scope = open_scope_at(
+            &mut principal,
+            &genesis,
+            pool.get("bob").expect("bob"),
+            NOW + 10,
+        );
+        let err = match block_on(scope.finalize_with_signer(&revoked, NOW + 11, AUTHORITY)) {
+            Ok(_) => panic!("{what}: revoked key closed a commit"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, Error::KeyRevoked),
+            "{what}: expected KeyRevoked, got {err:?}"
+        );
+        assert_eq!(
+            principal.commits().count(),
+            commits_before,
+            "{what}: no commit recorded"
+        );
+        assert_eq!(
+            principal.pr_tagged().expect("pr"),
+            pr_before,
+            "{what}: state must not move"
+        );
     }
 }
