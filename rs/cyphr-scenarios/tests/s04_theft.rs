@@ -41,13 +41,27 @@ async fn s04_theft() {
     // Part one: Alice's branch wins by naked revoke and resolution.
     let pr = h.ok(alice.create_principal().await);
     let laptop_key = h.ok(alice.pair_device(&pr, &laptop).await);
-    h.ok(alice.push(&pr, &["p1", "p2"]).await);
+    h.ok(alice.push(&pr, &["p1", "p2"]).await)
+        .accepted("base push");
     h.ok(thief.steal_key(&laptop, &laptop_key).await);
 
     h.ok(alice.commit_data(&pr, "alice").await);
     h.ok(thief.commit_data(&pr, "thief").await);
-    h.ok(alice.push(&pr, &["p1", "p2"]).await);
-    h.ok(thief.push(&pr, &["p3"]).await);
+    let at = h
+        .ok(alice.push(&pr, &["p1", "p2"]).await)
+        .accepted("alice branch");
+    let tt = h
+        .ok(thief.push(&pr, &["p3"]).await)
+        .accepted("thief branch");
+    assert_ne!(at, tt, "the thief must have forked");
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(at.clone())
+    );
+    assert_eq!(
+        h.peer_view("p3", &pr).await.map(|v| v.tip),
+        Some(tt.clone())
+    );
 
     h.eventually(
         "every verdict to converge on Error plus evidence",
@@ -60,41 +74,65 @@ async fn s04_theft() {
     )
     .await;
     let forked = h.ok(bob.verdict(&pr, &all).await);
+    assert!(forked.branches.contains(&at) && forked.branches.contains(&tt));
     assert_eq!(forked.branches.len(), 2);
-    let alice_tip = match h.ok(alice.verdict(&pr, &["p1"]).await).tip {
-        t if forked.branches.contains(&t) => t,
-        t => panic!("Alice's tip {t:?} is not one of the branches"),
-    };
 
     h.ok(alice.naked_revoke(&pr, &laptop_key).await);
-    h.ok(alice.resolve_fork(&pr, &alice_tip).await);
-    h.eventually("verdicts to follow Alice's branch", CONVERGE, || async {
-        let v = bob.verdict(&pr, &all).await?;
-        Ok(v.standing == Standing::Active && v.tip == alice_tip)
+    let rt = h.ok(alice.resolve_fork(&pr, &at).await);
+    h.eventually("all peers to hold Alice's resolution", CONVERGE, || async {
+        for peer in all {
+            if h.peer_view(peer, &pr).await.map(|v| v.tip) != Some(rt.clone()) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &all).await);
+    assert_eq!(after.standing, Standing::Active);
+    assert_eq!(after.tip, rt);
     assert!(
         after.resolved_by.is_some(),
         "the verdict shows the resolving key"
     );
-    assert_eq!(after.branches.len(), 2, "the thief's branch is kept");
+    assert!(after.branches.contains(&tt), "the thief's branch is kept");
     let audit = h.ok(alice.audit(&pr).await);
-    assert!(audit.branches.len() >= 2, "an audit sees both branches");
+    assert!(audit.branches.contains(&tt) && audit.branches.contains(&at));
+
+    // The stolen key must stop working once revoked.
+    h.ok(thief.commit_data(&pr, "thief again").await);
+    let late = h.ok(thief.push(&pr, &["p3"]).await);
+    assert_eq!(
+        late.refused("push with the revoked key"),
+        RefusalKind::Revoked
+    );
+    let settled = h.settled_view("p3", &pr).await.map(|v| v.tip);
+    assert_eq!(
+        settled,
+        Some(rt.clone()),
+        "a revoked key must not move any peer"
+    );
 
     // Variant: the thief rotates first; Alice rotates and carries on. No
     // verdict may pick a branch.
     let pr2 = h.ok(alice.create_principal().await);
     let key2 = h.ok(alice.pair_device(&pr2, &laptop).await);
-    h.ok(alice.push(&pr2, &["p1", "p2"]).await);
+    h.ok(alice.push(&pr2, &["p1", "p2"]).await)
+        .accepted("variant base");
     h.ok(thief.steal_key(&laptop, &key2).await);
     h.ok(thief.rotate_key(&pr2).await);
-    h.ok(thief.push(&pr2, &["p3"]).await);
+    let tt2 = h
+        .ok(thief.push(&pr2, &["p3"]).await)
+        .accepted("thief rotation");
     h.ok(alice.rotate_key(&pr2).await);
-    h.ok(alice.push(&pr2, &["p1", "p2"]).await);
+    let at2 = h
+        .ok(alice.push(&pr2, &["p1", "p2"]).await)
+        .accepted("alice rotation");
+    assert_ne!(at2, tt2);
 
     h.eventually("both branches to be reported", CONVERGE, || async {
-        Ok(bob.verdict(&pr2, &all).await?.branches.len() == 2)
+        let v = bob.verdict(&pr2, &all).await?;
+        Ok(v.branches.contains(&at2) && v.branches.contains(&tt2))
     })
     .await;
     let v = h.ok(bob.verdict(&pr2, &all).await);
@@ -104,4 +142,6 @@ async fn s04_theft() {
         v.resolved_by.is_none(),
         "no branch is ever picked for Alice"
     );
+    assert_eq!(h.peer_view("p3", &pr2).await.map(|v| v.tip), Some(tt2));
+    assert_eq!(h.peer_view("p1", &pr2).await.map(|v| v.tip), Some(at2));
 }

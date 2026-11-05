@@ -26,7 +26,7 @@ async fn s09_migration() {
     let (alice, bob) = (h.client("alice"), h.client("bob"));
 
     let pr = h.ok(alice.create_principal().await);
-    h.ok(alice.push(&pr, &["p1"]).await);
+    let t1 = h.ok(alice.push(&pr, &["p1"]).await).accepted("push to P1");
     h.ok(alice.publish_self_claim(&pr, &["p1"]).await);
     h.ok(bob.trust_genesis(&pr, &["p1"]).await);
     let before = h.ok(bob.verdict(&pr, &[]).await);
@@ -35,15 +35,22 @@ async fn s09_migration() {
         ["p1"],
         "peers lists those used, even for an empty `from`"
     );
+    assert_eq!(before.tip, t1);
 
-    h.ok(alice.push(&pr, &["p3"]).await);
+    let moved = h.ok(alice.push(&pr, &["p3"]).await).accepted("push to P3");
+    assert_eq!(moved, t1, "the same chain moves to P3");
+    assert_eq!(
+        h.peer_view("p3", &pr).await.map(|v| v.tip),
+        Some(t1.clone())
+    );
     h.ok(alice.publish_self_claim(&pr, &["p3"]).await);
     h.ok(h.stop_peer("p1").await);
+    assert!(h.peer_down("p1").await, "P1 must actually be gone");
 
     h.ok(bob.follow_claim(&pr).await);
     let after = h.ok(bob.verdict(&pr, &[]).await);
     assert_eq!(after.peers, ["p3"], "Bob follows the claim to P3");
-    assert_eq!(after.tip, before.tip);
+    assert_eq!(after.tip, t1);
     assert_eq!(after.anchor, before.anchor, "only the peer list may change");
     assert_eq!(after.standing, Standing::Active);
     assert!(after.evidence.is_empty());

@@ -29,30 +29,62 @@ async fn s08_forgery() {
     let pr = h.ok(alice.create_principal().await);
     let retired = h.ok(alice.add_backup_key(&pr).await);
     h.ok(alice.remove_key(&pr, &retired).await);
-    h.ok(alice.push(&pr, &peers).await);
+    h.ok(alice.push(&pr, &peers).await)
+        .accepted("key removal push");
     h.ok(bob.trust_genesis(&pr, &peers).await);
 
-    // A backdated action from the retired key is refused everywhere.
+    // A legitimate action must change state, or "unchanged" proves nothing.
+    let act = h.ok(alice.data_action(&pr, "once").await);
+    let pre = h
+        .settled_view("p1", &pr)
+        .await
+        .expect("P1 holds the principal");
+    h.ok(alice.submit(&act, "p1").await);
+    let applied = h
+        .settled_view("p1", &pr)
+        .await
+        .expect("P1 holds the principal");
+    assert_ne!(applied, pre, "the legitimate action must change P1's state");
+    let p2_before = h.settled_view("p2", &pr).await;
+
+    // A backdated action from the retired key is refused everywhere, and
+    // changes nothing.
     let forged = h.ok(alice.forge_backdated(&pr, &retired).await);
     for peer in peers {
         let out = h.ok(alice.submit(&forged, peer).await);
-        assert!(
-            matches!(out, PushOutcome::Rejected(_)),
-            "{peer} accepted a forgery: {out:?}"
+        assert_eq!(
+            out.refused(&format!("{peer} on a forgery")),
+            RefusalKind::Revoked
         );
     }
 
     // A replayed data action and a re-pushed old commit change nothing (SPEC 7.6).
-    let act = h.ok(alice.data_action(&pr, "once").await);
-    h.ok(alice.submit(&act, "p1").await);
-    let settled = h.ok(bob.verdict(&pr, &["p1"]).await);
-    h.ok(alice.submit(&act, "p1").await);
-    h.ok(alice.repush_commit(&pr, "p1", 1).await);
-    let replayed = h.ok(bob.verdict(&pr, &["p1"]).await);
+    let replay = h.ok(alice.submit(&act, "p1").await);
+    if let PushOutcome::Refused(r) = replay {
+        assert_eq!(
+            r.kind,
+            RefusalKind::CozReuse,
+            "a replay is refused as reuse, if at all"
+        );
+    }
+    let repush = h.ok(alice.repush_commit(&pr, "p1", 1).await);
+    if let PushOutcome::Refused(r) = repush {
+        assert!(matches!(r.kind, RefusalKind::CozReuse | RefusalKind::Stale));
+    }
+
+    // Absence is only meaningful once the peers have gone quiet.
     assert_eq!(
-        replayed.tip, settled.tip,
-        "a replay must leave the tip unchanged"
+        h.settled_view("p1", &pr).await,
+        Some(applied.clone()),
+        "attacks must not move P1"
     );
-    assert_eq!(replayed.standing, Standing::Active);
-    assert!(replayed.evidence.is_empty());
+    assert_eq!(
+        h.settled_view("p2", &pr).await,
+        p2_before,
+        "attacks must not move P2"
+    );
+    let v = h.ok(bob.verdict(&pr, &["p1"]).await);
+    assert_eq!(v.tip, applied.tip);
+    assert_eq!(v.standing, Standing::Active);
+    assert!(v.evidence.is_empty());
 }

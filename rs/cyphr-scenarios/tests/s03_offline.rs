@@ -31,66 +31,136 @@ async fn s03_offline() {
 
     let (laptop, phone) = (h.client("alice-laptop"), h.client("alice-phone"));
     let observer = h.client("bob");
+    let both = ["p1", "p2"];
 
     let pr = h.ok(laptop.create_principal().await);
     h.ok(laptop.pair_device(&pr, &phone).await);
-    h.ok(laptop.push(&pr, &["p1", "p2"]).await);
+    let base = h.ok(laptop.push(&pr, &both).await).accepted("base push");
+    let h0 = h
+        .peer_view("p1", &pr)
+        .await
+        .expect("P1 holds the base")
+        .height;
 
-    // Case 1: the laptop commits while offline; the phone commits via P1.
+    // Case 1: the laptop is offline and commits locally while the phone
+    // pushes via P1.
     h.proxy.offline("alice-laptop");
-    h.ok(laptop.commit_data(&pr, "laptop, offline").await);
-    h.ok(phone.commit_data(&pr, "phone").await);
-    assert!(matches!(
-        h.ok(phone.push(&pr, &["p1"]).await),
-        PushOutcome::Accepted(_)
-    ));
-    h.proxy.online("alice-laptop");
-
-    assert_eq!(
-        h.ok(laptop.push(&pr, &["p1"]).await),
-        PushOutcome::RefusedStale
+    assert!(
+        !h.reach("alice-laptop", "p1").await,
+        "the laptop must be offline"
     );
-    h.ok(laptop.rebase(&pr).await);
-    assert!(matches!(
-        h.ok(laptop.push(&pr, &["p1"]).await),
-        PushOutcome::Accepted(_)
-    ));
-    let v = h.ok(observer.verdict(&pr, &["p1"]).await);
-    assert_eq!(v.branches.len(), 1, "a refused-stale push must not fork");
-    assert!(v.evidence.is_empty());
+    h.ok(laptop.commit_data(&pr, "laptop, offline").await);
+    let offline_push = h.ok(laptop.push(&pr, &["p1"]).await);
+    assert!(
+        matches!(offline_push, PushOutcome::Refused(_)),
+        "an offline device cannot push: {offline_push:?}"
+    );
+    h.ok(phone.commit_data(&pr, "phone").await);
+    let phone_tip = h.ok(phone.push(&pr, &["p1"]).await).accepted("phone push");
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(phone_tip.clone())
+    );
+    h.proxy.online("alice-laptop");
+    assert!(
+        h.reach("alice-laptop", "p1").await,
+        "the laptop must be back"
+    );
 
-    // Case 2: the two devices commit to different, partitioned peers.
+    let stale = h.ok(laptop.push(&pr, &["p1"]).await);
+    assert_eq!(
+        stale.refused("laptop push on a stale view"),
+        RefusalKind::Stale
+    );
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(phone_tip.clone()),
+        "a refused push must not move the peer"
+    );
+    let rebased = h.ok(laptop.rebase(&pr).await);
+    assert_ne!(rebased, phone_tip, "a rebase adds the laptop's own commit");
+    let merged = h.ok(laptop.push(&pr, &both).await).accepted("rebased push");
+    for peer in both {
+        let v = h.peer_view(peer, &pr).await.expect("peer holds the chain");
+        assert_eq!(
+            (v.tip, v.height),
+            (merged.clone(), h0 + 2),
+            "{peer}: base + phone + laptop"
+        );
+    }
+    let v = h.ok(observer.verdict(&pr, &both).await);
+    assert_eq!(
+        v.branches,
+        std::slice::from_ref(&merged),
+        "a stale refusal must not fork"
+    );
+    assert!(v.evidence.is_empty());
+    assert_ne!(base, merged);
+
+    // Case 2: the devices commit to different, partitioned peers.
     h.proxy.partition("p1", "p2");
     h.proxy.partition("alice-laptop", "p1");
     h.proxy.partition("alice-phone", "p2");
+    assert!(!h.reach("alice-laptop", "p1").await && !h.reach("alice-phone", "p2").await);
+    assert!(h.reach("alice-laptop", "p2").await && h.reach("alice-phone", "p1").await);
     h.ok(laptop.commit_data(&pr, "laptop, branch").await);
     h.ok(phone.commit_data(&pr, "phone, branch").await);
-    let lt = h.ok(laptop.push(&pr, &["p2"]).await);
-    let pt = h.ok(phone.push(&pr, &["p1"]).await);
-    assert!(matches!(
-        (&lt, &pt),
-        (PushOutcome::Accepted(_), PushOutcome::Accepted(_))
-    ));
+    let lt = h
+        .ok(laptop.push(&pr, &["p2"]).await)
+        .accepted("laptop branch");
+    let pt = h
+        .ok(phone.push(&pr, &["p1"]).await)
+        .accepted("phone branch");
+    assert_ne!(lt, pt, "the two devices must have forked");
+    assert_eq!(
+        h.peer_view("p2", &pr).await.map(|v| v.tip),
+        Some(lt.clone())
+    );
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(pt.clone())
+    );
+    // PROVISIONAL: red until peers gossip through the proxy (G2).
+    h.eventually(
+        "a peer-to-peer attempt on the cut link",
+        CONVERGE,
+        || async { Ok(h.proxy.stats("p1", "p2").blocked > 0) },
+    )
+    .await;
     h.proxy.heal("p1", "p2");
 
     h.eventually(
         "the fork to surface as Error plus evidence",
         CONVERGE,
         || async {
-            let v = observer.verdict(&pr, &["p1", "p2"]).await?;
+            let v = observer.verdict(&pr, &both).await?;
             Ok(v.standing == Standing::Error
                 && v.evidence.contains(&Evidence::PrincipalFork(pr.clone())))
         },
     )
     .await;
-    let forked = h.ok(observer.verdict(&pr, &["p1", "p2"]).await);
-    assert_eq!(forked.branches.len(), 2);
+    let forked = h.ok(observer.verdict(&pr, &both).await);
+    let mut seen = forked.branches.clone();
+    seen.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut want = [lt.clone(), pt.clone()];
+    want.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(seen, want, "exactly the two pushed branches");
 
     // Alice resolves (SPEC 15.8); the abandoned branch stays in the record.
-    let keep = forked.branches[0].clone();
-    h.ok(phone.resolve_fork(&pr, &keep).await);
-    let healed = h.ok(observer.verdict(&pr, &["p1", "p2"]).await);
+    let resolved = h.ok(phone.resolve_fork(&pr, &pt).await);
+    h.eventually("the peers to hold the resolution", CONVERGE, || async {
+        Ok(
+            h.peer_view("p1", &pr).await.map(|v| v.tip) == Some(resolved.clone())
+                && h.peer_view("p2", &pr).await.map(|v| v.tip) == Some(resolved.clone()),
+        )
+    })
+    .await;
+    let healed = h.ok(observer.verdict(&pr, &both).await);
     assert_eq!(healed.standing, Standing::Active);
-    assert_eq!(healed.branches.len(), 2, "the abandoned branch is kept");
+    assert_eq!(healed.tip, resolved);
+    assert!(
+        healed.branches.contains(&lt),
+        "the abandoned branch is kept"
+    );
     assert!(healed.resolved_by.is_some());
 }

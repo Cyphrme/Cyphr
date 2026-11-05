@@ -9,7 +9,7 @@
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
@@ -26,32 +26,58 @@ async fn s11_signon() {
     .await;
 
     let alice = h.client("alice");
-    // Open (pending nrd): the sign-in window is not fixed by SPEC or the plan.
-    const WINDOW: Duration = Duration::from_secs(30);
+    // Open (pending nrd): SPEC and the plan fix no sign-in window. The bound
+    // below is only a default for a relying party that states none.
+    const DEFAULT_VIEW_AGE_BOUND: Duration = Duration::from_secs(30);
 
     let rp = h.ok(h.start_relying_party().await);
+    let cfg = h.ok(rp.config().await);
+    let window = cfg.view_age_bound.unwrap_or(DEFAULT_VIEW_AGE_BOUND) + cfg.refresh_interval;
+
     let pr = h.ok(alice.create_principal().await);
-    h.ok(alice.push(&pr, &["p1"]).await);
+    // The principal keeps a second key, so removing the sign-in key leaves
+    // it with an authority.
+    h.ok(alice.add_backup_key(&pr).await);
+    h.ok(alice.push(&pr, &["p1"]).await).accepted("setup push");
 
     let session = h.ok(alice.sign_in(&rp).await);
+    assert_eq!(
+        session.principal, pr,
+        "the token's subject is the canonical principal"
+    );
     assert!(
         h.ok(rp.session_active(&session.token).await),
         "sign-in must open a session"
     );
-    assert!(h.ok(rp.present(&session.token, Channel::Original).await));
+    assert_eq!(
+        h.ok(rp.present(&session.token, Channel::Original).await),
+        Presented::Accepted
+    );
 
+    // A token on another channel is refused while the session is live, so a
+    // relying party with no channel binding fails here, not after removal.
+    match h.ok(rp.present(&session.token, Channel::Other).await) {
+        Presented::Refused(r) => assert_eq!(r.kind, RefusalKind::Unauthorized),
+        Presented::Accepted => panic!("a live token was accepted on another channel"),
+    }
+    assert!(
+        h.ok(rp.session_active(&session.token).await),
+        "the refusal must not end the session"
+    );
+
+    let removed_at = Instant::now();
     h.ok(alice.remove_key(&pr, &session.key).await);
-    h.ok(alice.push(&pr, &["p1"]).await);
+    h.ok(alice.push(&pr, &["p1"]).await)
+        .accepted("removal push");
     h.ok(rp.refresh_view().await);
     h.eventually(
         "the session to end once the RP sees the removal",
-        WINDOW,
+        window,
         || async { Ok(!rp.session_active(&session.token).await?) },
     )
     .await;
-
     assert!(
-        !h.ok(rp.present(&session.token, Channel::Other).await),
-        "a token on another channel must be refused"
+        removed_at.elapsed() <= window,
+        "the session outlived the window"
     );
 }

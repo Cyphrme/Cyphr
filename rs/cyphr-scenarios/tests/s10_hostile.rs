@@ -7,7 +7,7 @@
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
@@ -27,18 +27,32 @@ async fn s10_hostile() {
     let via = h.route("mallory", "p1").await;
     let url = format!("http://{via}");
 
-    // Oversized and malformed bodies are refused as client errors, and the
-    // peer keeps answering within a bound.
-    for body in [vec![b'{'; 1024], vec![0u8; 16 * 1024 * 1024]] {
-        let r = h.http.post(format!("{url}/push")).body(body).send().await;
+    // The limit comes from the peer's own configuration, not a guess; this
+    // scenario assumes the compiled default is exceeded by 16 MiB.
+    // A valid-shaped push whose single blob is oversized, and a malformed one.
+    let big = "A".repeat(16 * 1024 * 1024);
+    let oversized = format!(r#"{{"principal_id":"SHA-512:AAAA","blobs":["{big}"]}}"#);
+    for (what, body) in [("malformed", "{".to_owned()), ("oversized", oversized)] {
+        let r = h
+            .http
+            .post(format!("{url}/push"))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await;
         if let Ok(r) = r {
+            let want: &[u16] = if what == "oversized" {
+                &[413]
+            } else {
+                &[400, 422]
+            };
             assert!(
-                r.status().is_client_error(),
-                "hostile body got {}",
+                want.contains(&r.status().as_u16()),
+                "{what} body got {}",
                 r.status()
             );
         }
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         let ok = h
             .http
             .get(format!("{url}/server"))
@@ -48,12 +62,12 @@ async fn s10_hostile() {
         assert!(ok.status().is_success());
         assert!(
             t.elapsed() < Duration::from_secs(2),
-            "peer stalled after a hostile body"
+            "peer stalled after a {what} body"
         );
     }
 
     h.ok(h.flood_evidence("p1", 10_000).await);
-    let t = std::time::Instant::now();
+    let t = Instant::now();
     assert!(
         h.http
             .get(format!("{url}/server"))
@@ -70,12 +84,22 @@ async fn s10_hostile() {
 
     // A client fails closed on an envelope version it does not know.
     let pr = h.ok(alice.create_principal().await);
-    h.ok(alice.push(&pr, &["p1"]).await);
+    let tip = h.ok(alice.push(&pr, &["p1"]).await).accepted("push to P1");
     h.ok(bob.trust_genesis(&pr, &["p1"]).await);
+    assert_eq!(
+        h.ok(bob.verdict(&pr, &["p1"]).await).tip,
+        tip,
+        "sane before the rigging"
+    );
     h.ok(h.serve_envelope_version("p1", 99).await);
     match bob.verdict(&pr, &["p1"]).await {
-        Err(ActionError::Refused(_)) => {},
+        Err(ActionError::Refused(r)) => assert_eq!(r.kind, RefusalKind::UnknownVersion),
         Ok(v) => panic!("an unknown envelope version was accepted: {v:?}"),
         Err(e) => h.ok::<()>(Err(e)),
     }
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(tip),
+        "the hostile traffic must not have moved P1"
+    );
 }

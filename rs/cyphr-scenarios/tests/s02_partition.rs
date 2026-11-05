@@ -8,7 +8,7 @@
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
 use cyphr_scenarios::{Capability, Harness};
@@ -30,37 +30,68 @@ async fn s02_partition() {
     let (alice, bob) = (h.client("alice"), h.client("bob"));
 
     let pr = h.ok(alice.create_principal().await);
-    h.ok(alice.push(&pr, &["p1", "p2"]).await);
+    let before = h
+        .ok(alice.push(&pr, &["p1", "p2"]).await)
+        .accepted("initial push");
     h.ok(bob.trust_genesis(&pr, &["p2"]).await);
     h.ok(bob.watch(&pr).await);
+    let last_update = Instant::now();
 
-    // P2 is cut off from P1 and from Alice; Bob can still reach P2.
+    // P2 is cut off from P1 and from Alice; Bob can still reach P2. Verify
+    // each fault before relying on it.
     h.proxy.partition("p1", "p2");
     h.proxy.partition("alice", "p2");
-    h.ok(alice.rotate_key(&pr).await);
-    let tip = match h.ok(alice.push(&pr, &["p1"]).await) {
-        PushOutcome::Accepted(t) => t,
-        other => panic!("rotation push to P1: {other:?}"),
-    };
-
-    let during = h.ok(bob.verdict(&pr, &["p2"]).await);
-    // A client cannot know P2 is cut off; it can only report its view's age.
     assert!(
-        during.freshness.age > Duration::ZERO,
-        "a view reports its age, never \"current\""
+        !h.reach("alice", "p2").await,
+        "Alice must be cut off from P2"
     );
-    assert_ne!(during.tip, tip, "P2 cannot have seen the rotation");
+    assert!(h.reach("bob", "p2").await, "Bob must still reach P2");
+
+    h.ok(alice.rotate_key(&pr).await);
+    let tip = h
+        .ok(alice.push(&pr, &["p1"]).await)
+        .accepted("rotation push to P1");
+    assert_eq!(
+        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        Some(tip.clone())
+    );
+
+    // The peer-to-peer link must be exercised, not merely declared: the
+    // partition has to have blocked real traffic between the peers.
+    // PROVISIONAL: red until peers gossip through the proxy (G2).
+    h.eventually(
+        "a peer-to-peer attempt on the cut link",
+        CONVERGE,
+        || async { Ok(h.proxy.stats("p1", "p2").blocked > 0) },
+    )
+    .await;
+    assert_eq!(
+        h.peer_view("p2", &pr).await.map(|v| v.tip),
+        Some(before.clone()),
+        "a partitioned P2 must not learn the rotation"
+    );
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let during = h.ok(bob.verdict(&pr, &["p2"]).await);
+    assert_eq!(during.tip, before, "Bob can only see P2's old tip");
+    assert!(
+        during.freshness.age >= last_update.elapsed().saturating_sub(Duration::from_secs(1)),
+        "the view's age must have grown with the partition, got {:?}",
+        during.freshness.age
+    );
 
     h.proxy.heal("p1", "p2");
     h.proxy.heal("alice", "p2");
     h.eventually(
         "anti-entropy to bring P2 to Alice's tip",
         CONVERGE,
-        || async {
-            let v = bob.verdict(&pr, &["p2"]).await?;
-            Ok(v.tip == tip && !v.freshness.peer_reported_newer)
-        },
+        || async { Ok(h.peer_view("p2", &pr).await.map(|v| v.tip) == Some(tip.clone())) },
     )
+    .await;
+    h.eventually("Bob to catch up", CONVERGE, || async {
+        let v = bob.verdict(&pr, &["p2"]).await?;
+        Ok(v.tip == tip && !v.freshness.peer_reported_newer)
+    })
     .await;
     let after = h.ok(bob.verdict(&pr, &["p2"]).await);
     assert_eq!(after.standing, Standing::Active);
