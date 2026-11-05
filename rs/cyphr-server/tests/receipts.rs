@@ -26,22 +26,9 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    attestor_server, build_genesis_push_body, envelope_payload, get_json, keyed_appstate,
-    keyless_server, load_pool, post_json, write_signing_key,
+    attestor_server, build_genesis_push_body, envelope_payload, get_json, golden_principal_id,
+    keyed_appstate, keyless_server, load_pool, post_json, write_signing_key,
 };
-
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
 
 /// Assert `body` carries a signed statement stamped `expected_typ`, whose
 /// signature verifies against `identity`'s key. Returns `(payload,
@@ -100,8 +87,8 @@ async fn attestor_push_response_carries_signed_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -131,8 +118,8 @@ async fn attestor_tip_response_carries_signed_tip_report() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_100;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -258,7 +245,8 @@ fn commit_receipt_with_sentinel_empty_cr_signs_typed_absence_not_empty_string() 
 #[tokio::test]
 async fn keyless_push_and_tip_responses_stay_unsigned() {
     let pool = load_pool();
-    let principal_id = "receipt-keyless-principal";
+    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_200;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -289,7 +277,8 @@ async fn keyed_but_unbootstrapped_push_and_tip_responses_stay_unsigned() {
     );
 
     let pool = load_pool();
-    let principal_id = "receipt-unbootstrapped-principal";
+    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_300;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -357,8 +346,8 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x03);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = golden_principal_id(&pool);
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_400;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, push_envelope) = post_json(app.clone(), "/push", push_body).await;
@@ -375,19 +364,17 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let discovery = &discovery_envelope["payload"];
     let pinned_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
     let genesis = &discovery["genesis"];
-    let genesis_key = cyphr::Key {
-        alg: genesis["alg"].as_str().expect("genesis alg").to_string(),
-        tmb: coz::Thumbprint::from_bytes(
+    let genesis_key = cyphr::Key::new(
+        genesis["alg"].as_str().expect("genesis alg").to_string(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(genesis["tmb"].as_str().expect("genesis tmb"))
                 .expect("valid genesis tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
+        Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
             .expect("valid genesis pub base64"),
-        first_seen: genesis["first_seen"].as_i64().expect("genesis first_seen"),
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
     // Step 2: the genesis key is a HINT, made trustless by re-deriving the
     // PG from it alone -- never trusting discovery's `pg` claim directly.
@@ -472,7 +459,7 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
             .expect("valid receipt sig base64");
     let pay_json = serde_json::to_vec(&receipt_coz["pay"]).expect("pay re-serializes");
     assert_eq!(
-        coz::verify_json(&pay_json, &receipt_sig, receipt_alg, &active_key.pub_key),
+        coz::verify_json(&pay_json, &receipt_sig, receipt_alg, active_key.pub_key()),
         Some(true),
         "the receipt signature must verify against the replay-derived active key"
     );

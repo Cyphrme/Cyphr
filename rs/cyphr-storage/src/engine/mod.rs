@@ -68,45 +68,15 @@ pub struct DerivedRoots {
 /// blobs and build an index entry.
 #[derive(Clone, Debug)]
 struct ParsedCozInfo {
-    hash: Blake3Hash,
     pay_json: Vec<u8>,
     sig: Vec<u8>,
     czd: coz::Czd,
     typ: String,
-    pre: Option<String>,
     tmb: String,
     now: i64,
     alg: String,
     new_key: Option<cyphr::Key>,
     key_info: Option<crate::PublicKeyInfo>,
-}
-
-fn map_coz_info(parsed: &ParsedCozInfo, active_algs: &[cyphr::state::HashAlg]) -> IndexableCoz {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    let source_alg =
-        cyphr::state::hash_alg_from_str(&parsed.alg).unwrap_or(cyphr::state::HashAlg::Sha256);
-    let tagged = cyphr::state::TaggedCzd::new(&parsed.czd, source_alg);
-
-    let primary_alg = active_algs.first().copied().unwrap_or(source_alg);
-    let converted = tagged.convert_to(primary_alg);
-    let primary_czd = format!(
-        "{primary_alg}:{}",
-        Base64UrlUnpadded::encode_string(&converted)
-    );
-
-    let payload = serde_json::from_slice::<serde_json::Value>(&parsed.pay_json)
-        .ok()
-        .and_then(|v| serde_json::to_string(&v).ok());
-
-    IndexableCoz {
-        blob_hash: parsed.hash,
-        czd: primary_czd,
-        typ: parsed.typ.clone(),
-        tmb: parsed.tmb.clone(),
-        alg: parsed.alg.clone(),
-        now: parsed.now,
-        payload,
-    }
 }
 
 /// Result from [`StorageEngine::ingest_commit`] and
@@ -133,9 +103,8 @@ const COMMIT_MANIFEST_KIND: &str = "cyphr-storage/commit-manifest/v1";
 ///
 /// This is the signal that lets an index rebuild ([`StorageEngine::rebuild_index_from_manifests`])
 /// re-derive a commit directly, without the permutation search
-/// [`StorageEngine::reindex`] otherwise needs to reconstruct same-timestamp
-/// mutation order. Per root `AGENTS.md` invariant I1, the manifest is
-/// itself blob-store content, not a new index-only source of truth.
+/// that reconstructing same-timestamp mutation order would need. Per root `AGENTS.md` invariant I1,
+/// the manifest is itself blob-store content, not a new index-only source of truth.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CommitManifest {
     kind: String,
@@ -289,8 +258,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// Cost strategy: always a full [`Self::rebuild_index_from_manifests`]
     /// scan rather than a cheaper orphan-detection pre-check. Against this
-    /// crate's backends the scan is already the mechanism `reindex` and
-    /// the CLI rely on for full recovery, `index_commit` is idempotent so
+    /// crate's backends the scan is already the mechanism full recovery
+    /// relies on, `index_commit` is idempotent so
     /// a healthy store's scan is a pure read with no re-indexing writes,
     /// and it runs at most once per instance -- an orphan pre-check would
     /// only save a single redundant scan's read cost per process lifetime,
@@ -324,7 +293,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
         self.ensure_healed().await?;
-        Ok(self.indexer.get_tip(principal_id).await?)
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self.indexer.get_tip(&principal_id).await?)
     }
 
     /// Retrieve a patch: commit chain metadata joined with blob content.
@@ -350,6 +320,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let principal_id = principal_id.as_str();
         let from_seq = match from {
             Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
             None => None,
@@ -468,8 +440,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn rederive_roots(&self, principal_id: &str) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
-        let genesis = self.resolve_genesis(principal_id, &[]).await?;
-        let principal = self.load_principal(principal_id, genesis).await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let genesis = self.resolve_genesis(&principal_id, &[]).await?;
+        let principal = self.load_principal(&principal_id, genesis).await?;
 
         let pr = format_multihash_all(principal.pr().as_multihash())?
             .into_iter()
@@ -708,6 +681,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         use crate::import::replay_commits;
 
         self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let principal_id = principal_id.as_str();
 
         // 1. Construct the principal from genesis (no commits yet), backed
         // by a fresh storage instance from this engine's factory.
@@ -807,7 +782,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// # Arguments
     ///
-    /// * `principal_id` — Tagged-digest identifier for this principal.
+    /// * `principal_id` — The principal's genesis-derived id (SPEC §3.1), labelled (`ALG:digest`,
+    ///   the stored spelling) or bare. Any other id is refused with [`EngineError::InvalidInput`];
+    ///   every key below is the labelled spelling.
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
@@ -833,6 +810,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
+        // 1. Resolve genesis, then the one canonical spelling of the id.
+        //
+        // SPEC §3.1: a principal's identifier is derived from its genesis,
+        // never chosen by the caller. The derived id has one stored
+        // spelling (the algorithm-labelled `ALG:digest`); the bare digest
+        // is accepted as input only when it names that same id. Every
+        // lock, index and storage key below is the canonical spelling, so
+        // one identity cannot be stored as two independent principals
+        // (a fork refused under one spelling accepted under the other, or a
+        // revoked key committing under an alias).
+        let stored = self.stored_id(principal_id).await?;
+        let genesis = match (genesis, &stored) {
+            (Some(g), _) => g,
+            (None, Some(stored_id)) => self.genesis_of_stored(stored_id).await?,
+            (None, None) => Self::genesis_from_raw_blobs(raw_blobs)?,
+        };
+        let canonical = genesis_principal_id(&genesis)?;
+        if principal_id != canonical && principal_id != bare_digest(&canonical) {
+            return Err(EngineError::InvalidInput(format!(
+                "principal_id is not the genesis-derived id: {principal_id}"
+            )));
+        }
+        let principal_id = canonical.as_str();
+
         // Serialize the whole sequence-resolution-through-ingest critical
         // section per principal_id: two concurrent callers for the SAME
         // principal must never both resolve `next_seq` before either has
@@ -840,12 +841,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // caller for a DIFFERENT principal_id never contends on this lock.
         let lock = self.principal_lock(principal_id);
         let _serialize_writes = lock.lock().await;
-
-        // 1. Resolve genesis.
-        let genesis = match genesis {
-            Some(g) => g,
-            None => self.resolve_genesis(principal_id, raw_blobs).await?,
-        };
 
         // 2. Load (or construct) the principal from existing state.
         let mut principal = self.load_principal(principal_id, genesis).await?;
@@ -912,33 +907,42 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
             let tmb = header.tmb.to_b64();
             let now = header.now;
-            let pre = pay
-                .get("pre")
-                .and_then(|p| p.as_str())
-                .map(|s| s.to_string());
 
             let mut key_info = None;
             let new_key = if is_key_introducing_typ(&typ) {
-                value.get("key").and_then(|k| {
-                    let ke = key_value_to_entry(k)?;
-                    key_info = Some(crate::PublicKeyInfo {
-                        thumbprint: ke.tmb.clone(),
-                        algorithm: ke.alg.clone(),
-                        public_key: ke.pub_key.clone(),
-                    });
-                    crate::import::key_entry_to_key(&ke).ok()
-                })
+                match value.get("key") {
+                    // A missing sidecar is the protocol layer's to reject
+                    // (`MalformedPayload`); a PRESENT one that is not a
+                    // valid key is reported as such, never swallowed.
+                    None => None,
+                    Some(k) => {
+                        let ke = key_value_to_entry(k).ok_or_else(|| {
+                            EngineError::MalformedBlob(format!(
+                                "blob {i}: 'key' missing required fields (alg, pub, tmb)"
+                            ))
+                        })?;
+                        key_info = Some(crate::PublicKeyInfo {
+                            thumbprint: ke.tmb.clone(),
+                            algorithm: ke.alg.clone(),
+                            public_key: ke.pub_key.clone(),
+                        });
+                        Some(crate::import::key_entry_to_key(&ke).map_err(|e| match e {
+                            // e.g. `TmbMismatch`: a client-facing protocol
+                            // refusal, not an infrastructure failure.
+                            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
+                            other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
+                        })?)
+                    },
+                }
             } else {
                 None
             };
 
             Ok(ParsedCozInfo {
-                hash: Blake3Hash::from_bytes([0; 32]), // populated on ingest
                 pay_json,
                 sig,
                 czd,
                 typ,
-                pre,
                 tmb,
                 now,
                 alg: alg_str,
@@ -1122,26 +1126,72 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<crate::Genesis, EngineError> {
         self.ensure_healed().await?;
 
-        // Check if the principal already exists.
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, Some(0), Some(0))
-            .await?;
-
-        if let Some(first_commit) = chain.first() {
-            // Existing principal — fetch the first stored commit's blobs from the blob store.
-            let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
-            for hash in &first_commit.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!("blob {hash} not found in store"))
-                })?;
-                blobs.push(data);
-            }
-            Self::genesis_from_raw_blobs(&blobs)
+        if let Some(stored_id) = self.stored_id(principal_id).await? {
+            // Existing principal: its genesis is in its first stored commit.
+            self.genesis_of_stored(&stored_id).await
         } else {
             // New principal — the caller's own submitted blobs are the first commit.
             Self::genesis_from_raw_blobs(raw_blobs)
         }
+    }
+
+    /// Genesis of the principal stored under exactly `stored_id`, read from
+    /// its first stored commit's blobs.
+    async fn genesis_of_stored(&self, stored_id: &str) -> Result<crate::Genesis, EngineError> {
+        let chain = self
+            .indexer
+            .get_commit_chain(stored_id, Some(0), Some(0))
+            .await?;
+        let first_commit = chain.first().ok_or_else(|| {
+            EngineError::NotFound(format!("principal {stored_id} has no stored commits"))
+        })?;
+        let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
+        for hash in &first_commit.blob_hashes {
+            let data =
+                self.blob_store.get(hash).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!("blob {hash} not found in store"))
+                })?;
+            blobs.push(data);
+        }
+        Self::genesis_from_raw_blobs(&blobs)
+    }
+
+    /// The spelling under which `principal_id` is stored, if a principal is.
+    ///
+    /// A labelled id (`ALG:digest`) is its own spelling. A bare digest
+    /// names whichever labelled spelling has a stored chain; at most one
+    /// can, because [`submit_commit`](Self::submit_commit) stores only the
+    /// canonical spelling.
+    async fn stored_id(&self, principal_id: &str) -> Result<Option<String>, EngineError> {
+        let candidates: Vec<String> = if principal_id.contains(':') {
+            vec![principal_id.to_string()]
+        } else {
+            ID_LABELS
+                .iter()
+                .map(|label| format!("{label}:{principal_id}"))
+                .collect()
+        };
+        for candidate in candidates {
+            let chain = self
+                .indexer
+                .get_commit_chain(&candidate, Some(0), Some(0))
+                .await?;
+            if !chain.is_empty() {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The canonical (stored) spelling of `principal_id`, or `principal_id`
+    /// unchanged if no such principal is stored. Read paths key on this so
+    /// the bare and labelled spellings of one id reach one chain.
+    pub async fn canonical_principal_id(&self, principal_id: &str) -> Result<String, EngineError> {
+        self.ensure_healed().await?;
+        Ok(self
+            .stored_id(principal_id)
+            .await?
+            .unwrap_or_else(|| principal_id.to_string()))
     }
 
     /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy
@@ -1201,707 +1251,49 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(crate::Genesis::Implicit(key))
     }
 
-    /// Reindex the index from durable content in the BlobStore.
+    /// Discard the index and rebuild it from every durable manifest.
     ///
-    /// Implements recovery verification/convergance [recovery-reindex] and
-    /// [recovery-convergence]. Two independent recovery paths run in the same
-    /// pass:
-    ///
-    /// - Raw blobs with no manifest (legacy content, or content seeded directly into the blob store
-    ///   bypassing `ingest_commit`) are scanned first and, where they resolve to a genesis
-    ///   bootstrap or a deterministically-orderable commit, indexed.
-    /// - Manifest-backed commits -- anything ingested via [`Self::ingest_commit`]/`submit_commit`
-    ///   -- are recovered last, directly from their [`CommitManifest`] via
-    ///   [`Self::rebuild_index_from_manifests`]: their exact ingest-time order and derived digests
-    ///   are read, never searched for. Running this pass last makes a manifest-backed principal's
-    ///   real tip always win over any raw content indexed above for the same `principal_id`.
-    #[tracing::instrument(skip(self, keys))]
-    pub async fn reindex(&self, keys: &[cyphr::Key], total_check: bool) -> Result<(), EngineError> {
-        use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-        use crate::import::is_transaction_typ;
-
-        if total_check {
-            self.indexer.clear(&DeriveToken::new()).await?;
-        }
-
-        let iter = self.blob_store.iter().await?;
-        let hashes: Vec<Blake3Hash> = iter.collect::<Result<Vec<_>, _>>()?;
-        tracing::debug!("reindex: found {} blobs in store", hashes.len());
-
-        // Blobs already covered by a durable CommitManifest must never be
-        // reconstructed from raw content: their exact ingest-time order and
-        // derived digests are authoritative via `rebuild_index_from_manifests`
-        // (run last, below), not the deterministic-but-unverified sort order
-        // raw recovery falls back to. Detected unconditionally (not gated on
-        // `total_check`), since a manifest's own referenced blobs would
-        // otherwise still be swept into a `total_check` full raw rescan.
-        //
-        // Also tally each principal's manifest-backed commit count: a
-        // durable indexer backend (e.g. SQL) enforces a real uniqueness
-        // constraint on (principal_id, sequence), so a raw-bootstrapped
-        // genesis (below) must start numbering *after* any manifest-backed
-        // commits already known for that same principal_id, never at a
-        // sequence a manifest-backed commit will also occupy.
-        let mut manifested_hashes = std::collections::HashSet::new();
-        let mut manifest_commit_counts: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        for hash in &hashes {
-            let Some(data) = self.blob_store.get(hash).await? else {
-                continue;
-            };
-            let Ok(manifest) = serde_json::from_slice::<CommitManifest>(&data) else {
-                continue;
-            };
-            if manifest.kind != COMMIT_MANIFEST_KIND {
-                continue;
-            }
-            manifested_hashes.insert(*hash);
-            manifested_hashes.extend(manifest.commit.blob_hashes.iter().copied());
-            let count = manifest_commit_counts
-                .entry(manifest.commit.principal_id.clone())
-                .or_insert(0);
-            *count = (*count).max(manifest.commit.sequence + 1);
-        }
-
-        let mut cozies = Vec::new();
-        for hash in hashes {
-            if manifested_hashes.contains(&hash) {
-                continue;
-            }
-            if !total_check && self.indexer.is_blob_indexed(&hash).await? {
-                continue;
-            }
-
-            let data = match self.blob_store.get(&hash).await? {
-                Some(d) => d,
-                None => continue,
-            };
-
-            #[derive(serde::Deserialize)]
-            struct CozExtractor<'a> {
-                #[serde(borrow)]
-                pay: &'a serde_json::value::RawValue,
-                sig: String,
-                key: Option<serde_json::Value>,
-            }
-
-            let ext: CozExtractor = match serde_json::from_slice(&data) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(
-                        "reindex: CozExtractor deserialize failed: {:?}, data = '{}'",
-                        e,
-                        String::from_utf8_lossy(&data)
-                    );
-                    continue;
-                },
-            };
-
-            let sig = match Base64UrlUnpadded::decode_vec(&ext.sig) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        "reindex: base64 decode of sig '{}' failed: {:?}",
-                        ext.sig,
-                        e
-                    );
-                    continue;
-                },
-            };
-
-            let pay_json = ext.pay.get().as_bytes().to_vec();
-
-            #[derive(serde::Deserialize)]
-            struct PayFields {
-                typ: String,
-                pre: Option<String>,
-                tmb: String,
-                now: i64,
-                alg: String,
-            }
-
-            let pay: PayFields = match serde_json::from_str(ext.pay.get()) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(
-                        "reindex: PayFields deserialize failed: {:?}, pay = '{}'",
-                        e,
-                        ext.pay.get()
-                    );
-                    continue;
-                },
-            };
-
-            let mut key_info = None;
-            let new_key = if let Some(k) = &ext.key {
-                if let Some(ke) = key_value_to_entry(k) {
-                    key_info = Some(crate::PublicKeyInfo {
-                        thumbprint: ke.tmb.clone(),
-                        algorithm: ke.alg.clone(),
-                        public_key: ke.pub_key.clone(),
-                    });
-                    crate::import::key_entry_to_key(&ke).ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let czd = cyphr::compute_czd(&pay_json, &sig, &pay.alg).ok_or_else(|| {
-                EngineError::MalformedBlob(format!("blob {hash}: czd computation failed"))
-            })?;
-
-            cozies.push(ParsedCozInfo {
-                hash,
-                pay_json,
-                sig,
-                czd,
-                typ: pay.typ,
-                pre: pay.pre,
-                tmb: pay.tmb,
-                now: pay.now,
-                alg: pay.alg,
-                new_key,
-                key_info,
-            });
-        }
-
-        tracing::debug!("total cozies parsed: {}", cozies.len());
-
-        // Separate transactions and actions
-        let (mut tx_cozies, action_cozies): (Vec<_>, Vec<_>) =
-            cozies.into_iter().partition(|c| is_transaction_typ(&c.typ));
-
-        tracing::debug!(
-            "tx_cozies count: {}, action_cozies count: {}",
-            tx_cozies.len(),
-            action_cozies.len()
-        );
-
-        let mut bootstrapped = Vec::new();
-
-        // Note: principals already fully indexed via manifest recovery
-        // (above) need no further bootstrapping here -- there is no
-        // remaining raw, non-manifest content for them to append, since
-        // every commit reaching this store through `ingest_commit`/
-        // `submit_commit` durably retains a manifest. Only genuinely
-        // un-manifested raw content (steps 1 and 2 below) needs a fresh
-        // `Principal` constructed to process it.
-
-        // 1. Bootstrap from raw, non-manifest genesis markers: a standalone
-        // coz whose `pre` is present AND explicitly empty. This is never true
-        // for an ordinary mutation cozy, which omits `pre` entirely
-        // (deserializing to `None`) now that the field was dropped from every
-        // mutation, not just genesis ones -- only a deliberately-marked
-        // legacy/synthetic genesis coz sets it to `Some("")`.
-        // Exclude finalizer commit/create cozies from being consumed as mock genesis cozies
-        let mut mock_genesis_cozies = Vec::new();
-        for c in &tx_cozies {
-            if !c.typ.contains("/commit/create") && c.pre.as_deref() == Some("") {
-                if let Some(key) = &c.new_key {
-                    mock_genesis_cozies.push((c.clone(), key.clone()));
-                }
-            }
-        }
-
-        // Remove mock genesis cozies from tx_cozies
-        tx_cozies.retain(|c| !mock_genesis_cozies.iter().any(|(m, _)| m.hash == c.hash));
-
-        for (mock_coz, key) in mock_genesis_cozies {
-            let principal_id = implicit_genesis_principal_id(&key)?;
-            let storage = (self.storage_factory)(&principal_id).map_err(EngineError::Storage)?;
-            let principal = cyphr::Principal::implicit_with_storage(key, storage)?;
-
-            // Start numbering after any manifest-backed commits this
-            // principal_id already has (see the manifest pre-scan above) --
-            // never at a sequence one of them will also occupy.
-            let mut sequence: u64 = manifest_commit_counts
-                .get(&principal_id)
-                .copied()
-                .unwrap_or(0);
-
-            // Index the mock genesis cozy at the next free sequence.
-            let genesis_commit_ids = format_multihash_all(principal.pr().as_multihash())?;
-            let genesis_prs = format_multihash_all(principal.pr().as_multihash())?;
-            // `implicit_with_storage` (two lines above) unconditionally sets
-            // `sr: Some(sr)` -- a freshly constructed implicit principal
-            // always has an SR, never None.
-            let genesis_srs = format_multihash_all(principal.sr().unwrap().as_multihash())?;
-            let genesis_ars = format_multihash_all(principal.auth_root().as_multihash())?;
-
-            let mut genesis_keys = Vec::new();
-            if let Some(info) = &mock_coz.key_info {
-                genesis_keys.push(info.clone());
-            }
-
-            let genesis_indexable = IndexableCommit {
-                principal_id: principal_id.clone(),
-                commit_ids: genesis_commit_ids,
-                sequence,
-                pre: None,
-                prs: genesis_prs,
-                srs: genesis_srs,
-                ars: genesis_ars,
-                // No CR at genesis: PR = SR until the first real commit
-                // populates the EML log.
-                crs: Vec::new(),
-                blob_hashes: vec![mock_coz.hash],
-                cozies: vec![map_coz_info(&mock_coz, &principal.active_algs())],
-                timestamp: mock_coz.now,
-                keys: genesis_keys,
-            };
-            self.indexer
-                .index_commit(&genesis_indexable, &DeriveToken::new())
-                .await?;
-            sequence += 1;
-
-            bootstrapped.push((principal, principal_id, sequence));
-        }
-
-        // 2. Bootstrap explicitly-supplied genesis keys (e.g. loaded from a
-        // keystore at startup, per `cyphr-cli`'s parse_store). Trusted
-        // directly rather than filtered by any in-band cozy signal: since `pre`
-        // was removed from every ordinary mutation cozy, no reliable
-        // per-cozy marker distinguishes a genesis key/create from a later
-        // one, so the caller-supplied candidate is the only signal left.
-        // Skips any key whose principal is already bootstrapped above.
-        for key in keys {
-            let principal_id = implicit_genesis_principal_id(key)?;
-            if bootstrapped.iter().any(|(_, pid, _)| pid == &principal_id) {
-                continue;
-            }
-            let storage = (self.storage_factory)(&principal_id).map_err(EngineError::Storage)?;
-            let principal = cyphr::Principal::implicit_with_storage(key.clone(), storage)?;
-            let sequence = manifest_commit_counts
-                .get(&principal_id)
-                .copied()
-                .unwrap_or(0);
-            bootstrapped.push((principal, principal_id, sequence));
-        }
-
-        // Recombine remaining transactions and actions into a single chronological pool.
-        let mut pool = tx_cozies;
-        pool.extend(action_cozies);
-
-        // Sort pool by timestamp to facilitate sequential application.
-        // For cozies with the same timestamp, ensure mutation transactions
-        // come first, then actions, then finalizer commit/create cozies
-        // last. If they are in the same category, use lexical byte order
-        // of their czd as the tie-breaker. This is the single,
-        // deterministic order applied to same-timestamp mutations below
-        // -- no search over alternate orderings.
-        //
-        // SPEC is silent on this specific application order. The governing
-        // clause is docs/specs/storage-engine.md's [recovery-reindex]
-        // (reindex MUST match a clean sequential ingest) and its "Recovery
-        // ordering" resolution (deterministic; no permutation search;
-        // ordering comes from the wire format's pre/txs_order for objects
-        // that ARE part of a commit) -- neither speaks to how a
-        // standalone data action interleaves with a same-timestamp
-        // commit, since a data action is not a commit member and carries
-        // no `pre`/`txs_order` linkage to one. Main-SPEC.md's own explicit
-        // ordering rules (§3.7's digest-child ordering, §4.8.1's DR
-        // tie-break) are a separate, narrower concern: digest computation
-        // for an already-assembled `txs` batch, not this raw-fallback
-        // engine heuristic for un-manifested content. So this tie-break is
-        // a deliberate implementation choice, not a normative one -- and
-        // the two orders are NOT interchangeable.
-        // Below, an action sorting *before* the first transaction in the
-        // pool is applied directly to `principal` as a "pre-action" (see
-        // step 1.1), which mutates `principal` -- and therefore the clone
-        // `test_principal` a same-timestamp commit's finalizer trial reads
-        // its `fwd` component from -- *before* that trial runs. A
-        // same-timestamp action sorted ahead of its sibling transaction
-        // would silently change the state a commit's already-signed
-        // `arrow` was computed against, so no candidate finalizer would
-        // ever verify and reindex would hard-fail for that principal
-        // (taking the whole server down, since this runs on every
-        // startup). Sorting the transaction first avoids that: the action
-        // instead falls into the "deferred" bucket (applied after the
-        // commit finalizes, onto `next_principal`), so it can never
-        // corrupt an in-flight arrow trial. The trade-off is narrower and
-        // strictly safer: if the same-timestamp transaction also
-        // deactivates the action's signer (e.g. `key/replace`,
-        // `key/revoke`), the deferred action fails its own key-liveness
-        // check and is dropped -- a best-effort raw-recovery heuristic
-        // losing one action in a rare same-timestamp coincidence, not a
-        // server that fails to boot.
-        pool.sort_by(|a, b| match a.now.cmp(&b.now) {
-            std::cmp::Ordering::Equal => {
-                let a_is_commit = a.typ.contains("/commit/create");
-                let b_is_commit = b.typ.contains("/commit/create");
-                if a_is_commit != b_is_commit {
-                    a_is_commit.cmp(&b_is_commit)
-                } else {
-                    let a_is_tx = is_transaction_typ(&a.typ);
-                    let b_is_tx = is_transaction_typ(&b.typ);
-                    if a_is_tx != b_is_tx {
-                        b_is_tx.cmp(&a_is_tx)
-                    } else {
-                        a.czd.as_bytes().cmp(b.czd.as_bytes())
-                    }
-                }
-            },
-            other => other,
-        });
-
-        for (mut principal, principal_id, mut sequence) in bootstrapped {
-            loop {
-                let mut commit_blobs = Vec::new();
-                let mut commit_cozies = Vec::new();
-
-                let mut first_tx_idx = None;
-                for (idx, coz) in pool.iter().enumerate() {
-                    if is_transaction_typ(&coz.typ) {
-                        first_tx_idx = Some(idx);
-                        break;
-                    }
-                }
-
-                let Some(tx_start_idx) = first_tx_idx else {
-                    break;
-                };
-
-                // 1.1 Apply all pre-actions before the first transaction.
-                for coz in pool.iter().take(tx_start_idx) {
-                    let tmb_bytes = match Base64UrlUnpadded::decode_vec(&coz.tmb) {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                    let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
-
-                    if principal.is_key_active(&signer_tmb) {
-                        let alg = &coz.alg;
-                        let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
-                            Some(c) => c,
-                            None => continue,
-                        };
-
-                        let res = principal.verify_and_record_action(
-                            &coz.pay_json,
-                            &coz.sig,
-                            czd.clone(),
-                        );
-                        tracing::debug!(
-                            "reindex pre-action: typ={}, now={}, res={:?}",
-                            coz.typ,
-                            coz.now,
-                            res
-                        );
-                        if res.is_ok() {
-                            commit_blobs.push(coz.hash);
-                            commit_cozies.push(coz.clone());
-                        }
-                    }
-                }
-
-                // 1.2 Gather mutation transactions and finalizers for the
-                // current commit. `mutations` is already in the pool's
-                // single deterministic sorted order (timestamp, category,
-                // then lexical czd tie-break) -- applied directly below,
-                // with no search over alternate orderings.
-                let target_time = pool[tx_start_idx].now;
-
-                let mutations: Vec<_> = pool
-                    .iter()
-                    .filter(|c| {
-                        c.now == target_time
-                            && is_transaction_typ(&c.typ)
-                            && !c.typ.contains("/commit/create")
-                    })
-                    .cloned()
-                    .collect();
-
-                let finalizers: Vec<_> = pool
-                    .iter()
-                    .filter(|c| c.now == target_time && c.typ.contains("/commit/create"))
-                    .cloned()
-                    .collect();
-
-                if finalizers.is_empty() {
-                    // No completing finalizer at this timestamp: an
-                    // incomplete/crashed commit, not an error -- its raw
-                    // content stays harmlessly unindexed until a finalizer
-                    // arrives. Not silent, though: this reindex runs on
-                    // every server startup, so a stalled principal needs
-                    // to be visible to an operator, matching the
-                    // dropped-deferred-action precedent above.
-                    tracing::warn!(
-                        "reindex: incomplete commit for principal {principal_id} at timestamp \
-                         {target_time} -- {} mutation cozy(ies) present but no commit/create \
-                         finalizer found; raw content stays unindexed until a finalizer arrives",
-                        mutations.len()
-                    );
-                    break;
-                }
-
-                let mut matched_combination = None;
-
-                for finalizer_coz in &finalizers {
-                    let alg = &finalizer_coz.alg;
-                    let finalizer_czd = match cyphr::compute_czd(
-                        &finalizer_coz.pay_json,
-                        &finalizer_coz.sig,
-                        alg,
-                    ) {
-                        Some(c) => c,
-                        None => continue,
-                    };
-
-                    let claimed_arrow = if let Ok(value) =
-                        serde_json::from_slice::<serde_json::Value>(&finalizer_coz.pay_json)
-                    {
-                        value
-                            .get("arrow")
-                            .and_then(|v| v.as_str())
-                            .and_then(|arrow_val| {
-                                arrow_val
-                                    .parse::<cyphr::state::TaggedDigest>()
-                                    .ok()
-                                    .and_then(|tagged| {
-                                        cyphr::multihash::MultihashDigest::from_single(
-                                            tagged.alg(),
-                                            tagged.as_bytes().to_vec(),
-                                        )
-                                        .ok()
-                                    })
-                            })
-                    } else {
-                        None
-                    };
-
-                    let claimed_arrow = match claimed_arrow {
-                        Some(arr) => arr,
-                        None => continue,
-                    };
-
-                    let mut test_principal = principal.clone();
-                    let mut scope = test_principal.begin_commit();
-                    let mut ok = true;
-                    let mut commit_keys = Vec::new();
-
-                    for coz in &mutations {
-                        let alg = &coz.alg;
-                        let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
-                            Some(c) => c,
-                            None => {
-                                ok = false;
-                                break;
-                            },
-                        };
-
-                        let new_key = if let Some(info) = &coz.key_info {
-                            crate::import::key_entry_to_key(&crate::KeyEntry {
-                                alg: info.algorithm.clone(),
-                                pub_key: info.public_key.clone(),
-                                tmb: info.thumbprint.clone(),
-                                tag: None,
-                                now: None,
-                            })
-                            .ok()
-                        } else {
-                            None
-                        };
-
-                        if scope
-                            .verify_and_apply(&coz.pay_json, &coz.sig, czd.clone(), new_key)
-                            .is_ok()
-                        {
-                            if let Some(info) = &coz.key_info {
-                                commit_keys.push(info.clone());
-                            }
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-
-                    if ok && scope.matches_arrow(&claimed_arrow) {
-                        // Finalize the commit using the finalizer cozy
-                        let res = scope.verify_and_apply(
-                            &finalizer_coz.pay_json,
-                            &finalizer_coz.sig,
-                            finalizer_czd.clone(),
-                            finalizer_coz.new_key.clone(),
-                        );
-                        if res.is_ok() {
-                            if let Some(info) = &finalizer_coz.key_info {
-                                commit_keys.push(info.clone());
-                            }
-
-                            let commit = match scope.finalize() {
-                                Ok(c) => c,
-                                Err(_) => continue,
-                            };
-                            let commit_ids = match format_multihash_all(&commit.tr().0) {
-                                Ok(ids) => ids,
-                                Err(_) => continue,
-                            };
-                            let ar = match format_multihash_all(commit.auth_root().as_multihash()) {
-                                Ok(val) => val,
-                                Err(_) => continue,
-                            };
-                            let sr = match format_multihash_all(commit.sr().as_multihash()) {
-                                Ok(val) => val,
-                                Err(_) => continue,
-                            };
-                            let pr = match format_multihash_all(commit.pr().as_multihash()) {
-                                Ok(val) => val,
-                                Err(_) => continue,
-                            };
-
-                            matched_combination = Some((
-                                test_principal,
-                                commit_ids,
-                                ar,
-                                sr,
-                                pr,
-                                finalizer_coz.clone(),
-                                commit_keys,
-                            ));
-                            break;
-                        }
-                    }
-                }
-
-                let Some((
-                    mut next_principal,
-                    commit_ids,
-                    ar,
-                    sr,
-                    pr,
-                    matched_finalizer,
-                    commit_keys,
-                )) = matched_combination
-                else {
-                    return Err(EngineError::MalformedBlob(format!(
-                        "reindex: principal {principal_id}'s commit at timestamp {target_time} \
-                         has {} candidate finalizer(s) but none verify against the deterministic \
-                         mutation order recovered from raw content -- recovery cannot silently \
-                         guess an alternate order",
-                        finalizers.len()
-                    )));
-                };
-
-                // Gather all consumed cozies' hashes.
-                let mut consumed_hashes: std::collections::HashSet<Blake3Hash> =
-                    pool.iter().take(tx_start_idx).map(|c| c.hash).collect();
-                for m_coz in &mutations {
-                    consumed_hashes.insert(m_coz.hash);
-                }
-                consumed_hashes.insert(matched_finalizer.hash);
-
-                // Collect deferred actions (not yet consumed, at or before this commit's time).
-                let mut deferred_actions = Vec::new();
-                for coz in pool.iter() {
-                    if coz.now <= target_time
-                        && !is_transaction_typ(&coz.typ)
-                        && !consumed_hashes.contains(&coz.hash)
-                    {
-                        let tmb_bytes = match Base64UrlUnpadded::decode_vec(&coz.tmb) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        let signer_tmb = coz::Thumbprint::from_bytes(tmb_bytes);
-
-                        let alg = &coz.alg;
-                        let czd = match cyphr::compute_czd(&coz.pay_json, &coz.sig, alg) {
-                            Some(c) => c,
-                            None => continue,
-                        };
-                        deferred_actions.push((coz.clone(), czd, signer_tmb));
-                    }
-                }
-
-                for m_coz in &mutations {
-                    commit_blobs.push(m_coz.hash);
-                    commit_cozies.push(m_coz.clone());
-                }
-                commit_blobs.push(matched_finalizer.hash);
-                commit_cozies.push(matched_finalizer.clone());
-
-                for (coz, czd, signer_tmb) in deferred_actions {
-                    if next_principal.is_key_active(&signer_tmb)
-                        && next_principal
-                            .verify_and_record_action(&coz.pay_json, &coz.sig, czd.clone())
-                            .is_ok()
-                    {
-                        commit_blobs.push(coz.hash);
-                        commit_cozies.push(coz.clone());
-                        consumed_hashes.insert(coz.hash);
-                    } else {
-                        // Best-effort raw-recovery heuristic losing one
-                        // action: its signer was deactivated by a
-                        // same-timestamp transaction before this deferred
-                        // action could apply (see the tie-break comment
-                        // above `pool.sort_by`). Not silent -- surfaced so
-                        // an operator can notice a real, if rare, recovery
-                        // data-loss event.
-                        tracing::warn!(
-                            "reindex: dropping deferred action typ={} now={} (signer inactive at \
-                             apply time)",
-                            coz.typ,
-                            coz.now
-                        );
-                    }
-                }
-
-                let commit_pre = if sequence == 0 {
-                    None
-                } else {
-                    format_multihash_all(principal.pr().as_multihash())?
-                        .first()
-                        .cloned()
-                };
-
-                let cozies = commit_cozies
-                    .iter()
-                    .map(|coz| map_coz_info(coz, &next_principal.active_algs()))
-                    .collect();
-
-                let cr = next_principal
-                    .cr()
-                    .map(|c| format_multihash_all(c.as_multihash()))
-                    .transpose()?
-                    .unwrap_or_default();
-
-                // Index this commit
-                let indexable = IndexableCommit {
-                    principal_id: principal_id.clone(),
-                    commit_ids,
-                    sequence,
-                    pre: commit_pre,
-                    prs: pr,
-                    srs: sr,
-                    ars: ar,
-                    crs: cr,
-                    blob_hashes: commit_blobs,
-                    cozies,
-                    timestamp: target_time,
-                    keys: commit_keys,
-                };
-                self.indexer
-                    .index_commit(&indexable, &DeriveToken::new())
-                    .await?;
-                sequence += 1;
-
-                // Remove consumed items from pool
-                pool.retain(|coz| !consumed_hashes.contains(&coz.hash));
-                principal = next_principal;
-            }
-        }
-
-        // Manifest-backed commits are authoritative: read their durably
-        // retained order and digests directly (no search) last, so a
-        // manifest-backed principal's real tip always wins over any raw,
-        // non-manifest content indexed above for the same principal_id
-        // (e.g. a legacy/synthetic genesis marker bootstrapped in step 1).
-        self.rebuild_index_from_manifests().await?;
-
-        Ok(())
+    /// The full-recovery form of [`Self::rebuild_index_from_manifests`]
+    /// ([recovery-reindex], [recovery-convergence]): the index is a
+    /// rebuildable cache of the blob store (root `AGENTS.md` I1), so
+    /// clearing it first also drops any entry no manifest backs. `clear`
+    /// requires a [`DeriveToken`] that only this crate can mint, which is
+    /// why the clear lives here rather than at the call site.
+    #[tracing::instrument(skip(self))]
+    pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
+        self.indexer.clear(&DeriveToken::new()).await?;
+        self.rebuild_index_from_manifests().await
     }
+}
+
+/// Hash labels an identifier may carry. A bare digest is mapped to one of
+/// these only by finding which labelled spelling names a stored principal
+/// (or, on first push, the one the genesis derives); the label is never
+/// inferred from the digest's length.
+const ID_LABELS: [&str; 3] = ["SHA-256", "SHA-384", "SHA-512"];
+
+/// The digest part of a labelled id (`ALG:digest`); an unlabelled id is
+/// returned as is. This is the wire spelling SPEC §2.2.3 gives identifiers
+/// by default (the engine stores the labelled spelling).
+pub fn bare_digest(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(_, digest)| digest)
+}
+
+/// The id `genesis` derives (SPEC §3.1): its genesis-time Principal Root in
+/// the algorithm-labelled `ALG:digest` form, the one canonical spelling
+/// every storage and index key uses (for an implicit genesis the digest is
+/// the genesis key's `tmb`).
+///
+/// # Errors
+///
+/// Returns the protocol error genesis construction raises (e.g. an empty
+/// key set).
+pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
+    let principal = match genesis {
+        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone())?,
+        crate::Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone())?,
+    };
+    Ok(principal.pr_tagged()?)
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.
@@ -1933,30 +1325,6 @@ fn format_multihash_all(
     mh.algorithms()
         .map(|alg| Ok(mh.tagged(alg)?.to_string()))
         .collect()
-}
-
-/// Compute the `principal_id` a single genesis key resolves to, without
-/// needing durable storage — `reindex`'s bootstrap loops must call
-/// `storage_factory` with this identifier, but the identifier is only
-/// knowable *after* constructing a `Principal`, and `storage_factory` is
-/// what constructs one.
-///
-/// Breaks that cycle by building a throwaway `Principal` against the
-/// always-available [`cyphr::eml::MemoryStorage`] purely to read off its
-/// `pr()`. This is safe — not an approximation — because a genesis PR is a
-/// pure function of the genesis key(s) and active algorithms alone: no CR
-/// exists yet (`PR = SR`, per SPEC §3.7.1's implicit promotion), and SR/AR/KR
-/// are all derived from key thumbprints, never from the storage backend. The
-/// throwaway principal and the one `storage_factory` goes on to build from
-/// the *same* key are therefore guaranteed to compute byte-identical PRs,
-/// which is what keeps this identifier consistent with the one
-/// `load_principal`/`submit_commit` compute for the same principal later.
-fn implicit_genesis_principal_id(key: &cyphr::Key) -> Result<String, EngineError> {
-    let throwaway = cyphr::Principal::implicit(key.clone())?;
-    format_multihash_all(throwaway.pr().as_multihash())?
-        .into_iter()
-        .next()
-        .ok_or_else(|| EngineError::InvalidInput("empty PR".into()))
 }
 
 #[cfg(test)]

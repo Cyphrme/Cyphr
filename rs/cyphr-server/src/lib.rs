@@ -10,15 +10,12 @@
 pub mod admission;
 pub mod auth;
 pub mod config;
-pub mod consistency;
 pub mod envelope;
 pub mod error;
-pub mod fanout;
 pub mod logging;
 pub mod observation;
 pub mod rate_limit;
 pub mod receipt;
-pub mod registration;
 pub mod revoke;
 pub mod routes;
 pub mod sync;
@@ -85,9 +82,6 @@ pub struct AppState {
     /// the index that a reindex rebuilds.
     pub observations: observation::ObservationStore,
 
-    /// In-memory witness registration store (SPEC §13.5.1).
-    pub registration: registration::RegistrationStore,
-
     /// Reusable HTTP client for witness state sync and upstream calls.
     pub http_client: reqwest::Client,
 
@@ -97,9 +91,6 @@ pub struct AppState {
             std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
         >,
     >,
-
-    /// Background fanout delivery tracker (SPEC §13.5).
-    pub fanout: fanout::FanoutTracker,
 }
 
 impl AppState {
@@ -141,10 +132,8 @@ impl AppState {
             principal: None,
             challenges: auth::login::ChallengeStore::new(),
             observations,
-            registration: registration::RegistrationStore::new(),
             http_client,
             sync_locks,
-            fanout: fanout::FanoutTracker::new(),
         })
     }
 
@@ -242,12 +231,6 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/patch", axum::routing::get(routes::patch))
         .route("/push", axum::routing::post(routes::push))
         .route("/revoke", axum::routing::post(routes::revoke))
-        .route(
-            "/witness/register",
-            axum::routing::post(routes::witness_register_post)
-                .get(routes::witness_register_get)
-                .delete(routes::witness_register_delete),
-        )
         .route("/e/{digest}", axum::routing::get(routes::entity))
         .route("/server", axum::routing::get(routes::identity))
         .route(
@@ -347,8 +330,8 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     let listen_addr = config.listen.clone();
     let mut state = AppState::new(config)?;
 
-    // Run incremental reindexing on startup
-    state.engine.reindex(&[], false).await?;
+    // Heal any crash-window manifests the index missed before serving
+    state.engine.rebuild_index_from_manifests().await?;
 
     // On a keyed boot, establish (or load) the server's own principal so
     // its genesis chain exists and is served like any other principal. The
@@ -546,7 +529,11 @@ mod tests {
             ..Default::default()
         };
         let mut state = AppState::new(config).expect("AppState::new with a valid key");
-        state.engine.reindex(&[], false).await.expect("reindex");
+        state
+            .engine
+            .rebuild_index_from_manifests()
+            .await
+            .expect("rebuild index");
 
         let identity = state
             .identity

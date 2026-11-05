@@ -9,7 +9,6 @@
 //! enough to drive a real call site without needing a fault-injecting fork
 //! of `eml` itself.
 
-use coz::Thumbprint;
 use cyphr::Principal;
 use cyphr::eml::{AlgorithmMetas, Storage};
 use cyphr::error::Error;
@@ -18,15 +17,7 @@ use cyphr::key::Key;
 /// A minimal single-key genesis key, sufficient to reach
 /// `Principal::implicit_with_storage`'s `CommitTrees::open` call.
 fn genesis_key() -> Key {
-    Key {
-        alg: "ES256".to_string(),
-        tmb: Thumbprint::from_bytes(vec![0u8; 32]),
-        pub_key: vec![0u8; 64],
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::from_pub_key("ES256".to_string(), vec![0u8; 64]).expect("key binds its tmb")
 }
 
 /// Always-failing storage error, standing in for a real infrastructure

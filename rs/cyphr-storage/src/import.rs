@@ -1,17 +1,12 @@
-//! Import utilities for loading Principals from stored entries.
+//! Import utilities for loading Principals from stored commit bundles.
 //!
-//! This module provides functions to reconstruct a `Principal` from stored
-//! entries, supporting both full replay from genesis and partial replay
-//! from a trusted checkpoint.
-//!
-//! Supports both legacy flat format (one cz per line) and commit-based format
-//! (one commit bundle per line).
+//! This module reconstructs a `Principal` by replaying commit bundles
+//! (one commit per line, per SPEC §4.2.1, §7.3.1) from genesis.
 
 use coz::Thumbprint;
-use cyphr::state::{AuthRoot, PrincipalGenesis};
-use cyphr::{CommitRoot, CommitTrees, Key, Principal};
+use cyphr::{Key, Principal};
 
-use crate::{CommitEntry, Entry, KeyEntry};
+use crate::{CommitEntry, KeyEntry};
 
 // ============================================================================
 // Types
@@ -34,36 +29,6 @@ pub enum Genesis {
     /// Per SPEC §5.1: "Multi-key accounts require explicit genesis"
     /// - PR is established by principal/create
     Explicit(Vec<Key>),
-}
-
-/// Trusted checkpoint for partial replay.
-///
-/// Enables thin clients to verify only recent cozies without
-/// replaying full history from genesis.
-///
-/// # Security
-///
-/// The caller must establish trust in this checkpoint before using it.
-/// Per SPEC §6.3.3, checkpoint trust is established via signature by
-/// a key the client trusts (self, service, or cross-attestation).
-#[derive(Debug, Clone)]
-pub struct Checkpoint {
-    /// The trusted Auth State at checkpoint.
-    pub auth_root: AuthRoot,
-    /// Active keys at checkpoint (needed to verify subsequent cozies).
-    pub keys: Vec<Key>,
-    /// Future: thumbprint of key that attested this checkpoint.
-    ///
-    /// Not currently verified; included for forward compatibility.
-    pub attestor: Option<Thumbprint>,
-    /// The trusted Commit Root at checkpoint, if the checkpoint carries MALT
-    /// proof-generation state (a value, like `auth_root`, not a tree).
-    ///
-    /// When `Some`, the caller must also pass the matching [`CommitTrees`] to
-    /// [`load_from_checkpoint`] — this field alone cannot reconstruct the
-    /// tree, it only lets the restored principal's CR be checked against the
-    /// value the checkpoint's issuer attested to.
-    pub cr: Option<CommitRoot>,
 }
 
 /// Errors that can occur during import.
@@ -101,11 +66,6 @@ pub enum LoadError {
         source: serde_json::Error,
     },
 
-    /// The provided `trees` produced a CR that does not match the trusted
-    /// checkpoint's `cr` field.
-    #[error("checkpoint CR mismatch: trees produced a different CR than the trusted checkpoint")]
-    CheckpointCrMismatch,
-
     /// Unsupported cryptographic algorithm.
     #[error("unsupported algorithm")]
     UnsupportedAlgorithm,
@@ -133,112 +93,9 @@ pub(crate) fn is_transaction_typ(typ: &str) -> bool {
 // Import Functions
 // ============================================================================
 
-/// Load a principal by replaying entries from genesis.
-///
-/// This performs full verification of the entire coz history.
-///
-/// # Arguments
-///
-/// * `genesis` - How the principal was created (implicit or explicit)
-/// * `entries` - All cozies and actions to replay
-///
-/// # Errors
-///
-/// Returns `LoadError` if:
-/// - Signature verification fails
-/// - Unknown signer key
-///
-/// # Example
-///
-/// ```ignore
-/// // Ignored: requires store context and key material not available in doc-test
-/// let genesis = Genesis::Implicit(my_key);
-/// let entries = store.get_entries(&pr)?;
-/// let principal = load_principal(genesis, &entries)?;
-/// ```
-pub fn load_principal(genesis: Genesis, entries: &[Entry]) -> Result<Principal, LoadError> {
-    // Create principal from genesis
-    let mut principal = match genesis {
-        Genesis::Implicit(key) => Principal::implicit(key)?,
-        Genesis::Explicit(keys) => {
-            if keys.is_empty() {
-                return Err(LoadError::NoGenesisKeys);
-            }
-            Principal::explicit(keys)?
-        },
-    };
-
-    // Replay entries
-    replay_entries(&mut principal, entries)?;
-
-    Ok(principal)
-}
-
-/// Load a principal from a trusted checkpoint.
-///
-/// This allows verification of only the coz suffix, enabling
-/// efficient sync for thin clients or after long periods offline.
-///
-/// # Security
-///
-/// The `expected_pr` parameter is required to prevent identity confusion
-/// attacks. The caller must know which principal they are loading.
-///
-/// # Arguments
-///
-/// * `expected_pr` - The expected Principal Root (for security validation)
-/// * `checkpoint` - Trusted state to start from
-/// * `trees` - The Commit Tree (EML log) state to restore, if the checkpoint carries MALT
-///   proof-generation state. `None` yields a principal with no CR, matching pre-checkpoint-CR
-///   behavior. When `Some` and `checkpoint.cr` is also `Some`, the CR computed from `trees` is
-///   verified against `checkpoint.cr` before it's trusted.
-/// * `entries` - Entries after the checkpoint to replay
-///
-/// # Example
-///
-/// ```ignore
-/// let checkpoint = Checkpoint {
-///     auth_root: trusted_as,
-///     keys: current_keys,
-///     attestor: Some(service_tmb),
-///     cr: trusted_cr,
-/// };
-/// let entries = store.get_entries_range(&pr, &QueryOpts { after: Some(cp_time), .. })?;
-/// let principal = load_from_checkpoint(pr, checkpoint, trusted_trees, &entries)?;
-/// ```
-pub fn load_from_checkpoint(
-    expected_pr: Option<PrincipalGenesis>,
-    checkpoint: Checkpoint,
-    trees: Option<CommitTrees>,
-    entries: &[Entry],
-) -> Result<Principal, LoadError> {
-    if checkpoint.keys.is_empty() {
-        return Err(LoadError::NoGenesisKeys);
-    }
-
-    let expected_cr = checkpoint.cr.clone();
-
-    // Construct principal at checkpoint state
-    // We use the first key to determine hash algorithm, then add remaining keys
-    let mut principal =
-        Principal::from_checkpoint(expected_pr, checkpoint.auth_root, checkpoint.keys, trees)?;
-
-    if let Some(expected) = expected_cr {
-        if principal.cr() != Some(&expected) {
-            return Err(LoadError::CheckpointCrMismatch);
-        }
-    }
-
-    // Replay entries from checkpoint
-    replay_entries(&mut principal, entries)?;
-
-    Ok(principal)
-}
-
 /// Load a principal by replaying commit bundles from genesis.
 ///
-/// This is the commit-based equivalent of `load_principal`, used when
-/// storage contains one commit per line (per SPEC §4.2.1, §7.3.1).
+/// Storage holds one commit per line (per SPEC §4.2.1, §7.3.1).
 ///
 /// # Arguments
 ///
@@ -263,90 +120,20 @@ pub fn load_principal_from_commits(
     genesis: Genesis,
     commits: &[CommitEntry],
 ) -> Result<Principal, LoadError> {
-    // Create principal from genesis
-    let mut principal = load_principal(genesis, &[])?; // Load from genesis, no flat entries
+    let mut principal = match genesis {
+        Genesis::Implicit(key) => Principal::implicit(key)?,
+        Genesis::Explicit(keys) => {
+            if keys.is_empty() {
+                return Err(LoadError::NoGenesisKeys);
+            }
+            Principal::explicit(keys)?
+        },
+    };
 
     // Replay commits
     replay_commits(&mut principal, commits)?;
 
     Ok(principal)
-}
-
-/// Replay entries onto a principal (shared logic).
-fn replay_entries(principal: &mut Principal, entries: &[Entry]) -> Result<(), LoadError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    for (index, entry) in entries.iter().enumerate() {
-        // Parse entry for field access (NOT for czd computation)
-        let raw = entry
-            .as_value()
-            .map_err(|_| LoadError::MissingTimestamp { index })?;
-
-        let pay = raw
-            .get("pay")
-            .ok_or(LoadError::MissingTimestamp { index })?;
-
-        let sig_b64 = raw
-            .get("sig")
-            .and_then(|s| s.as_str())
-            .ok_or(LoadError::MissingSig { index })?;
-
-        let sig =
-            Base64UrlUnpadded::decode_vec(sig_b64).map_err(|_| LoadError::InvalidSignature {
-                index,
-                message: "invalid base64 signature".into(),
-            })?;
-
-        // CRITICAL: Use pay_bytes() for bit-perfect JSON, NOT re-serialization
-        let pay_json = entry
-            .pay_bytes()
-            .map_err(|_| LoadError::MissingTimestamp { index })?;
-
-        // Determine if this is a coz or action by typ prefix
-        let header = cyphr::parsed_coz::CozHeader::parse(pay)?;
-
-        if is_transaction_typ(&header.typ) {
-            // ParsedCoz: extract key material if present
-            let new_key = extract_key_from_entry(&raw);
-
-            // Compute czd for this entry
-            let czd = compute_czd(&pay_json, &sig)?;
-
-            // Apply coz
-            principal
-                .verify_and_apply_transaction(&pay_json, &sig, czd, new_key)
-                .map_err(|e| match e {
-                    cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                        index,
-                        message: "signature verification failed".into(),
-                    },
-                    cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                        index,
-                        tmb: header.tmb.to_b64(),
-                    },
-                    other => LoadError::Protocol(other),
-                })?;
-        } else {
-            // Action: compute czd and record
-            let czd = compute_czd(&pay_json, &sig)?;
-
-            principal
-                .verify_and_record_action(&pay_json, &sig, czd)
-                .map_err(|e| match e {
-                    cyphr::Error::InvalidSignature => LoadError::InvalidSignature {
-                        index,
-                        message: "signature verification failed".into(),
-                    },
-                    cyphr::Error::UnknownKey => LoadError::UnknownSigner {
-                        index,
-                        tmb: header.tmb.to_b64(),
-                    },
-                    other => LoadError::Protocol(other),
-                })?;
-        }
-    }
-
-    Ok(())
 }
 
 pub(crate) fn canonicalize_value(val: &mut serde_json::Value) {
@@ -589,42 +376,15 @@ pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
             message: e.to_string(),
         })?;
 
-    Ok(Key {
-        alg: entry.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
+    // The one place stored/wire key material becomes a `Key`: the
+    // constructor rejects a tmb that is not the thumbprint of the pub.
+    Ok(Key::new(
+        entry.alg.clone(),
+        Thumbprint::from_bytes(tmb_bytes),
         pub_key,
-        first_seen: entry.now.unwrap_or(0),
-        last_used: None,
-        revocation: None,
-        tag: entry.tag.clone(),
-    })
-}
-
-/// Extract key material from a per-entry embedded `key` field.
-///
-/// Used by `replay_entries()` (legacy flat format) where key material
-/// is embedded in each coz entry. For commit-based format,
-/// use `key_entry_to_key()` with commit-level `keys[]` instead.
-pub(crate) fn extract_key_from_entry(raw: &serde_json::Value) -> Option<Key> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let key_obj = raw.get("key")?;
-    let alg = key_obj.get("alg")?.as_str()?;
-    let pub_b64 = key_obj.get("pub")?.as_str()?;
-    let tmb_b64 = key_obj.get("tmb")?.as_str()?;
-
-    let pub_key = Base64UrlUnpadded::decode_vec(pub_b64).ok()?;
-    let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).ok()?;
-
-    Some(Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key,
-        first_seen: 0, // Will be set by apply_transaction
-        last_used: None,
-        revocation: None,
-        tag: None,
-    })
+    )?
+    .with_first_seen(entry.now.unwrap_or(0))
+    .with_tag(entry.tag.clone()))
 }
 
 /// Compute Coz digest for an entry.
@@ -653,36 +413,19 @@ mod tests {
     use super::*;
 
     fn make_test_key(id: u8) -> Key {
-        Key {
-            alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 32]),
-            pub_key: vec![id; 64],
-            first_seen: 1000,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+        Key::from_pub_key("ES256", vec![id; 64])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     #[test]
-    fn load_implicit_genesis_no_entries() {
-        let key = make_test_key(0xAA);
-        let _expected_tmb = key.tmb.clone();
-
-        let principal = load_principal(Genesis::Implicit(key), &[]).unwrap();
-
-        // Implicit genesis: PG is None at L1
-        assert!(principal.pg().is_none(), "PG should be None at L1");
-        assert_eq!(principal.active_key_count(), 1);
-    }
-
-    #[test]
-    fn load_explicit_genesis_no_entries() {
+    fn load_explicit_genesis_no_commits() {
         let key1 = make_test_key(0xAA);
         let key2 = make_test_key(0xBB);
 
         let principal =
-            load_principal(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[]).unwrap();
+            load_principal_from_commits(Genesis::Explicit(vec![key1.clone(), key2.clone()]), &[])
+                .unwrap();
 
         // Explicit genesis: PG is None (needs principal/create)
         assert!(
@@ -690,48 +433,45 @@ mod tests {
             "PG should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
-        assert!(principal.is_key_active(&key1.tmb));
-        assert!(principal.is_key_active(&key2.tmb));
+        assert!(principal.is_key_active(key1.tmb()));
+        assert!(principal.is_key_active(key2.tmb()));
     }
 
     #[test]
     fn load_explicit_genesis_empty_keys_fails() {
-        let result = load_principal(Genesis::Explicit(vec![]), &[]);
+        let result = load_principal_from_commits(Genesis::Explicit(vec![]), &[]);
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 
-    /// F29: an entry whose pay is missing `typ` must be rejected outright
-    /// during replay, not silently misclassified. Before the fix,
-    /// replay_entries's hand-rolled extraction defaulted a missing `typ`
-    /// to `""`, and `is_transaction_typ("")` is false -- so a malformed
-    /// coz could be silently routed to `verify_and_record_action` instead
-    /// of being rejected. `now` must still be present here: `Entry`
-    /// construction itself already validates that field independently, so
-    /// this test isolates the `typ` gap `CozHeader::parse` closes.
+    /// Claim: a commit whose coz pay omits `typ` is rejected as malformed
+    /// during replay, never silently routed to the action path (a missing
+    /// `typ` is not a transaction type, so only `CozHeader::parse` stops it).
+    /// Turns red if replay stops parsing the header strictly. Not an
+    /// end-to-end scenario: it needs a malformed commit no honest write path
+    /// produces, so only a direct replay reaches it.
     #[test]
-    fn load_principal_rejects_entry_missing_typ() {
+    fn replay_rejects_commit_missing_typ() {
         let key = make_test_key(0xAA);
-        let tmb_b64 = key.tmb.to_b64();
-
         let malformed = serde_json::json!({
-            "pay": {
-                "alg": "ES256",
-                "tmb": tmb_b64,
-                "now": 1000
-                // "typ" deliberately omitted
-            },
+            "pay": { "alg": "ES256", "tmb": key.tmb().to_b64(), "now": 1000 },
             "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         });
-        let entry = crate::Entry::from_value(&malformed).expect("entry construction");
+        let commit = CommitEntry::new(
+            vec![malformed],
+            vec![],
+            "SHA-256:c".into(),
+            "SHA-256:a".into(),
+            "SHA-256:s".into(),
+            "SHA-256:p".into(),
+        );
 
-        let result = load_principal(Genesis::Implicit(key), &[entry]);
+        let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]);
         assert!(
             matches!(
                 result,
                 Err(LoadError::Protocol(cyphr::Error::MalformedPayload))
             ),
-            "an entry missing 'typ' must be rejected as malformed, not silently misclassified as \
-             an action, got {result:?}"
+            "a coz missing 'typ' must be rejected as malformed, got {result:?}"
         );
     }
 
@@ -752,24 +492,5 @@ mod tests {
         assert!(is_transaction_typ("cyphr.me/cyphr/principal/delete"));
         assert!(is_transaction_typ("cyphr.me/cyphr/freeze/create"));
         assert!(is_transaction_typ("cyphr.me/cyphr/freeze/delete"));
-    }
-
-    #[test]
-    fn checkpoint_empty_keys_fails() {
-        use cyphr::multihash::MultihashDigest;
-        use cyphr::state::HashAlg;
-
-        let pr = PrincipalGenesis::from_bytes(vec![0xAA; 32]).unwrap();
-        let checkpoint = Checkpoint {
-            auth_root: AuthRoot(
-                MultihashDigest::from_single(HashAlg::Sha256, vec![0xBB; 32]).unwrap(),
-            ),
-            keys: vec![],
-            attestor: None,
-            cr: None,
-        };
-
-        let result = load_from_checkpoint(Some(pr), checkpoint, None, &[]);
-        assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 }

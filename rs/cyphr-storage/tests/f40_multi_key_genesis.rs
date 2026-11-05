@@ -28,15 +28,7 @@ fn load_pool() -> test_fixtures::Pool {
 fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
     let tmb = pk.compute_tmb().expect("pool tmb");
-    cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 fn pool_key_json(pk: &test_fixtures::PoolKey) -> serde_json::Value {
@@ -136,7 +128,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
 
     let commit1 = scope1
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize (client side)");
     assert_eq!(commit1.len(), 2, "principal/create + commit/create");
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
@@ -149,7 +145,9 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
     let index_path = dir.path().join("index");
-    let principal_id = "f40-durable-multi-key-genesis";
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id = principal_id.as_str();
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");
     let blob_store = FjallBlobStore::from_database(db.clone()).expect("blob store");
@@ -187,7 +185,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         )
         .expect("key/create mutation should apply to the second commit (client side)");
     let commit2 = scope2
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 

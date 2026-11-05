@@ -290,15 +290,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's genesis_keys array.
@@ -584,7 +581,8 @@ async fn submit_commit_valid_fixture() {
     let expected = &fixture["expected"];
 
     let engine = test_engine();
-    let principal_id = "submit-test";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Submit each commit in the fixture through the validated write path.
     for commit in commits {
@@ -643,8 +641,9 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
     );
 
     let engine = test_engine();
-    let principal_id = "action-only-test";
     let genesis = make_genesis(genesis_keys);
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let principal_id = principal_id.as_str();
 
     let blobs = build_raw_blobs(&commits[0]);
     let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
@@ -691,8 +690,9 @@ async fn submit_commit_rejects_blob_missing_typ() {
     let bytes = serde_json::to_vec(&malformed).unwrap();
 
     let engine = test_engine();
+    let principal_id = genesis_principal_id(&genesis).unwrap();
     let result = engine
-        .submit_commit("f29-missing-typ", Some(genesis), &[&bytes])
+        .submit_commit(&principal_id, Some(genesis), &[&bytes])
         .await;
 
     assert!(
@@ -709,7 +709,8 @@ async fn submit_commit_bad_signature_rejected() {
     let commits = fixture["commits"].as_array().unwrap();
 
     let engine = test_engine();
-    let principal_id = "submit-bad-sig";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Build blobs from the first commit but tamper with the signature.
     let first_commit = &commits[0];
@@ -750,7 +751,10 @@ async fn submit_commit_empty_rejected() {
     let engine = test_engine();
     let genesis = make_genesis(genesis_keys);
 
-    let result = engine.submit_commit("empty-test", Some(genesis), &[]).await;
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let result = engine
+        .submit_commit(&principal_id, Some(genesis), &[])
+        .await;
     assert!(result.is_err(), "empty blob list should be rejected");
 }
 
@@ -762,7 +766,8 @@ async fn submit_then_load_round_trip() {
     let expected = &fixture["expected"];
 
     let engine = test_engine();
-    let principal_id = "round-trip-submit";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Submit all commits.
     for commit in commits {
@@ -886,6 +891,45 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
 /// This must resolve to full absence -- the orphaned blob is harmless,
 /// content-addressed leftover data (never surfaced through the index),
 /// not a half-formed commit.
+/// Claim: `rebuild_index_from_scratch` discards the index before rebuilding,
+/// so an entry no manifest backs does not survive it, and the returned count
+/// is the number of manifests replayed. Turns red if the `clear` is dropped
+/// (the orphan stays indexed). End-to-end scenario: yes, a stale index
+/// healed through the public recovery entry point.
+#[tokio::test]
+async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
+    let engine = test_engine();
+    let blob = b"{\"pay\":{\"now\":1000}}";
+    engine
+        .ingest_commit(&[blob.as_slice()], make_meta("alice", 0, 1000))
+        .await
+        .expect("ingest_commit failed");
+
+    // An indexed commit with no manifest: what a corrupted or stale index
+    // holds that the blob store cannot account for.
+    engine
+        .indexer()
+        .index_commit(&make_meta("orphan", 0, 1000), &DeriveToken::new())
+        .await
+        .expect("index orphan");
+    assert!(engine.indexer().get_tip("orphan").await.unwrap().is_some());
+
+    let rebuilt = engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("rebuild_index_from_scratch failed");
+
+    assert_eq!(rebuilt, 1, "count must equal the manifests replayed");
+    assert!(
+        engine.indexer().get_tip("orphan").await.unwrap().is_none(),
+        "an entry with no backing manifest must not survive a from-scratch rebuild"
+    );
+    assert!(
+        engine.indexer().get_tip("alice").await.unwrap().is_some(),
+        "the manifest-backed principal must be rebuilt"
+    );
+}
+
 #[tokio::test]
 async fn crash_before_manifest_write_leaves_commit_fully_absent() {
     let engine = test_engine();
@@ -915,8 +959,7 @@ async fn crash_before_manifest_write_leaves_commit_fully_absent() {
 }
 
 /// The commit's intra-commit transaction order must be readable directly
-/// from its durable manifest -- not via `reindex`'s permutation search --
-/// and must match the exact order `ingest_commit` was called with.
+/// from its durable manifest, and must match the exact order `ingest_commit` was called with.
 #[tokio::test]
 async fn manifest_retains_ingest_order_without_search() {
     let engine = test_engine();
@@ -948,8 +991,7 @@ async fn manifest_retains_ingest_order_without_search() {
     ];
 
     // Read the manifest back directly from the blob store -- the same
-    // mechanism `rebuild_index_from_manifests` uses -- rather than via
-    // `reindex`'s permutation search.
+    // mechanism `rebuild_index_from_manifests` uses.
     let manifest_bytes = engine
         .blob_store()
         .get(
@@ -982,309 +1024,6 @@ async fn manifest_retains_ingest_order_without_search() {
     assert_eq!(manifest.commit.ars, vec![tip.ar]);
 }
 
-#[tokio::test]
-async fn test_reindex_recovery() {
-    use coz::base64ct::Encoding;
-
-    let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let blob_store = MemoryBlobStore::new();
-    let indexer = MemoryIndexer::new();
-    let engine = StorageEngine::new(blob_store.clone(), indexer);
-
-    // Compute the actual principal_id from the genesis key
-    let key = golden_key_to_domain(&genesis_keys[0]);
-    let temp_principal = cyphr::Principal::implicit(key).unwrap();
-    let pr_bytes = temp_principal
-        .pr()
-        .as_multihash()
-        .get(cyphr::state::HashAlg::Sha256)
-        .unwrap();
-    let principal_id = format!(
-        "SHA-256:{}",
-        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
-    );
-
-    // Submit all commits.
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-
-        engine
-            .submit_commit(&principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    // Create and write a mock genesis cozy to the BlobStore so reindex() can bootstrap the
-    // principal.
-    let genesis_key = &genesis_keys[0];
-    let genesis_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/create",
-            "now": 1000000,
-            "pre": "",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig",
-        "key": genesis_key
-    });
-
-    let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let _genesis_blob_hash = blob_store.put(&genesis_coz_bytes).await.unwrap();
-
-    // Get original tip state.
-    let original_tip = engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("tip should exist");
-
-    // Get a digest to resolve later as a sanity check.
-    let tagged_digest: TaggedDigest = original_tip.pr.parse().unwrap();
-    let original_entity = engine
-        .indexer
-        .resolve_digest(&tagged_digest)
-        .await
-        .unwrap()
-        .unwrap();
-
-    // Create a new engine sharing the same blob store but with a completely empty indexer.
-    let new_indexer = MemoryIndexer::new();
-    let recovery_engine = StorageEngine::new(blob_store, new_indexer);
-
-    // Reindex from the blobs.
-    recovery_engine
-        .reindex(&[], false)
-        .await
-        .expect("reindex failed");
-
-    // Verify recovery.
-    let recovered_tip = recovery_engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("recovered tip should exist");
-
-    // Recovered tip should have 1 more commit (the mock genesis commit).
-    assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
-    assert_eq!(recovered_tip.pr, original_tip.pr);
-    assert_eq!(recovered_tip.sr, original_tip.sr);
-    assert_eq!(recovered_tip.ar, original_tip.ar);
-
-    // Verify digest resolution.
-    let recovered_entity = recovery_engine
-        .indexer
-        .resolve_digest(&tagged_digest)
-        .await
-        .unwrap()
-        .expect("digest should resolve in recovered indexer");
-
-    assert_eq!(recovered_entity.blob_hash, original_entity.blob_hash);
-}
-
-#[tokio::test]
-async fn test_reindex_recovery_with_crashed_commit() {
-    use coz::base64ct::Encoding;
-
-    let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let blob_store = MemoryBlobStore::new();
-    let indexer = MemoryIndexer::new();
-    let engine = StorageEngine::new(blob_store.clone(), indexer);
-
-    // Compute the actual principal_id from the genesis key
-    let key = golden_key_to_domain(&genesis_keys[0]);
-    let temp_principal = cyphr::Principal::implicit(key).unwrap();
-    let pr_bytes = temp_principal
-        .pr()
-        .as_multihash()
-        .get(cyphr::state::HashAlg::Sha256)
-        .unwrap();
-    let principal_id = format!(
-        "SHA-256:{}",
-        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
-    );
-
-    // Submit all commits.
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-
-        engine
-            .submit_commit(&principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    // Write a mock genesis cozy to the BlobStore
-    let genesis_key = &genesis_keys[0];
-    let genesis_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/create",
-            "now": 1000000,
-            "pre": "",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig",
-        "key": genesis_key
-    });
-
-    let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let _ = blob_store.put(&genesis_coz_bytes).await.unwrap();
-
-    // Now write a random transaction cozy simulating a crashed commit write (missing finalizer
-    // cozy)
-    let crashed_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/add",
-            "now": 1800000000,
-            "pre": "some-pre-hash",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig-crashed",
-        "key": genesis_key
-    });
-    let crashed_coz_bytes = serde_json::to_vec(&crashed_coz_json).unwrap();
-    let _ = blob_store.put(&crashed_coz_bytes).await.unwrap();
-
-    // Create a new engine sharing the same blob store but with a completely empty indexer.
-    let new_indexer = MemoryIndexer::new();
-    let recovery_engine = StorageEngine::new(blob_store, new_indexer);
-
-    // Reindex from the blobs. This must succeed, skipping the crashed/unfinalized cozy.
-    recovery_engine
-        .reindex(&[], false)
-        .await
-        .expect("reindex recovery with crashed commit failed");
-
-    // Verify recovery.
-    let recovered_tip = recovery_engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("recovered tip should exist");
-
-    // Tip commit count should match original_tip + 1 (for genesis_coz), completely ignoring the
-    // crashed cozy.
-    let original_tip = engine.get_tip(&principal_id).await.unwrap().unwrap();
-    assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
-}
-
-/// A principal's CR must survive a checkpoint save/restore cycle
-/// byte-identically once the caller threads real `CommitTrees` through.
-#[tokio::test]
-async fn checkpoint_round_trip_preserves_cr() {
-    use crate::import::{Checkpoint, load_from_checkpoint};
-
-    let fixture = load_golden("mutations", "key_add_changes_state");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let engine = test_engine();
-    let principal_id = "checkpoint-cr-test";
-
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-        engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    let genesis = make_genesis(genesis_keys);
-    let principal = engine
-        .load_principal(principal_id, genesis)
-        .await
-        .expect("load after submit failed");
-
-    let original_cr = principal.cr().cloned();
-    assert!(
-        original_cr.is_some(),
-        "fixture with real commits should produce a CR"
-    );
-
-    let trees = principal.commit_trees().clone();
-    let keys: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
-
-    let checkpoint = Checkpoint {
-        auth_root: principal.auth_root().clone(),
-        keys,
-        attestor: None,
-        cr: original_cr.clone(),
-    };
-
-    let restored = load_from_checkpoint(principal.pg().cloned(), checkpoint, Some(trees), &[])
-        .expect("load_from_checkpoint failed");
-
-    assert_eq!(
-        restored.cr().cloned(),
-        original_cr,
-        "checkpoint round-trip must preserve CR byte-identically"
-    );
-}
-
-/// `load_from_checkpoint` without trees must keep today's backward-
-/// compatible behavior: no CR, empty commit_trees.
-#[tokio::test]
-async fn checkpoint_without_trees_still_has_no_cr() {
-    use crate::import::{Checkpoint, load_from_checkpoint};
-
-    let fixture = load_golden("mutations", "key_add_changes_state");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let engine = test_engine();
-    let principal_id = "checkpoint-no-trees-test";
-
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-        engine
-            .submit_commit(principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    let genesis = make_genesis(genesis_keys);
-    let principal = engine
-        .load_principal(principal_id, genesis)
-        .await
-        .expect("load after submit failed");
-
-    let keys: Vec<cyphr::Key> = principal.active_keys().cloned().collect();
-    let checkpoint = Checkpoint {
-        auth_root: principal.auth_root().clone(),
-        keys,
-        attestor: None,
-        cr: None,
-    };
-
-    let restored = load_from_checkpoint(principal.pg().cloned(), checkpoint, None, &[])
-        .expect("load_from_checkpoint failed");
-
-    assert!(
-        restored.cr().is_none(),
-        "load_from_checkpoint without trees must have no CR"
-    );
-    assert!(
-        restored.commit_trees().is_empty(),
-        "load_from_checkpoint without trees must have empty commit_trees"
-    );
-}
-
 // ========================================================================
 // F40: multi-key genesis + second commit (StorageEngine::submit_commit's
 // real replay-based reload path)
@@ -1306,15 +1045,7 @@ fn pool_key_to_domain(pk: &test_fixtures::PoolKey) -> cyphr::Key {
 
     let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pool pub base64");
     let tmb = pk.compute_tmb().expect("pool tmb");
-    cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 /// The `"key"` JSON object a raw blob embeds for a key-introducing coz,
@@ -1381,7 +1112,7 @@ fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
 /// which reconstructs the principal via a full replay (`load_principal`) on
 /// *every* call rather than reusing one live in-memory instance. Every raw
 /// blob submitted here is produced by a correctly-computing client
-/// (`CommitScope::finalize_with_arrow` on its own independently-maintained
+/// (`CommitScope::finalize_with_software` on its own independently-maintained
 /// principal), so any failure below is a genuine server-side asymmetry, not
 /// a malformed test fixture. No existing golden fixture or test exercises
 /// an *established* (`principal/create`-finalized) multi-key genesis
@@ -1439,7 +1170,11 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     };
 
     let commit1 = scope1
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize (client side)");
     assert_eq!(commit1.len(), 2, "principal/create + commit/create");
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
@@ -1450,7 +1185,8 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     );
 
     let engine = test_engine();
-    let principal_id = "f40-multi-key-genesis";
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let principal_id = principal_id.as_str();
 
     engine
         .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
@@ -1482,7 +1218,11 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         )
         .expect("key/create mutation should apply to the second commit (client side)");
     let commit2 = scope2
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 
@@ -1493,4 +1233,46 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
             "a second commit signed on top of a fresh multi-key established genesis must submit \
              without a state-root mismatch (F40)",
         );
+}
+
+/// Backs the KA1/D2 claim: `submit_commit` refuses any `principal_id` that
+/// is not the id the genesis derives (SPEC §3.1), before touching storage.
+/// Fails if `ensure_genesis_derived_id` is removed: the valid genesis commit
+/// would then be accepted under the unrelated id and leave a tip behind.
+#[tokio::test]
+async fn submit_commit_refuses_id_not_derived_from_genesis() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+    let derived = genesis_principal_id(&genesis).unwrap();
+    let wrong = "unrelated-principal-id";
+    assert_ne!(wrong, derived);
+
+    let blobs = build_raw_blobs(&commits[0]);
+    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    let engine = test_engine();
+
+    let refused = engine
+        .submit_commit(wrong, Some(genesis.clone()), &blob_slices)
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::InvalidInput(_))),
+        "an id not derived from the genesis must be refused as InvalidInput, got {refused:?}"
+    );
+    assert!(
+        engine.get_tip(wrong).await.unwrap().is_none(),
+        "refused submit must leave no commit chain under the wrong id"
+    );
+    assert!(
+        engine.get_tip(&derived).await.unwrap().is_none(),
+        "refused submit must leave no commit chain under the derived id"
+    );
+
+    // Same commit, derived id: succeeds, so the refusal was about the id.
+    engine
+        .submit_commit(&derived, Some(genesis), &blob_slices)
+        .await
+        .expect("the same commit under the genesis-derived id must be accepted");
+    assert!(engine.get_tip(&derived).await.unwrap().is_some());
 }

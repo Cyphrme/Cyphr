@@ -231,15 +231,12 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// genesis).
 fn genesis_key(pool: &test_fixtures::Pool, name: &str) -> cyphr::Key {
     let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key {
-        alg: k.alg.clone(),
-        tmb: k.compute_tmb().expect("genesis tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        k.alg.clone(),
+        k.compute_tmb().expect("genesis tmb"),
+        Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
+    )
+    .expect("key binds its tmb")
 }
 
 /// Append a fresh "add `new_key_name`" commit onto `principal`, signed by
@@ -282,17 +279,15 @@ fn append_key_create(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -303,11 +298,8 @@ fn append_key_create(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -357,9 +349,9 @@ fn genesis_and_followon(pid: &str, now: i64) -> (String, String) {
     c.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": gkey.alg,
+            "alg": gkey.alg(),
             "pub": pool.get("golden").unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb().as_bytes()),
         }),
     );
     g_blobs[closing] = serde_json::to_vec(&c).unwrap();
@@ -516,7 +508,8 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 
     // The victim establishes residency with an active key via its genesis push
     // (from its own IP). Under generous per-op/per-IP limits this succeeds.
-    let (genesis, followon) = genesis_and_followon("griefing-victim", NOW_BASE + 700);
+    let victim_id = common::golden_principal_id(&common::load_pool());
+    let (genesis, followon) = genesis_and_followon(&victim_id, NOW_BASE + 700);
     let g = server
         .request("POST", "/push", Some(&genesis), "127.0.0.1")
         .await;
@@ -530,7 +523,7 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
     // VICTIM's principal_id. Garbage blobs never commit (the handler rejects
     // them), so the victim's chain is untouched -- but a per-principal rate
     // fence keyed on the named principal would drain the victim's bucket.
-    let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
+    let garbage = push_body(&victim_id, &[b"not a valid commit".to_vec()]);
     let _ = server
         .burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST)
         .await;
@@ -643,7 +636,10 @@ async fn per_principal_count_quota_refuses_over_cap() {
     limits.count_quota = 1;
     let server = TestServer::with_limits(&limits).await;
 
-    let (genesis, followon) = genesis_and_followon("quota-p", NOW_BASE + 100);
+    let (genesis, followon) = genesis_and_followon(
+        &common::golden_principal_id(&common::load_pool()),
+        NOW_BASE + 100,
+    );
 
     let g = server.post("/push", &genesis).await;
     assert_eq!(
@@ -743,7 +739,13 @@ async fn bare_server_boots_and_self_bootstraps() {
     );
     assert_eq!(
         server
-            .post("/push", &genesis_body("bare-genesis", NOW_BASE + 400))
+            .post(
+                "/push",
+                &genesis_body(
+                    &common::golden_principal_id(&common::load_pool()),
+                    NOW_BASE + 400,
+                ),
+            )
             .await
             .status,
         201,

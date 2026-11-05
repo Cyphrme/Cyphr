@@ -59,7 +59,8 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
 use cyphr_server::observation::ObservationStore;
 use cyphr_server::{AppState, build_router};
-use cyphr_storage::index::Indexer;
+use cyphr_storage::blob::Blake3Hash;
+use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
 use tempfile::TempDir;
 use test_fixtures::Pool;
 
@@ -102,17 +103,20 @@ fn fresh_keyed_state() -> (Arc<AppState>, TempDir) {
     (state, dir)
 }
 
-/// Bootstrap `pid` with genesis `golden` plus an added active key `key_a`,
-/// both active, through the real `/push` wire path -- so `golden` and `key_a`
-/// are genuinely active keys of this exact principal AND indexed globally.
-async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool, pid: &str) {
-    let body = common::build_genesis_push_body(pool, pid, RVK);
+/// Bootstrap a principal with genesis `golden` plus an added active key
+/// `key_a`, both active, through the real `/push` wire path -- so `golden`
+/// and `key_a` are genuinely active keys of this exact principal AND indexed
+/// globally. Returns the principal's genesis-derived id (SPEC 3.1).
+async fn bootstrap_golden_key_a(state: &Arc<AppState>, pool: &Pool) -> String {
+    let pid = common::golden_principal_id(pool);
+    let body = common::build_genesis_push_body(pool, &pid, RVK);
     let (status, json) = common::post_json(build_router(state.clone()), "/push", body).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
         "bootstrap push must create the principal: {json:?}"
     );
+    pid
 }
 
 // ========================================================================
@@ -347,17 +351,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -368,11 +370,8 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -420,15 +419,12 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// genesis).
 fn genesis_key(pool: &Pool, name: &str) -> cyphr::Key {
     let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key {
-        alg: k.alg.clone(),
-        tmb: k.compute_tmb().expect("genesis tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        k.alg.clone(),
+        k.compute_tmb().expect("genesis tmb"),
+        Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
+    )
+    .expect("key binds its tmb")
 }
 
 /// Bootstrap `pid` over real HTTP with an implicit `genesis_name` genesis that
@@ -455,9 +451,9 @@ async fn bootstrap_via_push(
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": gkey.alg,
+            "alg": gkey.alg(),
             "pub": pool.get(genesis_name).unwrap().pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(gkey.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -514,8 +510,7 @@ async fn post_push(state: &Arc<AppState>, body: String) -> (StatusCode, serde_js
 async fn accepts_valid_self_signed_naked_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-accept";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -557,8 +552,7 @@ async fn accepts_valid_self_signed_naked_revoke() {
 async fn keyless_revoke_body_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-keyless-body";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz_bare(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -584,8 +578,8 @@ async fn keyless_revoke_body_is_rejected() {
 async fn forge_disclosing_non_victim_key_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-forge-bind";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let coz = revoke_body(
         &pool,
@@ -625,8 +619,8 @@ async fn forge_disclosing_non_victim_key_is_rejected() {
 async fn forge_disclosing_victim_key_signed_by_other_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-forge-sig";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let coz = revoke_body(
         &pool,
@@ -673,38 +667,39 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
 
     // Victim: a normal principal (golden genesis adds key_a). key_a's real
     // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
-    let victim_pid = "nr-avail-victim";
-    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
     let victim_tmb = tmb_b64(&pool, "key_a");
 
-    // Attack: overwrite index[V] -> attacker (alice) pub via a fresh attacker
-    // principal's unauthenticated poison genesis push. `alice` is a distinct
-    // key whose private half the attacker holds.
+    // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
+    // attacker principal's unauthenticated genesis push with a swapped sidecar
+    // pub. `alice` is a distinct key whose private half the attacker holds.
     let body =
-        poison_genesis_push_body(&pool, "nr-avail-attacker", "bob", "alice", &victim_tmb, RVK);
+        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. Asserting it makes the DoS genuine (not a
-    // vacuous no-poison pass).
-    let poisoned = state
+    // The poison did not take, so the revoke below runs against a clean
+    // index. The disclosed-key rule (never the index content) still decides
+    // the outcome: that independence is what this test guards.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the DoS precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
+
+    // Poison the index directly: the wire can no longer do it, but the
+    // victim's emergency revoke must not depend on the index being clean.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
 
     // The victim's OWN emergency revoke: discloses key_a's REAL key, self-signed
     // by key_a. It must succeed despite the poisoned index.
@@ -739,8 +734,7 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
 async fn rejects_malformed_rvk() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-bad-rvk";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let cases = [
         ("rvk = 0", serde_json::json!(0)),
@@ -766,8 +760,7 @@ async fn rejects_malformed_rvk() {
 async fn rejects_bad_signature() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-bad-sig";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = corrupt_sig(self_revoke_coz(&pool, "key_a", serde_json::json!(RVK)));
     let (status, json) = post_revoke(&state, coz).await;
@@ -782,8 +775,7 @@ async fn rejects_bad_signature() {
 async fn rejects_wrong_typ() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-wrong-typ";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let signer = pool.get("key_a").expect("key_a");
     let pay = serde_json::json!({
@@ -811,8 +803,7 @@ async fn rejects_wrong_typ() {
 async fn rejects_unknown_tmb() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-unknown-tmb";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "alice", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -832,8 +823,7 @@ async fn rejects_unknown_tmb() {
 async fn accepts_presigned_rvk_one() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-presigned";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(1));
     let (status, json) = post_revoke(&state, coz).await;
@@ -852,8 +842,7 @@ async fn accepts_presigned_rvk_one() {
 async fn idempotent_re_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-idempotent";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let first = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (s1, j1) = post_revoke(&state, first).await;
@@ -876,7 +865,7 @@ async fn idempotent_re_revoke() {
 
 /// After a naked revoke, the resulting refusal survives BOTH a full `AppState`
 /// rebuild over the same data dir (a restart) AND an in-process engine
-/// `reindex` -- proving the death record is durable and is NOT held in the
+/// `rebuild_index_from_scratch` -- proving the death record is durable and is NOT held in the
 /// rebuildable index. Observed through the login gate: the revoked key stays
 /// refused across both.
 ///
@@ -888,10 +877,10 @@ async fn death_record_survives_restart_and_reindex() {
     let key_path = common::write_signing_key(dir.path());
     let data_dir = dir.path().join("data");
     let pool = common::load_pool();
-    let pid = "nr-durable";
 
     let state1 = keyed_state_at(&data_dir, &key_path);
-    bootstrap_golden_key_a(&state1, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state1, &pool).await;
+    let pid = pid.as_str();
     // Pre-revoke sanity: key_a logs in fine.
     assert_eq!(
         login_status(&state1, &pool, "key_a", pid).await,
@@ -914,9 +903,9 @@ async fn death_record_survives_restart_and_reindex() {
     // the rebuildable index would be wiped here.
     state2
         .engine
-        .reindex(&[], true)
+        .rebuild_index_from_scratch()
         .await
-        .expect("engine reindex");
+        .expect("engine rebuild");
 
     assert_eq!(
         login_status(&state2, &pool, "key_a", pid).await,
@@ -934,12 +923,13 @@ async fn death_record_survives_restart_and_reindex() {
 /// refusal is scoped to the revoked key, not the whole principal.
 ///
 /// Behavior: green on both servers (login refusal + key-scoping unchanged).
+// @docket: signon-disowned-key :: scripts/docket-run signon-disowned-key
 #[tokio::test]
 async fn revoked_key_refused_at_login_sibling_survives() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-login-refuse";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     // Baseline: key_a logs in before any revoke.
     assert_eq!(
@@ -983,7 +973,8 @@ async fn revoked_key_refused_at_login_sibling_survives() {
 async fn revoked_key_refused_at_push() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-push-death";
+    let pid = common::golden_principal_id(&pool);
+    let pid = pid.as_str();
     let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
@@ -1022,7 +1013,8 @@ async fn revoked_key_refused_at_push() {
 async fn sibling_key_still_pushes_after_revoke() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-push-sibling";
+    let pid = common::golden_principal_id(&pool);
+    let pid = pid.as_str();
     let (gkey, gentry) = bootstrap_via_push(&state, &pool, pid, "golden", "key_a", RVK).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
@@ -1062,8 +1054,9 @@ async fn sibling_key_still_pushes_after_revoke() {
 async fn revoked_key_dead_globally_across_principals() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid1 = "nr-global-1";
-    let pid2 = "nr-global-2";
+    let pid1 = common::implicit_principal_id(&pool, "golden");
+    let pid2 = common::implicit_principal_id(&pool, "bob");
+    let (pid1, pid2) = (pid1.as_str(), pid2.as_str());
 
     // Two independent principals, distinct genesis keys, both holding key_a.
     bootstrap_via_push(&state, &pool, pid1, "golden", "key_a", RVK).await;
@@ -1129,8 +1122,8 @@ async fn revoked_key_dead_globally_across_principals() {
 async fn naked_revoke_does_not_mutate_pr() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-pr-unchanged";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    let pid = bootstrap_golden_key_a(&state, &pool).await;
+    let pid = pid.as_str();
 
     let tip_before = tip_roots(&state, pid).await;
 
@@ -1176,8 +1169,7 @@ async fn tip_roots(state: &Arc<AppState>, pid: &str) -> serde_json::Value {
 async fn keyless_server_accepts_naked_revoke() {
     let (state, _dir) = common::keyless_server();
     let pool = common::load_pool();
-    let pid = "nr-keyless";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
     let (status, json) = post_revoke(&state, coz).await;
@@ -1205,8 +1197,7 @@ async fn keyless_server_accepts_naked_revoke() {
 async fn golden_naked_revoke_vector_is_accepted() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-golden";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let coz: serde_json::Value =
         serde_json::from_str(&golden("naked_revoke_valid.json")).expect("parse golden vector");
@@ -1245,28 +1236,80 @@ fn golden(name: &str) -> String {
 // 12 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
 // ========================================================================
 
-/// Build a fresh ATTACKER principal's genesis push whose single added key is
-/// POISONED: the embedded key block declares `declared_tmb_b64` (the victim
-/// thumbprint to hijack) while carrying `attacker_key_name`'s REAL public key.
+/// Overwrite `index[victim tmb]` with `attacker_key_name`'s pub, directly
+/// through the test-only indexer write.
 ///
-/// No key-introduction site enforces `tmb == H(pub)`, and the global key index
-/// trusts the client-declared `tmb`, overwriting on reuse -- so pushing this
-/// overwrites `index[declared_tmb_b64]` to point at the attacker's pubkey. The
-/// new-principal genesis push is unauthenticated (`genesis_name` self-authorizes
-/// it), so no existing credential is needed. The attacker holds
-/// `attacker_key_name`'s private key and will sign the forged revoke with it.
+/// The wire can no longer do this (a sidecar whose `tmb` is not its pub's
+/// thumbprint is refused), so this stands in for any residual path that
+/// could corrupt the index (a bug, a bad import, disk corruption). The
+/// revoke path must not depend on the index being clean: it verifies the
+/// DISCLOSED key, never the indexed one.
+async fn poison_index_directly(
+    state: &Arc<AppState>,
+    pool: &Pool,
+    victim_tmb_b64: &str,
+    attacker_key_name: &str,
+) {
+    let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+    let poison = IndexableCommit {
+        principal_id: "SHA-256:nr-poisoned-index".to_string(),
+        commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
+        sequence: 0,
+        pre: None,
+        prs: vec!["SHA-256:POISON_PR".to_string()],
+        srs: vec!["SHA-256:POISON_SR".to_string()],
+        ars: vec!["SHA-256:POISON_AR".to_string()],
+        crs: vec!["SHA-256:POISON_CR".to_string()],
+        blob_hashes: vec![Blake3Hash::from_bytes([7u8; 32])],
+        cozies: vec![],
+        timestamp: 1_700_000_000,
+        keys: vec![cyphr_storage::index::PublicKeyInfo {
+            thumbprint: victim_tmb_b64.to_string(),
+            algorithm: attacker.alg.clone(),
+            public_key: attacker.pub_key.clone(),
+        }],
+    };
+    state
+        .engine
+        .indexer()
+        .index_commit(&poison, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("direct index poisoning");
+    let indexed = state
+        .engine
+        .indexer()
+        .get_key(victim_tmb_b64)
+        .await
+        .expect("index lookup succeeds")
+        .expect("the poisoned entry is indexed");
+    assert_eq!(
+        indexed.public_key, attacker.pub_key,
+        "precondition: index[V] must now resolve to the attacker's pub"
+    );
+}
+
+/// Build a fresh ATTACKER principal's genesis push that tries to POISON the
+/// global key index: the signed `key/create` introduces `victim_key_name`'s
+/// real thumbprint, but the unsigned sidecar's `pub` is swapped for
+/// `attacker_key_name`'s, so that (if accepted) `index[victim tmb]` would
+/// resolve to the attacker's key. The attacker holds `attacker_key_name`'s
+/// private key and would sign the forged revoke with it.
 ///
-/// (The key-introduction `tmb == H(pub)` gap this exploits is broader than
-/// revoke and out of this node's scope; the disclosed-key verification in
-/// `interpret` is what closes the revoke exploit.)
+/// The commit is built honestly through `Principal` (a forged `Key` cannot be
+/// constructed: `tmb` is bound to `pub`), then the sidecar is rewritten on the
+/// wire, which is the only place the attack remains expressible. Only the
+/// server's key-binding check stands between this body and the index.
 fn poison_genesis_push_body(
     pool: &Pool,
     attacker_pid: &str,
     genesis_name: &str,
+    victim_key_name: &str,
     attacker_key_name: &str,
-    declared_tmb_b64: &str,
     now: i64,
 ) -> String {
+    let victim = pool.get(victim_key_name).expect("victim key in pool");
+    let declared_tmb_b64 = victim.compute_tmb_b64().expect("victim tmb");
+    let declared_tmb_b64 = declared_tmb_b64.as_str();
     let genesis = pool.get(genesis_name).expect("genesis key in pool");
     let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
 
@@ -1290,44 +1333,38 @@ fn poison_genesis_push_body(
 
     // The POISONED key: declared thumbprint = the victim's V, but the actual
     // public key is the attacker's own (whose private key signs the revoke).
-    let victim_tmb_bytes =
-        Base64UrlUnpadded::decode_vec(declared_tmb_b64).expect("victim tmb base64");
-    let attacker_pub =
-        Base64UrlUnpadded::decode_vec(&attacker.pub_key).expect("attacker pub base64");
-    let poisoned_key = cyphr::Key {
-        alg: attacker.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(victim_tmb_bytes),
-        pub_key: attacker_pub,
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let victim_pub = Base64UrlUnpadded::decode_vec(&victim.pub_key).expect("victim pub b64");
+    let honest_victim_key = cyphr::Key::new(
+        victim.alg.clone(),
+        victim.compute_tmb().expect("victim tmb"),
+        victim_pub,
+    )
+    .expect("the victim key binds its tmb")
+    .with_first_seen(now);
 
-    let genesis_key = cyphr::Key {
-        alg: genesis.alg.clone(),
-        tmb: genesis.compute_tmb().expect("genesis tmb"),
-        pub_key: genesis_pub.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let genesis_key = cyphr::Key::new(
+        genesis.alg.clone(),
+        genesis.compute_tmb().expect("genesis tmb"),
+        genesis_pub.clone(),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
 
     let mut scope = principal.begin_commit();
     scope
-        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(poisoned_key))
-        .expect("poison key/create must verify (no tmb==H(pub) gate at key introduction)");
+        .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(honest_victim_key))
+        .expect("the honest key/create verifies before the sidecar is swapped");
     let genesis_tmb = coz::Thumbprint::from_bytes(
         Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &genesis.alg,
-            &genesis_prv,
-            &genesis_pub,
-            &genesis_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &genesis.alg,
+                &genesis_prv,
+                &genesis_pub,
+                &genesis_tmb,
+            ),
             now,
             "cyphr.me",
         )
@@ -1336,7 +1373,7 @@ fn poison_genesis_push_body(
     let entries = cyphr_storage::export_commits(&principal).expect("export the poison commit");
     let new_commit = entries.last().expect("at least one commit after finalize");
 
-    // Embed the (poisoned) key block on the key-introducing cozy, then the
+    // Embed the (swapped-pub) key block on the key-introducing cozy, then the
     // genesis key on the closing cozy -- the never-before-seen-principal wire
     // contract `resolve_genesis` requires.
     let mut key_idx = 0;
@@ -1352,7 +1389,7 @@ fn poison_genesis_push_body(
                     "key".to_string(),
                     serde_json::json!({
                         "alg": key.alg,
-                        "pub": key.pub_key,
+                        "pub": attacker.pub_key,
                         "tmb": key.tmb,
                     }),
                 );
@@ -1367,7 +1404,7 @@ fn poison_genesis_push_body(
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": genesis_key.alg,
+            "alg": genesis_key.alg(),
             "pub": genesis.pub_key,
             "tmb": genesis_tmb_b64,
         }),
@@ -1400,8 +1437,8 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 
     // Victim: a normal principal (golden genesis adds key_a). key_a's real
     // thumbprint V = H(key_a pub) is indexed to key_a's real pub.
-    let victim_pid = "nr-poison-victim";
-    bootstrap_golden_key_a(&state, &pool, victim_pid).await;
+    let victim_pid = bootstrap_golden_key_a(&state, &pool).await;
+    let victim_pid = victim_pid.as_str();
     let victim_tmb = tmb_b64(&pool, "key_a");
 
     // Baseline: the victim key logs in before any attack.
@@ -1411,43 +1448,40 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
         "the victim key must log in before the attack (empirical baseline)"
     );
 
-    // Attack step 1: overwrite index[V] -> attacker (alice) pub via a fresh
-    // attacker principal's unauthenticated poison genesis push. `alice` is a
-    // distinct key whose private half the attacker holds (to sign the forge).
-    let body = poison_genesis_push_body(
-        &pool,
-        "nr-poison-attacker",
-        "bob",
-        "alice",
-        &victim_tmb,
-        RVK,
-    );
+    // Attack step 1: try to overwrite index[V] -> attacker (alice) pub via a
+    // fresh attacker principal's unauthenticated genesis push whose sidecar
+    // `pub` is swapped. `alice` is a distinct key whose private half the
+    // attacker holds (to sign the forge). The attacker principal's id is its
+    // genesis-derived id, so the refusal below is for the swapped sidecar.
+    let body =
+        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
-    assert_eq!(
-        pstatus,
-        StatusCode::CREATED,
-        "the unauthenticated poison push must be accepted -- the key-introduction tmb==H(pub) gap \
-         it exploits is out of this node's scope: {pjson:?}"
+    assert!(
+        pstatus.is_client_error(),
+        "a push whose sidecar pub does not hash to its tmb must be refused: {pstatus} {pjson:?}"
     );
 
-    // Poison-took precondition: the global index now returns the ATTACKER pub
-    // for the victim's thumbprint. If this failed, the test would be vacuous
-    // (no real poisoning); asserting it makes the attack genuine.
-    let poisoned = state
+    // The poison did not take: the global index still resolves the victim's
+    // thumbprint to the victim's real pub, so the forge below is rejected on
+    // its own merits (the disclosed key does not bind), not on a setup miss.
+    let indexed = state
         .engine
         .indexer()
         .get_key(&victim_tmb)
         .await
         .expect("index lookup succeeds")
-        .expect("V is still indexed after the poison push");
+        .expect("V is still indexed after the refused poison push");
     assert_eq!(
-        poisoned.public_key,
-        pool.get("alice").expect("alice").pub_key,
-        "index[V] must now resolve to the attacker's pub -- the attack precondition"
+        indexed.public_key,
+        pool.get("key_a").expect("key_a").pub_key,
+        "index[V] must still resolve to the victim's real pub"
     );
 
-    // Attack step 2: forge a naked revoke of V, signed with and disclosing the
-    // ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
+    // Poison the index directly instead: a wire push can no longer do it.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
+
+    // Attack step 2 (against the directly poisoned index): forge a naked revoke of V, signed with
+    // and disclosing the ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
     // rejects it.
     let coz = revoke_body(
         &pool,
@@ -1488,8 +1522,7 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
 async fn oversize_naked_revoke_is_rejected() {
     let (state, _dir) = fresh_keyed_state();
     let pool = common::load_pool();
-    let pid = "nr-oversize";
-    bootstrap_golden_key_a(&state, &pool, pid).await;
+    bootstrap_golden_key_a(&state, &pool).await;
 
     let signer = pool.get("key_a").expect("key_a");
     // Pad well past RVK_MAX_SIZE (but far under any default transport limit),

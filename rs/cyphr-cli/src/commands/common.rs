@@ -50,15 +50,15 @@ pub fn load_key_from_keystore(keystore: &JsonKeyStore, tmb: &str) -> crate::Resu
     let stored = keystore.get(tmb)?;
     let now = current_timestamp();
 
-    Ok(Key {
-        alg: stored.alg.clone(),
-        tmb: Thumbprint::from_bytes(decode_b64(tmb)?),
-        pub_key: stored.pub_key.clone(),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: stored.tag.clone(),
-    })
+    // The keystore is local trust, but a corrupted or swapped record must
+    // not yield a key whose tmb is not its pub's thumbprint.
+    Ok(Key::new(
+        stored.alg.clone(),
+        Thumbprint::from_bytes(decode_b64(tmb)?),
+        stored.pub_key.clone(),
+    )?
+    .with_first_seen(now)
+    .with_tag(stored.tag.clone()))
 }
 
 /// Extract genesis from stored commits.
@@ -88,16 +88,18 @@ pub fn extract_genesis_from_commits(
                 .and_then(|p| p.get("tmb"))
                 .and_then(|v| v.as_str())
             {
-                // Try embedded key first (self-signed genesis)
+                // The keystore is the local authority: a key embedded in
+                // the (untrusted) bundle never overrides it.
+                if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
+                    return Ok(Genesis::Implicit(key));
+                }
+
+                // Not in the keystore: fall back to the self-signed
+                // genesis key the bundle embeds.
                 if let Some(key_obj) = first_tx.get("key") {
                     if key_obj.get("tmb").and_then(|v| v.as_str()) == Some(signer_tmb) {
                         return extract_key_from_obj(key_obj).map(Genesis::Implicit);
                     }
-                }
-
-                // Fallback to keystore
-                if let Ok(key) = load_key_from_keystore(ks, signer_tmb) {
-                    return Ok(Genesis::Implicit(key));
                 }
             }
         }
@@ -143,22 +145,16 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
     let pub_key = Base64UrlUnpadded::decode_vec(pub_b64)?;
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64)?;
 
-    Ok(Key {
-        alg: alg.to_string(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
+    Ok(Key::new(
+        alg.to_string(),
+        Thumbprint::from_bytes(tmb_bytes),
         pub_key,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    })
+    )?)
 }
 
 /// Parse the CLI options into a CliStorageEngine.
 pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
     let store_uri = &cli.store;
-    let keystore_path = &cli.keystore;
-    let total_check = cli.total_check;
 
     if let Some(path) = store_uri.strip_prefix("file:") {
         let path = std::path::Path::new(path);
@@ -175,19 +171,12 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
                     .map_err(|e| e.to_string())
             });
 
-        // Open keystore and extract keys
-        let keystore = JsonKeyStore::open(keystore_path)?;
-        let thumbprints = keystore.list();
-        let mut keys = Vec::new();
-        for tmb in &thumbprints {
-            if let Ok(key) = load_key_from_keystore(&keystore, tmb) {
-                keys.push(key);
-            }
+        // The engine heals manifest-backed gaps lazily on first use; only an
+        // explicit total check discards the index and rebuilds it.
+        if cli.total_check {
+            block_on(engine.rebuild_index_from_scratch())?
+                .map_err(|e| crate::Error::Storage(e.to_string()))?;
         }
-
-        // Reindex on startup synchronously
-        block_on(engine.reindex(&keys, total_check))?
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
 
         Ok(engine)
     } else {
@@ -405,11 +394,11 @@ pub fn save_principal_to_engine<S: cyphr::eml::Storage>(
                     if let [identity] = principal.genesis_keys() {
                         if let Ok(key) = load_key_from_keystore(keystore, identity) {
                             let key_entry = cyphr_storage::KeyEntry {
-                                alg: key.alg.clone(),
-                                pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
-                                tmb: key.tmb.to_b64(),
-                                tag: key.tag.clone(),
-                                now: Some(key.first_seen),
+                                alg: key.alg().to_owned(),
+                                pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+                                tmb: key.tmb().to_b64(),
+                                tag: key.tag().map(str::to_owned),
+                                now: Some(key.first_seen()),
                             };
                             if let Some(obj) = coz_mut.as_object_mut() {
                                 obj.insert("key".to_string(), serde_json::to_value(&key_entry)?);
@@ -554,15 +543,9 @@ pub fn generate_key(algo: &str, tag: Option<&str>) -> crate::Result<(String, Sto
         tag: tag.map(String::from),
     };
 
-    let key = Key {
-        alg: algo.to_string(),
-        tmb: Thumbprint::from_bytes(keypair.thumbprint.as_bytes().to_vec()),
-        pub_key: keypair.pub_bytes,
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: tag.map(String::from),
-    };
+    let key = Key::from_pub_key(algo.to_string(), keypair.pub_bytes)?
+        .with_first_seen(now)
+        .with_tag(tag.map(String::from));
 
     Ok((tmb_b64, stored, key))
 }

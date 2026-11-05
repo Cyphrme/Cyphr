@@ -75,17 +75,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -96,11 +94,8 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -174,15 +169,12 @@ fn assert_unsigned_envelope(body: &serde_json::Value) -> &serde_json::Value {
 /// principal). Mirrors `push_new_principal_happy_path` in `tests/e2e.rs`.
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
 
@@ -191,9 +183,9 @@ fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: 
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -248,7 +240,13 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 #[tokio::test]
 async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
-    let principal_id = "keyless-matrix-repo";
+    // The id the golden implicit genesis derives (SPEC 3.1): its thumbprint.
+    let principal_id_derived = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb b64");
+    let principal_id = principal_id_derived.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -426,6 +424,7 @@ async fn keyless_login_returns_capability_absence_not_internal_error() {
 /// on a keyless server (delegated design lean): one honest condition, one
 /// treatment, not two differently-worded rejections a client would have
 /// to reconcile.
+// @docket: signon-honest-refusal :: scripts/docket-run signon-honest-refusal
 #[tokio::test]
 async fn keyless_login_and_challenge_share_the_same_rejection() {
     let state = keyless_state();

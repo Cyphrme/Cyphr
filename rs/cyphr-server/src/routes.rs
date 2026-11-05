@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::envelope::Envelope;
 use crate::error::{AppError, AppJson};
-use crate::registration::RegistrationAuthority;
 use crate::sync::SyncOutcome;
 use crate::{AppState, receipt};
 
@@ -102,8 +101,8 @@ pub struct PushResponse {
     /// The accepted commit's id -- a push client previously had no way to
     /// learn this without a follow-up `/tip` read.
     pub commit_id: String,
-    /// The accepted commit's 0-indexed position (post-state
-    /// `commit_count - 1`).
+    /// The accepted commit's 0-indexed position (the
+    /// post-state commit count minus one).
     pub sequence: u64,
     /// The post-state roots, nested to mirror the same shape a signed
     /// commit receipt's `roots` claim carries (`docs/specs/receipts.md`),
@@ -217,7 +216,7 @@ pub async fn tip(
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
     let payload = TipResponse {
-        principal_id: t.principal_id.clone(),
+        principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
@@ -285,7 +284,7 @@ async fn sign_tip_attestation(
     let coz = receipt::tip_report(
         identity,
         crate::auth::server_now(),
-        t.principal_id.clone(),
+        cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         commit_sequence(t.commit_count)?,
         t.commit_id.clone(),
         &roots,
@@ -374,7 +373,7 @@ pub async fn patch(
         .collect();
 
     let payload = PatchResponseBody {
-        principal_id: response.principal_id,
+        principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
         entries,
     };
 
@@ -469,7 +468,8 @@ pub async fn push(
     // server never attempts to sign a receipt, so it stays free to accept
     // any storage-key-shaped `principal_id`, exactly as before.
     if state.attestor_identity().is_some()
-        && receipt::parse_genesis_id_str(&request.principal_id).is_err()
+        && receipt::parse_genesis_id_str(cyphr_storage::engine::bare_digest(&request.principal_id))
+            .is_err()
     {
         return Err(AppError::bad_request(format!(
             "principal_id is not a canonical genesis identifier: {}",
@@ -544,12 +544,6 @@ pub async fn push(
         .map_err(AppError::engine)?
         .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
 
-    crate::fanout::spawn_fanout(
-        state.clone(),
-        request.principal_id.clone(),
-        request.blobs.clone(),
-    );
-
     let payload = PushResponse {
         blob_hashes: result.blob_hashes.iter().map(|h| h.to_string()).collect(),
         commit_id: t.commit_id.clone(),
@@ -591,7 +585,7 @@ pub async fn push(
             let coz = receipt::commit_receipt(
                 identity,
                 crate::auth::server_now(),
-                t.principal_id,
+                cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
                 commit_sequence(t.commit_count)?,
                 t.commit_id,
                 &roots,
@@ -672,10 +666,10 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                     pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
                     tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
                     genesis: GenesisKeyInfo {
-                        alg: genesis_key.alg.clone(),
-                        pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
-                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
-                        first_seen: genesis_key.first_seen,
+                        alg: genesis_key.alg().to_owned(),
+                        pub_key: Base64UrlUnpadded::encode_string(genesis_key.pub_key()),
+                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes()),
+                        first_seen: genesis_key.first_seen(),
                     },
                 }
             },
@@ -715,306 +709,17 @@ pub async fn entity(
 }
 
 // ========================================================================
-// Witness registration routes (SPEC §13.5.1)
+// #98/#156: the receipt `sequence` must never silently wrap
 // ========================================================================
 
-/// Request envelope for POST /witness/register and DELETE /witness/register.
-#[derive(Debug, Deserialize)]
-pub struct WitnessRegisterEnvelope {
-    pub pay: serde_json::Value,
-    #[serde(with = "coz::b64")]
-    pub sig: Vec<u8>,
-    pub key: Option<crate::revoke::DisclosedKey>,
-}
-
-/// Parsed and cryptographically verified witness registration details.
-pub struct VerifiedWitnessRegister {
-    pub principal_id: String,
-    pub witness_id: String,
-    pub signer_tmb: String,
-    pub now: i64,
-    pub verb: String,
-    pub raw_blob: Vec<u8>,
-}
-
-/// Verify envelope structure, key thumbprint bind, and signature.
-pub fn verify_witness_register_envelope(
-    envelope: &WitnessRegisterEnvelope,
-) -> Result<VerifiedWitnessRegister, AppError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    let key = envelope
-        .key
-        .as_ref()
-        .ok_or_else(|| AppError::bad_request("witness register envelope missing disclosed key"))?;
-
-    let pay_bytes = serde_json::to_vec(&envelope.pay)
-        .map_err(|e| AppError::bad_request(format!("invalid JSON pay: {e}")))?;
-
-    let id = envelope
-        .pay
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::bad_request("missing id in pay"))?;
-
-    let tmb = envelope
-        .pay
-        .get("tmb")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::bad_request("missing tmb in pay"))?;
-
-    let typ = envelope
-        .pay
-        .get("typ")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::bad_request("missing typ in pay"))?;
-
-    let principal_id = envelope
-        .pay
-        .get("principal_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::bad_request("missing principal_id in pay"))?;
-
-    let now = envelope
-        .pay
-        .get("now")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| AppError::bad_request("missing now in pay"))?;
-
-    // Thumbprint bind verification
-    let computed_tmb = coz::compute_thumbprint_for_alg(&key.alg, &key.pub_key)
-        .ok_or_else(|| AppError::unauthorized("unsupported algorithm for key thumbprint"))?;
-
-    let computed_tmb_b64 = Base64UrlUnpadded::encode_string(computed_tmb.as_bytes());
-    if computed_tmb_b64 != tmb {
-        return Err(AppError::unauthorized("signer thumbprint mismatch"));
-    }
-
-    // Signature verification
-    let valid =
-        coz::verify_json(&pay_bytes, &envelope.sig, &key.alg, &key.pub_key).unwrap_or(false);
-    if !valid {
-        return Err(AppError::unauthorized(
-            "invalid signature on witness register envelope",
-        ));
-    }
-
-    let verb = if typ.ends_with("/witness/register/create") {
-        "create".to_string()
-    } else if typ.ends_with("/witness/register/delete") {
-        "delete".to_string()
-    } else {
-        return Err(AppError::bad_request(format!("invalid typ: {typ}")));
-    };
-
-    let coz_obj = serde_json::json!({
-        "pay": envelope.pay,
-        "sig": Base64UrlUnpadded::encode_string(&envelope.sig),
-        "key": {
-            "alg": key.alg,
-            "pub": Base64UrlUnpadded::encode_string(&key.pub_key),
-            "tmb": tmb,
-        }
-    });
-    let raw_blob = serde_json::to_vec(&coz_obj).unwrap_or_default();
-
-    Ok(VerifiedWitnessRegister {
-        principal_id: principal_id.to_string(),
-        witness_id: id.to_string(),
-        signer_tmb: tmb.to_string(),
-        now,
-        verb,
-        raw_blob,
-    })
-}
-
-/// Parse the registration authorization context into a typed
-/// [`RegistrationAuthority`] proof: a resident principal is managed by its
-/// active keys; a not-yet-resident principal only by itself (SPEC §13.5.1:
-/// the principal signs its witness registrations). `witness_id` plays no
-/// part — a `witness_id` naming the signer's own key was never evidence
-/// that the signer may register for the principal.
-async fn check_registration_authorization(
-    state: &AppState,
-    principal_id: &str,
-    signer_tmb: &str,
-) -> Result<RegistrationAuthority, AppError> {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
-    // A residency lookup failure propagates: falling through to the
-    // non-resident branch on an engine fault would decide authorization
-    // against absent evidence.
-    let tip = state
-        .engine
-        .get_tip(principal_id)
-        .await
-        .map_err(AppError::engine)?;
-    if tip.is_some() {
-        let genesis = state
-            .engine
-            .resolve_genesis(principal_id, &[])
-            .await
-            .map_err(AppError::engine)?;
-        let principal = state
-            .engine
-            .load_principal(principal_id, genesis)
-            .await
-            .map_err(AppError::engine)?;
-
-        let signer_tmb_bytes = Base64UrlUnpadded::decode_vec(signer_tmb)
-            .map_err(|_| AppError::unauthorized("invalid signer thumbprint base64"))?;
-        let signer_tmb_obj = coz::Thumbprint::from_bytes(signer_tmb_bytes);
-
-        return RegistrationAuthority::active_key(&principal, &signer_tmb_obj)
-            .ok_or_else(|| AppError::unauthorized("signer key is not active for principal"));
-    }
-
-    RegistrationAuthority::self_signer(principal_id, signer_tmb)
-        .ok_or_else(|| AppError::unauthorized("unauthorized third-party witness registration"))
-}
-
-/// `POST /witness/register` — register an external witness for a principal.
-#[tracing::instrument(skip(state, envelope))]
-pub async fn witness_register_post(
-    State(state): State<Arc<AppState>>,
-    AppJson(envelope): AppJson<WitnessRegisterEnvelope>,
-) -> Result<impl IntoResponse, AppError> {
-    let verified = verify_witness_register_envelope(&envelope)?;
-    if verified.verb != "create" {
-        return Err(AppError::bad_request(
-            "invalid verb for POST witness register",
-        ));
-    }
-
-    let authority =
-        check_registration_authorization(&state, &verified.principal_id, &verified.signer_tmb)
-            .await?;
-
-    let (current_witnesses, _) = state.registration.get_witnesses(&verified.principal_id);
-    if current_witnesses.len() >= crate::registration::MAX_WITNESSES_PER_PRINCIPAL
-        && !current_witnesses.iter().any(|w| w == &verified.witness_id)
-    {
-        return Err(AppError::bad_request("capacity limit reached"));
-    }
-
-    let _ = state
-        .engine
-        .submit_commit(&verified.principal_id, None, &[&verified.raw_blob])
-        .await;
-
-    state.registration.register_witness(
-        authority,
-        &verified.principal_id,
-        &verified.witness_id,
-        verified.now,
-    )?;
-
-    let payload = serde_json::json!({
-        "principal_id": verified.principal_id,
-        "witness_id": verified.witness_id,
-        "last_updated": verified.now,
-        "now": verified.now,
-    });
-
-    let env = crate::envelope::Envelope::unsigned(payload);
-
-    Ok((StatusCode::CREATED, Json(env)))
-}
-
-/// `DELETE /witness/register` — revoke (mark inactive) a registered witness.
-#[tracing::instrument(skip(state, envelope))]
-pub async fn witness_register_delete(
-    State(state): State<Arc<AppState>>,
-    AppJson(envelope): AppJson<WitnessRegisterEnvelope>,
-) -> Result<impl IntoResponse, AppError> {
-    let verified = verify_witness_register_envelope(&envelope)?;
-    if verified.verb != "delete" {
-        return Err(AppError::bad_request(
-            "invalid verb for DELETE witness register",
-        ));
-    }
-
-    let authority =
-        check_registration_authorization(&state, &verified.principal_id, &verified.signer_tmb)
-            .await?;
-
-    let _ = state
-        .engine
-        .submit_commit(&verified.principal_id, None, &[&verified.raw_blob])
-        .await;
-
-    state.registration.revoke_witness(
-        authority,
-        &verified.principal_id,
-        &verified.witness_id,
-        verified.now,
-    )?;
-
-    let (active_witnesses, last_updated) = state.registration.get_witnesses(&verified.principal_id);
-
-    let payload = serde_json::json!({
-        "principal_id": verified.principal_id,
-        "witnesses": active_witnesses,
-        "last_updated": last_updated,
-    });
-
-    let env = crate::envelope::Envelope::unsigned(payload);
-
-    Ok((StatusCode::OK, Json(env)))
-}
-
-/// `GET /witness/register` — query active witnesses for a principal.
-#[tracing::instrument(skip(state, query))]
-pub async fn witness_register_get(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<TipQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    let (active_witnesses, last_updated) = state.registration.get_witnesses(&query.pr);
-    let deliveries = state.fanout.get_deliveries(&query.pr, &active_witnesses);
-
-    let payload = serde_json::json!({
-        "principal_id": query.pr,
-        "witnesses": active_witnesses,
-        "last_updated": last_updated,
-        "deliveries": deliveries,
-    });
-
-    let env = crate::envelope::Envelope::unsigned(payload);
-
-    Ok((StatusCode::OK, Json(env)))
-}
-
-// ========================================================================
-// #98/#156: `commit_count - 1` must never silently wrap
-// ========================================================================
-
-/// White-box coverage for #98/#156: three sites in this file compute a
-/// receipt/response `sequence` as `t.commit_count - 1` on a plain `u64`,
-/// with no check. Issue #98's own text: "It's safe today ... the safety
-/// rests on that invariant holding at every call site indefinitely, with
-/// no compiler or runtime signal if a future change ... ever violated
-/// it." Issue #156 confirms the invariant is genuinely unreachable via
-/// the ordinary commit-ingestion path today (a `TipState` is only ever
-/// recorded after indexing at least one commit -- `MemoryIndexer`'s own
-/// `commit_count` is a freshly-computed chain length, never a caller
-/// -supplied value), so this suite exercises the vulnerable call sites
-/// directly with a hand-constructed [`TipState`] rather than via HTTP --
-/// the same white-box pattern `sync.rs`'s own
-/// `resulting_tip_matches_report_accepts_legitimate_empty_commit_root`
-/// test already uses.
-///
-/// Only `sign_tip_attestation` (this file's :272, shared by `/tip` and
-/// `/patch`) is independently callable this way; `push`'s own two sites
-/// (:521 payload, :557 receipt) fetch their `TipState` from the live,
-/// concretely-typed `FjallIndexer`-backed engine inline and cannot be fed
-/// a corrupted value without either refactoring production code (out of
-/// this role's scope) or a storage-layer corruption this crate's test
-/// surface has no API to perform -- see
-/// `no_unchecked_commit_count_arithmetic_remains_in_routes` below, which
-/// covers all three sites structurally instead.
+/// White-box coverage for #98/#156: a receipt/response `sequence` is the
+/// post-state commit count minus one, which wraps on a zero count. The
+/// zero count is unreachable via ordinary commit ingestion (a `TipState`
+/// is only recorded after indexing at least one commit), but nothing in
+/// the type enforces that, so this drives `sign_tip_attestation` with a
+/// hand-constructed [`TipState`] -- no HTTP path can feed it one.
 #[cfg(test)]
 mod commit_count_underflow_tests {
-    use std::path::Path;
     use std::sync::Arc;
 
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -1080,21 +785,21 @@ mod commit_count_underflow_tests {
     /// freshly generated keypair rather than the shared `test_fixtures`
     /// pool) because that helper lives in the separate integration-test
     /// crate this unit-test module cannot depend on.
-    async fn push_test_genesis(state: &AppState, principal_id: &str, now: i64) {
+    ///
+    /// Returns the principal id the genesis derives (SPEC §3.1), the only
+    /// id the engine accepts for this commit.
+    async fn push_test_genesis(state: &AppState, now: i64) -> String {
         let golden_kp = coz::Alg::Ed25519.generate_keypair();
         let golden_tmb = golden_kp
             .alg
             .compute_thumbprint(&golden_kp.pub_bytes)
             .expect("golden thumbprint");
-        let golden_key = cyphr::Key {
-            alg: golden_kp.alg.name().to_string(),
-            tmb: golden_tmb.clone(),
-            pub_key: golden_kp.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let golden_key = cyphr::Key::new(
+            golden_kp.alg.name().to_string(),
+            golden_tmb.clone(),
+            golden_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb");
 
         let new_kp = coz::Alg::Ed25519.generate_keypair();
         let new_tmb = new_kp
@@ -1125,15 +830,13 @@ mod commit_count_underflow_tests {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
 
-        let new_key = cyphr::Key {
-            alg: new_kp.alg.name().to_string(),
-            tmb: new_tmb,
-            pub_key: new_kp.pub_bytes.clone(),
-            first_seen: now,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let new_key = cyphr::Key::new(
+            new_kp.alg.name().to_string(),
+            new_tmb,
+            new_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
 
         let mut principal =
             cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
@@ -1142,11 +845,13 @@ mod commit_count_underflow_tests {
             .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key))
             .expect("key/create verifies against the starting principal state");
         scope
-            .finalize_with_arrow(
-                golden_kp.alg.name(),
-                &golden_kp.prv_bytes,
-                &golden_kp.pub_bytes,
-                &golden_tmb,
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    golden_kp.alg.name(),
+                    &golden_kp.prv_bytes,
+                    &golden_kp.pub_bytes,
+                    &golden_tmb,
+                ),
                 now,
                 "cyphr.me",
             )
@@ -1186,8 +891,8 @@ mod commit_count_underflow_tests {
         closing.as_object_mut().unwrap().insert(
             "key".to_string(),
             serde_json::json!({
-                "alg": golden_key.alg,
-                "pub": Base64UrlUnpadded::encode_string(&golden_key.pub_key),
+                "alg": golden_key.alg(),
+                "pub": Base64UrlUnpadded::encode_string(golden_key.pub_key()),
                 "tmb": golden_tmb_b64,
             }),
         );
@@ -1197,12 +902,17 @@ mod commit_count_underflow_tests {
         let last = all_blobs.len() - 1;
         all_blobs[last] = closing_blob;
 
+        let principal_id = cyphr_storage::engine::genesis_principal_id(
+            &cyphr_storage::Genesis::Implicit(golden_key.clone()),
+        )
+        .expect("genesis-derived principal id");
         let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
         state
             .engine
-            .submit_commit(principal_id, None, &blob_refs)
+            .submit_commit(&principal_id, None, &blob_refs)
             .await
             .expect("genesis push succeeds");
+        principal_id
     }
 
     /// Positive control: proves this suite's harness genuinely exercises
@@ -1214,8 +924,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_legitimate_tip_signs_correct_sequence() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_000).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_000).await;
 
         let tip = state
             .engine
@@ -1246,8 +955,7 @@ mod commit_count_underflow_tests {
     /// let `sign_tip_attestation` sign a receipt at all, and must never
     /// panic doing so.
     ///
-    /// Mutation this binds: today's bare `t.commit_count - 1` at :272.
-    /// Once fixed with a checked computation, this test passes either
+    /// Once the subtraction is checked, this test passes either
     /// because the call returns an explicit error or because it falls
     /// back to unsigned (`Ok(None)`) -- either is an acceptable "typed
     /// absence" per this node's IBC, which leaves the exact
@@ -1264,8 +972,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_zero_commit_count_never_wraps_or_panics() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x62u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_100).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_100).await;
 
         let real_tip = state
             .engine
@@ -1304,48 +1011,5 @@ mod commit_count_underflow_tests {
                 // exact representation is this node's delegated call.
             },
         }
-    }
-
-    /// Structural companion to the behavioral test above: this file's
-    /// three call sites (`sign_tip_attestation`'s :272, `push`'s payload
-    /// :521, `push`'s receipt :557) must ALL move off the bare
-    /// `commit_count - 1` expression, not just the one the test above can
-    /// reach behaviorally (`c-no-wrap`).
-    ///
-    /// Scoped to code lines only -- the doc comment on
-    /// `PushResponse::sequence` that describes the relationship in prose
-    /// is not arithmetic and is not this constraint's target. Scoped to
-    /// THIS file only -- `sync.rs:479`'s own `commit_count - 1` is already
-    /// guarded by an explicit `tip.commit_count == 0 ||` short-circuit
-    /// before it runs (the "codebase already contains the correct pattern
-    /// once" the IBC cites), a different file, and out of this check's
-    /// scope by construction; a whole-crate literal-text grep would flag
-    /// it too despite it already being safe.
-    #[test]
-    fn no_unchecked_commit_count_arithmetic_remains_in_routes() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes.rs");
-        let src = std::fs::read_to_string(&path).expect("read routes.rs");
-        // Scan only the PRODUCTION portion of the file, up to this test
-        // module's own opening line -- this test module's source text
-        // necessarily quotes the literal pattern it is checking for (in
-        // doc comments, filter closures, and the assertion message
-        // itself), which would otherwise self-match.
-        let module_marker = "mod commit_count_underflow_tests {";
-        let production_src = src
-            .split_once(module_marker)
-            .map(|(before, _)| before)
-            .unwrap_or(&src);
-        let offenders: Vec<(usize, &str)> = production_src
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| !line.trim_start().starts_with("//"))
-            .filter(|(_, line)| line.contains("commit_count - 1"))
-            .map(|(i, line)| (i + 1, line))
-            .collect();
-        assert!(
-            offenders.is_empty(),
-            "unchecked `commit_count - 1` arithmetic remains in routes.rs (c-no-wrap): \
-             {offenders:?}"
-        );
     }
 }

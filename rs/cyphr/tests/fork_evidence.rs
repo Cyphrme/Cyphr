@@ -36,15 +36,9 @@ fn signer(name: &str) -> Signer {
 }
 
 fn domain_key(s: &Signer) -> Key {
-    Key {
-        alg: s.alg.clone(),
-        tmb: s.tmb.clone(),
-        pub_key: s.pub_key.clone(),
-        first_seen: 1_700_000_000,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::new(s.alg.clone(), s.tmb.clone(), s.pub_key.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(1_700_000_000)
 }
 
 type Wire = Vec<(Vec<u8>, Vec<u8>, coz::Czd)>;
@@ -70,11 +64,8 @@ fn delete_commit(
     let (b, s, c) = delete_pay(signer, target, now);
     let mut scope = p.begin_commit();
     scope.verify_and_apply(&b, &s, c, None)?;
-    scope.finalize_with_arrow(
-        &signer.alg,
-        &signer.prv,
-        &signer.pub_key,
-        &signer.tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv, &signer.pub_key, &signer.tmb),
         now,
         "cyphr.me",
     )?;
@@ -151,11 +142,8 @@ fn fork_branches_from_cloned_ancestor() {
     scope
         .verify_and_apply(&bytes, &sig, czd, None)
         .expect("branch B coz applies");
-    let r = scope.finalize_with_arrow(
-        &key_a.alg,
-        &key_a.prv,
-        &key_a.pub_key,
-        &key_a.tmb,
+    let r = scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(&key_a.alg, &key_a.prv, &key_a.pub_key, &key_a.tmb),
         1_700_000_101,
         "cyphr.me",
     );

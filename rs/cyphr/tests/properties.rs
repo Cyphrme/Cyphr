@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::key::{Key, Revocation};
 use cyphr::state::{HashAlg, derive_hash_algs};
@@ -22,33 +21,26 @@ fn hash_alg_strategy() -> impl Strategy<Value = HashAlg> {
 fn key_strategy() -> impl Strategy<Value = Key> {
     (
         prop_oneof![
-            Just("ES256".to_string()),
-            Just("ES384".to_string()),
-            Just("Ed25519".to_string()),
+            Just(("ES256", 64usize)),
+            Just(("ES384", 96usize)),
+            Just(("Ed25519", 32usize)),
         ],
-        prop::collection::vec(any::<u8>(), 32),
-        prop::collection::vec(any::<u8>(), 64),
+        prop::collection::vec(any::<u8>(), 96),
         any::<i64>(),
         any::<bool>(), // true = active, false = revoked
     )
-        .prop_map(|(alg, tmb_bytes, pub_key, first_seen, active)| {
-            let tmb = Thumbprint::from_bytes(tmb_bytes);
-            let revocation = if active {
-                None
+        .prop_map(|((alg, pub_len), mut pub_key, first_seen, active)| {
+            pub_key.truncate(pub_len);
+            let key = Key::from_pub_key(alg, pub_key)
+                .expect("any bytes of the right length thumbprint")
+                .with_first_seen(first_seen);
+            if active {
+                key
             } else {
-                Some(Revocation {
+                key.with_revocation(Revocation {
                     rvk: first_seen.saturating_add(100),
                     by: None,
                 })
-            };
-            Key {
-                alg,
-                tmb,
-                pub_key,
-                first_seen,
-                last_used: None,
-                revocation,
-                tag: None,
             }
         })
 }
@@ -68,7 +60,7 @@ proptest! {
         let mut expected = std::collections::BTreeSet::new();
         for key in &keys {
             if key.is_active() {
-                let alg = match key.alg.as_str() {
+                let alg = match key.alg() {
                     "ES256" => HashAlg::Sha256,
                     "ES384" => HashAlg::Sha384,
                     "Ed25519" => HashAlg::Sha512,
@@ -218,15 +210,7 @@ fn arrow_domain_key(pk: &test_fixtures::PoolKey) -> Key {
     let pub_bytes =
         Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("invalid pool pub key base64");
     let tmb = pk.compute_tmb().expect("failed to compute tmb");
-    Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 fn arrow_prv_bytes(pk: &test_fixtures::PoolKey) -> Vec<u8> {
@@ -270,7 +254,7 @@ fn arrow_signed_key_create(
 
 /// Build and sign a real `commit/create` coz carrying `arrow_tagged`
 /// (`alg:base64digest`) under `signer`. Used both for the genuine value
-/// (via `finalize_with_arrow`, elsewhere) and, here, for deliberately
+/// (via `finalize_with_software`, elsewhere) and, here, for deliberately
 /// tampered values driven through the real signature-verification path.
 fn arrow_signed_commit_create(
     signer: &test_fixtures::PoolKey,
@@ -399,8 +383,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -453,8 +437,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -514,8 +498,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_ref
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -561,7 +545,7 @@ proptest! {
 
 /// F40 regression: a genuinely fresh explicit multi-key genesis (2+ keys,
 /// zero prior commits) — signed and applied through the real production
-/// path (`CommitScope::verify_and_apply` + `finalize_with_arrow`, exactly
+/// path (`CommitScope::verify_and_apply` + `finalize_with_software`, exactly
 /// as `cyphr-storage`'s write path and the CLI use it) — must accept a
 /// second, ordinary commit signed on top of it. Every prior arrow-property
 /// test in this file only ever exercises `Principal::implicit` (single-key,
@@ -601,7 +585,11 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis");
     scope1
-        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize");
 
     assert!(
@@ -616,7 +604,11 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         .verify_and_apply(&kc_pay, &kc_sig, kc_czd, Some(arrow_domain_key(key_c)))
         .expect("key/create mutation should apply to the second commit");
     scope2
-        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must finalize \
              without a state-root mismatch (F40)",

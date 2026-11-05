@@ -47,19 +47,6 @@ use tower::ServiceExt;
 // integration-test crate and cannot be imported here)
 // ========================================================================
 
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report` refuses a malformed `pr`, so this
-/// foreign-principal identifier must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
 fn load_pool() -> test_fixtures::Pool {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -155,15 +142,12 @@ fn build_foreign_principal_and_push_body(
     let golden = pool.get("golden").expect("golden key in pool");
     let new_key_fixture = pool.get("key_a").expect("key_a in pool");
 
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
 
     let signer_tmb_b64 = golden.compute_tmb_b64().expect("golden tmb b64");
@@ -184,18 +168,15 @@ fn build_foreign_principal_and_push_body(
         coz::sign_json(&pay_vec, &golden.alg, &golden_prv, &golden_pub).expect("sign key/create");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &golden.alg).expect("czd for golden's alg");
 
-    let new_key = cyphr::Key {
-        alg: new_key_fixture.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_key = cyphr::Key::new(
+        new_key_fixture.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key_fixture.pub_key)
-            .expect("new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key_fixture.pub_key).expect("new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -206,11 +187,8 @@ fn build_foreign_principal_and_push_body(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &golden.alg,
-            &golden_prv,
-            &golden_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&golden.alg, &golden_prv, &golden_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -247,9 +225,9 @@ fn build_foreign_principal_and_push_body(
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -350,8 +328,13 @@ async fn build_fixture() -> PortabilityFixture {
 
     let pool = load_pool();
     let now = 1_700_100_000;
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    // The id the golden implicit genesis derives (SPEC 3.1): its thumbprint.
+    let principal_id_derived = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb b64");
+    let principal_id = principal_id_derived.as_str();
 
     // ---- PROVER: materialize the foreign principal and push it ----
     let (foreign_principal, push_body) =
@@ -363,7 +346,7 @@ async fn build_fixture() -> PortabilityFixture {
     let alg = HashAlg::Sha256;
     let alg_id = hash_alg_to_u64(alg);
     let active_algs = foreign_principal.active_algs();
-    let thumbprints: Vec<&Thumbprint> = foreign_principal.active_keys().map(|k| &k.tmb).collect();
+    let thumbprints: Vec<&Thumbprint> = foreign_principal.active_keys().map(|k| k.tmb()).collect();
     assert_eq!(thumbprints.len(), 2, "genesis key + key/create");
     let tmb_a = thumbprints[0].clone();
 
@@ -413,19 +396,17 @@ async fn build_fixture() -> PortabilityFixture {
     let discovery = &discovery_envelope["payload"];
     let pinned_server_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
     let genesis = &discovery["genesis"];
-    let genesis_key = cyphr::Key {
-        alg: genesis["alg"].as_str().expect("genesis alg").to_string(),
-        tmb: coz::Thumbprint::from_bytes(
+    let genesis_key = cyphr::Key::new(
+        genesis["alg"].as_str().expect("genesis alg").to_string(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(genesis["tmb"].as_str().expect("genesis tmb"))
                 .expect("valid genesis tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
+        Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
             .expect("valid genesis pub base64"),
-        first_seen: genesis["first_seen"].as_i64().expect("genesis first_seen"),
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
     let client = cyphr::Principal::explicit(vec![genesis_key.clone()])
         .expect("the published genesis key reconstructs an explicit genesis");
@@ -490,8 +471,8 @@ async fn build_fixture() -> PortabilityFixture {
     let tip_active_key = replayed_server
         .get_key(&tip_tmb)
         .expect("the active key's material is available from the replayed chain")
-        .pub_key
-        .clone();
+        .pub_key()
+        .to_vec();
 
     let never_active_tmb = Thumbprint::from_bytes(vec![0x99; 32]);
 

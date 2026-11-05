@@ -48,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
             let _ = engine.blob_store().put(chunk).await;
         }
 
-        // Run reindex recovery - should not panic
-        let _ = engine.reindex(&[], true).await;
+        // Rebuild from the store's manifests - should not panic on arbitrary blobs
+        let _ = engine.rebuild_index_from_scratch().await;
     });
 });

@@ -124,11 +124,13 @@ fn add(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_arrow(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(
+            &signer_stored.alg,
+            &signer_stored.prv_key,
+            &signer_stored.pub_key,
+            &tmb,
+        ),
         now,
         authority,
     )?;
@@ -216,11 +218,13 @@ fn revoke(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_arrow(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(
+            &signer_stored.alg,
+            &signer_stored.prv_key,
+            &signer_stored.pub_key,
+            &tmb,
+        ),
         now,
         authority,
     )?;
@@ -309,9 +313,9 @@ fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
                 .iter()
                 .map(|k| {
                     serde_json::json!({
-                        "tmb": k.tmb.to_b64(),
-                        "alg": k.alg,
-                        "tag": k.tag,
+                        "tmb": k.tmb().to_b64(),
+                        "alg": k.alg(),
+                        "tag": k.tag(),
                     })
                 })
                 .collect();
@@ -324,8 +328,8 @@ fn list_identity(cli: &Cli, identity: &str) -> crate::Result<()> {
         OutputFormat::Table => {
             println!("Active keys for {identity}:");
             for key in active {
-                let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("  {} ({}) [{}]", key.tmb.to_b64(), key.alg, tag_str);
+                let tag_str = key.tag().unwrap_or("-");
+                println!("  {} ({}) [{}]", key.tmb().to_b64(), key.alg(), tag_str);
             }
         },
     }

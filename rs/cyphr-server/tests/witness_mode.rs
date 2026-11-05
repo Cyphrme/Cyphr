@@ -13,8 +13,7 @@
 
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use clap::Parser;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
@@ -25,48 +24,10 @@ use cyphr_server::sync::{SyncOutcome, sync_from_authority};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
 use cyphr_storage::index::{DeriveToken, IndexableCommit, IndexerWrite};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
 
 mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
-
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
-/// Helper: Issue a `DELETE` request against an axum router with a JSON body.
-async fn delete_json(
-    app: axum::Router,
-    uri: &str,
-    body: String,
-) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
-}
 
 // ========================================================================
 // Acceptance Criteria N2.1 – N2.6
@@ -103,7 +64,7 @@ async fn witness_mode_starts() {
 /// N2.2: `all_write_routes_refused`
 ///
 /// Structural write refusal: In Witness mode, ALL state-mutating (write) endpoints
-/// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`,
+/// (`POST /push`, `POST /revoke`,
 /// and unmapped mutating routes like `POST /unmapped_write_route_test`) MUST be
 /// structurally refused with a non-success write-refusal HTTP status code (403 Forbidden,
 /// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope
@@ -121,10 +82,11 @@ async fn all_write_routes_refused() {
     let app = build_app_router(state.clone()).expect("app router initialization");
 
     let pool = load_pool();
-    let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
+    let push_body =
+        build_genesis_push_body(&pool, &common::golden_principal_id(&pool), 1_700_000_000);
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
-    let (push_status, push_json) = post_json(app.clone(), "/push", push_body.clone()).await;
+    let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
     assert!(
         push_status == StatusCode::FORBIDDEN
             || push_status == StatusCode::METHOD_NOT_ALLOWED
@@ -137,25 +99,9 @@ async fn all_write_routes_refused() {
         "push refusal envelope MUST be unsigned: {push_json:?}"
     );
 
-    // 1b. POST /push with fanout/witness-push headers MUST ALSO be refused in witness mode
-    let fanout_req = Request::builder()
-        .method("POST")
-        .uri("/push")
-        .header("content-type", "application/json")
-        .header("x-cyphr-fanout", "true")
-        .header("x-witness-push", "true")
-        .body(Body::from(push_body))
-        .unwrap();
-    let fanout_resp = app.clone().oneshot(fanout_req).await.unwrap();
-    assert_eq!(
-        fanout_resp.status(),
-        StatusCode::FORBIDDEN,
-        "POST /push with fanout headers MUST be structurally refused in witness mode"
-    );
-
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
     let revoke_body = serde_json::json!({
-        "principal_id": "n2-write-refusal-principal",
+        "principal_id": common::golden_principal_id(&pool),
         "coz": {}
     })
     .to_string();
@@ -172,43 +118,7 @@ async fn all_write_routes_refused() {
         "revoke refusal envelope MUST be unsigned: {revoke_json:?}"
     );
 
-    // 3. POST /witness/register MUST be refused in witness mode with an unsigned envelope
-    let reg_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/create" }
-    })
-    .to_string();
-    let (reg_status, reg_json) = post_json(app.clone(), "/witness/register", reg_body).await;
-    assert!(
-        reg_status == StatusCode::FORBIDDEN
-            || reg_status == StatusCode::METHOD_NOT_ALLOWED
-            || reg_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: \
-         {reg_json:?}"
-    );
-    assert_eq!(
-        reg_json["statement"]["kind"], "unsigned",
-        "POST /witness/register refusal envelope MUST be unsigned: {reg_json:?}"
-    );
-
-    // 4. DELETE /witness/register MUST be refused in witness mode with an unsigned envelope
-    let del_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/delete" }
-    })
-    .to_string();
-    let (del_status, del_json) = delete_json(app.clone(), "/witness/register", del_body).await;
-    assert!(
-        del_status == StatusCode::FORBIDDEN
-            || del_status == StatusCode::METHOD_NOT_ALLOWED
-            || del_status == StatusCode::NOT_IMPLEMENTED,
-        "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: \
-         {del_json:?}"
-    );
-    assert_eq!(
-        del_json["statement"]["kind"], "unsigned",
-        "DELETE /witness/register refusal envelope MUST be unsigned: {del_json:?}"
-    );
-
-    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
+    // 3. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
     //    in witness mode with an unsigned envelope
     let unmapped_body = serde_json::json!({"test": "unmapped"}).to_string();
     let (unmapped_status, unmapped_json) =
@@ -254,8 +164,8 @@ async fn syncs_from_authority() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -324,8 +234,8 @@ async fn rejects_unverifiable_delta() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
 
     // 1. Establish valid principal on authority
@@ -602,49 +512,6 @@ async fn responses_carry_freshness() {
     );
 }
 
-/// Security Regression Test: `unauthenticated_fanout_header_cannot_bypass_witness_write_refusal`
-///
-/// Verifies that unauthenticated request headers (`x-cyphr-fanout`, `x-witness-push`) CANNOT
-/// bypass strict structural write refusal on Witness nodes. All POST /push requests MUST be
-/// rejected with HTTP 403 Forbidden and an unsigned refusal envelope.
-#[tokio::test]
-async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        ..Default::default()
-    };
-    let witness_instance = common::multi::Instance::from_config(witness_config, witness_dir).await;
-
-    let pool = load_pool();
-    let push_body =
-        build_genesis_push_body(&pool, "n2-fanout-bypass-attempt-principal", 1_700_000_000);
-
-    let resp = witness_instance
-        .post_with_headers(
-            "/push",
-            push_body,
-            &[("x-cyphr-fanout", "true"), ("x-witness-push", "true")],
-        )
-        .await;
-
-    assert_eq!(
-        resp.status,
-        StatusCode::FORBIDDEN,
-        "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
-         status {}: {:?}",
-        resp.status,
-        resp.json
-    );
-
-    assert_eq!(
-        resp.json["statement"]["kind"], "unsigned",
-        "Refusal envelope MUST be unsigned, got: {:?}",
-        resp.json
-    );
-}
-
 // ========================================================================
 // N2 remediation: wedge elimination + authenticated channel + ingestion
 // ========================================================================
@@ -718,17 +585,15 @@ fn append_key_create(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -738,11 +603,8 @@ fn append_key_create(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -781,15 +643,12 @@ fn build_two_commit_push_bodies(
     now: i64,
 ) -> (String, String) {
     let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
 
     // Commit 0 (genesis): introduce key_a, then embed the golden genesis key on
@@ -801,9 +660,9 @@ fn build_two_commit_push_bodies(
     closing_coz.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
@@ -1009,7 +868,7 @@ async fn witness_for(
 #[tokio::test]
 async fn sync_recovers_after_bad_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x11);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let bad_pr = principal.clone();
@@ -1095,7 +954,7 @@ async fn sync_recovers_after_bad_entry() {
 #[tokio::test]
 async fn sync_recovers_after_unverifiable_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x12);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
@@ -1185,7 +1044,7 @@ async fn sync_recovers_after_unverifiable_entry() {
 #[tokio::test]
 async fn patch_envelope_authority_signature() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x14);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let expected = coz::Alg::Ed25519.generate_keypair();
@@ -1231,7 +1090,7 @@ async fn patch_envelope_authority_signature() {
 #[tokio::test]
 async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1373,7 +1232,7 @@ async fn genuine_entries_and_identity(
 #[tokio::test]
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x18);
+    let principal = common::golden_principal_id(&load_pool());
     let (entries, _real_report, identity, _auth_dir) =
         genuine_entries_and_identity(&principal, now).await;
 
@@ -1469,7 +1328,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 #[tokio::test]
 async fn authenticated_channel_accepts_genuine_authority() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1d);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1578,15 +1437,12 @@ fn build_genesis_push_body_with(
     new_key: &str,
 ) -> String {
     let g = pool.get(signer).expect("signer key in pool");
-    let g_key = cyphr::Key {
-        alg: g.alg.clone(),
-        tmb: g.compute_tmb().expect("signer tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let g_key = cyphr::Key::new(
+        g.alg.clone(),
+        g.compute_tmb().expect("signer tmb"),
+        Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(g_key.clone()).expect("implicit genesis");
     let mut blobs = append_key_create(&mut principal, pool, signer, new_key, now);
     let closing = blobs.len() - 1;
@@ -1594,9 +1450,9 @@ fn build_genesis_push_body_with(
     closing_coz.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": g_key.alg,
+            "alg": g_key.alg(),
             "pub": g.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(g_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(g_key.tmb().as_bytes()),
         }),
     );
     blobs[closing] = serde_json::to_vec(&closing_coz).unwrap();
@@ -1622,12 +1478,14 @@ fn build_genesis_push_body_with(
 #[tokio::test]
 async fn cross_principal_substitution_rejected() {
     let now = 1_700_000_000;
-    let principal_a = principal_digest(0x81);
-    let principal_b = principal_digest(0x82);
+    let pool = load_pool();
+    // Distinct genesis keys (`alice` vs `golden`) give genuinely distinct
+    // genesis-derived ids.
+    let principal_a = common::implicit_principal_id(&pool, "alice");
+    let principal_b = common::golden_principal_id(&pool);
 
     let authority = authority_with_two_commits(&principal_b, now).await;
     let authority_identity = authority.identity();
-    let pool = load_pool();
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
@@ -1688,7 +1546,7 @@ async fn cross_principal_substitution_rejected() {
 #[tokio::test]
 async fn decoy_top_entry_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7a);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1753,7 +1611,7 @@ async fn decoy_top_entry_withholding_rejected() {
 #[tokio::test]
 async fn empty_entries_with_advanced_report_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7b);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1790,7 +1648,7 @@ async fn empty_entries_with_advanced_report_rejected() {
 #[tokio::test]
 async fn request_side_from_rewrite_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7c);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1856,7 +1714,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
 #[tokio::test]
 async fn synced_outcome_reports_rejected_count_alongside_applied() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7f);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1957,7 +1815,7 @@ async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandl
 #[tokio::test]
 async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x8a);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1998,7 +1856,7 @@ async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
 #[tokio::test]
 async fn stripped_statement_fails_closed_when_configured() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -2068,15 +1926,12 @@ fn build_chained_push_bodies(
 ) -> Vec<String> {
     assert!(!key_names.is_empty(), "at least a genesis key is required");
     let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
 
     let mut c0 = append_key_create(&mut principal, pool, "golden", key_names[0], now);
@@ -2085,9 +1940,9 @@ fn build_chained_push_bodies(
     closing_coz.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     c0[closing] = serde_json::to_vec(&closing_coz).unwrap();
@@ -2171,8 +2026,8 @@ async fn spawn_observing_patch_proxy(
 #[tokio::test]
 async fn sync_resumes_from_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa1);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_100_000;
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
 
@@ -2277,10 +2132,11 @@ async fn sync_resumes_from_digest_anchor() {
 #[tokio::test]
 async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa2);
-    let principal_id = principal_id_digest.as_str();
-    let fork_principal_id_digest = principal_digest(0xa3);
-    let fork_principal_id = fork_principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
+    // The fork lives on a SEPARATE authority and shares the canonical genesis
+    // (hence the genesis-derived id); it diverges only at sequence 1.
+    let fork_principal_id = principal_id;
     let now = 1_700_200_000;
 
     // Canonical authority: three genuinely chained commits.
@@ -2400,8 +2256,8 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
 #[tokio::test]
 async fn sequence_only_anchor_does_not_resume() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa4);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_300_000;
 
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
@@ -2470,8 +2326,8 @@ async fn sequence_only_anchor_does_not_resume() {
 #[tokio::test]
 async fn anchor_digest_rejects_malformed() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa5);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_400_000;
 
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
@@ -2527,7 +2383,7 @@ async fn anchor_digest_rejects_malformed() {
 #[tokio::test]
 async fn patch_bounded_to_is_unsigned_on_attestor() {
     let now = 1_700_500_000;
-    let principal = principal_digest(0x8e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
 
     let (unbounded_status, unbounded) = get_json(

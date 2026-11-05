@@ -19,7 +19,7 @@ use cyphr_server::auth::ServerIdentity;
 use cyphr_server::auth::principal::ServerPrincipal;
 use cyphr_server::config::ServerConfig;
 use cyphr_server::receipt::{self, EquivocationVerdict, Roots};
-use cyphr_server::{AppState, build_router, consistency};
+use cyphr_server::{AppState, build_router};
 use http_body_util::BodyExt;
 use proptest::prelude::*;
 use tower::ServiceExt;
@@ -69,17 +69,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -90,11 +88,8 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -129,15 +124,12 @@ fn sign_key_create_commit(
 
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
 
@@ -146,9 +138,9 @@ fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: 
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -274,8 +266,7 @@ fn restamp_sequence(
 }
 
 /// Render a distinct, valid SHA-256 digest string from a repeated seed
-/// byte -- the same convention `tests/cross_witness.rs` established
-/// (`455894a`). `check_equivocation`/`receipt::tip_report` parse
+/// byte. `check_equivocation`/`receipt::tip_report` parse
 /// `commit_id`/`roots` as `TaggedDigest`, so this suite's placeholders,
 /// which used to be human-readable or hand-typed repeated-letter
 /// literals, must genuinely parse. `pr` is NOT tagged -- see
@@ -335,8 +326,14 @@ async fn same_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x30);
-    let principal_id = principal_id_digest.as_str();
+    // The principal id must be the genesis-derived id (SPEC 3.1): the
+    // implicit genesis key's thumbprint.
+    let principal_id = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let principal_id = principal_id.as_str();
     let now = 1_700_100_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -393,8 +390,14 @@ async fn cross_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x31);
-    let principal_id = principal_id_digest.as_str();
+    // The principal id must be the genesis-derived id (SPEC 3.1): the
+    // implicit genesis key's thumbprint.
+    let principal_id = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let principal_id = principal_id.as_str();
     let now = 1_700_200_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -695,22 +698,8 @@ fn wrong_typ_pair_is_not_equivocation() {
 }
 
 // ========================================================================
-// N1 (rework, redirected against ND's landed typed contract): the
-// `Malformed` verdict's own doc comment named a two-sided gap --
-// `check_equivocation` diagnoses a report that fails to canonicalize as
-// DISTINCT from every other outcome (ND's boundary-side property; already
-// implemented and covered by ND's own suite), but every consumer in
-// `consistency.rs` read that distinction as nothing but "no conflict" --
-// `check_cross_witness_consistency`, `verify_evidence_offline`, and
-// `detect_fork_unverified` each compared `verdict == Proven` only, so a
-// malformed report and an honest non-conflicting pair were indistinguishable
-// at every call site. Four properties close N1's half of this from its own
-// file surface: the first is decorrelated coverage of ND's already-landed
-// boundary property; the other three each pin one consumer site's fold.
-// `check_cross_witness_consistency` now returns `Result<Value, NoEvidence>`
-// (`NoEvidence::Malformed` distinct from `NoEvidence::NoConflict`);
-// `verify_evidence_offline`/`detect_fork_unverified` now return `None` on a
-// `Malformed` verdict instead of folding it into `Some(false)`.
+// A report that fails to canonicalize is diagnosed `Malformed`, distinct
+// from every other outcome, so a consumer cannot read it as "no conflict".
 // ========================================================================
 
 /// Re-stamp a signed tip report's `pr` claim and re-sign -- the `pr`
@@ -804,293 +793,6 @@ proptest! {
              silently folded in with an honest non-conflict verdict",
             if malformed_on_pr { "pr" } else { "sequence" },
             malformed_value
-        );
-    }
-
-    /// The consumer half of ND's two-sided contract (S5.1): a report that
-    /// fails to canonicalize MUST read differently at
-    /// `consistency::check_cross_witness_consistency` than a genuinely
-    /// honest, agreeing pair. Closed by widening the function's return to
-    /// `Result<Value, NoEvidence>`: a malformed pair now yields
-    /// `Err(NoEvidence::Malformed)`, distinct from the honest pair's
-    /// `Err(NoEvidence::NoConflict)`.
-    #[test]
-    fn malformed_pair_is_distinguishable_from_honest_agreement_at_consumer(
-        malformed_on_pr in any::<bool>(),
-        malformed_value in malformed_field_strategy(),
-    ) {
-        let (_dir_a, identity_a) = identity_with_seed(0x11);
-        let (_dir_b, identity_b) = identity_with_seed(0x22);
-        let pr = principal_digest(0x50);
-
-        // Attack shape: one report hand-crafted to fail canonicalization,
-        // paired with a genuinely conflicting well-formed counterpart --
-        // the live evasion (an attacker makes one report fail to parse
-        // instead of making the raw comparison see two different values).
-        let a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x51),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report a");
-        let b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x52),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report b");
-        let a = if malformed_on_pr {
-            restamp_pr(a, &identity_a, malformed_value.clone())
-        } else {
-            restamp_sequence(a, &identity_a, malformed_value.clone())
-        };
-
-        let malformed_claim = consistency::check_cross_witness_consistency(&[
-            (&a, identity_a.pub_key()),
-            (&b, identity_b.pub_key()),
-        ]);
-
-        // Control: a fully honest, genuinely agreeing pair -- the ONE
-        // outcome a malformed report must never be indistinguishable from.
-        let honest_a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x53),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report a");
-        let honest_b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x53),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report b");
-        let honest_claim = consistency::check_cross_witness_consistency(&[
-            (&honest_a, identity_a.pub_key()),
-            (&honest_b, identity_b.pub_key()),
-        ]);
-
-        prop_assert_eq!(
-            malformed_claim,
-            Err(consistency::NoEvidence::Malformed),
-            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST diagnose Malformed at \
-             check_cross_witness_consistency, not silently fold into NoConflict",
-            malformed_on_pr,
-            malformed_value
-        );
-        prop_assert_eq!(
-            honest_claim,
-            Err(consistency::NoEvidence::NoConflict),
-            "a genuinely honest agreeing pair MUST diagnose NoConflict at \
-             check_cross_witness_consistency, not Malformed"
-        );
-    }
-
-    /// The same consumer-side contract as
-    /// `malformed_pair_is_distinguishable_from_honest_agreement_at_consumer`,
-    /// pinned at `verify_evidence_offline` instead of
-    /// `check_cross_witness_consistency`. Closed: a `Malformed` verdict now
-    /// returns `None`, distinct from the honest pair's `Some(false)`.
-    #[test]
-    fn malformed_pair_is_distinguishable_from_honest_agreement_at_verify_evidence_offline(
-        malformed_on_pr in any::<bool>(),
-        malformed_value in malformed_field_strategy(),
-    ) {
-        let (_dir_a, identity_a) = identity_with_seed(0x11);
-        let (_dir_b, identity_b) = identity_with_seed(0x22);
-        let pr = principal_digest(0x54);
-
-        // Attack shape, as the consumer property above: one report
-        // hand-crafted to fail canonicalization, paired with a genuinely
-        // conflicting well-formed counterpart.
-        let a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x55),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report a");
-        let b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x56),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report b");
-        let a = if malformed_on_pr {
-            restamp_pr(a, &identity_a, malformed_value.clone())
-        } else {
-            restamp_sequence(a, &identity_a, malformed_value.clone())
-        };
-
-        let malformed_result = consistency::verify_evidence_offline(
-            &a,
-            identity_a.pub_key(),
-            &b,
-            identity_b.pub_key(),
-        );
-
-        // Control: a fully honest, genuinely agreeing pair.
-        let honest_a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x57),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report a");
-        let honest_b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x57),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report b");
-        let honest_result = consistency::verify_evidence_offline(
-            &honest_a,
-            identity_a.pub_key(),
-            &honest_b,
-            identity_b.pub_key(),
-        );
-
-        prop_assert_eq!(
-            malformed_result,
-            None,
-            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST return None at verify_evidence_offline, not \
-             silently fold into Some(false)",
-            malformed_on_pr,
-            malformed_value
-        );
-        prop_assert_eq!(
-            honest_result,
-            Some(false),
-            "a genuinely honest agreeing pair MUST verify to Some(false) at \
-             verify_evidence_offline, not None"
-        );
-    }
-
-    /// As the two properties above, pinned at `detect_fork_unverified` --
-    /// the third and last of the three call sites. Closed the same way:
-    /// `Malformed` now returns `None`, distinct from `Some(false)`.
-    #[test]
-    fn malformed_pair_is_distinguishable_from_honest_agreement_at_detect_fork_unverified(
-        malformed_on_pr in any::<bool>(),
-        malformed_value in malformed_field_strategy(),
-    ) {
-        let (_dir_a, identity_a) = identity_with_seed(0x11);
-        let (_dir_b, identity_b) = identity_with_seed(0x22);
-        let pr = principal_digest(0x58);
-
-        let a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x59),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report a");
-        let b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            0,
-            digest(0x5a),
-            &roots_a(),
-            1,
-            1_700_000_000,
-        )
-        .expect("compose conflicting report b");
-        let a = if malformed_on_pr {
-            restamp_pr(a, &identity_a, malformed_value.clone())
-        } else {
-            restamp_sequence(a, &identity_a, malformed_value.clone())
-        };
-
-        let malformed_result =
-            consistency::detect_fork_unverified(&a, identity_a.pub_key(), &b, identity_b.pub_key());
-
-        let honest_a = receipt::tip_report(
-            &identity_a,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x5b),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report a");
-        let honest_b = receipt::tip_report(
-            &identity_b,
-            1_700_000_000,
-            &pr,
-            1,
-            digest(0x5b),
-            &roots_a(),
-            2,
-            1_700_000_000,
-        )
-        .expect("compose honest agreeing report b");
-        let honest_result = consistency::detect_fork_unverified(
-            &honest_a,
-            identity_a.pub_key(),
-            &honest_b,
-            identity_b.pub_key(),
-        );
-
-        prop_assert_eq!(
-            malformed_result,
-            None,
-            "a pair where one report fails to canonicalize (malformed_on_pr={}, \
-             malformed_value={:?}) MUST return None at detect_fork_unverified, not \
-             silently fold into Some(false)",
-            malformed_on_pr,
-            malformed_value
-        );
-        prop_assert_eq!(
-            honest_result,
-            Some(false),
-            "a genuinely honest agreeing pair MUST verify to Some(false) at \
-             detect_fork_unverified, not None"
         );
     }
 }

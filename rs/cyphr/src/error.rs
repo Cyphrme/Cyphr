@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Cyphr error type covering all error conditions from SPEC §17.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The signing backend failed (see [`crate::signer`]).
+    #[error(transparent)]
+    Signer(#[from] crate::signer::SignerError),
+
     // === ParsedCoz errors (§17.1) ===
     /// Signature does not verify against claimed key.
     #[error("invalid signature")]
@@ -33,6 +37,18 @@ pub enum Error {
     /// Missing required fields for coz type.
     #[error("malformed payload")]
     MalformedPayload,
+
+    /// A key's `tmb` is not the thumbprint of its public key.
+    #[error("key tmb does not match its public key")]
+    TmbMismatch,
+
+    /// `pay.alg` is absent or differs from the signing key's algorithm.
+    #[error("pay alg does not match signing key alg")]
+    AlgMismatch,
+
+    /// The supplied `czd` is not the digest of the signed bytes.
+    #[error("czd does not match signed bytes")]
+    CzdMismatch,
 
     /// `key/create` for key already in KS.
     #[error("duplicate key")]

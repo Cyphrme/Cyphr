@@ -497,14 +497,14 @@ impl Principal<eml::MemoryStorage> {
             return Err(Error::NoActiveKeys);
         }
 
-        let _ = hash_alg_from_str(&keys[0].alg)?;
+        let _ = hash_alg_from_str(keys[0].alg())?;
 
         // Derive active algorithms from checkpoint keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
         // Compute KR from provided keys
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
         let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
         // Restore MALT state if provided, otherwise start fresh.
@@ -532,10 +532,10 @@ impl Principal<eml::MemoryStorage> {
         }
         let pr = pt.pr(&active_algs)?;
 
-        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb.to_b64()).collect();
+        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
         let mut key_map = IndexMap::new();
         for k in keys {
-            key_map.insert(k.tmb.to_b64(), k);
+            key_map.insert(k.tmb().to_b64(), k);
         }
         let core = PrincipalCore {
             pr,
@@ -622,14 +622,14 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
     pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
-        let hash_alg = hash_alg_from_str(&key.alg)?;
-        let tmb_b64 = key.tmb.to_b64();
+        let hash_alg = hash_alg_from_str(key.alg())?;
+        let tmb_b64 = key.tmb().to_b64();
 
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
         // KT → AR-node → SR-node (no DR at genesis)
-        let (kr, ar, sr) = derive_state_roots(&[&key.tmb], None, &active_algs)?;
+        let (kr, ar, sr) = derive_state_roots(&[key.tmb()], None, &active_algs)?;
         // PR = SR (no CR at genesis): the tree's native singleton promotion.
         let mut pt = PrincipalTree::new();
         pt.set_sr(&sr, &active_algs)?;
@@ -675,14 +675,14 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::NoActiveKeys);
         }
 
-        let _ = hash_alg_from_str(&keys[0].alg)?;
+        let _ = hash_alg_from_str(keys[0].alg())?;
 
         // Derive active algorithms from all keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
         // Collect thumbprints for KR computation
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
         let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
         // KT → AR-node → SR-node (no DR at genesis)
         let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
@@ -693,7 +693,7 @@ impl<S: eml::Storage> Principal<S> {
 
         let mut key_map = IndexMap::new();
         for k in keys {
-            key_map.insert(k.tmb.to_b64(), k);
+            key_map.insert(k.tmb().to_b64(), k);
         }
 
         Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore {
@@ -752,14 +752,14 @@ impl<S: eml::Storage> Principal<S> {
             return Err(Error::NoActiveKeys);
         }
 
-        let _ = hash_alg_from_str(&keys[0].alg)?;
+        let _ = hash_alg_from_str(keys[0].alg())?;
 
         // Derive active algorithms from checkpoint keys (SPEC §14)
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
         // Compute KR from provided keys
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
         let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
         // A restored, non-empty log yields a CR; a genuinely empty one
@@ -789,10 +789,10 @@ impl<S: eml::Storage> Principal<S> {
         }
         let pr = pt.pr(&active_algs)?;
 
-        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb.to_b64()).collect();
+        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
         let mut key_map = IndexMap::new();
         for k in keys {
-            key_map.insert(k.tmb.to_b64(), k);
+            key_map.insert(k.tmb().to_b64(), k);
         }
         let core = PrincipalCore {
             pr,
@@ -959,7 +959,7 @@ impl<S: eml::Storage> Principal<S> {
             .keys
             .shift_remove(&tmb_b64)
             .ok_or(Error::UnknownKey)?;
-        key.revocation = Some(Revocation { rvk, by: None });
+        key.set_revocation(Revocation { rvk, by: None });
         core.auth.revoked.insert(tmb_b64, key);
         Ok(())
     }
@@ -1168,7 +1168,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // Lexical-sort position, matching KeyTree::build_tree's own sort.
-        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
         let mut sorted: Vec<&[u8]> = thumbprints.iter().map(|t| t.as_bytes()).collect();
         sorted.sort();
         let index = sorted
@@ -1380,7 +1380,12 @@ impl<S: eml::Storage> Principal<S> {
         // Verify signer is an active key
         if !self.is_key_active(&action.signer) {
             // Check if key exists but is revoked
-            if self.auth.revoked.values().any(|k| k.tmb == action.signer) {
+            if self
+                .auth
+                .revoked
+                .values()
+                .any(|k| *k.tmb() == action.signer)
+            {
                 return Err(Error::KeyRevoked);
             }
             return Err(Error::UnknownKey);
@@ -1484,11 +1489,24 @@ impl<S: eml::Storage> Principal<S> {
         // Look up signer key
         let signer_key = self.get_key(&signer_tmb).ok_or(Error::UnknownKey)?;
 
+        // The signed pay must name the key that actually verifies it.
+        if pay_value["alg"].as_str() != Some(signer_key.alg()) {
+            return Err(Error::AlgMismatch);
+        }
+
         // Verify signature
-        let valid =
-            coz::verify_json(pay_json, sig, &signer_key.alg, &signer_key.pub_key).unwrap_or(false);
+        let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
+            .unwrap_or(false);
         if !valid {
             return Err(Error::InvalidSignature);
+        }
+
+        // The czd identifies the action; it is derived from the signed
+        // bytes, never trusted from the caller.
+        let computed = crate::parsed_coz::compute_czd(pay_json, sig, signer_key.alg())
+            .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg().to_owned()))?;
+        if computed.as_bytes() != czd.as_bytes() {
+            return Err(Error::CzdMismatch);
         }
 
         // Construct CozJson for storage
@@ -1570,7 +1588,7 @@ impl<S: eml::Storage> Principal<S> {
         // algorithm (see finalize_commit's identical refresh).
         let key_refs: Vec<&Key> = self.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
-        let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&coz::Thumbprint> = self.auth.keys.values().map(|k| k.tmb()).collect();
         let action_refs: Vec<&Action> = self.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs)?;
         let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs)?;
@@ -1706,11 +1724,15 @@ impl<S: eml::Storage> Principal<S> {
         match &cz.kind {
             CozKind::KeyCreate { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
-                if key.tmb.to_b64() != id.to_b64() {
+                if key.tmb().to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
-                // Verify algorithm is supported
-                let _ = hash_alg_from_str(&key.alg)?;
+                // The signed pay binds only `tmb`; the sidecar `pub` is unsigned.
+                // SPEC §6.4: a revoked key is never trusted again. Only a
+                // deleted key may be re-added (§6.2).
+                if self.auth.revoked.contains_key(&id.to_b64()) {
+                    return Err(Error::KeyRevoked);
+                }
                 // Check for duplicate key
                 if self.auth.keys.contains_key(&id.to_b64()) {
                     return Err(Error::DuplicateKey);
@@ -1722,11 +1744,14 @@ impl<S: eml::Storage> Principal<S> {
             },
             CozKind::KeyReplace { id } => {
                 let key = vtx.new_key().cloned().ok_or(Error::MalformedPayload)?;
-                if key.tmb.to_b64() != id.to_b64() {
+                if key.tmb().to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
-                // Verify algorithm is supported
-                let _ = hash_alg_from_str(&key.alg)?;
+                // The signed pay binds only `tmb`; the sidecar `pub` is unsigned.
+                // SPEC §6.4: a revoked key is never trusted again.
+                if self.auth.revoked.contains_key(&id.to_b64()) {
+                    return Err(Error::KeyRevoked);
+                }
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, cz.now);
@@ -1877,7 +1902,7 @@ impl<S: eml::Storage> Principal<S> {
 
         // KT → AR-node → SR-node (post-mutation key set, refreshed DR).
         // PR is computed below, after Arrow validation and CR assembly.
-        let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<&Thumbprint> = core.auth.keys.values().map(|k| k.tmb()).collect();
         let (kr, ar, sr) = derive_state_roots(&thumbprints, core.dr.as_ref(), &active_algs)?;
         core.kr = kr;
         core.ar = ar;
@@ -2056,8 +2081,8 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// Sets `first_seen` to the given timestamp.
     fn add_key(&mut self, mut key: Key, first_seen: i64) {
-        key.first_seen = first_seen;
-        let tmb_b64 = key.tmb.to_b64();
+        key.set_first_seen(first_seen);
+        let tmb_b64 = key.tmb().to_b64();
         self.core_mut().auth.keys.insert(tmb_b64, key);
     }
 
@@ -2102,7 +2127,7 @@ impl<S: eml::Storage> Principal<S> {
             .keys
             .shift_remove(&tmb_b64)
             .ok_or(Error::UnknownKey)?;
-        key.revocation = Some(Revocation { rvk, by });
+        key.set_revocation(Revocation { rvk, by });
 
         // Move to revoked set for historical verification
         core.auth.revoked.insert(tmb_b64, key);
@@ -2116,7 +2141,7 @@ impl<S: eml::Storage> Principal<S> {
     fn update_last_used(&mut self, tmb: &Thumbprint, timestamp: i64) {
         let tmb_b64 = tmb.to_b64();
         if let Some(key) = self.core_mut().auth.keys.get_mut(&tmb_b64) {
-            key.last_used = Some(timestamp);
+            key.set_last_used(timestamp);
         }
     }
 }
@@ -2136,15 +2161,9 @@ mod tests {
     use crate::state::StateDigest;
 
     fn make_test_key(id: u8) -> Key {
-        Key {
-            alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 32]),
-            pub_key: vec![id; 64],
-            first_seen: 1000,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+        Key::from_pub_key("ES256", vec![id; 64])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     /// Create a dummy CozJson for test cozies.
@@ -2170,22 +2189,22 @@ mod tests {
         assert!(principal.pg().is_none(), "PR should be None at Level 1");
         assert_eq!(
             principal.pr().get(principal.hash_alg()).unwrap(),
-            key.tmb.as_bytes()
+            key.tmb().as_bytes()
         );
         assert_eq!(
             principal.auth_root().get(principal.hash_alg()).unwrap(),
-            key.tmb.as_bytes()
+            key.tmb().as_bytes()
         );
         assert_eq!(
             principal.key_root().get(principal.hash_alg()).unwrap(),
-            key.tmb.as_bytes()
+            key.tmb().as_bytes()
         );
     }
 
     #[test]
     fn implicit_genesis_has_one_active_key() {
         let key = make_test_key(0xBB);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let principal = Principal::implicit(key).unwrap();
 
         assert_eq!(principal.active_key_count(), 1);
@@ -2207,8 +2226,8 @@ mod tests {
 
         // Should have 2 active keys
         assert_eq!(principal.active_key_count(), 2);
-        assert!(principal.is_key_active(&key1.tmb));
-        assert!(principal.is_key_active(&key2.tmb));
+        assert!(principal.is_key_active(key1.tmb()));
+        assert!(principal.is_key_active(key2.tmb()));
 
         // Level 3 due to multiple keys
         assert_eq!(principal.level(), Level::L3);
@@ -2279,7 +2298,7 @@ mod tests {
     #[test]
     fn principal_with_no_active_keys_derives_dead() {
         let key = make_test_key(0xD1);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         principal.pre_revoke_key(&tmb, 1000).unwrap();
@@ -2315,7 +2334,7 @@ mod tests {
         );
 
         let mut revoked = Principal::implicit(make_test_key(0xD5)).unwrap();
-        let tmb = revoked.active_keys().next().unwrap().tmb.clone();
+        let tmb = revoked.active_keys().next().unwrap().tmb().clone();
         revoked.pre_revoke_key(&tmb, 2000).unwrap();
         assert_ne!(
             revoked.lifecycle_state(),
@@ -2362,7 +2381,7 @@ mod tests {
         use crate::parsed_coz::CozKind;
 
         let key = make_test_key(0xE1);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         let freeze_cz = make_lifecycle_cz(
@@ -2400,7 +2419,7 @@ mod tests {
         use crate::parsed_coz::CozKind;
 
         let key = make_test_key(0xE2);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         let delete_cz = make_lifecycle_cz(
@@ -2436,7 +2455,7 @@ mod tests {
         use crate::parsed_coz::CozKind;
 
         let key = make_test_key(0xE3);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         let freeze_cz = make_lifecycle_cz(
@@ -2465,7 +2484,7 @@ mod tests {
         use crate::parsed_coz::CozKind;
 
         let key = make_test_key(0xE4);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         assert!(!principal.is_frozen());
@@ -2486,7 +2505,7 @@ mod tests {
         use crate::parsed_coz::CozKind;
 
         let key = make_test_key(0xE5);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         let freeze_cz = make_lifecycle_cz(
@@ -2549,7 +2568,7 @@ mod tests {
             CozKind::PrincipalDelete {
                 id: principal.pr().clone(),
             },
-            &key1.tmb,
+            key1.tmb(),
             2000,
         );
         principal.apply_transaction_test(delete_cz, None).unwrap();
@@ -2563,7 +2582,7 @@ mod tests {
         let (mut principal, key1, _key2) = build_deleted_principal();
 
         let new_key = make_test_key(0xD3);
-        let cz = make_key_add_tx(&new_key, &key1.tmb);
+        let cz = make_key_add_tx(&new_key, key1.tmb());
 
         let result = principal.apply_transaction_test(cz, Some(new_key));
         assert!(matches!(result, Err(Error::AlreadyDeleted)));
@@ -2579,9 +2598,9 @@ mod tests {
 
         let cz = ParsedCoz {
             kind: CozKind::KeyDelete {
-                id: key2.tmb.clone(),
+                id: key2.tmb().clone(),
             },
-            signer: key1.tmb.clone(),
+            signer: key1.tmb().clone(),
             now: 2001,
             czd: Czd::from_bytes(vec![0xD4; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -2604,9 +2623,9 @@ mod tests {
         let new_key = make_test_key(0xD5);
         let cz = ParsedCoz {
             kind: CozKind::KeyReplace {
-                id: new_key.tmb.clone(),
+                id: new_key.tmb().clone(),
             },
-            signer: key1.tmb.clone(),
+            signer: key1.tmb().clone(),
             now: 2001,
             czd: Czd::from_bytes(vec![0xD6; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -2633,7 +2652,7 @@ mod tests {
 
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 2001 },
-            signer: key2.tmb.clone(),
+            signer: key2.tmb().clone(),
             now: 2001,
             czd: Czd::from_bytes(vec![0xD7; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -2644,7 +2663,7 @@ mod tests {
         let result = principal.apply_transaction_test(cz, None);
         assert!(matches!(result, Err(Error::AlreadyDeleted)));
         assert!(
-            principal.is_key_active(&key2.tmb),
+            principal.is_key_active(key2.tmb()),
             "rejected self-revoke must not mutate the key set"
         );
     }
@@ -2661,7 +2680,7 @@ mod tests {
             kind: CozKind::PrincipalCreate {
                 id: principal.auth_root().clone(),
             },
-            signer: key1.tmb.clone(),
+            signer: key1.tmb().clone(),
             now: 2001,
             czd: Czd::from_bytes(vec![0xD8; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -2693,7 +2712,7 @@ mod tests {
             crate::parsed_coz::CozKind::FreezeDelete {
                 id: principal.pr().clone(),
             },
-            &key1.tmb,
+            key1.tmb(),
             2001,
         );
         let result = principal.apply_transaction_test(thaw_cz, None);
@@ -2705,9 +2724,9 @@ mod tests {
         let (mut principal, key1, _key2) = build_deleted_principal();
 
         let pay = serde_json::json!({
-            "alg": key1.alg,
+            "alg": key1.alg(),
             "now": 2001,
-            "tmb": key1.tmb.to_b64(),
+            "tmb": key1.tmb().to_b64(),
             "typ": "cyphr.me/comment",
         });
         let pay_json = serde_json::to_vec(&pay).unwrap();
@@ -2734,7 +2753,7 @@ mod tests {
         use crate::parsed_coz::{CozKind, ParsedCoz};
 
         let key = make_test_key(0xDA);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let mut principal = Principal::implicit(key).unwrap();
 
         let delete_cz = ParsedCoz {
@@ -2765,7 +2784,7 @@ mod tests {
         let key_refs: Vec<&Key> = principal.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
-            principal.auth.keys.values().map(|k| &k.tmb).collect();
+            principal.auth.keys.values().map(|k| k.tmb()).collect();
         let action_refs: Vec<&Action> = principal.data.actions.iter().collect();
         let dr = compute_dr(&action_refs, None, &active_algs).unwrap();
         let (_kr, _ar, sr) = derive_state_roots(&thumbprints, dr.as_ref(), &active_algs).unwrap();
@@ -2848,7 +2867,7 @@ mod tests {
             kind: CozKind::CommitCreate {
                 arrow: arrow_md.clone(),
             },
-            signer: key1.tmb.clone(),
+            signer: key1.tmb().clone(),
             now: 3000,
             czd: coz::Czd::from_bytes(vec![0xE9; 32]),
             hash_alg: HashAlg::Sha256,
@@ -2882,14 +2901,14 @@ mod tests {
                 "alg": "ES256",
                 "now": 2000,
                 "tmb": signer.to_b64(),
-                "id": new_key.tmb.to_b64()
+                "id": new_key.tmb().to_b64()
             }),
             sig: vec![0; 64],
         };
 
         ParsedCoz {
             kind: CozKind::KeyCreate {
-                id: new_key.tmb.clone(),
+                id: new_key.tmb().clone(),
             },
             signer: signer.clone(),
             now: 2000,
@@ -2906,14 +2925,14 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, key1.tmb());
 
         principal
             .apply_transaction_test(cz, Some(key2.clone()))
             .unwrap();
 
         assert_eq!(principal.active_key_count(), 2);
-        assert!(principal.is_key_active(&key2.tmb));
+        assert!(principal.is_key_active(key2.tmb()));
         assert_eq!(principal.level(), Level::L3);
     }
 
@@ -2928,7 +2947,7 @@ mod tests {
             .unwrap()
             .to_vec();
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, key1.tmb());
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
         // apply_transaction_test auto-finalizes the commit
@@ -2954,7 +2973,7 @@ mod tests {
         );
 
         let key2 = make_test_key(0x22);
-        let cz = make_key_add_tx(&key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, key1.tmb());
 
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
@@ -2997,7 +3016,7 @@ mod tests {
         assert_eq!(principal.level(), Level::L1);
         assert!(principal.data_root().is_none());
 
-        let action = make_test_action(&key.tmb);
+        let action = make_test_action(key.tmb());
         principal.record_action(action).unwrap();
 
         assert_eq!(principal.level(), Level::L4);
@@ -3012,7 +3031,7 @@ mod tests {
 
         let pr_before = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
 
-        let action = make_test_action(&key.tmb);
+        let action = make_test_action(key.tmb());
         principal.record_action(action).unwrap();
 
         let pr_after = principal.pr().get(principal.hash_alg()).unwrap().to_vec();
@@ -3051,7 +3070,7 @@ mod tests {
 
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 2000 },
-            signer: key.tmb.clone(),
+            signer: key.tmb().clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xEE; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -3064,7 +3083,7 @@ mod tests {
 
         // Key should still be active (no mutation occurred)
         assert_eq!(principal.active_key_count(), 1);
-        assert!(principal.is_key_active(&key.tmb));
+        assert!(principal.is_key_active(key.tmb()));
     }
 
     #[test]
@@ -3082,7 +3101,7 @@ mod tests {
 
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 2000 },
-            signer: key2.tmb.clone(),
+            signer: key2.tmb().clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![0xFF; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -3093,8 +3112,8 @@ mod tests {
         principal.apply_transaction_test(cz, None).unwrap();
 
         assert_eq!(principal.active_key_count(), 1);
-        assert!(principal.is_key_active(&key1.tmb));
-        assert!(!principal.is_key_active(&key2.tmb));
+        assert!(principal.is_key_active(key1.tmb()));
+        assert!(!principal.is_key_active(key2.tmb()));
     }
 
     // ========================================================================
@@ -3107,10 +3126,10 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         let mut key2 = make_test_key(0x22);
-        key2.first_seen = 0; // Caller may not set this
+        key2.set_first_seen(0); // Caller may not set this
 
         // ParsedCoz has now=2000
-        let cz = make_key_add_tx(&key2, &key1.tmb);
+        let cz = make_key_add_tx(&key2, key1.tmb());
         assert_eq!(cz.now, 2000);
 
         principal
@@ -3118,8 +3137,8 @@ mod tests {
             .unwrap();
 
         // New key's first_seen should be set from cz.now
-        let added_key = principal.get_key(&key2.tmb).unwrap();
-        assert_eq!(added_key.first_seen, 2000);
+        let added_key = principal.get_key(key2.tmb()).unwrap();
+        assert_eq!(added_key.first_seen(), 2000);
     }
 
     // ========================================================================
@@ -3139,7 +3158,7 @@ mod tests {
         // Revoke key2 (self-revoke)
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 1500 },
-            signer: key2.tmb.clone(),
+            signer: key2.tmb().clone(),
             now: 1500,
             czd: Czd::from_bytes(vec![0xAA; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -3149,11 +3168,11 @@ mod tests {
         principal.apply_transaction_test(cz, None).unwrap();
 
         // key2 should be in revoked set, not active
-        assert!(!principal.is_key_active(&key2.tmb));
-        assert!(principal.auth.revoked.contains_key(&key2.tmb.to_b64()));
+        assert!(!principal.is_key_active(key2.tmb()));
+        assert!(principal.auth.revoked.contains_key(&key2.tmb().to_b64()));
 
         // get_key still finds it (for historical verification)
-        assert!(principal.get_key(&key2.tmb).is_some());
+        assert!(principal.get_key(key2.tmb()).is_some());
     }
 
     // ========================================================================
@@ -3166,7 +3185,7 @@ mod tests {
         let mut principal = Principal::implicit(key1.clone()).unwrap();
 
         // Initially, last_used should be None
-        assert!(principal.get_key(&key1.tmb).unwrap().last_used.is_none());
+        assert!(principal.get_key(key1.tmb()).unwrap().last_used().is_none());
 
         // Apply a key/create coz with now=5000
         let key2 = make_test_key(0x22);
@@ -3176,9 +3195,9 @@ mod tests {
         use crate::parsed_coz::{CozKind, ParsedCoz};
         let cz = ParsedCoz {
             kind: CozKind::KeyCreate {
-                id: key2.tmb.clone(),
+                id: key2.tmb().clone(),
             },
-            signer: key1.tmb.clone(),
+            signer: key1.tmb().clone(),
             now: 5000,
             czd: Czd::from_bytes(vec![0xBB; 32]),
             hash_alg: crate::state::HashAlg::Sha256,
@@ -3188,7 +3207,10 @@ mod tests {
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
         // Signer's last_used should now be 5000
-        assert_eq!(principal.get_key(&key1.tmb).unwrap().last_used, Some(5000));
+        assert_eq!(
+            principal.get_key(key1.tmb()).unwrap().last_used(),
+            Some(5000)
+        );
     }
 
     #[test]
@@ -3196,16 +3218,19 @@ mod tests {
         let key = make_test_key(0xAA);
         let mut principal = Principal::implicit(key.clone()).unwrap();
 
-        assert!(principal.get_key(&key.tmb).unwrap().last_used.is_none());
+        assert!(principal.get_key(key.tmb()).unwrap().last_used().is_none());
 
         // Record action with now=7000
-        let action = make_test_action(&key.tmb);
+        let action = make_test_action(key.tmb());
         // Our test helper uses now=3000, let's verify that
         assert_eq!(action.now, 3000);
 
         principal.record_action(action).unwrap();
 
-        assert_eq!(principal.get_key(&key.tmb).unwrap().last_used, Some(3000));
+        assert_eq!(
+            principal.get_key(key.tmb()).unwrap().last_used(),
+            Some(3000)
+        );
     }
 
     // ========================================================================
@@ -3223,11 +3248,11 @@ mod tests {
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 2) as u8);
-            let signer = keys.last().unwrap().tmb.clone();
+            let signer = keys.last().unwrap().tmb().clone();
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    id: new_key.tmb.clone(),
+                    id: new_key.tmb().clone(),
                 },
                 signer: signer.clone(),
                 now: (1000 + (i as i64 + 1) * 1000),
@@ -3291,14 +3316,14 @@ mod tests {
 
         let mut keys = vec![make_test_key(0x01), make_test_key_ed25519(0x02)];
         let mut principal = Principal::explicit(keys.clone()).unwrap();
-        let signer = keys[0].tmb.clone();
+        let signer = keys[0].tmb().clone();
 
         for i in 0..n_commits {
             let new_key = make_test_key((i + 3) as u8);
 
             let cz = ParsedCoz {
                 kind: CozKind::KeyCreate {
-                    id: new_key.tmb.clone(),
+                    id: new_key.tmb().clone(),
                 },
                 signer: signer.clone(),
                 now: (1000 + (i as i64 + 1) * 1000),
@@ -3428,9 +3453,9 @@ mod tests {
         for alg in [HashAlg::Sha256, HashAlg::Sha512] {
             for key in &keys {
                 assert!(
-                    principal.verify_key_inclusion(alg, &key.tmb).unwrap(),
+                    principal.verify_key_inclusion(alg, key.tmb()).unwrap(),
                     "key inclusion failed for alg {alg:?} tmb {:?}",
-                    key.tmb
+                    key.tmb()
                 );
             }
         }
@@ -3461,7 +3486,7 @@ mod tests {
     fn key_inclusion_rejects_forged_leaf_at_real_position() {
         let (principal, keys) = build_multi_alg_principal_with_commits(2);
         let alg = HashAlg::Sha256;
-        let genuine_tmb = keys[0].tmb.clone();
+        let genuine_tmb = keys[0].tmb().clone();
 
         let mut path = principal.key_inclusion_proof(alg, &genuine_tmb).unwrap();
         path.hops[0].proof.leaf_hash = vec![0xEE; 32];
@@ -3488,7 +3513,7 @@ mod tests {
     #[test]
     fn key_inclusion_verifies_through_genesis_promotion_chain() {
         let key = make_test_key(0xAA);
-        let tmb = key.tmb.clone();
+        let tmb = key.tmb().clone();
         let principal = Principal::implicit(key).unwrap();
         let alg = principal.hash_alg();
 
@@ -3511,7 +3536,7 @@ mod tests {
     fn sr_inclusion_proof_matches_hop_four() {
         let (principal, keys) = build_multi_alg_principal_with_commits(3);
         let alg = HashAlg::Sha256;
-        let tmb = keys[0].tmb.clone();
+        let tmb = keys[0].tmb().clone();
 
         let path = principal.key_inclusion_proof(alg, &tmb).unwrap();
         let hop4 = principal
@@ -3559,11 +3584,11 @@ mod tests {
     #[test]
     fn key_inclusion_bridge_rejects_spliced_hops_that_individually_verify() {
         let key_a = make_test_key(0xAA);
-        let tmb_a = key_a.tmb.clone();
+        let tmb_a = key_a.tmb().clone();
         let principal_a = Principal::implicit(key_a).unwrap();
 
         let key_b = make_test_key(0xBB);
-        let tmb_b = key_b.tmb.clone();
+        let tmb_b = key_b.tmb().clone();
         let principal_b = Principal::implicit(key_b).unwrap();
 
         let alg = principal_a.hash_alg();
@@ -3810,15 +3835,9 @@ mod tests {
     /// (which is always ES256/SHA-256), so a two-key principal registers two
     /// distinct hash algorithms from genesis.
     fn make_test_key_ed25519(id: u8) -> Key {
-        Key {
-            alg: "Ed25519".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 64]), // SHA-512 digest length
-            pub_key: vec![id; 32],
-            first_seen: 1000,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+        Key::from_pub_key("Ed25519", vec![id; 32])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     /// c2/a2 — the correctness pivot of this node: for a principal with 2+
@@ -3852,7 +3871,7 @@ mod tests {
         let id = principal.auth_root().clone();
         let cz = ParsedCoz {
             kind: CozKind::PrincipalCreate { id },
-            signer: key_es256.tmb.clone(),
+            signer: key_es256.tmb().clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x33; 32]),
             hash_alg: HashAlg::Sha256,
@@ -3893,7 +3912,7 @@ mod tests {
         {
             let mut scope = principal.begin_commit();
             let key2 = make_test_key(0x22);
-            let cz = make_key_add_tx(&key2, &key1.tmb);
+            let cz = make_key_add_tx(&key2, key1.tmb());
             let vtx = crate::parsed_coz::VerifiedCoz::from_transaction_unsafe(cz, Some(key2));
             scope.apply(vtx).unwrap();
             // Deliberately dropped here without calling finalize().
@@ -3948,7 +3967,7 @@ mod tests {
         // last-active-key revoke (which would be rejected).
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 2000 },
-            signer: key_ed25519.tmb.clone(),
+            signer: key_ed25519.tmb().clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
             hash_alg: HashAlg::Sha512,
@@ -3958,7 +3977,7 @@ mod tests {
         principal.apply_transaction_test(cz, None).unwrap();
 
         assert!(
-            !principal.is_key_active(&key_ed25519.tmb),
+            !principal.is_key_active(key_ed25519.tmb()),
             "Ed25519 key must be revoked"
         );
         assert_eq!(
@@ -4002,7 +4021,7 @@ mod tests {
 
         let cz = ParsedCoz {
             kind: CozKind::SelfRevoke { rvk: 2000 },
-            signer: key_ed25519.tmb.clone(),
+            signer: key_ed25519.tmb().clone(),
             now: 2000,
             czd: coz::Czd::from_bytes(vec![0x44; 64]),
             hash_alg: HashAlg::Sha512,
@@ -4049,7 +4068,7 @@ mod tests {
         let key = make_test_key(0x11);
         let mut principal = Principal::implicit(key.clone()).unwrap();
 
-        let action = make_test_action(&key.tmb);
+        let action = make_test_action(key.tmb());
         principal.record_action(action).unwrap();
         assert_eq!(principal.active_algs(), vec![HashAlg::Sha256]);
 
@@ -4062,16 +4081,16 @@ mod tests {
                 "typ": "cyphr.me/key/create",
                 "alg": "Ed25519",
                 "now": 4000,
-                "tmb": key.tmb.to_b64(),
-                "id": key2.tmb.to_b64()
+                "tmb": key.tmb().to_b64(),
+                "id": key2.tmb().to_b64()
             }),
             sig: vec![0; 64],
         };
         let cz = crate::parsed_coz::ParsedCoz {
             kind: CozKind::KeyCreate {
-                id: key2.tmb.clone(),
+                id: key2.tmb().clone(),
             },
-            signer: key.tmb.clone(),
+            signer: key.tmb().clone(),
             now: 4000,
             czd: Czd::from_bytes(vec![0xAB; 32]),
             hash_alg: HashAlg::Sha256,
@@ -4098,7 +4117,7 @@ mod tests {
     #[test]
     fn genesis_recursive_promotion_tmb_equals_kr_ar_sr_pr() {
         let key = make_test_key_ed25519(0xCC);
-        let tmb_bytes = key.tmb.as_bytes().to_vec();
+        let tmb_bytes = key.tmb().as_bytes().to_vec();
         let principal = Principal::implicit(key).unwrap();
 
         let alg = principal.hash_alg();
@@ -4136,7 +4155,7 @@ mod tests {
             kind: CozKind::PrincipalCreate {
                 id: principal.auth_root().clone(),
             },
-            signer: key.tmb.clone(),
+            signer: key.tmb().clone(),
             now: 2000,
             czd: Czd::from_bytes(vec![czd_byte; 32]),
             hash_alg: crate::state::HashAlg::Sha256,

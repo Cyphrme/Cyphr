@@ -40,6 +40,7 @@ pub mod principal_tree;
 /// pattern from "one instance at the root" to "one instance per semantic
 /// node." See module docs for the full design.
 pub mod semantic_tree;
+pub mod signer;
 pub mod state;
 // ...
 /// Transaction structure definitions.
@@ -49,7 +50,7 @@ pub mod transaction_root;
 
 // Re-exports
 pub use action::Action;
-pub use commit::{Commit, CommitScope, PendingCommit};
+pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit};
 pub use commit_root::{CommitRoot, CommitTrees, MaltHasher, verify_consistency, verify_inclusion};
 // The full `eml` crate, re-exported so a durable-storage caller (e.g.
 // `cyphr-storage`'s `StorageEngine<B, I, S>`) can name `eml::Storage` and

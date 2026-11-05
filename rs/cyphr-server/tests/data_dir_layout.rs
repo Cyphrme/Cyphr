@@ -57,7 +57,7 @@ mod common;
 
 /// Construct an `AppState` and run it through the same startup sequence
 /// `serve()` runs (`lib.rs`'s `serve` function): open storage, run
-/// incremental reindex, and -- when keyed and asked for -- bootstrap the
+/// manifest heal, and -- when keyed and asked for -- bootstrap the
 /// server's own principal (the `record/server-principal.json` sidecar).
 ///
 /// `bootstrap_own_principal` is a separate knob from "keyed" because two of
@@ -71,9 +71,9 @@ async fn boot(config: ServerConfig, bootstrap_own_principal: bool) -> Arc<AppSta
     let mut state = AppState::new(config).expect("failed to open AppState");
     state
         .engine
-        .reindex(&[], false)
+        .rebuild_index_from_manifests()
         .await
-        .expect("incremental reindex on boot failed");
+        .expect("manifest heal on boot failed");
 
     if bootstrap_own_principal {
         if let (Some(identity), Some(key_path)) = (
@@ -236,7 +236,8 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
 
     let state = boot(config, false).await;
     let fixture = common::load_golden("mutations", "key_add_changes_state");
-    let principal_id = "s2-eml-placement-check";
+    let principal_id = common::fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
     common::bootstrap_principal(&state, principal_id, &fixture).await;
 
     // Drop every handle onto the physical databases (the engine, the blob
@@ -248,13 +249,14 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
 
     // Mirrors the fixed keyspace-name suffixes
     // `storage_fjall::FjallStorage::with_database_scoped` opens (see the S1
-    // baseline's `delete_principal_eml_keyspaces`). `principal_id` here uses
-    // only characters already inside `sanitize_fjall_prefix`'s passthrough
-    // charset, so the sanitized name is the identifier itself.
+    // baseline's `delete_principal_eml_keyspaces`). The labelled id's `:` is
+    // outside `sanitize_fjall_prefix`'s passthrough charset and is escaped
+    // as `$3a`; the rest of `principal_id` is already inside it.
+    let keyspace_prefix = principal_id.replace(':', "$3a");
     let eml_keyspaces = [
-        format!("{principal_id}_eml_leaves"),
-        format!("{principal_id}_eml_nodes"),
-        format!("{principal_id}_eml_metadata"),
+        format!("{keyspace_prefix}_eml_leaves"),
+        format!("{keyspace_prefix}_eml_nodes"),
+        format!("{keyspace_prefix}_eml_metadata"),
     ];
 
     let record_blobs_db = fjall::Database::builder(data_dir.join("record").join("blobs"))
@@ -332,7 +334,8 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     let app = build_app_router(state.clone()).expect("failed to build app router");
 
     let pool = common::load_pool();
-    let principal_id = "s2-index-rebuild-check";
+    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let push_now = 1_700_000_000;
     let push_body = common::build_genesis_push_body(&pool, principal_id, push_now);
     let (push_status, push_json) = common::post_json(app.clone(), "/push", push_body).await;
@@ -399,14 +402,14 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     );
     std::fs::remove_dir_all(&index_path).expect("remove index directory");
 
-    // -- rebuild: reopen storage at the same data_dir, then a full reindex --
+    // -- rebuild: reopen storage at the same data_dir, then a full rebuild --
 
     let state = boot(config, false).await;
     state
         .engine
-        .reindex(&[], true)
+        .rebuild_index_from_scratch()
         .await
-        .expect("full reindex after index deletion failed");
+        .expect("full rebuild after index deletion failed");
     let app = build_app_router(state.clone()).expect("failed to build app router (post-rebuild)");
 
     // -- after: re-issue the same three requests and compare --

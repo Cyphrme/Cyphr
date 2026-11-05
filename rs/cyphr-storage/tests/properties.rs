@@ -89,15 +89,8 @@ fn golden_key_to_domain(gk: &test_fixtures::GoldenKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&gk.pub_key).expect("invalid pub base64");
     let tmb_bytes = Base64UrlUnpadded::decode_vec(&gk.tmb).expect("invalid tmb base64");
 
-    cyphr::Key {
-        alg: gk.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(gk.alg.clone(), Thumbprint::from_bytes(tmb_bytes), pub_bytes)
+        .expect("key binds its tmb")
 }
 
 fn is_transaction_typ(typ: &str) -> bool {
@@ -309,26 +302,6 @@ fn run_engine_recovery_test<B, I>(
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        // Write mock genesis cozy to the BlobStore so reindex() can bootstrap the principal.
-        let genesis_coz_json = serde_json::json!({
-            "pay": {
-                "typ": "cyphr.me/cyphr/key/create",
-                "now": 1000000,
-                "pre": "",
-                "tmb": genesis_key.tmb.clone(),
-                "alg": genesis_key.alg.clone(),
-            },
-            "sig": "mock-sig",
-            "key": {
-                "alg": genesis_key.alg.clone(),
-                "pub": genesis_key.pub_key.clone(),
-                "tmb": genesis_key.tmb.clone(),
-            }
-        });
-
-        let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-        let _ = engine.blob_store().put(&genesis_coz_bytes).await.unwrap();
-
         // Ingest commits sequentially
         for commit in &merged_commits {
             let mut raw_blobs = Vec::new();
@@ -375,6 +348,16 @@ fn run_engine_recovery_test<B, I>(
             .unwrap()
             .expect("original tip should exist");
 
+        // Read before the rebuild: an entity read after it would compare the
+        // rebuilt index with itself and could never fail.
+        let tagged_pr: cyphr::state::TaggedDigest = original_tip.pr.parse().unwrap();
+        let original_entity = engine
+            .indexer()
+            .resolve_digest(&tagged_pr)
+            .await
+            .unwrap()
+            .unwrap();
+
         // Re-submit the last commit to test idempotency
         let last_commit = merged_commits.last().unwrap();
         let mut raw_blobs = Vec::new();
@@ -420,8 +403,11 @@ fn run_engine_recovery_test<B, I>(
         assert_eq!(tip_after_dup.pr, original_tip.pr);
         assert_eq!(tip_after_dup.cr, original_tip.cr);
 
-        // Reindex recovery test with total_check = true
-        engine.reindex(&[], true).await.expect("reindex failed");
+        // Discard the index and rebuild it from the durable manifests alone.
+        engine
+            .rebuild_index_from_scratch()
+            .await
+            .expect("rebuild failed");
 
         let recovered_tip = engine
             .get_tip(&principal_id)
@@ -429,13 +415,12 @@ fn run_engine_recovery_test<B, I>(
             .unwrap()
             .expect("recovered tip should exist");
 
-        // The recovered tip has 1 more commit (the mock genesis commit)
-        assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
+        assert_eq!(recovered_tip.commit_count, original_tip.commit_count);
         assert_eq!(recovered_tip.pr, original_tip.pr);
         assert_eq!(recovered_tip.sr, original_tip.sr);
         assert_eq!(recovered_tip.ar, original_tip.ar);
         // CR equality is checked explicitly, not just inferred from PR: PR
-        // folds CR in, but a reindex bug that recomputed a wrong CR while
+        // folds CR in, but a rebuild bug that recomputed a wrong CR while
         // still landing on the same PR (e.g. by chance collision in a
         // malformed fold) would slip past a PR-only check.
         assert!(
@@ -447,13 +432,6 @@ fn run_engine_recovery_test<B, I>(
         let recovered_principals = engine.indexer().list_principals().await.unwrap();
         assert_eq!(recovered_principals.len(), 1);
 
-        let tagged_pr: cyphr::state::TaggedDigest = original_tip.pr.parse().unwrap();
-        let original_entity = engine
-            .indexer()
-            .resolve_digest(&tagged_pr)
-            .await
-            .unwrap()
-            .unwrap();
         let recovered_entity = engine
             .indexer()
             .resolve_digest(&tagged_pr)
@@ -466,7 +444,7 @@ fn run_engine_recovery_test<B, I>(
 
 proptest! {
     #[test]
-    fn test_memory_engine_reindex_recovery((genesis_key_idx, steps) in test_case_strategy()) {
+    fn test_memory_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
         let pool = load_pool();
         let intent = build_intent(genesis_key_idx, steps);
         let blob_store = MemoryBlobStore::new();
@@ -476,7 +454,7 @@ proptest! {
     }
 
     #[test]
-    fn test_persistent_engine_reindex_recovery((genesis_key_idx, steps) in test_case_strategy()) {
+    fn test_persistent_engine_rebuild_recovery((genesis_key_idx, steps) in test_case_strategy()) {
         let pool = load_pool();
         let intent = build_intent(genesis_key_idx, steps);
         let temp_dir_blob = tempfile::tempdir().unwrap();

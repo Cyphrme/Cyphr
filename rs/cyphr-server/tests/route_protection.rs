@@ -46,15 +46,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -147,17 +144,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key {
-        alg: new_key.alg.clone(),
-        tmb: coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
         ),
-        pub_key: Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
-        first_seen: now,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -168,11 +163,8 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -205,6 +197,22 @@ fn sign_key_create_commit(
         .collect();
 
     (blobs, new_commit.clone())
+}
+
+/// The id the fixture's genesis derives (SPEC 3.1), the only `principal_id`
+/// the engine accepts for it.
+fn fixture_principal_id(fixture: &serde_json::Value) -> String {
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+        .expect("fixture genesis derives an id")
+}
+
+/// The id the standard `golden` implicit genesis derives (SPEC 3.1).
+fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    pool.get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb")
 }
 
 /// Bootstrap a principal into the engine via the validated write path
@@ -282,15 +290,12 @@ async fn send(req: Request<Body>, app: axum::Router) -> (StatusCode, serde_json:
 /// only differ in what (if any) bearer token they attach.
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let (mut blobs, _entry) = sign_key_create_commit(principal, pool, "golden", "key_a", now);
 
@@ -299,9 +304,9 @@ fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: 
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -347,7 +352,8 @@ fn real_now() -> i64 {
 #[tokio::test]
 async fn push_with_mismatched_token_pr_rejected() {
     let pool = load_pool();
-    let principal_id = "push-admission-mismatch";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
 
     let state = state_with_identity();
@@ -377,7 +383,8 @@ async fn push_with_mismatched_token_pr_rejected() {
 #[tokio::test]
 async fn push_with_matching_token_pr_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-match";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
 
     let state = state_with_identity();
@@ -418,18 +425,16 @@ async fn push_with_matching_token_pr_succeeds() {
 #[tokio::test]
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-existing-no-token";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
 
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let (mut genesis_blobs, genesis_entry) =
         sign_key_create_commit(principal, &pool, "golden", "key_a", 1_700_000_000);
@@ -439,9 +444,9 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     genesis_blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
@@ -498,10 +503,10 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
 #[tokio::test]
 async fn tip_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-tip-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()
@@ -523,10 +528,10 @@ async fn tip_succeeds_with_no_bearer_token() {
 #[tokio::test]
 async fn patch_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-patch-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()

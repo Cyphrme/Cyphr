@@ -106,13 +106,16 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 /// broken).
 #[tokio::test]
 async fn push_with_canonical_principal_id_is_accepted_and_receipted() {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id = Base64UrlUnpadded::encode_string(&[0x42u8; 32]);
+    // SPEC 3.1: the id is the implicit genesis key's tmb, not a free choice.
+    let principal_id = pool
+        .get("golden")
+        .expect("golden in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb");
     let now = 1_700_100_100;
     let push_body = build_genesis_push_body(&pool, &principal_id, now);
 

@@ -18,7 +18,7 @@
 //! originate from the engine's own derivation path (blob-store record →
 //! index entry), never from an out-of-crate caller reaching a write
 //! method directly. That path is `StorageEngine::ingest_commit`,
-//! `StorageEngine::rebuild_index_from_manifests`, and `StorageEngine::reindex`
+//! `StorageEngine::rebuild_index_from_manifests`, and `StorageEngine::rebuild_index_from_scratch`
 //! — all inside `cyphr-storage`'s `engine` module — and nowhere else.
 //!
 //! The write surface ([`IndexerWrite::index_commit`], [`IndexerWrite::clear`])
@@ -74,7 +74,7 @@ pub struct DeriveToken(());
 impl DeriveToken {
     /// Mint a token. Private to this crate (the tuple field is private,
     /// and this constructor is `pub(crate)`) — the engine's derivation
-    /// path (`ingest_commit`, `rebuild_index_from_manifests`, `reindex`)
+    /// path (`ingest_commit`, `rebuild_index_from_manifests`, `rebuild_index_from_scratch`)
     /// is the intended, and only production, caller.
     pub(crate) fn new() -> Self {
         DeriveToken(())

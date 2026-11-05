@@ -21,6 +21,11 @@ jobs:
         working-directory: rs
     steps:
       - uses: actions/checkout@v4
+      # The spec-conformance map test reads SPEC.md at be0663f, which lives
+      # only on the zami branch and is absent from the shallow checkout.
+      - name: Fetch the spec branch
+        working-directory: .
+        run: git fetch --no-tags origin zami
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

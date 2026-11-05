@@ -38,15 +38,9 @@ fn signer(name: &str) -> Signer {
 }
 
 fn domain_key(s: &Signer) -> Key {
-    Key {
-        alg: s.alg.clone(),
-        tmb: s.tmb.clone(),
-        pub_key: s.pub_key.clone(),
-        first_seen: 1_700_000_000,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::new(s.alg.clone(), s.tmb.clone(), s.pub_key.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(1_700_000_000)
 }
 
 type Signed = (Vec<u8>, Vec<u8>, coz::Czd);
@@ -214,11 +208,13 @@ fn principal_with_deleted_key(golden: &Signer, key_a: &Signer) -> Principal {
         .verify_and_apply(&pay, &sig, czd, None)
         .expect("delete applies");
     scope
-        .finalize_with_arrow(
-            &golden.alg,
-            &golden.prv,
-            &golden.pub_key,
-            &golden.tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &golden.alg,
+                &golden.prv,
+                &golden.pub_key,
+                &golden.tmb,
+            ),
             1_700_000_100,
             "cyphr.me",
         )
