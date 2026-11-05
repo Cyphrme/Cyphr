@@ -31,9 +31,13 @@ fn signed_register_create(pool: &Pool, principal_id: &str, witness_url: &str) ->
     });
     let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("prv")).expect("prv b64");
     let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("pub b64");
-    let (sig, _cad) =
-        coz::sign_json(&serde_json::to_vec(&pay).unwrap(), &signer.alg, &prv, &pub_key)
-            .expect("signing supported");
+    let (sig, _cad) = coz::sign_json(
+        &serde_json::to_vec(&pay).unwrap(),
+        &signer.alg,
+        &prv,
+        &pub_key,
+    )
+    .expect("signing supported");
     serde_json::json!({
         "pay": pay,
         "sig": Base64UrlUnpadded::encode_string(&sig),
@@ -66,7 +70,10 @@ async fn register_route_is_gone_and_push_never_dials_out() {
     assert_eq!(push_status, StatusCode::CREATED, "push: {push_json:?}");
 
     let dialed = tokio::time::timeout(Duration::from_millis(500), peer.accept()).await;
-    assert!(dialed.is_err(), "push dialed a peer: no outbound fanout may exist");
+    assert!(
+        dialed.is_err(),
+        "push dialed a peer: no outbound fanout may exist"
+    );
     assert_eq!(
         reg_status,
         StatusCode::NOT_FOUND,
