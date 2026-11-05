@@ -267,12 +267,14 @@ Procedure when a contradiction surfaces during any work:
 - **I6 — Plans are legacy.** `docs/plans/*.md` are never plan-of-record;
   the campaign workflow (forge issues and git history) supersedes them.
   Grounding: human operator directive 2026-07-06. Signpost: n/a — do not update them as plans.
-- **I7 — Plain hashing.** Hashing uses no domain separation, prefixes or
-  kind tags, and agents do not propose adding them. This is a settled
-  maintainer decision, not an open design question. Grounding: the
-  maintainer decision; SPEC §2.2.2 defines a digest as the plain output of
-  a cryptographic hashing algorithm. Signpost: a change or proposal that
-  adds a tag, prefix or separator to a hash input.
+- **I7 — No tags in hash inputs.** Hash inputs carry no domain
+  separation, prefixes or kind tags, and agents do not propose adding
+  them. This is a settled maintainer decision, not an open design
+  question. It concerns what is hashed, not how a digest is labeled:
+  SPEC's Digest Labeling recommends algorithm-prefixed labels such as
+  `SHA256:<b64ut>` on identifiers, and that stays. Grounding: the
+  maintainer decision. Signpost: a change or proposal that adds a tag,
+  prefix or separator to a hash input.
 
 ## Unknowns
 
