@@ -29,9 +29,29 @@
       "ar": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
       "sr": "ji0bduc-y7-xgsxjhR8B1rQzevAcMCCXXibd5A872PY",
       "pr": "ji0bduc-y7-xgsxjhR8B1rQzevAcMCCXXibd5A872PY"
+    },
+    {
+      "txs": [
+        {
+          "pay": {
+            "alg": "ES256",
+            "msg": "Replayed action",
+            "now": 1700000001,
+            "tmb": "U5XUZots-WmQYcQWmsO751Xk0yeVi9XUKWQ2mGz6Aqg",
+            "typ": "cyphr.me/action"
+          },
+          "sig": "xeRgw6SrVgk2ztou-NDKjVNt5xpPgqh_OStiVHaNBCNtQmn5SIuYghaKluADQasrFjH_wVVSMJK17Q3sHLOG_Q"
+        }
+      ],
+      "keys": [],
+      "commit_id": "",
+      "ar": "",
+      "sr": "",
+      "pr": ""
     }
   ],
   "digests": [
+    "4odMPugKZQFgnvtZQljGAaTopRPaNlYGjd37P0OMsK4",
     "4odMPugKZQFgnvtZQljGAaTopRPaNlYGjd37P0OMsK4"
   ],
   "expected": {
