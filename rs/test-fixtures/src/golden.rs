@@ -668,7 +668,11 @@ impl<'a> Generator<'a> {
             )?;
         let tmb = coz::Thumbprint::from_bytes(Base64UrlUnpadded::decode_vec(&tmb_str).unwrap());
         scope
-            .finalize_with_arrow(&alg, &prv, &pub_k, &tmb, coz_now, "cyphr.me")
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(&alg, &prv, &pub_k, &tmb),
+                coz_now,
+                "cyphr.me",
+            )
             .map_err(|e| Error::Generation {
                 name: test_name.to_string(),
                 reason: format!("failed to finalize commit: {}", e),

@@ -70,11 +70,8 @@ fn delete_commit(
     let (b, s, c) = delete_pay(signer, target, now);
     let mut scope = p.begin_commit();
     scope.verify_and_apply(&b, &s, c, None)?;
-    scope.finalize_with_arrow(
-        &signer.alg,
-        &signer.prv,
-        &signer.pub_key,
-        &signer.tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer.prv, &signer.pub_key, &signer.tmb),
         now,
         "cyphr.me",
     )?;
@@ -151,11 +148,8 @@ fn fork_branches_from_cloned_ancestor() {
     scope
         .verify_and_apply(&bytes, &sig, czd, None)
         .expect("branch B coz applies");
-    let r = scope.finalize_with_arrow(
-        &key_a.alg,
-        &key_a.prv,
-        &key_a.pub_key,
-        &key_a.tmb,
+    let r = scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(&key_a.alg, &key_a.prv, &key_a.pub_key, &key_a.tmb),
         1_700_000_101,
         "cyphr.me",
     );

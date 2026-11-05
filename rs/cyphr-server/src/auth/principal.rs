@@ -30,7 +30,7 @@ pub const GENESIS_FIRST_SEEN: i64 = 0;
 /// The `typ` authority segment of the server's own chain cozies (SPEC
 /// §7.2). Unlike a login audience, this segment is never matched against an
 /// external value — it is only formatted into the `typ` and signed over
-/// consistently (see `cyphr::commit`'s `finalize_with_arrow`), so a fixed
+/// consistently (see `cyphr::commit`'s `finalize_with_software`), so a fixed
 /// value is sufficient. It matches the authority the rest of the corpus
 /// uses for constructed chains.
 const CHAIN_AUTHORITY: &str = "cyphr.me";
@@ -356,11 +356,13 @@ impl ServerPrincipal {
 
         let mut scope = principal.begin_commit();
         scope.verify_and_apply(&pay, &sig, czd, Some(new_key))?;
-        let commit = scope.finalize_with_arrow(
-            alg,
-            current.prv_key(),
-            current.pub_key(),
-            &signer_tmb,
+        let commit = scope.finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                alg,
+                current.prv_key(),
+                current.pub_key(),
+                &signer_tmb,
+            ),
             now + 1,
             CHAIN_AUTHORITY,
         )?;
@@ -461,11 +463,13 @@ fn build_genesis(
 
     let mut scope = client.begin_commit();
     scope.verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)?;
-    let commit = scope.finalize_with_arrow(
-        alg,
-        identity.prv_key(),
-        identity.pub_key(),
-        &genesis_key.tmb,
+    let commit = scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(
+            alg,
+            identity.prv_key(),
+            identity.pub_key(),
+            &genesis_key.tmb,
+        ),
         now + 1,
         CHAIN_AUTHORITY,
     )?;

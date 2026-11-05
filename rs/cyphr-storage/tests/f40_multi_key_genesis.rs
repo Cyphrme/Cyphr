@@ -136,7 +136,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let pub_a = Base64UrlUnpadded::decode_vec(&key_a.pub_key).expect("golden pub base64");
 
     let commit1 = scope1
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize (client side)");
     assert_eq!(commit1.len(), 2, "principal/create + commit/create");
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
@@ -187,7 +191,11 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
         )
         .expect("key/create mutation should apply to the second commit (client side)");
     let commit2 = scope2
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 

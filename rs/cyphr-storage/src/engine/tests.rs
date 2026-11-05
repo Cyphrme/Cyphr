@@ -1381,7 +1381,7 @@ fn commit_tx_raw_blob(commit: &cyphr::commit::Commit, n: usize) -> Vec<u8> {
 /// which reconstructs the principal via a full replay (`load_principal`) on
 /// *every* call rather than reusing one live in-memory instance. Every raw
 /// blob submitted here is produced by a correctly-computing client
-/// (`CommitScope::finalize_with_arrow` on its own independently-maintained
+/// (`CommitScope::finalize_with_software` on its own independently-maintained
 /// principal), so any failure below is a genuine server-side asymmetry, not
 /// a malformed test fixture. No existing golden fixture or test exercises
 /// an *established* (`principal/create`-finalized) multi-key genesis
@@ -1439,7 +1439,11 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     };
 
     let commit1 = scope1
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize (client side)");
     assert_eq!(commit1.len(), 2, "principal/create + commit/create");
     let cc1_blob = commit_tx_raw_blob(commit1, 0);
@@ -1482,7 +1486,11 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
         )
         .expect("key/create mutation should apply to the second commit (client side)");
     let commit2 = scope2
-        .finalize_with_arrow(&key_a.alg, &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&key_a.alg, &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect("second commit should finalize (client side)");
     let cc2_blob = commit_tx_raw_blob(commit2, 0);
 

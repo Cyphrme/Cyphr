@@ -206,11 +206,8 @@ fn build_foreign_principal_and_push_body(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &golden.alg,
-            &golden_prv,
-            &golden_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&golden.alg, &golden_prv, &golden_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
