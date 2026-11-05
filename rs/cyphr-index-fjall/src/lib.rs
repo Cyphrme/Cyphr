@@ -32,6 +32,11 @@
 //! injectivity gap `sanitize_fjall_prefix` (F11) left unenforced, and how
 //! the length-prefixed encoding here closes it.
 //!
+//! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
+//!   lookup). Derived from every indexed commit's `prs`, so a principal is addressable by its PG
+//!   and any other PR it has had (SPEC §3.7.1/§12.1); first writer wins, and a stored principal id
+//!   always outranks an alias on read.
+//!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
 use std::collections::BTreeSet;
@@ -44,8 +49,10 @@ use cyphr_storage::index::{
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
-/// Current schema version recorded in the `meta` partition.
-const SCHEMA_VERSION: u32 = 1;
+/// Current schema version recorded in the `meta` partition. Version 2
+/// adds the `index_aliases` partition; a version-1 store has no alias rows
+/// until the index is rebuilt from blobs (it is a derived cache, I1).
+const SCHEMA_VERSION: u32 = 2;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
@@ -62,6 +69,7 @@ const PARTITION_NAMES: &[&str] = &[
     "index_commits",
     "index_digests",
     "index_public_keys",
+    "index_aliases",
 ];
 
 /// The `meta` partition's single tracking record — the "meta-table
@@ -115,6 +123,19 @@ fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>
     (commit_key(principal_id, from), commit_key(principal_id, to))
 }
 
+/// The stored principal id `id` names: itself if a principal is stored
+/// under it, else the principal its alias names, else `id` unchanged.
+fn canonical_id(tips: &Keyspace, aliases: &Keyspace, id: String) -> Result<String, IndexerError> {
+    if tips.contains_key(id.as_bytes()).map_err(to_backend_err)? {
+        return Ok(id);
+    }
+    match aliases.get(id.as_bytes()).map_err(to_backend_err)? {
+        Some(bytes) => String::from_utf8(bytes.to_vec())
+            .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}"))),
+        None => Ok(id),
+    }
+}
+
 fn to_backend_err(e: fjall::Error) -> IndexerError {
     IndexerError::Backend(format!("fjall error: {e}"))
 }
@@ -152,6 +173,7 @@ pub struct FjallIndexer {
     commits: Keyspace,
     digests: Keyspace,
     public_keys: Keyspace,
+    aliases: Keyspace,
     write_lock: tokio::sync::Mutex<()>,
 }
 
@@ -190,6 +212,7 @@ impl FjallIndexer {
         let commits = open("index_commits")?;
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
+        let aliases = open("index_aliases")?;
 
         // No bootstrap write here: the registry claim (`index_meta`'s
         // record) is written only as derivation OUTPUT, atomically
@@ -208,6 +231,7 @@ impl FjallIndexer {
             commits,
             digests,
             public_keys,
+            aliases,
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
@@ -244,9 +268,11 @@ impl Indexer for FjallIndexer {
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
         let principal_id = principal_id.to_string();
         let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                match tips.get(principal_id.as_bytes()).map_err(to_backend_err)? {
+                let id = canonical_id(&tips, &aliases, principal_id)?;
+                match tips.get(id.as_bytes()).map_err(to_backend_err)? {
                     Some(bytes) => Ok(Some(de(&bytes)?)),
                     None => Ok(None),
                 }
@@ -264,8 +290,11 @@ impl Indexer for FjallIndexer {
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
         let principal_id = principal_id.to_string();
         let commits = self.commits.clone();
+        let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                let principal_id = canonical_id(&tips, &aliases, principal_id)?;
                 let (lower, upper) =
                     commit_key_range(&principal_id, from.unwrap_or(0), to.unwrap_or(u64::MAX));
                 let mut chain = Vec::new();
@@ -361,6 +390,7 @@ struct Keyspaces {
     commits: Keyspace,
     digests: Keyspace,
     public_keys: Keyspace,
+    aliases: Keyspace,
 }
 
 impl FjallIndexer {
@@ -372,6 +402,7 @@ impl FjallIndexer {
             commits: self.commits.clone(),
             digests: self.digests.clone(),
             public_keys: self.public_keys.clone(),
+            aliases: self.aliases.clone(),
         }
     }
 }
@@ -406,6 +437,7 @@ impl IndexerWrite for FjallIndexer {
                 ks.commits.clear().map_err(to_backend_err)?;
                 ks.digests.clear().map_err(to_backend_err)?;
                 ks.public_keys.clear().map_err(to_backend_err)?;
+                ks.aliases.clear().map_err(to_backend_err)?;
                 // The registry claim is derivation output too: clearing
                 // the derived rows without also retracting what the
                 // deriver claims to have produced would leave a stale
@@ -527,6 +559,13 @@ fn db_index_commit(
             last_updated: commit.timestamp,
         })?,
     );
+
+    for pr in &commit.prs {
+        // First writer wins; the principal's own id needs no alias.
+        if *pr != commit.principal_id && !ks.aliases.contains_key(pr).map_err(to_backend_err)? {
+            batch.insert(&ks.aliases, pr.as_bytes(), pid_key);
+        }
+    }
 
     batch.insert(
         &ks.principals,

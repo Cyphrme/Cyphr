@@ -121,6 +121,13 @@ pub trait Indexer: Send + Sync {
     /// Retrieve the current tip state for a principal.
     ///
     /// Returns `None` if the principal is unknown (never indexed).
+    ///
+    /// `principal_id` may also be any Principal Root variant the principal
+    /// has had (its PG among them, SPEC §3.7.1/§12.1): such an alias
+    /// resolves to the one stored principal. The alias table is derived
+    /// from the indexed commits' `prs` and rebuilt with the index (I1); a
+    /// stored principal id always outranks an alias, and an unknown or
+    /// forged label resolves to nothing.
     fn get_tip(
         &self,
         principal_id: &str,
@@ -130,7 +137,7 @@ pub trait Indexer: Send + Sync {
     ///
     /// Returns commits in sequence order, inclusive of both endpoints.
     /// If `from` is `None`, starts from genesis. If `to` is `None`,
-    /// extends to the current tip.
+    /// extends to the current tip. Resolves aliases as [`Self::get_tip`].
     fn get_commit_chain(
         &self,
         principal_id: &str,
