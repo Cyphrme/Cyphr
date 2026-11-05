@@ -690,3 +690,9 @@ fn test_golden_lifecycle() {
 fn test_golden_witness() {
     run_golden_dir("witness");
 }
+
+/// Key-authentication vectors (SPEC 6.4): a revoked key is never re-added.
+#[test]
+fn test_golden_key_auth() {
+    run_golden_dir("key_auth");
+}
