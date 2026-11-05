@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use cyphr_scenarios::Harness;
+use cyphr_scenarios::capability::{Capability, Probe};
 use cyphr_scenarios::carrier::{Carrier, UdpCarrier};
 use cyphr_scenarios::faults::{Link, Schedule};
 
@@ -137,4 +138,32 @@ async fn harness_every_probe_evaluates() {
         eprintln!("probe {:<16} -> {res:?}", cap.name());
         assert!(res.is_ok(), "{}: {res:?}", cap.name());
     }
+}
+
+// Claim: each probe kind can say "present". Without a positive control, a
+// probe that always reports absent would make every scenario red for the
+// wrong reason. Each control probes something that exists today.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_each_probe_kind_can_report_present() {
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let cap = Capability::Transport; // the name is used only in error text
+    let controls = [
+        ("Cli", Probe::Cli(&["init", "--help"], Some("--"))),
+        ("Server", Probe::Server(&["serve", "--help"])),
+        ("Route", Probe::Route("/server")),
+        ("Banner", Probe::Banner("listening on ")),
+        ("WorkspacePath", Probe::WorkspacePath(&["Cargo.toml"])),
+    ];
+    for (kind, probe) in controls {
+        assert!(
+            probe.eval(&h, cap).await.expect("probe runs"),
+            "{kind} control reported absent"
+        );
+    }
+    assert!(
+        !Probe::Pending("none")
+            .eval(&h, cap)
+            .await
+            .expect("probe runs")
+    );
 }
