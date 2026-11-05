@@ -195,11 +195,12 @@ _claim_selfcheck_env_prefix_zero=(
 _claim_selfcheck_cd_prefix_zero=(
   "cd rs && cargo test -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
 )
-# One target fails (fork_evidence's ignored RED(G0) test, forced by
-# --include-ignored), one passes, and a pipe sits between cargo and the
-# exit code: the failure must still red the claim.
+# A self-owned synthetic failure: one passing and one failing result line,
+# exit 101, and a pipe between the producer and the exit code. The pipe
+# must not mask the failure, and no project test is borrowed, so fixing a
+# project bug cannot turn this check vacuous.
 _claim_selfcheck_piped_failure=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr --no-fail-fast --test fork_evidence --test signer_seam -- --include-ignored | cat"
+  "( echo 'test result: ok. 1 passed;'; echo 'test result: FAILED. 0 passed; 1 failed;'; exit 101 ) | cat"
 )
 _claim_selfcheck_real_test=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
