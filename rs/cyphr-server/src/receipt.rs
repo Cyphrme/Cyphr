@@ -459,11 +459,11 @@ pub enum EquivocationVerdict {
 /// caller-supplied key; (3) both reports canonicalize into a [`TipReport`]
 /// -- a report that does not is diagnosed [`EquivocationVerdict::Malformed`],
 /// a verdict this function's own return type keeps distinct from every
-/// other outcome (no production code calls this function today); (4) both claim the same typed `pr` and the same typed
-/// `sequence`; (5) they differ in typed `commit_id` or in any typed
-/// `roots` field -- compared by canonical value, so representation never
-/// causes a miss or a false alarm. Anything else is a diagnosed
-/// non-equivocation.
+/// other outcome (no production code calls this function today); (4) both
+/// claim the same typed `pr` and the same typed `sequence`; (5) they differ
+/// in typed `commit_id` or in any typed `roots` field -- compared by
+/// canonical value, so representation never causes a miss or a false alarm.
+/// Anything else is a diagnosed non-equivocation.
 pub fn check_equivocation(
     a: &coz::CozJson,
     a_pub_key: &[u8],
