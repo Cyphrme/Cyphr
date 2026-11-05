@@ -273,3 +273,70 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
     after.as_object_mut().expect("tip object").remove("now");
     assert_eq!(before, after, "the alias push moved the principal");
 }
+
+/// Backs SPEC §3.7.1 ("PG is an immutable principal identifier"): a
+/// principal that added a key BEFORE `principal/create` is established
+/// with a PG that differs from its genesis-time Principal Root (the PG is
+/// the PR at `principal/create`), and must be pushable under that PG.
+/// Turns red (as it is today) because the engine accepts only the
+/// genesis-derived id, so the push under the PG is refused with 400.
+/// End to end: yes.
+#[tokio::test]
+#[ignore = "RED(AD1): a principal established after adding keys is not addressable by its PG"]
+async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
+    use cyphr::StateDigest;
+
+    let pool = load_pool();
+    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+
+    // genesis(golden); commit 0 adds key_a; commit 1 is principal/create
+    // whose `id` is the PR after commit 0, so PG != the genesis tmb.
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": a.tmb.to_b64(), "now": NOW,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        ),
+        Some(key_of(&a)),
+        NOW,
+    );
+    let pr_after_keys = p.pr_tagged().expect("pr");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 1,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW + 1,
+    );
+    let pg = p
+        .pg()
+        .expect("principal/create establishes the PG")
+        .as_multihash()
+        .tagged_first()
+        .expect("PG digest")
+        .to_string();
+    let genesis_id = common::golden_principal_id(&pool);
+    assert_ne!(
+        pg,
+        format!("SHA-256:{genesis_id}"),
+        "premise: the PG differs from the genesis-time id"
+    );
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    for i in 0..2 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &pg)).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "commit {i} pushed under the principal's PG {pg}: {body:?}"
+        );
+    }
+}
