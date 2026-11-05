@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::actions::ActionResult;
 use crate::bins::Bins;
 use crate::capability::{Capability, ProbeError};
 use crate::carrier::TcpCarrier;
@@ -81,19 +82,46 @@ impl Harness {
         for cap in caps {
             match cap.probe().eval(self, cap).await {
                 Ok(true) => {},
-                Ok(false) => panic!(
-                    "RED({}) after-setup peers={} ids={}",
-                    cap.name(),
-                    self.peers.len(),
-                    self.peers
-                        .iter()
-                        .map(|p| p.id.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
+                Ok(false) => self.red(cap),
                 Err(e) => panic!("harness defect: {e}"),
             }
         }
+    }
+
+    /// Poll `f` until it yields `true` or `within` elapses; panics on timeout.
+    /// Convergence (gossip, anti-entropy, session expiry) is eventual, so
+    /// scenarios wait for it rather than sleeping a guessed interval.
+    pub async fn eventually<F, Fut>(&self, what: &str, within: Duration, mut f: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = ActionResult<bool>>,
+    {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if self.ok(f().await) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out after {within:?} waiting for {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The marker every red scenario ends with: the first missing
+    /// capability, the peer count, and this run's peer identities.
+    pub fn red_marker(&self, cap: Capability) -> String {
+        format!(
+            "RED({}) after-setup peers={} ids={}",
+            cap.name(),
+            self.peers.len(),
+            self.peers
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 
     /// Evaluate every probe, reporting mechanics rather than outcome.

@@ -4,6 +4,7 @@
 //! loopback, behind a proxy that injects partitions, delay, drops and
 //! node outages on seeded schedules. Nothing here mocks a peer or the CLI.
 
+pub mod actions;
 pub mod bins;
 pub mod capability;
 pub mod carrier;

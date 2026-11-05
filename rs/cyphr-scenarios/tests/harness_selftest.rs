@@ -196,3 +196,14 @@ async fn harness_partition_cuts_an_open_connection() {
         "an open connection must be cut by a partition, got {cut:?}"
     );
 }
+
+// Claim: an action that is not implemented ends the scenario as RED for the
+// capability it names, even when that capability's probe reads present. A
+// scenario can therefore neither pass nor fail as a behaviour failure by
+// running an empty step.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "RED(cli-network) after-setup peers=1 ids=")]
+async fn harness_unsupported_action_ends_red() {
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    h.ok(h.client("alice").create_principal().await);
+}
