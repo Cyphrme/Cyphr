@@ -122,10 +122,11 @@ pub trait Indexer: Send + Sync {
     ///
     /// Returns `None` if the principal is unknown (never indexed).
     ///
-    /// `principal_id` may also be any Principal Root variant the principal
-    /// has had (its PG among them, SPEC §3.7.1/§12.1): such an alias
-    /// resolves to the one stored principal. The alias table is derived
-    /// from the indexed commits' `prs` and rebuilt with the index (I1); a
+    /// `principal_id` may also be any hash variant of the principal's PG
+    /// (SPEC §3.7.1/§12.1): such an alias resolves to the one stored
+    /// principal. A historical PR is not an alias. The alias table is
+    /// derived from the `pg` of the PG-establishing commit and rebuilt with
+    /// the index (I1); a
     /// stored principal id always outranks an alias, and an unknown or
     /// forged label resolves to nothing.
     fn get_tip(

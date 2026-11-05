@@ -263,7 +263,6 @@ async fn alias_resolution_survives_reindex_on_fjall() {
 /// canonical (first-variant) spelling, or the post-create PR's variants,
 /// resolve. End to end at the engine seam: yes.
 #[tokio::test]
-#[ignore = "RED(AD1): the PG of a create-in-commit-0 principal is not aliased"]
 async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant() {
     let pool = load_pool();
     let (g, d, e) = (
@@ -318,7 +317,6 @@ async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant(
 /// commit's own post-commit PR. Turns red if any `pre` equals its own
 /// commit's PR or otherwise differs from the previous commit's PR.
 #[tokio::test]
-#[ignore = "RED(AD1): the indexed pre is not the previous commit's PR"]
 async fn commit_pre_is_the_previous_commits_pr() {
     let pool = load_pool();
     let (p, genesis, id) = build(&pool, &["key_a", "diana_es384"]);

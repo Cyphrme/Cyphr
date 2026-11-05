@@ -33,9 +33,9 @@
 //! the length-prefixed encoding here closes it.
 //!
 //! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
-//!   lookup). Derived from every indexed commit's `prs`, so a principal is addressable by its PG
-//!   and any other PR it has had (SPEC §3.7.1/§12.1); first writer wins, and a stored principal id
-//!   always outranks an alias on read.
+//!   lookup). Derived from the `pg` variants of the PG-establishing commit, so a principal is
+//!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR;
+//!   first writer wins, and a stored principal id always outranks an alias on read.
 //!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
@@ -560,7 +560,7 @@ fn db_index_commit(
         })?,
     );
 
-    for pr in &commit.prs {
+    for pr in &commit.pg {
         // First writer wins; the principal's own id needs no alias.
         if *pr != commit.principal_id && !ks.aliases.contains_key(pr).map_err(to_backend_err)? {
             batch.insert(&ks.aliases, pr.as_bytes(), pid_key);
@@ -595,6 +595,7 @@ fn db_index_commit(
                     blob_hash: coz.blob_hash,
                     entity_type,
                     sequence: Some(commit.sequence),
+                    principal_id: Some(commit.principal_id.clone()),
                 })?,
             );
         }
@@ -616,6 +617,7 @@ fn db_index_commit(
                 blob_hash: first_blob_hash,
                 entity_type: EntityType::Commit,
                 sequence: Some(commit.sequence),
+                principal_id: Some(commit.principal_id.clone()),
             })?,
         );
     }

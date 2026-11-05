@@ -228,9 +228,9 @@ impl IndexerWrite for MemoryIndexer {
                     last_updated: commit.timestamp,
                 });
 
-            // Alias every PR variant to the principal (first writer wins,
+            // Alias each PG variant to the principal (first writer wins,
             // and a stored principal id always outranks an alias).
-            for pr in &commit.prs {
+            for pr in &commit.pg {
                 if *pr != commit.principal_id {
                     state
                         .aliases
@@ -271,6 +271,7 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: coz.blob_hash,
                         entity_type,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
                     },
                 );
 
@@ -281,6 +282,7 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: coz.blob_hash,
                         entity_type,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
                     },
                 );
             }
@@ -302,6 +304,7 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: commit.blob_hashes[0],
                         entity_type: EntityType::Commit,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
                     },
                 );
             }

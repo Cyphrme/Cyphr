@@ -27,7 +27,8 @@ pub use error::EngineError;
 
 use crate::blob::{Blake3Hash, BlobStore};
 use crate::index::{
-    CommitRef, DeriveToken, IndexableCommit, IndexableCoz, Indexer, IndexerWrite, TipState,
+    CommitRef, DeriveToken, EntityType, IndexableCommit, IndexableCoz, Indexer, IndexerWrite,
+    TipState,
 };
 
 /// A commit's metadata paired with its blob contents.
@@ -677,12 +678,22 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         principal_id: &str,
         genesis: crate::Genesis,
     ) -> Result<cyphr::Principal<S>, EngineError> {
-        use crate::CommitEntry;
-        use crate::import::replay_commits;
-
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
-        let principal_id = principal_id.as_str();
+        self.replay_stored(&principal_id, genesis).await
+    }
+
+    /// [`load_principal`](Self::load_principal) for an id already known to
+    /// be the stored spelling. Separate so resolving a PG-to-be
+    /// ([`pending_pg_owner`](Self::pending_pg_owner)) can replay without
+    /// re-entering id resolution.
+    async fn replay_stored(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+    ) -> Result<cyphr::Principal<S>, EngineError> {
+        use crate::CommitEntry;
+        use crate::import::replay_commits;
 
         // 1. Construct the principal from genesis (no commits yet), backed
         // by a fresh storage instance from this engine's factory.
@@ -821,7 +832,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // one identity cannot be stored as two independent principals
         // (a fork refused under one spelling accepted under the other, or a
         // revoked key committing under an alias).
-        let stored = self.stored_id(principal_id).await?;
+        let mut stored = self.stored_id(principal_id).await?;
+        if stored.is_none() {
+            stored = self.pending_pg_owner(principal_id).await?;
+        }
         let genesis = match (genesis, &stored) {
             (Some(g), _) => g,
             (None, Some(stored_id)) => self.genesis_of_stored(stored_id).await?,
@@ -962,6 +976,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             })
         };
 
+        // The principal's state BEFORE this bundle: the chain link (`pre`) is
+        // the previous commit's PR, and a PG established by this bundle is
+        // the PR held before the `principal/create` commit (SPEC §3.7.1).
+        let commit_pre = if next_seq == 0 {
+            None
+        } else {
+            format_multihash_all(principal.pr().as_multihash())?
+                .first()
+                .cloned()
+        };
+        let had_pg = principal.pg().is_some();
+
         let mut parsed_cozies = Vec::with_capacity(raw_blobs.len());
         let mut last_timestamp: i64 = 0;
         let mut extracted_keys = Vec::new();
@@ -1055,12 +1081,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                     "principal_id is not the genesis-derived id: {claimed}"
                 )));
             }
-            let commit_pre = if next_seq == 0 {
-                None
-            } else {
-                format_multihash_all(principal.pr().as_multihash())?
-                    .first()
-                    .cloned()
+            let pg = match principal.pg() {
+                Some(pg) if !had_pg => format_multihash_all(pg.as_multihash())?,
+                _ => Vec::new(),
             };
 
             let mut cozies = Vec::with_capacity(parsed_cozies.len());
@@ -1105,6 +1128,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 cozies,
                 timestamp: last_timestamp,
                 keys: extracted_keys,
+                pg,
             };
 
             self.ingest_commit(raw_blobs, commit).await
@@ -1206,15 +1230,73 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         Ok(None)
     }
 
+    /// The stored principal for which `claimed` (labelled or bare) is the
+    /// PG-to-be: the Principal Root it holds NOW, while it has no PG yet
+    /// (SPEC §3.7.1: the PG is the PR before the `principal/create`
+    /// commit). Before that commit no alias exists, so a client may push
+    /// and read under the PG it is about to establish. The index only
+    /// locates the candidate; replayed state decides, so a historical PR,
+    /// or any PR once the PG exists, names nothing.
+    async fn pending_pg_owner(&self, claimed: &str) -> Result<Option<String>, EngineError> {
+        let Some((owner, sequence)) = self.locate_by_pr(claimed).await? else {
+            return Ok(None);
+        };
+        // Cheap filter before the replay: the claim must be the owner's
+        // current PR, i.e. its latest commit.
+        let Some(tip) = self.indexer.get_tip(&owner).await? else {
+            return Ok(None);
+        };
+        if tip.commit_count.checked_sub(1) != Some(sequence) {
+            return Ok(None);
+        }
+        let genesis = self.genesis_of_stored(&owner).await?;
+        let principal = self.replay_stored(&owner, genesis).await?;
+        let holds_claim = principal.pg().is_none()
+            && format_multihash_all(principal.pr().as_multihash())?
+                .iter()
+                .any(|v| v == claimed || bare_digest(v) == claimed);
+        Ok(holds_claim.then_some(owner))
+    }
+
+    /// The principal and commit sequence whose commit has `principal_id`
+    /// (labelled or bare) as a digest variant, as a locator only: the
+    /// caller must verify against replayed state.
+    async fn locate_by_pr(&self, principal_id: &str) -> Result<Option<(String, u64)>, EngineError> {
+        let candidates: Vec<String> = if principal_id.contains(':') {
+            vec![principal_id.to_string()]
+        } else {
+            ID_LABELS
+                .iter()
+                .map(|label| format!("{label}:{principal_id}"))
+                .collect()
+        };
+        for candidate in candidates {
+            let Ok(digest) = candidate.parse::<cyphr::state::TaggedDigest>() else {
+                continue;
+            };
+            if let Some(entity) = self.indexer.resolve_digest(&digest).await? {
+                if entity.entity_type == EntityType::Commit {
+                    if let (Some(principal), Some(sequence)) =
+                        (entity.principal_id, entity.sequence)
+                    {
+                        return Ok(Some((principal, sequence)));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// The canonical (stored) spelling of `principal_id`, or `principal_id`
     /// unchanged if no such principal is stored. Read paths key on this so
     /// the bare and labelled spellings of one id reach one chain.
     pub async fn canonical_principal_id(&self, principal_id: &str) -> Result<String, EngineError> {
         self.ensure_healed().await?;
-        Ok(self
-            .stored_id(principal_id)
-            .await?
-            .unwrap_or_else(|| principal_id.to_string()))
+        let stored = match self.stored_id(principal_id).await? {
+            Some(id) => Some(id),
+            None => self.pending_pg_owner(principal_id).await?,
+        };
+        Ok(stored.unwrap_or_else(|| principal_id.to_string()))
     }
 
     /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy

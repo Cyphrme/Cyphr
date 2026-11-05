@@ -392,10 +392,8 @@ fn principal_create_commit(principal_id: &str, seq: u64) -> IndexableCommit {
 /// commit), resolve to nothing and create no principal; `clear` drops the
 /// aliases (derived, I1).
 ///
-/// RED(AD1): written against `IndexableCommit.pg: Vec<String>`, a field the
-/// engine fills and the implementer must add, so this does not compile until
-/// it exists. A unit test because the engine-level scenarios cannot tell
-/// which backend failed.
+/// A unit test because the engine-level scenarios cannot tell which backend
+/// failed.
 pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrite>(indexer: &I) {
     let token = DeriveToken::for_conformance_tests();
     let id = "SHA-256:genesis-digest";

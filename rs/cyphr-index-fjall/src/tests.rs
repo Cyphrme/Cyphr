@@ -44,9 +44,7 @@ async fn alias_pg_variants_resolve_to_the_principal() {
 /// index meta-table, not a side channel. After a PG-establishing commit is
 /// indexed the registry lists the five pre-alias partitions plus exactly
 /// one more. Turns red if no partition is registered for the alias, or
-/// more than one is. RED(AD1): sets `IndexableCommit.pg`, a field that
-/// does not exist yet, so it does not compile until it does. A unit test:
-/// the registry is not reachable from any
+/// more than one is. A unit test: the registry is not reachable from any
 /// end-to-end scenario.
 #[tokio::test]
 async fn alias_table_is_one_registered_kv_table() {

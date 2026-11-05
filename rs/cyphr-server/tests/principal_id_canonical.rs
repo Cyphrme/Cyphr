@@ -528,7 +528,6 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
 /// then reads the principal (200) or accepts its push (201). End to end:
 /// yes.
 #[tokio::test]
-#[ignore = "RED(AD1): every historical PR is aliased, not only the PG"]
 async fn historical_pr_is_not_an_alias() {
     use cyphr::StateDigest;
 
