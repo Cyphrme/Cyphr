@@ -304,7 +304,100 @@ impl<S: eml::Storage> std::ops::Deref for Principal<S> {
     }
 }
 
+/// The roots a newly constructed principal starts from: KR, AR and SR,
+/// the Commit Root of a restored commit log (if any), and the Principal
+/// Tree built over them with its PR.
+struct StartingRoots {
+    kr: KeyRoot,
+    ar: AuthRoot,
+    sr: StateRoot,
+    cr: Option<crate::commit_root::CommitRoot>,
+    pt: PrincipalTree,
+    pr: PrincipalRoot,
+}
+
+impl StartingRoots {
+    /// Build the Principal Tree over `sr` (cell 0) and, when a commit log
+    /// was restored, `cr` (cell 1), and derive PR from it. With no CR the
+    /// tree's singleton promotion makes PR = SR.
+    fn new(
+        kr: KeyRoot,
+        ar: AuthRoot,
+        sr: StateRoot,
+        cr: Option<crate::commit_root::CommitRoot>,
+        algs: &[HashAlg],
+    ) -> Result<Self> {
+        let mut pt = PrincipalTree::new();
+        pt.set_sr(&sr, algs)?;
+        if let Some(ref cr_val) = cr {
+            pt.set_cr(cr_val, algs)?;
+        }
+        let pr = pt.pr(algs)?;
+        Ok(Self {
+            kr,
+            ar,
+            sr,
+            cr,
+            pt,
+            pr,
+        })
+    }
+}
+
+/// Open the Commit Tree over a caller-supplied storage backend.
+fn open_commit_trees<S: eml::Storage>(storage: S) -> Result<crate::commit_root::CommitTrees<S>> {
+    crate::commit_root::CommitTrees::open(storage).map_err(|e| Error::Storage(e.to_string()))
+}
+
 impl<S: eml::Storage> PrincipalCore<S> {
+    /// Assemble a principal's state from its keys, starting roots and
+    /// Commit Tree. Every constructor ends here, so a field added to
+    /// `PrincipalCore` or a change to how a fresh principal is filled is
+    /// made once. `keys` become both the active set and the genesis-key
+    /// list, in the order given.
+    fn new(
+        keys: Vec<Key>,
+        roots: StartingRoots,
+        commit_trees: crate::commit_root::CommitTrees<S>,
+    ) -> Self {
+        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
+        let mut key_map = IndexMap::new();
+        for k in keys {
+            key_map.insert(k.tmb().to_b64(), k);
+        }
+        let StartingRoots {
+            kr,
+            ar,
+            sr,
+            cr,
+            pt,
+            pr,
+        } = roots;
+        PrincipalCore {
+            pr,
+            kr,
+            tr: None,
+            commit_trees,
+            pt,
+            cr,
+            sr: Some(sr),
+            ar,
+            dr: None,
+            auth: AuthLedger {
+                keys: key_map,
+                ..Default::default()
+            },
+            data: DataLedger::default(),
+            latest_timestamp: 0,
+            max_clock_skew: 0,
+            genesis_keys,
+            deleted: false,
+            deleted_pending: false,
+            frozen: false,
+            errored: false,
+        }
+    }
+
     /// Resolve `tmb` to the active key that may sign for this principal.
     ///
     /// The single signer lookup every verification path uses, so a key is
@@ -515,78 +608,16 @@ impl Principal<eml::MemoryStorage> {
         keys: Vec<Key>,
         trees: Option<crate::commit_root::CommitTrees>,
     ) -> Result<Self> {
-        if keys.is_empty() {
-            return Err(Error::NoActiveKeys);
-        }
-
-        let _ = hash_alg_from_str(keys[0].alg())?;
-
-        // Derive active algorithms from checkpoint keys (SPEC §14)
-        let key_refs: Vec<&Key> = keys.iter().collect();
-        let active_algs = derive_hash_algs(&key_refs);
-
-        // Compute KR from provided keys
-        let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
-        let kr = KeyTree::build(&thumbprints, &active_algs)?;
-
-        // Restore MALT state if provided, otherwise start fresh.
-        let (commit_trees, cr) = match trees {
-            Some(t) => {
-                let cr = crate::commit_root::commit_root_from_trees(&t, &active_algs)?;
-                (t, Some(cr))
-            },
-            None => (
+        match trees {
+            Some(t) => Self::restore_checkpoint(pg, ar, keys, t, true),
+            None => Self::restore_checkpoint(
+                pg,
+                ar,
+                keys,
                 crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-                None,
+                false,
             ),
-        };
-
-        // SR and PR: derive_state_roots is not used here because `ar` is
-        // provided by the checkpoint, not derived from `kr`. We enter the
-        // chain at SR-node directly.
-        let sr = StateTree::build(&ar, None, &active_algs)?;
-        // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
-        // checkpoint's SR and (if restored) CR.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        if let Some(ref cr_val) = cr {
-            pt.set_cr(cr_val, &active_algs)?;
         }
-        let pr = pt.pr(&active_algs)?;
-
-        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
-        let mut key_map = IndexMap::new();
-        for k in keys {
-            key_map.insert(k.tmb().to_b64(), k);
-        }
-        let core = PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees,
-            pt,
-            cr,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys: key_map,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys,
-            deleted: false,
-            deleted_pending: false,
-            frozen: false,
-            errored: false,
-        };
-
-        Ok(match pg {
-            Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
-            None => Self(Some(PrincipalKind::Nascent(core))),
-        })
     }
 }
 
@@ -645,45 +676,15 @@ impl<S: eml::Storage> Principal<S> {
     /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
     pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
         let hash_alg = hash_alg_from_str(key.alg())?;
-        let tmb_b64 = key.tmb().to_b64();
 
         // Derive active algorithms from genesis key
         let active_algs = vec![hash_alg];
 
-        // KT → AR-node → SR-node (no DR at genesis)
+        // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
         let (kr, ar, sr) = derive_state_roots(&[key.tmb()], None, &active_algs)?;
-        // PR = SR (no CR at genesis): the tree's native singleton promotion.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        let pr = pt.pr(&active_algs)?;
-
-        let mut keys = IndexMap::new();
-        keys.insert(tmb_b64.clone(), key);
-
-        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees: crate::commit_root::CommitTrees::open(storage)
-                .map_err(|e| Error::Storage(e.to_string()))?,
-            pt,
-            cr: None,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys: vec![tmb_b64],
-            deleted: false,
-            deleted_pending: false,
-            frozen: false,
-            errored: false,
-        }))))
+        let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
+        let core = PrincipalCore::new(vec![key], roots, open_commit_trees(storage)?);
+        Ok(Self(Some(PrincipalKind::Nascent(core))))
     }
 
     /// Create a principal with explicit genesis (multiple keys), backed by
@@ -703,45 +704,12 @@ impl<S: eml::Storage> Principal<S> {
         let key_refs: Vec<&Key> = keys.iter().collect();
         let active_algs = derive_hash_algs(&key_refs);
 
-        // Collect thumbprints for KR computation
+        // KT → AR-node → SR-node (no DR at genesis); PR = SR (no CR yet).
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
-        let genesis_keys: Vec<String> = thumbprints.iter().map(|t| t.to_b64()).collect();
-        // KT → AR-node → SR-node (no DR at genesis)
         let (kr, ar, sr) = derive_state_roots(&thumbprints, None, &active_algs)?;
-        // PR = SR (no CR at genesis): the tree's native singleton promotion.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        let pr = pt.pr(&active_algs)?;
-
-        let mut key_map = IndexMap::new();
-        for k in keys {
-            key_map.insert(k.tmb().to_b64(), k);
-        }
-
-        Ok(Self(Some(PrincipalKind::Nascent(PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees: crate::commit_root::CommitTrees::open(storage)
-                .map_err(|e| Error::Storage(e.to_string()))?,
-            pt,
-            cr: None,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys: key_map,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys,
-            deleted: false,
-            deleted_pending: false,
-            frozen: false,
-            errored: false,
-        }))))
+        let roots = StartingRoots::new(kr, ar, sr, None, &active_algs)?;
+        let core = PrincipalCore::new(keys, roots, open_commit_trees(storage)?);
+        Ok(Self(Some(PrincipalKind::Nascent(core))))
     }
 
     /// Create a principal from a trusted checkpoint, with its Commit Tree
@@ -770,6 +738,31 @@ impl<S: eml::Storage> Principal<S> {
         keys: Vec<Key>,
         trees: crate::commit_root::CommitTrees<S>,
     ) -> Result<Self> {
+        // A restored, non-empty log yields a CR; a genuinely empty one
+        // (e.g. a fresh backend with no prior commits) does not. Decided
+        // by the tree's own emptiness rather than by an `Option` at the
+        // API boundary, as `from_checkpoint` does.
+        let restore_cr = !trees.is_empty();
+        Self::restore_checkpoint(pg, ar, keys, trees, restore_cr)
+    }
+
+    /// The one checkpoint-restore body behind [`Principal::from_checkpoint`]
+    /// and [`Self::from_checkpoint_with_trees`]. `restore_cr` says whether
+    /// `trees` carries a commit log whose Commit Root enters the Principal
+    /// Tree; the two public constructors decide it differently (an
+    /// explicit `Some` versus a non-empty tree), so it is theirs to pass.
+    ///
+    /// # Errors
+    ///
+    /// `NoActiveKeys` if `keys` is empty; `UnsupportedAlgorithm` if the
+    /// first key's algorithm is unknown.
+    fn restore_checkpoint(
+        pg: Option<PrincipalGenesis>,
+        ar: AuthRoot,
+        keys: Vec<Key>,
+        trees: crate::commit_root::CommitTrees<S>,
+        restore_cr: bool,
+    ) -> Result<Self> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
         }
@@ -784,61 +777,21 @@ impl<S: eml::Storage> Principal<S> {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
         let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
-        // A restored, non-empty log yields a CR; a genuinely empty one
-        // (e.g. a fresh backend with no prior commits) does not — mirrors
-        // `from_checkpoint`'s `Some`/`None` split, decided here by the
-        // tree's own emptiness rather than by an `Option` at the API
-        // boundary.
-        let cr = if trees.is_empty() {
-            None
-        } else {
+        let cr = if restore_cr {
             Some(crate::commit_root::commit_root_from_trees(
                 &trees,
                 &active_algs,
             )?)
+        } else {
+            None
         };
 
-        // SR and PR: derive_state_roots is not used here because `ar` is
+        // SR: derive_state_roots is not used here because `ar` is
         // provided by the checkpoint, not derived from `kr`. We enter the
         // chain at SR-node directly.
         let sr = StateTree::build(&ar, None, &active_algs)?;
-        // PR = EpochTree::root(alg_id): rebuild the Principal Tree from the
-        // checkpoint's SR and (if restored) CR.
-        let mut pt = PrincipalTree::new();
-        pt.set_sr(&sr, &active_algs)?;
-        if let Some(ref cr_val) = cr {
-            pt.set_cr(cr_val, &active_algs)?;
-        }
-        let pr = pt.pr(&active_algs)?;
-
-        let genesis_keys: Vec<String> = keys.iter().map(|k| k.tmb().to_b64()).collect();
-        let mut key_map = IndexMap::new();
-        for k in keys {
-            key_map.insert(k.tmb().to_b64(), k);
-        }
-        let core = PrincipalCore {
-            pr,
-            kr,
-            tr: None,
-            commit_trees: trees,
-            pt,
-            cr,
-            sr: Some(sr),
-            ar,
-            dr: None,
-            auth: AuthLedger {
-                keys: key_map,
-                ..Default::default()
-            },
-            data: DataLedger::default(),
-            latest_timestamp: 0,
-            max_clock_skew: 0,
-            genesis_keys,
-            deleted: false,
-            deleted_pending: false,
-            frozen: false,
-            errored: false,
-        };
+        let roots = StartingRoots::new(kr, ar, sr, cr, &active_algs)?;
+        let core = PrincipalCore::new(keys, roots, trees);
 
         Ok(match pg {
             Some(pg) => Self(Some(PrincipalKind::Established { core, pg })),
