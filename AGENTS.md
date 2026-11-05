@@ -336,6 +336,17 @@ resolved unilaterally.
   stored under, after enumerating every legitimate producer of a mismatch.
   Signpost: #139's answer determines #152's fix; #154's mismatch check
   must not land before that producer enumeration.
+- **U11 — Recovery admission as trust root.** Whether each recovery
+  admission is a fresh trust root: admitting a recovery agent imports
+  that agent's own genesis into what the account's validity rests on, and
+  whether every out-of-band exercise counts as a new admission or
+  admitting the agent once settles it is decided neither by the
+  specification nor by the sign-on document. It bears on how many parties
+  the sign-on claim "the person presenting the key is the person the
+  account is for" rests on. Grounding:
+  `docs/architecture/path-a-sovereign-sign-on.md` (What is open).
+  Signpost: the SPEC author's answer, or a design that must count the
+  parties row 6 rests on.
 - **U10 — Questions for the SPEC author.** Not to be resolved here (see
   the contradiction procedure): where the custody self-claim lives (a
   `key/create` field or a Level 4 data action); gossip's discovery claim
