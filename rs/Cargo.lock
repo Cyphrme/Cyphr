@@ -580,6 +580,7 @@ dependencies = [
  "coz-rs",
  "cyphr",
  "cyphr-blob-fjall",
+ "cyphr-client",
  "cyphr-index-fjall",
  "cyphr-storage",
  "eml",

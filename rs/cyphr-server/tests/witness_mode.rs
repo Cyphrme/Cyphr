@@ -2582,7 +2582,6 @@ async fn sync_converges_and_refuses_tampered_or_missigned() {
 /// The assertion is "nothing retained once idle", the strongest bound a
 /// fix can honour; a mere cap above the probe count would not satisfy it.
 #[tokio::test]
-#[ignore = "RED(N14): sync_locks retains one entry per requested principal id forever"]
 async fn sync_locks_bounded() {
     let (authority_url, _auth) = spawn_fixed_authority(serde_json::json!({})).await;
     let (witness_state, witness_app) = witness_for(&authority_url, None).await;

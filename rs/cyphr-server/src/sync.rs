@@ -10,9 +10,9 @@
 //!
 //! 1. Before any entry is applied, the response's signed statement must verify against the expected
 //!    identity, canonicalize via [`TipReport::parse`], and attest to the SAME principal being
-//!    synced -- see [`verify_authenticated_envelope`]. A genuine, validly-signed report for a
-//!    *different* principal (an on-path party rewrote only the outbound query) is refused here,
-//!    before it ever reaches storage.
+//!    synced -- see [`cyphr_client::verify_authenticated_envelope`]. A genuine, validly-signed
+//!    report for a *different* principal (an on-path party rewrote only the outbound query) is
+//!    refused here, before it ever reaches storage.
 //! 2. After the apply loop runs, the witness's own resulting local tip must equal what the signed
 //!    report attests -- see [`resulting_tip_matches_report`]. A signature over `pay` says nothing
 //!    about a *separate* plaintext `entries` array, so no per-entry label comparison against that
@@ -39,18 +39,16 @@
 //! Without a configured identity, sync runs the legacy unauthenticated path
 //! unchanged.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
-use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr_client::{
+    AuthorityKey, BindingPolicy, HttpConnector, PatchFailure, PatchRequest, TipReport, fetch_patch,
+};
 use cyphr_storage::index::types::TipState;
-use serde_json::Value;
 use tracing::{error, warn};
 
 use crate::AppState;
 use crate::config::AuthorityIdentity;
-use crate::envelope::Statement;
-use crate::receipt::{self, TipReport};
 
 /// The result of one [`sync_from_authority`] attempt.
 ///
@@ -136,14 +134,39 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
 
     let principal_lock = {
         let mut map = state.sync_locks.lock().await;
+        // Drop idle entries (held only by the map). Every holder clones
+        // under this same map lock, so a count of 1 means nobody holds or
+        // awaits the lock. Pruning here, as well as on completion below,
+        // bounds the map even when a request future is cancelled between
+        // acquiring a lock and releasing it.
+        map.retain(|_, lock| Arc::strong_count(lock) > 1);
         map.entry(principal_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
-    let _guard = principal_lock.lock().await;
 
-    let base_url = authority_url.trim_end_matches('/');
+    let outcome = {
+        let _guard = principal_lock.lock().await;
+        sync_locked(state, principal_id, authority_url).await
+    };
 
+    // Release the entry once idle. Unconditionally keeping it would grow
+    // the map by one lock per principal id an unauthenticated reader asks
+    // about. Two holders -- this clone and the map's -- means no other
+    // sync is queued behind it.
+    let mut map = state.sync_locks.lock().await;
+    if Arc::strong_count(&principal_lock) == 2 {
+        map.remove(principal_id);
+    }
+    outcome
+}
+
+/// One sync attempt, run while holding `principal_id`'s lock.
+async fn sync_locked(
+    state: &Arc<AppState>,
+    principal_id: &str,
+    authority_url: &str,
+) -> SyncOutcome {
     let local_tip = match state.engine.get_tip(principal_id).await {
         Ok(tip) => tip,
         Err(err) => {
@@ -175,160 +198,68 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
     let from_seq = local_tip.as_ref().map_or(0, |t| t.commit_count);
     let anchor_pr = local_tip.as_ref().map(|t| t.pr.clone());
 
-    // Percent-encode `principal_id` (client-supplied) and the anchor before
-    // they are interpolated into the outbound URL, so a value containing
-    // `&`/`=`/`#` cannot inject extra query parameters into the witness's
-    // own outbound request. Currently redundant with the pre-apply principal
-    // comparison below (any such value already fails to match the report's
-    // attested principal) and with the anchor's own tagged-digest charset
-    // (algorithm name plus base64url, which excludes those bytes), but the
-    // safety should not depend on either being the only guard.
-    let encoded_principal = percent_encode_query_value(principal_id);
-    let patch_url = match &anchor_pr {
-        Some(pr) => {
-            let encoded_anchor = percent_encode_query_value(pr);
-            format!("{base_url}/patch?pr={encoded_principal}&from={encoded_anchor}")
-        },
-        None => format!("{base_url}/patch?pr={encoded_principal}"),
+    let connector = HttpConnector::new(state.http_client.clone(), authority_url);
+    let request = PatchRequest {
+        principal_id,
+        anchor: anchor_pr.as_deref(),
     };
-
-    let res = match state
-        .http_client
-        .get(&patch_url)
-        .header("accept", "application/json")
-        .send()
-        .await
+    // Authenticated channel (K10), part 1. When the witness knows the
+    // expected authority identity, the signature, the report's canonical
+    // shape, AND the report's principal are checked inside `fetch_patch`,
+    // strictly before any entry is handed back -- a mismatch must leave
+    // local storage completely untouched (fail closed), and the only way
+    // to guarantee that with no undo path is to gate before the first
+    // `submit_commit`, not after. Entry-binding is NOT checked there (see
+    // part 2, after the loop): no comparison of the wire body against
+    // itself can be sound.
+    let expected = state.config.authority_identity.as_ref().map(authority_key);
+    let patch = match fetch_patch(
+        &connector,
+        &request,
+        BindingPolicy::NotRequired,
+        expected.as_ref(),
+    )
+    .await
     {
-        Ok(res) => res,
-        Err(err) => {
-            error!(
-                principal = %principal_id,
-                error = %err,
-                "witness sync HTTP request failed"
-            );
-            return SyncOutcome::Failed {
-                reason: SyncFailure::UpstreamUnreachable(err.to_string()),
-            };
-        },
-    };
-
-    if !res.status().is_success() {
-        let status = res.status();
-        warn!(
-            principal = %principal_id,
-            %status,
-            "witness sync upstream non-success status"
-        );
-        return SyncOutcome::Failed {
-            reason: SyncFailure::UpstreamNonSuccess(status.as_u16()),
-        };
-    }
-
-    let body: Value = match res.json().await {
-        Ok(v) => v,
+        Ok(patch) => patch,
         Err(err) => {
             warn!(
                 principal = %principal_id,
                 error = %err,
-                "witness sync payload decode failed"
+                "witness sync: patch fetch or verification failed"
             );
-            return SyncOutcome::Failed {
-                reason: SyncFailure::MalformedResponse(err.to_string()),
-            };
+            return SyncOutcome::Failed { reason: err.into() };
         },
     };
-
-    let entries = match body
-        .get("payload")
-        .and_then(|p| p.get("entries"))
-        .and_then(|e| e.as_array())
-    {
-        Some(e) => e,
-        None => {
-            warn!(principal = %principal_id, "witness sync payload missing entries array");
-            return SyncOutcome::Failed {
-                reason: SyncFailure::MalformedResponse(
-                    "payload.entries missing or not an array".to_string(),
-                ),
-            };
-        },
-    };
-
-    // Authenticated channel (K10), part 1. When the witness knows the
-    // expected authority identity, the signature, the report's canonical
-    // shape, AND the report's principal are checked here, strictly before
-    // the per-entry apply loop below -- a mismatch must leave local storage
-    // completely untouched (fail closed), and the only way to guarantee
-    // that with no undo path is to gate before the first `submit_commit`,
-    // not after. Entry-binding is NOT checked here (see part 2, after the
-    // loop): no comparison of the wire body against itself can be sound.
-    let authenticated_report: Option<TipReport> =
-        if let Some(expected) = &state.config.authority_identity {
-            match verify_authenticated_envelope(&body, expected, principal_id) {
-                Ok(report) => Some(report),
-                Err(reason) => {
-                    warn!(
-                        principal = %principal_id,
-                        ?reason,
-                        "witness sync authenticated-channel check failed"
-                    );
-                    return SyncOutcome::Failed { reason };
-                },
-            }
-        } else {
-            None
-        };
+    let authenticated_report: Option<TipReport> = patch.report;
 
     let mut applied = 0usize;
     let mut rejected = 0usize;
-    for entry in entries {
-        let seq = entry.get("sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+    for entry in &patch.entries {
+        let seq = entry.sequence;
         if seq < from_seq {
             continue;
         }
 
-        let blob_strs = match entry.get("blobs").and_then(|b| b.as_array()) {
-            Some(b) => b,
-            None => {
+        let raw_blobs = match &entry.blobs {
+            Ok(blobs) => blobs,
+            Err(defect) => {
+                // Wedge fix, site 1 (decode failure): a malformed entry
+                // must never make a later, genuine entry unreachable --
+                // skip and record, don't abort the whole sync. `from_seq`
+                // is recomputed fresh from local state on every call with
+                // no persisted progress marker, so aborting here would
+                // refetch and re-abort on this same entry forever.
                 warn!(
                     principal_id = %principal_id,
                     sequence = seq,
-                    "patch entry carries no blobs array; skipping"
+                    ?defect,
+                    "patch entry undecodable; skipping"
                 );
                 rejected += 1;
                 continue;
             },
         };
-
-        let mut raw_blobs = Vec::with_capacity(blob_strs.len());
-        let mut decode_error = false;
-        for b_val in blob_strs {
-            let Some(b_str) = b_val.as_str() else {
-                decode_error = true;
-                break;
-            };
-            let Ok(decoded) = Base64UrlUnpadded::decode_vec(b_str) else {
-                decode_error = true;
-                break;
-            };
-            raw_blobs.push(decoded);
-        }
-
-        if decode_error || raw_blobs.is_empty() {
-            // Wedge fix, site 1 (decode failure): a malformed entry must
-            // never make a later, genuine entry unreachable -- skip and
-            // record, don't abort the whole sync. `from_seq` is
-            // recomputed fresh from local state on every call with no
-            // persisted progress marker, so aborting here would refetch
-            // and re-abort on this same entry forever.
-            warn!(
-                principal_id = %principal_id,
-                sequence = seq,
-                "patch entry blob decode failed; skipping"
-            );
-            rejected += 1;
-            continue;
-        }
 
         let blob_refs: Vec<&[u8]> = raw_blobs.iter().map(|b| b.as_slice()).collect();
 
@@ -410,54 +341,29 @@ pub async fn sync_from_authority(state: &Arc<AppState>, principal_id: &str) -> S
     }
 }
 
-/// Verify the authenticated channel (K10), part 1, for one `/patch`
-/// response: the statement must be a signature by `expected`, it must
-/// canonicalize via [`TipReport::parse`], and it must attest to
-/// `principal_id` -- the principal actually being synced, not merely SOME
-/// principal the authority happens to hold.
-///
-/// The principal check is load-bearing, not defense in depth: the storage
-/// engine's `resolve_genesis` derives a new principal's genesis from
-/// whatever blobs are submitted under `principal_id` and never compares it
-/// against the identifier itself, so an on-path party who rewrites only the
-/// outbound query's `pr` gets back a fully genuine, genuinely-signed
-/// response for a *different* principal -- every other check here passes,
-/// because the response really is what it claims to be, just not an answer
-/// about the principal the witness asked. This is the only place that can
-/// be stopped.
-///
-/// Entry-binding is NOT decided here -- see [`resulting_tip_matches_report`],
-/// which runs after the apply loop against the witness's own resulting
-/// state rather than against anything the wire body carries about itself.
-fn verify_authenticated_envelope(
-    body: &Value,
-    expected: &AuthorityIdentity,
-    principal_id: &str,
-) -> Result<TipReport, SyncFailure> {
-    let statement: Option<Statement> = body
-        .get("statement")
-        .and_then(|s| serde_json::from_value(s.clone()).ok());
-
-    let Some(Statement::Signed(coz)) = statement else {
-        return Err(SyncFailure::EnvelopeUnsignedOrMisSigned);
-    };
-
-    if coz.pay["alg"].as_str() != Some(expected.alg.as_str())
-        || !receipt::receipt_signature_verifies(&coz, &expected.pub_key)
-    {
-        return Err(SyncFailure::EnvelopeUnsignedOrMisSigned);
+fn authority_key(identity: &AuthorityIdentity) -> AuthorityKey {
+    AuthorityKey {
+        alg: identity.alg.clone(),
+        pub_key: identity.pub_key.clone(),
     }
+}
 
-    let report = TipReport::parse(&coz).map_err(|_| SyncFailure::MalformedReport)?;
-
-    // `report.pr` (a bare b64ut genesis identifier, SPEC §2.2.3's DEFAULT
-    // form) and `principal_id` share the identical wire form -- a direct
-    // string comparison, no re-encoding needed.
-    if report.pr.to_string() != cyphr_storage::engine::bare_digest(principal_id) {
-        return Err(SyncFailure::PrincipalMismatch);
+impl From<PatchFailure> for SyncFailure {
+    fn from(err: PatchFailure) -> Self {
+        match err {
+            PatchFailure::Unreachable(m) => Self::UpstreamUnreachable(m),
+            PatchFailure::NonSuccess(status) => Self::UpstreamNonSuccess(status),
+            PatchFailure::MalformedResponse(m) => Self::MalformedResponse(m),
+            PatchFailure::EnvelopeUnsignedOrMisSigned => Self::EnvelopeUnsignedOrMisSigned,
+            PatchFailure::MalformedReport => Self::MalformedReport,
+            PatchFailure::PrincipalMismatch => Self::PrincipalMismatch,
+            // The witness requires no binding (`BindingPolicy::NotRequired`),
+            // so this is unreachable today; if a Noise carrier is wired in
+            // with a requirement, a refused binding is the carrier failing
+            // to be what was asked for, which is how the peer reads.
+            err @ PatchFailure::Binding(_) => Self::UpstreamUnreachable(err.to_string()),
+        }
     }
-
-    Ok(report)
 }
 
 /// Authenticated channel (K10), part 2: does the witness's own resulting
@@ -497,35 +403,15 @@ fn resulting_tip_matches_report(resulting: Option<&TipState>, report: &TipReport
     tip.cr == report_cr
 }
 
-/// Percent-encode `value` for use as one query-string component, escaping
-/// every byte outside RFC 3986's `unreserved` set (`ALPHA` / `DIGIT` / `-` /
-/// `.` / `_` / `~`) as `%XX`. A minimal, dependency-free encoder scoped to
-/// this module's one call site: `principal_id` is client-supplied and
-/// interpolated into the outbound `/patch` URL, so a value containing
-/// `&`/`=`/`#` must not be able to inject extra query parameters into the
-/// witness's own outbound request.
-fn percent_encode_query_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            },
-            _ => {
-                out.push('%');
-                write!(out, "{byte:02X}").expect("write to String never fails");
-            },
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    use coz::base64ct::Encoding as _;
     use cyphr::HashAlg;
     use cyphr::state::TaggedDigest;
+    use cyphr_client::TipReportRoots;
 
     use super::*;
+    use crate::receipt;
 
     /// C2: the empty-commit-root invariant, pinned where it is actually
     /// constructible. A principal legitimately in the no-commit-root state
@@ -565,7 +451,7 @@ mod tests {
             pr: coz::Thumbprint::from_bytes(vec![0xffu8; 32]),
             sequence: 0,
             commit_id,
-            roots: receipt::TipReportRoots {
+            roots: TipReportRoots {
                 pr,
                 sr,
                 ar,
@@ -580,16 +466,75 @@ mod tests {
         );
     }
 
+    /// The client crate carries its own copy of the canonical report parse
+    /// (the server's `receipt` module is its other consumer), so the two
+    /// must agree on every shape or a witness and an equivocation check
+    /// would canonicalize one report differently. Unit-level by exception:
+    /// no end-to-end scenario can present both parsers the same hostile
+    /// pay cheaply.
     #[test]
-    fn percent_encode_query_value_leaves_unreserved_bytes_alone() {
-        assert_eq!(percent_encode_query_value("abcXYZ019-_.~"), "abcXYZ019-_.~");
-        assert_eq!(percent_encode_query_value(""), "");
-    }
-
-    #[test]
-    fn percent_encode_query_value_escapes_query_injection_chars() {
-        // `&`, `=`, and `#` are exactly the bytes an injected extra query
-        // parameter or a fragment marker would need.
-        assert_eq!(percent_encode_query_value("a&b=c#d"), "a%26b%3Dc%23d");
+    fn client_and_receipt_report_parsers_agree() {
+        let d = |b: u8| {
+            format!(
+                "SHA-256:{}",
+                coz::base64ct::Base64UrlUnpadded::encode_string(&[b; 32])
+            )
+        };
+        let pr = coz::base64ct::Base64UrlUnpadded::encode_string(&[7u8; 32]);
+        let good = serde_json::json!({
+            "pr": pr, "sequence": 3, "commit_id": d(9),
+            "roots": { "pr": d(1), "sr": d(2), "ar": d(3), "cr": d(4) },
+        });
+        let mut pays = vec![good.clone()];
+        for (path, v) in [
+            ("pr", serde_json::json!(5)),
+            ("pr", serde_json::json!(format!("SHA-256:{pr}"))),
+            ("sequence", serde_json::json!("3")),
+            ("sequence", serde_json::json!("3x")),
+            ("sequence", serde_json::json!(-1)),
+            ("sequence", serde_json::json!(3.5)),
+            ("commit_id", serde_json::json!(null)),
+            ("commit_id", serde_json::json!("SHA-256:AA")),
+        ] {
+            let mut p = good.clone();
+            p[path] = v;
+            pays.push(p);
+        }
+        for (field, v) in [
+            ("cr", serde_json::json!(null)),
+            ("cr", serde_json::json!("")),
+            ("sr", serde_json::json!(null)),
+            ("ar", serde_json::json!(["x"])),
+        ] {
+            let mut p = good.clone();
+            p["roots"][field] = v;
+            pays.push(p);
+        }
+        for pay in pays {
+            let coz = coz::CozJson {
+                pay,
+                sig: Vec::new(),
+            };
+            let client = cyphr_client::TipReport::parse(&coz);
+            let server = receipt::TipReport::parse(&coz);
+            assert_eq!(
+                client
+                    .as_ref()
+                    .map(|r| (r.pr.to_string(), r.sequence, r.commit_id.to_string()))
+                    .ok(),
+                server
+                    .as_ref()
+                    .map(|r| (r.pr.to_string(), r.sequence, r.commit_id.to_string()))
+                    .ok(),
+                "parsers disagree on {:?}",
+                coz.pay
+            );
+            if let (Ok(c), Ok(s)) = (&client, &server) {
+                assert_eq!(
+                    c.roots.cr.as_ref().map(ToString::to_string),
+                    s.roots.cr.as_ref().map(ToString::to_string)
+                );
+            }
+        }
     }
 }
