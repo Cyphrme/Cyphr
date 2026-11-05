@@ -329,36 +329,36 @@ resync. Persistent failure (>3 attempts) escalates to Error state.
 > consistency, not a working implementation. None of this document's
 > constraints have rs/go code behind them.
 
-| Constraint                     | Method      | Result | Detail                           |
-| :----------------------------- | :---------- | :----- | :------------------------------- |
+| Constraint                     | Method      | Result | Detail                                                      |
+| :----------------------------- | :---------- | :----- | :---------------------------------------------------------- |
 | [single-chain]                 | agent-check | pass   | Term: SPEC.md §11.5 (refined); mechanics: §15.7 (unrefined) |
-| [proof-of-error]               | agent-check | pass   | Explicit in SPEC.md §17.1        |
-| [timestamp-tolerance]          | agent-check | pass   | Explicit in SPEC.md §17.6        |
-| [timestamp-monotonic]          | agent-check | pass   | Explicit in SPEC.md §17.6        |
-| [timestamp-global-range]       | agent-check | pass   | Explicit in SPEC.md §17.3 errors |
-| [witness-consensus-states]     | agent-check | pass   | Explicit in SPEC.md §17.3        |
-| [consensus-state-transitions]  | agent-check | pass   | Explicit in SPEC.md §17.3.1      |
-| [error-reject-atomic]          | agent-check | pass   | Explicit in SPEC.md §24.5        |
-| [error-codes-transaction]      | agent-check | pass   | Explicit in SPEC.md §24.1        |
-| [error-codes-state]            | agent-check | pass   | Explicit in SPEC.md §24.3        |
-| [error-codes-recovery]         | agent-check | pass   | Explicit in SPEC.md §24.2        |
-| [resync-process]               | agent-check | pass   | Explicit in SPEC.md §17.2        |
-| [resync-backoff]               | agent-check | pass   | Explicit in SPEC.md §17.2        |
-| [resync-pop]                   | agent-check | pass   | Explicit in SPEC.md §17.2.1      |
-| [fork-detection]               | agent-check | pass   | SPEC.md §15.7.1 (unrefined)      |
-| [fork-response]                | agent-check | pass   | SPEC.md §15.7, §15.7.1, §15.8 (unrefined) |
-| [fork-resolution]              | agent-check | pass   | Term: §11.5 (refined); mechanics: §15.8 (unrefined) |
-| [state-jump-mechanism]         | agent-check | pass   | Explicit in SPEC.md §23.1        |
-| [state-jump-revocation-check]  | agent-check | pass   | Explicit in SPEC.md §23.3        |
-| [state-jump-optional]          | agent-check | pass   | Explicit in SPEC.md §23          |
-| [state-jump-multi]             | agent-check | pass   | Explicit in SPEC.md §23.4        |
-| [no-fork-propagation]          | agent-check | pass   | Follows from SPEC.md §15.8 (unrefined) |
-| [no-backward-timestamp]        | agent-check | pass   | Follows from §17.6               |
-| [no-partial-apply]             | agent-check | pass   | Explicit in §24.5                |
-| [no-jump-bypassing-revocation] | agent-check | pass   | Explicit in §23.3                |
-| [consensus-independent]        | agent-check | pass   | Explicit in §17 philosophy       |
-| [proof-of-error-durable]       | agent-check | pass   | Explicit in §17.1                |
-| [resync-resolves-transient]    | agent-check | pass   | Explicit in §17.2                |
+| [proof-of-error]               | agent-check | pass   | Explicit in SPEC.md §17.1                                   |
+| [timestamp-tolerance]          | agent-check | pass   | Explicit in SPEC.md §17.6                                   |
+| [timestamp-monotonic]          | agent-check | pass   | Explicit in SPEC.md §17.6                                   |
+| [timestamp-global-range]       | agent-check | pass   | Explicit in SPEC.md §17.3 errors                            |
+| [witness-consensus-states]     | agent-check | pass   | Explicit in SPEC.md §17.3                                   |
+| [consensus-state-transitions]  | agent-check | pass   | Explicit in SPEC.md §17.3.1                                 |
+| [error-reject-atomic]          | agent-check | pass   | Explicit in SPEC.md §24.5                                   |
+| [error-codes-transaction]      | agent-check | pass   | Explicit in SPEC.md §24.1                                   |
+| [error-codes-state]            | agent-check | pass   | Explicit in SPEC.md §24.3                                   |
+| [error-codes-recovery]         | agent-check | pass   | Explicit in SPEC.md §24.2                                   |
+| [resync-process]               | agent-check | pass   | Explicit in SPEC.md §17.2                                   |
+| [resync-backoff]               | agent-check | pass   | Explicit in SPEC.md §17.2                                   |
+| [resync-pop]                   | agent-check | pass   | Explicit in SPEC.md §17.2.1                                 |
+| [fork-detection]               | agent-check | pass   | SPEC.md §15.7.1 (unrefined)                                 |
+| [fork-response]                | agent-check | pass   | SPEC.md §15.7, §15.7.1, §15.8 (unrefined)                   |
+| [fork-resolution]              | agent-check | pass   | Term: §11.5 (refined); mechanics: §15.8 (unrefined)         |
+| [state-jump-mechanism]         | agent-check | pass   | Explicit in SPEC.md §23.1                                   |
+| [state-jump-revocation-check]  | agent-check | pass   | Explicit in SPEC.md §23.3                                   |
+| [state-jump-optional]          | agent-check | pass   | Explicit in SPEC.md §23                                     |
+| [state-jump-multi]             | agent-check | pass   | Explicit in SPEC.md §23.4                                   |
+| [no-fork-propagation]          | agent-check | pass   | Follows from SPEC.md §15.8 (unrefined)                      |
+| [no-backward-timestamp]        | agent-check | pass   | Follows from §17.6                                          |
+| [no-partial-apply]             | agent-check | pass   | Explicit in §24.5                                           |
+| [no-jump-bypassing-revocation] | agent-check | pass   | Explicit in §23.3                                           |
+| [consensus-independent]        | agent-check | pass   | Explicit in §17 philosophy                                  |
+| [proof-of-error-durable]       | agent-check | pass   | Explicit in §17.1                                           |
+| [resync-resolves-transient]    | agent-check | pass   | Explicit in §17.2                                           |
 
 ## Implications
 

@@ -22,24 +22,21 @@
 //!
 //! Three tests, each closing a distinct facet of that promise:
 //!
-//! - [`fresh_boot_creates_exact_record_and_index_tree`] -- the tree itself:
-//!   nothing extra, nothing missing, at either level.
-//! - [`eml_commit_tree_lives_under_record_blobs_not_index`] -- the trap the
-//!   layout invites: the EML commit tree is *reconstructible* from the blob
-//!   store like anything in `index/`, but reconstructibility is not the
-//!   authority test (ADR-0002 Decision 3, 6) -- attestation is. A test that
-//!   only checked "does `rm -rf index/` + rebuild recover the same answers?"
-//!   would still pass even if the commit tree's bytes physically lived
-//!   inside `index/`, because replay from the blob store reconstructs the
-//!   EML tree regardless of where its keyspaces currently sit (see the
-//!   S1 baseline, `cyphr-storage/tests/eml_keyspace_recovery.rs`). This test
-//!   checks placement directly instead: it opens the two physical fjall
-//!   databases by path and asserts which one actually holds the keyspaces,
-//!   so a commit tree filed under the disposable half fails here even
+//! - [`fresh_boot_creates_exact_record_and_index_tree`] -- the tree itself: nothing extra, nothing
+//!   missing, at either level.
+//! - [`eml_commit_tree_lives_under_record_blobs_not_index`] -- the trap the layout invites: the EML
+//!   commit tree is *reconstructible* from the blob store like anything in `index/`, but
+//!   reconstructibility is not the authority test (ADR-0002 Decision 3, 6) -- attestation is. A
+//!   test that only checked "does `rm -rf index/` + rebuild recover the same answers?" would still
+//!   pass even if the commit tree's bytes physically lived inside `index/`, because replay from the
+//!   blob store reconstructs the EML tree regardless of where its keyspaces currently sit (see the
+//!   S1 baseline, `cyphr-storage/tests/eml_keyspace_recovery.rs`). This test checks placement
+//!   directly instead: it opens the two physical fjall databases by path and asserts which one
+//!   actually holds the keyspaces, so a commit tree filed under the disposable half fails here even
 //!   though it would still "recover" under the other test.
-//! - [`index_deletion_and_rebuild_restores_identical_answers`] -- the
-//!   behavioral promise for the side that *is* disposable: deleting
-//!   `index/` and rebuilding must not be observable from outside.
+//! - [`index_deletion_and_rebuild_restores_identical_answers`] -- the behavioral promise for the
+//!   side that *is* disposable: deleting `index/` and rebuilding must not be observable from
+//!   outside.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -174,8 +171,8 @@ async fn fresh_boot_creates_exact_record_and_index_tree() {
         ["record", "index"].iter().map(|s| s.to_string()).collect();
     assert_eq!(
         top_level, expected_top_level,
-        "a fresh keyed boot under policy=invite must create exactly record/ and index/ at the \
-         top level of the data directory (ADR-0002 Decision 1), got: {top_level:?}"
+        "a fresh keyed boot under policy=invite must create exactly record/ and index/ at the top \
+         level of the data directory (ADR-0002 Decision 1), got: {top_level:?}"
     );
 
     let record_dir = data_dir.join("record");
@@ -269,8 +266,8 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
             "principal {principal_id}'s EML keyspace {name} must live inside record/blobs -- \
              ADR-0002 Decision 6: the commit tree is record data (its root is signed into every \
              commit's Arrow, SPEC.md:114,333-339,587-588), not a derived projection, so it \
-             belongs in the record/ tree the same as any other told store. Found no such \
-             keyspace there."
+             belongs in the record/ tree the same as any other told store. Found no such keyspace \
+             there."
         );
     }
 
@@ -281,9 +278,9 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
         assert!(
             !index_db.keyspace_exists(name),
             "principal {principal_id}'s EML keyspace {name} must NOT live inside index/ -- \
-             finding it there means record data (attested by every commit's Arrow) has been \
-             filed under the one directory the layout tells an operator is safe to `rm -rf`: \
-             data loss waiting for someone to act on the layout's own promise."
+             finding it there means record data (attested by every commit's Arrow) has been filed \
+             under the one directory the layout tells an operator is safe to `rm -rf`: data loss \
+             waiting for someone to act on the layout's own promise."
         );
     }
 }
@@ -369,7 +366,14 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     );
 
     let login_now = now_secs();
-    let login_request_body = login_body(&pool, "golden", AUDIENCE, Some(principal_id), None, login_now);
+    let login_request_body = login_body(
+        &pool,
+        "golden",
+        AUDIENCE,
+        Some(principal_id),
+        None,
+        login_now,
+    );
     let (login_status_before, login_before) =
         common::post_json(app.clone(), "/auth/login", login_request_body.clone()).await;
     assert_eq!(login_status_before, StatusCode::OK, "{login_before:?}");

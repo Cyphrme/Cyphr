@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use cyphr_server::build_router;
 use cyphr_storage::blob::Blake3Hash;
-use cyphr_storage::index::{IndexableCommit, Indexer};
+use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
 
 mod common;
 
@@ -58,7 +58,7 @@ async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: 
     state
         .engine
         .indexer()
-        .index_commit(&corrupt_commit)
+        .index_commit(&corrupt_commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("corrupt index_commit");
 }

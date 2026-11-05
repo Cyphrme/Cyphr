@@ -15,10 +15,10 @@ obligation, not something an exit code can observe from outside.
 docket in the loop) with two claim ids it expects the implementation to
 register in its `CLAIMS` table:
 
-| claim id                    | CLAIMS value (list, ≥2 entries)         | expected `docket-run` exit |
-| :--------------------------- | :--------------------------------------- | :-------------------------- |
-| `list-valued-both-green`     | two commands, both exit 0                | `0`                          |
-| `list-valued-one-failing`    | two commands, the second exits nonzero   | nonzero                     |
+| claim id                  | CLAIMS value (list, ≥2 entries)        | expected `docket-run` exit |
+| :------------------------ | :------------------------------------- | :------------------------- |
+| `list-valued-both-green`  | two commands, both exit 0              | `0`                        |
+| `list-valued-one-failing` | two commands, the second exits nonzero | nonzero                    |
 
 Today `scripts/docket-run` does not exist, so both invocations fail with
 "command not found" — a nonzero exit either way, which happens to satisfy

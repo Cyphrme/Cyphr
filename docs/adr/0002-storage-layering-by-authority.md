@@ -14,8 +14,8 @@
 The server's durable storage was grouped by storage technology — one
 directory per embedded database (`blobs/`, `index/`, `observations/`,
 `admission/`). `docs/proposals/storage-layering.md` proposed grouping it
-by **authority** instead: whether the server was *told* a thing (and so
-cannot recover it if lost) or *worked it out* (and so can always rebuild
+by **authority** instead: whether the server was _told_ a thing (and so
+cannot recover it if lost) or _worked it out_ (and so can always rebuild
 it). The proposal asked three yes/no questions (§6); this ADR records
 the answers and the decisions that follow from them.
 
@@ -67,7 +67,7 @@ That co-location is no longer a carved-out exception to the layering
 rule (contrast the proposal's own framing in §1.1 and §5). Decision 6
 establishes the EML commit tree as record data — co-locating it inside
 `record/blobs/` is simply the correct placement, not a rule violated and
-priced. Decision 4 separately prices *why* it stays co-located rather
+priced. Decision 4 separately prices _why_ it stays co-located rather
 than moving to its own database (single-batch atomicity).
 
 ### Decision 2 — Q2: sole-writer enforcement
@@ -129,7 +129,7 @@ physical database. Four grounds:
   the wrapper and the current backend) and a crash-consistency test,
   both required before the wrapper ships.
 
-Wrapping does not change what the EML data *is* — Decision 6 answers
+Wrapping does not change what the EML data _is_ — Decision 6 answers
 that question independently — and does not by itself move where that
 data lives; Decision 1's layout answers that.
 
@@ -174,8 +174,8 @@ exactly one member: the index. There is no `derived/` directory —
 `index/` sits directly under `data_dir/`, a sibling of `record/`
 (Decision 1).**
 
-The proposal's authority test asks whether a structure is *told* or
-*worked out*. Applied to bytes, the EML commit tree is worked out — it
+The proposal's authority test asks whether a structure is _told_ or
+_worked out_. Applied to bytes, the EML commit tree is worked out — it
 is a function of the record's blobs, and replay reconstructs it. But
 recomputability from the record is not what the authority test is
 actually discriminating, per Decision 3's sharpening: a signed file's
@@ -192,7 +192,7 @@ prior PR via `pre` (`SPEC.md:587-588`). So every commit's signature
 attests the commit tree's root as of its predecessor, one hash away:
 **the EML commit tree is the record's own structure, not a projection
 of it.** (One precision that changes nothing in the classification: the
-attestation of the tree's tip arrives with the *next* commit, since
+attestation of the tree's tip arrives with the _next_ commit, since
 `pre` in commit N+1 is what binds commit N's resulting root — the tree
 is attested chainwise-retrospectively, not instantaneously, but it is
 attested.)
@@ -226,7 +226,7 @@ inherited:
   target: there is no carve-out to defend or reject, because the EML
   tree was never derived-class data placed inside the record layer by
   exception. It is record data placed inside the record layer, plainly.
-  Decision 4 still prices *why* it stays co-located in `blobs/` rather
+  Decision 4 still prices _why_ it stays co-located in `blobs/` rather
   than moving to its own database — that is a real, separately-argued
   atomicity trade-off — but it is not payment for an exemption.
 
@@ -235,7 +235,7 @@ or "exception" reference to the EML keyspaces in §1.1, §4, and §5 as
 superseded by Decision 6, not as a live characterization.
 
 The proposal's Q1 condition ("the EML commit-tree keyspaces remain
-inside the record's blob database") stands unchanged as *policy* — this
+inside the record's blob database") stands unchanged as _policy_ — this
 correction changes why it is right, not whether it is right.
 
 ### Decision 8 — `AGENTS.md` I1 rewritten
@@ -261,8 +261,8 @@ cache, it is record structure. I1 is rewritten to:
 > makes the index authoritative, or that treats deleting the EML
 > keyspaces as a routine operation, violates this.
 
-The distinction the rewrite draws — *reconstructible in principle* vs.
-*disposable in practice* — is why the EML keyspaces sit in `record/`
+The distinction the rewrite draws — _reconstructible in principle_ vs.
+_disposable in practice_ — is why the EML keyspaces sit in `record/`
 while `index/` remains the one path safe for an operator's `rm -rf`.
 
 ---

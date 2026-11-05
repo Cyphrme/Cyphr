@@ -35,17 +35,14 @@ const NON_CANONICAL_PRINCIPAL_ID: &str = "bob";
 /// lands (refuse pre-commit, or make post-commit receipt formatting
 /// infallible for any `principal_id` that reached ingest):
 ///
-/// 1. the response status must not be `500` -- a client-controlled value
-///    being unparseable is a well-formed 4xx-shaped refusal, never an
-///    "internal error" that implies a server fault; and
-/// 2. if the response was NOT a `2xx` acceptance, the write must
-///    genuinely not have landed -- re-submitting the identical bundle,
-///    and reading the principal's own tip, must both behave as though the
-///    first attempt never happened. This is the only way a caller could
-///    ever discover, after the fact, that the first "failed" push
-///    actually succeeded, which is exactly what the issue's own
-///    reproduction demonstrates happens today (a follow-up login and a
-///    retried push both reveal the durable write).
+/// 1. the response status must not be `500` -- a client-controlled value being unparseable is a
+///    well-formed 4xx-shaped refusal, never an "internal error" that implies a server fault; and
+/// 2. if the response was NOT a `2xx` acceptance, the write must genuinely not have landed --
+///    re-submitting the identical bundle, and reading the principal's own tip, must both behave as
+///    though the first attempt never happened. This is the only way a caller could ever discover,
+///    after the fact, that the first "failed" push actually succeeded, which is exactly what the
+///    issue's own reproduction demonstrates happens today (a follow-up login and a retried push
+///    both reveal the durable write).
 ///
 /// Mutation this binds: reverting the fix's pre-commit refusal (or its
 /// infallible post-commit formatting) back to today's
@@ -84,17 +81,20 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
     let error_text = body2["payload"]["error"].as_str().unwrap_or_default();
     assert!(
         !error_text.to_lowercase().contains("duplicate"),
-        "a refused push must not have landed durably: resubmitting the identical bundle reports \
-         a duplicate-key error, proving the first \"refusal\" actually committed: {body2:?}"
+        "a refused push must not have landed durably: resubmitting the identical bundle reports a \
+         duplicate-key error, proving the first \"refusal\" actually committed: {body2:?}"
     );
 
-    let (tip_status, tip_body) =
-        get_json(app.clone(), &format!("/tip?pr={NON_CANONICAL_PRINCIPAL_ID}")).await;
+    let (tip_status, tip_body) = get_json(
+        app.clone(),
+        &format!("/tip?pr={NON_CANONICAL_PRINCIPAL_ID}"),
+    )
+    .await;
     assert_eq!(
         tip_status,
         StatusCode::NOT_FOUND,
-        "a refused push must not have landed durably: the principal is readable via /tip, \
-         proving the first \"refusal\" actually committed: {tip_body:?}"
+        "a refused push must not have landed durably: the principal is readable via /tip, proving \
+         the first \"refusal\" actually committed: {tip_body:?}"
     );
 }
 

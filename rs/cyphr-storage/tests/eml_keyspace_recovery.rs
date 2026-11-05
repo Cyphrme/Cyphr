@@ -217,7 +217,8 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
         let engine = StorageEngine::with_storage_factory(blob_store, indexer, {
             let db = db.clone();
             move |pid: &str| {
-                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid).map_err(|e| e.to_string())
+                cyphr_blob_fjall::open_eml_storage_scoped(db.clone(), pid)
+                    .map_err(|e| e.to_string())
             }
         });
 

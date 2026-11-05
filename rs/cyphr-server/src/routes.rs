@@ -1061,9 +1061,10 @@ mod commit_count_underflow_tests {
         // directly, bypassing that auto-detection entirely. A test push
         // must go through the same auto-detecting shape a real client
         // request does.
-        let sp = ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
-            .await
-            .expect("bootstrap the server principal");
+        let sp =
+            ServerPrincipal::bootstrap(&state.engine, identity, &key_path, &state.config.data_dir)
+                .await
+                .expect("bootstrap the server principal");
         state.principal = Some(Arc::new(sp));
 
         (Arc::new(state), dir)
@@ -1121,7 +1122,8 @@ mod commit_count_underflow_tests {
             &golden_kp.pub_bytes,
         )
         .expect("signing supported for Ed25519");
-        let czd = coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
+        let czd =
+            coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
 
         let new_key = cyphr::Key {
             alg: new_kp.alg.name().to_string(),
@@ -1282,10 +1284,9 @@ mod commit_count_underflow_tests {
         corrupted.commit_count = 0;
 
         let state_for_task = Arc::clone(&state);
-        let outcome = tokio::spawn(async move {
-            sign_tip_attestation(&state_for_task, &corrupted).await
-        })
-        .await;
+        let outcome =
+            tokio::spawn(async move { sign_tip_attestation(&state_for_task, &corrupted).await })
+                .await;
 
         match outcome {
             Err(join_err) => panic!(
@@ -1295,8 +1296,7 @@ mod commit_count_underflow_tests {
                 let sequence = coz.pay["sequence"].clone();
                 panic!(
                     "commit_count == 0 must never produce a signed receipt at all (a typed \
-                     absence is required, not a value) -- got a signed sequence claim: \
-                     {sequence}"
+                     absence is required, not a value) -- got a signed sequence claim: {sequence}"
                 );
             },
             Ok(Ok(None)) | Ok(Err(_)) => {
