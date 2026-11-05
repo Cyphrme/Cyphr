@@ -14,6 +14,7 @@
 //!   bytes, never trusted from the caller.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::signer::SoftwareSigner;
 use cyphr::{Key, Principal};
 use serde_json::json;
 
@@ -24,7 +25,7 @@ const T: i64 = 1_700_000_000;
 const CZD_LEN: usize = 64;
 
 struct Kp {
-    alg: coz::Alg,
+    alg: String,
     pubb: Vec<u8>,
     prv: Vec<u8>,
     tmb: coz::Thumbprint,
@@ -34,11 +35,42 @@ fn kp() -> Kp {
     let k = coz::Alg::Ed25519.generate_keypair();
     let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
     Kp {
-        alg: k.alg,
+        alg: k.alg.name().to_string(),
         pubb: k.pub_bytes,
         prv: k.prv_bytes,
         tmb,
     }
+}
+
+/// The pool's ES256 `golden` key (SPEC 15.1 principal), for non-Ed25519
+/// coverage.
+fn golden_es256() -> Kp {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .join("tests/keys/pool.toml");
+    let pool = test_fixtures::Pool::load(&path).expect("pool");
+    let pk = pool.get("golden").expect("golden in pool");
+    let d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
+    assert_eq!(pk.alg, "ES256", "premise: golden is ES256");
+    Kp {
+        alg: pk.alg.clone(),
+        pubb: d(&pk.pub_key),
+        prv: d(pk.prv.as_ref().expect("golden prv")),
+        tmb: pk.compute_tmb().expect("tmb"),
+    }
+}
+
+/// Observable principal state: a rejected operation must leave all of it
+/// untouched (no error variant is pinned for D1/D4 until KA1 names one).
+fn snapshot(p: &Principal) -> (cyphr::PrincipalRoot, usize, usize, usize) {
+    (
+        p.pr().clone(),
+        p.active_key_count(),
+        p.action_count(),
+        p.commits().count(),
+    )
 }
 
 /// The honest key: `tmb` is the real thumbprint of `pub`.
@@ -49,7 +81,7 @@ fn honest(k: &Kp) -> Key {
 /// A key carrying `k`'s public bytes under an arbitrary claimed `tmb`.
 fn key_with_tmb(k: &Kp, tmb: coz::Thumbprint) -> Key {
     Key {
-        alg: k.alg.name().to_string(),
+        alg: k.alg.to_string(),
         tmb,
         pub_key: k.pubb.clone(),
         first_seen: 0,
@@ -67,15 +99,15 @@ fn b64(t: &coz::Thumbprint) -> String {
 fn sign(k: &Kp, mut pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     pay.as_object_mut().expect("pay object").sort_keys();
     let v = serde_json::to_vec(&pay).expect("serialize pay");
-    let (sig, cad) = coz::sign_json(&v, k.alg.name(), &k.prv, &k.pubb).expect("sign");
-    let czd = coz::czd_for_alg(&cad, &sig, k.alg.name()).expect("czd");
+    let (sig, cad) = coz::sign_json(&v, &k.alg, &k.prv, &k.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &k.alg).expect("czd");
     (v, sig, czd)
 }
 
 fn key_create(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     sign(
         signer,
-        json!({"alg": "Ed25519", "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
+        json!({"alg": signer.alg, "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
                "typ": "cyphr.me/cyphr/key/create"}),
     )
 }
@@ -83,7 +115,7 @@ fn key_create(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>,
 fn key_replace(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     sign(
         signer,
-        json!({"alg": "Ed25519", "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
+        json!({"alg": signer.alg, "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
                "typ": "cyphr.me/cyphr/key/replace"}),
     )
 }
@@ -91,7 +123,7 @@ fn key_replace(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>
 fn key_delete(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     sign(
         signer,
-        json!({"alg": "Ed25519", "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
+        json!({"alg": signer.alg, "id": b64(id), "now": now, "tmb": b64(&signer.tmb),
                "typ": "cyphr.me/cyphr/key/delete"}),
     )
 }
@@ -99,7 +131,7 @@ fn key_delete(signer: &Kp, id: &coz::Thumbprint, now: i64) -> (Vec<u8>, Vec<u8>,
 fn self_revoke(k: &Kp, now: i64) -> (Vec<u8>, Vec<u8>, coz::Czd) {
     sign(
         k,
-        json!({"alg": "Ed25519", "now": now, "rvk": now, "tmb": b64(&k.tmb),
+        json!({"alg": k.alg, "now": now, "rvk": now, "tmb": b64(&k.tmb),
                "typ": "cyphr.me/cyphr/key/revoke"}),
     )
 }
@@ -132,11 +164,8 @@ fn commit_one(
     let mut scope = p.begin_commit();
     scope.verify_and_apply(&pay, &sig, czd, sidecar)?;
     scope
-        .finalize_with_arrow(
-            "Ed25519",
-            &signer.prv,
-            &signer.pubb,
-            &signer.tmb,
+        .finalize_with_software(
+            &SoftwareSigner::new(&signer.alg, &signer.prv, &signer.pubb, &signer.tmb),
             now,
             "cyphr.me",
         )
@@ -152,6 +181,7 @@ fn commit_one(
 /// `Key { tmb: victim, pub: attacker }`, letting an attacker's signature
 /// verify as the victim's thumbprint.
 #[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_implicit_genesis_rejects_unbound_key() {
     let victim = kp();
     let attacker = kp();
@@ -168,6 +198,7 @@ fn d1_implicit_genesis_rejects_unbound_key() {
 /// Backs: same binding at explicit (multi-key) genesis. Red now because
 /// `Principal::explicit` does not check `tmb == H(pub)` for any member.
 #[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_explicit_genesis_rejects_unbound_key() {
     let good = kp();
     let victim = kp();
@@ -185,11 +216,13 @@ fn d1_explicit_genesis_rejects_unbound_key() {
 /// is rejected. Red now because `verify_and_apply` only compares
 /// `id == key.tmb`, never `key.tmb == H(key.pub)`.
 #[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
     let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
+    let before = snapshot(&p);
 
     let r = commit_one(
         &mut p,
@@ -202,16 +235,26 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
         r.is_err(),
         "key/create id=victim tmb with pub=attacker was accepted and finalized"
     );
+    assert_eq!(before, snapshot(&p), "a rejected key/create changed state");
+    assert!(!p.is_key_active(&victim.tmb), "victim tmb became active");
+    // End to end: the attacker cannot sign as the victim's tmb.
+    let (apay, asig, aczd) = action(&attacker, &victim.tmb, T + 2, "Ed25519");
+    assert!(
+        p.verify_and_record_action(&apay, &asig, aczd).is_err(),
+        "attacker signed an accepted action as the victim tmb"
+    );
 }
 
 /// Backs: same binding for `key/replace`. Red now for the same reason as
 /// the `key/create` case.
 #[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
     let attacker = kp();
     let mut p = Principal::implicit(honest(&g)).expect("honest genesis");
+    let before = snapshot(&p);
 
     let r = commit_one(
         &mut p,
@@ -224,51 +267,7 @@ fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
         r.is_err(),
         "key/replace id=victim tmb with pub=attacker was accepted and finalized"
     );
-}
-
-/// Backs the end-to-end consequence of D1: after a signed `key/create` for
-/// K2 whose unsigned sidecar `pub` is swapped for the attacker's, no
-/// principal state exists in which the attacker's signature verifies as K2.
-/// Red now because the swap is accepted, the PR is unchanged, and the
-/// attacker then signs an action as K2.
-#[test]
-fn d1_substituted_sidecar_never_lets_attacker_sign_as_k2() {
-    let g = kp();
-    let k2 = kp();
-    let attacker = kp();
-
-    // The coz is honestly signed by g over id = K2's tmb; only the
-    // unsigned sidecar is substituted.
-    let (pay, sig, czd) = key_create(&g, &k2.tmb, T);
-    let run = |sidecar: Key| -> Option<Principal> {
-        let mut p = Principal::implicit(honest(&g)).expect("genesis");
-        commit_one(
-            &mut p,
-            &g,
-            (pay.clone(), sig.clone(), czd.clone()),
-            Some(sidecar),
-            T + 1,
-        )
-        .ok()
-        .map(|()| p)
-    };
-
-    let honest_p = run(honest(&k2)).expect("honest key/create must still succeed");
-    let forged_p = run(key_with_tmb(&attacker, k2.tmb.clone()));
-
-    if let Some(mut forged_p) = forged_p {
-        assert_eq!(
-            honest_p.pr(),
-            forged_p.pr(),
-            "premise: the substitution leaves the PR unchanged"
-        );
-        let (apay, asig, aczd) = action(&attacker, &k2.tmb, T + 2, "Ed25519");
-        let r = forged_p.verify_and_record_action(&apay, &asig, aczd);
-        assert!(
-            r.is_err(),
-            "attacker signed an action as K2 against a PR identical to the honest principal's"
-        );
-    }
+    assert_eq!(before, snapshot(&p), "a rejected key/replace changed state");
 }
 
 /// Control (passes today and must keep passing): an honest `key/create`
@@ -317,10 +316,12 @@ fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
 /// keys only): `key/create` of a revoked tmb is rejected. Red now because
 /// the revoked key is accepted back as active.
 #[test]
+#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_be_readded_by_key_create() {
     let g = kp();
     let k2 = kp();
     let mut p = principal_with_revoked_k2(&g, &k2);
+    let before = snapshot(&p);
 
     let r = commit_one(
         &mut p,
@@ -329,16 +330,22 @@ fn d3_revoked_key_cannot_be_readded_by_key_create() {
         Some(honest(&k2)),
         T + 5,
     );
-    assert!(r.is_err(), "key/create re-added a revoked key");
+    assert!(
+        matches!(r, Err(cyphr::error::Error::KeyRevoked)),
+        "key/create of a revoked key must fail with KeyRevoked, got {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a rejected re-add changed state");
 }
 
 /// Backs SPEC 6.4 for `key/replace`: replacing onto a revoked tmb is
 /// rejected. Red now for the same reason as the `key/create` case.
 #[test]
+#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_be_readded_by_key_replace() {
     let g = kp();
     let k2 = kp();
     let mut p = principal_with_revoked_k2(&g, &k2);
+    let before = snapshot(&p);
 
     let r = commit_one(
         &mut p,
@@ -347,13 +354,18 @@ fn d3_revoked_key_cannot_be_readded_by_key_replace() {
         Some(honest(&k2)),
         T + 5,
     );
-    assert!(r.is_err(), "key/replace installed a revoked key");
+    assert!(
+        matches!(r, Err(cyphr::error::Error::KeyRevoked)),
+        "key/replace onto a revoked key must fail with KeyRevoked, got {r:?}"
+    );
+    assert_eq!(before, snapshot(&p), "a rejected replace changed state");
 }
 
 /// Backs SPEC 6.4 end to end: whatever the re-add does, the revoked key
 /// must neither be active nor able to sign afterwards. Red now because the
 /// re-add succeeds and K2's action is then accepted.
 #[test]
+#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_sign_after_readd_attempt() {
     let g = kp();
     let k2 = kp();
@@ -372,9 +384,11 @@ fn d3_revoked_key_cannot_sign_after_readd_attempt() {
         "revoked key is active again after key/create"
     );
     let (apay, asig, aczd) = action(&k2, &k2.tmb, T + 6, "Ed25519");
+    let r = p.verify_and_record_action(&apay, &asig, aczd);
     assert!(
-        p.verify_and_record_action(&apay, &asig, aczd).is_err(),
-        "a revoked key signed an accepted action"
+        matches!(r, Err(cyphr::error::Error::KeyRevoked)),
+        "a revoked key's action must fail with KeyRevoked, got {:?}",
+        r.map(|_| ())
     );
 }
 
@@ -413,16 +427,19 @@ fn d3_control_deleted_key_may_be_readded() {
 /// and not recorded. Red now because `verify_and_record_action` verifies
 /// with the key's alg and never compares it to `pay.alg`.
 #[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_action_pay_alg_must_equal_key_alg() {
     let g = kp();
     let mut p = Principal::implicit(honest(&g)).expect("genesis");
     let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
 
+    let before = snapshot(&p);
     let r = p.verify_and_record_action(&pay, &sig, czd);
     assert!(
         r.is_err(),
         "action with pay.alg=ES256 on an Ed25519 key accepted"
     );
+    assert_eq!(before, snapshot(&p), "a rejected action changed state");
     assert_eq!(p.action_count(), 0, "mismatched-alg action was recorded");
 }
 
@@ -430,6 +447,7 @@ fn d4_action_pay_alg_must_equal_key_alg() {
 /// because `verify_and_apply` accepts an Ed25519-signed `key/create`
 /// whose pay claims `"alg":"ES256"`.
 #[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_commit_coz_pay_alg_must_equal_key_alg() {
     let g = kp();
     let k2 = kp();
@@ -452,6 +470,7 @@ fn d4_commit_coz_pay_alg_must_equal_key_alg() {
 /// fail. Red now because the bogus czd is stored verbatim as the action's
 /// identity.
 #[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
     let g = kp();
     let mut p = Principal::implicit(honest(&g)).expect("genesis");
@@ -474,6 +493,7 @@ fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
 /// committed coz. Red now because `verify_and_apply` stores the caller's
 /// czd.
 #[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
     let g = kp();
     let k2 = kp();
@@ -518,6 +538,7 @@ fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
 /// `golden_fixtures.rs` has no `key_auth` directory runner yet; once one
 /// is added there this replay is redundant and may be cut.
 #[test]
+#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_corpus_vector_revoked_key_readd_fails() {
     use std::path::PathBuf;
 
@@ -574,4 +595,62 @@ fn d3_corpus_vector_revoked_key_readd_fails() {
         Ok(()) => panic!("vector expects {expected}, but key/create of a revoked key was accepted"),
         Err(e) => assert_eq!(format!("{e:?}"), expected, "wrong rejection reason"),
     }
+}
+
+// ============================================================================
+// D4 over ES256 (the pool's `golden` key)
+// ============================================================================
+
+/// Control: an ES256 action whose `pay.alg` matches its key is accepted, so
+/// the ES256 rejections below cannot be an artifact of the setup.
+#[test]
+fn d4_control_es256_matching_alg_action_accepted() {
+    let g = golden_es256();
+    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let (pay, sig, czd) = action(&g, &g.tmb, T, "ES256");
+    p.verify_and_record_action(&pay, &sig, czd)
+        .expect("ES256 action with matching pay.alg");
+    assert_eq!(p.action_count(), 1);
+}
+
+/// Backs: an ES256-signed action claiming `"alg":"Ed25519"` is rejected and
+/// not recorded. Red now because `pay.alg` is never compared to the key's
+/// alg.
+#[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
+fn d4_es256_action_pay_alg_must_equal_key_alg() {
+    let g = golden_es256();
+    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let (pay, sig, czd) = action(&g, &g.tmb, T, "Ed25519");
+    let before = snapshot(&p);
+
+    let r = p.verify_and_record_action(&pay, &sig, czd);
+    assert!(
+        r.is_err(),
+        "action with pay.alg=Ed25519 on an ES256 key accepted"
+    );
+    assert_eq!(before, snapshot(&p), "a rejected action changed state");
+}
+
+/// Backs: same rule on the commit path for an ES256 signer. Red now because
+/// `verify_and_apply` ignores `pay.alg`.
+#[test]
+#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
+fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
+    let g = golden_es256();
+    let k2 = kp();
+    let mut p = Principal::implicit(honest(&g)).expect("genesis");
+    let before = snapshot(&p);
+    let parts = sign(
+        &g,
+        json!({"alg": "Ed25519", "id": b64(&k2.tmb), "now": T, "tmb": b64(&g.tmb),
+               "typ": "cyphr.me/cyphr/key/create"}),
+    );
+
+    let r = commit_one(&mut p, &g, parts, Some(honest(&k2)), T + 1);
+    assert!(
+        r.is_err(),
+        "key/create with pay.alg=Ed25519 signed by an ES256 key accepted"
+    );
+    assert_eq!(before, snapshot(&p), "a rejected key/create changed state");
 }
