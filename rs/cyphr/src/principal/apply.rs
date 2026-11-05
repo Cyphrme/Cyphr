@@ -48,6 +48,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
+    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub fn apply_transaction(&mut self, vtx: crate::parsed_coz::VerifiedCoz) -> Result<&Commit> {
         let mut scope = self.begin_commit();
         scope.apply(vtx)?;
@@ -70,6 +71,7 @@ impl<S: eml::Storage> Principal<S> {
     /// - `TimestampFuture`: ParsedCoz timestamp is too far in the future
     /// - `NoActiveKeys`: Would leave principal with no active keys
     /// - `DuplicateKey`: Adding key already in KS
+    /// - `CozReuse`: This principal already included this coz (SPEC §7.6)
     pub(crate) fn apply_verified_internal(
         &mut self,
         vtx: crate::parsed_coz::VerifiedCoz,
@@ -161,6 +163,13 @@ impl<S: eml::Storage> Principal<S> {
 
         // Access the underlying ParsedCoz via Deref
         let cz = &*vtx;
+
+        // SPEC §7.6: a transaction coz this principal already included is
+        // rejected; the first inclusion is authoritative. Checked first so a
+        // replay is typed COZ_REUSE whatever state or timestamp it meets.
+        if self.included_czds.contains(cz.czd.as_bytes()) {
+            return Err(Error::CozReuse);
+        }
 
         // Validate timestamp is not in the past (SPEC §14.1)
         if cz.now < self.latest_timestamp {
@@ -345,6 +354,7 @@ impl<S: eml::Storage> Principal<S> {
 
         // Update latest timestamp
         let core = self.core_mut();
+        core.included_czds.insert(cz.czd.as_bytes().to_vec());
         if cz.now > core.latest_timestamp {
             core.latest_timestamp = cz.now;
         }

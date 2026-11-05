@@ -48,18 +48,18 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   39 |
-| `red-existing` |    1 |
-| `red-new`      |   10 |
+| `covered`      |   41 |
+| `red-existing` |    0 |
+| `red-new`      |    9 |
 | `not-testable` |   14 |
 | `out-of-scope` |    8 |
 | `total`        |   72 |
 
-Fixing ids on red rows: `N09` is the idempotency node and `q3` the last-key
+Fixing ids on red rows: `q3` is the last-key
 self-revoke decision (the code allows no revoke of the only key; SPEC allows
 it and leaves the principal Dead). `SC1-F1` (frozen principals reject
 mutations), `SC1-F2` (in-commit `rvk` and `now` bounds), `SC1-F3` (Key Tree
-arity), `SC1-F4` (coz reuse), `SC1-F5` (default future-timestamp tolerance)
+arity), `SC1-F5` (default future-timestamp tolerance)
 and `SC1-F6` (identical `typ` in a transaction) have no fixing node yet; they
 are tracking ids until one is assigned.
 
@@ -571,15 +571,15 @@ evaluator: none
 
 ### [sc-l1266]
 
-SPEC 7.6, line 1266. Disposition: `red-existing`.
+SPEC 7.6, line 1266. Disposition: `covered`.
 
 - spec-line: 1266
 - source: supplement
-- disposition: red-existing
+- disposition: covered
 - spec-text: All actions are idempotent. For data actions, replaying an previously applied
 - tests:
   - `rs/cyphr/tests/properties.rs::prop_data_action_replay_is_idempotent`
-- fails when: replaying a previously applied data-action coz changes state (red today, node N09).
+- fails when: replaying a previously applied data-action coz changes state.
 
 ```claim
 kind: requirement
@@ -588,17 +588,18 @@ evaluator: none
 
 ### [sc-l1268]
 
-SPEC 7.6, line 1268. Disposition: `red-new`.
+SPEC 7.6, line 1268. Disposition: `covered`.
 
 - spec-line: 1268
 - source: supplement
-- disposition: red-new
+- disposition: covered
 - spec-text: particular principal is prohibited and results in error `COZ_REUSE`. The first
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected`
   - `rs/cyphr/tests/spec_conformance.rs::s7_6_reuse_is_typed_and_scoped_to_one_principal`
   - `rs/cyphr/tests/spec_conformance.rs::multihash_replay_of_an_es384_signed_coz_is_reuse`
-- fails when: a transaction coz already included by a principal is applied again (red today: no reuse check and no `COZ_REUSE` variant).
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/coz_reuse_fails]`
+- fails when: a transaction coz already included by a principal is applied again.
 
 ```claim
 kind: requirement

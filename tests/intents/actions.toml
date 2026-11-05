@@ -81,3 +81,25 @@ typ    = "cyphr.me/action"
 
 [test.expected]
 level = 4
+
+# Replayed data action is ignored (SPEC §7.6)
+# The identical signed action is submitted twice; the replay produces no
+# state change, so exactly one action is recorded.
+[[test]]
+name      = "replayed_action_is_ignored"
+principal = ["golden"]
+
+[[test.action]]
+msg    = "Replayed action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[[test.action]]
+msg    = "Replayed action"
+now    = 1700000001
+signer = "golden"
+typ    = "cyphr.me/action"
+
+[test.expected]
+level = 4

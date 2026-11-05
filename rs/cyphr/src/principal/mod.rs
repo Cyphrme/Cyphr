@@ -17,6 +17,8 @@ mod proofs;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
+
 use coz::Thumbprint;
 use indexmap::IndexMap;
 pub(crate) use proofs::{NodePath, NodePathHop};
@@ -132,6 +134,11 @@ pub struct PrincipalCore<S: eml::Storage = eml::MemoryStorage> {
     pub(crate) auth: AuthLedger,
     /// Data ledger (Level 4+).
     pub(crate) data: DataLedger,
+    /// Full czd bytes of every transaction coz and data action this
+    /// principal has included (SPEC §7.6). Keyed on the whole digest, not a
+    /// prefix: czd width follows the signing algorithm (ES384 = 48 bytes).
+    /// Rebuilt by replaying history; a checkpoint restore starts empty.
+    pub(crate) included_czds: HashSet<Vec<u8>>,
     /// Latest timestamp seen (SPEC §14.1).
     pub(crate) latest_timestamp: i64,
     /// Maximum allowed future timestamp (seconds from server time).
@@ -190,6 +197,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
             dr: self.dr.clone(),
             auth: self.auth.clone(),
             data: self.data.clone(),
+            included_czds: self.included_czds.clone(),
             latest_timestamp: self.latest_timestamp,
             max_clock_skew: self.max_clock_skew,
             genesis_keys: self.genesis_keys.clone(),
@@ -434,6 +442,7 @@ impl<S: eml::Storage> PrincipalCore<S> {
                 ..Default::default()
             },
             data: DataLedger::default(),
+            included_czds: HashSet::new(),
             latest_timestamp: 0,
             max_clock_skew: 0,
             genesis_keys,

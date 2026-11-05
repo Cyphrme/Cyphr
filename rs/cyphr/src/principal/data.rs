@@ -46,6 +46,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // Record action
+        core.included_czds.insert(action.czd.as_bytes().to_vec());
         core.data.actions.push(action);
 
         // Recompute DS
@@ -142,6 +143,13 @@ impl<S: eml::Storage> Principal<S> {
             .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg().to_owned()))?;
         if computed.as_bytes() != czd.as_bytes() {
             return Err(Error::CzdMismatch);
+        }
+
+        // SPEC §7.6: replaying an applied data action is ignored and
+        // produces no state change. Checked only after the czd is proven
+        // derived from verified bytes, so it cannot be spoofed.
+        if self.included_czds.contains(computed.as_bytes()) {
+            return Ok(&self.pr);
         }
 
         // Construct CozJson for storage

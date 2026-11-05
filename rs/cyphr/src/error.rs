@@ -54,6 +54,11 @@ pub enum Error {
     #[error("duplicate key")]
     DuplicateKey,
 
+    /// A transaction coz this principal already included is submitted
+    /// again (SPEC §7.6). The first inclusion stays authoritative.
+    #[error("COZ_REUSE: transaction coz already included by this principal")]
+    CozReuse,
+
     // === State errors (§17.3) ===
     /// Computed PR does not match claimed PR.
     #[error("state mismatch")]

@@ -189,7 +189,6 @@ fn build_chain(pool: &test_fixtures::Pool, id: &str) -> Chain {
 /// on load-then-apply, an error that leaves the blobs indexed, a generic
 /// `InvalidInput` message. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(N09): SPEC 7.6 replayed coz accepted by the push path"]
 async fn push_refuses_a_replayed_transaction_coz_and_keeps_the_chain() {
     let pool = load_pool();
     let id = golden_principal_id(&pool);

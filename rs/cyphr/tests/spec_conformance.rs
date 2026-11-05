@@ -998,7 +998,6 @@ fn map_rows_resolve_and_agree_with_their_tests() {
 /// transaction coz is applied a second time. RED: the core has no reuse
 /// check and no `COZ_REUSE` variant. End to end: yes.
 #[test]
-#[ignore = "RED(SC1-F4): SPEC 7.6 transaction coz reuse accepted"]
 fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
     let (a, b, k3) = (kp(), kp(), kp());
     let build = || {
@@ -1106,7 +1105,6 @@ fn assert_coz_reuse(r: cyphr::error::Result<()>) {
 /// `Ok` (accepts), `Err(StateMismatch)` (wrong type), a process-global czd
 /// set (control). End to end: yes.
 #[test]
-#[ignore = "RED(N09): SPEC 7.6 transaction coz reuse not typed COZ_REUSE"]
 fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
     let (a, b, c3, k3) = (kp(), kp(), kp(), kp());
     let (mut p, d) = reuse_fixture(&a, &b, &k3, &a);
@@ -1147,7 +1145,6 @@ fn s7_6_reuse_is_typed_and_scoped_to_one_principal() {
 /// recognises an ES384 coz. Mutant caught: a set of `[u8; 32]` czd prefixes.
 /// End to end: yes.
 #[test]
-#[ignore = "RED(N09): SPEC 7.6 ES384-signed coz reuse accepted"]
 fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
     let (a, b, k3) = (
         kp_alg(coz::Alg::ES256),
