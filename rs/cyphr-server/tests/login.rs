@@ -945,7 +945,6 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
 /// party two account rows for one identity. A no-op that canonicalizes
 /// only one flow (or lowercases) still fails the equality. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(SO1): token subject follows the spelling that logged in"]
 async fn token_subject_is_one_whatever_spelling_logged_in() {
     let state = login_state();
     let pool = load_pool();
@@ -985,7 +984,6 @@ async fn token_subject_is_one_whatever_spelling_logged_in() {
 /// challenge fail with a different status/body than login still fails the
 /// equality. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(SO1): challenge is issued by a server whose login cannot succeed"]
 async fn login_and_challenge_refuse_alike_without_audience() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let key_path = temp_dir.path().join("signing-key.json");
