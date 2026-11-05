@@ -282,7 +282,6 @@ async fn revoked_key_cannot_commit_through_the_alias_spelling() {
 /// genesis-derived id, so the push under the PG is refused with 400.
 /// End to end: yes.
 #[tokio::test]
-#[ignore = "RED(AD1): a principal established after adding keys is not addressable by its PG"]
 async fn principal_with_keys_before_create_is_pushable_under_its_pg() {
     use cyphr::StateDigest;
 
@@ -387,7 +386,6 @@ fn without_now(mut v: serde_json::Value) -> serde_json::Value {
 /// or reads another principal), if a variant push forks or is refused, or
 /// if a label the PG lacks is accepted. End to end: yes.
 #[tokio::test]
-#[ignore = "RED(AD1): PG hash variants are not resolved to one principal"]
 async fn variant_labels_and_bare_digests_address_one_principal() {
     let pool = load_pool();
     let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
@@ -436,7 +434,6 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
 
     // Created under the genesis-derived id (which the engine accepts today),
     // so this test isolates PG-variant resolution from PG-as-push-id (the
-    // other RED(AD1) test above).
     let genesis_id = self::spellings(&pool).1;
     let (state, _dir) = keyless_server();
     let app = build_router(state);

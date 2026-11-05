@@ -224,7 +224,6 @@ proptest! {
     /// resolvable before the reindex), is lost, or moves in the reindex.
     /// A property test over random principals, not a scenario.
     #[test]
-    #[ignore = "RED(AD1): PG aliases are not resolved, so cannot survive a reindex"]
     fn alias_resolution_survives_reindex(
         added in Just(ADDABLE.to_vec()).prop_shuffle().prop_flat_map(|v| {
             let n = v.len();
@@ -244,7 +243,6 @@ proptest! {
 /// The same property on the durable backend, whose alias partition is
 /// registered in `index_meta` and must be re-derived after `clear`.
 #[tokio::test]
-#[ignore = "RED(AD1): PG aliases are not resolved, so cannot survive a reindex"]
 async fn alias_resolution_survives_reindex_on_fjall() {
     let pool = load_pool();
     let dir = tempfile::tempdir().expect("tempdir");

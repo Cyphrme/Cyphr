@@ -783,8 +783,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// # Arguments
     ///
     /// * `principal_id` — The principal's genesis-derived id (SPEC §3.1), labelled (`ALG:digest`,
-    ///   the stored spelling) or bare. Any other id is refused with [`EngineError::InvalidInput`];
-    ///   every key below is the labelled spelling.
+    ///   the stored spelling) or bare, or any Principal Root variant the principal has had (its PG
+    ///   among them, SPEC §3.7.1/§12.1), labelled or bare. Any other id is refused with
+    ///   [`EngineError::InvalidInput`]; every key below is the genesis-derived labelled spelling.
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
@@ -827,11 +828,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             (None, None) => Self::genesis_from_raw_blobs(raw_blobs)?,
         };
         let canonical = genesis_principal_id(&genesis)?;
-        if principal_id != canonical && principal_id != bare_digest(&canonical) {
+        let claimed = principal_id;
+        // A spelling other than the genesis-derived id is honoured only
+        // when it already resolves to this stored principal, or (a new
+        // principal) when its own first commit yields that Principal Root
+        // (checked once the commit is applied, below).
+        let alias_claim = claimed != canonical && claimed != bare_digest(&canonical);
+        if stored
+            .as_deref()
+            .is_some_and(|stored_id| stored_id != canonical)
+        {
             return Err(EngineError::InvalidInput(format!(
-                "principal_id is not the genesis-derived id: {principal_id}"
+                "principal_id is not the genesis-derived id: {claimed}"
             )));
         }
+        let unproven_alias = alias_claim && stored.is_none();
         let principal_id = canonical.as_str();
 
         // Serialize the whole sequence-resolution-through-ingest critical
@@ -1039,6 +1050,11 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
+            if unproven_alias && !pr.iter().any(|v| v == claimed || bare_digest(v) == claimed) {
+                return Err(EngineError::InvalidInput(format!(
+                    "principal_id is not the genesis-derived id: {claimed}"
+                )));
+            }
             let commit_pre = if next_seq == 0 {
                 None
             } else {
@@ -1161,7 +1177,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// A labelled id (`ALG:digest`) is its own spelling. A bare digest
     /// names whichever labelled spelling has a stored chain; at most one
     /// can, because [`submit_commit`](Self::submit_commit) stores only the
-    /// canonical spelling.
+    /// canonical spelling. A Principal Root alias (the PG, or any other PR
+    /// the principal has had) resolves to the principal's canonical id.
     async fn stored_id(&self, principal_id: &str) -> Result<Option<String>, EngineError> {
         let candidates: Vec<String> = if principal_id.contains(':') {
             vec![principal_id.to_string()]
@@ -1172,12 +1189,18 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 .collect()
         };
         for candidate in candidates {
+            // The index resolves a Principal Root alias to the stored id. A
+            // tip with no stored chain is a corrupt index, not a stored
+            // principal.
+            let Some(tip) = self.indexer.get_tip(&candidate).await? else {
+                continue;
+            };
             let chain = self
                 .indexer
                 .get_commit_chain(&candidate, Some(0), Some(0))
                 .await?;
             if !chain.is_empty() {
-                return Ok(Some(candidate));
+                return Ok(Some(tip.principal_id));
             }
         }
         Ok(None)
