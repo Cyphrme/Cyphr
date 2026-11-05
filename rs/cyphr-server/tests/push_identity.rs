@@ -148,7 +148,6 @@ fn substitute_sidecar_pub(body: &str, new_pub_b64: &str) -> String {
 /// checking the sidecar's `tmb == H(pub)`, accepting it under the correct
 /// derived id.
 #[tokio::test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 async fn d1_push_refuses_substituted_key_sidecar() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -225,7 +224,6 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
 /// because `load_principal_from_commits` rebuilds the key from the stored
 /// sidecar without checking `tmb == H(pub)`.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_replay_refuses_substituted_key_sidecar() {
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden");
