@@ -260,15 +260,15 @@ outage, but it cannot establish currency.
 
 The claim _"the record I hold for this principal is canonical"_ fails monotonicity: it can
 be true when evaluated and false after the record grows, with nothing in the record
-announcing the change. Such a claim admits no certificate that is at once offline,
-eternal and about the present; it can have at most two, so a design gives one up. There are
-three ways to do that. A **watcher** — a party holding more than one view over time — gives
-up _offline_ checking. A claim restricted to "as of" a stated moment gives up _now_. An
+announcing the change. Such a claim admits no certificate that is at once offline, eternal
+and about the present; it can have at most two, so a design gives one up. There are three
+ways to do that. A **watcher** — a party holding more than one view over time — gives up
+_offline_ checking. A claim restricted to "as of" a stated moment gives up _now_. An
 accepted expiry gives up _eternal_: past the window the certificate says nothing about the
-present. An expiry bounds the damage and never establishes currency. An attestor is none of these: its word is a point
-observation of exactly the kind that goes stale. This is stated as
-[a requirement](#currency-unmet) rather than designed here; see
-[what this document does not cover](#what-this-document-does-not-cover).
+present. An expiry bounds the damage and never establishes currency. An attestor is none
+of these: its word is a point observation of exactly the kind that goes stale. This is
+stated as [a requirement](#currency-unmet) rather than designed here; see [what this
+document does not cover](#what-this-document-does-not-cover).
 
 ## The claim table
 
