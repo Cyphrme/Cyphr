@@ -1159,6 +1159,48 @@ fn multihash_replay_of_an_es384_signed_coz_is_reuse() {
     assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
 }
 
+/// Backs SPEC 12.1 / 7.6 (a replay must not slip through a repeating hash
+/// variant): every active algorithm's Commit Root variant is a function of
+/// the whole log, so it must change with every commit. Scenario: an
+/// ES256 + ES384 principal takes three commits; after each, CR carries both
+/// the SHA-256 and SHA-384 variants and each differs from its value after
+/// the previous commit. Turns red if a variant stops advancing (frozen or
+/// recomputed from a stale tree) or a variant goes missing. Mutant caught:
+/// leaving one algorithm's MALT tree out of the per-commit append. End to
+/// end: yes.
+#[test]
+fn every_active_algorithms_cr_variant_advances_with_every_commit() {
+    let (a, b) = (kp_alg(coz::Alg::ES256), kp_alg(coz::Alg::ES384));
+    let mut p = Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis");
+    let cr_variants = |p: &Principal| {
+        p.cr()
+            .map(|cr| cr.as_multihash().variants().clone())
+            .unwrap_or_default()
+    };
+    let mut prev = cr_variants(&p);
+    for step in 0..3 {
+        let k = kp_alg(coz::Alg::ES256);
+        commit_one(
+            &mut p,
+            &a,
+            sign(&a, key_create_pay(&a, &k.tmb, T)),
+            Some(key_of(&k)),
+            T,
+        )
+        .expect("commit");
+        let now = cr_variants(&p);
+        assert_eq!(now.len(), 2, "step {step}: CR must carry both algorithms");
+        for (alg, digest) in &now {
+            assert_ne!(
+                prev.get(alg),
+                Some(digest),
+                "step {step}: the {alg:?} CR variant did not advance"
+            );
+        }
+        prev = now;
+    }
+}
+
 // ============================================================================
 // SPEC 15.9 (line 2834): future-dated messages are rejected
 // ============================================================================
