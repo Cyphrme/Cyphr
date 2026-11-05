@@ -598,6 +598,7 @@ SPEC 7.6, line 1268. Disposition: `covered`.
   - `rs/cyphr/tests/spec_conformance.rs::s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected`
   - `rs/cyphr/tests/spec_conformance.rs::s7_6_reuse_is_typed_and_scoped_to_one_principal`
   - `rs/cyphr/tests/spec_conformance.rs::multihash_replay_of_an_es384_signed_coz_is_reuse`
+  - `rs/cyphr/tests/spec_conformance.rs::every_active_algorithms_cr_variant_advances_with_every_commit`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/coz_reuse_fails]`
 - fails when: a transaction coz already included by a principal is applied again.
 

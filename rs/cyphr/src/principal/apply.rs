@@ -406,8 +406,15 @@ impl<S: eml::Storage> Principal<S> {
             vec![active_algs.first().copied().unwrap_or(HashAlg::Sha256)]
         };
 
-        // Compute TR from pending commit
-        let tr = pending.compute_tr(&tx_algs).ok_or(Error::EmptyCommit)?;
+        // TR carries a variant for the signer's algorithms AND every active
+        // algorithm. The commit-log leaf is this TR, and each algorithm's
+        // MALT hasher reads only its own variant: a missing one hashes to a
+        // constant and freezes that algorithm's CR variant (SPEC §12.1: all
+        // variants name the same content). The arrow still binds only
+        // `tx_algs` (computed separately below).
+        let mut tr_algs = tx_algs.clone();
+        tr_algs.extend(active_algs.iter().copied().filter(|a| !tx_algs.contains(a)));
+        let tr = pending.compute_tr(&tr_algs).ok_or(Error::EmptyCommit)?;
         core.tr = Some(tr.clone());
 
         // Refresh DR's algorithm coverage to the post-mutation active_algs
@@ -522,7 +529,7 @@ impl<S: eml::Storage> Principal<S> {
         core.pr = core.write_pt_sr_cr(&sr, &cr, &active_algs)?;
 
         // Finalize the pending commit with computed states
-        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tx_algs)?;
+        let commit = pending.finalize(core.ar.clone(), sr, core.pr.clone(), &tr_algs)?;
 
         core.auth.commits.push(commit);
 
