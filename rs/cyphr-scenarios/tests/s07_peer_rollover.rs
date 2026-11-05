@@ -4,7 +4,7 @@
 // Must hold: clients follow P1's chain; old-key statements stay attributable; nothing
 // is mistaken for evidence.
 //
-// Required capabilities: transport,cli-network,peer-rollover.
+// Required capabilities: transport,cli-network,evidence,peer-rollover.
 // Red until they exist: the scenario starts its fresh-keyed peers, then the
 // harness reports the first absent capability.
 
@@ -23,6 +23,7 @@ async fn s07_peer_rollover() {
     h.require(&[
         Capability::Transport,
         Capability::CliNetwork,
+        Capability::Evidence,
         Capability::PeerRollover,
     ])
     .await;
@@ -37,6 +38,15 @@ async fn s07_peer_rollover() {
     let ident = server_identity(&h).await;
     // A statement signed before the rollover, held by Bob.
     let held = h.ok(bob.hold_statement(&pr, "p1").await);
+    // Verified offline by the harness, under the old public key read from
+    // /server before the rollover, independent of `attribute`.
+    let (old_alg, old_pub, old_tmb) = (
+        ident["payload"]["alg"].as_str().expect("alg"),
+        ident["payload"]["pub"].as_str().expect("pub"),
+        ident["payload"]["tmb"].as_str().expect("tmb"),
+    );
+    cyphr_scenarios::signed::verify_statement(&held.0, old_alg, old_pub, old_tmb)
+        .unwrap_or_else(|why| panic!("the held statement is not signed by P1's old key: {why}"));
 
     h.ok(h.rotate_peer_key("p1").await);
 
@@ -68,15 +78,8 @@ async fn s07_peer_rollover() {
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &["p1"]).await);
-    h.check_verdict(
-        &after,
-        &pr,
-        &Expect {
-            peers: &["p1"],
-            anchor_id: &pr.0,
-        },
-    )
-    .await;
+    h.check_verdict(&after, &pr, &Expect::new(&["p1"], &pr.0))
+        .await;
     assert_eq!(after.standing, Standing::Active);
     assert!(!after.freshness.peer_reported_newer);
     assert!(

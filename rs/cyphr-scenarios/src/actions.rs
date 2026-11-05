@@ -88,23 +88,32 @@ fn unsupported<T>(action: &'static str, capability: Capability) -> ActionResult<
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal(pub String);
 
+fn split_tag(s: &str) -> (Option<&str>, &str) {
+    match s.split_once(':') {
+        Some((tag, digest)) => (Some(tag), digest),
+        None => (None, s),
+    }
+}
+
 impl Principal {
     /// The handle without any algorithm tag (`SHA-512:abc` and `abc` are
     /// one address).
     pub fn bare(&self) -> &str {
-        self.0.rsplit(':').next().unwrap_or(&self.0)
+        split_tag(&self.0).1
     }
 
-    /// Whether `other` names the same principal in any spelling.
+    /// Whether `other` names the same principal in any spelling: the same
+    /// digest, and the same algorithm tag when both carry one.
     pub fn same_as(&self, other: &str) -> bool {
-        self.bare() == Principal(other.to_owned()).bare()
+        let ((ta, da), (tb, db)) = (split_tag(&self.0), split_tag(other));
+        da == db && (ta.is_none() || tb.is_none() || ta == tb)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// A key, by thumbprint.
 pub struct KeyRef(pub String);
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// A commit id, as a peer's `GET /tip` reports it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tip(pub String);
 
 /// What a peer itself holds for a principal, read from its own `GET /tip`.
@@ -243,14 +252,15 @@ pub struct Session {
     pub principal: Principal,
 }
 
-/// A signed statement a client holds from a peer.
+/// A signed statement a client holds from a peer: the signed coz bytes the
+/// peer served, which the harness can verify offline.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Statement(pub String);
+pub struct Statement(pub Vec<u8>);
 
 /// Whom a statement is attributed to once checked against the peer's chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attribution {
-    /// The peer's identity digest.
+    /// The peer's canonical PG.
     pub peer: String,
     /// Thumbprint of the key that signed the statement.
     pub signing_key_tmb: String,

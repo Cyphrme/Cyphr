@@ -253,3 +253,69 @@ impl Harness {
         out
     }
 }
+
+/// A golden-corpus principal with one genesis key and one commit, used to
+/// give self-tests a real principal on real peers.
+const SEED_FIXTURE: &str = "algorithm_diversity/ed25519_account_adds_es256_key";
+
+impl Harness {
+    /// Push the seed fixture to each of `peers` over HTTP, as a client
+    /// would, and return the principal (its genesis tmb, SPEC 3.1). Used to
+    /// self-test the observer and the oracle against peers that hold
+    /// something; scenarios themselves go through the action seam.
+    pub async fn seed_principal(&self, peers: &[&str]) -> Result<Principal, String> {
+        use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden")
+            .join(format!("{SEED_FIXTURE}.json"));
+        let fixture: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?,
+        )
+        .map_err(|e| format!("parsing {}: {e}", path.display()))?;
+        let genesis = &fixture["genesis_keys"][0];
+        let id = genesis["tmb"]
+            .as_str()
+            .ok_or("fixture genesis has no tmb")?;
+        let commit = &fixture["commits"][0];
+        let keys = commit["keys"].as_array().cloned().unwrap_or_default();
+
+        let mut key_idx = 0;
+        let mut blobs = Vec::new();
+        let txs = commit["txs"]
+            .as_array()
+            .ok_or("fixture commit has no txs")?;
+        for (i, tx) in txs.iter().enumerate() {
+            let mut coz = tx.clone();
+            let typ = coz["pay"]["typ"].as_str().unwrap_or_default().to_owned();
+            if typ.ends_with("/key/create") || typ.ends_with("/key/replace") {
+                coz["key"] = keys.get(key_idx).cloned().ok_or("fixture lacks a key")?;
+                key_idx += 1;
+            }
+            // The implicit genesis key rides on the closing commit coz.
+            if i + 1 == txs.len() {
+                coz["key"] = genesis.clone();
+            }
+            blobs.push(Base64UrlUnpadded::encode_string(
+                &serde_json::to_vec(&coz).map_err(|e| e.to_string())?,
+            ));
+        }
+        let body = serde_json::json!({"principal_id": id, "blobs": blobs});
+        for peer in peers {
+            let addr = self.upstream(peer);
+            let r = self
+                .http
+                .post(format!("http://{addr}/push"))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("push to `{peer}`: {e}"))?;
+            if !r.status().is_success() {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                return Err(format!("push to `{peer}` answered {status}: {text}"));
+            }
+        }
+        Ok(Principal(id.to_owned()))
+    }
+}

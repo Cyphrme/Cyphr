@@ -208,15 +208,21 @@ async fn harness_unsupported_action_ends_red() {
     h.ok(h.client("alice").create_principal().await);
 }
 
-// Claim: the observer parses a peer's `GET /tip` envelope and reports `None`
-// for a principal the peer does not hold. (The server's own principal cannot
-// serve as a live positive control: its `/tip` currently answers 500, so the
-// parse is pinned against the documented response shape instead.)
+// Claim: the observer reads what a peer itself holds. Positive control: a
+// principal pushed to two peers over HTTP is reported by each with the same
+// tip, and by neither under a principal it never saw.
 #[tokio::test(flavor = "multi_thread")]
 async fn harness_peer_view_reads_the_peer_itself() {
     use cyphr_scenarios::actions::{PeerTip, Principal, Tip};
 
-    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
+    let pr = h
+        .seed_principal(&["p1", "p2"])
+        .await
+        .expect("seed a principal");
+    let (v1, v2) = (h.peer_view("p1", &pr).await, h.peer_view("p2", &pr).await);
+    assert!(v1.is_some(), "p1 must report the seeded principal");
+    assert_eq!(v1, v2, "both peers took the same commit");
     assert_eq!(
         h.peer_view("p1", &Principal("SHA-512:AAAA".into())).await,
         None
@@ -251,6 +257,10 @@ fn harness_principal_handles_compare_by_bare_digest() {
     assert!(tagged.same_as("abcDEF_-123"));
     assert!(tagged.same_as("SHA-512:abcDEF_-123"));
     assert!(!tagged.same_as("abcDEF_-124"));
+    assert!(
+        !tagged.same_as("SHA-256:abcDEF_-123"),
+        "the same text under another algorithm is another digest"
+    );
 }
 
 // Claim: a partition cuts a peer-to-peer link, not only client traffic. A
@@ -288,7 +298,7 @@ async fn harness_partition_cuts_a_peer_to_peer_link() {
 }
 
 fn oracle_verdict(
-    branches: Vec<&str>,
+    tip: &str,
     standing: cyphr_scenarios::actions::Standing,
 ) -> cyphr_scenarios::actions::Verdict {
     use cyphr_scenarios::actions::*;
@@ -299,39 +309,19 @@ fn oracle_verdict(
             age: Duration::ZERO,
             peer_reported_newer: false,
         },
-        tip: Tip(branches[0].into()),
+        tip: Tip(tip.into()),
         anchor: Anchor {
             source: AnchorSource::TrustedGenesis,
             id: "AAAA".into(),
         },
         peers: vec!["p1".into()],
-        branches: branches.into_iter().map(|b| Tip(b.into())).collect(),
+        branches: vec![Tip(tip.into())],
         evidence: vec![],
         resolved_by: None,
     }
 }
 
-// Claim: the verdict oracle never accepts a verdict vacuously. A verdict that
-// agrees with everything the peers can answer today still ends RED, because
-// "no evidence" cannot be confirmed without the evidence route.
-#[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "RED(evidence) after-setup peers=1")]
-async fn harness_oracle_is_red_without_the_evidence_route() {
-    use cyphr_scenarios::actions::{Principal, Standing};
-    use cyphr_scenarios::oracle::Expect;
-
-    let h = Harness::start(&["p1"]).await.expect("start peer");
-    let v = oracle_verdict(vec!["T"], Standing::Active);
-    let e = Expect {
-        peers: &["p1"],
-        anchor_id: "SHA-512:AAAA",
-    };
-    h.check_verdict(&v, &Principal("SHA-512:AAAA".into()), &e)
-        .await;
-}
-
-// Claim: the oracle rejects a verdict that names the wrong peers, and one
-// that reports a fork as Active.
+// Claim: the oracle rejects a verdict that names the wrong peers.
 #[tokio::test(flavor = "multi_thread")]
 #[should_panic(expected = "verdict peers differ from the chosen set")]
 async fn harness_oracle_rejects_the_wrong_peer_set() {
@@ -339,25 +329,254 @@ async fn harness_oracle_rejects_the_wrong_peer_set() {
     use cyphr_scenarios::oracle::Expect;
 
     let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
-    let v = oracle_verdict(vec!["T"], Standing::Active);
-    let e = Expect {
-        peers: &["p2"],
-        anchor_id: "AAAA",
-    };
-    h.check_verdict(&v, &Principal("AAAA".into()), &e).await;
+    let v = oracle_verdict("T", Standing::Active);
+    h.check_verdict(&v, &Principal("AAAA".into()), &Expect::new(&["p2"], "AAAA"))
+        .await;
 }
 
+// Claim: a chosen peer that does not answer is never skipped silently: the
+// oracle fails unless the scenario declares that peer down.
 #[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "a fork is reported in Error")]
-async fn harness_oracle_rejects_a_fork_reported_active() {
+#[should_panic(expected = "peer `p1` did not report a tip for the principal")]
+async fn harness_oracle_requires_every_live_peer_to_answer() {
     use cyphr_scenarios::actions::{Principal, Standing};
     use cyphr_scenarios::oracle::Expect;
 
     let h = Harness::start(&["p1"]).await.expect("start peer");
-    let v = oracle_verdict(vec!["T1", "T2"], Standing::Active);
-    let e = Expect {
-        peers: &["p1"],
-        anchor_id: "AAAA",
+    let v = oracle_verdict("T", Standing::Active);
+    h.check_verdict(&v, &Principal("AAAA".into()), &Expect::new(&["p1"], "AAAA"))
+        .await;
+}
+
+// Claim: the verdict's branches must equal the peers' observed head, not
+// merely contain it. A peer holds exactly one head for the seeded principal.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "verdict branches differ from the peers' observed head")]
+async fn harness_oracle_rejects_branches_that_are_not_the_peers_head() {
+    use cyphr_scenarios::actions::{Standing, Tip};
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let pr = h.seed_principal(&["p1"]).await.expect("seed a principal");
+    let head = h.peer_view("p1", &pr).await.expect("seeded").tip;
+    let mut v = oracle_verdict(&head.0, Standing::Active);
+    v.anchor.id = pr.0.clone();
+    v.branches.push(Tip("EXTRA".into()));
+    h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
+}
+
+// Claim: even a verdict that agrees with the peers on everything they can
+// answer today ends RED, because "no evidence" cannot be confirmed without
+// the evidence route. Never a vacuous pass.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "RED(evidence) after-setup peers=1")]
+async fn harness_oracle_is_red_without_the_evidence_route() {
+    use cyphr_scenarios::actions::Standing;
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let pr = h.seed_principal(&["p1"]).await.expect("seed a principal");
+    let view = h.peer_view("p1", &pr).await.expect("seeded");
+    let age = h.peer_age("p1", &pr).await.expect("age");
+    let mut v = oracle_verdict(&view.tip.0, Standing::Active);
+    v.anchor.id = pr.0.clone();
+    v.freshness.age = Duration::from_secs(age.max(0) as u64);
+    h.check_verdict(&v, &pr, &Expect::new(&["p1"], &pr.0)).await;
+}
+
+// Claim: an evidence response is only "no evidence" when it is a 2xx with the
+// expected shape. A 500, a malformed body or a missing items array fails.
+// (Pure logic: the evidence route does not exist yet, so no peer can serve
+// these cases.)
+#[test]
+fn harness_evidence_reads_must_be_2xx_with_items() {
+    use cyphr_scenarios::signed::evidence_items;
+
+    assert_eq!(
+        evidence_items(200, br#"{"payload":{"items":[]}}"#),
+        Ok(vec![])
+    );
+    assert_eq!(
+        evidence_items(200, br#"{"payload":{"items":[{"k":1}]}}"#).map(|v| v.len()),
+        Ok(1)
+    );
+    assert!(evidence_items(500, br#"{"payload":{"items":[]}}"#).is_err());
+    assert!(evidence_items(404, b"{}").is_err());
+    assert!(evidence_items(200, b"not json").is_err());
+    assert!(evidence_items(200, br#"{"payload":{}}"#).is_err());
+}
+
+fn keyed() -> (String, String, String, Vec<u8>) {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let tmb = kp.alg.compute_thumbprint(&kp.pub_bytes).expect("tmb");
+    (
+        kp.alg.name().to_owned(),
+        Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+        kp.prv_bytes.clone(),
+    )
+}
+
+fn signed_coz(alg: &str, pub_b64: &str, prv: &[u8], pay: serde_json::Value) -> serde_json::Value {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+
+    let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).expect("pub");
+    let json = serde_json::to_vec(&pay).expect("pay");
+    let (sig, _) = coz::sign_json(&json, alg, prv, &pub_bytes).expect("sign");
+    serde_json::json!({"pay": pay, "sig": Base64UrlUnpadded::encode_string(&sig)})
+}
+
+// Claim: statement and evidence verification is offline and discriminating.
+// A correctly signed statement passes; a tampered payload, a different
+// signer and a wrong expected tmb each fail. (Pure crypto: no scenario
+// reaches a forged object cheaply.)
+#[test]
+fn harness_statement_verification_catches_forgery() {
+    use cyphr_scenarios::signed::verify_statement;
+
+    let (alg, pub_b64, tmb, prv) = keyed();
+    let good = signed_coz(
+        &alg,
+        &pub_b64,
+        &prv,
+        serde_json::json!({"alg": alg, "tmb": tmb, "now": 1}),
+    );
+    let bytes = serde_json::to_vec(&good).unwrap();
+    assert_eq!(verify_statement(&bytes, &alg, &pub_b64, &tmb), Ok(()));
+
+    let mut tampered = good.clone();
+    tampered["pay"]["now"] = 2.into();
+    let tampered = serde_json::to_vec(&tampered).unwrap();
+    assert!(
+        verify_statement(&tampered, &alg, &pub_b64, &tmb).is_err(),
+        "tampered payload"
+    );
+
+    let (_, other_pub, other_tmb, _) = keyed();
+    assert!(
+        verify_statement(&bytes, &alg, &other_pub, &tmb).is_err(),
+        "another key"
+    );
+    assert!(
+        verify_statement(&bytes, &alg, &pub_b64, &other_tmb).is_err(),
+        "another tmb"
+    );
+}
+
+// Claim: the resolution signer is chosen by `typ`, not position, and its
+// signature must verify against the chain's keys.
+#[test]
+fn harness_commit_signer_is_chosen_by_typ_and_verified() {
+    use coz::base64ct::{Base64UrlUnpadded, Encoding};
+    use cyphr_scenarios::signed::commit_signer_from_patch;
+
+    let (alg, pub_b64, tmb, prv) = keyed();
+    let key = serde_json::json!({"alg": alg, "pub": pub_b64, "tmb": tmb});
+    let blob =
+        |c: &serde_json::Value| Base64UrlUnpadded::encode_string(&serde_json::to_vec(c).unwrap());
+    let mut commit = signed_coz(
+        &alg,
+        &pub_b64,
+        &prv,
+        serde_json::json!({"alg": alg, "tmb": tmb, "typ": "x/cyphr/commit/create"}),
+    );
+    commit["key"] = key.clone();
+    // A later, non-commit coz must not be mistaken for the commit.
+    let action = signed_coz(
+        &alg,
+        &pub_b64,
+        &prv,
+        serde_json::json!({"alg": alg, "tmb": "OTHER", "typ": "x/action"}),
+    );
+    let patch =
+        |blobs: Vec<String>| serde_json::json!({"payload": {"entries": [{"blobs": blobs}]}});
+
+    assert_eq!(
+        commit_signer_from_patch(&patch(vec![blob(&commit), blob(&action)])),
+        Ok(tmb.clone())
+    );
+    let mut forged = commit.clone();
+    forged["pay"]["now"] = 9.into();
+    assert!(
+        commit_signer_from_patch(&patch(vec![blob(&forged)])).is_err(),
+        "mis-signed commit"
+    );
+    assert!(
+        commit_signer_from_patch(&patch(vec![blob(&action)])).is_err(),
+        "no commit/create"
+    );
+}
+
+// Claim: a served evidence item is believed only when it verifies offline:
+// two conflicting objects signed by the culprit, and for a fork the shared
+// ancestor. A forged or mis-signed item, identical objects, a missing
+// ancestor, or a different signer each fail.
+#[test]
+fn harness_evidence_items_are_verified_offline() {
+    use std::collections::BTreeMap;
+
+    use cyphr_scenarios::signed::{Keys, Proven, verify_evidence};
+
+    let (alg, pub_b64, tmb, prv) = keyed();
+    let (_, evil_pub, evil_tmb, evil_prv) = keyed();
+    let mut keys = Keys::new();
+    keys.insert(tmb.clone(), (alg.clone(), pub_b64.clone()));
+    keys.insert(evil_tmb.clone(), (alg.clone(), evil_pub.clone()));
+    let peers = BTreeMap::from([("PEER-PG".to_owned(), tmb.clone())]);
+
+    let obj = |n: u64| {
+        signed_coz(
+            &alg,
+            &pub_b64,
+            &prv,
+            serde_json::json!({"alg": alg, "tmb": tmb, "pre": "P", "n": n}),
+        )
     };
-    h.check_verdict(&v, &Principal("AAAA".into()), &e).await;
+    let equiv = |a: serde_json::Value, b: serde_json::Value| {
+        serde_json::json!(
+        {"kind": "peer-equivocation", "pg": "PG", "peer": "PEER-PG", "a": a, "b": b})
+    };
+
+    assert_eq!(
+        verify_evidence(&equiv(obj(1), obj(2)), &keys, &peers),
+        Ok(Proven::PeerEquivocation {
+            pg: "PG".into(),
+            peer: "PEER-PG".into()
+        })
+    );
+    assert!(
+        verify_evidence(&equiv(obj(1), obj(1)), &keys, &peers).is_err(),
+        "identical objects"
+    );
+    let mut forged = obj(2);
+    forged["pay"]["n"] = 3.into();
+    assert!(
+        verify_evidence(&equiv(obj(1), forged), &keys, &peers).is_err(),
+        "mis-signed object"
+    );
+    let framed = signed_coz(
+        &alg,
+        &evil_pub,
+        &evil_prv,
+        serde_json::json!({"alg": alg, "tmb": evil_tmb, "pre": "P", "n": 4}),
+    );
+    assert!(
+        verify_evidence(&equiv(obj(1), framed), &keys, &peers).is_err(),
+        "signed by someone else: not the accused peer"
+    );
+
+    let fork = |ancestor: serde_json::Value| {
+        serde_json::json!(
+        {"kind": "principal-fork", "pg": "PG", "a": obj(1), "b": obj(2), "ancestor": ancestor})
+    };
+    assert_eq!(
+        verify_evidence(&fork(obj(0)), &keys, &peers),
+        Ok(Proven::PrincipalFork { pg: "PG".into() })
+    );
+    assert!(
+        verify_evidence(&fork(serde_json::Value::Null), &keys, &peers).is_err(),
+        "no ancestor"
+    );
 }
