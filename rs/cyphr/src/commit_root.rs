@@ -143,26 +143,52 @@ impl StateDigest for CommitRoot {
     }
 }
 
-/// A cloneable wrapper around [`Log`] to preserve `Clone` bounds on `Principal`,
-/// generic over the storage backend `S`.
+/// A shareable wrapper around [`Log`], generic over the storage backend `S`.
 ///
 /// The inner mutex is only ever contended by the synchronous `block_on` bridge
 /// below, on a single logical caller; a poisoned lock therefore means a prior
 /// call already panicked mid-mutation, an unrecoverable state, so lock
 /// acquisition here panics too rather than plumbing a synthetic storage error.
 ///
-/// # Manual `Debug`/`Clone`
+/// # Two ways to duplicate a handle
 ///
-/// Both traits are implemented by hand rather than derived: `#[derive(...)]`
-/// would add an `S: Debug`/`S: Clone` bound even though neither is actually
-/// needed (`Clone` shares the `Arc`; `Debug` never inspects the inner log) —
-/// and `storage_fjall::FjallStorage` deliberately implements neither, so a
-/// derived bound would make `CloneableLog<FjallStorage>` uninstantiable.
+/// - [`Clone`] (public, only where `S: Clone`) deep-copies the storage and
+///   rebuilds an independent log, so two principals derived from one ancestor
+///   can each commit without perturbing the other (SPEC.md section 15.8:
+///   witnesses hold both branches of a fork). Durable storages such as
+///   `storage_fjall::FjallStorage` have no copy primitive in eml 0.11 and
+///   implement no `Clone`, so cloning them is a compile error rather than a
+///   silent share of one on-disk log.
+/// - [`Self::share`] (crate-private) aliases the same log. A
+///   [`crate::commit::CommitScope`] projects state onto a copy of its own
+///   principal but must record durably to the principal's log, so it shares.
+///
+/// # Manual `Debug`
+///
+/// Implemented by hand: `#[derive(Debug)]` would add an `S: Debug` bound the
+/// impl never needs, and `FjallStorage` implements no `Debug`.
 pub struct CloneableLog<S: eml::Storage>(pub Arc<Mutex<Log<S>>>);
 
-impl<S: eml::Storage> Clone for CloneableLog<S> {
-    fn clone(&self) -> Self {
+impl<S: eml::Storage> CloneableLog<S> {
+    /// Alias the same underlying log (not an independent copy).
+    pub(crate) fn share(&self) -> Self {
         Self(self.0.clone())
+    }
+}
+
+impl<S: eml::Storage + Clone> Clone for CloneableLog<S> {
+    fn clone(&self) -> Self {
+        let storage = self
+            .0
+            .lock()
+            .expect("commit tree mutex poisoned")
+            .storage()
+            .clone();
+        // `open` re-reads registered algorithms and rebuilds the log from
+        // storage that this very log wrote and validated, so reconstruction
+        // failing means the copied storage is corrupt, which `Clone` has no
+        // channel to report.
+        Self::open(storage).expect("a log reopens over a faithful copy of its own storage")
     }
 }
 

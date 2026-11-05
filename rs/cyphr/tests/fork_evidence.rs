@@ -5,11 +5,11 @@
 //! Claims backed here:
 //! - F1 (green): branches built on FRESH ancestors both finalize to different PRs, and a linear
 //!   replayer rejects the second branch.
-//! - F2 (red, G0): branches built on CLONES of one ancestor must do the same. They currently do
-//!   not, because `Principal::clone` shares the commit log between clones.
-//! - `clone_independence_*` (red, G0): a public clone is fully independent of its source, and a
+//! - F2 (green): branches built on CLONES of one ancestor must do the same; each clone owns its
+//!   commit log.
+//! - `clone_independence_*` (green): a public clone is fully independent of its source, and a
 //!   durable-storage principal cannot be publicly cloned at all (rather than silently sharing).
-//! - `commit_scope_records_to_own_principal_*` (green guard, G0): the fix must not detach a commit
+//! - `commit_scope_records_to_own_principal_*` (green guard): the fix must not detach a commit
 //!   scope from the principal it was opened on.
 
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
@@ -126,11 +126,10 @@ fn fork_branches_verify_from_fresh_ancestors() {
 
 // Practice: SPEC.md section 15.7.1 and section 15.8: witnesses must be able to hold both branches
 // of a fork, and root AGENTS.md invariant I2 requires the fork be detected, so deriving the
-// branches by cloning the ancestor must not couple them. Claim F2 (RED, owner G0). Mutation that
+// branches by cloning the ancestor must not couple them. Claim F2. Mutation that
 // makes this green: `Principal::clone` giving each clone its own commit log instead of sharing the
 // `Arc`.
 #[test]
-#[ignore = "RED(G0): Principal::clone shares the commit log"]
 fn fork_branches_from_cloned_ancestor() {
     let (golden, key_a) = (signer("golden"), signer("key_a"));
     let ancestor =
@@ -151,7 +150,7 @@ fn fork_branches_from_cloned_ancestor() {
         1_700_000_101,
         "cyphr.me",
     );
-    assert!(r.is_ok(), "RED(G0): branch from a cloned ancestor: {r:?}");
+    assert!(r.is_ok(), "branch from a cloned ancestor: {r:?}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -187,7 +186,6 @@ mod clone_independence {
         })]
 
         #[test]
-        #[ignore = "RED(G0): Principal::clone shares the commit log"]
         fn clone_independence_property(
             // Targets golden deletes on branch A, in order: a random non-empty prefix of a
             // random permutation of the three non-golden keys.
@@ -248,7 +246,6 @@ mod clone_independence {
     // The in-memory principal must stay publicly Clone (F2 and the property above need it).
     // End-to-end scenario: no, a type-level invariant has no scenario that reaches it.
     #[test]
-    #[ignore = "RED(G0): Principal<S>: Clone for every S, durable included"]
     fn clone_independence_durable_principal_not_publicly_clone() {
         // Constants by design; the const-assert lint would suggest a build-time error instead,
         // which would break compilation of the whole file rather than fail this one test.

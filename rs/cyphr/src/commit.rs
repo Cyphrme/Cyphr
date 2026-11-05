@@ -378,7 +378,7 @@ pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
 impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
     pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
-        let projected = principal.clone();
+        let projected = principal.share();
         Self {
             principal,
             pending: PendingCommit::new(),
