@@ -72,3 +72,9 @@ async fn principal_summary_tracks_creation_time() {
 async fn test_new_indexer_methods_memory() {
     conformance::new_indexer_methods(&MemoryIndexer::new()).await;
 }
+
+#[tokio::test]
+#[ignore = "RED(AD1): the index has no PG alias table"]
+async fn alias_pg_variants_resolve_to_the_principal_memory() {
+    conformance::alias_pg_variants_resolve_to_the_principal(&MemoryIndexer::new()).await;
+}

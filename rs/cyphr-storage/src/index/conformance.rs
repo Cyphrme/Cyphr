@@ -362,3 +362,107 @@ pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
             .is_empty()
     );
 }
+
+/// Hash variants of one PG, as the `prs` of the commit that carries
+/// `principal/create` (SPEC §3.7.1: the PG is the PR at `principal/create`).
+fn pg_variants() -> Vec<String> {
+    ["SHA-256", "SHA-384", "SHA-512"]
+        .iter()
+        .map(|alg| format!("{alg}:pg-digest-{alg}"))
+        .collect()
+}
+
+/// A commit carrying `principal/create`, so its `prs` are the PG variants.
+fn principal_create_commit(principal_id: &str, seq: u64) -> IndexableCommit {
+    let mut commit = make_commit(principal_id, seq, 1000 + seq as i64);
+    commit.prs = pg_variants();
+    commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
+    commit
+}
+
+/// Backs SPEC §12.1 (every PG hash variant names one principal) at the
+/// index seam, for every backend: once a `principal/create` commit is
+/// indexed, each PG variant resolves to the principal's chain and tip; a
+/// label-forged spelling resolves to nothing and creates no principal;
+/// `clear` drops the aliases (they are derived, I1). The alias is derived
+/// from fields `IndexableCommit` already carries (the `principal/create`
+/// cozy and its `prs`), resolved through `get_commit_chain`/`get_tip`.
+/// Turns red if a variant resolves to nothing, to a second principal, or
+/// outlives `clear`. A unit test because the engine-level scenario (server
+/// `variant_` and storage `alias_` tests) cannot tell which backend failed.
+pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let id = "SHA-256:genesis-digest";
+    indexer
+        .index_commit(&make_commit(id, 0, 1000), &token)
+        .await
+        .expect("index genesis commit");
+
+    let variants = pg_variants();
+    for v in &variants {
+        assert!(
+            indexer
+                .get_commit_chain(v, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{v} resolved before any principal/create was indexed"
+        );
+    }
+
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("index principal/create commit");
+    // Re-indexing is a no-op and must not duplicate or move an alias.
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("re-index principal/create commit");
+
+    let want_chain = indexer.get_commit_chain(id, None, None).await.unwrap();
+    let want_tip = indexer.get_tip(id).await.unwrap().expect("tip");
+    assert_eq!(want_chain.len(), 2, "control: the canonical chain");
+    for v in &variants {
+        assert_eq!(
+            indexer.get_commit_chain(v, None, None).await.unwrap(),
+            want_chain,
+            "PG variant {v} does not resolve to the principal's chain"
+        );
+        assert_eq!(
+            indexer.get_tip(v).await.unwrap().as_ref(),
+            Some(&want_tip),
+            "PG variant {v} does not resolve to the principal's tip"
+        );
+    }
+
+    // A digest the PG has under another label, and a label no variant has.
+    for forged in ["SHA-512:pg-digest-SHA-256", "SHA3-256:pg-digest-SHA-256"] {
+        assert!(
+            indexer
+                .get_commit_chain(forged, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "forged spelling {forged} resolved"
+        );
+        assert!(indexer.get_tip(forged).await.unwrap().is_none());
+    }
+    assert_eq!(
+        indexer.list_principals().await.unwrap().len(),
+        1,
+        "an alias must not appear as a second principal"
+    );
+
+    indexer.clear(&token).await.expect("clear");
+    for v in &variants {
+        assert!(
+            indexer
+                .get_commit_chain(v, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "alias {v} survived clear: the alias table is not derived state"
+        );
+    }
+}
