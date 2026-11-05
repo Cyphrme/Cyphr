@@ -542,6 +542,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyphr-scenarios"
+version = "0.1.0"
+dependencies = [
+ "coz-rs",
+ "futures",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "cyphr-server"
 version = "0.1.0"
 dependencies = [
