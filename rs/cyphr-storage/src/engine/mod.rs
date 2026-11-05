@@ -96,6 +96,50 @@ pub struct IngestResult {
     /// `None` for an action-only bundle (`submit_commit`'s action-only
     /// branch): no commit was formed, so there is no manifest to hash.
     pub manifest_hash: Option<Blake3Hash>,
+    /// The tip this commit produced, computed during ingest from the same
+    /// replayed state the index entry is written from, so a caller can
+    /// report the committed state without re-reading the index (a re-read
+    /// is a fallible step AFTER the commit is durable).
+    ///
+    /// For an action-only bundle no commit was formed, so this is the
+    /// principal's unchanged tip, or `None` if it has no committed state.
+    pub tip: Option<CommittedTip>,
+}
+
+/// The principal's tip immediately after one accepted commit, as the
+/// indexer records it (primary-algorithm variant of each root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedTip {
+    /// The commit's 0-indexed position in the principal's chain.
+    pub sequence: u64,
+    /// Commit ID (tagged digest).
+    pub commit_id: String,
+    /// Principal Root after the commit.
+    pub pr: String,
+    /// State Root after the commit.
+    pub sr: String,
+    /// Auth Root after the commit.
+    pub ar: String,
+    /// Commit Root after the commit (empty if the EML log has no leaf yet,
+    /// matching [`TipState::cr`]).
+    pub cr: String,
+}
+
+impl CommittedTip {
+    /// The tip `commit` leaves: the first (primary-algorithm) variant of
+    /// each digest, the same selection every [`Indexer`] applies when it
+    /// writes its tip, so this equals what a `get_tip` would then return.
+    fn of(commit: &IndexableCommit) -> Self {
+        let first = |v: &[String]| v.first().cloned().unwrap_or_default();
+        Self {
+            sequence: commit.sequence,
+            commit_id: first(&commit.commit_ids),
+            pr: first(&commit.prs),
+            sr: first(&commit.srs),
+            ar: first(&commit.ars),
+            cr: first(&commit.crs),
+        }
+    }
 }
 
 /// Discriminator embedded in every [`CommitManifest`], distinguishing it
@@ -665,6 +709,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             principal_id: commit.principal_id.clone(),
             blob_hashes,
             manifest_hash: Some(manifest_hash),
+            tip: Some(CommittedTip::of(&commit)),
         })
     }
 
@@ -1229,10 +1274,21 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 let hash = self.blob_store.put(blob).await?;
                 blob_hashes.push(hash);
             }
+            let tip = self.indexer.get_tip(principal_id).await?.and_then(|t| {
+                Some(CommittedTip {
+                    sequence: t.commit_count.checked_sub(1)?,
+                    commit_id: t.commit_id,
+                    pr: t.pr,
+                    sr: t.sr,
+                    ar: t.ar,
+                    cr: t.cr,
+                })
+            });
             Ok(IngestResult {
                 principal_id: principal_id.to_string(),
                 blob_hashes,
                 manifest_hash: None,
+                tip,
             })
         }
     }
