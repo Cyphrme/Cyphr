@@ -415,7 +415,7 @@ mod tests {
     fn make_test_key(id: u8) -> Key {
         Key {
             alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 32]),
+            tmb: coz::compute_thumbprint_for_alg("ES256", &[id; 64]).expect("ES256 tmb"),
             pub_key: vec![id; 64],
             first_seen: 1000,
             last_used: None,

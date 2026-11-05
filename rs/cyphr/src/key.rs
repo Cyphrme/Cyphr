@@ -46,10 +46,10 @@ impl Key {
     /// # Errors
     ///
     /// - `TmbMismatch`: `tmb` is not the thumbprint of `pub_key` under `alg`
-    /// - `UnsupportedAlgorithm`: `alg` is unknown
+    /// - `UnknownAlg`: `alg` is unknown
     pub fn verify_binding(&self) -> Result<()> {
         let computed = coz::compute_thumbprint_for_alg(&self.alg, &self.pub_key)
-            .ok_or_else(|| Error::UnsupportedAlgorithm(self.alg.clone()))?;
+            .ok_or(Error::UnknownAlg)?;
         if computed.as_bytes() != self.tmb.as_bytes() {
             return Err(Error::TmbMismatch);
         }
