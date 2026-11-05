@@ -21,9 +21,9 @@ axum.workspace               = true
 blake3.workspace             = true
 clap.workspace               = true
 coz.workspace                = true
-cyphr-client                 = { path = "../cyphr-client", version = "0.1.0" }
 cyphr                        = { path = "../cyphr", version = "0.1.0" }
 cyphr-blob-fjall             = { path = "../cyphr-blob-fjall", version = "0.1.0" }
+cyphr-client                 = { path = "../cyphr-client", version = "0.1.0" }
 cyphr-index-fjall            = { path = "../cyphr-index-fjall", version = "0.1.0" }
 cyphr-storage                = { path = "../cyphr-storage", version = "0.1.0" }
 eml.workspace                = true
