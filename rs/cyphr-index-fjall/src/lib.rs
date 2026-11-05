@@ -32,6 +32,11 @@
 //! injectivity gap `sanitize_fjall_prefix` (F11) left unenforced, and how
 //! the length-prefixed encoding here closes it.
 //!
+//! - `aliases` — Principal Root variant (tagged digest) → the `principal_id` it names (point
+//!   lookup). Derived from the `pg` variants of the PG-establishing commit, so a principal is
+//!   addressable by its PG in every hash variant (SPEC §3.7.1/§12.1), never by a historical PR;
+//!   first writer wins, and a stored principal id always outranks an alias on read.
+//!
 //! [`MemoryIndexer`]: cyphr_storage::index::MemoryIndexer
 
 use std::collections::BTreeSet;
@@ -44,8 +49,10 @@ use cyphr_storage::index::{
 };
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
-/// Current schema version recorded in the `meta` partition.
-const SCHEMA_VERSION: u32 = 1;
+/// Current schema version recorded in the `meta` partition. Version 2
+/// adds the `index_aliases` partition; a version-1 store has no alias rows
+/// until the index is rebuilt from blobs (it is a derived cache, I1).
+const SCHEMA_VERSION: u32 = 2;
 
 /// Fixed key under which the `meta` partition stores its single tracking
 /// record.
@@ -62,6 +69,7 @@ const PARTITION_NAMES: &[&str] = &[
     "index_commits",
     "index_digests",
     "index_public_keys",
+    "index_aliases",
 ];
 
 /// The `meta` partition's single tracking record — the "meta-table
@@ -115,6 +123,33 @@ fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>
     (commit_key(principal_id, from), commit_key(principal_id, to))
 }
 
+/// The stored principal id `id` names: itself if a principal is stored
+/// under it, else the principal its alias names, else `id` unchanged.
+fn canonical_id(tips: &Keyspace, aliases: &Keyspace, id: String) -> Result<String, IndexerError> {
+    // Established-PG markers share this table under a NUL-prefixed key
+    // (see [`pg_marker_key`]); no real id starts with NUL.
+    if id.starts_with('\0') {
+        return Ok(id);
+    }
+    if tips.contains_key(id.as_bytes()).map_err(to_backend_err)? {
+        return Ok(id);
+    }
+    match aliases.get(id.as_bytes()).map_err(to_backend_err)? {
+        Some(bytes) => String::from_utf8(bytes.to_vec())
+            .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}"))),
+        None => Ok(id),
+    }
+}
+
+/// Key of the "this principal's PG is established" marker, stored in the
+/// alias table so the index still registers exactly one alias table.
+fn pg_marker_key(principal_id: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + principal_id.len());
+    key.push(0);
+    key.extend_from_slice(principal_id.as_bytes());
+    key
+}
+
 fn to_backend_err(e: fjall::Error) -> IndexerError {
     IndexerError::Backend(format!("fjall error: {e}"))
 }
@@ -152,6 +187,7 @@ pub struct FjallIndexer {
     commits: Keyspace,
     digests: Keyspace,
     public_keys: Keyspace,
+    aliases: Keyspace,
     write_lock: tokio::sync::Mutex<()>,
 }
 
@@ -190,6 +226,7 @@ impl FjallIndexer {
         let commits = open("index_commits")?;
         let digests = open("index_digests")?;
         let public_keys = open("index_public_keys")?;
+        let aliases = open("index_aliases")?;
 
         // No bootstrap write here: the registry claim (`index_meta`'s
         // record) is written only as derivation OUTPUT, atomically
@@ -208,6 +245,7 @@ impl FjallIndexer {
             commits,
             digests,
             public_keys,
+            aliases,
             write_lock: tokio::sync::Mutex::new(()),
         })
     }
@@ -244,15 +282,30 @@ impl Indexer for FjallIndexer {
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send {
         let principal_id = principal_id.to_string();
         let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                match tips.get(principal_id.as_bytes()).map_err(to_backend_err)? {
+                let id = canonical_id(&tips, &aliases, principal_id)?;
+                match tips.get(id.as_bytes()).map_err(to_backend_err)? {
                     Some(bytes) => Ok(Some(de(&bytes)?)),
                     None => Ok(None),
                 }
             })
             .await
             .map_err(join_err)?
+        }
+    }
+
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let key = pg_marker_key(principal_id);
+        let aliases = self.aliases.clone();
+        async move {
+            tokio::task::spawn_blocking(move || aliases.contains_key(&key).map_err(to_backend_err))
+                .await
+                .map_err(join_err)?
         }
     }
 
@@ -264,8 +317,11 @@ impl Indexer for FjallIndexer {
     ) -> impl std::future::Future<Output = Result<Vec<CommitRef>, IndexerError>> + Send {
         let principal_id = principal_id.to_string();
         let commits = self.commits.clone();
+        let tips = self.tips.clone();
+        let aliases = self.aliases.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                let principal_id = canonical_id(&tips, &aliases, principal_id)?;
                 let (lower, upper) =
                     commit_key_range(&principal_id, from.unwrap_or(0), to.unwrap_or(u64::MAX));
                 let mut chain = Vec::new();
@@ -361,6 +417,7 @@ struct Keyspaces {
     commits: Keyspace,
     digests: Keyspace,
     public_keys: Keyspace,
+    aliases: Keyspace,
 }
 
 impl FjallIndexer {
@@ -372,6 +429,7 @@ impl FjallIndexer {
             commits: self.commits.clone(),
             digests: self.digests.clone(),
             public_keys: self.public_keys.clone(),
+            aliases: self.aliases.clone(),
         }
     }
 }
@@ -406,6 +464,7 @@ impl IndexerWrite for FjallIndexer {
                 ks.commits.clear().map_err(to_backend_err)?;
                 ks.digests.clear().map_err(to_backend_err)?;
                 ks.public_keys.clear().map_err(to_backend_err)?;
+                ks.aliases.clear().map_err(to_backend_err)?;
                 // The registry claim is derivation output too: clearing
                 // the derived rows without also retracting what the
                 // deriver claims to have produced would leave a stale
@@ -528,6 +587,17 @@ fn db_index_commit(
         })?,
     );
 
+    for pr in &commit.pg {
+        // First writer wins; the principal's own id needs no alias.
+        if *pr != commit.principal_id && !ks.aliases.contains_key(pr).map_err(to_backend_err)? {
+            batch.insert(&ks.aliases, pr.as_bytes(), pid_key);
+        }
+    }
+
+    if !commit.pg.is_empty() {
+        batch.insert(&ks.aliases, pg_marker_key(&commit.principal_id), []);
+    }
+
     batch.insert(
         &ks.principals,
         pid_key,
@@ -556,6 +626,8 @@ fn db_index_commit(
                     blob_hash: coz.blob_hash,
                     entity_type,
                     sequence: Some(commit.sequence),
+                    principal_id: Some(commit.principal_id.clone()),
+                    principal_root: false,
                 })?,
             );
         }
@@ -577,6 +649,8 @@ fn db_index_commit(
                 blob_hash: first_blob_hash,
                 entity_type: EntityType::Commit,
                 sequence: Some(commit.sequence),
+                principal_id: Some(commit.principal_id.clone()),
+                principal_root: commit.prs.contains(variant),
             })?,
         );
     }

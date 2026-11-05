@@ -65,6 +65,13 @@ pub struct IndexableCommit {
     pub timestamp: i64,
     /// Public keys extracted from key-introducing transactions.
     pub keys: Vec<PublicKeyInfo>,
+    /// Principal Genesis variants (tagged digest strings), set only on the
+    /// commit that establishes the PG (`principal/create`): the PR held
+    /// immediately BEFORE that commit, not the commit's own post-commit PR
+    /// (SPEC §3.7.1). Empty on every other commit. `serde(default)` so a
+    /// manifest written before this field existed still deserializes.
+    #[serde(default)]
+    pub pg: Vec<String>,
 }
 
 /// Public key metadata.
@@ -149,6 +156,17 @@ pub struct EntityRef {
     /// `digests` record deserializes instead of failing to open).
     #[serde(default)]
     pub sequence: Option<u64>,
+    /// The principal whose commit produced this digest. A locator hint
+    /// only (`None` in a record written before this field existed): any
+    /// authorisation decision must re-verify against replayed state.
+    #[serde(default)]
+    pub principal_id: Option<String>,
+    /// Whether this digest is a Principal Root variant (as opposed to a
+    /// commit id, state, auth or commit root, or a coz digest). Lets a
+    /// caller tell a PR claim from any other digest without loading
+    /// history. `false` in a record written before this field existed.
+    #[serde(default)]
+    pub principal_root: bool,
 }
 
 /// Classification of indexed entities.

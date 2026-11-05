@@ -537,9 +537,11 @@ pub async fn push(
     // commit -- read back via the same post-submit tip any other client
     // would see. A push client previously had no way to learn the
     // accepted commit_id/sequence/roots without a follow-up /tip read.
+    // Read back under the canonical id the engine stored under: the
+    // submitted spelling can stop resolving once this commit moves the PR.
     let t = state
         .engine
-        .get_tip(&request.principal_id)
+        .get_tip(&result.principal_id)
         .await
         .map_err(AppError::engine)?
         .ok_or_else(|| AppError::internal("accepted commit has no tip"))?;
@@ -560,7 +562,7 @@ pub async fn push(
         Some(identity) => {
             let derived = state
                 .engine
-                .rederive_roots(&request.principal_id)
+                .rederive_roots(&result.principal_id)
                 .await
                 .map_err(|e| {
                     AppError::internal(format!("attestation root re-derivation failed: {e}"))

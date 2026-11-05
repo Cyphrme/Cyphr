@@ -35,6 +35,50 @@ conformance_test!(list_principals_returns_all);
 conformance_test!(principal_summary_tracks_creation_time);
 
 #[tokio::test]
+async fn alias_pg_variants_resolve_to_the_principal() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::alias_pg_variants_resolve_to_the_principal(&indexer).await;
+}
+
+/// Backs R3 (AGENTS.md): the alias table is ONE KV table registered in the
+/// index meta-table, not a side channel. After a PG-establishing commit is
+/// indexed the registry lists the five pre-alias partitions plus exactly
+/// one more. Turns red if no partition is registered for the alias, or
+/// more than one is. A unit test: the registry is not reachable from any
+/// end-to-end scenario.
+#[tokio::test]
+async fn alias_table_is_one_registered_kv_table() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    let mut commit = conformance::make_commit("SHA-256:genesis-digest", 0, 1000);
+    commit.pg = vec!["SHA-256:pg-digest".to_string()];
+    commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
+    indexer
+        .index_commit(&commit, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("index");
+
+    let registry = indexer.registry().expect("registry");
+    let before = [
+        "index_tips",
+        "index_principals",
+        "index_commits",
+        "index_digests",
+        "index_public_keys",
+    ];
+    for name in before {
+        assert!(
+            registry.contains(name),
+            "registry lost {name}: {registry:?}"
+        );
+    }
+    assert_eq!(
+        registry.len(),
+        before.len() + 1,
+        "the alias table must be exactly one newly registered partition: {registry:?}"
+    );
+}
+
+#[tokio::test]
 async fn new_indexer_methods() {
     let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
     conformance::new_indexer_methods(&indexer).await;
@@ -186,4 +230,10 @@ async fn multitenancy_prefix_principals_are_isolated() {
     assert_eq!(alice_tip.commit_count, 3);
     let alice2_tip = indexer.get_tip("alice2").await.unwrap().unwrap();
     assert_eq!(alice2_tip.commit_count, 2);
+}
+
+#[tokio::test]
+async fn pg_established_marker_tracks_the_pg_commit() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::pg_established_marker_tracks_the_pg_commit(&indexer).await;
 }

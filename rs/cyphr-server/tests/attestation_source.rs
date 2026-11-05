@@ -30,6 +30,7 @@ async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: 
     let principal_id = &format!("SHA-256:{principal_id}");
     let dummy_hash = Blake3Hash::from_bytes([1u8; 32]);
     let corrupt_commit = IndexableCommit {
+        pg: Vec::new(),
         principal_id: principal_id.to_string(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_ID_999999999999999999999999".to_string()],
         sequence: 99,
