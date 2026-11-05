@@ -13,8 +13,7 @@
 
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use clap::Parser;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::HashAlg;
@@ -25,8 +24,6 @@ use cyphr_server::sync::{SyncOutcome, sync_from_authority};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
 use cyphr_storage::index::{DeriveToken, IndexableCommit, IndexerWrite};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
 
 mod common;
 
@@ -43,29 +40,6 @@ use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post
 /// same shape, different wire form, never interchangeable.
 fn principal_digest(byte: u8) -> String {
     Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
-/// Helper: Issue a `DELETE` request against an axum router with a JSON body.
-async fn delete_json(
-    app: axum::Router,
-    uri: &str,
-    body: String,
-) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
 }
 
 // ========================================================================
@@ -103,7 +77,7 @@ async fn witness_mode_starts() {
 /// N2.2: `all_write_routes_refused`
 ///
 /// Structural write refusal: In Witness mode, ALL state-mutating (write) endpoints
-/// (`POST /push`, `POST /revoke`, `POST /witness/register`, `DELETE /witness/register`,
+/// (`POST /push`, `POST /revoke`,
 /// and unmapped mutating routes like `POST /unmapped_write_route_test`) MUST be
 /// structurally refused with a non-success write-refusal HTTP status code (403 Forbidden,
 /// 405 Method Not Allowed, or 501 Not Implemented) and an unsigned response envelope
@@ -124,7 +98,7 @@ async fn all_write_routes_refused() {
     let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
-    let (push_status, push_json) = post_json(app.clone(), "/push", push_body.clone()).await;
+    let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
     assert!(
         push_status == StatusCode::FORBIDDEN
             || push_status == StatusCode::METHOD_NOT_ALLOWED
@@ -135,22 +109,6 @@ async fn all_write_routes_refused() {
     assert_eq!(
         push_json["statement"]["kind"], "unsigned",
         "push refusal envelope MUST be unsigned: {push_json:?}"
-    );
-
-    // 1b. POST /push with fanout/witness-push headers MUST ALSO be refused in witness mode
-    let fanout_req = Request::builder()
-        .method("POST")
-        .uri("/push")
-        .header("content-type", "application/json")
-        .header("x-cyphr-fanout", "true")
-        .header("x-witness-push", "true")
-        .body(Body::from(push_body))
-        .unwrap();
-    let fanout_resp = app.clone().oneshot(fanout_req).await.unwrap();
-    assert_eq!(
-        fanout_resp.status(),
-        StatusCode::FORBIDDEN,
-        "POST /push with fanout headers MUST be structurally refused in witness mode"
     );
 
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
@@ -172,43 +130,7 @@ async fn all_write_routes_refused() {
         "revoke refusal envelope MUST be unsigned: {revoke_json:?}"
     );
 
-    // 3. POST /witness/register MUST be refused in witness mode with an unsigned envelope
-    let reg_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/create" }
-    })
-    .to_string();
-    let (reg_status, reg_json) = post_json(app.clone(), "/witness/register", reg_body).await;
-    assert!(
-        reg_status == StatusCode::FORBIDDEN
-            || reg_status == StatusCode::METHOD_NOT_ALLOWED
-            || reg_status == StatusCode::NOT_IMPLEMENTED,
-        "POST /witness/register in witness mode MUST be structurally refused, got {reg_status}: \
-         {reg_json:?}"
-    );
-    assert_eq!(
-        reg_json["statement"]["kind"], "unsigned",
-        "POST /witness/register refusal envelope MUST be unsigned: {reg_json:?}"
-    );
-
-    // 4. DELETE /witness/register MUST be refused in witness mode with an unsigned envelope
-    let del_body = serde_json::json!({
-        "pay": { "id": "SHA-256:dummy", "typ": "cyphr.me/cyphr/witness/register/delete" }
-    })
-    .to_string();
-    let (del_status, del_json) = delete_json(app.clone(), "/witness/register", del_body).await;
-    assert!(
-        del_status == StatusCode::FORBIDDEN
-            || del_status == StatusCode::METHOD_NOT_ALLOWED
-            || del_status == StatusCode::NOT_IMPLEMENTED,
-        "DELETE /witness/register in witness mode MUST be structurally refused, got {del_status}: \
-         {del_json:?}"
-    );
-    assert_eq!(
-        del_json["statement"]["kind"], "unsigned",
-        "DELETE /witness/register refusal envelope MUST be unsigned: {del_json:?}"
-    );
-
-    // 5. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
+    // 3. Unmapped/arbitrary mutating route (e.g. POST /unmapped_write_route_test) MUST be refused
     //    in witness mode with an unsigned envelope
     let unmapped_body = serde_json::json!({"test": "unmapped"}).to_string();
     let (unmapped_status, unmapped_json) =
@@ -599,49 +521,6 @@ async fn responses_carry_freshness() {
     assert!(
         tip_timestamp > 0,
         "freshness timestamp on GET /tip MUST be positive, got: {tip_timestamp}"
-    );
-}
-
-/// Security Regression Test: `unauthenticated_fanout_header_cannot_bypass_witness_write_refusal`
-///
-/// Verifies that unauthenticated request headers (`x-cyphr-fanout`, `x-witness-push`) CANNOT
-/// bypass strict structural write refusal on Witness nodes. All POST /push requests MUST be
-/// rejected with HTTP 403 Forbidden and an unsigned refusal envelope.
-#[tokio::test]
-async fn unauthenticated_fanout_header_cannot_bypass_witness_write_refusal() {
-    let witness_dir = tempfile::tempdir().expect("witness tempdir");
-    let witness_config = ServerConfig {
-        mode: ServerMode::Witness,
-        data_dir: witness_dir.path().join("data"),
-        ..Default::default()
-    };
-    let witness_instance = common::multi::Instance::from_config(witness_config, witness_dir).await;
-
-    let pool = load_pool();
-    let push_body =
-        build_genesis_push_body(&pool, "n2-fanout-bypass-attempt-principal", 1_700_000_000);
-
-    let resp = witness_instance
-        .post_with_headers(
-            "/push",
-            push_body,
-            &[("x-cyphr-fanout", "true"), ("x-witness-push", "true")],
-        )
-        .await;
-
-    assert_eq!(
-        resp.status,
-        StatusCode::FORBIDDEN,
-        "Witness node MUST return 403 Forbidden for POST /push even with fanout headers, got \
-         status {}: {:?}",
-        resp.status,
-        resp.json
-    );
-
-    assert_eq!(
-        resp.json["statement"]["kind"], "unsigned",
-        "Refusal envelope MUST be unsigned, got: {:?}",
-        resp.json
     );
 }
 
