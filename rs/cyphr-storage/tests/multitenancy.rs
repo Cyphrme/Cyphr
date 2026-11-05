@@ -31,15 +31,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build raw coz blobs from a golden fixture's commit, embedding key
@@ -106,7 +103,8 @@ fn two_principals_share_one_database_without_collision() {
     // The two fixtures must carry genuinely distinct genesis identities —
     // otherwise this test would not actually exercise multitenancy.
     assert_ne!(
-        genesis_key_a.tmb, genesis_key_b.tmb,
+        genesis_key_a.tmb(),
+        genesis_key_b.tmb(),
         "fixtures must have distinct genesis keys to exercise multitenancy"
     );
 
@@ -115,8 +113,14 @@ fn two_principals_share_one_database_without_collision() {
     assert!(commits_a.len() >= 2, "fixture a needs multiple commits");
     assert!(commits_b.len() >= 2, "fixture b needs multiple commits");
 
-    let principal_id_a = "tenant-a";
-    let principal_id_b = "tenant-b";
+    // Each principal is keyed by the id its own (distinct) genesis derives.
+    let principal_id_a =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_a.clone()))
+            .expect("genesis-derived id a");
+    let principal_id_b =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_b.clone()))
+            .expect("genesis-derived id b");
+    let (principal_id_a, principal_id_b) = (principal_id_a.as_str(), principal_id_b.as_str());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

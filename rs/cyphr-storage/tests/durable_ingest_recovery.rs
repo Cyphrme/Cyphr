@@ -37,15 +37,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build raw coz blobs from a golden fixture's commit, the same shape
@@ -92,7 +89,9 @@ async fn freeze_create_commit_survives_reload() {
     let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
     assert_eq!(keys.len(), 1, "fixture uses implicit single-key genesis");
     let genesis = Genesis::Implicit(keys[0].clone());
-    let principal_id = "freeze-create-roundtrip-test";
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id = principal_id.as_str();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
@@ -148,7 +147,9 @@ async fn rebuild_index_from_manifests_survives_index_deletion() {
 
     let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
     let genesis = Genesis::Explicit(keys);
-    let principal_id = "durable-ingest-recovery-test";
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id = principal_id.as_str();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

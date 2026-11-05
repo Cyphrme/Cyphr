@@ -62,15 +62,8 @@ fn golden_key_to_domain(gk: &GoldenKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&gk.pub_key).expect("invalid pub base64");
     let tmb_bytes = Base64UrlUnpadded::decode_vec(&gk.tmb).expect("invalid tmb base64");
 
-    cyphr::Key {
-        alg: gk.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(gk.alg.clone(), Thumbprint::from_bytes(tmb_bytes), pub_bytes)
+        .expect("key binds its tmb")
 }
 
 /// Convert Golden.genesis_keys to Genesis enum.
@@ -696,7 +689,7 @@ fn e2e_multihash_round_trip() {
 
         // --- Step 3: Verify each variant is coherent (recomputable) ---
         // Get thumbprints from current keyset
-        let thumbprints: Vec<_> = principal.active_keys().map(|k| &k.tmb).collect();
+        let thumbprints: Vec<_> = principal.active_keys().map(|k| k.tmb()).collect();
 
         // Recompute KR via the real KT (not the demoted compute_kr oracle,
         // which only agrees with KT for single-algorithm keysets — see

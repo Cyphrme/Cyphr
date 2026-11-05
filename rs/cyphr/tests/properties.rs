@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use coz::Thumbprint;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr::key::{Key, Revocation};
 use cyphr::state::{HashAlg, derive_hash_algs};
@@ -22,33 +21,26 @@ fn hash_alg_strategy() -> impl Strategy<Value = HashAlg> {
 fn key_strategy() -> impl Strategy<Value = Key> {
     (
         prop_oneof![
-            Just("ES256".to_string()),
-            Just("ES384".to_string()),
-            Just("Ed25519".to_string()),
+            Just(("ES256", 64usize)),
+            Just(("ES384", 96usize)),
+            Just(("Ed25519", 32usize)),
         ],
-        prop::collection::vec(any::<u8>(), 32),
-        prop::collection::vec(any::<u8>(), 64),
+        prop::collection::vec(any::<u8>(), 96),
         any::<i64>(),
         any::<bool>(), // true = active, false = revoked
     )
-        .prop_map(|(alg, tmb_bytes, pub_key, first_seen, active)| {
-            let tmb = Thumbprint::from_bytes(tmb_bytes);
-            let revocation = if active {
-                None
+        .prop_map(|((alg, pub_len), mut pub_key, first_seen, active)| {
+            pub_key.truncate(pub_len);
+            let key = Key::from_pub_key(alg, pub_key)
+                .expect("any bytes of the right length thumbprint")
+                .with_first_seen(first_seen);
+            if active {
+                key
             } else {
-                Some(Revocation {
+                key.with_revocation(Revocation {
                     rvk: first_seen.saturating_add(100),
                     by: None,
                 })
-            };
-            Key {
-                alg,
-                tmb,
-                pub_key,
-                first_seen,
-                last_used: None,
-                revocation,
-                tag: None,
             }
         })
 }
@@ -68,7 +60,7 @@ proptest! {
         let mut expected = std::collections::BTreeSet::new();
         for key in &keys {
             if key.is_active() {
-                let alg = match key.alg.as_str() {
+                let alg = match key.alg() {
                     "ES256" => HashAlg::Sha256,
                     "ES384" => HashAlg::Sha384,
                     "Ed25519" => HashAlg::Sha512,
@@ -218,15 +210,7 @@ fn arrow_domain_key(pk: &test_fixtures::PoolKey) -> Key {
     let pub_bytes =
         Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("invalid pool pub key base64");
     let tmb = pk.compute_tmb().expect("failed to compute tmb");
-    Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
 }
 
 fn arrow_prv_bytes(pk: &test_fixtures::PoolKey) -> Vec<u8> {

@@ -48,16 +48,14 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   37 |
-| `red-existing` |    2 |
-| `red-new`      |   11 |
+| `covered`      |   39 |
+| `red-existing` |    1 |
+| `red-new`      |   10 |
 | `not-testable` |   14 |
 | `out-of-scope` |    8 |
 | `total`        |   72 |
 
-Fixing ids on red rows: `KA1` is the key-authentication node
-(`pay.alg == key.alg` must treat an absent `alg` as a mismatch, and revoked
-keys must not be re-added), `N09` the idempotency node and `q3` the last-key
+Fixing ids on red rows: `N09` is the idempotency node and `q3` the last-key
 self-revoke decision (the code allows no revoke of the only key; SPEC allows
 it and leaves the principal Dead). `SC1-F1` (frozen principals reject
 mutations), `SC1-F2` (in-commit `rvk` and `now` bounds), `SC1-F3` (Key Tree
@@ -137,16 +135,16 @@ evaluator: test
 
 ### [sc-l226]
 
-SPEC 2.3.1, line 226. Disposition: `red-new`.
+SPEC 2.3.1, line 226. Disposition: `covered`.
 
 - spec-line: 226
 - source: rule
-- disposition: red-new
+- disposition: covered
 - spec-text: Cyphr requires specific Coz semantics. All cozies must have the fields:
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_1_coz_missing_tmb_now_or_typ_is_rejected`
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_1_coz_missing_alg_is_rejected`
-- fails when: a coz missing `tmb`, `now` or `typ` is accepted (green test), or a coz missing `alg` is accepted (red today: `verify_coz` never reads `pay.alg`).
+- fails when: a coz missing `tmb`, `now` or `typ` is accepted (green test), or a coz missing `alg` is accepted (green: `verify_coz` and `verify_and_record_action` require `pay.alg == key.alg`).
 
 ```claim
 kind: requirement
@@ -478,11 +476,11 @@ evaluator: none
 
 ### [sc-l1058]
 
-SPEC 6.4, line 1058. Disposition: `red-existing`.
+SPEC 6.4, line 1058. Disposition: `covered`.
 
 - spec-line: 1058
 - source: rule
-- disposition: red-existing
+- disposition: covered
 - spec-text: A revoke is a self-signed declaration that a key is compromised and should never
 - tests:
   - `rs/cyphr/tests/key_auth.rs::d3_revoked_key_cannot_be_readded_by_key_create`
@@ -490,7 +488,7 @@ SPEC 6.4, line 1058. Disposition: `red-existing`.
   - `rs/cyphr/tests/key_auth.rs::d3_revoked_key_cannot_sign_after_readd_attempt`
   - `rs/cyphr/tests/signer_seam.rs::revoked_signer_is_key_revoked`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/revoked_key_fails]`
-- fails when: a revoked key is re-added by `key/create` or `key/replace` (red today, KA1T), or still signs a commit or action (green).
+- fails when: a revoked key is re-added by `key/create` or `key/replace` or still signs a commit or action (all green).
 
 ```claim
 kind: requirement

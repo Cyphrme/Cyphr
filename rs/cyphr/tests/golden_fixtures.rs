@@ -49,22 +49,17 @@ fn load_pool() -> Pool {
     Pool::load(&path).expect("failed to load pool.toml")
 }
 
-/// Try to convert a pool key to domain key, returning None for unsupported algorithms.
-fn try_pool_key_to_domain(pk: &PoolKey) -> Option<Key> {
+/// Convert a pool key to a domain key. An unsupported algorithm or key
+/// material the checked `Key` constructor refuses is the genesis error the
+/// vector may declare.
+fn try_pool_key_to_domain(pk: &PoolKey) -> Result<Key, cyphr::error::Error> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).ok()?;
-    let tmb = pk.compute_tmb().ok()?;
+    let unsupported = || cyphr::error::Error::UnsupportedAlgorithm(pk.alg.clone());
+    let pub_bytes = Base64UrlUnpadded::decode_vec(&pk.pub_key).map_err(|_| unsupported())?;
+    let tmb = pk.compute_tmb().map_err(|_| unsupported())?;
 
-    Some(Key {
-        alg: pk.alg.clone(),
-        tmb,
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    })
+    Key::new(pk.alg.clone(), tmb, pub_bytes)
 }
 
 fn error_name(e: &cyphr::error::Error) -> &'static str {
@@ -342,25 +337,25 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         .collect();
 
     // Try to convert pool keys to domain keys (may fail for unsupported algs)
-    let genesis_keys: Result<Vec<Key>, &str> = pool_keys
+    let genesis_keys: Result<Vec<Key>, cyphr::error::Error> = pool_keys
         .iter()
-        .map(|pk| try_pool_key_to_domain(pk).ok_or("UnsupportedAlgorithm"))
+        .map(|pk| try_pool_key_to_domain(pk))
         .collect();
 
     // Handle genesis-time errors (e.g., unsupported algorithm)
     let genesis_keys = match genesis_keys {
         Ok(keys) => keys,
-        Err(_) => {
-            // Genesis failed (unsupported algorithm)
+        Err(e) => {
+            // Genesis failed (e.g. unsupported algorithm)
             if let Some(expected) = expected_error {
-                if expected == "UnsupportedAlgorithm" {
+                if expected == error_name(&e) {
                     println!("  ✓ {} (expected error: {})", fixture.name, expected);
                     return;
                 }
             }
             panic!(
-                "{}: genesis failed due to unsupported algorithm, but expected error was {:?}",
-                fixture.name, expected_error
+                "{}: genesis failed with {:?}, but expected error was {:?}",
+                fixture.name, e, expected_error
             );
         },
     };
@@ -476,15 +471,12 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                                 .expect("invalid key pub base64");
                             let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb)
                                 .expect("invalid key tmb base64");
-                            Key {
-                                alg: ke.alg.clone(),
-                                tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-                                pub_key: pub_bytes,
-                                first_seen: 0,
-                                last_used: None,
-                                revocation: None,
-                                tag: None,
-                            }
+                            Key::new(
+                                ke.alg.clone(),
+                                coz::Thumbprint::from_bytes(tmb_bytes),
+                                pub_bytes,
+                            )
+                            .expect("key binds its tmb")
                         })
                     } else {
                         None
@@ -689,4 +681,10 @@ fn test_golden_lifecycle() {
 #[test]
 fn test_golden_witness() {
     run_golden_dir("witness");
+}
+
+/// Key-authentication vectors (SPEC 6.4): a revoked key is never re-added.
+#[test]
+fn test_golden_key_auth() {
+    run_golden_dir("key_auth");
 }

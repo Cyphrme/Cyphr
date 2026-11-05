@@ -478,7 +478,7 @@ impl<'a> Generator<'a> {
         // Convert pool keys to cyphr keys
         let keys: Vec<cyphr::Key> = key_names
             .iter()
-            .map(|name| self.pool_key_to_cyphr_key(name))
+            .map(|name| self.pool_key_to_cyphr_key(name, test_name))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Auto-promotion: 1 key = implicit, >1 = explicit
@@ -498,7 +498,7 @@ impl<'a> Generator<'a> {
     }
 
     /// Convert a pool key name to a cyphr::Key.
-    fn pool_key_to_cyphr_key(&self, name: &str) -> Result<cyphr::Key, Error> {
+    fn pool_key_to_cyphr_key(&self, name: &str, test_name: &str) -> Result<cyphr::Key, Error> {
         let pool_key = self.resolve_key(name)?;
         let tmb = pool_key.compute_tmb()?;
         let pub_bytes = Base64UrlUnpadded::decode_vec(&pool_key.pub_key).map_err(|e| {
@@ -507,15 +507,16 @@ impl<'a> Generator<'a> {
             }
         })?;
 
-        Ok(cyphr::Key {
-            alg: pool_key.alg.clone(),
-            tmb,
-            pub_key: pub_bytes,
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: pool_key.tag.clone(),
-        })
+        // The constructor refuses an unknown alg or a tmb that is not the
+        // pub's thumbprint; surface that as the test's genesis failure so a
+        // declared `expected.error` is still checked against it.
+        let key = cyphr::Key::new(pool_key.alg.clone(), tmb, pub_bytes).map_err(|source| {
+            Error::GenesisFailed {
+                name: test_name.to_string(),
+                source,
+            }
+        })?;
+        Ok(key.with_tag(pool_key.tag.clone()))
     }
 
     /// Build a `CozSignerInfo` (alg, prv, pub, tmb_b64, now) for `name`, for
@@ -632,7 +633,7 @@ impl<'a> Generator<'a> {
                         Err(Error::MissingPrivateKey { .. }) => {},
                         Err(e) => return Err(e),
                     }
-                    Some(self.pool_key_to_cyphr_key(target_name)?)
+                    Some(self.pool_key_to_cyphr_key(target_name, test_name)?)
                 } else {
                     None
                 };

@@ -18,11 +18,11 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
                 .active_keys()
                 .map(|k| {
                     serde_json::json!({
-                        "tmb": k.tmb.to_b64(),
-                        "alg": k.alg,
-                        "tag": k.tag,
-                        "first_seen": k.first_seen,
-                        "last_used": k.last_used,
+                        "tmb": k.tmb().to_b64(),
+                        "alg": k.alg(),
+                        "tag": k.tag(),
+                        "first_seen": k.first_seen(),
+                        "last_used": k.last_used(),
                     })
                 })
                 .collect();
@@ -51,8 +51,8 @@ pub fn run(cli: &Cli, identity: &str) -> crate::Result<()> {
 
             println!("Active Keys ({}):", active.len());
             for key in active {
-                let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("  {} ({}) [{}]", key.tmb.to_b64(), key.alg, tag_str);
+                let tag_str = key.tag().unwrap_or("-");
+                println!("  {} ({}) [{}]", key.tmb().to_b64(), key.alg(), tag_str);
             }
 
             println!();

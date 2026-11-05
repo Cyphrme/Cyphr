@@ -453,7 +453,7 @@ fn verify_authenticated_envelope(
     // `report.pr` (a bare b64ut genesis identifier, SPEC §2.2.3's DEFAULT
     // form) and `principal_id` share the identical wire form -- a direct
     // string comparison, no re-encoding needed.
-    if report.pr.to_string() != principal_id {
+    if report.pr.to_string() != cyphr_storage::engine::bare_digest(principal_id) {
         return Err(SyncFailure::PrincipalMismatch);
     }
 

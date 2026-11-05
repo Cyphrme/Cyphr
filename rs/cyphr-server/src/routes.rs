@@ -216,7 +216,7 @@ pub async fn tip(
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
     let payload = TipResponse {
-        principal_id: t.principal_id.clone(),
+        principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
@@ -284,7 +284,7 @@ async fn sign_tip_attestation(
     let coz = receipt::tip_report(
         identity,
         crate::auth::server_now(),
-        t.principal_id.clone(),
+        cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         commit_sequence(t.commit_count)?,
         t.commit_id.clone(),
         &roots,
@@ -373,7 +373,7 @@ pub async fn patch(
         .collect();
 
     let payload = PatchResponseBody {
-        principal_id: response.principal_id,
+        principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
         entries,
     };
 
@@ -468,7 +468,8 @@ pub async fn push(
     // server never attempts to sign a receipt, so it stays free to accept
     // any storage-key-shaped `principal_id`, exactly as before.
     if state.attestor_identity().is_some()
-        && receipt::parse_genesis_id_str(&request.principal_id).is_err()
+        && receipt::parse_genesis_id_str(cyphr_storage::engine::bare_digest(&request.principal_id))
+            .is_err()
     {
         return Err(AppError::bad_request(format!(
             "principal_id is not a canonical genesis identifier: {}",
@@ -584,7 +585,7 @@ pub async fn push(
             let coz = receipt::commit_receipt(
                 identity,
                 crate::auth::server_now(),
-                t.principal_id,
+                cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
                 commit_sequence(t.commit_count)?,
                 t.commit_id,
                 &roots,
@@ -665,10 +666,10 @@ pub async fn identity(State(state): State<Arc<AppState>>) -> Result<impl IntoRes
                     pub_key: Base64UrlUnpadded::encode_string(identity.pub_key()),
                     tmb: Base64UrlUnpadded::encode_string(tmb.as_bytes()),
                     genesis: GenesisKeyInfo {
-                        alg: genesis_key.alg.clone(),
-                        pub_key: Base64UrlUnpadded::encode_string(&genesis_key.pub_key),
-                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes()),
-                        first_seen: genesis_key.first_seen,
+                        alg: genesis_key.alg().to_owned(),
+                        pub_key: Base64UrlUnpadded::encode_string(genesis_key.pub_key()),
+                        tmb: Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes()),
+                        first_seen: genesis_key.first_seen(),
                     },
                 }
             },
@@ -784,21 +785,21 @@ mod commit_count_underflow_tests {
     /// freshly generated keypair rather than the shared `test_fixtures`
     /// pool) because that helper lives in the separate integration-test
     /// crate this unit-test module cannot depend on.
-    async fn push_test_genesis(state: &AppState, principal_id: &str, now: i64) {
+    ///
+    /// Returns the principal id the genesis derives (SPEC §3.1), the only
+    /// id the engine accepts for this commit.
+    async fn push_test_genesis(state: &AppState, now: i64) -> String {
         let golden_kp = coz::Alg::Ed25519.generate_keypair();
         let golden_tmb = golden_kp
             .alg
             .compute_thumbprint(&golden_kp.pub_bytes)
             .expect("golden thumbprint");
-        let golden_key = cyphr::Key {
-            alg: golden_kp.alg.name().to_string(),
-            tmb: golden_tmb.clone(),
-            pub_key: golden_kp.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let golden_key = cyphr::Key::new(
+            golden_kp.alg.name().to_string(),
+            golden_tmb.clone(),
+            golden_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb");
 
         let new_kp = coz::Alg::Ed25519.generate_keypair();
         let new_tmb = new_kp
@@ -829,15 +830,13 @@ mod commit_count_underflow_tests {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
 
-        let new_key = cyphr::Key {
-            alg: new_kp.alg.name().to_string(),
-            tmb: new_tmb,
-            pub_key: new_kp.pub_bytes.clone(),
-            first_seen: now,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let new_key = cyphr::Key::new(
+            new_kp.alg.name().to_string(),
+            new_tmb,
+            new_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
 
         let mut principal =
             cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
@@ -892,8 +891,8 @@ mod commit_count_underflow_tests {
         closing.as_object_mut().unwrap().insert(
             "key".to_string(),
             serde_json::json!({
-                "alg": golden_key.alg,
-                "pub": Base64UrlUnpadded::encode_string(&golden_key.pub_key),
+                "alg": golden_key.alg(),
+                "pub": Base64UrlUnpadded::encode_string(golden_key.pub_key()),
                 "tmb": golden_tmb_b64,
             }),
         );
@@ -903,12 +902,17 @@ mod commit_count_underflow_tests {
         let last = all_blobs.len() - 1;
         all_blobs[last] = closing_blob;
 
+        let principal_id = cyphr_storage::engine::genesis_principal_id(
+            &cyphr_storage::Genesis::Implicit(golden_key.clone()),
+        )
+        .expect("genesis-derived principal id");
         let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
         state
             .engine
-            .submit_commit(principal_id, None, &blob_refs)
+            .submit_commit(&principal_id, None, &blob_refs)
             .await
             .expect("genesis push succeeds");
+        principal_id
     }
 
     /// Positive control: proves this suite's harness genuinely exercises
@@ -920,8 +924,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_legitimate_tip_signs_correct_sequence() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_000).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_000).await;
 
         let tip = state
             .engine
@@ -969,8 +972,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_zero_commit_count_never_wraps_or_panics() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x62u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_100).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_100).await;
 
         let real_tip = state
             .engine

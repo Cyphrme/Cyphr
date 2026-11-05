@@ -376,15 +376,15 @@ pub(crate) fn key_entry_to_key(entry: &KeyEntry) -> Result<Key, LoadError> {
             message: e.to_string(),
         })?;
 
-    Ok(Key {
-        alg: entry.alg.clone(),
-        tmb: Thumbprint::from_bytes(tmb_bytes),
+    // The one place stored/wire key material becomes a `Key`: the
+    // constructor rejects a tmb that is not the thumbprint of the pub.
+    Ok(Key::new(
+        entry.alg.clone(),
+        Thumbprint::from_bytes(tmb_bytes),
         pub_key,
-        first_seen: entry.now.unwrap_or(0),
-        last_used: None,
-        revocation: None,
-        tag: entry.tag.clone(),
-    })
+    )?
+    .with_first_seen(entry.now.unwrap_or(0))
+    .with_tag(entry.tag.clone()))
 }
 
 /// Compute Coz digest for an entry.
@@ -413,15 +413,9 @@ mod tests {
     use super::*;
 
     fn make_test_key(id: u8) -> Key {
-        Key {
-            alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 32]),
-            pub_key: vec![id; 64],
-            first_seen: 1000,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+        Key::from_pub_key("ES256", vec![id; 64])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     #[test]
@@ -439,8 +433,8 @@ mod tests {
             "PG should be None before principal/create"
         );
         assert_eq!(principal.active_key_count(), 2);
-        assert!(principal.is_key_active(&key1.tmb));
-        assert!(principal.is_key_active(&key2.tmb));
+        assert!(principal.is_key_active(key1.tmb()));
+        assert!(principal.is_key_active(key2.tmb()));
     }
 
     #[test]
@@ -459,7 +453,7 @@ mod tests {
     fn replay_rejects_commit_missing_typ() {
         let key = make_test_key(0xAA);
         let malformed = serde_json::json!({
-            "pay": { "alg": "ES256", "tmb": key.tmb.to_b64(), "now": 1000 },
+            "pay": { "alg": "ES256", "tmb": key.tmb().to_b64(), "now": 1000 },
             "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         });
         let commit = CommitEntry::new(

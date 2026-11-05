@@ -23,8 +23,9 @@ use cyphr_server::build_router;
 mod common;
 
 use common::{
-    bootstrap_principal, build_raw_blobs, envelope_payload, get_json, keyless_server, load_golden,
-    load_pool, make_genesis, post_json, sign_key_create_commit,
+    bootstrap_principal, build_raw_blobs, envelope_payload, fixture_principal_id, get_json,
+    golden_principal_id, implicit_principal_id, keyless_server, load_golden, load_pool,
+    make_genesis, post_json, sign_key_create_commit,
 };
 
 // ========================================================================
@@ -35,7 +36,8 @@ use common::{
 #[tokio::test]
 async fn tip_after_bootstrap() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "e2e-tip";
+    let principal_id = fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -52,7 +54,11 @@ async fn tip_after_bootstrap() {
         commits.len() as u64,
         "tip commit_count should match number of submitted commits"
     );
-    assert_eq!(tip["principal_id"], principal_id);
+    assert_eq!(
+        tip["principal_id"],
+        cyphr_storage::engine::bare_digest(principal_id),
+        "the wire spelling of an id is its bare digest"
+    );
 
     let engine_tip = state
         .engine
@@ -71,7 +77,8 @@ async fn tip_after_bootstrap() {
 #[tokio::test]
 async fn patch_after_bootstrap() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "e2e-patch";
+    let principal_id = fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -82,7 +89,11 @@ async fn patch_after_bootstrap() {
     assert_eq!(status, StatusCode::OK);
     let patch = envelope_payload(&envelope);
 
-    assert_eq!(patch["principal_id"], principal_id);
+    assert_eq!(
+        patch["principal_id"],
+        cyphr_storage::engine::bare_digest(principal_id),
+        "the wire spelling of an id is its bare digest"
+    );
     let entries = patch["entries"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
     assert_eq!(
@@ -108,7 +119,8 @@ async fn patch_after_bootstrap() {
 #[tokio::test]
 async fn patch_with_range() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let principal_id = "e2e-patch-range";
+    let principal_id = fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
 
     let (state, _dir) = keyless_server();
     bootstrap_principal(&state, principal_id, &fixture).await;
@@ -240,7 +252,8 @@ async fn push_malformed_json_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
     let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let principal_id = "e2e-concurrent-same-principal";
+    let principal_id = fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
 
     let (state, _dir) = keyless_server();
     let pool = load_pool();
@@ -283,6 +296,7 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
     let mut handles = Vec::with_capacity(n);
     for new_key_name in candidate_keys {
         let state = state.clone();
+        let principal_id = principal_id.to_string();
         let genesis_keys = genesis_keys.clone();
         let fresh_principal = cyphr_storage::load_principal_from_commits(
             make_genesis(&genesis_keys),
@@ -301,7 +315,7 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
             state
                 .engine
                 .submit_commit(
-                    "e2e-concurrent-same-principal",
+                    &principal_id,
                     Some(make_genesis(&genesis_keys)),
                     &variant_slices,
                 )
@@ -353,38 +367,101 @@ async fn submit_commit_concurrent_same_principal_serializes_and_conflicts() {
 /// choke point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn submit_commit_concurrent_different_principals_do_not_block() {
-    let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let m = 6;
-    let principal_ids: Vec<String> = (0..m)
-        .map(|i| format!("e2e-concurrent-distinct-{i}"))
+    let pool = load_pool();
+    // Each principal's id is derived from its genesis key (SPEC 3.1), so M
+    // distinct principals need M distinct genesis keys, each signing its own
+    // chain of three `key/create` commits.
+    let signers = [
+        "golden",
+        "alice",
+        "bob",
+        "carol",
+        "diana_es384",
+        "eve_ed25519",
+    ];
+    let m = signers.len();
+    let new_keys = |signer: &str| -> Vec<&'static str> {
+        ["key_a", "key_b", "alice", "bob"]
+            .into_iter()
+            .filter(|k| *k != signer)
+            .take(3)
+            .collect()
+    };
+    let genesis_of = |signer: &str| {
+        let key = pool.get(signer).expect("signer key in pool");
+        cyphr_storage::Genesis::Implicit(
+            cyphr::Key::new(
+                key.alg.clone(),
+                key.compute_tmb().expect("signer tmb"),
+                Base64UrlUnpadded::decode_vec(&key.pub_key).expect("signer pub b64"),
+            )
+            .expect("key binds its tmb"),
+        )
+    };
+    let principal_ids: Vec<String> = signers
+        .iter()
+        .map(|s| implicit_principal_id(&pool, s))
         .collect();
+    // The next key/create commit for `signer`'s principal, signed against
+    // the state the engine currently holds for it.
+    let next_commit = |state: &std::sync::Arc<cyphr_server::AppState>,
+                       idx: usize,
+                       new_key: &'static str,
+                       now: i64| {
+        let state = state.clone();
+        let signer = signers[idx];
+        let pid = principal_ids[idx].clone();
+        let genesis = genesis_of(signer);
+        let pool = &pool;
+        async move {
+            let principal = state
+                .engine
+                .load_principal(&pid, genesis)
+                .await
+                .expect("load principal at its current state");
+            // The engine's principal is storage-backed; replay its commits
+            // onto an in-memory one, which is what the signing helper takes.
+            let entries = cyphr_storage::export_commits(&principal).expect("export commits");
+            let fresh = cyphr_storage::load_principal_from_commits(genesis_of(signer), &entries)
+                .expect("replay commits onto a fresh principal");
+            sign_key_create_commit(fresh, pool, signer, new_key, now)
+        }
+    };
 
     let (state, _dir) = keyless_server();
-    for pid in &principal_ids {
-        let commit0_blobs = build_raw_blobs(&commits[0]);
+    for (i, signer) in signers.iter().enumerate() {
+        let principal = cyphr::Principal::implicit(match genesis_of(signer) {
+            cyphr_storage::Genesis::Implicit(k) => k,
+            cyphr_storage::Genesis::Explicit(_) => unreachable!("genesis_of builds implicit"),
+        })
+        .expect("implicit genesis");
+        let commit0_blobs =
+            sign_key_create_commit(principal, &pool, signer, new_keys(signer)[0], 1_700_000_100);
         let commit0_slices: Vec<&[u8]> = commit0_blobs.iter().map(|b| b.as_slice()).collect();
         state
             .engine
-            .submit_commit(pid, Some(make_genesis(genesis_keys)), &commit0_slices)
+            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &commit0_slices)
             .await
             .expect("bootstrap commit 0 failed");
     }
 
     // Concurrent: submit commit 1 for every distinct principal at once.
+    let mut commit1_blobs = Vec::with_capacity(m);
+    for (i, signer) in signers.iter().enumerate() {
+        commit1_blobs.push(next_commit(&state, i, new_keys(signer)[1], 1_700_000_200).await);
+    }
     let concurrent_start = std::time::Instant::now();
     let mut handles = Vec::with_capacity(m);
-    for pid in principal_ids.clone() {
+    for (i, signer) in signers.iter().enumerate() {
         let state = state.clone();
-        let genesis_keys = genesis_keys.clone();
-        let commit1_blobs = build_raw_blobs(&commits[1]);
+        let pid = principal_ids[i].clone();
+        let genesis = genesis_of(signer);
+        let blobs = commit1_blobs[i].clone();
         handles.push(tokio::spawn(async move {
-            let commit1_slices: Vec<&[u8]> = commit1_blobs.iter().map(|b| b.as_slice()).collect();
+            let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
             state
                 .engine
-                .submit_commit(&pid, Some(make_genesis(&genesis_keys)), &commit1_slices)
+                .submit_commit(&pid, Some(genesis), &slices)
                 .await
         }));
     }
@@ -396,15 +473,19 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
     }
     let concurrent_elapsed = concurrent_start.elapsed();
 
-    // Sequential baseline: the same M submissions, one at a time (commit 2,
-    // so it isn't rejected as an already-applied duplicate of commit 1).
+    // Sequential baseline: the same M submissions, one at a time (a further
+    // commit, so it isn't rejected as an already-applied duplicate of commit
+    // 1). Signed up front so only submission is timed.
+    let mut commit2_blobs = Vec::with_capacity(m);
+    for (i, signer) in signers.iter().enumerate() {
+        commit2_blobs.push(next_commit(&state, i, new_keys(signer)[2], 1_700_000_300).await);
+    }
     let sequential_start = std::time::Instant::now();
-    for pid in &principal_ids {
-        let commit2_blobs = build_raw_blobs(&commits[2]);
-        let commit2_slices: Vec<&[u8]> = commit2_blobs.iter().map(|b| b.as_slice()).collect();
+    for (i, signer) in signers.iter().enumerate() {
+        let slices: Vec<&[u8]> = commit2_blobs[i].iter().map(|b| b.as_slice()).collect();
         state
             .engine
-            .submit_commit(pid, Some(make_genesis(genesis_keys)), &commit2_slices)
+            .submit_commit(&principal_ids[i], Some(genesis_of(signer)), &slices)
             .await
             .expect("sequential baseline submission should succeed");
     }
@@ -451,15 +532,12 @@ async fn submit_commit_concurrent_different_principals_do_not_block() {
 async fn push_new_principal_happy_path() {
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key {
-        alg: golden.alg.clone(),
-        tmb: golden.compute_tmb().expect("golden tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
 
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let now = 1_700_000_000;
@@ -476,16 +554,16 @@ async fn push_new_principal_happy_path() {
     closing.as_object_mut().unwrap().insert(
         "key".to_string(),
         serde_json::json!({
-            "alg": golden_key.alg,
+            "alg": golden_key.alg(),
             "pub": golden.pub_key,
-            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb.as_bytes()),
+            "tmb": Base64UrlUnpadded::encode_string(golden_key.tmb().as_bytes()),
         }),
     );
     blobs[closing_idx] = serde_json::to_vec(&closing).unwrap();
 
-    let principal_id = "http-happy-path";
+    let principal_id = golden_principal_id(&pool);
     let body = serde_json::json!({
-        "principal_id": principal_id,
+        "principal_id": &principal_id,
         "blobs": blobs
             .iter()
             .map(|b| Base64UrlUnpadded::encode_string(b))

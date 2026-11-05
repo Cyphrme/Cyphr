@@ -38,6 +38,18 @@ pub enum Error {
     #[error("malformed payload")]
     MalformedPayload,
 
+    /// A key's `tmb` is not the thumbprint of its public key.
+    #[error("key tmb does not match its public key")]
+    TmbMismatch,
+
+    /// `pay.alg` is absent or differs from the signing key's algorithm.
+    #[error("pay alg does not match signing key alg")]
+    AlgMismatch,
+
+    /// The supplied `czd` is not the digest of the signed bytes.
+    #[error("czd does not match signed bytes")]
+    CzdMismatch,
+
     /// `key/create` for key already in KS.
     #[error("duplicate key")]
     DuplicateKey,

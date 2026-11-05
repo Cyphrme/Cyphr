@@ -118,10 +118,10 @@ struct GenesisKeyRecord {
 impl GenesisKeyRecord {
     fn from_key(key: &cyphr::Key) -> Self {
         Self {
-            alg: key.alg.clone(),
-            pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
-            tmb: Base64UrlUnpadded::encode_string(key.tmb.as_bytes()),
-            first_seen: key.first_seen,
+            alg: key.alg().to_owned(),
+            pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+            tmb: Base64UrlUnpadded::encode_string(key.tmb().as_bytes()),
+            first_seen: key.first_seen(),
         }
     }
 
@@ -130,15 +130,13 @@ impl GenesisKeyRecord {
             .map_err(|_| ServerPrincipalError::RecordMismatch)?;
         let tmb = Base64UrlUnpadded::decode_vec(&self.tmb)
             .map_err(|_| ServerPrincipalError::RecordMismatch)?;
-        Ok(cyphr::Key {
-            alg: self.alg.clone(),
-            tmb: coz::Thumbprint::from_bytes(tmb),
-            pub_key,
-            first_seen: self.first_seen,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        })
+        // A record whose tmb is not its pub's thumbprint is a mismatched
+        // (tampered or corrupt) record, like any other disagreement.
+        Ok(
+            cyphr::Key::new(self.alg.clone(), coz::Thumbprint::from_bytes(tmb), pub_key)
+                .map_err(|_| ServerPrincipalError::RecordMismatch)?
+                .with_first_seen(self.first_seen),
+        )
     }
 }
 
@@ -335,15 +333,13 @@ impl ServerPrincipal {
             .compute_thumbprint(&new_keypair.pub_bytes)
             .ok_or_else(|| ServerPrincipalError::Signing(new_keypair.alg.name().to_string()))?;
         let new_tmb_b64 = Base64UrlUnpadded::encode_string(new_tmb.as_bytes());
-        let new_key = cyphr::Key {
-            alg: new_keypair.alg.name().to_string(),
-            tmb: new_tmb,
-            pub_key: new_keypair.pub_bytes.clone(),
-            first_seen: now,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let new_key = cyphr::Key::new(
+            new_keypair.alg.name().to_string(),
+            new_tmb,
+            new_keypair.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
 
         let pay = canonical_pay(json!({
             "alg": alg,
@@ -420,15 +416,13 @@ fn identity_thumbprint(identity: &ServerIdentity) -> Result<coz::Thumbprint, Ser
 fn genesis_key_from_identity(
     identity: &ServerIdentity,
 ) -> Result<cyphr::Key, ServerPrincipalError> {
-    Ok(cyphr::Key {
-        alg: identity.alg().name().to_string(),
-        tmb: identity_thumbprint(identity)?,
-        pub_key: identity.pub_key().to_vec(),
-        first_seen: GENESIS_FIRST_SEEN,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    })
+    let key = cyphr::Key::new(
+        identity.alg().name().to_string(),
+        identity_thumbprint(identity)?,
+        identity.pub_key().to_vec(),
+    )
+    .map_err(|_| ServerPrincipalError::Signing(identity.alg().name().to_string()))?;
+    Ok(key.with_first_seen(GENESIS_FIRST_SEEN))
 }
 
 /// Construct and sign the two-coz genesis commit (principal/create +
@@ -439,7 +433,7 @@ fn build_genesis(
     genesis_key: &cyphr::Key,
 ) -> Result<(String, Vec<Vec<u8>>), ServerPrincipalError> {
     let alg = identity.alg().name();
-    let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb.as_bytes());
+    let tmb_b64 = Base64UrlUnpadded::encode_string(genesis_key.tmb().as_bytes());
 
     // The PG is the nascent PR of the fresh explicit genesis — computed
     // before any commit and independent of timestamps, so it is the same
@@ -468,7 +462,7 @@ fn build_genesis(
             alg,
             identity.prv_key(),
             identity.pub_key(),
-            &genesis_key.tmb,
+            genesis_key.tmb(),
         ),
         now + 1,
         CHAIN_AUTHORITY,

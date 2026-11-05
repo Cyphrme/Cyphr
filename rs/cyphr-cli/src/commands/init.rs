@@ -85,7 +85,7 @@ pub fn run(
     // that would otherwise anchor it in storage.
     if principal.genesis_keys().len() > 1 {
         let principal_id = get_principal_id_from_principal(&principal, &keystore)?;
-        let key_tmbs = principal.active_keys().map(|k| k.tmb.to_b64()).collect();
+        let key_tmbs = principal.active_keys().map(|k| k.tmb().to_b64()).collect();
         keystore.record_genesis(&principal_id, key_tmbs)?;
     }
 
@@ -96,7 +96,7 @@ pub fn run(
     // Output result
     match cli.output {
         OutputFormat::Json => {
-            let keys: Vec<_> = principal.active_keys().map(|k| k.tmb.to_b64()).collect();
+            let keys: Vec<_> = principal.active_keys().map(|k| k.tmb().to_b64()).collect();
             let output = serde_json::json!({
                 "pr": identity_str,
                 "keys": keys,
@@ -108,8 +108,8 @@ pub fn run(
             println!("  pr: {identity_str}");
             println!("  keys:");
             for key in principal.active_keys() {
-                let tag_str = key.tag.as_deref().unwrap_or("-");
-                println!("    {} ({}) [{}]", key.tmb.to_b64(), key.alg, tag_str);
+                let tag_str = key.tag().unwrap_or("-");
+                println!("    {} ({}) [{}]", key.tmb().to_b64(), key.alg(), tag_str);
             }
             println!("  stored: {}", cli.store);
         },

@@ -64,7 +64,6 @@ async fn d2_control_push_under_derived_id_is_accepted() {
 /// canonical-form gate does not mask the defect). Red now because the
 /// handler stores the genesis under any client-chosen string: here `"bob"`.
 #[tokio::test]
-#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -78,7 +77,7 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     )
     .await;
     assert!(
-        status.is_client_error(),
+        status == StatusCode::BAD_REQUEST,
         "genesis stored under unrelated principal_id {squat:?}: {status} {body:?}"
     );
     assert_eq!(
@@ -94,7 +93,6 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
 /// `routes.rs` `push_test_genesis` shape (`[0x61; 32]`). Red now because
 /// only the id's byte length is checked.
 #[tokio::test]
-#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -109,7 +107,7 @@ async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     )
     .await;
     assert!(
-        status.is_client_error(),
+        status == StatusCode::BAD_REQUEST,
         "genesis stored under a well-formed but unrelated principal_id: {status} {body:?}"
     );
     assert_eq!(
@@ -148,7 +146,6 @@ fn substitute_sidecar_pub(body: &str, new_pub_b64: &str) -> String {
 /// checking the sidecar's `tmb == H(pub)`, accepting it under the correct
 /// derived id.
 #[tokio::test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 async fn d1_push_refuses_substituted_key_sidecar() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -161,9 +158,16 @@ async fn d1_push_refuses_substituted_key_sidecar() {
     assert_ne!(honest, forged, "premise: the body was altered");
 
     let (status, body) = post_json(app.clone(), "/push", forged).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "push accepted a key/create whose sidecar pub does not hash to its tmb: {body:?}"
+    );
+    // The refusal names the binding failure itself, not a generic malformed
+    // payload that would also fit a dropped sidecar.
     assert!(
-        status.is_client_error(),
-        "push accepted a key/create whose sidecar pub does not hash to its tmb: {status} {body:?}"
+        body.to_string().contains("does not match its public key"),
+        "the refusal must report the tmb/pub mismatch: {body:?}"
     );
     assert_eq!(
         tip_status(app, &id).await,
@@ -176,14 +180,13 @@ async fn d1_push_refuses_substituted_key_sidecar() {
 fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
-    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb: pk.compute_tmb().expect("tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
+    let dom = |pk: &test_fixtures::PoolKey| {
+        cyphr::Key::new(
+            pk.alg.clone(),
+            pk.compute_tmb().expect("tmb"),
+            Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
+        )
+        .expect("key binds its tmb")
     };
     let b64d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
     let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
@@ -225,21 +228,19 @@ fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
 /// because `load_principal_from_commits` rebuilds the key from the stored
 /// sidecar without checking `tmb == H(pub)`.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_replay_refuses_substituted_key_sidecar() {
     let pool = load_pool();
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
     let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
 
-    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb: pk.compute_tmb().expect("tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
+    let dom = |pk: &test_fixtures::PoolKey| {
+        cyphr::Key::new(
+            pk.alg.clone(),
+            pk.compute_tmb().expect("tmb"),
+            Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
+        )
+        .expect("key binds its tmb")
     };
 
     let p = honest_history(&pool);

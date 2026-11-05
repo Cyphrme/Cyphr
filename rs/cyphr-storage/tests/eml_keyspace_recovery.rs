@@ -48,15 +48,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key {
-        alg: alg.to_string(),
-        tmb: coz::Thumbprint::from_bytes(tmb_bytes),
-        pub_key: pub_bytes,
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build raw coz blobs from a golden fixture's commit, the same shape
@@ -162,7 +159,9 @@ async fn snapshot(
 /// suffixes `storage_fjall::FjallStorage::with_database_scoped` opens.
 fn delete_principal_eml_keyspaces(db: &fjall::Database, principal_id: &str) {
     for suffix in ["_eml_leaves", "_eml_nodes", "_eml_metadata"] {
-        let name = format!("{principal_id}{suffix}");
+        // `:` in a labelled id is escaped as `$3a` by the keyspace-name
+        // sanitizer; every other character of the id passes through.
+        let name = format!("{}{suffix}", principal_id.replace(':', "$3a"));
         let handle = db
             .keyspace(&name, KeyspaceCreateOptions::default)
             .unwrap_or_else(|e| panic!("open keyspace {name} for deletion failed: {e}"));
@@ -186,7 +185,8 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
     let genesis_key_a = golden_key_to_domain(&fixture_a["genesis_keys"][0]);
     let genesis_key_b = golden_key_to_domain(&fixture_b["genesis_keys"][0]);
     assert_ne!(
-        genesis_key_a.tmb, genesis_key_b.tmb,
+        genesis_key_a.tmb(),
+        genesis_key_b.tmb(),
         "fixtures must have distinct genesis keys to exercise per-principal recovery"
     );
 
@@ -198,8 +198,14 @@ async fn replay_reconstructs_eml_after_keyspace_deletion() {
     );
     assert!(commits_b.len() >= 2, "fixture b needs multiple commits");
 
-    let principal_id_a = "eml-recovery-tenant-a";
-    let principal_id_b = "eml-recovery-tenant-b";
+    // Each principal is keyed by the id its own (distinct) genesis derives.
+    let principal_id_a =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_a.clone()))
+            .expect("genesis-derived id a");
+    let principal_id_b =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_b.clone()))
+            .expect("genesis-derived id b");
+    let (principal_id_a, principal_id_b) = (principal_id_a.as_str(), principal_id_b.as_str());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

@@ -22,15 +22,12 @@ fn signing_key() -> &'static (Vec<u8>, Key) {
     KEY.get_or_init(|| {
         let sk = SigningKey::<ES256>::generate();
         let vk = sk.verifying_key();
-        let key = Key {
-            alg: "ES256".to_string(),
-            tmb: vk.thumbprint().clone(),
-            pub_key: vk.public_key_bytes().to_vec(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let key = Key::new(
+            "ES256".to_string(),
+            vk.thumbprint().clone(),
+            vk.public_key_bytes().to_vec(),
+        )
+        .expect("key binds its tmb");
         (sk.private_key_bytes(), key)
     })
 }
@@ -52,7 +49,7 @@ fuzz_target!(|data: &[u8]| {
                 let _ = verify_coz(&pay_json, &coz_json.sig, key, czd, None);
             }
         }
-    } else if let Some((sig, cad)) = coz::sign_json(rest, "ES256", prv, &key.pub_key) {
+    } else if let Some((sig, cad)) = coz::sign_json(rest, "ES256", prv, key.pub_key()) {
         // Real signature over fuzzer-controlled payload bytes: exercises
         // verify_coz's genuine signature-valid path (czd derivation, payload
         // re-parse, VerifiedCoz construction), not just its earliest

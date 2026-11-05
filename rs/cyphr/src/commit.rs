@@ -502,7 +502,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
-            self.projected.auth.keys.values().map(|k| &k.tmb).collect();
+            self.projected.auth.keys.values().map(|k| k.tmb()).collect();
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
@@ -597,10 +597,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         // The signer is only a claim: bind it to the principal. The stored
         // key (never the signer's own copy) supplies alg and public key.
         let stored = self.resolve_signer(signer.tmb())?;
-        if signer.alg() != stored.alg {
+        if signer.alg() != stored.alg() {
             return Err(crate::error::Error::InvalidSignature);
         }
-        let alg = stored.alg.as_str();
+        let alg = stored.alg();
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
@@ -608,7 +608,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let key_refs: Vec<&crate::key::Key> = self.projected.auth.keys.values().collect();
         let active_algs = crate::state::derive_hash_algs(&key_refs);
         let thumbprints: Vec<&coz::Thumbprint> =
-            self.projected.auth.keys.values().map(|k| &k.tmb).collect();
+            self.projected.auth.keys.values().map(|k| k.tmb()).collect();
 
         // Refresh DR to the current active_algs rather than trusting the
         // cached value, which may predate a key of a new algorithm (see
@@ -647,7 +647,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("alg".to_string(), json!(alg));
         pay.insert("arrow".to_string(), json!(arrow_tagged));
         pay.insert("now".to_string(), json!(now));
-        pay.insert("tmb".to_string(), json!(stored.tmb.to_b64()));
+        pay.insert("tmb".to_string(), json!(stored.tmb().to_b64()));
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
@@ -663,7 +663,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         Ok(PreparedCommit {
             alg: alg.to_string(),
-            pub_key: stored.pub_key.clone(),
+            pub_key: stored.pub_key().to_vec(),
             signer_hash_alg,
             pay_obj,
             pay_vec,
@@ -1090,15 +1090,7 @@ mod tests {
         let pub_bytes = coz::base64ct::Base64UrlUnpadded::decode_vec(&pk.pub_key)
             .expect("invalid pool pub key base64");
         let tmb = pk.compute_tmb().expect("failed to compute tmb");
-        crate::key::Key {
-            alg: pk.alg.clone(),
-            tmb,
-            pub_key: pub_bytes,
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        }
+        crate::key::Key::new(pk.alg.clone(), tmb, pub_bytes).expect("key binds its tmb")
     }
 
     fn fold_prv_bytes(pk: &test_fixtures::PoolKey) -> Vec<u8> {

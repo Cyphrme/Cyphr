@@ -65,11 +65,11 @@ pub fn export_commits<S: eml::Storage>(
             // Collect key material at commit level
             if let Some(key) = cz.new_key() {
                 keys.push(KeyEntry {
-                    alg: key.alg.clone(),
-                    pub_key: Base64UrlUnpadded::encode_string(&key.pub_key),
-                    tmb: key.tmb.to_b64(),
-                    tag: key.tag.clone(),
-                    now: Some(key.first_seen),
+                    alg: key.alg().to_owned(),
+                    pub_key: Base64UrlUnpadded::encode_string(key.pub_key()),
+                    tmb: key.tmb().to_b64(),
+                    tag: key.tag().map(str::to_owned),
+                    now: Some(key.first_seen()),
                 });
             }
         }

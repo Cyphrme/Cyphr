@@ -337,7 +337,7 @@ pub fn derive_hash_algs(keys: &[&crate::Key]) -> Vec<HashAlg> {
     let algs: BTreeSet<HashAlg> = keys
         .iter()
         .filter(|k| k.is_active())
-        .filter_map(|k| hash_alg_from_str(&k.alg).ok())
+        .filter_map(|k| hash_alg_from_str(k.alg()).ok())
         .collect();
 
     algs.into_iter().collect()
