@@ -115,6 +115,11 @@ test as `implementation-marker-absent`.
 
 ## Requirements
 
+Each requirement below is a docket claim: a `[kebab-id]` heading
+followed by a `claim` block whose `evaluator: test` says a test must
+back it. `docs/AGENTS.md`, section "Docket — the documentation claim
+gate", describes how a claim is bound to its test.
+
 ### [arch-views-are-self-claims]
 
 A server's signed tip report claims only what that server holds for the

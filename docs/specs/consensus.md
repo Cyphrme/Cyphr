@@ -136,7 +136,9 @@ outside ±360 seconds (default) of the witness's time on receipt, and
 reject future-dated messages (§15.9). The tolerance is a default, so it
 is local witness policy, not a global protocol invariant: different
 witnesses MAY use different tolerances. The protocol-level constraint
-is [timestamp-monotonic].
+is [timestamp-monotonic]. Open for the spec author: §15.7.1 names the
+timestamp tolerance as ±60 s ("within timestamp tolerance, ±60s") where
+§15.9 gives ±360 s; SPEC does not say which governs.
 `VERIFIED: agent-check`
 
 **[timestamp-monotonic]**: Witnesses MUST track the latest known timestamp
@@ -275,7 +277,9 @@ and keys added only in it are not part of KR. Witnesses retain the
 abandoned branch only as proof of error. Resolution belongs to the
 principal alone: witnesses observe the principal's choice and adopt it;
 they do not adjudicate which branch is correct (§15.1: the principal is
-"the primary custodian of its own security and state").
+"the primary custodian of its own security and state"). §15.7.1 also
+names other ways a fork may end: "principal/merge, revocation, or
+multi-sig confirmation in Level 5+"; §15.8 does not define them.
 
 - **PRE**: Two conflicting branches exist; consensus state is Error.
 - **POST**: One branch is canonical; abandoned branch retained as proof of
@@ -284,7 +288,7 @@ they do not adjudicate which branch is correct (§15.1: the principal is
 
 #### State Jumping
 
-**[state-jump-mechanism]**: A state-jump transaction (Level 3+) advances
+**[state-jump-mechanism]**: A state-jump transaction advances
 a client's trust anchor from an old PR directly to a much later PR
 without fetching every intermediate transaction (§18, §18.1).
 
