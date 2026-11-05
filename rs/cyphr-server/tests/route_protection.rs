@@ -821,3 +821,49 @@ async fn bearer_refuses_server_signed_non_token() {
         "a genuine server signature under a non-token typ must not authorize a push: {json:?}"
     );
 }
+
+/// Backs: a session names a key that is in the chain; a token whose login
+/// key the principal does not hold (a deleted key looks identical to the
+/// chain: absent) is refused as KeyNotActive, not merely as Revoked, and
+/// a token with no login key at all is refused. Turns red if: the
+/// absent-key arm is dropped (a never-held key then authorizes) or a
+/// token without `ltmb` is admitted for an existing principal. End to
+/// end: yes. Control: the survivor test above.
+#[tokio::test]
+async fn token_key_absent_or_missing_is_refused_at_push() {
+    let (state, followup, _revoked, _survivor) = revoked_key_session().await;
+    let pool = load_pool();
+    let pid = golden_principal_id(&pool);
+    let identity = state.identity.as_ref().unwrap();
+    let stranger = coz::Alg::Ed25519
+        .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
+        .expect("thumbprint");
+    let perms = || vec!["write".to_string()];
+
+    let absent = identity
+        .issue_login_token(pid.as_str(), &stranger, perms(), real_now(), 300)
+        .expect("issue token");
+    let unbound = identity
+        .issue_token(pid.as_str(), perms(), real_now(), 300)
+        .expect("issue token");
+
+    for (label, token, reason) in [
+        ("absent key", absent, "not an active key"),
+        ("no login key", unbound, "names no login key"),
+    ] {
+        let (status, json) = send(
+            push_request(followup.clone(), Some(&token)),
+            build_router(state.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{label}: a session not backed by an active key must be refused: {json:?}"
+        );
+        assert!(
+            json.to_string().contains(reason),
+            "{label}: refused for the wrong reason (want `{reason}`): {json:?}"
+        );
+    }
+}
