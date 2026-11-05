@@ -168,21 +168,18 @@ login = { per_second = 50, burst = 100 }
 revoke = { per_second = 50, burst = 100 }
 ```
 
-Three settings are rejected at startup rather than accepted into a broken
+Two settings are rejected at startup rather than accepted into a broken
 server. Each exits 1 before binding a port:
 
 ```
 configuration error: limits.max_body_bytes is 0 -- this refuses every request body; set it to the intended cap in bytes (the default is 2 MiB)
 configuration error: limits.count_quota is 0 -- this refuses every principal's first commit; set it to the intended per-principal commit cap
-configuration error: admission pow difficulty 0 is invalid -- must be in 1..=256 leading zero bits (0 admits every nonce; blake3 digests are only 256 bits, so >256 admits none)
 ```
 
 Each of those is a value that would silently brick the server rather than
 fail visibly — a zero body cap refuses every request, a zero quota refuses
-every principal's first commit, a zero difficulty turns the anti-spam gate
-into a no-op while looking configured. They are checked because
-`difficulty` and the `[limits]` fields all default when omitted, so
-deserialization alone would not catch them.
+every principal's first commit. They are checked because the `[limits]`
+fields default when omitted, so deserialization alone would not catch them.
 
 A rate bucket of zero is treated differently. It starts, and clamps to the
 tightest live bucket instead:
@@ -435,7 +432,7 @@ maintenance window, because it is the one operation that needs downtime.
 
 Admission gates exactly one event — a principal the server has never seen
 taking up residency — and nothing else. An already-resident principal
-pushing its next commit never touches it. There are three policies.
+pushing its next commit never touches it. There are two policies.
 
 **`open` is the default, and it means what it says.** No fence is installed
 at all. Anyone who can reach the port can create principals without limit,
@@ -512,48 +509,6 @@ identity, not a subscription.
 An `invite` server whose `data/record/admission/` you restore from an older
 backup un-spends every token issued since. There is no expiry and no
 revocation list; a leaked token is live until someone uses it.
-
-**`pow` asks for proof of work instead of a secret.**
-
-```toml
-[admission]
-policy = "pow"
-difficulty = 20
-```
-
-The refusal echoes the parameters:
-
-```json
-{
-  "v": 1,
-  "payload": {
-    "error": "admission required",
-    "policy": "pow",
-    "difficulty": 20,
-    "window": "utc-hour"
-  },
-  "statement": { "kind": "unsigned" }
-}
-```
-
-The client finds a nonce, sends it as `X-Cyphr-Pow`, and gets its `201`.
-The work binds to one principal identifier and one UTC hour, so a solution
-cannot be amortized: the same nonce presented for a different principal is
-refused. Solutions from the previous hour still verify, so a client that
-solves just before the boundary is not punished; anything older is stale.
-The server holds no state for any of this, and a check costs up to two
-hashes -- one for the current hour and, since a solution from the previous
-hour still verifies, one for that hour too.
-
-**But no shipped client can compute that nonce.** The preimage — a domain
-tag, the principal id length-prefixed, then the hour and nonce as
-little-endian 64-bit integers, hashed with blake3 — is written down in the
-server's source and in the server's own test, and nowhere else. There is no
-client library, no CLI subcommand, and no specification a client author
-could implement from. The `403` tells a client the difficulty but not the
-thing it cannot guess. Turning this policy on today closes new-principal
-onboarding to everyone; `invite` is the policy to reach for until that
-changes.
 
 ## The fences
 
@@ -1079,7 +1034,6 @@ reading them here:
 
 - **No replay protection on witness sync.** The authenticated sync channel (see "Authenticating the upstream" above) verifies a signed report's pairing with local state, not its freshness — a captured, genuinely-signed response can be replayed by an on-path party while the authority advances, and a witness has no way to tell. Tracked as issue #152, gated on an open specification question about what an attestation asserts about currency.
 - **No key rotation you can perform.** The capability exists in the codebase and has no command, endpoint, or signal attached to it. A server whose signing key is compromised has no move except a new identity — which breaks every client's pin, because the `pg` changes with the genesis key.
-- **No usable proof-of-work admission.** The policy works; nothing that could talk to it exists or is documented.
 - **No metrics, no health endpoint, no access log by default.**
 - **No backup command.** `cyphr-server export` is listed in `--help` and prints `error: export is not yet implemented`. Consistent backups mean stopping the server.
 - **No token revocation and no invite expiry.** A leaked invite token is live until spent; a leaked bearer token is live until it expires, 15 minutes later.
