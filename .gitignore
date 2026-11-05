@@ -1,6 +1,5 @@
 .vscode
 target
-Cargo.lock
 .repomap*
 .ledger/
 .meetings
