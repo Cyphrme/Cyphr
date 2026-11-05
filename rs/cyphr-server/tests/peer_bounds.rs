@@ -60,7 +60,6 @@ fn assert_refused_naming(toml: &str, key: &str) {
 /// admission. Lying impl it catches: `deny_unknown_fields` on every struct
 /// but the admission tag enum (the layer the typo defeats). E2E: load path.
 #[test]
-#[ignore = "RED(N15a): unknown config keys are silently ignored (polcy -> open admission)"]
 fn unknown_key_admission_policy_typo_is_refused() {
     assert_refused_naming(
         "[admission]\npolcy = \"invite\"\ntokens_path = \"/x\"\n",
@@ -75,7 +74,6 @@ fn unknown_key_admission_policy_typo_is_refused() {
 /// Claim as above, top-level table. Catches an impl that only hardens the
 /// nested tables.
 #[test]
-#[ignore = "RED(N15a): unknown config keys are silently ignored"]
 fn unknown_key_top_level_is_refused() {
     assert_refused_naming("listn = \"127.0.0.1:1\"\n", "listn");
 }
@@ -83,14 +81,12 @@ fn unknown_key_top_level_is_refused() {
 /// Claim as above, `[limits]`. Catches an impl that skips `LimitsConfig`
 /// (its `#[serde(default)]` is the usual place a deny gets forgotten).
 #[test]
-#[ignore = "RED(N15a): unknown config keys are silently ignored"]
 fn unknown_key_limits_is_refused() {
     assert_refused_naming("[limits]\nmax_body_byte = 1\n", "max_body_byte");
 }
 
 /// Claim as above, inline `RateBucket` table.
 #[test]
-#[ignore = "RED(N15a): unknown config keys are silently ignored"]
 fn unknown_key_rate_bucket_is_refused() {
     assert_refused_naming(
         "[limits]\npush = { per_second = 1, burst = 1, bursts = 2 }\n",
@@ -101,7 +97,6 @@ fn unknown_key_rate_bucket_is_refused() {
 /// Claim as above, `[authority_identity]`: a typo here must not leave the
 /// sync channel half-configured.
 #[test]
-#[ignore = "RED(N15a): unknown config keys are silently ignored"]
 fn unknown_key_authority_identity_is_refused() {
     assert_refused_naming(
         "[authority_identity]\nalg = \"Ed25519\"\npub = \"AAAA\"\nalgg = \"x\"\n",
