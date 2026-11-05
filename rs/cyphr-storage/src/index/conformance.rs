@@ -39,6 +39,7 @@ pub fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCom
         }],
         timestamp,
         keys: Vec::new(),
+        pg: Vec::new(),
     }
 }
 
@@ -361,4 +362,152 @@ pub async fn new_indexer_methods<I: Indexer + IndexerWrite>(indexer: &I) {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Hash variants of a principal's PG (SPEC §3.7.1): the PR it held
+/// immediately BEFORE the `principal/create` commit, not that commit's own
+/// post-commit PR.
+fn pg_variants() -> Vec<String> {
+    ["SHA-256", "SHA-384", "SHA-512"]
+        .iter()
+        .map(|alg| format!("{alg}:pg-digest-{alg}"))
+        .collect()
+}
+
+/// A commit carrying `principal/create`. Its `prs` are the post-commit PR
+/// (which differs from the PG); `pg` is what the engine records for the
+/// PG-establishing commit.
+fn principal_create_commit(principal_id: &str, seq: u64) -> IndexableCommit {
+    let mut commit = make_commit(principal_id, seq, 1000 + seq as i64);
+    commit.cozies[0].typ = "cyphr.me/cyphr/principal/create".to_string();
+    commit.pg = pg_variants();
+    commit
+}
+
+/// Backs SPEC §3.7.1/§12.1 (the PG, in every hash variant, names one
+/// principal; nothing else does) at the index seam, for every backend: once
+/// the PG-establishing commit is indexed, each PG variant resolves to the
+/// principal's chain and tip; a label-forged spelling, and every PR the
+/// principal has held that is not its PG (before and after the create
+/// commit), resolve to nothing and create no principal; `clear` drops the
+/// aliases (derived, I1).
+///
+/// A unit test because the engine-level scenarios cannot tell which backend
+/// failed.
+pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let id = "SHA-256:genesis-digest";
+    indexer
+        .index_commit(&make_commit(id, 0, 1000), &token)
+        .await
+        .expect("index commit 0");
+
+    let variants = pg_variants();
+    for v in &variants {
+        assert!(
+            indexer
+                .get_commit_chain(v, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{v} resolved before the PG was established"
+        );
+    }
+
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("index principal/create commit");
+    // Re-indexing is a no-op and must not duplicate or move an alias.
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("re-index principal/create commit");
+
+    let want_chain = indexer.get_commit_chain(id, None, None).await.unwrap();
+    let want_tip = indexer.get_tip(id).await.unwrap().expect("tip");
+    assert_eq!(want_chain.len(), 2, "control: the canonical chain");
+    for v in &variants {
+        assert_eq!(
+            indexer.get_commit_chain(v, None, None).await.unwrap(),
+            want_chain,
+            "PG variant {v} does not resolve to the principal's chain"
+        );
+        assert_eq!(
+            indexer.get_tip(v).await.unwrap().as_ref(),
+            Some(&want_tip),
+            "PG variant {v} does not resolve to the principal's tip"
+        );
+    }
+
+    // Not the PG: a digest the PG has under another label, a label no
+    // variant has, and PRs the principal held (commit 0's, and the create
+    // commit's own post-commit PR).
+    let held = [format!("SHA-256:pr-{id}-0"), format!("SHA-256:pr-{id}-1")];
+    for forged in [
+        "SHA-512:pg-digest-SHA-256",
+        "SHA3-256:pg-digest-SHA-256",
+        held[0].as_str(),
+        held[1].as_str(),
+    ] {
+        assert!(
+            indexer
+                .get_commit_chain(forged, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{forged} resolved but is not the PG or the genesis id"
+        );
+        assert!(indexer.get_tip(forged).await.unwrap().is_none());
+    }
+    assert_eq!(
+        indexer.list_principals().await.unwrap().len(),
+        1,
+        "an alias must not appear as a second principal"
+    );
+
+    indexer.clear(&token).await.expect("clear");
+    for v in &variants {
+        assert!(
+            indexer
+                .get_commit_chain(v, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "alias {v} survived clear: the alias table is not derived state"
+        );
+    }
+}
+
+/// Backs the read-path DoS bound at the index seam: the established-PG
+/// marker is false until the PG-establishing commit is indexed, true for
+/// that principal only (not for a PG variant or another principal), and
+/// dropped by `clear` (derived, I1). Turns red if the marker is set early,
+/// leaks to an alias, or survives `clear`. A unit test: the engine-level
+/// test cannot tell which backend failed.
+pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let id = "SHA-256:genesis-digest";
+    indexer
+        .index_commit(&make_commit(id, 0, 1000), &token)
+        .await
+        .expect("index commit 0");
+    assert!(!indexer.is_pg_established(id).await.unwrap());
+
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("index principal/create commit");
+    assert!(indexer.is_pg_established(id).await.unwrap());
+    for v in pg_variants() {
+        assert!(
+            !indexer.is_pg_established(&v).await.unwrap(),
+            "the marker leaked to the alias {v}"
+        );
+    }
+    assert!(!indexer.is_pg_established("SHA-256:other").await.unwrap());
+    assert!(!indexer.is_pg_established("").await.unwrap());
+
+    indexer.clear(&token).await.expect("clear");
+    assert!(!indexer.is_pg_established(id).await.unwrap());
 }

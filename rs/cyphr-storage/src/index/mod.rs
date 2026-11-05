@@ -121,16 +121,33 @@ pub trait Indexer: Send + Sync {
     /// Retrieve the current tip state for a principal.
     ///
     /// Returns `None` if the principal is unknown (never indexed).
+    ///
+    /// `principal_id` may also be any hash variant of the principal's PG
+    /// (SPEC §3.7.1/§12.1): such an alias resolves to the one stored
+    /// principal. A historical PR is not an alias. The alias table is
+    /// derived from the `pg` of the PG-establishing commit and rebuilt with
+    /// the index (I1); a
+    /// stored principal id always outranks an alias, and an unknown or
+    /// forged label resolves to nothing.
     fn get_tip(
         &self,
         principal_id: &str,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send;
 
+    /// Whether the principal stored under exactly `principal_id` has
+    /// established its PG (an indexed commit carried `pg`). A cheap marker
+    /// so a caller can refuse a PG-to-be claim without replaying history.
+    /// Derived state, rebuilt with the index (I1).
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
+
     /// Retrieve the commit chain between two sequence numbers.
     ///
     /// Returns commits in sequence order, inclusive of both endpoints.
     /// If `from` is `None`, starts from genesis. If `to` is `None`,
-    /// extends to the current tip.
+    /// extends to the current tip. Resolves aliases as [`Self::get_tip`].
     fn get_commit_chain(
         &self,
         principal_id: &str,
