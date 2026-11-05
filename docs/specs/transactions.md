@@ -240,14 +240,15 @@ error `DUPLICATE`.
 
 **[transaction-id-required]**: Transaction cozies MUST contain `id` in `pay`,
 identifying the target noun. For example, for `key/create`, `id` is the key's
-`tmb`. (SPEC.md §4.3)
+`tmb`. ([SPEC §4.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#41-transaction) at `be0663f` shows `id` in its
+example; it states no rule in words.)
 `VERIFIED: agent-check — new 2026-03-09 per S-3`
 
 #### Wire Format
 
 **[wire-format-plurals]**: JSON wire format MUST use plural field names. The
 singular forms `tx`, `key`, and `coz` are prohibited. Valid fields: `txs`,
-`keys`, `cozies`. (SPEC.md JSON Wire Format)
+`keys`, `cozies`. ([SPEC §4.6.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#461-plurals) at `be0663f`)
 `VERIFIED: agent-check — new 2026-03-09 per S-2`
 
 **[key-sideband-optional]**: The public key material required to authenticate a transaction (e.g., verifying a `key/create` signature) MAY be transmitted via sideband data or extracted from a parent structure. The `coz` JSON structure itself does not strictly mandate embedding full public key material if it can be retrieved deterministically.
@@ -412,24 +413,27 @@ explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 - **POST**: DR = MR(DT) is included as a component of SR (and thus PR).
   `VERIFIED: agent-check`
 
-**[witness-register-create]**: `cyphr.me/cyphr/witness/register/create` is a
+**[witness-register-create]**: [SPEC §13.5.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#1351-witness-registration)
+defines `cyphr.me/cyphr/witness/register/create` (no longer routed by `cyphr-server`) as a
 data action that registers an external witness (represented as a principal)
-with the principal's clients. The transaction MUST NOT mutate PT or AT and MUST NOT
+with the principal's clients. The protocol message remains in SPEC and the
+golden corpus (`tests/golden/witness/`); `cyphr-server` has no registration
+endpoint and does not act on it. The transaction MUST NOT mutate PT or AT and MUST NOT
 contain `pre` (per [data-action-stateless] and [data-action-no-pre]). The payload MUST
 include `id` containing the witness principal's Principal Genesis (PG) value.
 
 - **PRE**: Signing key MUST be active in KR.
-- **POST**: Witness registration is recorded in DT (if DT exists). PR and AT remain unmodified.
+- **POST**: The registration message is recorded in DT (if DT exists). PR and AT remain unmodified.
   `VERIFIED: agent-check`
 
-**[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` is a
+**[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` (no longer routed by `cyphr-server`) is a
 data action that removes a previously registered external witness. The transaction
 MUST NOT mutate PT or AT and MUST NOT contain `pre` (per [data-action-stateless] and
 [data-action-no-pre]). The payload MUST include `id` identifying the witness
 principal's PG to remove.
 
 - **PRE**: Signing key MUST be active in KR. Witness MUST be currently registered.
-- **POST**: Witness registration is removed from DT (if DT exists). PR and AT remain unmodified.
+- **POST**: The registration message is removed from DT (if DT exists). PR and AT remain unmodified.
   `VERIFIED: agent-check`
 
 #### Nonce Transactions
