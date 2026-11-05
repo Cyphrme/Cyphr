@@ -90,15 +90,17 @@ fn harness_schedule_is_seeded_and_nonempty() {
     let nodes = ["p1", "p2", "bob"];
     for seed in 0..64u64 {
         let s = Schedule::generate(seed, &nodes, 8);
+        // Compare events, not whole schedules: `Schedule` carries its seed, so
+        // comparing it would make different seeds differ by construction.
         assert_eq!(
-            s,
-            Schedule::generate(seed, &nodes, 8),
+            s.events,
+            Schedule::generate(seed, &nodes, 8).events,
             "seed {seed} not reproducible"
         );
         assert_ne!(
-            s,
-            Schedule::generate(seed + 1, &nodes, 8),
-            "seeds {seed},{} collide",
+            s.events,
+            Schedule::generate(seed + 1, &nodes, 8).events,
+            "seeds {seed},{} yield the same events",
             seed + 1
         );
         assert!(
