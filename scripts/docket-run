@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # Bounded id-indirection runner for docket claims whose `@docket:` marker
-# names this script plus a claim id — successor to the earlier
-# `docket-test` shape, whose CLAIMS table mapped one claim id to exactly
-# one test invocation. A conjunctive requirement needing several tests
-# to jointly close it had no way to register more than one there.
+# names this script plus a claim id. A conjunctive requirement needing
+# several tests to jointly close it registers them all under one id.
 #
-# Here CLAIMS_INDEX maps a claim id to the name of a real bash ARRAY
-# (via nameref, below) — not a single joined shell string (`a && b`),
-# which would satisfy a black-box exit code without the underlying data
+# CLAIMS_INDEX maps a claim id to the name of a real bash ARRAY (via
+# nameref, below) — not a single joined shell string (`a && b`), which
+# would satisfy a black-box exit code without the underlying data
 # actually being list-shaped. Every command in the array runs, in
 # order; the claim only passes if every one of them exits 0.
 #
-# The other half of the bound this preserves from `docket-test`: a
-# marker naming this script plus a short id is fixed-length regardless
+# A marker naming this script plus a short id is fixed-length regardless
 # of how long the underlying commands are or how many a claim needs —
-# `// docket: <id> :: scripts/docket-run <id>` never risks a comment's
+# `@docket: <id> :: scripts/docket-run <id>` never risks a comment's
 # column-wrap limit the way inlining a raw multi-command invocation
 # would.
 #
@@ -60,6 +57,16 @@ declare -A CLAIMS_INDEX=(
   [arch-evidence-rides-along]="_claim_arch_evidence_rides_along"
   [arch-owner-alone-resolves]="_claim_arch_owner_alone_resolves"
   [arch-resolution-ends-fork]="_claim_arch_resolution_ends_fork"
+
+  # Sign-on claims (docs/architecture/path-a-sovereign-sign-on.md); each
+  # names the one scenario test that closes it.
+  [signon-honest-refusal]="_claim_signon_honest_refusal"
+  [signon-disowned-key]="_claim_signon_disowned_key"
+  [signon-token-kind-binding]="_claim_signon_token_kind_binding"
+  [signon-claimed-principal]="_claim_signon_claimed_principal"
+  [signon-key-active-in-principal]="_claim_signon_key_active_in_principal"
+  [signon-replay-bound]="_claim_signon_replay_bound"
+  [signon-audience-binding]="_claim_signon_audience_binding"
 )
 
 # scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
@@ -108,6 +115,28 @@ _claim_arch_owner_alone_resolves=(
 )
 _claim_arch_resolution_ends_fork=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_resolution_ends_fork -- --exact"
+)
+
+_claim_signon_honest_refusal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test keyless_matrix keyless_login_and_challenge_share_the_same_rejection -- --exact"
+)
+_claim_signon_disowned_key=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test naked_revoke revoked_key_refused_at_login_sibling_survives -- --exact"
+)
+_claim_signon_token_kind_binding=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
+)
+_claim_signon_claimed_principal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_binds_key_to_claimed_principal_not_thumbprint -- --exact"
+)
+_claim_signon_key_active_in_principal=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_key_revoked_in_claimed_principal -- --exact"
+)
+_claim_signon_replay_bound=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_replayed_challenge -- --exact"
+)
+_claim_signon_audience_binding=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_mismatched_audience -- --exact"
 )
 
 if [ "$#" -ne 1 ]; then
