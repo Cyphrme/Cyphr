@@ -48,7 +48,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key::new(alg.to_string(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's `genesis_keys` array.
@@ -136,9 +141,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
+        ),
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -316,7 +327,12 @@ async fn bootstrap_active_with_key(
     let golden = pool.get(genesis_name).expect("genesis key in pool");
     // SPEC 3.1: an implicit genesis's principal id is its key's thumbprint.
     let principal_id = golden.compute_tmb_b64().expect("genesis tmb b64");
-    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let mut blobs = sign_key_create_commit(principal, pool, genesis_name, add_key, 1_700_000_000);
 
@@ -487,7 +503,8 @@ async fn bootstrap_active_then_revoke(
 async fn login_timestamp_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
 
     let app = build_router(state.clone());
@@ -516,7 +533,8 @@ async fn login_timestamp_flow_issues_valid_token() {
 async fn login_challenge_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state.clone());
 
@@ -559,7 +577,8 @@ async fn login_challenge_flow_issues_valid_token() {
 async fn login_rejects_replayed_challenge() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state.clone());
 
@@ -593,7 +612,8 @@ async fn login_rejects_replayed_challenge() {
 async fn login_rejects_out_of_window_timestamp() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -617,7 +637,8 @@ async fn login_rejects_out_of_window_timestamp() {
 async fn login_rejects_mismatched_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -638,7 +659,8 @@ async fn login_rejects_mismatched_audience() {
 async fn login_rejects_missing_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 
@@ -693,8 +715,10 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     // P_other genuinely has key_a active; P_claimed (alice + key_b) does not.
     // Distinct genesis keys, because a principal's id is derived from its
     // genesis.
-    let other = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
-    let claimed = bootstrap_active_with_key(build_router(state.clone()), &pool, "alice", "key_b").await;
+    let other =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let claimed =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "alice", "key_b").await;
     let (other, claimed) = (other.as_str(), claimed.as_str());
 
     // key_a claiming P_other: accepted (key_a is active there).
@@ -728,7 +752,8 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
 async fn login_rejects_invalid_signature() {
     let state = login_state();
     let pool = load_pool();
-    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let pid = pid.as_str();
     let app = build_router(state);
 

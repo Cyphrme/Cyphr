@@ -22,7 +22,12 @@ fn signing_key() -> &'static (Vec<u8>, Key) {
     KEY.get_or_init(|| {
         let sk = SigningKey::<ES256>::generate();
         let vk = sk.verifying_key();
-        let key = Key::new("ES256".to_string(), vk.thumbprint().clone(), vk.public_key_bytes().to_vec()).expect("key binds its tmb");
+        let key = Key::new(
+            "ES256".to_string(),
+            vk.thumbprint().clone(),
+            vk.public_key_bytes().to_vec(),
+        )
+        .expect("key binds its tmb");
         (sk.private_key_bytes(), key)
     })
 }

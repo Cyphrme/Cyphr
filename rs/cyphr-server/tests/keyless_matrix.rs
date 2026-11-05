@@ -75,9 +75,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
+        ),
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -163,7 +169,12 @@ fn assert_unsigned_envelope(body: &serde_json::Value) -> &serde_json::Value {
 /// principal). Mirrors `push_new_principal_happy_path` in `tests/e2e.rs`.
 fn build_genesis_push_body(pool: &test_fixtures::Pool, principal_id: &str, now: i64) -> String {
     let golden = pool.get("golden").expect("golden key in pool");
-    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
     let mut blobs = sign_key_create_commit(principal, pool, "golden", "key_a", now);
 
@@ -230,7 +241,11 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
     // The id the golden implicit genesis derives (SPEC 3.1): its thumbprint.
-    let principal_id_derived = pool.get("golden").expect("golden key in pool").compute_tmb_b64().expect("golden tmb b64");
+    let principal_id_derived = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb b64");
     let principal_id = principal_id_derived.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);

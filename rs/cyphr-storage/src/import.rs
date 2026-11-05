@@ -413,7 +413,9 @@ mod tests {
     use super::*;
 
     fn make_test_key(id: u8) -> Key {
-        Key::from_pub_key("ES256", vec![id; 64]).expect("dummy key").with_first_seen(1000)
+        Key::from_pub_key("ES256", vec![id; 64])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     #[test]

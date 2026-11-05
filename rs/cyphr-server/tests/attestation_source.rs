@@ -119,7 +119,8 @@ async fn roots_derive_from_blobs() {
     let push_principal = common::implicit_principal_id(&pool, "alice");
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
 
     let (push_status, push_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
     if push_status == StatusCode::CREATED {
@@ -196,7 +197,8 @@ async fn stale_index_fails_attestation() {
     let push_principal = common::implicit_principal_id(&pool, "alice");
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
     let (push_status, push_body_res) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     let is_signed_corrupt_push = push_status == StatusCode::CREATED
@@ -274,7 +276,8 @@ async fn failure_is_typed_not_silent() {
     let push_principal = common::implicit_principal_id(&pool, "alice");
     let push_principal = push_principal.as_str();
     corrupt_indexer_tip(&state, push_principal).await;
-    let push_body_corrupt = common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
+    let push_body_corrupt =
+        common::build_genesis_push_body_with(&pool, "alice", "key_a", push_principal, now);
     let (push_status, push_res_body) = post_json(app.clone(), "/push", push_body_corrupt).await;
 
     assert!(

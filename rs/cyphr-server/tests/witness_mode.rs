@@ -82,7 +82,8 @@ async fn all_write_routes_refused() {
     let app = build_app_router(state.clone()).expect("app router initialization");
 
     let pool = load_pool();
-    let push_body = build_genesis_push_body(&pool, &common::golden_principal_id(&pool), 1_700_000_000);
+    let push_body =
+        build_genesis_push_body(&pool, &common::golden_principal_id(&pool), 1_700_000_000);
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
     let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
@@ -584,9 +585,15 @@ fn append_key_create(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
+        ),
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -636,7 +643,12 @@ fn build_two_commit_push_bodies(
     now: i64,
 ) -> (String, String) {
     let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
 
     // Commit 0 (genesis): introduce key_a, then embed the golden genesis key on
@@ -1425,7 +1437,12 @@ fn build_genesis_push_body_with(
     new_key: &str,
 ) -> String {
     let g = pool.get(signer).expect("signer key in pool");
-    let g_key = cyphr::Key::new(g.alg.clone(), g.compute_tmb().expect("signer tmb"), Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64")).expect("key binds its tmb");
+    let g_key = cyphr::Key::new(
+        g.alg.clone(),
+        g.compute_tmb().expect("signer tmb"),
+        Base64UrlUnpadded::decode_vec(&g.pub_key).expect("signer pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(g_key.clone()).expect("implicit genesis");
     let mut blobs = append_key_create(&mut principal, pool, signer, new_key, now);
     let closing = blobs.len() - 1;
@@ -1909,7 +1926,12 @@ fn build_chained_push_bodies(
 ) -> Vec<String> {
     assert!(!key_names.is_empty(), "at least a genesis key is required");
     let golden = pool.get("golden").expect("golden key");
-    let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
+    let golden_key = cyphr::Key::new(
+        golden.alg.clone(),
+        golden.compute_tmb().expect("golden tmb"),
+        Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64"),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
 
     let mut c0 = append_key_create(&mut principal, pool, "golden", key_names[0], now);

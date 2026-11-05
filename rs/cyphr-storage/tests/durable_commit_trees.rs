@@ -73,7 +73,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key::new(alg.to_string(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 fn canonicalize(val: &mut serde_json::Value) {
@@ -368,7 +373,8 @@ fn principal_replay_survives_disk_drop_and_reload() {
 
     let keys: Vec<cyphr::Key> = genesis_keys.iter().map(golden_key_to_domain).collect();
     let genesis = Genesis::Explicit(keys);
-    let principal_id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
     let principal_id = principal_id.as_str();
 
     let dir = tempfile::tempdir().expect("tempdir");

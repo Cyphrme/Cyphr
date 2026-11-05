@@ -62,7 +62,8 @@ fn golden_key_to_domain(gk: &GoldenKey) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(&gk.pub_key).expect("invalid pub base64");
     let tmb_bytes = Base64UrlUnpadded::decode_vec(&gk.tmb).expect("invalid tmb base64");
 
-    cyphr::Key::new(gk.alg.clone(), Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+    cyphr::Key::new(gk.alg.clone(), Thumbprint::from_bytes(tmb_bytes), pub_bytes)
+        .expect("key binds its tmb")
 }
 
 /// Convert Golden.genesis_keys to Genesis enum.

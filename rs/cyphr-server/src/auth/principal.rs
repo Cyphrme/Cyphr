@@ -333,7 +333,13 @@ impl ServerPrincipal {
             .compute_thumbprint(&new_keypair.pub_bytes)
             .ok_or_else(|| ServerPrincipalError::Signing(new_keypair.alg.name().to_string()))?;
         let new_tmb_b64 = Base64UrlUnpadded::encode_string(new_tmb.as_bytes());
-        let new_key = cyphr::Key::new(new_keypair.alg.name().to_string(), new_tmb, new_keypair.pub_bytes.clone()).expect("key binds its tmb").with_first_seen(now);
+        let new_key = cyphr::Key::new(
+            new_keypair.alg.name().to_string(),
+            new_tmb,
+            new_keypair.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
 
         let pay = canonical_pay(json!({
             "alg": alg,

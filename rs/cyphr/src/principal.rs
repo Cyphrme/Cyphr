@@ -1380,7 +1380,12 @@ impl<S: eml::Storage> Principal<S> {
         // Verify signer is an active key
         if !self.is_key_active(&action.signer) {
             // Check if key exists but is revoked
-            if self.auth.revoked.values().any(|k| *k.tmb() == action.signer) {
+            if self
+                .auth
+                .revoked
+                .values()
+                .any(|k| *k.tmb() == action.signer)
+            {
                 return Err(Error::KeyRevoked);
             }
             return Err(Error::UnknownKey);
@@ -1490,8 +1495,8 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // Verify signature
-        let valid =
-            coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key()).unwrap_or(false);
+        let valid = coz::verify_json(pay_json, sig, signer_key.alg(), signer_key.pub_key())
+            .unwrap_or(false);
         if !valid {
             return Err(Error::InvalidSignature);
         }
@@ -2156,7 +2161,9 @@ mod tests {
     use crate::state::StateDigest;
 
     fn make_test_key(id: u8) -> Key {
-        Key::from_pub_key("ES256", vec![id; 64]).expect("dummy key").with_first_seen(1000)
+        Key::from_pub_key("ES256", vec![id; 64])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     /// Create a dummy CozJson for test cozies.
@@ -3200,7 +3207,10 @@ mod tests {
         principal.apply_transaction_test(cz, Some(key2)).unwrap();
 
         // Signer's last_used should now be 5000
-        assert_eq!(principal.get_key(key1.tmb()).unwrap().last_used(), Some(5000));
+        assert_eq!(
+            principal.get_key(key1.tmb()).unwrap().last_used(),
+            Some(5000)
+        );
     }
 
     #[test]
@@ -3217,7 +3227,10 @@ mod tests {
 
         principal.record_action(action).unwrap();
 
-        assert_eq!(principal.get_key(key.tmb()).unwrap().last_used(), Some(3000));
+        assert_eq!(
+            principal.get_key(key.tmb()).unwrap().last_used(),
+            Some(3000)
+        );
     }
 
     // ========================================================================
@@ -3822,7 +3835,9 @@ mod tests {
     /// (which is always ES256/SHA-256), so a two-key principal registers two
     /// distinct hash algorithms from genesis.
     fn make_test_key_ed25519(id: u8) -> Key {
-        Key::from_pub_key("Ed25519", vec![id; 32]).expect("dummy key").with_first_seen(1000)
+        Key::from_pub_key("Ed25519", vec![id; 32])
+            .expect("dummy key")
+            .with_first_seen(1000)
     }
 
     /// c2/a2 — the correctness pivot of this node: for a principal with 2+

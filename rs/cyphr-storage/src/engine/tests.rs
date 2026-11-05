@@ -290,7 +290,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
 
-    cyphr::Key::new(alg.to_string(), Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+    cyphr::Key::new(
+        alg.to_string(),
+        Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build genesis from a golden fixture's genesis_keys array.

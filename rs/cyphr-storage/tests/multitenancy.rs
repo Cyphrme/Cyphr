@@ -31,7 +31,12 @@ fn golden_key_to_domain(gk: &serde_json::Value) -> cyphr::Key {
     let tmb_b64 = gk["tmb"].as_str().unwrap();
     let pub_bytes = Base64UrlUnpadded::decode_vec(pub_b64).unwrap();
     let tmb_bytes = Base64UrlUnpadded::decode_vec(tmb_b64).unwrap();
-    cyphr::Key::new(alg.to_string(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+    cyphr::Key::new(
+        alg.to_string(),
+        coz::Thumbprint::from_bytes(tmb_bytes),
+        pub_bytes,
+    )
+    .expect("key binds its tmb")
 }
 
 /// Build raw coz blobs from a golden fixture's commit, embedding key
@@ -98,7 +103,8 @@ fn two_principals_share_one_database_without_collision() {
     // The two fixtures must carry genuinely distinct genesis identities —
     // otherwise this test would not actually exercise multitenancy.
     assert_ne!(
-        genesis_key_a.tmb(), genesis_key_b.tmb(),
+        genesis_key_a.tmb(),
+        genesis_key_b.tmb(),
         "fixtures must have distinct genesis keys to exercise multitenancy"
     );
 

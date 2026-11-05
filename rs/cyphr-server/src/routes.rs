@@ -793,7 +793,12 @@ mod commit_count_underflow_tests {
             .alg
             .compute_thumbprint(&golden_kp.pub_bytes)
             .expect("golden thumbprint");
-        let golden_key = cyphr::Key::new(golden_kp.alg.name().to_string(), golden_tmb.clone(), golden_kp.pub_bytes.clone()).expect("key binds its tmb");
+        let golden_key = cyphr::Key::new(
+            golden_kp.alg.name().to_string(),
+            golden_tmb.clone(),
+            golden_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb");
 
         let new_kp = coz::Alg::Ed25519.generate_keypair();
         let new_tmb = new_kp
@@ -824,7 +829,13 @@ mod commit_count_underflow_tests {
         let czd =
             coz::czd_for_alg(&cad, &sig_bytes, golden_kp.alg.name()).expect("czd for Ed25519");
 
-        let new_key = cyphr::Key::new(new_kp.alg.name().to_string(), new_tmb, new_kp.pub_bytes.clone()).expect("key binds its tmb").with_first_seen(now);
+        let new_key = cyphr::Key::new(
+            new_kp.alg.name().to_string(),
+            new_tmb,
+            new_kp.pub_bytes.clone(),
+        )
+        .expect("key binds its tmb")
+        .with_first_seen(now);
 
         let mut principal =
             cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
@@ -890,11 +901,10 @@ mod commit_count_underflow_tests {
         let last = all_blobs.len() - 1;
         all_blobs[last] = closing_blob;
 
-        let principal_id =
-            cyphr_storage::engine::genesis_principal_id(&cyphr_storage::Genesis::Implicit(
-                golden_key.clone(),
-            ))
-            .expect("genesis-derived principal id");
+        let principal_id = cyphr_storage::engine::genesis_principal_id(
+            &cyphr_storage::Genesis::Implicit(golden_key.clone()),
+        )
+        .expect("genesis-derived principal id");
         let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
         state
             .engine

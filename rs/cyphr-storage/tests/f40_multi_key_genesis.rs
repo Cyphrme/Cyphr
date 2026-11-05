@@ -145,7 +145,8 @@ async fn submit_commit_durable_explicit_multi_key_genesis_second_commit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");
     let index_path = dir.path().join("index");
-    let principal_id = cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
+    let principal_id =
+        cyphr_storage::engine::genesis_principal_id(&genesis).expect("genesis-derived id");
     let principal_id = principal_id.as_str();
 
     let db = fjall::Database::builder(&db_path).open().expect("open db");

@@ -426,9 +426,8 @@ async fn configured_body_cap_governs_push_under_active_admission() {
     // `blobs`, so nothing about this request is rejectable by admission's
     // invite policy or the handler's own parse for any reason OTHER than
     // size.
-    let mut body: serde_json::Value =
-        serde_json::from_str(&genesis_body("golden", NOW_BASE + 60))
-            .expect("genesis body parses as JSON");
+    let mut body: serde_json::Value = serde_json::from_str(&genesis_body("golden", NOW_BASE + 60))
+        .expect("genesis body parses as JSON");
     body.as_object_mut()
         .expect("genesis body is a JSON object")
         .insert(

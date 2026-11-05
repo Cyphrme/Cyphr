@@ -18,7 +18,9 @@ use cyphr::state::HashAlg;
 use cyphr::{Key, ParsedCoz, Principal};
 
 fn make_test_key(id: u8) -> Key {
-    Key::from_pub_key("ES256".to_string(), vec![id; 64]).expect("key binds its tmb").with_first_seen(1000)
+    Key::from_pub_key("ES256".to_string(), vec![id; 64])
+        .expect("key binds its tmb")
+        .with_first_seen(1000)
 }
 
 /// A dummy `CozJson` for cozies whose signature is never checked: these

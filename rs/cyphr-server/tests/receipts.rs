@@ -364,11 +364,17 @@ async fn offline_verification_replays_chain_and_verifies_commit_receipt() {
     let discovery = &discovery_envelope["payload"];
     let pinned_pg = discovery["pg"].as_str().expect("attestor pg").to_string();
     let genesis = &discovery["genesis"];
-    let genesis_key = cyphr::Key::new(genesis["alg"].as_str().expect("genesis alg").to_string(), coz::Thumbprint::from_bytes(
+    let genesis_key = cyphr::Key::new(
+        genesis["alg"].as_str().expect("genesis alg").to_string(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(genesis["tmb"].as_str().expect("genesis tmb"))
                 .expect("valid genesis tmb base64"),
-        ), Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
-            .expect("valid genesis pub base64")).expect("key binds its tmb").with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
+        ),
+        Base64UrlUnpadded::decode_vec(genesis["pub"].as_str().expect("genesis pub"))
+            .expect("valid genesis pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(genesis["first_seen"].as_i64().expect("genesis first_seen"));
 
     // Step 2: the genesis key is a HINT, made trustless by re-deriving the
     // PG from it alone -- never trusting discovery's `pg` claim directly.

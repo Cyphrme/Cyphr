@@ -38,7 +38,9 @@ fn signer(name: &str) -> Signer {
 }
 
 fn domain_key(s: &Signer) -> Key {
-    Key::new(s.alg.clone(), s.tmb.clone(), s.pub_key.clone()).expect("key binds its tmb").with_first_seen(1_700_000_000)
+    Key::new(s.alg.clone(), s.tmb.clone(), s.pub_key.clone())
+        .expect("key binds its tmb")
+        .with_first_seen(1_700_000_000)
 }
 
 type Signed = (Vec<u8>, Vec<u8>, coz::Czd);

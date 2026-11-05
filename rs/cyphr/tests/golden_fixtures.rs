@@ -337,8 +337,10 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
         .collect();
 
     // Try to convert pool keys to domain keys (may fail for unsupported algs)
-    let genesis_keys: Result<Vec<Key>, cyphr::error::Error> =
-        pool_keys.iter().map(|pk| try_pool_key_to_domain(pk)).collect();
+    let genesis_keys: Result<Vec<Key>, cyphr::error::Error> = pool_keys
+        .iter()
+        .map(|pk| try_pool_key_to_domain(pk))
+        .collect();
 
     // Handle genesis-time errors (e.g., unsupported algorithm)
     let genesis_keys = match genesis_keys {
@@ -469,7 +471,12 @@ fn run_golden_test(fixture_path: &PathBuf, pool: &Pool) {
                                 .expect("invalid key pub base64");
                             let tmb_bytes = Base64UrlUnpadded::decode_vec(&ke.tmb)
                                 .expect("invalid key tmb base64");
-                            Key::new(ke.alg.clone(), coz::Thumbprint::from_bytes(tmb_bytes), pub_bytes).expect("key binds its tmb")
+                            Key::new(
+                                ke.alg.clone(),
+                                coz::Thumbprint::from_bytes(tmb_bytes),
+                                pub_bytes,
+                            )
+                            .expect("key binds its tmb")
                         })
                     } else {
                         None

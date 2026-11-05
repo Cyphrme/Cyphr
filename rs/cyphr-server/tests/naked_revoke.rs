@@ -350,9 +350,15 @@ fn sign_key_create_commit(
         .expect("signing supported for this algorithm");
     let czd = coz::czd_for_alg(&cad, &sig_bytes, &signer.alg).expect("czd for this algorithm");
 
-    let new_cyphr_key = cyphr::Key::new(new_key.alg.clone(), coz::Thumbprint::from_bytes(
+    let new_cyphr_key = cyphr::Key::new(
+        new_key.alg.clone(),
+        coz::Thumbprint::from_bytes(
             Base64UrlUnpadded::decode_vec(&new_tmb_b64).expect("valid new key tmb base64"),
-        ), Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64")).expect("key binds its tmb").with_first_seen(now);
+        ),
+        Base64UrlUnpadded::decode_vec(&new_key.pub_key).expect("valid new key pub base64"),
+    )
+    .expect("key binds its tmb")
+    .with_first_seen(now);
 
     let mut scope = principal.begin_commit();
     scope
@@ -412,7 +418,12 @@ fn push_body(pid: &str, blobs: &[Vec<u8>]) -> String {
 /// genesis).
 fn genesis_key(pool: &Pool, name: &str) -> cyphr::Key {
     let k = pool.get(name).expect("genesis key in pool");
-    cyphr::Key::new(k.alg.clone(), k.compute_tmb().expect("genesis tmb"), Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64")).expect("key binds its tmb")
+    cyphr::Key::new(
+        k.alg.clone(),
+        k.compute_tmb().expect("genesis tmb"),
+        Base64UrlUnpadded::decode_vec(&k.pub_key).expect("genesis pub b64"),
+    )
+    .expect("key binds its tmb")
 }
 
 /// Bootstrap `pid` over real HTTP with an implicit `genesis_name` genesis that
@@ -661,14 +672,8 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
     // Attack: try to overwrite index[V] -> attacker (alice) pub via a fresh
     // attacker principal's unauthenticated genesis push with a swapped sidecar
     // pub. `alice` is a distinct key whose private half the attacker holds.
-    let body = poison_genesis_push_body(
-        &pool,
-        &tmb_b64(&pool, "bob"),
-        "bob",
-        "key_a",
-        "alice",
-        RVK,
-    );
+    let body =
+        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),
@@ -1280,7 +1285,12 @@ fn poison_genesis_push_body(
     .expect("the victim key binds its tmb")
     .with_first_seen(now);
 
-    let genesis_key = cyphr::Key::new(genesis.alg.clone(), genesis.compute_tmb().expect("genesis tmb"), genesis_pub.clone()).expect("key binds its tmb");
+    let genesis_key = cyphr::Key::new(
+        genesis.alg.clone(),
+        genesis.compute_tmb().expect("genesis tmb"),
+        genesis_pub.clone(),
+    )
+    .expect("key binds its tmb");
     let mut principal = cyphr::Principal::implicit(genesis_key.clone()).expect("implicit genesis");
 
     let mut scope = principal.begin_commit();
@@ -1386,14 +1396,8 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
     // `pub` is swapped. `alice` is a distinct key whose private half the
     // attacker holds (to sign the forge). The attacker principal's id is its
     // genesis-derived id, so the refusal below is for the swapped sidecar.
-    let body = poison_genesis_push_body(
-        &pool,
-        &tmb_b64(&pool, "bob"),
-        "bob",
-        "key_a",
-        "alice",
-        RVK,
-    );
+    let body =
+        poison_genesis_push_body(&pool, &tmb_b64(&pool, "bob"), "bob", "key_a", "alice", RVK);
     let (pstatus, pjson) = post_push(&state, body).await;
     assert!(
         pstatus.is_client_error(),

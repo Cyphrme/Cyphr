@@ -83,7 +83,12 @@ fn pool() -> test_fixtures::Pool {
 }
 
 fn domain_key(pk: &test_fixtures::PoolKey) -> Key {
-    Key::new(pk.alg.clone(), pk.compute_tmb().expect("tmb"), B64::decode_vec(&pk.pub_key).expect("pub b64")).expect("key binds its tmb")
+    Key::new(
+        pk.alg.clone(),
+        pk.compute_tmb().expect("tmb"),
+        B64::decode_vec(&pk.pub_key).expect("pub b64"),
+    )
+    .expect("key binds its tmb")
 }
 
 /// Software signer whose private key is unreachable from outside this

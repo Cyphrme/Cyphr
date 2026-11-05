@@ -500,7 +500,8 @@ mod tests {
         let tmb = coz::Alg::Ed25519
             .compute_thumbprint(&kp.pub_bytes)
             .expect("thumbprint");
-        let key = cyphr::Key::new(kp.alg.name().to_string(), tmb.clone(), kp.pub_bytes.clone()).expect("key binds its tmb");
+        let key = cyphr::Key::new(kp.alg.name().to_string(), tmb.clone(), kp.pub_bytes.clone())
+            .expect("key binds its tmb");
         let principal = cyphr::Principal::implicit(key).expect("implicit genesis");
         TestPrincipal {
             principal,
