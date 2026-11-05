@@ -40,14 +40,16 @@ evaluator instead.
 | **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](../../SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
 | **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                             | **watcher**                                                                                         |
 
-One role, two names: `SPEC.md` §14.2 names the external account that holds delegated
-recovery permissions a **Recovery Authority** (_"**External Recovery** Where some
-permissions are delegated to an external account, a **Recovery Authority**."_), and §14.6
-describes the same actor in the recovery flow as the agent, whose recovery transaction
-_"manually links"_ the new PR to the original PG. The specification does not define them
-as separate roles, so this document treats them as one and calls it the recovery agent.
-Whether every admission of such an agent is a fresh trust root is open; see
-[what is open](#what-is-open).
+Recovery agent and Recovery Authority: `SPEC.md` §14.2 names the external account that
+holds delegated recovery permissions a **Recovery Authority** (_"**External Recovery**
+Where some permissions are delegated to an external account, a **Recovery Authority**."_).
+§14.6, the recovery flow, uses both names: the user contacts the _"recovery agent"_, the
+agent verifies identity and signs the recovery transaction, and the new PR is _"manually
+linked to the original PG by the Recovery Authority's recovery transaction."_ The
+specification does not define them as separate roles, so this document treats them as one
+and calls it the recovery agent. Whether they are one role is a question for nrd and the
+specification's author, not settled here. Whether every admission of such an agent is a
+fresh trust root is also open; see [what is open](#what-is-open).
 
 "Attestor" here is the cure name only — not the **server tier** this repository's own
 specifications call `attestor` (`docs/specs/server-identity.md`, `docs/specs/receipts.md`),
@@ -98,7 +100,7 @@ against its own configured identity rather than against any transport detail
 for it to a victim service and collect her session there — the relay that WebAuthn closes
 by binding the origin inside the signed client data (W3C Web Authentication, the
 [`CollectedClientData` `origin`
-member](https://www.w3.org/TR/webauthn-2/#dictdef-collectedclientdata)). A separated
+member](https://www.w3.org/TR/webauthn-3/#dom-collectedclientdata-origin)). A separated
 relying party **inherits** this unchanged, and needs it more, because it is exactly the
 party a relay targets.
 
@@ -115,7 +117,8 @@ it. The activity and lifecycle checks are not: they require the principal's curr
 and a separated relying party **breaks** here. This is the pivot of the whole document.
 
 **It refuses a key its holder disowned out of band.** A key recorded in the global
-death-set is refused at login even when the chain still shows it active
+death-set (the server's record of keys whose holders declared them dead out of band,
+kept apart from any principal's chain) is refused at login even when the chain still shows it active
 (`login.rs:444-455`), because the holder declared it compromised by a route the chain does
 not carry. A separated relying party **breaks** here too, and worse: the death-set is
 state it does not have at all.
@@ -256,26 +259,32 @@ Attaching a maximum age to the view bounds the damage but does not close the cla
 expiry cannot distinguish a view that is behind and catching up from one that is
 permanently cut off, because both look identical from inside: no new commits. The relying
 party can decline to serve after the deadline, which converts a silent failure into an
-outage, but it cannot establish currency.
+outage, but it establishes only that the view is no older than the window, not that it is
+current.
 
 The claim _"the record I hold for this principal is canonical"_ fails monotonicity: it can
 be true when evaluated and false after the record grows, with nothing in the record
 announcing the change. Such a claim admits no certificate that is at once offline, eternal
 and about the present; it can have at most two, so a design gives one up. There are three
-ways to do that. A **watcher** — a party holding more than one view over time — gives up
-_offline_ checking. A claim restricted to "as of" a stated moment gives up _now_. An
-accepted expiry gives up _eternal_: past the window the certificate says nothing about the
-present. An expiry bounds the damage and never establishes currency. An attestor is none
-of these: its word is a point observation of exactly the kind that goes stale. This is
-stated as [a requirement](#currency-unmet) rather than designed here; see [what this
-document does not cover](#what-this-document-does-not-cover).
+ways to do that, and they discharge different claims. A **watcher** — a party holding more
+than one view over time — gives up _offline_ checking and keeps _now_, so it is the only
+remedy that establishes currency, online. A claim restricted to "as of" a stated moment
+gives up _now_ and discharges only the weaker, time-scoped claim. An accepted expiry gives
+up _eternal_ and discharges only a bounded claim, "fresh within the window": past the
+window the certificate says nothing about the present. That is why an expiry covers row 10
+below but not a current key set for rows 4 and 5. None of the three is in place for the
+key set. An attestor is none of these: its word is a point observation of exactly the kind
+that goes stale. This is stated as [a requirement](#currency-unmet) rather than designed
+here; see [what this document does not cover](#what-this-document-does-not-cover).
 
 ## The claim table
 
 Every claim crossing between participants on this path, in two groups: claims about the
 **record** — what a relying party concludes about a principal — and claims about the
 **exchange** — what it concludes about the request in front of it. **Det/Cert/Mono** are
-the three axes (determination, certifiability and monotonicity); a claim's **cell** is
+the three axes (determination, certifiability and monotonicity), which the trust model
+numbers T1, T2 and T3; a claim's **cell** is written `n / Tk`, where `Tk` is the axis that
+fails (for example `2 / T3` fails only monotonicity), and is
 ["its position once the three axis outcomes are fixed"](../trust-model.md#cells). A claim
 that holds on all three needs an evaluator and no trusted party at all. Every row carries
 a requirement or a note saying why it has none.
@@ -297,8 +306,8 @@ a requirement or a note saying why it has none.
 "row" always means a row of this table): determined,
 certifiable and monotone, discharged by running something rather than by trusting someone.
 Row 1 of this table is not one — it sits `below the floor`, where "the message carries
-everything the check needs" and there is no trust residue to type — but all three name no
-party. Row 1
+everything the check needs" and there is no trust residue to type — but rows 1, 2 and 3
+all name no party. Row 1
 carries no requirement of its own, and deliberately: verifying a signature over the bytes
 presented is the precondition every path shares, and what this document has to say about it
 is that satisfying it is not enough — which is what the exchange rows say.
@@ -307,8 +316,8 @@ is that satisfying it is not enough — which is what the exchange rows say.
 engine holds both the derived genesis and the identifier a record is filed under at the
 moment of the write, and does not compare them; its own documentation names the same gap on
 the read path — "storage never binds a derived genesis to the identifier it is filed under"
-(`rs/cyphr-storage/src/engine/mod.rs:405-406`). That comment and the one at `:397` both
-name the tracking issue, #154. A cell-1 claim left undischarged is
+(`rs/cyphr-storage/src/engine/mod.rs:406-407`), in a doc comment that names the tracking
+issue, #154 (`:397-409`). A cell-1 claim left undischarged is
 [indefensible](../trust-model.md#row-1-claims) — the check is free and nobody is running it.
 Discharging it at every writer is a system-wide task beyond this path; the requirement here
 is only that a relying party must not assume it.
@@ -323,8 +332,9 @@ the two golden fixtures that exercise `key/replace` both leave `pg` empty, which
 survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
-set going stale; row 5 is about the whole view being non-canonical. Both need one of the
-three remedies for a non-monotone claim, and this system supplies none: no watcher exists,
+set going stale; row 5 is about the whole view being non-canonical. Both need a watcher to
+be established as current. The two weaker remedies discharge only a scoped or bounded
+claim, not a current key set, and none of the three is in place: no watcher exists,
 nothing a separated party is served is scoped "as of" a moment, and no bound on the age of
 the view is implemented
 ([separated-staleness-not-absence](#separated-staleness-not-absence) requires one).
@@ -558,13 +568,14 @@ A relying party's obligation to hold a _current_ view of a principal is not met 
 anything in the record. The replay of
 [separated-key-set-by-replay](#separated-key-set-by-replay) establishes that what is held
 is genuine, never that it is complete. The claim _"the record I hold for this principal is
-canonical"_ fails monotonicity, and the remedies are a **watcher** holding more than one
-view over time (giving up offline checking), a claim restricted to "as of" a stated moment
-(giving up _now_), or an accepted expiry (giving up _eternal_, so that past the window the
-view says nothing about the present) — never an attestor, whose word is a point observation
-of exactly the kind that goes stale. None is in place, and none of them, an expiry
-included, establishes that the view is the current one. A relying party MUST state this
-obligation as unmet rather than treat a successful replay as having met it. Traces to rows 4 and 5.
+canonical"_ fails monotonicity, and there are three remedies. A **watcher** holding more
+than one view over time gives up offline checking and keeps _now_, so it is the only
+remedy that establishes currency, online. A claim restricted to "as of" a stated moment
+gives up _now_ and discharges only the weaker, time-scoped claim. An accepted expiry gives
+up _eternal_ and discharges only a bounded claim, "fresh within the window". None is in
+place for the key set, and an attestor is not one of them: its word is a point observation
+of exactly the kind that goes stale. A relying party MUST state this obligation as unmet
+rather than treat a successful replay as having met it. Traces to rows 4 and 5.
 
 ```claim
 kind: requirement
@@ -575,11 +586,12 @@ because: [separated-key-set-by-replay]
 ### [separated-staleness-not-absence]
 
 A relying party MUST NOT treat "no update observed" as "no update exists". It MUST bound
-the age of its view explicitly and refuse to serve past that bound. Bounding the
-age of the view is the accepted-expiry remedy: it gives up an eternal certificate, so past
-the bound the view says nothing about the present and the party refuses. That converts a
-silent wrong answer into a refusal, which is an improvement, and it does not establish
-currency, so [currency-unmet](#currency-unmet) stays unmet. Traces to row 5.
+the age of its view explicitly and refuse to serve past that bound. Bounding the age of
+the view is the accepted-expiry remedy: it gives up an eternal certificate, so past the
+bound the view says nothing about the present and the party refuses. That converts a
+silent wrong answer into a refusal, which is an improvement. What it establishes is a
+bounded claim — the view is no older than the bound — and not that the view is current, so
+[currency-unmet](#currency-unmet) stays unmet. Traces to row 5.
 
 ```claim
 kind: requirement
