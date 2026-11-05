@@ -2,6 +2,8 @@
 
 use coz::Thumbprint;
 
+use crate::error::{Error, Result};
+
 /// Revocation information for a key.
 #[derive(Debug, Clone)]
 pub struct Revocation {
@@ -34,6 +36,26 @@ pub struct Key {
 }
 
 impl Key {
+    /// Checks that `tmb` is the thumbprint of (`alg`, `pub_key`).
+    ///
+    /// A signed pay and every state root bind only the `tmb`; the public
+    /// key travels unsigned beside it. Without this check anyone who can
+    /// supply the sidecar can pair a victim's `tmb` with their own key.
+    /// Every path that admits a key into a principal calls it.
+    ///
+    /// # Errors
+    ///
+    /// - `TmbMismatch`: `tmb` is not the thumbprint of `pub_key` under `alg`
+    /// - `UnsupportedAlgorithm`: `alg` is unknown
+    pub fn verify_binding(&self) -> Result<()> {
+        let computed = coz::compute_thumbprint_for_alg(&self.alg, &self.pub_key)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(self.alg.clone()))?;
+        if computed.as_bytes() != self.tmb.as_bytes() {
+            return Err(Error::TmbMismatch);
+        }
+        Ok(())
+    }
+
     /// Returns true if the key is currently active (not revoked).
     pub fn is_active(&self) -> bool {
         self.revocation.is_none()

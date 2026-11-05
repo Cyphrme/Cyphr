@@ -181,7 +181,6 @@ fn commit_one(
 /// `Key { tmb: victim, pub: attacker }`, letting an attacker's signature
 /// verify as the victim's thumbprint.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_implicit_genesis_rejects_unbound_key() {
     let victim = kp();
     let attacker = kp();
@@ -198,7 +197,6 @@ fn d1_implicit_genesis_rejects_unbound_key() {
 /// Backs: same binding at explicit (multi-key) genesis. Red now because
 /// `Principal::explicit` does not check `tmb == H(pub)` for any member.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_explicit_genesis_rejects_unbound_key() {
     let good = kp();
     let victim = kp();
@@ -216,7 +214,6 @@ fn d1_explicit_genesis_rejects_unbound_key() {
 /// is rejected. Red now because `verify_and_apply` only compares
 /// `id == key.tmb`, never `key.tmb == H(key.pub)`.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
@@ -248,7 +245,6 @@ fn d1_key_create_rejects_victim_tmb_with_attacker_pub() {
 /// Backs: same binding for `key/replace`. Red now for the same reason as
 /// the `key/create` case.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_key_replace_rejects_victim_tmb_with_attacker_pub() {
     let g = kp();
     let victim = kp();
@@ -298,7 +294,6 @@ fn d1_control_honest_key_create_activates_signer() {
 /// set is built from the supplied keys without hashing their `pub`. The
 /// honest checkpoint loads first as a control.
 #[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 fn d1_from_checkpoint_rejects_unbound_key() {
     let g = kp();
     let k2 = kp();
@@ -349,7 +344,6 @@ fn principal_with_revoked_k2(g: &Kp, k2: &Kp) -> Principal {
 /// keys only): `key/create` of a revoked tmb is rejected. Red now because
 /// the revoked key is accepted back as active.
 #[test]
-#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_be_readded_by_key_create() {
     let g = kp();
     let k2 = kp();
@@ -373,7 +367,6 @@ fn d3_revoked_key_cannot_be_readded_by_key_create() {
 /// Backs SPEC 6.4 for `key/replace`: replacing onto a revoked tmb is
 /// rejected. Red now for the same reason as the `key/create` case.
 #[test]
-#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_be_readded_by_key_replace() {
     let g = kp();
     let k2 = kp();
@@ -398,7 +391,6 @@ fn d3_revoked_key_cannot_be_readded_by_key_replace() {
 /// must neither be active nor able to sign afterwards. Red now because the
 /// re-add succeeds and K2's action is then accepted.
 #[test]
-#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_revoked_key_cannot_sign_after_readd_attempt() {
     let g = kp();
     let k2 = kp();
@@ -460,7 +452,6 @@ fn d3_control_deleted_key_may_be_readded() {
 /// and not recorded. Red now because `verify_and_record_action` verifies
 /// with the key's alg and never compares it to `pay.alg`.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_action_pay_alg_must_equal_key_alg() {
     let g = kp();
     let mut p = Principal::implicit(honest(&g)).expect("genesis");
@@ -480,7 +471,6 @@ fn d4_action_pay_alg_must_equal_key_alg() {
 /// because `verify_and_apply` accepts an Ed25519-signed `key/create`
 /// whose pay claims `"alg":"ES256"`.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_commit_coz_pay_alg_must_equal_key_alg() {
     let g = kp();
     let k2 = kp();
@@ -503,7 +493,6 @@ fn d4_commit_coz_pay_alg_must_equal_key_alg() {
 /// fail. Red now because the bogus czd is stored verbatim as the action's
 /// identity.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
     let g = kp();
     let mut p = Principal::implicit(honest(&g)).expect("genesis");
@@ -526,7 +515,6 @@ fn d4_wrong_caller_czd_is_not_recorded_for_actions() {
 /// committed coz. Red now because `verify_and_apply` stores the caller's
 /// czd.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
     let g = kp();
     let k2 = kp();
@@ -571,7 +559,6 @@ fn d4_wrong_caller_czd_is_not_recorded_for_commit_cozies() {
 /// `golden_fixtures.rs` has no `key_auth` directory runner yet; once one
 /// is added there this replay is redundant and may be cut.
 #[test]
-#[ignore = "RED(KA1): D3 revoked key re-addable"]
 fn d3_corpus_vector_revoked_key_readd_fails() {
     use std::path::PathBuf;
 
@@ -650,7 +637,6 @@ fn d4_control_es256_matching_alg_action_accepted() {
 /// not recorded. Red now because `pay.alg` is never compared to the key's
 /// alg.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_es256_action_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
     let mut p = Principal::implicit(honest(&g)).expect("genesis");
@@ -668,7 +654,6 @@ fn d4_es256_action_pay_alg_must_equal_key_alg() {
 /// Backs: same rule on the commit path for an ES256 signer. Red now because
 /// `verify_and_apply` ignores `pay.alg`.
 #[test]
-#[ignore = "RED(KA1): D4 pay.alg/czd trusted"]
 fn d4_es256_commit_coz_pay_alg_must_equal_key_alg() {
     let g = golden_es256();
     let k2 = kp();

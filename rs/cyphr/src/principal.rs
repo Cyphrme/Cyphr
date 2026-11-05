@@ -496,6 +496,7 @@ impl Principal<eml::MemoryStorage> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
         }
+        keys.iter().try_for_each(Key::verify_binding)?;
 
         let _ = hash_alg_from_str(&keys[0].alg)?;
 
@@ -622,6 +623,7 @@ impl<S: eml::Storage> Principal<S> {
     ///
     /// Returns `UnsupportedAlgorithm` if the key's algorithm is not recognized.
     pub fn implicit_with_storage(key: Key, storage: S) -> Result<Self> {
+        key.verify_binding()?;
         let hash_alg = hash_alg_from_str(&key.alg)?;
         let tmb_b64 = key.tmb.to_b64();
 
@@ -674,6 +676,7 @@ impl<S: eml::Storage> Principal<S> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
         }
+        keys.iter().try_for_each(Key::verify_binding)?;
 
         let _ = hash_alg_from_str(&keys[0].alg)?;
 
@@ -751,6 +754,7 @@ impl<S: eml::Storage> Principal<S> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
         }
+        keys.iter().try_for_each(Key::verify_binding)?;
 
         let _ = hash_alg_from_str(&keys[0].alg)?;
 
@@ -1484,11 +1488,24 @@ impl<S: eml::Storage> Principal<S> {
         // Look up signer key
         let signer_key = self.get_key(&signer_tmb).ok_or(Error::UnknownKey)?;
 
+        // The signed pay must name the key that actually verifies it.
+        if pay_value["alg"].as_str() != Some(signer_key.alg.as_str()) {
+            return Err(Error::AlgMismatch);
+        }
+
         // Verify signature
         let valid =
             coz::verify_json(pay_json, sig, &signer_key.alg, &signer_key.pub_key).unwrap_or(false);
         if !valid {
             return Err(Error::InvalidSignature);
+        }
+
+        // The czd identifies the action; it is derived from the signed
+        // bytes, never trusted from the caller.
+        let computed = crate::parsed_coz::compute_czd(pay_json, sig, &signer_key.alg)
+            .ok_or_else(|| Error::UnsupportedAlgorithm(signer_key.alg.clone()))?;
+        if computed.as_bytes() != czd.as_bytes() {
+            return Err(Error::CzdMismatch);
         }
 
         // Construct CozJson for storage
@@ -1709,8 +1726,15 @@ impl<S: eml::Storage> Principal<S> {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
+                // The signed pay binds only `tmb`; the sidecar `pub` is unsigned.
+                key.verify_binding()?;
                 // Verify algorithm is supported
                 let _ = hash_alg_from_str(&key.alg)?;
+                // SPEC §6.4: a revoked key is never trusted again. Only a
+                // deleted key may be re-added (§6.2).
+                if self.auth.revoked.contains_key(&id.to_b64()) {
+                    return Err(Error::KeyRevoked);
+                }
                 // Check for duplicate key
                 if self.auth.keys.contains_key(&id.to_b64()) {
                     return Err(Error::DuplicateKey);
@@ -1725,8 +1749,14 @@ impl<S: eml::Storage> Principal<S> {
                 if key.tmb.to_b64() != id.to_b64() {
                     return Err(Error::MalformedPayload);
                 }
+                // The signed pay binds only `tmb`; the sidecar `pub` is unsigned.
+                key.verify_binding()?;
                 // Verify algorithm is supported
                 let _ = hash_alg_from_str(&key.alg)?;
+                // SPEC §6.4: a revoked key is never trusted again.
+                if self.auth.revoked.contains_key(&id.to_b64()) {
+                    return Err(Error::KeyRevoked);
+                }
                 // Atomic swap: add new key first, then remove signer
                 // This allows Level 2 single-key accounts to replace their key
                 self.add_key(key, cz.now);
@@ -2138,7 +2168,7 @@ mod tests {
     fn make_test_key(id: u8) -> Key {
         Key {
             alg: "ES256".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 32]),
+            tmb: coz::compute_thumbprint_for_alg("ES256", &[id; 64]).expect("ES256 tmb"),
             pub_key: vec![id; 64],
             first_seen: 1000,
             last_used: None,
@@ -3812,7 +3842,7 @@ mod tests {
     fn make_test_key_ed25519(id: u8) -> Key {
         Key {
             alg: "Ed25519".to_string(),
-            tmb: Thumbprint::from_bytes(vec![id; 64]), // SHA-512 digest length
+            tmb: coz::compute_thumbprint_for_alg("Ed25519", &[id; 32]).expect("Ed25519 tmb"),
             pub_key: vec![id; 32],
             first_seen: 1000,
             last_used: None,
