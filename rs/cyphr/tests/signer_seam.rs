@@ -285,7 +285,7 @@ fn finalize<'a, S: Signer>(
 // Claim 1 + golden: finalize through a key-opaque signer; bytes unchanged
 // ============================================================================
 
-/// Legacy vectors, produced by the pre-seam `finalize_with_arrow` over the
+/// Legacy vectors, produced by the pre-seam raw-key finalize over the
 /// same inputs (pool key -> `key_a` key/create at NOW -> commit at NOW+1) and
 /// stable across repeated runs (RFC 6979 / Ed25519 are deterministic).
 const GOLDEN: &[(&str, &str, &str)] = &[

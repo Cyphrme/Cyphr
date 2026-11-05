@@ -451,25 +451,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .as_ref()
             .ok_or(crate::error::Error::MalformedPayload)?;
 
-        // [pre-mutation-key-rule]: Check authorization against the snapshot
-        // of keys that were active when this commit began, not the eagerly
-        // mutated live state. Keys added during the commit are also accepted.
-        let signer_key = {
-            if self.principal.is_key_active(signer_tmb) {
-                self.principal
-                    .get_key(signer_tmb)
-                    .ok_or(crate::error::Error::UnknownKey)?
-            } else if self.projected.is_key_active(signer_tmb) {
-                // Key was added during this commit — accept it
-                self.projected
-                    .get_key(signer_tmb)
-                    .ok_or(crate::error::Error::UnknownKey)?
-            } else if self.principal.is_key_revoked(signer_tmb) {
-                return Err(crate::error::Error::KeyRevoked);
-            } else {
-                return Err(crate::error::Error::UnknownKey);
-            }
-        };
+        let signer_key = self.resolve_signer(signer_tmb)?;
 
         // Verify signature and parse coz
         let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
@@ -568,6 +550,26 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         claimed_digest == computed_digest.as_slice()
     }
 
+    /// Resolve `tmb` to the key authorized to sign in this scope.
+    ///
+    /// [pre-mutation-key-rule]: authorization is checked against the keys
+    /// that were active when this commit began, not the eagerly mutated live
+    /// state; keys added during the commit are also accepted. Shared by
+    /// mutation verification and the terminal `commit/create` signer so both
+    /// obey one rule.
+    fn resolve_signer(&self, tmb: &coz::Thumbprint) -> crate::error::Result<&crate::key::Key> {
+        use crate::error::Error;
+        if self.principal.is_key_active(tmb) {
+            self.principal.get_key(tmb).ok_or(Error::UnknownKey)
+        } else if self.projected.is_key_active(tmb) {
+            self.projected.get_key(tmb).ok_or(Error::UnknownKey)
+        } else if self.principal.is_key_revoked(tmb) {
+            Err(Error::KeyRevoked)
+        } else {
+            Err(Error::UnknownKey)
+        }
+    }
+
     /// Step 1 of the three-step finalize: compute the Arrow and the
     /// `commit/create` payload for `signer`'s key, without signing and
     /// without touching the scope. Pass [`PreparedCommit::cad`] to
@@ -592,7 +594,13 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             return Err(crate::error::Error::EmptyCommit);
         }
 
-        let alg = signer.alg();
+        // The signer is only a claim: bind it to the principal. The stored
+        // key (never the signer's own copy) supplies alg and public key.
+        let stored = self.resolve_signer(signer.tmb())?;
+        if signer.alg() != stored.alg {
+            return Err(crate::error::Error::InvalidSignature);
+        }
+        let alg = stored.alg.as_str();
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
@@ -639,7 +647,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("alg".to_string(), json!(alg));
         pay.insert("arrow".to_string(), json!(arrow_tagged));
         pay.insert("now".to_string(), json!(now));
-        pay.insert("tmb".to_string(), json!(signer.tmb().to_b64()));
+        pay.insert("tmb".to_string(), json!(stored.tmb.to_b64()));
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
@@ -655,7 +663,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         Ok(PreparedCommit {
             alg: alg.to_string(),
-            pub_key: signer.pub_key().to_vec(),
+            pub_key: stored.pub_key.clone(),
             signer_hash_alg,
             pay_obj,
             pay_vec,
@@ -665,7 +673,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
     /// Step 3 of the three-step finalize: verify `sig` over the prepared pay
     /// and append the commit. A signature that does not verify under the
-    /// signer's key (empty, malformed, wrong message, high-S) is
+    /// principal's stored key for the signer (resolved in `prepare_commit`,
+    /// not the signer's own copy) (empty, malformed, wrong message, high-S) is
     /// `InvalidSignature` and the scope is dropped unchanged; the core never
     /// normalizes S (see [`crate::signer`]).
     ///
@@ -1159,7 +1168,7 @@ mod tests {
     /// Post-mutation SR then has only 2 variants (SHA-256, SHA-512) --
     /// neither matching the SHA-384 signer -- forcing
     /// `arrow_component_bytes`'s multi-variant fold branch.
-    /// `finalize_with_arrow` (construction) must succeed, and
+    /// `finalize_with_software` (construction) must succeed, and
     /// `matches_arrow` (independent verification) must accept the
     /// resulting arrow via the same fallback.
     #[test]
@@ -1282,7 +1291,7 @@ mod tests {
     /// SHA-256) with ZERO shared hash algorithms at arrow-computation time.
     /// The fwd side has no SHA-384 variant and len==1, so genesis promotion
     /// returns its lone SHA-256 variant for the requested SHA-384.
-    /// `finalize_with_arrow` (construction) and `matches_arrow` (independent
+    /// `finalize_with_software` (construction) and `matches_arrow` (independent
     /// verification) MUST agree. This is the scenario behind forge issue #51.
     #[test]
     fn matches_arrow_accepts_sole_key_algorithm_change() {
@@ -1354,7 +1363,7 @@ mod tests {
     /// Storage double that delegates to a real in-memory backend until
     /// armed, then fails every operation. Genesis setup (and any mutation
     /// apply, which never touches storage) succeeds normally; arming right
-    /// before `finalize`/`finalize_with_arrow` isolates the injected
+    /// before `finalize`/`finalize_with_software` isolates the injected
     /// failure to `finalize_commit`'s own durable-write path.
     #[derive(Debug)]
     struct ToggledFailureStorage {
@@ -1568,7 +1577,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "finalize_with_arrow must surface the injected storage failure"
+            "finalize_with_software must surface the injected storage failure"
         );
         assert_eq!(
             principal.pr(),
