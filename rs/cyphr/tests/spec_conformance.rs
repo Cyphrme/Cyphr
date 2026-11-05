@@ -38,15 +38,7 @@ fn kp() -> Kp {
 }
 
 fn key_of(k: &Kp) -> Key {
-    Key {
-        alg: k.alg.clone(),
-        tmb: k.tmb.clone(),
-        pub_key: k.pubb.clone(),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    }
+    Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
 }
 
 fn b64(t: &coz::Thumbprint) -> String {
@@ -173,7 +165,6 @@ fn s2_3_1_coz_missing_tmb_now_or_typ_is_rejected() {
 /// accepted. Turns green when KA1's `pay.alg == key.alg` check treats an
 /// absent `alg` as a mismatch. End to end: yes.
 #[test]
-#[ignore = "RED(KA1): SPEC 2.3.1 absent pay.alg accepted"]
 fn s2_3_1_coz_missing_alg_is_rejected() {
     assert!(
         create_missing_field("alg").is_err(),

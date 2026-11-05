@@ -209,15 +209,7 @@ proptest! {
             let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
             (k, tmb)
         };
-        let key_of = |k: &coz::KeyPair, tmb: &coz::Thumbprint| cyphr::Key {
-            alg: k.alg.name().to_string(),
-            tmb: tmb.clone(),
-            pub_key: k.pub_bytes.clone(),
-            first_seen: 0,
-            last_used: None,
-            revocation: None,
-            tag: None,
-        };
+        let key_of = |k: &coz::KeyPair, tmb: &coz::Thumbprint| cyphr::Key::new(k.alg.name().to_string(), tmb.clone(), k.pub_bytes.clone()).expect("key binds its tmb");
         let keys: Vec<_> = algs.iter().map(|&ed| gen_key(ed)).collect();
         let (g, gtmb) = &keys[0];
         let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).expect("genesis");
