@@ -182,7 +182,7 @@ SPEC 2.3.2, line 240. Disposition: `covered`.
 - spec-text: 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_2_no_operation_changes_the_principal_genesis`
-- fails when: a key create, replace, delete or revoke changes the recorded PG.
+- fails when: a second `principal/create` overwrites the PG (the only writer; it must fail with `StateMismatch`), or a key create, replace, delete or revoke changes it.
 
 ```claim
 kind: requirement
@@ -384,8 +384,9 @@ SPEC 6, line 944. Disposition: `covered`.
 - spec-text: "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s6_no_wire_form_carries_private_key_material`
+  - `rs/cyphr-server/tests/spec_conformance.rs::s6_exported_commits_carry_no_private_key_material`
   - `rs/cyphr-server/tests/spec_conformance.rs::s6_no_http_response_carries_private_key_material`
-- fails when: any serialized coz, or any HTTP response (push, tip, patch and its decoded blobs), carries a key's private component. A property over random key sets of both algorithms (core) and an end-to-end push and read (server); they check the wire forms the protocol and server emit, not the client keystore.
+- fails when: any serialized coz, any exported commit entry (cozies and key sidecars), or any HTTP response of an attestor (push, server identity, tip, patch and its decoded blobs) carries a private component. Two properties over random key sets of both algorithms (core: cozies; server tier: `export_commits`, which the core crate cannot import) and one end-to-end scenario whose needles include the attestor's own private signing bytes. They check the wire forms the protocol and server emit, not the client keystore.
 
 ```claim
 kind: requirement

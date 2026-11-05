@@ -1166,9 +1166,10 @@ fn s2_2_2_non_canonical_b64ut_is_rejected() {
 // ============================================================================
 
 /// Backs SPEC 2.3.2: "No operation can change a PG." Scenario: an explicit
-/// principal runs every key operation (create, replace, delete of a genesis
-/// key, revoke); its PG is compared after each. Turns red if any operation
-/// changes the recorded PG. End to end: yes.
+/// principal establishes its PG, a second `principal/create` (the only
+/// writer of the PG) is refused with `StateMismatch`, then it runs every key operation (create,
+/// replace, delete of a genesis key, revoke); its PG is compared after each. Turns red if any
+/// operation changes the recorded PG. End to end: yes.
 // @docket: sc-l240 :: scripts/docket-run sc-l240
 #[test]
 fn s2_3_2_no_operation_changes_the_principal_genesis() {
@@ -1178,6 +1179,20 @@ fn s2_3_2_no_operation_changes_the_principal_genesis() {
     commit_one(&mut p, &a, sign(&a, establish), None, T).expect("principal/create establishes PG");
     let pg = format!("{:?}", p.pg());
     assert_ne!(pg, "None", "premise: principal/create records a PG");
+    let again = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,
+                       "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
+    let before = snapshot(&p);
+    let r = commit_one(&mut p, &a, sign(&a, again), None, T);
+    assert!(
+        matches!(r, Err(Error::StateMismatch)),
+        "a second principal/create must be refused (PG is write-once): {r:?}"
+    );
+    assert_eq!(
+        format!("{:?}", p.pg()),
+        pg,
+        "a refused second principal/create changed the PG"
+    );
+    assert_eq!(before, snapshot(&p));
     let (k3, k4) = (kp(), kp());
     let steps: Vec<(&str, Signed, Option<Key>, &Kp)> = vec![
         (

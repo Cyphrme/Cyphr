@@ -111,34 +111,41 @@ async fn s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put() {
 }
 
 /// Backs SPEC 6 (line 944): the private component is "never transmitted".
-/// Scenario over HTTP: a genesis push (the pool's `golden` adds `key_a`),
-/// then every read surface (`/tip`, `/patch` with its decoded blobs) and the
-/// push response itself, none of which may contain either key's private
-/// component in base64url. The server holds only public material, so this
-/// pins that no response type gains a private field. Turns red if any
-/// response carries a private component. End to end: yes.
+/// Scenario over HTTP against an attestor (the keyed, bootstrapped server,
+/// which holds a private signing key and signs what it serves): a genesis
+/// push (the pool's `golden` adds `key_a`), then every read surface (`/server`,
+/// `/tip`, `/patch` with its decoded blobs) and the push response, none of
+/// which may contain the pool keys' or the server's own private bytes (read
+/// from its key file) in base64url. A keyless server holds no private key
+/// of its own and could not fail this. Turns red if any response carries a
+/// private component. End to end: yes.
 // @docket: sc-l944 :: scripts/docket-run sc-l944
 #[tokio::test]
 async fn s6_no_http_response_carries_private_key_material() {
     let pool = load_pool();
-    let id = pool
-        .get("golden")
-        .expect("golden in pool")
-        .compute_tmb_b64()
-        .expect("golden tmb");
-    let needles: Vec<String> = ["golden", "key_a"]
-        .iter()
-        .map(|n| {
+    let (state, _identity, dir) = common::attestor_server().await;
+    let key_file: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("signing-key.json")).expect("server key file"),
+    )
+    .expect("key file is JSON");
+    let mut needles: Vec<String> = vec![
+        key_file["prv_key"]
+            .as_str()
+            .expect("server prv_key")
+            .to_string(),
+    ];
+    for n in ["golden", "key_a"] {
+        needles.push(
             pool.get(n)
                 .expect("key in pool")
                 .prv
                 .clone()
-                .expect("pool key has prv")
-        })
-        .collect();
+                .expect("pool key has prv"),
+        );
+    }
 
-    let (state, _dir) = keyless_server();
     let app = build_router(state);
+    let id = Base64UrlUnpadded::encode_string(&[0x42u8; 32]);
     let (status, push) = post_json(
         app.clone(),
         "/push",
@@ -146,28 +153,106 @@ async fn s6_no_http_response_carries_private_key_material() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{push:?}");
+    assert_eq!(
+        push["statement"]["kind"], "signed",
+        "premise: the attestor signs"
+    );
+    let (_, server) = get_json(app.clone(), "/server").await;
     let (_, tip) = get_json(app.clone(), &format!("/tip?pr={id}")).await;
     let (status, patch) = get_json(app, &format!("/patch?pr={id}")).await;
     assert_eq!(status, StatusCode::OK);
 
-    let mut surfaces = vec![push.to_string(), tip.to_string(), patch.to_string()];
-    for entry in envelope_payload(&patch)["entries"]
-        .as_array()
-        .expect("entries")
-    {
+    let mut surfaces = vec![
+        push.to_string(),
+        server.to_string(),
+        tip.to_string(),
+        patch.to_string(),
+    ];
+    for entry in patch["payload"]["entries"].as_array().expect("entries") {
         for blob in entry["blobs"].as_array().expect("blobs") {
             let raw = Base64UrlUnpadded::decode_vec(blob.as_str().expect("blob string"))
                 .expect("blob base64url");
             surfaces.push(String::from_utf8_lossy(&raw).into_owned());
         }
     }
-    assert!(surfaces.len() > 3, "premise: the patch carried blobs");
+    assert!(surfaces.len() > 4, "premise: the patch carried blobs");
     for s in &surfaces {
         for n in &needles {
             assert!(
                 !s.contains(n.as_str()),
                 "a response carries a private component"
             );
+        }
+    }
+}
+
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// Backs SPEC 6 (line 944) for the storage wire forms: for any principal
+    /// built from random keys of both algorithms, none of the exported
+    /// commit entries (cozies and the key sidecars that travel with them)
+    /// contains a private component in base64url or hex. Property test: the
+    /// invariant is over all key sets. Lives in this crate because
+    /// `cyphr-storage` depends on `cyphr`, so the core tier cannot import
+    /// `export_commits`. Turns red if an exported form gains a private
+    /// field.
+    // @docket: sc-l944 :: scripts/docket-run sc-l944
+    #[test]
+    fn s6_exported_commits_carry_no_private_key_material(
+        algs in proptest::collection::vec(any::<bool>(), 2..5),
+    ) {
+        let gen_key = |ed: bool| {
+            let k = if ed { coz::Alg::Ed25519 } else { coz::Alg::ES256 }.generate_keypair();
+            let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
+            (k, tmb)
+        };
+        let key_of = |k: &coz::KeyPair, tmb: &coz::Thumbprint| cyphr::Key {
+            alg: k.alg.name().to_string(),
+            tmb: tmb.clone(),
+            pub_key: k.pub_bytes.clone(),
+            first_seen: 0,
+            last_used: None,
+            revocation: None,
+            tag: None,
+        };
+        let keys: Vec<_> = algs.iter().map(|&ed| gen_key(ed)).collect();
+        let (g, gtmb) = &keys[0];
+        let mut p = cyphr::Principal::implicit(key_of(g, gtmb)).expect("genesis");
+        for (i, (k, tmb)) in keys.iter().enumerate().skip(1) {
+            let now = 1_700_000_000 + i64::try_from(i).expect("small");
+            let pay = serde_json::json!({
+                "alg": g.alg.name(), "id": Base64UrlUnpadded::encode_string(tmb.as_bytes()),
+                "now": now, "tmb": Base64UrlUnpadded::encode_string(gtmb.as_bytes()),
+                "typ": "cyphr.me/cyphr/key/create",
+            });
+            let bytes = serde_json::to_vec(&pay).expect("pay");
+            let (sig, cad) = coz::sign_json(&bytes, g.alg.name(), &g.prv_bytes, &g.pub_bytes)
+                .expect("sign");
+            let czd = coz::czd_for_alg(&cad, &sig, g.alg.name()).expect("czd");
+            let mut scope = p.begin_commit();
+            scope.verify_and_apply(&bytes, &sig, czd, Some(key_of(k, tmb))).expect("apply");
+            let signer =
+                cyphr::signer::SoftwareSigner::new(g.alg.name(), &g.prv_bytes, &g.pub_bytes, gtmb);
+            scope
+                .finalize_with_software(
+                    &signer,
+                    now,
+                    "cyphr.me",
+                )
+                .expect("finalize");
+        }
+        let exported = serde_json::to_string(&cyphr_storage::export_commits(&p).expect("export"))
+            .expect("serialize");
+        prop_assert!(exported.contains(&Base64UrlUnpadded::encode_string(keys[1].1.as_bytes())),
+            "premise: sidecars are in the export");
+        for (k, _) in &keys {
+            let b64 = Base64UrlUnpadded::encode_string(&k.prv_bytes);
+            let hex: String = k.prv_bytes.iter().map(|b| format!("{b:02x}")).collect();
+            prop_assert!(!exported.contains(&b64) && !exported.contains(&hex),
+                "an exported commit carries a private component");
         }
     }
 }
