@@ -152,16 +152,14 @@ impl StateDigest for CommitRoot {
 ///
 /// # Two ways to duplicate a handle
 ///
-/// - [`Clone`] (public, only where `S: Clone`) deep-copies the storage and
-///   rebuilds an independent log, so two principals derived from one ancestor
-///   can each commit without perturbing the other (SPEC.md section 15.8:
-///   witnesses hold both branches of a fork). Durable storages such as
-///   `storage_fjall::FjallStorage` have no copy primitive in eml 0.11 and
-///   implement no `Clone`, so cloning them is a compile error rather than a
-///   silent share of one on-disk log.
-/// - [`Self::share`] (crate-private) aliases the same log. A
-///   [`crate::commit::CommitScope`] projects state onto a copy of its own
-///   principal but must record durably to the principal's log, so it shares.
+/// - [`Clone`] (public, only where `S: Clone`) deep-copies the storage and rebuilds an independent
+///   log, so two principals derived from one ancestor can each commit without perturbing the other
+///   (SPEC.md section 15.8: witnesses hold both branches of a fork). Durable storages such as
+///   `storage_fjall::FjallStorage` have no copy primitive in eml 0.11 and implement no `Clone`, so
+///   cloning them is a compile error rather than a silent share of one on-disk log.
+/// - [`Self::share`] (crate-private) aliases the same log. A [`crate::commit::CommitScope`]
+///   projects state onto a copy of its own principal but must record durably to the principal's
+///   log, so it shares.
 ///
 /// # Manual `Debug`
 ///
