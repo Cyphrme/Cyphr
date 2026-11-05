@@ -54,6 +54,13 @@ pub enum RefusalKind {
     Malformed,
     /// The input would fork the principal.
     Forked,
+    /// A harness-level kind: the connection failed (reset, timeout,
+    /// refused). Distinct from every protocol refusal, which a peer
+    /// actually sent.
+    Unreachable,
+    /// The peer refused to serve or sign a tip lower than one it already
+    /// signed (a restored peer must not roll back).
+    Rollback,
     /// The input exceeds a size bound.
     TooLarge,
     /// The envelope version is not one this client understands.
@@ -94,6 +101,7 @@ impl Principal {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A key, by thumbprint.
 pub struct KeyRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// A commit id, as a peer's `GET /tip` reports it.
