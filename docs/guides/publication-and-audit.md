@@ -28,7 +28,7 @@ Both halves have real limits. This guide says where they are.
 | Term       | What it is                                                                                                       |
 | :--------- | :--------------------------------------------------------------------------------------------------------------- |
 | Principal  | A user's identity: a chain of commits adding and revoking keys over time. Not a key — a key history.             |
-| `pr`       | The identifier a server files a principal under.                                                                 |
+| `pr`       | The principal's identifier, derived from its genesis keys.                                                       |
 | PG         | Principal Genesis. A server's own identifier, derived from its signing key. Tagged, like `SHA-512:wWKa…`.        |
 | Coz        | The signed-message format, `{"pay": {…}, "sig": "…"}`. Transactions, receipts, and bearer tokens are all cozies. |
 | Receipt    | A coz the server signs over what it accepted or currently sees. Two kinds: commit receipts and tip reports.      |
@@ -423,15 +423,14 @@ What none of it establishes:
 - **That the server will still say it.** There is no undertaking to
   retain anything. Losing the server's data directory loses the record;
   what survives is what its users and watchers kept.
-- **That the identifier is meaningful.** A `pr` is whatever the client
-  used on its first push, first-come-first-served within that one server's
-  namespace, not something derived from key material. Pushing a
-  perfectly ordinary principal's commits under a randomly generated
-  identifier gets a `201` and a signed receipt naming that identifier, and
-  `GET /tip` then serves it. The only constraint an attestor imposes is
-  shape: the identifier has to decode as base64url to 32, 48, or 64 bytes,
-  because a receipt's `pr` claim will not compose otherwise. On an
-  open-admission server, anyone can take any unused one.
+- **That the principal is anyone in particular.** A `pr` is derived
+  from the principal's genesis keys, not chosen: a push filed under any
+  other identifier is refused with a `400` before anything is stored, so
+  no one can claim another principal's identifier. The server stores the
+  algorithm-labelled spelling and accepts the bare digest for the same
+  principal. What the identifier does not tell you is who holds the keys.
+  Who may create a principal on a server at all is its admission policy;
+  on an open-admission server, anyone can.
 
 ## Auditing
 
@@ -475,7 +474,8 @@ server says the principal is.
 
 One endpoint that does not work: **a server cannot report a tip about
 itself.** The server is an ordinary principal in its own store, and
-`/patch` serves its chain like anyone else's, but the tip report fails:
+`/patch` serves its chain like anyone else's — unsigned, for the reason
+below — but the tip report fails:
 
 ```sh
 curl -s "http://127.0.0.1:4100/tip?pr=SHA-512:wWKaBAIFCCvRKbv7DbjsvoYrX986HwRMbtKgC2bwFlm0sVTjfi3aYCkZPVejOOap_Lar56XdaztAmjwL87uYyw"
@@ -509,9 +509,9 @@ language.
 1. Pin `pg` and the `genesis` object from `GET /server`.
 2. Re-derive the PG from that genesis key alone. If it does not match the
    pinned `pg`, stop — the published key does not back the identity.
-3. Fetch the server's own chain: `GET /patch?pr=<pg>`, tagged form
-   included. The bare thumbprint is a `404`; the tag is part of the
-   identifier the server files itself under.
+3. Fetch the server's own chain: `GET /patch?pr=<pg>`. The tagged form
+   and the bare digest after the `SHA-512:` label both work. The response
+   is unsigned, since the server cannot attest its own tip.
 4. Replay every entry into a fresh, independent engine of your own,
    supplying that genesis key explicitly on each commit. The blobs carry
    no key material, so nothing recovers it from the chain itself.

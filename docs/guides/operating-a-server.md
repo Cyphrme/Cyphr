@@ -24,7 +24,7 @@ to.
 | Term      | What it is                                                                                           |
 | :-------- | :--------------------------------------------------------------------------------------------------- |
 | Principal | A user's identity: a chain of commits adding and revoking keys over time. Not a key — a key history. |
-| `pr`      | The identifier the server files a principal under.                                                   |
+| `pr`      | The principal's identifier, derived from its genesis keys.                                           |
 | PG        | Principal Genesis. Your server's own stable identifier, derived from its signing key.                |
 | Tier      | What the server declares itself to be at `GET /server`: `attestor`, `repository`, or `witness`.      |
 | Admission | The gate on a brand-new principal taking up residency. Off by default.                               |
@@ -437,8 +437,8 @@ pushing its next commit never touches it. There are two policies.
 **`open` is the default, and it means what it says.** No fence is installed
 at all. Anyone who can reach the port can create principals without limit,
 bounded only by the rate fences and the commit quota. For a public server
-this is a decision, not a default to inherit by not thinking about it: the
-namespace of principal identifiers is first-come-first-served.
+this is a decision, not a default to inherit by not thinking about it:
+anyone can create principals without limit.
 
 **`invite` hands out single-use tokens.**
 

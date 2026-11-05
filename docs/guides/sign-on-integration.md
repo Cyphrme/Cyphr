@@ -191,11 +191,9 @@ The `jq` rewrites each transaction as a base64url blob, which is the shape
 for. Use `.[-1]` to send only the newest commit — re-sending one the server
 already holds is an error.
 
-Use the genesis thumbprint as the principal id, as above. The write path
-accepts an arbitrary string, but on a server that signs its responses a
-non-thumbprint id makes the push return `500` with `commit receipt signing
-unavailable` even though the commit was stored — a confusing state to debug
-and one that gets worse on retry.
+Use the genesis thumbprint as the principal id, as above. Any other id is
+refused with a `400` before anything is stored; see
+[Map `pr` to an account](#5-map-pr-to-an-account).
 
 Two CLI limits to know before you lean on it: `key add` and `key revoke` fail
 outright on Ed25519 principals (`digest length mismatch for SHA-256: expected
