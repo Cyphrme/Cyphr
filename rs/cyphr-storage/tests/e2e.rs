@@ -387,7 +387,6 @@ fn load_error_name(e: &LoadError) -> &'static str {
         LoadError::Json { .. } => "JsonError",
         LoadError::UnsupportedAlgorithm => "UnsupportedAlgorithm",
         LoadError::InvalidKeyMaterial { .. } => "InvalidKeyMaterial",
-        LoadError::CheckpointCrMismatch => "CheckpointCrMismatch",
     }
 }
 
@@ -554,7 +553,7 @@ fn e2e_dynamic_features_matrix() {
 }
 
 // ============================================================================
-// Genesis/Checkpoint Load Tests
+// Genesis Load Tests
 // ============================================================================
 
 /// Runner for a genesis load test - verifies load_principal produces correct state.
@@ -610,59 +609,6 @@ fn e2e_dynamic_genesis_load() {
     for test in &intent.test {
         run_e2e_genesis_test(&pool, test);
     }
-}
-
-/// Checkpoint load test: verify PR matching and partial replay.
-#[test]
-fn e2e_checkpoint_load() {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-    use cyphr_storage::{Checkpoint, load_from_checkpoint};
-
-    let pool = load_pool();
-
-    // Build a 2-cz history, then load from checkpoint at cz 1
-    let golden_key = pool
-        .pool
-        .key
-        .iter()
-        .find(|k| k.name == "golden")
-        .expect("golden key not found");
-
-    let key = golden_key_to_domain(&test_fixtures::GoldenKey {
-        alg: golden_key.alg.clone(),
-        pub_key: golden_key.pub_key.clone(),
-        tmb: Base64UrlUnpadded::encode_string(golden_key.compute_tmb().unwrap().as_bytes()),
-    });
-
-    // Create principal with single key (implicit genesis)
-    let principal = cyphr::Principal::implicit(key.clone()).expect("implicit failed");
-    let initial_as = principal.auth_root().clone();
-
-    // L1 principal has no PG
-    assert!(principal.pg().is_none(), "L1 principal should have no PG");
-
-    // Create checkpoint at genesis
-    let checkpoint = Checkpoint {
-        auth_root: initial_as,
-        keys: vec![key],
-        attestor: None,
-        cr: None,
-    };
-
-    // Load from checkpoint with no additional entries (no PG for L1)
-    let loaded = load_from_checkpoint(None, checkpoint, None, &[]).expect("load failed");
-
-    // Verify PG is still None for L1
-    assert!(
-        loaded.pg().is_none(),
-        "checkpoint_matches_pg: L1 should have no PG"
-    );
-
-    eprintln!("  ✓ checkpoint_matches_pg (L1: no PG)");
-
-    // Test checkpoint_with_suffix is implicitly tested by round-trip tests
-    // that load entries after genesis - the load_principal path is the same
-    eprintln!("  ✓ checkpoint_with_suffix (covered by load_with_transactions)");
 }
 
 // ============================================================================
