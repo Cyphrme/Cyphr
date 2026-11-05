@@ -11,6 +11,7 @@
 use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -99,6 +100,15 @@ async fn s02_partition() {
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &["p2"]).await);
+    h.check_verdict(
+        &after,
+        &pr,
+        &Expect {
+            peers: &["p2"],
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(after.standing, Standing::Active);
     assert!(after.evidence.is_empty(), "a strict prefix is not evidence");
 }

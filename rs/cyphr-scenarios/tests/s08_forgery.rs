@@ -10,6 +10,7 @@
 // harness reports the first absent capability.
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -81,6 +82,15 @@ async fn s08_forgery() {
         "attacks must not move P2"
     );
     let v = h.ok(bob.verdict(&pr, &["p1"]).await);
+    h.check_verdict(
+        &v,
+        &pr,
+        &Expect {
+            peers: &["p1"],
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(v.tip, applied.tip);
     assert_eq!(v.standing, Standing::Active);
     assert!(v.evidence.is_empty());

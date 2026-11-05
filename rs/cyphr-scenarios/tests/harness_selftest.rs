@@ -286,3 +286,78 @@ async fn harness_partition_cuts_a_peer_to_peer_link() {
         "a healed pull is forwarded"
     );
 }
+
+fn oracle_verdict(
+    branches: Vec<&str>,
+    standing: cyphr_scenarios::actions::Standing,
+) -> cyphr_scenarios::actions::Verdict {
+    use cyphr_scenarios::actions::*;
+
+    Verdict {
+        standing,
+        freshness: Freshness {
+            age: Duration::ZERO,
+            peer_reported_newer: false,
+        },
+        tip: Tip(branches[0].into()),
+        anchor: Anchor {
+            source: AnchorSource::TrustedGenesis,
+            id: "AAAA".into(),
+        },
+        peers: vec!["p1".into()],
+        branches: branches.into_iter().map(|b| Tip(b.into())).collect(),
+        evidence: vec![],
+        resolved_by: None,
+    }
+}
+
+// Claim: the verdict oracle never accepts a verdict vacuously. A verdict that
+// agrees with everything the peers can answer today still ends RED, because
+// "no evidence" cannot be confirmed without the evidence route.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "RED(evidence) after-setup peers=1")]
+async fn harness_oracle_is_red_without_the_evidence_route() {
+    use cyphr_scenarios::actions::{Principal, Standing};
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let v = oracle_verdict(vec!["T"], Standing::Active);
+    let e = Expect {
+        peers: &["p1"],
+        anchor_id: "SHA-512:AAAA",
+    };
+    h.check_verdict(&v, &Principal("SHA-512:AAAA".into()), &e)
+        .await;
+}
+
+// Claim: the oracle rejects a verdict that names the wrong peers, and one
+// that reports a fork as Active.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "verdict peers differ from the chosen set")]
+async fn harness_oracle_rejects_the_wrong_peer_set() {
+    use cyphr_scenarios::actions::{Principal, Standing};
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
+    let v = oracle_verdict(vec!["T"], Standing::Active);
+    let e = Expect {
+        peers: &["p2"],
+        anchor_id: "AAAA",
+    };
+    h.check_verdict(&v, &Principal("AAAA".into()), &e).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "a fork is reported in Error")]
+async fn harness_oracle_rejects_a_fork_reported_active() {
+    use cyphr_scenarios::actions::{Principal, Standing};
+    use cyphr_scenarios::oracle::Expect;
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let v = oracle_verdict(vec!["T1", "T2"], Standing::Active);
+    let e = Expect {
+        peers: &["p1"],
+        anchor_id: "AAAA",
+    };
+    h.check_verdict(&v, &Principal("AAAA".into()), &e).await;
+}

@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -67,6 +68,15 @@ async fn s07_peer_rollover() {
     })
     .await;
     let after = h.ok(bob.verdict(&pr, &["p1"]).await);
+    h.check_verdict(
+        &after,
+        &pr,
+        &Expect {
+            peers: &["p1"],
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(after.standing, Standing::Active);
     assert!(!after.freshness.peer_reported_newer);
     assert!(

@@ -10,6 +10,7 @@ pub mod capability;
 pub mod carrier;
 pub mod faults;
 pub mod harness;
+pub mod oracle;
 pub mod peer;
 pub mod proxy;
 

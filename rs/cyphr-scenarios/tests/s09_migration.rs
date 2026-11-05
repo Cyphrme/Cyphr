@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -71,6 +72,15 @@ async fn s09_migration() {
     )
     .await;
     let after = h.ok(bob.verdict(&pr, &[]).await);
+    h.check_verdict(
+        &after,
+        &pr,
+        &Expect {
+            peers: &["p3"],
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(after.peers, ["p3"], "Bob follows the claim to P3");
     assert_eq!(after.tip, t2);
     assert_eq!(after.anchor, before.anchor, "only the peer list may change");

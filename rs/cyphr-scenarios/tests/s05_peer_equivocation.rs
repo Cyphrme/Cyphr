@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -71,6 +72,15 @@ async fn s05_peer_equivocation() {
         .await;
         // Only now, with the positive established, is absence meaningful.
         let v = h.ok(who.verdict(&pr, &["p1", "p2"]).await);
+        h.check_verdict(
+            &v,
+            &pr,
+            &Expect {
+                peers: &["p1", "p2"],
+                anchor_id: &pr.0,
+            },
+        )
+        .await;
         let named: Vec<_> = v
             .evidence
             .iter()
@@ -105,6 +115,15 @@ async fn s05_peer_equivocation() {
     )
     .await;
     let v = h.ok(carol.verdict(&pr, &["p1", "p2"]).await);
+    h.check_verdict(
+        &v,
+        &pr,
+        &Expect {
+            peers: &["p1", "p2"],
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert!(
         !v.evidence.contains(&Evidence::PeerEquivocation {
             peer: p2_id.clone()

@@ -13,6 +13,7 @@
 use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -55,6 +56,15 @@ async fn s01_first_contact() {
     assert_eq!(vb.tip, tip, "Bob must replay to the tip Alice pushed");
     assert_eq!(vc.tip, tip, "Carol must replay to the tip Alice pushed");
     for v in [&vb, &vc] {
+        h.check_verdict(
+            v,
+            &pr,
+            &Expect {
+                peers: &["p1", "p2"],
+                anchor_id: &pr.0,
+            },
+        )
+        .await;
         assert_eq!(v.standing, Standing::Active);
         assert!(v.evidence.is_empty());
         assert!(pr.same_as(&v.anchor.id), "the anchor is Alice's genesis");

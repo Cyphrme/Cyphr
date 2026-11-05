@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::oracle::Expect;
 use cyphr_scenarios::{Capability, Harness};
 
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -92,6 +93,15 @@ async fn s03_offline() {
         );
     }
     let v = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(
+        &v,
+        &pr,
+        &Expect {
+            peers: &both,
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(
         v.branches,
         std::slice::from_ref(&merged),
@@ -147,6 +157,15 @@ async fn s03_offline() {
     )
     .await;
     let forked = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(
+        &forked,
+        &pr,
+        &Expect {
+            peers: &both,
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     let mut seen = forked.branches.clone();
     seen.sort_by(|a, b| a.0.cmp(&b.0));
     let mut want = [lt.clone(), pt.clone()];
@@ -163,6 +182,15 @@ async fn s03_offline() {
     })
     .await;
     let healed = h.ok(observer.verdict(&pr, &both).await);
+    h.check_verdict(
+        &healed,
+        &pr,
+        &Expect {
+            peers: &both,
+            anchor_id: &pr.0,
+        },
+    )
+    .await;
     assert_eq!(healed.standing, Standing::Active);
     assert_eq!(healed.tip, resolved);
     assert!(
