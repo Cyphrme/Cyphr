@@ -984,11 +984,10 @@ directory is locked exclusively, a rolling restart of two processes against
 one directory is not possible — the second refuses to start. A blue-green
 deployment needs two data directories and a resync, not a shared one.
 
-Three things interact with a restart in ways worth planning for:
+Two things interact with a restart in ways worth planning for:
 
 - **Login challenges** are in-memory and per-process. A client mid-login when you restart gets `login challenge is unknown, already used, or expired` and needs a fresh challenge. Harmless — clients retry — but it is a burst of login failures at every restart.
-- **Witness registrations** (`POST /witness/register`) are in-memory. Every witness registered for push fanout is forgotten on restart and must register again. If you depend on fanout, that is a re-registration step in your restart procedure, not something the server recovers on its own.
-- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart, the same as the two hazards above.
+- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart.
 
 `rebuild-index` is the one maintenance command that exists. It reconstructs
 `index/` entirely from `record/blobs/`; use it after restoring a partial
