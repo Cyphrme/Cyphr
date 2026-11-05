@@ -16,6 +16,10 @@ tokio         = { workspace = true, features = ["rt", "macros"] }
 [dependencies.cyphr]
 path = "../cyphr"
 
+[dependencies.cyphr-client]
+default-features = false
+path             = "../cyphr-client"
+
 [dependencies.cyphr-server]
 path = "../cyphr-server"
 
@@ -69,4 +73,11 @@ bench = false
 doc   = false
 name  = "fuzz_tip_report"
 path  = "fuzz_targets/fuzz_tip_report.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_patch_envelope"
+path  = "fuzz_targets/fuzz_patch_envelope.rs"
 test  = false
