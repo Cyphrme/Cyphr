@@ -48,18 +48,22 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   35 |
+| `covered`      |   37 |
 | `red-existing` |    2 |
-| `red-new`      |   10 |
-| `not-testable` |   17 |
+| `red-new`      |   11 |
+| `not-testable` |   14 |
 | `out-of-scope` |    8 |
 | `total`        |   72 |
 
 Fixing ids on red rows: `KA1` is the key-authentication node
 (`pay.alg == key.alg` must treat an absent `alg` as a mismatch, and revoked
-keys must not be re-added). `SC1-F1` (frozen principals reject mutations),
-`SC1-F2` (in-commit `rvk` and `now` bounds) and `SC1-F3` (Key Tree arity) have
-no fixing node yet; they are tracking ids until one is assigned.
+keys must not be re-added), `N09` the idempotency node and `q3` the last-key
+self-revoke decision (the code allows no revoke of the only key; SPEC allows
+it and leaves the principal Dead). `SC1-F1` (frozen principals reject
+mutations), `SC1-F2` (in-commit `rvk` and `now` bounds), `SC1-F3` (Key Tree
+arity), `SC1-F4` (coz reuse), `SC1-F5` (default future-timestamp tolerance)
+and `SC1-F6` (identical `typ` in a transaction) have no fixing node yet; they
+are tracking ids until one is assigned.
 
 ## Rows
 
@@ -82,14 +86,15 @@ evaluator: test
 
 ### [sc-l127]
 
-SPEC 2.2.3, line 127. Disposition: `not-testable`.
+SPEC 2.2.3, line 127. Disposition: `covered`.
 
 - spec-line: 127
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: object. Following Coz semantics, all digest identifiers inside a coz must
-- tests: none
-- reason: Ambiguous against the corpus: read strictly, every digest identifier in a coz is computed with the algorithm named by that coz's `alg`, but the golden vector `algorithm_diversity/ed25519_account_adds_es256_key` has an Ed25519 coz whose `id` is a SHA-256 thumbprint. Question Q1.
+- tests:
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_algorithm_diversity[algorithm_diversity/ed25519_account_adds_es256_key]`
+- fails when: a `key/create` of a key of another algorithm is rejected. Resolved: the sentence aligns digests with `alg` 'unless explicitly labeled'; a key's `tmb` is the digest under the key's own `alg` (Coz), so an Ed25519 coz introducing an ES256 key carries a SHA-256 `id`. The corpus vector is right and pins it.
 
 ```claim
 kind: requirement
@@ -98,14 +103,15 @@ evaluator: none
 
 ### [sc-l129]
 
-SPEC 2.2.3, line 129. Disposition: `not-testable`.
+SPEC 2.2.3, line 129. Disposition: `covered`.
 
 - spec-line: 129
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: the algorithm for the `id` of the new key must be `SHA256`, aligning with alg
-- tests: none
-- reason: Same sentence pair as line 127: the example (`id` of the new key is SHA256 under `ES256`) is the same-algorithm case and says nothing about a cross-algorithm `key/create`. Question Q1.
+- tests:
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_algorithm_diversity[algorithm_diversity/ed25519_account_adds_es256_key]`
+- fails when: same sentence pair as line 127; the example is the same-algorithm case and the cross-algorithm vector pins the other.
 
 ```claim
 kind: requirement
@@ -210,7 +216,7 @@ SPEC 2.3.2, line 248. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: 2. **Capability gate**: The principal must have the components required for an
 - tests: none
-- reason: No operation-to-component pair the sentence names has an observable rejection at Levels 1-4: its own example ('principal genesis is required for commits') conflicts with Level 1 having no commit while an implicit-genesis principal commits today; 'data actions require DT commit inclusion' names no rejected input; the RT constraints it mentions are Level 5. Question Q2.
+- reason: The gate reads component presence, and §3.3 makes a key-only principal's first commit its genesis, so there is no contradiction. The one candidate input, a data action with no DT commit inclusion, has no decidable observable form: the core records data actions into the data root directly (they move PR with no commit), and the text does not say whether that is the inclusion it requires. The RT constraints in the sentence are Level 5.
 
 ```claim
 kind: requirement
@@ -245,7 +251,7 @@ SPEC 3.1, line 295. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - Single key, never changes
 - tests: none
-- reason: Descriptive of the Level 1 feature set, and §3.0 says a principal's level is not an authorization input, so there is no level-based rejection to test. Question Q3 (with line 298).
+- reason: Descriptive of the Level 1 feature set; §3.0 says a principal's level is not an authorization input, so there is no level-based rejection to test. The related last-key self-revoke requirement is line 298.
 
 ```claim
 kind: requirement
@@ -254,14 +260,15 @@ evaluator: none
 
 ### [sc-l298]
 
-SPEC 3.1, line 298. Disposition: `not-testable`.
+SPEC 3.1, line 298. Disposition: `red-new`.
 
 - spec-line: 298
 - source: supplement
-- disposition: not-testable
+- disposition: red-new
 - spec-text: - Self-revoke results in permanent lockout (in lieu of sideband intervention)
-- tests: none
-- reason: Contradicts the implementation and the corpus: SPEC says a Level 1 self-revoke 'results in permanent lockout', while `principal.rs::self_revoke_last_key_prevented` and the golden vector `errors/last_key_revoke_fails` reject the last-key revoke with `NoActiveKeys`. Not resolved here. Question Q3.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead`
+- fails when: a self-revoke of a principal's only key is refused with `NoActiveKeys` (red today). SPEC governs: §3.1 'permanent lockout', §11 Dead 'a consequence of any condition that leaves the principal with no keys', §14.1 services that ignore revokes are out of compliance. While the code refuses, Mallory who copies Alice's only key keeps it usable after Alice's revoke is refused. The code and the golden vector `errors/last_key_revoke_fails`, plus `principal.rs::self_revoke_last_key_prevented`, encode the opposite; the vector is not flipped here (pending nrd) and the fix regenerates the corpus.
 
 ```claim
 kind: requirement
@@ -311,7 +318,7 @@ SPEC 4.3, line 535. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: field "seq" is required in the format `"seq": "0/1"`. For example, for two
 - tests: none
-- reason: The `seq` field exists only for a commit transaction made of several cozies. The core has no multi-coz commit transaction (the finalizer is one `commit/create` coz) and `seq` appears nowhere in the Rust crates, so there is no behaviour to fail. Question Q11.
+- reason: The `seq` field exists only for a commit transaction made of several cozies. The core has no multi-coz commit transaction (the finalizer is one `commit/create` coz) and `seq` appears nowhere in the Rust crates, so there is no behaviour to fail. Open point O3.
 
 ```claim
 kind: requirement
@@ -360,7 +367,7 @@ SPEC 5.1, line 860. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: order is not provided, clients should throw error `TRANSACTION_ORDER_UNKNOWN`.
 - tests: none
-- reason: `TRANSACTION_ORDER_UNKNOWN` is a 'should throw' for a wire format that omits order; the core wire format always carries order and no error variant of that name exists. The storage engine's order retention (forge U1) is pinned by `manifest_retains_ingest_order_without_search`, a different sentence. Question Q11.
+- reason: `TRANSACTION_ORDER_UNKNOWN` is a 'should throw' for a wire format that omits order; the core wire format always carries order and no error variant of that name exists. The storage engine's order retention (forge U1) is pinned by `manifest_retains_ingest_order_without_search`, a different sentence. Open point O3.
 
 ```claim
 kind: requirement
@@ -428,7 +435,7 @@ SPEC 6.2, line 1002. Disposition: `covered`.
 - spec-text: Only actions signed while a ley is active in KT are interpreted. Past signatures
 - tests:
   - `rs/cyphr/tests/negative_vectors.rs::deleted_key_action_backdated_into_old_active_period_is_rejected`
-- fails when: the genuine pre-delete action is dropped after the delete, or a forged action backdated into the old active period is accepted. The test pins the implementation's fail-closed reading; the spec's position is open (forge issue #200). Question Q6.
+- fails when: the genuine pre-delete action is dropped after the delete, or a forged action backdated into the old active period is accepted. Rejection stands: a verdict is fixed by chain position, so a later commit cannot change an old one (the spec author on forge issue #200).
 
 ```claim
 kind: requirement
@@ -624,7 +631,7 @@ SPEC 7.7, line 1287. Disposition: `covered`.
 - spec-text: must be performed in exactly one canonical, atomic representation with no
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s7_7_fork_create_does_not_create_a_principal`
-- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300). Example 1 (genesis does not implicitly create the genesis key) contradicts implicit and explicit genesis, where genesis keys exist without a `key/create`; it is not tested and is Question Q10.
+- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300). Example 1 (genesis does not implicitly create the genesis key) conflicts with implicit and explicit genesis, where genesis keys exist with no `key/create`; it is not tested (open point O2).
 
 ```claim
 kind: requirement
@@ -689,7 +696,7 @@ SPEC 10.2, line 1673. Disposition: `out-of-scope`.
 - disposition: out-of-scope
 - spec-text: - The nonce's bit length must match the declared algorithm's output size (e.g.,
 - tests: none
-- reason: Nonces and embedding (Level 5+): no API in `rs/cyphr` accepts a nonce from outside (`derive` helpers take `Option<&[u8]>` and every caller passes none).
+- reason: Nonces are not implemented at Levels 1-4: the only nonce-taking code is `#[cfg(test)]` helpers in `state.rs` (`compute_kr` and siblings), which accept a nonce of any length (`ks_with_nonce_hashes` uses two bytes), and no public API passes one. The bit-length requirement is a must (the next bullet's 'only strength check possible') and gets a test when a public nonce path exists.
 
 ```claim
 kind: requirement
@@ -705,7 +712,7 @@ SPEC 10.2, line 1674. Disposition: `out-of-scope`.
 - disposition: out-of-scope
 - spec-text: a nonce declared as SHA-256 must be 256 bits). Bit-checking is the only
 - tests: none
-- reason: Same sentence as line 1673 (nonce bit length).
+- reason: Same sentence as line 1673 (nonce bit length); no public nonce path to test.
 
 ```claim
 kind: requirement
@@ -721,7 +728,7 @@ SPEC 10.2, line 1676. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - Nonce values should be cryptographic randomly generated values must match the
 - tests: none
-- reason: The sentence is ungrammatical ('should be cryptographic randomly generated values must match the target strength'), so which of should/must is intended is unknown. Question Q4. Nonces are also Level 5+.
+- reason: A 'should' on whoever generates the nonce: randomness cannot be checked by a verifier, and the bit-length check is the previous bullet. The sentence is ungrammatical (editorial note E2).
 
 ```claim
 kind: requirement
@@ -891,7 +898,7 @@ SPEC 11.5.1, line 1951. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: Note the target account must explicitly add keys from the source account (if the
 - tests: none
-- reason: No explicit merge transaction exists in `rs/cyphr` (`CozKind` has no `principal/merge` or `merge-ack`), so there is no behaviour to fail; a red test cannot be written without inventing the API. Question Q5.
+- reason: Explicit merge has no transaction kind in `rs/cyphr` (`CozKind` has no `principal/merge` or `merge-ack`). Merge is '(Level 3+)' in the text; whether it is in scope for this map is pending nrd, so it stays out for now.
 
 ```claim
 kind: requirement
@@ -907,7 +914,7 @@ SPEC 11.5.1, line 1953. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: must be explicitly added to the target. Also note that the source principal is
 - tests: none
-- reason: Same merge feature as line 1951: no implementation surface. Question Q5.
+- reason: Same merge feature as line 1951: no implementation surface, scope pending nrd.
 
 ```claim
 kind: requirement
@@ -956,7 +963,7 @@ SPEC 15.8, line 2814. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: An invalid fork is resolved when the principal unambiguously selects one
 - tests: none
-- reason: Witness-side consensus states (Error, then Active on resolution) have no implementation in `rs/cyphr` or `rs/cyphr-server`, and the sovereignty-model rewrite of the consensus spec (campaign node D1) is open. Question Q7.
+- reason: Witness-side consensus states (Error until the principal resolves its own fork) have no implementation in `rs/cyphr` or `rs/cyphr-server`; the text stands and the work belongs to the consensus nodes (D1 and the gossip nodes).
 
 ```claim
 kind: requirement
@@ -972,7 +979,7 @@ SPEC 15.8, line 2822. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - **2. PoP assertion** - The principal signs a `resync/create` message
 - tests: none
-- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814. Question Q7.
+- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814.
 
 ```claim
 kind: requirement
@@ -989,7 +996,7 @@ SPEC 15.8, line 2827. Disposition: `covered`.
 - spec-text: In both cases, the abandoned branch's transactions become permanently invalid.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_2_second_commit_on_a_stale_pre_is_rejected`
-- fails when: an abandoned branch's commit is accepted onto the chosen chain (core replay; the witness-side half is Q7).
+- fails when: an abandoned branch's commit is accepted onto the chosen chain (core replay; the witness-side half is line 2814).
 
 ```claim
 kind: requirement
@@ -1022,7 +1029,7 @@ SPEC 15.8, line 2829. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: transition the principal's consensus state from Error back to Active upon
 - tests: none
-- reason: The Error-to-Active transition on resolution is witness-side consensus state, with no implementation surface; same as line 2814. Question Q7.
+- reason: The Error-to-Active transition on resolution is witness-side consensus state with no implementation surface; same as line 2814.
 
 ```claim
 kind: requirement
@@ -1039,7 +1046,7 @@ SPEC 15.9, line 2835. Disposition: `red-new`.
 - spec-text: includes comparing now to witness time on receipt and rejecting outside ±360 s
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s15_9_future_dated_message_is_rejected_by_default`
-- fails when: a message dated a day ahead is accepted by a default principal (red today: the skew check is off by default). The backdated half (far in the past relative to witness time) is not tested because the corpus uses fixed 2023 timestamps; Question Q9.
+- fails when: a message dated a day ahead is accepted by a default principal (red today: the skew check is off by default). The backdated half (far in the past relative to witness time) is not tested because the corpus uses fixed 2023 timestamps; Open point O1.
 
 ```claim
 kind: requirement
@@ -1145,7 +1152,7 @@ SPEC 17.2, line 3059. Disposition: `covered`.
 - tests:
   - `rs/cyphr-server/tests/login.rs::login_rejects_frozen_principal`
   - `rs/cyphr-server/tests/login.rs::login_rejects_deleted_principal`
-- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (Question Q7).
+- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (line 2814).
 
 ```claim
 kind: requirement
@@ -1216,7 +1223,7 @@ SPEC 17.2, line 3083. Disposition: `covered`.
 - tests:
   - `rs/cyphr-server/tests/login.rs::login_rejects_frozen_principal`
   - `rs/cyphr-server/tests/login.rs::login_rejects_deleted_principal`
-- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (Question Q7).
+- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (line 2814).
 
 ```claim
 kind: requirement
@@ -1296,39 +1303,32 @@ kind: requirement
 evaluator: test
 ```
 
-## Questions for the spec author
+## Editorial notes for the spec author
 
-Each of these is a requirement the walk could not close without choosing a
-reading, so it was left open.
+The earlier open questions were settled against `be0663f`, the code, the
+corpus and the Coz reference implementations. Three leave a note on the text;
+none changes a verdict.
 
-- **Q1 (lines 127 and 129).** "All digest identifiers inside a coz must
-  aligned with algorithm (`alg`) in `pay` unless explicitly labeled." The
-  golden vector `algorithm_diversity/ed25519_account_adds_es256_key` has an
-  Ed25519 coz introducing an ES256 key whose `id` is a SHA-256 thumbprint. Is
-  a key's `id` computed under the signer's `alg` or the new key's own?
-- **Q2 (line 248).** The capability gate's example says principal genesis is
-  required for commits, but Level 1 has no commit and an implicit-genesis
-  principal commits today. Which operations are rejected, at which levels,
-  for lack of which component?
-- **Q3 (lines 295 and 298).** Level 1 "never changes" and a self-revoke
-  "results in permanent lockout", but §3.0 says a principal's level is not an
-  authorization input, and the implementation and the corpus reject a
-  last-key revoke with `NoActiveKeys` at every level. Which governs?
-- **Q4 (line 1676).** "Nonce values should be cryptographic randomly
-  generated values must match the target strength": should or must?
-- **Q5 (lines 1951 and 1953).** Explicit merge has no transaction kind in the
-  Rust crates. Is it in the Level 1-4 scope that the node list assumes?
-- **Q6 (line 1002).** Does "past signatures from previous active periods
-  remain valid" admit an action whose own `now` claims a past period but
-  which arrives after the key was deleted? The implementation rejects it;
-  forge issue #200 is open with the spec author.
-- **Q7 (lines 2814, 2822 and 2829).** Witness-side fork resolution (the
-  Error and Active consensus states, the `resync/create` transaction) has no
-  implementation. The node that rewrites the consensus specification to the
-  sovereignty model is open; is §15.8 still the requirement?
-- **Q8 (lines 1067 and 1069).** "`rvk` and `now` must be a positive integer
-  less than 2^53 - 1" and "must error if `rvk` is ... larger than 2^53 - 1":
-  is 2^53 - 1 itself in range? The tests avoid the boundary value.
+- **E1 (lines 127 and 129).** Add a cross-algorithm example: an Ed25519 coz
+  introducing an ES256 key carries a SHA-256 `id`, the key's own digest.
+- **E2 (line 1676).** The sentence "Nonce values should be cryptographic
+  randomly generated values must match the target strength" is ungrammatical.
+- **E3 (lines 1067 and 1069).** "Less than 2^53 - 1" and "larger than
+  2^53 - 1" disagree at the boundary. The Coz references accept 2^53 - 1 and
+  reject only above it, and the tests follow them.
+
+Open points this node raised that the resolved set did not cover:
+
+- **O1 (line 2835).** Is the "witness time on receipt" comparison a core rule
+  or a witness rule? The corpus uses fixed 2023 timestamps, so a strict
+  backdating check would reject every golden vector. Only the future side is
+  tested.
+- **O2 (line 1287).** Example 1 says genesis does not implicitly create the
+  genesis key and every key needs a `key/create`, but implicit and explicit
+  genesis both hold keys with no `key/create`.
+- **O3 (lines 535 and 860).** `seq` for multi-coz commit transactions and
+  `TRANSACTION_ORDER_UNKNOWN` have no counterpart in the Rust wire format; are
+  they still wanted at Levels 1-4?
 
 ## Drift in the in-tree SPEC.md
 

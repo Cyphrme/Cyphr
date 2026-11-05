@@ -16,6 +16,9 @@ use serde_json::json;
 
 const T: i64 = 1_700_000_000;
 
+/// 2^53 - 1, the largest integer in range for `rvk` and `now`.
+const MAX_SAFE: i64 = 9_007_199_254_740_991;
+
 struct Kp {
     alg: String,
     pubb: Vec<u8>,
@@ -327,8 +330,8 @@ fn revoke_outcome(pay_for: impl Fn(&Kp) -> serde_json::Value) -> cyphr::error::R
 /// carries each out-of-range `rvk` (zero, negative, 2^53, a fraction, a
 /// string); every one must be rejected, while `rvk = 1` (the value the SPEC
 /// calls suitable) is the control. Turns red if an out-of-range `rvk` revokes
-/// the key. The exact bound 2^53 - 1 is not exercised: the two sentences
-/// disagree on whether it is in range (a question for the spec author).
+/// the key. The boundary is pinned both ways: 2^53 - 1 is accepted (the Coz
+/// reference implementations reject only above it) and 2^53 is rejected.
 /// RED: in-commit `key/revoke` parses `rvk` as any `i64` and never bounds
 /// it (the naked-revoke path in the server does). End to end: yes.
 #[test]
@@ -347,11 +350,13 @@ fn s6_4_revoke_rvk_must_be_a_positive_bounded_integer() {
             accepted.push(label);
         }
     }
+    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: rvk = 1 is accepted");
+    revoke_outcome(|b| revoke_pay(b, T, json!(MAX_SAFE)))
+        .expect("control: rvk = 2^53 - 1 is in range (Coz references reject only above it)");
     assert!(
         accepted.is_empty(),
         "key/revoke accepted out-of-range rvk: {accepted:?}"
     );
-    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: rvk = 1 is accepted");
 }
 
 /// Backs SPEC 6.4: "`rvk` and `now` must be a positive integer less than
@@ -373,11 +378,13 @@ fn s6_4_revoke_now_must_be_a_positive_bounded_integer() {
             accepted.push(label);
         }
     }
+    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: now = T is accepted");
+    revoke_outcome(|b| revoke_pay(b, MAX_SAFE, json!(1)))
+        .expect("control: now = 2^53 - 1 is in range");
     assert!(
         accepted.is_empty(),
         "key/revoke accepted out-of-range now: {accepted:?}"
     );
-    revoke_outcome(|b| revoke_pay(b, T, json!(1))).expect("control: now = T is accepted");
 }
 
 // ============================================================================
@@ -605,6 +612,9 @@ use std::process::Command;
 
 /// The SPEC commit the map is written against (the spec author's `zami`
 /// branch; AGENTS.md I3).
+/// Built by `concat!` so a text search for ignored tests does not match this
+/// file's own scanner.
+const IGNORE_ATTR: &str = concat!("#[", "ignore");
 const SPEC_COMMIT: &str = "be0663f";
 const CORE_FILE: &str = "rs/cyphr/tests/spec_conformance.rs";
 const SERVER_FILE: &str = "rs/cyphr-server/tests/spec_conformance.rs";
@@ -908,7 +918,10 @@ fn map_rows_resolve_and_agree_with_their_tests() {
                     r.line
                 );
             }
-            let ignore: Vec<_> = attrs.iter().filter(|a| a.starts_with("#[ignore")).collect();
+            let ignore: Vec<_> = attrs
+                .iter()
+                .filter(|a| a.starts_with(IGNORE_ATTR))
+                .collect();
             if !ignore.is_empty() {
                 assert!(
                     ignore.iter().all(|a| a.contains("RED(")),
@@ -942,7 +955,7 @@ fn map_rows_resolve_and_agree_with_their_tests() {
         let lines: Vec<&str> = src.lines().collect();
         for (i, l) in lines.iter().enumerate() {
             let t = l.trim_start();
-            if !t.starts_with("#[ignore") {
+            if !t.starts_with(IGNORE_ATTR) {
                 continue;
             }
             assert!(
@@ -1422,4 +1435,52 @@ proptest! {
             }
         }
     }
+}
+
+// ============================================================================
+// SPEC 3.1 (line 298): a last-key self-revoke is allowed and leaves Dead
+// ============================================================================
+
+/// Backs SPEC 3.1 ("Self-revoke results in permanent lockout"), 11 (Dead is
+/// "a consequence of any condition that leaves the principal with no keys")
+/// and 14.1 (services that ignore revokes are out of compliance). Scenario:
+/// the only key of a principal signs a self-`key/revoke`; the revoke is
+/// accepted and the principal is Dead and takes nothing afterwards. Control:
+/// with two keys the same revoke is accepted. Turns red if the only key's
+/// revoke is refused, which leaves the compromised key live for anyone who
+/// copied it. RED: the core returns `NoActiveKeys`. The golden vector
+/// `errors/last_key_revoke_fails` and `principal.rs::self_revoke_last_key_prevented`
+/// encode the refusal and change with the fix. End to end: yes.
+#[test]
+#[ignore = "RED(q3): SPEC 3.1 last-key self-revoke refused"]
+fn s3_1_last_key_self_revoke_is_accepted_and_leaves_the_principal_dead() {
+    let (g, k2) = (kp(), kp());
+    let mut two = Principal::explicit(vec![key_of(&g), key_of(&k2)]).expect("genesis");
+    commit_one(
+        &mut two,
+        &g,
+        sign(&g, revoke_pay(&g, T, json!(T))),
+        None,
+        T + 1,
+    )
+    .expect("control: a revoke with a second key left is accepted");
+
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, revoke_pay(&g, T, json!(T))),
+        None,
+        T + 1,
+    );
+    assert!(r.is_ok(), "the only key's self-revoke was refused: {r:?}");
+    assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, T + 2)),
+        Some(key_of(&k2)),
+        T + 3,
+    );
+    assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
 }
