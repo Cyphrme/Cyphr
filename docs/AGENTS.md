@@ -11,6 +11,7 @@ pass lands, calibrate trust as below.
 | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `specs/`                        | Machine specs with `[tag]`-anchored constraints; behavior contracts for `rs/`. Edit alongside the code they govern; keep tags stable (tests and `protocol/constraint_coverage.md` reference them) |
 | `adr/`                          | Architecture decision records                                                                                                                                                                     |
+| `architecture/`                 | How the system fits together, per critical path. Carries `requirement` claim blocks registered with docket (below); claim ids are `[kebab-id]` headings                                           |
 | `models/`                       | Formal models (self-flagged staleness applies)                                                                                                                                                    |
 | `protocol/`                     | Constraint→test traceability matrix                                                                                                                                                               |
 | `charters/`, `audit/`, `plans/` | Historical; `plans/` is legacy (root I6) — read for archaeology only                                                                                                                              |
@@ -26,9 +27,13 @@ predicate documentation conventions when editing prose.
 `docket` binds a claim in prose to the code it describes and refuses a
 claim nothing checks; the root `docket.ncl` registers which genres of
 `docs/` may carry which kind of claim (see that file for the reasoning).
-Registration currently covers only the genres being born:
-`docs/architecture/**` (`requirement`) and `docs/use/**` (`kinds = []` —
-registered to carry no claim kind, not left unregistered).
+Three genres are registered: `docs/architecture/**` (`requirement`),
+`docs/use/**` and `docs/trust-model.md` (both `kinds = []` — registered
+to carry no claim kind, not left unregistered). An empty `kinds` bars
+claim blocks outright; for `docs/trust-model.md` it is also what gives
+"this document must not read as protocol" a real evaluator, via docket's
+`normative-prose` check. A tree is registered either because it carries
+claims or because it must never carry one.
 `docs/specs/` and `docs/guides/` are not registered yet.
 
 `kinds = []` and unregistered are not the same thing: an unregistered
@@ -67,6 +72,31 @@ commands: it is the bounded id-indirection wrapper, and its `CLAIMS`
 table holds a real list per id, all required green. See the script's own
 header for why a marker is bounded-length regardless of how long or how
 many the underlying commands are.
+
+A claim id is declared by a heading whose text is exactly a bracketed
+kebab-case token (`## [my-id]`, at any heading level); a heading with
+trailing prose declares nothing. A `because:`/`depends:` edge must be
+matched by a prose link to the same id, and that link must use the anchor
+form (`[my-id](#my-id)`) — the bare form docket's own fixtures use is
+rejected by the pre-commit link audit. A claim whose `evaluator` is `test`
+needs an `@docket:` marker comment at the test naming the command that
+runs it, and that command is always `scripts/docket-run <claim-id>` — the
+one runner, described above. Register the claim id in the script's
+`CLAIMS_INDEX` plus the array of commands it names; the commands carry
+their own `rs/Cargo.toml` path and `-p cyphr-server` scope, so a `--lib`
+run cannot fall through to the whole nine-member workspace. A marker is
+bound only if it uses the `@docket:` form; a plain `// docket:` comment
+binds nothing and docket reports `implementation-marker-absent`.
+
+**The claim-id budget.** A marker is
+`// @docket: <id> :: scripts/docket-run <id>`, which is 35 + 2×len(id)
+characters against `rs/.rustfmt.toml`'s 100-column comment wrap. **A claim
+id must therefore be at most 32 characters, or 30 where the marker is
+indented** — `signon-key-active-in-principal` is exactly 30. This pushes
+against corpus-wide uniqueness: claim ids are unique across the whole
+corpus, and further documents will want qualifying prefixes (`pathb-`,
+`pathc-`) spending the same 30 characters. Both constraints are mechanical,
+so a document that cannot satisfy both fails loudly — a docket error — rather than silently truncating a marker.
 
 `scripts/docket-fixtures/run` is the acceptance suite for the gate's own
 wiring — a fixture per failure mode the gate must catch (a malformed

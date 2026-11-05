@@ -1,10 +1,21 @@
 # Cyphr's docket genre configuration — the documentation gate registers
-# only the genres being born by this workstream; the rest of docs/ waits
-# until it earns registration on its own workstream.
+# three genres: `docs/architecture/**`, `docs/use/**` and
+# `docs/trust-model.md`. The rest of docs/ waits until it earns
+# registration on its own workstream.
 #
 # `docs/architecture/**` carries `requirement` claims (docket's own genre
 # table: "how it fits together" answers to the `requirement` kind). It is
 # the first tree this repository wires the gate to.
+#
+# `docs/trust-model.md` is declared with no permitted kinds, which is what
+# makes it enforceable as definitions rather than requirements: an empty
+# `kinds` bars claim blocks outright and turns an RFC-2119 keyword in the
+# document's own voice into a check failure. A definitions document that
+# needs "MUST" has drifted into being a specification, and this catches
+# that mechanically instead of leaving it to review. The file sits at the
+# `docs/` root rather than under `docs/architecture/**` because two genres
+# matching one path is a configuration error, and that tree already
+# permits `requirement`.
 #
 # `docs/use/**` is the user-documentation genre home a follow-on
 # workstream populates. An earlier revision registered it with
@@ -19,8 +30,7 @@
 # was a genre/path mismatch, not a valid registration.
 #
 # Corrected to `kinds = []`: the same shape `docs/trust-model.md` uses
-# (a sibling workstream's registration, node/trust-model) and docket
-# dogfoods on itself (its own docket.ncl: `README.md` gets `kinds = []`
+# and docket dogfoods on itself (its own docket.ncl: `README.md` gets `kinds = []`
 # "so a future claim block added here is a loud C3 genre violation
 # instead of silently unscanned"). A tree is registered either because
 # it carries claims or because it must never carry one. Leaving the
@@ -47,10 +57,15 @@
 # claims/documents, zero findings, exit 0).
 #
 # docket is a sibling checkout, never vendored into this repository (see
-# docs/AGENTS.md for the trade-off and the pinned invocation).
+# docs/AGENTS.md for the trade-off and the pinned invocation). The binary
+# embeds its claim-block contract, so no contract flag is needed. From
+# this repository's root, with a checkout at <docket>:
+#
+#   <docket>/target/release/docket check --corpus .
 {
   genres = [
     { path = "docs/architecture/**", kinds = ["requirement"], quadrant = "reference" },
     { path = "docs/use/**", kinds = [], quadrant = "how-to" },
+    { path = "docs/trust-model.md", kinds = [], quadrant = "reference" },
   ],
 }
