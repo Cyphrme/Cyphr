@@ -107,11 +107,8 @@ async fn single_key_explicit_genesis_establishes_pg() {
         .verify_and_apply(&pc_pay_bytes, &pc_sig, pc_czd, None)
         .expect("principal/create applies to single-key explicit genesis");
     let commit = scope
-        .finalize_with_arrow(
-            &alg,
-            &kp.prv_bytes,
-            &kp.pub_bytes,
-            &tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&alg, &kp.prv_bytes, &kp.pub_bytes, &tmb),
             now + 1,
             "cyphr.me",
         )

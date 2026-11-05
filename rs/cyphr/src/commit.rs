@@ -696,7 +696,8 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         if coz::verify_json(&pay_vec, &sig, &alg, &pub_key) != Some(true) {
             return Err(crate::error::Error::InvalidSignature);
         }
-        let czd = coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
+        let czd =
+            coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
 
         let raw = coz::CozJson {
             pay: pay_obj.clone(),
@@ -754,30 +755,6 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let prepared = self.prepare_commit(signer, now, authority)?;
         let sig = signer.sign_now(prepared.cad())?;
         self.finish_commit(prepared, sig)
-    }
-
-    /// Legacy raw-key finalize, kept only for out-of-surface test callers
-    /// (`rs/cyphr/tests/fork_evidence.rs`, `negative_vectors.rs`) pending
-    /// their migration to [`finalize_with_software`](Self::finalize_with_software).
-    /// New code must use a [`Signer`].
-    ///
-    /// # Errors
-    ///
-    /// As [`finalize_with_signer`](Self::finalize_with_signer).
-    pub fn finalize_with_arrow(
-        self,
-        alg: &str,
-        prv_key: &[u8],
-        pub_key: &[u8],
-        tmb: &coz::Thumbprint,
-        now: i64,
-        authority: &str,
-    ) -> crate::error::Result<&'a Commit> {
-        self.finalize_with_software(
-            &SoftwareSigner::new(alg, prv_key, pub_key, tmb),
-            now,
-            authority,
-        )
     }
 }
 
@@ -1213,11 +1190,8 @@ mod tests {
         let genesis_pub = coz::base64ct::Base64UrlUnpadded::decode_vec(&genesis.pub_key)
             .expect("genesis pub base64");
         scope
-            .finalize_with_arrow(
-                &genesis.alg,
-                &genesis_prv,
-                &genesis_pub,
-                &genesis_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&genesis.alg, &genesis_prv, &genesis_pub, &genesis_tmb),
                 now + 1,
                 "cyphr.me",
             )
@@ -1246,11 +1220,8 @@ mod tests {
         let diana_pub =
             coz::base64ct::Base64UrlUnpadded::decode_vec(&diana.pub_key).expect("diana pub base64");
         let commit2 = scope_a
-            .finalize_with_arrow(
-                &diana.alg,
-                &diana_prv,
-                &diana_pub,
-                &diana_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&diana.alg, &diana_prv, &diana_pub, &diana_tmb),
                 now + 3,
                 "cyphr.me",
             )
@@ -1351,11 +1322,8 @@ mod tests {
         let old_pub =
             coz::base64ct::Base64UrlUnpadded::decode_vec(&old_key.pub_key).expect("old pub base64");
         let commit = scope_a
-            .finalize_with_arrow(
-                &old_key.alg,
-                &old_prv,
-                &old_pub,
-                &old_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&old_key.alg, &old_prv, &old_pub, &old_tmb),
                 now + 1,
                 "cyphr.me",
             )
@@ -1592,11 +1560,8 @@ mod tests {
         // failure to finalize_commit's own durable-write path.
         armed.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scope.finalize_with_arrow(
-            &genesis.alg,
-            &prv_bytes,
-            &pub_bytes,
-            &genesis_tmb,
+        let result = scope.finalize_with_software(
+            &SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb),
             now + 1,
             "cyphr.me",
         );

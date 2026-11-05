@@ -4,18 +4,16 @@
 //!
 //! # Contract
 //!
-//! - [`Signer::sign`] receives the Coz `cad` (the canonical hash of the
-//!   pay) and returns the signature over it.
-//! - The signer OWNS signature canonicality. For ECDSA algorithms it MUST
-//!   return the low-S form (`coz` verification rejects high-S). Backends that
-//!   return another encoding (PKCS#11 raw `r || s` with arbitrary S, Secure
-//!   Enclave DER) normalize before returning. The core never normalizes: it
-//!   verifies the signature with `coz::verify_json` and rejects anything that
-//!   does not verify as [`Error::InvalidSignature`](crate::Error), so one
-//!   party owns the rule and a violation cannot be committed.
+//! - [`Signer::sign`] receives the Coz `cad` (the canonical hash of the pay) and returns the
+//!   signature over it.
+//! - The signer OWNS signature canonicality. For ECDSA algorithms it MUST return the low-S form
+//!   (`coz` verification rejects high-S). Backends that return another encoding (PKCS#11 raw `r ||
+//!   s` with arbitrary S, Secure Enclave DER) normalize before returning. The core never
+//!   normalizes: it verifies the signature with `coz::verify_json` and rejects anything that does
+//!   not verify as [`Error::InvalidSignature`](crate::Error), so one party owns the rule and a
+//!   violation cannot be committed.
 //! - Failure is a [`SignerError`], never an empty signature.
-//! - The returned future is not required to be `Send` (WebCrypto futures
-//!   are not).
+//! - The returned future is not required to be `Send` (WebCrypto futures are not).
 
 use std::future::Future;
 use std::task::{Context, Poll, Waker};

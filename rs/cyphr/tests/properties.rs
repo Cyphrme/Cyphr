@@ -270,7 +270,7 @@ fn arrow_signed_key_create(
 
 /// Build and sign a real `commit/create` coz carrying `arrow_tagged`
 /// (`alg:base64digest`) under `signer`. Used both for the genuine value
-/// (via `finalize_with_arrow`, elsewhere) and, here, for deliberately
+/// (via `finalize_with_software`, elsewhere) and, here, for deliberately
 /// tampered values driven through the real signature-verification path.
 fn arrow_signed_commit_create(
     signer: &test_fixtures::PoolKey,
@@ -399,8 +399,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -453,8 +453,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_a
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -514,8 +514,8 @@ proptest! {
         let prv_bytes = arrow_prv_bytes(genesis);
         let pub_bytes = Base64UrlUnpadded::decode_vec(&genesis.pub_key).expect("genesis pub base64");
         let commit = scope_ref
-            .finalize_with_arrow(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb, now + 1, "cyphr.me")
-            .expect("finalize_with_arrow should succeed for a genuine commit");
+            .finalize_with_software(&cyphr::signer::SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb), now + 1, "cyphr.me")
+            .expect("finalize_with_software should succeed for a genuine commit");
         let genuine_arrow = commit
             .commit_tx()
             .0
@@ -561,7 +561,7 @@ proptest! {
 
 /// F40 regression: a genuinely fresh explicit multi-key genesis (2+ keys,
 /// zero prior commits) — signed and applied through the real production
-/// path (`CommitScope::verify_and_apply` + `finalize_with_arrow`, exactly
+/// path (`CommitScope::verify_and_apply` + `finalize_with_software`, exactly
 /// as `cyphr-storage`'s write path and the CLI use it) — must accept a
 /// second, ordinary commit signed on top of it. Every prior arrow-property
 /// test in this file only ever exercises `Principal::implicit` (single-key,
@@ -601,7 +601,11 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         .verify_and_apply(&pc_pay, &pc_sig, pc_czd, None)
         .expect("principal/create should apply to a fresh multi-key genesis");
     scope1
-        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 1, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            now + 1,
+            "cyphr.me",
+        )
         .expect("genesis commit should finalize");
 
     assert!(
@@ -616,7 +620,11 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
         .verify_and_apply(&kc_pay, &kc_sig, kc_czd, Some(arrow_domain_key(key_c)))
         .expect("key/create mutation should apply to the second commit");
     scope2
-        .finalize_with_arrow("ES256", &prv_a, &pub_a, &tmb_a, now + 3, "cyphr.me")
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new("ES256", &prv_a, &pub_a, &tmb_a),
+            now + 3,
+            "cyphr.me",
+        )
         .expect(
             "a second commit signed on top of a fresh multi-key established genesis must finalize \
              without a state-root mismatch (F40)",

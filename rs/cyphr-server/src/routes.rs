@@ -846,11 +846,13 @@ mod commit_count_underflow_tests {
             .verify_and_apply(&pay_vec, &sig_bytes, czd, Some(new_key))
             .expect("key/create verifies against the starting principal state");
         scope
-            .finalize_with_arrow(
-                golden_kp.alg.name(),
-                &golden_kp.prv_bytes,
-                &golden_kp.pub_bytes,
-                &golden_tmb,
+            .finalize_with_software(
+                &cyphr::signer::SoftwareSigner::new(
+                    golden_kp.alg.name(),
+                    &golden_kp.prv_bytes,
+                    &golden_kp.pub_bytes,
+                    &golden_tmb,
+                ),
                 now,
                 "cyphr.me",
             )

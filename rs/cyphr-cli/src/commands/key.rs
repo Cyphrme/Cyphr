@@ -124,11 +124,13 @@ fn add(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_arrow(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(
+            &signer_stored.alg,
+            &signer_stored.prv_key,
+            &signer_stored.pub_key,
+            &tmb,
+        ),
         now,
         authority,
     )?;
@@ -216,11 +218,13 @@ fn revoke(
         coz::base64ct::Base64UrlUnpadded::decode_vec(signer_tmb)
             .map_err(|e| crate::Error::Signing(format!("invalid tmb base64: {}", e)))?,
     );
-    scope.finalize_with_arrow(
-        &signer_stored.alg,
-        &signer_stored.prv_key,
-        &signer_stored.pub_key,
-        &tmb,
+    scope.finalize_with_software(
+        &cyphr::signer::SoftwareSigner::new(
+            &signer_stored.alg,
+            &signer_stored.prv_key,
+            &signer_stored.pub_key,
+            &tmb,
+        ),
         now,
         authority,
     )?;
