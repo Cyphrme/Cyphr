@@ -532,6 +532,7 @@ version = "0.0.0"
 dependencies = [
  "coz-rs",
  "cyphr",
+ "cyphr-server",
  "cyphr-storage",
  "libfuzzer-sys",
  "serde_json",
