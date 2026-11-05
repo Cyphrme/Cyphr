@@ -23,11 +23,14 @@ present-tense certificate are the source's theorems, and this document defers to
 rather than re-deriving them. Where the text extends the model's vocabulary rather than
 restating it, it says so.
 
-**How a claim made here can be checked.** The source's Lean mechanization is frozen under
-its `rc1` tag; its written paper is a work-in-progress draft that is not. So a mechanized
-result is cited by its Lean theorem name, which is stable, and a point of prose is quoted
-rather than cited by section — a section number in an unfrozen draft is the same unstable
-handle this repository warns readers to verify before trusting for `SPEC.md`.
+**How a claim made here can be checked.** The Lean theorem names cited here are those of
+the source's `rc1` tag, whose tag message reads "the frozen Lean model". The later tags
+(`rc2`, `rc3`) restructure the development, and of the names cited here only
+`eon_trilemma_impossibility` still appears at the source's current head. The written paper
+is a work-in-progress draft. So a mechanized result is cited by its Lean theorem name at
+`rc1`, and a point of prose is quoted rather than cited by section — a section number in
+an unfrozen draft is the same unstable handle this repository warns readers to verify
+before trusting for `SPEC.md`.
 
 **Scope.** This is a lens for reasoning about what a Cyphr deployment trusts. It is not
 part of the Cyphr protocol and not a proposal to one; `SPEC.md` is the normative source
@@ -129,8 +132,11 @@ architecture documents cite it in a `cell` column.
 An **evaluator** is a check anyone can run over the artifact presented, arriving at the
 same answer independently. It is what discharges a claim without naming a trusted party,
 and it is what a certificate is checked by. The architecture documents use the word in two
-jobs: in prose, for that check, and as a machine-read `evaluator:` field naming the
-concrete test that runs it. The second is an instance of the first.
+jobs: in prose, for that check, and as a machine-read `evaluator:` field on a
+claim block, which holds `test` when an automated test backs the claim and `none` when
+nothing does. The test itself is bound to the claim by an `@docket:` marker at the test
+(see [the docket section of `docs/AGENTS.md`](AGENTS.md#docket--the-documentation-claim-gate)),
+not named in the field.
 
 Read the notation `n / Tk` as _cell n of the source's tabulation, where axis Tk is the one
 that fails_. The failing axis carries the meaning; the number is an index into the table
@@ -150,6 +156,9 @@ at any stratum, and those two rows posit one anyway (`undetermined_cell_empty`).
 | `6 / T1+T3`      | **fails**     | —              | **fails**    | an attestor, plus a freshness mechanism                           |
 | 7                | **fails**     | posited        | holds        | empty by theorem                                                  |
 | 8                | **fails**     | posited        | **fails**    | empty by theorem                                                  |
+
+A **freshness mechanism**, in cells 4 and 6, is any one of the three cures for a
+non-monotone claim set out under [curing a non-monotone claim](#curing-a-non-monotone-claim).
 
 Certifiability is written `—` where determination fails: there is no record-only predicate
 for the axis to range over. Monotonicity is asked everywhere, which is why cells 5 and 6
@@ -256,10 +265,10 @@ a _vouch_ is an evidence species; the shared root is not a shared referent.
 
 **watcher** — cures a monotonicity failure (T3) by holding more than one view of the same
 subject over time. A point observation cures nothing, no matter who signs it, and the
-source says why: divergence between two views, once it exists, is permanent, so
-_equivocation_ is affirmable — evidence of it endures once obtained — while _honesty_ is
-only refutable, falsifiable at the next check and never provable forever. A single view
-obtains neither.
+source says why: divergence between two views, once it exists, is permanent
+(`divergence_permanent`), so _equivocation_ is affirmable — evidence of it endures once
+obtained — while, in the source's words, "honesty is only ever refutative, never provable
+forever." A single view obtains neither.
 
 The model's own name for the watcher's role is **liveness holder**, and it offers witness
 quorums and gossip protocols as instances; "watcher" is this repository's name for the
@@ -316,14 +325,17 @@ commitment, narrowing the claim, or admitting a new trusted fact — and grades 
 exhaustiveness explicitly as model-relative, accounting "for every repair this model's
 mechanized verdicts distinguish, not for every repair any model could admit."
 
-The consequence for design is one the source states outright: whether a guarantee needs a
-consensus mechanism is settled by where its claim sits, not by argument. A system with a
-nameable authority can serve eternal offline evidence and needs no coordination for it,
-while every "is this current" question is a coordination problem no artifact retires. So a
-single party signing a statement about the present, with no expiry and no scoping,
-produces an artifact shaped like the corner that does not exist. What makes such an
-artifact unsound is not that it fails to prove currency — nothing proves currency alone —
-but that it does not disclose which of the two reachable corners it actually occupies.
+The consequence for design follows from the source's identification of monotonicity with
+coordination-freedom — "Monotonicity's identification with coordination-freedom is a
+biconditional in its own right", it says, citing Ameloot, Neven and Van den Bussche 2013.
+The reading for design is this document's: whether a guarantee needs coordination is
+settled by where its claim sits, not by argument. A system with a nameable authority can
+serve eternal offline evidence and needs no coordination for it, while every "is this
+current" question is a coordination problem no artifact retires. So a single party signing
+a statement about the present, with no expiry and no scoping, produces an artifact shaped
+like the corner that does not exist. What makes such an artifact unsound is not that it
+fails to prove currency — nothing proves currency alone — but that it does not disclose
+which of the two reachable corners it actually occupies.
 
 ## What the model does not settle
 
