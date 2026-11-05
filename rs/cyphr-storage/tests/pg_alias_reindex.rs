@@ -1,0 +1,258 @@
+//! The PG alias table is a rebuildable cache (AGENTS.md I1).
+//!
+//! A principal is addressable by every hash variant of its PG (SPEC §12.1).
+//! Those aliases live in the index, which `rebuild_index_from_scratch`
+//! discards and re-derives from the blob store alone. The property: for
+//! random principals, every alias resolves to the principal before the
+//! reindex, and to the same principal (tip included) after it.
+
+use std::collections::BTreeMap;
+
+use coz::base64ct::{Base64UrlUnpadded, Encoding};
+use cyphr::StateDigest;
+use cyphr_index_fjall::FjallIndexer;
+use cyphr_storage::Genesis;
+use cyphr_storage::blob::MemoryBlobStore;
+use cyphr_storage::engine::StorageEngine;
+use cyphr_storage::index::{Indexer, IndexerWrite, MemoryIndexer};
+use proptest::prelude::*;
+
+const NOW: i64 = 1_700_100_000;
+
+/// Pool keys that can be added after `golden`, spanning ES256, ES384 and
+/// Ed25519 so the PG gains SHA-256, SHA-384 and SHA-512 variants.
+const ADDABLE: &[&str] = &["key_a", "alice", "diana_es384", "eve_ed25519"];
+
+struct Kp {
+    alg: String,
+    prv: Vec<u8>,
+    pubb: Vec<u8>,
+    tmb: coz::Thumbprint,
+}
+
+fn load_pool() -> test_fixtures::Pool {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("rs dir")
+        .parent()
+        .expect("repo root")
+        .join("tests/keys/pool.toml");
+    test_fixtures::Pool::load(&path).expect("pool.toml")
+}
+
+fn kp(pool: &test_fixtures::Pool, name: &str) -> Kp {
+    let pk = pool.get(name).expect("pool key");
+    Kp {
+        alg: pk.alg.clone(),
+        prv: Base64UrlUnpadded::decode_vec(pk.prv.as_ref().expect("private key")).expect("prv b64"),
+        pubb: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
+        tmb: pk.compute_tmb().expect("tmb"),
+    }
+}
+
+fn key_of(k: &Kp) -> cyphr::Key {
+    cyphr::Key::new(k.alg.clone(), k.tmb.clone(), k.pubb.clone()).expect("key binds its tmb")
+}
+
+fn sign(k: &Kp, pay: serde_json::Value) -> (Vec<u8>, Vec<u8>, coz::Czd) {
+    let bytes = serde_json::to_vec(&pay).expect("pay");
+    let (sig, cad) = coz::sign_json(&bytes, &k.alg, &k.prv, &k.pubb).expect("sign");
+    let czd = coz::czd_for_alg(&cad, &sig, &k.alg).expect("czd");
+    (bytes, sig, czd)
+}
+
+fn commit_one(
+    p: &mut cyphr::Principal,
+    signer: &Kp,
+    pay: serde_json::Value,
+    sidecar: Option<cyphr::Key>,
+    now: i64,
+) {
+    let (pay, sig, czd) = sign(signer, pay);
+    let mut scope = p.begin_commit();
+    scope
+        .verify_and_apply(&pay, &sig, czd, sidecar)
+        .expect("apply");
+    scope
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &signer.alg,
+                &signer.prv,
+                &signer.pubb,
+                &signer.tmb,
+            ),
+            now,
+            "cyphr.me",
+        )
+        .expect("finalize");
+}
+
+/// Raw wire blobs of commit `i` of `p`: key-introducing cozies carry the
+/// new key, as the engine's ingest requires.
+fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
+    let entry = &cyphr_storage::export_commits(p).expect("export")[i];
+    let mut key_idx = 0;
+    entry
+        .cozies
+        .iter()
+        .map(|c| {
+            let mut c = c.clone();
+            let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
+            if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
+                let k = &entry.keys[key_idx];
+                c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
+                key_idx += 1;
+            }
+            serde_json::to_vec(&c).expect("blob")
+        })
+        .collect()
+}
+
+/// A principal rooted at `golden` that adds `added` (each in its own
+/// commit), then establishes its PG. Returns the principal, the genesis key
+/// and the genesis-derived id.
+fn build(pool: &test_fixtures::Pool, added: &[&str]) -> (cyphr::Principal, Genesis, String) {
+    let g = kp(pool, "golden");
+    let genesis = Genesis::Implicit(key_of(&g));
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let id = p.pr_tagged().expect("genesis id");
+    for (n, name) in added.iter().enumerate() {
+        let k = kp(pool, name);
+        let now = NOW + n as i64;
+        commit_one(
+            &mut p,
+            &g,
+            serde_json::json!({"alg": g.alg, "id": k.tmb.to_b64(), "now": now,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+            Some(key_of(&k)),
+            now,
+        );
+    }
+    let pr = p.pr_tagged().expect("pr");
+    let now = NOW + added.len() as i64;
+    commit_one(
+        &mut p,
+        &g,
+        serde_json::json!({"alg": g.alg, "id": pr, "now": now,
+                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        None,
+        now,
+    );
+    (p, genesis, id)
+}
+
+/// Every PG spelling: each hash-variant label and each bare digest.
+fn pg_spellings(p: &cyphr::Principal) -> Vec<String> {
+    let mh = p.pg().expect("PG established").as_multihash();
+    mh.algorithms()
+        .flat_map(|alg| {
+            let tagged = mh.tagged(alg).expect("variant").to_string();
+            let bare = tagged.split_once(':').expect("tagged").1.to_string();
+            [tagged, bare]
+        })
+        .collect()
+}
+
+/// Resolution of every alias, as `(canonical id, commit count)` per
+/// spelling; what a reindex must preserve.
+async fn resolve_all<B, I>(
+    engine: &StorageEngine<B, I>,
+    spellings: &[String],
+) -> BTreeMap<String, (String, Option<u64>)>
+where
+    B: cyphr_storage::blob::BlobStore,
+    I: Indexer + IndexerWrite,
+{
+    let mut out = BTreeMap::new();
+    for s in spellings {
+        let canonical = engine.canonical_principal_id(s).await.expect("resolve");
+        let count = engine
+            .get_tip(s)
+            .await
+            .expect("tip")
+            .map(|t| t.commit_count);
+        out.insert(s.clone(), (canonical, count));
+    }
+    out
+}
+
+/// Submit `added`-key principal, then check alias resolution before and
+/// after `rebuild_index_from_scratch`.
+async fn check<B, I>(engine: StorageEngine<B, I>, pool: &test_fixtures::Pool, added: &[&str])
+where
+    B: cyphr_storage::blob::BlobStore,
+    I: Indexer + IndexerWrite,
+{
+    let (p, genesis, id) = build(pool, added);
+    let commits = added.len() + 1;
+    for i in 0..commits {
+        let raw = blobs(&p, i);
+        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i} of {added:?}: {e}"));
+    }
+
+    let spellings = pg_spellings(&p);
+    let want = (id.clone(), Some(commits as u64));
+    let before = resolve_all(&engine, &spellings).await;
+    for (s, got) in &before {
+        assert_eq!(got, &want, "alias {s} before reindex ({added:?})");
+    }
+
+    engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("reindex from blobs");
+
+    assert_eq!(
+        resolve_all(&engine, &spellings).await,
+        before,
+        "reindex changed alias resolution ({added:?})"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+
+    /// Backs I1 (the alias table is a rebuildable cache): for a random
+    /// subset and order of added keys (so the PG has one, two or three
+    /// hash variants), every PG spelling resolves to the stored principal
+    /// before `rebuild_index_from_scratch` and to the identical principal
+    /// and tip after it. Turns red if an alias is never recorded (not
+    /// resolvable before the reindex), is lost, or moves in the reindex.
+    /// A property test over random principals, not a scenario.
+    #[test]
+    #[ignore = "RED(AD1): PG aliases are not resolved, so cannot survive a reindex"]
+    fn alias_resolution_survives_reindex(
+        added in Just(ADDABLE.to_vec()).prop_shuffle().prop_flat_map(|v| {
+            let n = v.len();
+            (Just(v), 1..=n).prop_map(|(v, n)| v[..n].to_vec())
+        })
+    ) {
+        let pool = load_pool();
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(check(
+            StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new()),
+            &pool,
+            &added,
+        ));
+    }
+}
+
+/// The same property on the durable backend, whose alias partition is
+/// registered in `index_meta` and must be re-derived after `clear`.
+#[tokio::test]
+#[ignore = "RED(AD1): PG aliases are not resolved, so cannot survive a reindex"]
+async fn alias_resolution_survives_reindex_on_fjall() {
+    let pool = load_pool();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let indexer = FjallIndexer::open(dir.path()).expect("open indexer");
+    check(
+        StorageEngine::new(MemoryBlobStore::new(), indexer),
+        &pool,
+        &["diana_es384", "eve_ed25519"],
+    )
+    .await;
+}
