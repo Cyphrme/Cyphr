@@ -24,7 +24,7 @@ to.
 | Term      | What it is                                                                                           |
 | :-------- | :--------------------------------------------------------------------------------------------------- |
 | Principal | A user's identity: a chain of commits adding and revoking keys over time. Not a key — a key history. |
-| `pr`      | The identifier the server files a principal under.                                                   |
+| `pr`      | The principal's identifier, derived from its genesis keys.                                           |
 | PG        | Principal Genesis. Your server's own stable identifier, derived from its signing key.                |
 | Tier      | What the server declares itself to be at `GET /server`: `attestor`, `repository`, or `witness`.      |
 | Admission | The gate on a brand-new principal taking up residency. Off by default.                               |
@@ -437,8 +437,8 @@ pushing its next commit never touches it. There are two policies.
 **`open` is the default, and it means what it says.** No fence is installed
 at all. Anyone who can reach the port can create principals without limit,
 bounded only by the rate fences and the commit quota. For a public server
-this is a decision, not a default to inherit by not thinking about it: the
-namespace of principal identifiers is first-come-first-served.
+this is a decision, not a default to inherit by not thinking about it:
+anyone can create principals without limit.
 
 **`invite` hands out single-use tokens.**
 
@@ -984,11 +984,10 @@ directory is locked exclusively, a rolling restart of two processes against
 one directory is not possible — the second refuses to start. A blue-green
 deployment needs two data directories and a resync, not a shared one.
 
-Three things interact with a restart in ways worth planning for:
+Two things interact with a restart in ways worth planning for:
 
 - **Login challenges** are in-memory and per-process. A client mid-login when you restart gets `login challenge is unknown, already used, or expired` and needs a fresh challenge. Harmless — clients retry — but it is a burst of login failures at every restart.
-- **Witness registrations** (`POST /witness/register`) are in-memory. Every witness registered for push fanout is forgotten on restart and must register again. If you depend on fanout, that is a re-registration step in your restart procedure, not something the server recovers on its own.
-- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart, the same as the two hazards above.
+- **Invite tokens issued to a running server** go the other way: they do nothing until the next restart. `invite new` durably records the new hashes in the tokens file, but the server reads that file once, at startup, and never rereads it. Hand out a token minted after boot and the holder gets a `403` until you restart. Every invite batch costs a restart.
 
 `rebuild-index` is the one maintenance command that exists. It reconstructs
 `index/` entirely from `record/blobs/`; use it after restoring a partial

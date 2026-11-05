@@ -26,7 +26,7 @@ their phone in a lake and is signing in with a key your server has never seen.
 | Term      | What it is                                                                                                         |
 | :-------- | :----------------------------------------------------------------------------------------------------------------- |
 | Principal | A user's identity: a chain of commits that adds and revokes keys over time. Not a key — a key _history_.           |
-| `pr`      | The identifier a Cyphr server files a principal under. This is what you store on your account row.                 |
+| `pr`      | The principal's identifier, derived from its genesis keys. This is what you store on your account row.             |
 | `tmb`     | A key's thumbprint. A hash of the key's algorithm and public key.                                                  |
 | Coz       | The signed-message format: `{"pay": {...}, "sig": "..."}`. Login payloads and bearer tokens are both Coz messages. |
 | Audience  | The identity your Cyphr server answers to, named inside every login signature.                                     |
@@ -191,11 +191,9 @@ The `jq` rewrites each transaction as a base64url blob, which is the shape
 for. Use `.[-1]` to send only the newest commit — re-sending one the server
 already holds is an error.
 
-Use the genesis thumbprint as the principal id, as above. The write path
-accepts an arbitrary string, but on a server that signs its responses a
-non-thumbprint id makes the push return `500` with `commit receipt signing
-unavailable` even though the commit was stored — a confusing state to debug
-and one that gets worse on retry.
+Use the genesis thumbprint as the principal id, as above. Any other id is
+refused with a `400` before anything is stored; see
+[Map `pr` to an account](#5-map-pr-to-an-account).
 
 Two CLI limits to know before you lean on it: `key add` and `key revoke` fail
 outright on Ed25519 principals (`digest length mismatch for SHA-256: expected
@@ -446,15 +444,34 @@ await session.start(account);
 ```
 
 This is the same shape as your `sub` handling, with one difference worth
-sitting with: `pr` is the identifier the Cyphr server files the principal
-under, and the server accepts whatever identifier the client used when it
-first pushed. It is first-come-first-served within that server's namespace,
-not a value derived from the key material. On a server with open admission,
-that namespace is open to anyone. If your deployment cares — and if you are
-using someone else's Cyphr server, it should — run the server yourself with
-`[admission] policy = "invite"` or `"pow"`, or scope your account table to the
-specific server that vouched for the principal. `invite` also needs a
-`tokens_path` set alongside it; the policy alone will not parse.
+sitting with: `pr` is derived, not chosen. A principal's identifier is the
+one its genesis keys derive — for a single-key genesis, the genesis key's
+thumbprint — and the server refuses a first push filed under any other id
+with a `400`,
+`invalid input: principal_id is not the genesis-derived id: <id>`. The server
+stores the algorithm-labelled spelling (`SHA-256:M9wE…`) and also accepts
+the bare digest (`M9wE…`) as input for the same principal. No one can
+claim another principal's identifier by pushing first.
+
+Two consequences for your account table:
+
+- **Normalize the spelling.** The token's `pr` is the spelling the client
+  claimed at login, copied verbatim, so one principal can arrive bare
+  from one client and labelled from another. Pick one form — the part
+  after the `ALG:` label, or the labelled form — and convert before you
+  look up or create a row, or one person gets two accounts.
+- **Addressing a principal by its Principal Genesis (PG) is not
+  supported yet.** A principal that adds keys before
+  `principal/create` has a PG that differs from its genesis-derived id,
+  and the server refuses a push filed under that PG with a `400`. Use the
+  genesis-derived id.
+
+Who may create a principal on a server at all is the server's admission
+policy. On a server with open admission, anyone can. If your deployment
+cares, run the server yourself with `[admission] policy = "invite"`, or
+scope your account table to the specific server that vouched for the
+principal. `invite` also needs a `tokens_path` set alongside it; the
+policy alone will not parse.
 
 ## The rejections you have to handle
 

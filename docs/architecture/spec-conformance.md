@@ -231,8 +231,8 @@ SPEC 2.3.2, line 252. Disposition: `red-new`.
 - spec-text: 3. **Lifecycle gate**: The principal's current lifecycle state must permit the
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s11_2_frozen_principal_rejects_key_mutations`
-  - `rs/cyphr/src/principal.rs::key_create_on_deleted_principal_is_rejected`
-  - `rs/cyphr/src/principal.rs::data_action_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::key_create_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::data_action_on_deleted_principal_is_rejected`
 - fails when: a frozen principal accepts a key mutation (red today: `frozen` is recorded but never consulted by the apply gate), or a deleted principal accepts any transaction or action (green).
 
 ```claim
@@ -824,9 +824,9 @@ SPEC 11.2, line 1863. Disposition: `covered`.
 - disposition: covered
 - spec-text: - **Deleted**: The principal signed `principal/delete`. No new transactions or
 - tests:
-  - `rs/cyphr/src/principal.rs::key_create_on_deleted_principal_is_rejected`
-  - `rs/cyphr/src/principal.rs::key_delete_on_deleted_principal_is_rejected`
-  - `rs/cyphr/src/principal.rs::data_action_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::key_create_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::key_delete_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::data_action_on_deleted_principal_is_rejected`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_lifecycle[lifecycle/freeze_after_delete_is_rejected]`
 - fails when: a deleted principal accepts a key mutation, a data action, or a freeze.
 
@@ -861,8 +861,8 @@ SPEC 11.2, line 1875. Disposition: `covered`.
 - disposition: covered
 - spec-text: `Deleted` and `Frozen` are mutually exclusive (a principal cannot be frozen and
 - tests:
-  - `rs/cyphr/src/principal.rs::principal_delete_from_frozen_succeeds_and_clears_frozen`
-  - `rs/cyphr/src/principal.rs::freeze_create_on_deleted_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::principal_delete_from_frozen_succeeds_and_clears_frozen`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::freeze_create_on_deleted_is_rejected`
 - fails when: a principal can be both frozen and deleted: a delete leaves `frozen` set, or a freeze is accepted on a deleted principal.
 
 ```claim
@@ -879,8 +879,8 @@ SPEC 11.4, line 1898. Disposition: `covered`.
 - disposition: covered
 - spec-text: Delete, Level 3+). Closed principals are permanently closed and cannot be
 - tests:
-  - `rs/cyphr/src/principal.rs::later_commit_bare_finalizer_on_already_deleted_is_rejected`
-  - `rs/cyphr/src/principal.rs::self_revoke_on_deleted_principal_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::later_commit_bare_finalizer_on_already_deleted_is_rejected`
+  - `rs/cyphr/src/principal/tests/lifecycle.rs::self_revoke_on_deleted_principal_is_rejected`
 - fails when: a later commit, including a bare finalizer, is accepted on a closed principal.
 
 ```claim
@@ -1294,7 +1294,7 @@ SPEC 19.5, line 3353. Disposition: `covered`.
 - spec-text: - Not apply partial state changes (atomic)
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s19_5_failed_commit_leaves_no_partial_state`
-  - `rs/cyphr/src/principal.rs::abandoned_commit_scope_does_not_leak_state`
+  - `rs/cyphr/src/principal/tests/tree.rs::abandoned_commit_scope_does_not_leak_state`
 - fails when: the first transaction of a failed commit is visible in the principal.
 
 ```claim
