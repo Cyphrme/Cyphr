@@ -36,6 +36,13 @@ impl Indexer for EveryKeyIndexed {
         Ok(None)
     }
 
+    // `interpret` never asks about PGs. `false` ("no PG established") is the
+    // answer for an index that holds no commits, which this stub's other
+    // methods already claim.
+    async fn is_pg_established(&self, _: &str) -> Result<bool, IndexerError> {
+        Ok(false)
+    }
+
     async fn get_commit_chain(
         &self,
         _: &str,
