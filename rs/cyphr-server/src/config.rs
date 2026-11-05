@@ -302,17 +302,6 @@ pub enum AdmissionConfig {
         /// Path to the deployment's `sha256(token)` hex-line file.
         tokens_path: PathBuf,
     },
-
-    /// Stateless proof-of-work admission. A new-principal genesis push must
-    /// carry an `X-Cyphr-Pow` nonce whose `blake3` hashcash, bound to the
-    /// principal id and the current UTC-hour window, clears `difficulty`
-    /// leading zero bits (see `admission`). No server state, no challenge
-    /// endpoint -- the server verifies with a single hash.
-    Pow {
-        /// Target difficulty in leading zero *bits* of the hashcash digest.
-        #[serde(default)]
-        difficulty: u32,
-    },
 }
 
 impl ServerConfig {
@@ -429,23 +418,9 @@ pub fn resolve_config(cli: &Cli) -> Result<ServerConfig, ConfigError> {
         .extract()
         .map_err(|e| ConfigError::Figment(Box::new(e)))?;
 
-    // A pow difficulty of 0 makes every well-formed nonce admit (the
-    // anti-Sybil fence is silently disabled); a difficulty above the
-    // blake3 digest's 256 bits is unsatisfiable by any nonce (new-principal
-    // onboarding is silently and permanently closed). `#[serde(default)]`
-    // on `difficulty` means an operator who omits it from the TOML table
-    // gets 0 with no error, so this must be checked explicitly rather than
-    // relying on deserialization to catch it.
-    if let AdmissionConfig::Pow { difficulty } = config.admission {
-        if difficulty == 0 || difficulty > 256 {
-            return Err(ConfigError::PowDifficultyInvalid(difficulty));
-        }
-    }
-
-    // The same silent-brick class as a zero pow difficulty: `#[serde(default)]`
-    // on every `[limits]` field means an operator who writes (or omits, then
-    // overrides with) `max_body_bytes = 0` gets a server that refuses every
-    // request body, and `count_quota = 0` gets a server that refuses every
+    // Silent-brick class: `#[serde(default)]` on every `[limits]` field means
+    // an operator who writes (or omits, then overrides with) `max_body_bytes = 0` gets a server
+    // that refuses every request body, and `count_quota = 0` gets a server that refuses every
     // principal's first commit -- both with no deserialization error, so both
     // must be checked explicitly here.
     if config.limits.max_body_bytes == 0 {
@@ -514,17 +489,6 @@ pub enum ConfigError {
          read-only/sync-from-authority behavior; use mode = \"authority\" (the default)"
     )]
     WitnessModeUnimplemented,
-
-    /// `[admission] policy = "pow"` was configured with a `difficulty` outside
-    /// the satisfiable range: 0 (every nonce admits -- the anti-Sybil fence is
-    /// silently off) or greater than 256 (no nonce can ever clear a blake3
-    /// digest's 256 bits -- new-principal onboarding is silently and
-    /// permanently closed).
-    #[error(
-        "admission pow difficulty {0} is invalid -- must be in 1..=256 leading zero bits (0 \
-         admits every nonce; blake3 digests are only 256 bits, so >256 admits none)"
-    )]
-    PowDifficultyInvalid(u32),
 
     /// `[limits] max_body_bytes = 0` was configured, which refuses every
     /// request body before any handler runs.
@@ -661,56 +625,27 @@ mod tests {
         }
     }
 
+    /// Proof-of-work admission was removed; a deployment config still naming
+    /// it must fail loudly at resolution, never fall back to another policy
+    /// (which would silently change who may take up residency). Scenario:
+    /// the operator's stale config file against the current binary.
     #[test]
-    fn pow_difficulty_zero_is_rejected() {
-        // `#[serde(default)]` on `difficulty` means omitting it -- or writing
-        // it explicitly -- as 0 must not silently disable the anti-Sybil
-        // fence (leading_zero_bits(..) >= 0 is always true).
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(tmp.path(), "[admission]\npolicy = \"pow\"\n");
-        let result = resolve_config(&cli);
-        assert!(
-            matches!(result, Err(ConfigError::PowDifficultyInvalid(0))),
-            "an omitted (default-0) pow difficulty must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn pow_difficulty_above_256_is_rejected() {
-        // blake3 digests are 256 bits; a difficulty above that is
-        // unsatisfiable by any nonce -- a silent, permanent onboarding outage.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cli = parse_with_admission_table(
-            tmp.path(),
-            "[admission]\npolicy = \"pow\"\ndifficulty = 300\n",
-        );
-        let result = resolve_config(&cli);
-        assert!(
-            matches!(result, Err(ConfigError::PowDifficultyInvalid(300))),
-            "a pow difficulty above 256 must be rejected, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn pow_difficulty_in_valid_range_resolves() {
+    fn removed_pow_policy_is_a_config_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cli = parse_with_admission_table(
             tmp.path(),
             "[admission]\npolicy = \"pow\"\ndifficulty = 18\n",
         );
-        let config =
-            resolve_config(&cli).expect("a pow difficulty within 1..=256 must resolve cleanly");
+        let result = resolve_config(&cli);
         assert!(
-            matches!(config.admission, AdmissionConfig::Pow { difficulty } if difficulty == 18),
-            "must resolve to AdmissionConfig::Pow carrying the configured difficulty, got: {:?}",
-            config.admission
+            matches!(&result, Err(ConfigError::Figment(e)) if e.to_string().contains("pow")),
+            "a config naming the removed pow policy must be a typed config error, got: {result:?}"
         );
     }
 
     /// A `max_body_bytes` of 0 refuses every request body, silently bricking
-    /// all writes (and reads with a body). Like the pow-difficulty zero case,
-    /// serde happily deserializes it, so `resolve_config` must reject it
-    /// explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
+    /// all writes (and reads with a body). Serde happily deserializes it, so
+    /// `resolve_config` must reject it explicitly (see `ConfigError::LimitsMaxBodyBytesZero`).
     #[test]
     fn limits_max_body_bytes_zero_is_rejected() {
         let tmp = tempfile::tempdir().expect("tempdir");

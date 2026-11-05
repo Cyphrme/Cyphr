@@ -41,14 +41,6 @@ use crate::envelope::Envelope;
 /// Header carrying the opaque, out-of-band invite token.
 const INVITE_HEADER: &str = "x-cyphr-invite";
 
-/// Header carrying the client's hashcash nonce (a base-10 `u64`).
-const POW_HEADER: &str = "x-cyphr-pow";
-
-/// Fixed-length domain-separation tag opening every hashcash preimage. The
-/// trailing byte versions the encoding so a future preimage change cannot
-/// collide with a solution minted under this one.
-const POW_DOMAIN_TAG: &[u8] = b"cyphr-pow\x01";
-
 /// Spent-set marker for a reserved (in-flight) token hash.
 const STATE_RESERVED: &[u8] = b"R";
 /// Spent-set marker for a consumed (observed-2xx) token hash.
@@ -115,11 +107,6 @@ pub fn layer(
 ) -> Result<Option<AdmissionLayer>, AdmissionError> {
     let policy = match config {
         AdmissionConfig::Open => return Ok(None),
-        // Stateless hashcash: no durable store, no challenge endpoint. The
-        // difficulty is the only state the gate carries.
-        AdmissionConfig::Pow { difficulty } => Policy::Pow {
-            difficulty: *difficulty,
-        },
         AdmissionConfig::Invite { tokens_path } => {
             let hashes = load_token_hashes(tokens_path)?;
             let spent = SpentSet::open(&record_dir.join("admission"))?;
@@ -197,8 +184,6 @@ enum Policy {
         /// Durable single-use spent-set.
         spent: SpentSet,
     },
-    /// Stateless hashcash proof-of-work at `difficulty` leading zero bits.
-    Pow { difficulty: u32 },
 }
 
 impl Gate {
@@ -233,14 +218,13 @@ impl Gate {
 
         // (3) An already-resident principal is bound to its chain by the
         // protocol; admission never fires for it.
-        if (self.resident)(id.clone()).await {
+        if (self.resident)(id).await {
             return call_inner(inner, req).await;
         }
 
         // (4) A new principal -- apply the active policy.
         match &self.policy {
             Policy::Invite { hashes, spent } => admit_invite(hashes, spent, req, inner).await,
-            Policy::Pow { difficulty } => admit_pow(&id, *difficulty, req, inner).await,
         }
     }
 }
@@ -311,34 +295,6 @@ where
     response
 }
 
-/// Proof-of-work policy for a new principal: an `X-Cyphr-Pow` nonce whose
-/// hashcash, bound to this `principal_id` and a live UTC-hour window, clears
-/// `difficulty` leading zero bits admits; a missing, non-`u64`, or
-/// insufficient nonce is a 403 echoing the challenge parameters. Stateless --
-/// the gate does one hash per window and holds no per-request state.
-async fn admit_pow<S>(principal_id: &str, difficulty: u32, req: Request, inner: &mut S) -> Response
-where
-    S: Service<Request, Response = Response, Error = Infallible>,
-    S::Future: Send,
-{
-    // Parse strictly: an absent or non-`u64` header is not a challenge, so it
-    // is denied outright -- never treated as a bypass.
-    let nonce = req
-        .headers()
-        .get(POW_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    let Some(nonce) = nonce else {
-        return denied_pow(difficulty);
-    };
-
-    if pow_admits(principal_id, nonce, difficulty) {
-        call_inner(inner, req).await
-    } else {
-        denied_pow(difficulty)
-    }
-}
-
 /// Drive the inner service. Its error is `Infallible`, so the match is total.
 async fn call_inner<S>(inner: &mut S, req: Request) -> Response
 where
@@ -362,80 +318,6 @@ fn denied_invite() -> Response {
         }))),
     )
         .into_response()
-}
-
-/// A proof-of-work denial: 403 whose JSON body echoes the challenge parameters
-/// -- the difficulty and the window binding -- so a client can size and bind
-/// its work without an out-of-band challenge exchange.
-fn denied_pow(difficulty: u32) -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(Envelope::unsigned(serde_json::json!({
-            "error": "admission required",
-            "policy": "pow",
-            "difficulty": difficulty,
-            "window": "utc-hour",
-        }))),
-    )
-        .into_response()
-}
-
-/// The coarse current time window: whole UTC hours since the Unix epoch. A
-/// pre-epoch clock (absurd in practice) yields window 0, under which every
-/// nonce simply fails difficulty -- the safe, refusing direction.
-fn current_utc_hour() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() / 3600)
-        .unwrap_or(0)
-}
-
-/// The hashcash preimage digest over an INJECTIVE byte encoding: a
-/// fixed-length domain tag, the `principal_id` LENGTH-PREFIXED, then the
-/// `utc_hour` and `nonce` as fixed-width little-endian `u64`s. The length
-/// prefix and fixed-width integers guarantee distinct `(principal_id,
-/// utc_hour, nonce)` triples never share a preimage for ANY `principal_id`, so
-/// a solution provably binds to exactly one principal and one window -- the
-/// anti-amortization property. A `:`-delimited string preimage would be
-/// non-injective (a colon-bearing `principal_id` could reframe the field
-/// boundaries and amortize one solve across principals), which is why the
-/// encoding is length-prefixed rather than delimited.
-fn pow_digest(principal_id: &str, utc_hour: u64, nonce: u64) -> [u8; 32] {
-    let pid = principal_id.as_bytes();
-    let mut preimage = Vec::with_capacity(POW_DOMAIN_TAG.len() + 8 + pid.len() + 8 + 8);
-    preimage.extend_from_slice(POW_DOMAIN_TAG);
-    preimage.extend_from_slice(&(pid.len() as u64).to_le_bytes());
-    preimage.extend_from_slice(pid);
-    preimage.extend_from_slice(&utc_hour.to_le_bytes());
-    preimage.extend_from_slice(&nonce.to_le_bytes());
-    *blake3::hash(&preimage).as_bytes()
-}
-
-/// Leading zero *bits* of a 32-byte digest read big-endian (byte 0 most
-/// significant) -- the difficulty metric. Bits, not bytes: a difficulty need
-/// not be a multiple of 8.
-fn leading_zero_bits(digest: &[u8; 32]) -> u32 {
-    let mut bits = 0;
-    for &byte in digest {
-        if byte == 0 {
-            bits += 8;
-        } else {
-            bits += byte.leading_zeros();
-            break;
-        }
-    }
-    bits
-}
-
-/// Whether `nonce` clears `difficulty` leading zero bits for `principal_id` in
-/// a live window. The grace spans the current UTC hour AND the immediately
-/// previous one, so a solution found just before an hour boundary still
-/// verifies; anything older is stale and refused (no stockpiling).
-fn pow_admits(principal_id: &str, nonce: u64, difficulty: u32) -> bool {
-    let hour = current_utc_hour();
-    [hour, hour.saturating_sub(1)]
-        .into_iter()
-        .any(|window| leading_zero_bits(&pow_digest(principal_id, window, nonce)) >= difficulty)
 }
 
 /// A non-denial refusal on a transport/infrastructure fact.
@@ -676,29 +558,5 @@ mod tests {
         assert!(is_known(&hashes, &sha256(b"a")));
         assert!(is_known(&hashes, &sha256(b"b")));
         assert!(!is_known(&hashes, &sha256(b"c")));
-    }
-
-    #[test]
-    fn pow_digest_is_injective_across_a_colon_bearing_reframe() {
-        // The old `:`-delimited framing folds `("sybil", "HH:7")` and the
-        // colon-bearing twin `("sybil:HH", "7")` onto one preimage; the
-        // length-prefixed encoding must give them unrelated digests.
-        let hour = 471_000u64;
-        let twin = format!("sybil:{hour}");
-        assert_ne!(
-            pow_digest("sybil", hour, 7),
-            pow_digest(&twin, hour, 7),
-            "length-prefixed preimage must not collide the colon reframe"
-        );
-    }
-
-    #[test]
-    fn leading_zero_bits_counts_bits_not_bytes() {
-        assert_eq!(leading_zero_bits(&[0u8; 32]), 256);
-        let mut d = [0u8; 32];
-        d[0] = 0b0000_0001;
-        assert_eq!(leading_zero_bits(&d), 7);
-        d[0] = 0b1000_0000;
-        assert_eq!(leading_zero_bits(&d), 0);
     }
 }
