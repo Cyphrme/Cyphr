@@ -55,7 +55,7 @@ pub enum Standing {
     Error,
 }
 
-/// All a client can honestly say about freshness (TR-P1): how old its view
+/// All a client can honestly say about freshness: how old its view
 /// is, and whether a peer it asked reported something newer. It cannot say
 /// "current", because nothing it can ask rules out a newer unseen state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +66,7 @@ pub struct Freshness {
     pub peer_reported_newer: bool,
 }
 
-/// How a trust anchor was obtained (TR-P3).
+/// How a trust anchor was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorSource {
     /// A tip the client pinned earlier.
