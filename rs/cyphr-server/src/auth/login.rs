@@ -493,8 +493,9 @@ pub async fn login(
     // spellings of one identity must not yield two accounts.
     let subject = bare_digest(&canonical_id).to_string();
     let token = identity
-        .issue_token(
+        .issue_login_token(
             subject,
+            &parsed.tmb,
             default_login_perms(),
             now,
             super::token::DEFAULT_TTL_SECS,

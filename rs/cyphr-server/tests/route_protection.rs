@@ -771,7 +771,6 @@ async fn token_key_survivor_session_outlives_sibling_revoke() {
 /// follow-up push is otherwise valid (control: the survivor test above).
 /// End to end: yes.
 #[tokio::test]
-#[ignore = "RED(SO1): a token outlives the revocation of the key that logged in (#162)"]
 async fn token_key_revoked_session_refused_at_push() {
     let (state, followup, revoked, _survivor) = revoked_key_session().await;
     let (status, json) = send(push_request(followup, Some(&revoked)), build_router(state)).await;

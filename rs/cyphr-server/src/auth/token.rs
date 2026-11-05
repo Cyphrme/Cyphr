@@ -7,10 +7,11 @@
 //! `verify_token` is called from `auth::middleware`'s bearer-verification
 //! helpers, wired into `/push`'s optional admission knob.
 //!
-//! There is no revocation list in v1 (ruling R8): a short `exp` is the sole
-//! invalidation mechanism, and the token carries the issuing key's `tmb` so
-//! a future key-rotation story has a verification-time anchor to check
-//! against.
+//! There is no revocation list (ruling R8), but a session is bound to the
+//! key that opened it: a login token carries that key's thumbprint in
+//! [`LOGIN_KEY_FIELD`], and route protection refuses the token once the key
+//! is no longer active in the server's current view of the principal
+//! (`auth::middleware`). `exp` still caps a session on top of that.
 
 use serde_json::Value;
 
@@ -35,6 +36,13 @@ pub const DEFAULT_TTL_SECS: i64 = 15 * 60;
 /// the signature, not merely assumed by the reader.
 pub const BEARER_TOKEN_TYP: &str = "cyphr-server/auth/token";
 
+/// The signed claim naming the thumbprint (b64ut) of the principal key
+/// that logged in. The server signs it, so a holder cannot rebind a
+/// session to a different key; route protection re-checks that key
+/// against the principal chain on every request (#162). Absent on a
+/// token not minted by a login, which route protection refuses.
+pub const LOGIN_KEY_FIELD: &str = "ltmb";
+
 /// Claims extracted from a verified bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
@@ -46,6 +54,9 @@ pub struct Claims {
     pub exp: i64,
     /// The issuing key's thumbprint (b64ut), SPEC.md 17.4 / ruling R8.
     pub tmb: String,
+    /// The thumbprint (b64ut) of the principal key that logged in
+    /// ([`LOGIN_KEY_FIELD`]); `None` for a token not minted by a login.
+    pub login_tmb: Option<String>,
 }
 
 /// Errors verifying a bearer token.
@@ -91,6 +102,34 @@ impl ServerIdentity {
         now: i64,
         ttl_secs: i64,
     ) -> Option<String> {
+        self.issue(pr.into(), None, perms, now, ttl_secs)
+    }
+
+    /// Issue the bearer token a successful login mints: [`issue_token`]
+    /// plus the thumbprint of the key that logged in, signed into the
+    /// token so route protection can end the session when that key
+    /// leaves the chain (#162).
+    ///
+    /// [`issue_token`]: ServerIdentity::issue_token
+    pub fn issue_login_token(
+        &self,
+        pr: impl Into<String>,
+        login_tmb: &coz::Thumbprint,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+    ) -> Option<String> {
+        self.issue(pr.into(), Some(login_tmb), perms, now, ttl_secs)
+    }
+
+    fn issue(
+        &self,
+        pr: String,
+        login_tmb: Option<&coz::Thumbprint>,
+        perms: Vec<String>,
+        now: i64,
+        ttl_secs: i64,
+    ) -> Option<String> {
         let tmb = self.alg().compute_thumbprint(self.pub_key())?;
 
         let mut pay = coz::Pay::new();
@@ -98,10 +137,16 @@ impl ServerIdentity {
         pay.now = Some(now);
         pay.tmb = Some(tmb);
         pay.typ = Some(BEARER_TOKEN_TYP.to_string());
-        pay.extra.insert("pr".to_string(), Value::String(pr.into()));
+        pay.extra.insert("pr".to_string(), Value::String(pr));
         pay.extra
             .insert("exp".to_string(), Value::from(now + ttl_secs));
         pay.extra.insert("perms".to_string(), Value::from(perms));
+        if let Some(login_tmb) = login_tmb {
+            pay.extra.insert(
+                LOGIN_KEY_FIELD.to_string(),
+                Value::String(login_tmb.to_b64()),
+            );
+        }
 
         let pay_json = serde_json::to_vec(&pay).ok()?;
         let (sig, _cad) = self.sign(&pay_json)?;
@@ -180,11 +225,22 @@ fn claims_from_pay(pay: &coz::Pay) -> Result<Claims, TokenError> {
         .collect::<Option<Vec<_>>>()
         .ok_or(TokenError::MissingClaim("perms"))?;
 
+    let login_tmb = pay
+        .extra
+        .get(LOGIN_KEY_FIELD)
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or(TokenError::MissingClaim(LOGIN_KEY_FIELD))
+        })
+        .transpose()?;
+
     Ok(Claims {
         pr,
         perms,
         exp,
         tmb,
+        login_tmb,
     })
 }
 
@@ -431,5 +487,37 @@ mod tests {
             "a validly-signed, unexpired message whose typ is not the bearer typ must be rejected \
              as TypMismatch, got: {result:?}"
         );
+    }
+
+    /// Backs: the login key rides in the signed token (#162). The claim
+    /// round-trips, a plain token carries none, and rewriting it breaks the
+    /// signature, so a holder cannot rebind a session to another key.
+    #[test]
+    fn login_token_signs_in_the_login_key() {
+        let (_dir, path) = write_random_key_file();
+        let identity = ServerIdentity::load_from_path(&path).expect("load signing key");
+        let login_tmb = coz::Alg::Ed25519
+            .compute_thumbprint(&coz::Alg::Ed25519.generate_keypair().pub_bytes)
+            .expect("thumbprint");
+
+        let token = identity
+            .issue_login_token(PR, &login_tmb, vec!["read".to_string()], 1_000, 300)
+            .expect("issue login token");
+        let claims = identity.verify_token(&token, 1_100).expect("verifies");
+        assert_eq!(claims.login_tmb, Some(login_tmb.to_b64()));
+
+        let plain = identity
+            .issue_token(PR, vec!["read".to_string()], 1_000, 300)
+            .expect("issue plain token");
+        assert_eq!(
+            identity.verify_token(&plain, 1_100).unwrap().login_tmb,
+            None
+        );
+
+        let rebound = token.replace(&login_tmb.to_b64(), &"A".repeat(login_tmb.to_b64().len()));
+        assert!(matches!(
+            identity.verify_token(&rebound, 1_100),
+            Err(TokenError::InvalidSignature)
+        ));
     }
 }
