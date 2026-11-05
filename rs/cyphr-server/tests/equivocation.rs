@@ -274,8 +274,7 @@ fn restamp_sequence(
 }
 
 /// Render a distinct, valid SHA-256 digest string from a repeated seed
-/// byte -- the same convention `tests/cross_witness.rs` established
-/// (`455894a`). `check_equivocation`/`receipt::tip_report` parse
+/// byte. `check_equivocation`/`receipt::tip_report` parse
 /// `commit_id`/`roots` as `TaggedDigest`, so this suite's placeholders,
 /// which used to be human-readable or hand-typed repeated-letter
 /// literals, must genuinely parse. `pr` is NOT tagged -- see
