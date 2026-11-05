@@ -73,6 +73,8 @@ declare -A CLAIMS_INDEX=(
   # `docket-run --self-check`; not project claims. The first must FAIL
   # (its test name matches nothing), the second must pass.
   [selfcheck-zero-tests]="_claim_selfcheck_zero_tests"
+  [selfcheck-env-prefix-zero]="_claim_selfcheck_env_prefix_zero"
+  [selfcheck-cd-prefix-zero]="_claim_selfcheck_cd_prefix_zero"
   [selfcheck-real-test]="_claim_selfcheck_real_test"
 )
 
@@ -186,6 +188,12 @@ _claim_sc_l3353=(
 _claim_selfcheck_zero_tests=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
 )
+_claim_selfcheck_env_prefix_zero=(
+  "CARGO_TERM_COLOR=never cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+_claim_selfcheck_cd_prefix_zero=(
+  "cd rs && cargo test -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
 _claim_selfcheck_real_test=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
 )
@@ -196,12 +204,14 @@ _claim_selfcheck_real_test=(
 # failed.
 if [ "${1:-}" = "--self-check" ]; then
   bad=0
-  if "${BASH_SOURCE[0]}" selfcheck-zero-tests >/dev/null 2>&1; then
-    echo "FAIL  a command naming a missing test passed" >&2
-    bad=1
-  else
-    echo "PASS  a command naming a missing test fails"
-  fi
+  for sc in selfcheck-zero-tests selfcheck-env-prefix-zero selfcheck-cd-prefix-zero; do
+    if "${BASH_SOURCE[0]}" "$sc" >/dev/null 2>&1; then
+      echo "FAIL  $sc passed though it ran no test" >&2
+      bad=1
+    else
+      echo "PASS  $sc fails"
+    fi
+  done
   if "${BASH_SOURCE[0]}" selfcheck-real-test >/dev/null 2>&1; then
     echo "PASS  a command naming a real test passes"
   else
@@ -228,13 +238,17 @@ declare -n cmds="$arrname"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 2
 
-# Zero-test rule: a `cargo test` command that runs no test proves
-# nothing, so it fails. cargo exits 0 for a name filter that matches
-# nothing ("0 passed; 0 failed; N filtered out"), which let a claim pass
-# by naming a test that does not exist. The rule sums the "N passed"
-# counts of every "test result:" line the command printed. Commands that
-# are not `cargo test` (the list-valued fixtures' `true`/`false`) are
-# held only to their exit code.
+# Zero-test rule: a command that runs no test proves nothing, so it
+# fails. cargo exits 0 for a name filter that matches nothing ("0 passed;
+# 0 failed; N filtered out"), which let a claim pass by naming a test
+# that does not exist. The rule sums the "N passed" counts of every
+# "test result:" line a command printed, and applies to EVERY command
+# however it is spelled (env prefix, `cd x &&`, wrapper): a rule keyed on
+# the command's text is dodged by rewording it. Only the fixture claims
+# below are exempt, because their `true`/`false` commands run no test by
+# design.
+_exempt_from_zero_test_rule=(list-valued-both-green list-valued-one-failing)
+
 failures=0
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
@@ -246,15 +260,14 @@ for cmd in "${cmds[@]}"; do
     failures=1
     continue
   fi
-  case "$cmd" in
-  "cargo test "*)
-    passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' "$out" | awk '{n += $1} END {print n + 0}')"
-    if [ "${passed:-0}" -lt 1 ]; then
-      echo "docket-run: '$id' command ran zero tests: $cmd" >&2
-      failures=1
-    fi
-    ;;
-  esac
+  for ex in "${_exempt_from_zero_test_rule[@]}"; do
+    [ "$id" = "$ex" ] && continue 2
+  done
+  passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' "$out" | awk '{n += $1} END {print n + 0}')"
+  if [ "${passed:-0}" -lt 1 ]; then
+    echo "docket-run: '$id' command ran zero tests: $cmd" >&2
+    failures=1
+  fi
 done
 
 exit "$failures"
