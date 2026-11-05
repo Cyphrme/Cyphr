@@ -5,14 +5,10 @@
 
 use std::process::Command;
 
+// Cargo sets CARGO_BIN_EXE_<name> for integration tests, so the path stays
+// correct under any target-dir or build-dir layout.
 fn server_binary() -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("current_exe")
-        .parent()
-        .expect("parent")
-        .parent()
-        .expect("parent")
-        .join("cyphr-server")
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cyphr-server"))
 }
 
 #[test]
