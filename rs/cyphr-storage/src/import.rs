@@ -449,6 +449,38 @@ mod tests {
         assert!(matches!(result, Err(LoadError::NoGenesisKeys)));
     }
 
+    /// Claim: a commit whose coz pay omits `typ` is rejected as malformed
+    /// during replay, never silently routed to the action path (a missing
+    /// `typ` is not a transaction type, so only `CozHeader::parse` stops it).
+    /// Turns red if replay stops parsing the header strictly. Not an
+    /// end-to-end scenario: it needs a malformed commit no honest write path
+    /// produces, so only a direct replay reaches it.
+    #[test]
+    fn replay_rejects_commit_missing_typ() {
+        let key = make_test_key(0xAA);
+        let malformed = serde_json::json!({
+            "pay": { "alg": "ES256", "tmb": key.tmb.to_b64(), "now": 1000 },
+            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        });
+        let commit = CommitEntry::new(
+            vec![malformed],
+            vec![],
+            "SHA-256:c".into(),
+            "SHA-256:a".into(),
+            "SHA-256:s".into(),
+            "SHA-256:p".into(),
+        );
+
+        let result = load_principal_from_commits(Genesis::Implicit(key), &[commit]);
+        assert!(
+            matches!(
+                result,
+                Err(LoadError::Protocol(cyphr::Error::MalformedPayload))
+            ),
+            "a coz missing 'typ' must be rejected as malformed, got {result:?}"
+        );
+    }
+
     #[test]
     fn is_key_introducing_typ_delegates_to_canonical_predicate() {
         assert!(is_key_introducing_typ("cyphr.me/cyphr/key/create"));
