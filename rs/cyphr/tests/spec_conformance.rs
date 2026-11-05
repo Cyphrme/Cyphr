@@ -579,14 +579,15 @@ fn s2_3_2_second_commit_on_a_stale_pre_is_rejected() {
 /// bound. RED: the collection node is capped at 256 children and returns
 /// `CollectionArityExceeded` (`error.rs` records it as a known, deferred
 /// gap). End to end: no; a unit-level boundary, because no scenario reaches
-/// 257 keys more cheaply.
+/// 257 keys more cheaply. The fixing node must also delete
+/// `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
 #[test]
 #[ignore = "RED(SC1-F3): SPEC 4 KT capped at 256 children"]
 fn s4_key_tree_supports_more_than_256_keys() {
     let keys = |n: usize| -> Vec<Key> { (0..n).map(|_| key_of(&kp())).collect() };
     Principal::explicit(keys(256)).expect("control: 256 keys build");
-    let r = Principal::explicit(keys(257));
-    assert!(r.is_ok(), "257 keys refused: {:?}", r.err());
+    let p = Principal::explicit(keys(257)).unwrap_or_else(|e| panic!("257 keys refused: {e:?}"));
+    assert_eq!(p.active_key_count(), 257, "not every key is active");
 }
 
 // ============================================================================
@@ -708,7 +709,7 @@ fn is_requirement_line(l: &str) -> bool {
 }
 
 /// 1-based line numbers of the in-scope requirement lines of `spec`:
-/// sections 2-12 (up to `# Extended`), 15.2 and 15.8.
+/// sections 2-12 (up to `# Extended`), 15.2, 15.8, 15.9, 17.2 and 19.5.
 fn spec_requirement_lines(spec: &str) -> BTreeMap<usize, String> {
     let lines: Vec<&str> = spec.lines().collect();
     let at = |prefix: &str, from: usize| {
@@ -718,12 +719,20 @@ fn spec_requirement_lines(spec: &str) -> BTreeMap<usize, String> {
     };
     let s2 = at("## 2. ", 0);
     let extended = at("# Extended", s2);
-    let s152 = at("### 15.2 ", extended);
-    let s152_end = at("### ", s152 + 1);
-    let s158 = at("#### 15.8 ", s152_end);
-    let s158_end = at("### ", s158 + 1);
+    let end_of = |start: usize| at("#", start + 1);
     let mut out = BTreeMap::new();
-    for (lo, hi) in [(s2, extended), (s152, s152_end), (s158, s158_end)] {
+    let mut ranges = vec![(s2, extended)];
+    for heading in [
+        "### 15.2 ",
+        "#### 15.8 ",
+        "### 15.9 ",
+        "### 17.2 ",
+        "### 19.5 ",
+    ] {
+        let start = at(heading, extended);
+        ranges.push((start, end_of(start)));
+    }
+    for (lo, hi) in ranges {
         for (i, l) in lines.iter().enumerate().take(hi).skip(lo) {
             if is_requirement_line(l) {
                 out.insert(i + 1, l.trim().to_string());
@@ -745,9 +754,7 @@ fn collapse(s: &str) -> String {
 /// `supplement` row's quote must sit on its line and must not already be a
 /// rule line. Turns red if a requirement sentence has no row, a row has no
 /// sentence, or a quote drifted from its line. The SPEC commit lives on the
-/// `zami` branch and is absent from shallow clones: without it the test
-/// reports that and stops, unless `SC1_REQUIRE_SPEC` is set, which turns the
-/// absence into a failure.
+/// `zami` branch, which governs; the test fails when it cannot read it.
 #[test]
 fn map_has_one_row_per_spec_requirement() {
     let out = Command::new("git")
@@ -757,15 +764,11 @@ fn map_has_one_row_per_spec_requirement() {
         .arg(format!("{SPEC_COMMIT}:SPEC.md"))
         .output()
         .expect("run git");
-    if !out.status.success() {
-        assert!(
-            std::env::var_os("SC1_REQUIRE_SPEC").is_none(),
-            "SPEC at {SPEC_COMMIT} is unavailable: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        eprintln!("SKIPPED: SPEC at {SPEC_COMMIT} is not in this clone (fetch the zami branch)");
-        return;
-    }
+    assert!(
+        out.status.success(),
+        "SPEC at {SPEC_COMMIT} is unavailable (the zami branch must be fetched): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let spec = String::from_utf8(out.stdout).expect("SPEC is UTF-8");
     let spec_lines: Vec<&str> = spec.lines().collect();
     let expected = spec_requirement_lines(&spec);
@@ -975,4 +978,448 @@ fn map_rows_resolve_and_agree_with_their_tests() {
         Some(rows.len()),
         "summary total"
     );
+}
+
+// ============================================================================
+// SPEC 7.6 (line 1267): coz reuse by a principal is prohibited (COZ_REUSE)
+// ============================================================================
+
+/// Backs SPEC 7.6: "For transactions, coz reuse by a particular principal is
+/// prohibited and results in error `COZ_REUSE`." Scenario: key `a` signs a
+/// `key/delete` of `k3` (coz D); `k3` is added, deleted by D, and re-added by
+/// a different coz; D is then replayed. All `now` values are equal so the
+/// timestamp rule cannot be what rejects the replay. Control: a fresh
+/// `key/delete` coz signed by `b` in the same state is accepted, so the
+/// rejection can only be the reuse. Turns red if a previously included
+/// transaction coz is applied a second time. RED: the core has no reuse
+/// check and no `COZ_REUSE` variant. End to end: yes.
+#[test]
+#[ignore = "RED(SC1-F4): SPEC 7.6 transaction coz reuse accepted"]
+fn s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected() {
+    let (a, b, k3) = (kp(), kp(), kp());
+    let build = || {
+        let mut p = Principal::explicit(vec![key_of(&a), key_of(&b)]).expect("genesis");
+        let d = sign(&a, key_delete_pay(&a, &k3.tmb, T));
+        commit_one(
+            &mut p,
+            &a,
+            sign(&a, key_create_pay(&a, &k3.tmb, T)),
+            Some(key_of(&k3)),
+            T,
+        )
+        .expect("add k3");
+        commit_one(&mut p, &a, d.clone(), None, T).expect("first inclusion of D");
+        commit_one(
+            &mut p,
+            &b,
+            sign(&b, key_create_pay(&b, &k3.tmb, T)),
+            Some(key_of(&k3)),
+            T,
+        )
+        .expect("re-add k3 by another coz");
+        assert!(p.is_key_active(&k3.tmb), "premise: k3 active again");
+        (p, d)
+    };
+
+    let (mut p, _) = build();
+    commit_one(
+        &mut p,
+        &b,
+        sign(&b, key_delete_pay(&b, &k3.tmb, T)),
+        None,
+        T,
+    )
+    .expect("control: a fresh delete coz is accepted");
+
+    let (mut p, d) = build();
+    let before = snapshot(&p);
+    let r = commit_one(&mut p, &a, d, None, T);
+    assert!(
+        r.is_err(),
+        "a previously included transaction coz was applied again"
+    );
+    assert_eq!(before, snapshot(&p), "a rejected reuse changed state");
+}
+
+// ============================================================================
+// SPEC 15.9 (line 2834): future-dated messages are rejected
+// ============================================================================
+
+fn unix_now() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs(),
+    )
+    .expect("fits i64")
+}
+
+/// Backs SPEC 15.9: "comparing now to witness time on receipt and rejecting
+/// outside +-360 s default tolerance ... and rejecting future-dated
+/// messages." Scenario, with a default `Principal`: a data action and a
+/// `key/create` dated a day ahead of the clock are applied; the same coz
+/// dated at the clock is the control. Turns red if a message far beyond the
+/// tolerance is accepted. RED: `max_clock_skew` defaults to 0, which
+/// disables the check. The backdated side (a first message far in the past)
+/// is not tested: the whole corpus uses fixed 2023 timestamps (question Q10).
+/// End to end: yes.
+#[test]
+#[ignore = "RED(SC1-F5): SPEC 15.9 default tolerance disabled"]
+fn s15_9_future_dated_message_is_rejected_by_default() {
+    let now = unix_now();
+    let outcome = |at: i64| {
+        let (g, k2) = (kp(), kp());
+        let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+        let (pay, sig, czd) = sign(
+            &g,
+            json!({"alg": g.alg, "now": at, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+        );
+        let action = p.verify_and_record_action(&pay, &sig, czd).map(|_| ());
+        let create = commit_one(
+            &mut p,
+            &g,
+            sign(&g, key_create_pay(&g, &k2.tmb, at)),
+            Some(key_of(&k2)),
+            at,
+        );
+        (action, create)
+    };
+    let (action, create) = outcome(now);
+    action.expect("control: an action dated now is accepted");
+    create.expect("control: a key/create dated now is accepted");
+
+    let (action, create) = outcome(now + 86_400);
+    let mut accepted = vec![];
+    if action.is_ok() {
+        accepted.push("data action");
+    }
+    if create.is_ok() {
+        accepted.push("key/create");
+    }
+    assert!(
+        accepted.is_empty(),
+        "day-ahead messages accepted: {accepted:?}"
+    );
+}
+
+// ============================================================================
+// SPEC 2.2.2 (line 119): b64ut errors on non-canonical encodings
+// ============================================================================
+
+/// The non-canonical alias of a canonical b64ut string: the last character
+/// carries zero padding bits, so bumping its index sets one and decodes to
+/// the same bytes under a lenient decoder.
+fn non_canonical_alias(s: &str) -> String {
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let last = s.chars().last().expect("non-empty");
+    let idx = ALPHABET.find(last).expect("b64url char");
+    let bumped = ALPHABET.chars().nth(idx + 1).expect("not the last letter");
+    format!("{}{bumped}", &s[..s.len() - 1])
+}
+
+/// Backs SPEC 2.2.2: "b64ut ... errors on non-canonical encodings". Scenario:
+/// a `key/create` signed by an active key whose `id` is a non-canonical
+/// alias of the new key's thumbprint must be rejected (otherwise one key has
+/// two spellings and two valid cozies). Control: the canonical `id` is
+/// accepted. Turns red if a lenient decoder admits the alias. End to end: yes.
+// @docket: sc-l119 :: scripts/docket-run sc-l119
+#[test]
+fn s2_2_2_non_canonical_b64ut_is_rejected() {
+    let (g, k2) = (kp(), kp());
+    let canonical = b64(&k2.tmb);
+    let alias = non_canonical_alias(&canonical);
+    assert_ne!(alias, canonical, "premise: the alias differs");
+
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    let mut pay = key_create_pay(&g, &k2.tmb, T);
+    pay["id"] = json!(alias);
+    let before = snapshot(&p);
+    let r = commit_one(&mut p, &g, sign(&g, pay), Some(key_of(&k2)), T + 1);
+    assert!(r.is_err(), "a non-canonical id was accepted: {r:?}");
+    assert_eq!(before, snapshot(&p));
+    commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, T)),
+        Some(key_of(&k2)),
+        T + 1,
+    )
+    .expect("control: the canonical id is accepted");
+}
+
+// ============================================================================
+// SPEC 2.3.2 (line 240): Principal Genesis is immutable
+// ============================================================================
+
+/// Backs SPEC 2.3.2: "No operation can change a PG." Scenario: an explicit
+/// principal runs every key operation (create, replace, delete of a genesis
+/// key, revoke); its PG is compared after each. Turns red if any operation
+/// changes the recorded PG. End to end: yes.
+// @docket: sc-l240 :: scripts/docket-run sc-l240
+#[test]
+fn s2_3_2_no_operation_changes_the_principal_genesis() {
+    let (mut p, a, b) = two_key_principal();
+    let establish = json!({"alg": a.alg, "id": p.pr_tagged().expect("pr"), "now": T,
+                           "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/create"});
+    commit_one(&mut p, &a, sign(&a, establish), None, T).expect("principal/create establishes PG");
+    let pg = format!("{:?}", p.pg());
+    assert_ne!(pg, "None", "premise: principal/create records a PG");
+    let (k3, k4) = (kp(), kp());
+    let steps: Vec<(&str, Signed, Option<Key>, &Kp)> = vec![
+        (
+            "key/create",
+            sign(&a, key_create_pay(&a, &k3.tmb, T)),
+            Some(key_of(&k3)),
+            &a,
+        ),
+        (
+            "key/replace",
+            sign(
+                &a,
+                json!({"alg": a.alg, "id": b64(&k4.tmb), "now": T, "tmb": b64(&a.tmb),
+                       "typ": "cyphr.me/cyphr/key/replace"}),
+            ),
+            Some(key_of(&k4)),
+            &a,
+        ),
+        (
+            "key/delete",
+            sign(&k4, key_delete_pay(&k4, &b.tmb, T)),
+            None,
+            &k4,
+        ),
+        (
+            "key/revoke",
+            sign(&k3, revoke_pay(&k3, T, json!(1))),
+            None,
+            &k3,
+        ),
+    ];
+    for (label, coz, sidecar, signer) in steps {
+        commit_one(&mut p, signer, coz, sidecar, T).unwrap_or_else(|e| panic!("{label}: {e:?}"));
+        assert_eq!(format!("{:?}", p.pg()), pg, "{label} changed the PG");
+    }
+}
+
+// ============================================================================
+// SPEC 7.7 (line 1300): a principal is created only by principal/create
+// ============================================================================
+
+/// Backs SPEC 7.7 Example 2: "A principal may only be created using
+/// `principal/create`. A `principal/fork/create` does not create a
+/// principal." Scenario: a validly signed `principal/fork/create` applied to
+/// an existing principal is rejected and changes nothing. Turns red if the
+/// fork typ is accepted as a creation or any other state change. End to end:
+/// yes.
+// @docket: sc-l1287 :: scripts/docket-run sc-l1287
+// @docket: sc-l1300 :: scripts/docket-run sc-l1300
+#[test]
+fn s7_7_fork_create_does_not_create_a_principal() {
+    let (mut p, a, _b) = two_key_principal();
+    let before = snapshot(&p);
+    let pay = json!({"alg": a.alg, "fork_pr": p.pr_tagged().expect("pr"), "now": T,
+                     "tmb": b64(&a.tmb), "typ": "cyphr.me/cyphr/principal/fork/create"});
+    let r = commit_one(&mut p, &a, sign(&a, pay), None, T);
+    assert!(r.is_err(), "principal/fork/create was applied: {r:?}");
+    assert_eq!(before, snapshot(&p));
+}
+
+// ============================================================================
+// SPEC 11.2 (line 1869): a Dead principal accepts nothing
+// ============================================================================
+
+/// Backs SPEC 11.2: "Dead: No transactions or actions possible at all." The
+/// protocol refuses to remove the last key, so Dead is reached only through
+/// `pre_revoke_key` (a naked revoke ahead of any commit). Scenario: the only
+/// key is revoked; the principal derives Dead; a `key/create` and a data
+/// action by that key are both rejected and change nothing. Turns red if a
+/// Dead principal still takes a transaction or action. End to end: yes.
+// @docket: sc-l1869 :: scripts/docket-run sc-l1869
+#[test]
+fn s11_2_dead_principal_accepts_no_transaction_or_action() {
+    let (g, k2) = (kp(), kp());
+    let mut p = Principal::implicit(key_of(&g)).expect("genesis");
+    p.pre_revoke_key(&g.tmb, T).expect("revoke the only key");
+    assert_eq!(p.lifecycle_state(), cyphr::lifecycle::LifecycleState::Dead);
+    let before = snapshot(&p);
+    let r = commit_one(
+        &mut p,
+        &g,
+        sign(&g, key_create_pay(&g, &k2.tmb, T + 1)),
+        Some(key_of(&k2)),
+        T + 2,
+    );
+    assert!(r.is_err(), "a dead principal took a key/create: {r:?}");
+    let (pay, sig, czd) = sign(
+        &g,
+        json!({"alg": g.alg, "now": T + 1, "tmb": b64(&g.tmb), "typ": "cyphr.me/cyphr/data/x"}),
+    );
+    let r = p.verify_and_record_action(&pay, &sig, czd);
+    assert!(r.is_err(), "a dead principal took a data action: {r:?}");
+    assert_eq!(before, snapshot(&p));
+}
+
+// ============================================================================
+// SPEC 19.5 (line 3353): rejected transactions apply no partial state
+// ============================================================================
+
+/// Backs SPEC 19.5: "Not apply partial state changes (atomic)." Scenario: a
+/// commit applies one valid `key/create` and then a transaction that fails
+/// (a `key/delete` of an unknown key); the scope is dropped. The principal
+/// must show nothing of the first transaction, and a fresh commit must still
+/// build. Turns red if any part of a failed commit leaks into the principal.
+/// End to end: yes.
+// @docket: sc-l3350 :: scripts/docket-run sc-l3351
+// @docket: sc-l3353 :: scripts/docket-run sc-l3353
+#[test]
+fn s19_5_failed_commit_leaves_no_partial_state() {
+    let (mut p, a, _b) = two_key_principal();
+    let (k3, ghost) = (kp(), kp());
+    let before = snapshot(&p);
+    {
+        let mut scope = p.begin_commit();
+        let (pay, sig, czd) = sign(&a, key_create_pay(&a, &k3.tmb, T));
+        scope
+            .verify_and_apply(&pay, &sig, czd, Some(key_of(&k3)))
+            .expect("first tx applies");
+        let (pay, sig, czd) = sign(&a, key_delete_pay(&a, &ghost.tmb, T));
+        assert!(
+            scope.verify_and_apply(&pay, &sig, czd, None).is_err(),
+            "premise: deleting an unknown key fails"
+        );
+    }
+    assert_eq!(before, snapshot(&p), "a failed commit leaked state");
+    assert!(
+        !p.is_key_active(&k3.tmb),
+        "the first tx of a failed commit is active"
+    );
+    commit_one(
+        &mut p,
+        &a,
+        sign(&a, key_create_pay(&a, &k3.tmb, T)),
+        Some(key_of(&k3)),
+        T,
+    )
+    .expect("control: the same key/create commits afterwards");
+}
+
+// ============================================================================
+// SPEC 4.1 (line 468): all cozies of a transaction share one typ
+// ============================================================================
+
+/// Backs SPEC 4.1: "All cozies for a particular transaction contain an
+/// identical `typ`." Scenario: one transaction (an unnamed array of cozies)
+/// holds a `key/create` coz and a `key/delete` coz, both validly signed by an
+/// active key. Control: two `key/create` cozies in one transaction apply.
+/// Turns red if a transaction of mixed `typ` is applied. RED: `apply_tx`
+/// groups cozies without comparing their `typ`. End to end: yes.
+#[test]
+#[ignore = "RED(SC1-F6): SPEC 4.1 mixed-typ transaction accepted"]
+fn s4_1_transaction_cozies_must_share_one_typ() {
+    let verified = |p: &Principal, coz: Signed, sidecar: Option<Key>, signer: &Kp| {
+        let (pay, sig, czd) = coz;
+        let key = p.get_key(&signer.tmb).expect("signer key").clone();
+        cyphr::parsed_coz::verify_coz(&pay, &sig, &key, czd, sidecar).expect("verifies")
+    };
+    let (mut p, a, b) = two_key_principal();
+    let (k3, k4) = (kp(), kp());
+    let same = vec![
+        verified(
+            &p,
+            sign(&a, key_create_pay(&a, &k3.tmb, T)),
+            Some(key_of(&k3)),
+            &a,
+        ),
+        verified(
+            &p,
+            sign(&a, key_create_pay(&a, &k4.tmb, T)),
+            Some(key_of(&k4)),
+            &a,
+        ),
+    ];
+    p.begin_commit()
+        .apply_tx(same)
+        .expect("control: a same-typ transaction applies");
+
+    let k5 = kp();
+    let mixed = vec![
+        verified(
+            &p,
+            sign(&a, key_create_pay(&a, &k5.tmb, T)),
+            Some(key_of(&k5)),
+            &a,
+        ),
+        verified(&p, sign(&a, key_delete_pay(&a, &b.tmb, T)), None, &a),
+    ];
+    // Applying each coz alone must succeed, so a rejection below is the mix.
+    let solo = vec![mixed[0].clone()];
+    p.clone()
+        .begin_commit()
+        .apply_tx(solo)
+        .expect("premise: each coz is valid alone");
+    let r = p.begin_commit().apply_tx(mixed);
+    assert!(r.is_err(), "a mixed-typ transaction was applied");
+}
+
+// ============================================================================
+// SPEC 6 (line 944): the private component is never transmitted
+// ============================================================================
+
+use proptest::prelude::*;
+
+fn kp_alg(alg: coz::Alg) -> Kp {
+    let k = alg.generate_keypair();
+    let tmb = k.alg.compute_thumbprint(&k.pub_bytes).expect("thumbprint");
+    Kp {
+        alg: k.alg.name().to_string(),
+        pubb: k.pub_bytes,
+        prv: k.prv_bytes,
+        tmb,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// Backs SPEC 6 ("`prv` ... never transmitted"): for any principal built
+    /// from random keys of either algorithm, no serialized wire form (every
+    /// coz of every commit, and every key as it travels in a sidecar)
+    /// contains any key's private component, in base64url or hex. Property
+    /// test: the invariant is over all key sets, and there is no scenario
+    /// that enumerates them. Turns red if a wire type ever gains the private
+    /// component (a `prv` field on `Key`, a signer copy in a coz).
+    // @docket: sc-l944 :: scripts/docket-run sc-l944
+    #[test]
+    fn s6_no_wire_form_carries_private_key_material(
+        algs in proptest::collection::vec(any::<bool>(), 2..5),
+    ) {
+        let keys: Vec<Kp> = algs
+            .iter()
+            .map(|&ed| kp_alg(if ed { coz::Alg::Ed25519 } else { coz::Alg::ES256 }))
+            .collect();
+        let mut p = Principal::implicit(key_of(&keys[0])).expect("genesis");
+        let mut wire: Vec<String> = vec![];
+        for (i, k) in keys.iter().enumerate().skip(1) {
+            let now = T + i64::try_from(i).expect("small");
+            let coz = sign(&keys[0], key_create_pay(&keys[0], &k.tmb, now));
+            commit_one(&mut p, &keys[0], coz, Some(key_of(k)), now).expect("honest commit");
+        }
+        for c in p.commits() {
+            for vc in c.all_cozies() {
+                wire.push(serde_json::to_string(vc.raw()).expect("coz serializes"));
+            }
+        }
+        for k in &keys {
+            let needles = [
+                Base64UrlUnpadded::encode_string(&k.prv),
+                k.prv.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            ];
+            for w in &wire {
+                for n in &needles {
+                    prop_assert!(!w.contains(n.as_str()), "wire form carries a private component");
+                }
+            }
+        }
+    }
 }

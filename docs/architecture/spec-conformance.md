@@ -1,16 +1,17 @@
 # SPEC conformance map
 
-This page maps every normative `must`, `must not`, `shall` and `never` on the
-security path of the protocol specification to a test that fails when the
-requirement breaks, and says plainly where no such test exists. It exists so a
-reader can answer "is this requirement of the specification enforced, and what
-would tell us if it stopped being?" without reading the test suite.
+This page maps the normative statements of the protocol specification in
+sections 2 through 12, 15.2, 15.8, 15.9, 17.2 and 19.5 to a test that fails
+when the requirement breaks, and says plainly where no such test exists. It
+covers those sections only: sections 13, 14, 15.1 and 15.3-15.7, 16, 17.1 and
+17.3-17.5, 18 and 19.1-19.4 are outside it. It exists so a reader can answer
+"is this requirement of the specification enforced, and what would tell us if
+it stopped being?" without reading the test suite.
 
 The source is `SPEC.md` as it stands at commit `be0663f` on the `zami`
-branch (the spec author's working copy), sections 2 through 12 plus 15.2 and
-15.8. The copy of `SPEC.md` on the integration branch differs from it; every
-row where that matters is listed under
-[Differences from the in-tree SPEC.md](#differences-from-the-in-tree-specmd).
+branch, the spec author's branch, which governs. The copy of `SPEC.md` on the
+integration branch has drifted from it; the rows where that matters are listed
+under [Drift in the in-tree SPEC.md](#drift-in-the-in-tree-specmd).
 This page never edits or reinterprets the specification: an ambiguous or
 contradictory sentence is recorded as a question for the spec author, not
 resolved.
@@ -18,7 +19,7 @@ resolved.
 ## How to read a row
 
 A row is one specification line, keyed by its line number at `be0663f`. Rows
-come from two sources. `rule` rows are every line in scope that contains the
+come from two sources. `rule` rows are every line in the sections above that contains the
 lowercase word `must`, `shall` or `never` (or the uppercase `MUST` or
 `SHALL`); `rs/cyphr/tests/spec_conformance.rs` re-extracts them from the
 specification and fails if a line has no row or a row has no line. The
@@ -47,12 +48,12 @@ go stale when a fix lands. Each test name resolves in the named file; a
 
 | Disposition    | Rows |
 | :------------- | ---: |
-| `covered`      |   15 |
-| `red-existing` |    1 |
-| `red-new`      |    6 |
+| `covered`      |   35 |
+| `red-existing` |    2 |
+| `red-new`      |   10 |
 | `not-testable` |   17 |
 | `out-of-scope` |    8 |
-| `total`        |   47 |
+| `total`        |   72 |
 
 Fixing ids on red rows: `KA1` is the key-authentication node
 (`pay.alg == key.alg` must treat an absent `alg` as a mismatch, and revoked
@@ -61,6 +62,23 @@ keys must not be re-added). `SC1-F1` (frozen principals reject mutations),
 no fixing node yet; they are tracking ids until one is assigned.
 
 ## Rows
+
+### [sc-l119]
+
+SPEC 2.2.2, line 119. Disposition: `covered`.
+
+- spec-line: 119
+- source: supplement
+- disposition: covered
+- spec-text: base64 URL alphabet and encoding method, errors on non-canonical encodings, and
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s2_2_2_non_canonical_b64ut_is_rejected`
+- fails when: a non-canonical b64ut spelling of a thumbprint is accepted as the same key (two valid spellings, two cozies).
+
+```claim
+kind: requirement
+evaluator: test
+```
 
 ### [sc-l127]
 
@@ -142,6 +160,23 @@ SPEC 2.3.2, line 237. Disposition: `covered`.
   - `rs/cyphr-server/tests/spec_conformance.rs::s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put`
   - `rs/cyphr-server/tests/e2e.rs::submit_commit_concurrent_same_principal_serializes_and_conflicts`
 - fails when: a second, fully authorized commit on a `pre` the chain has moved past is appended (core replay), stored over HTTP (server), or two racing writers both land.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+### [sc-l240]
+
+SPEC 2.3.2, line 240. Disposition: `covered`.
+
+- spec-line: 240
+- source: supplement
+- disposition: covered
+- spec-text: 2. **Principal Genesis (PG) is immutable**: No operation can change a PG.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s2_3_2_no_operation_changes_the_principal_genesis`
+- fails when: a key create, replace, delete or revoke changes the recorded PG.
 
 ```claim
 kind: requirement
@@ -243,7 +278,40 @@ SPEC 4, line 463. Disposition: `red-new`.
 - spec-text: Merkle tree primitive must support n-arity.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s4_key_tree_supports_more_than_256_keys`
-- fails when: the Key Tree refuses a key set beyond 256 keys (`CollectionArityExceeded`, a documented deferred gap in `error.rs`).
+- fails when: the Key Tree refuses a key set beyond 256 keys (`CollectionArityExceeded`, a documented deferred gap in `error.rs`), or does not make all 257 keys active. The fixing node must also delete `semantic_tree.rs` `kt_arity_boundary_rejected`, which pins the cap.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l468]
+
+SPEC 4.1, line 468. Disposition: `red-new`.
+
+- spec-line: 468
+- source: supplement
+- disposition: red-new
+- spec-text: of PT. All cozies for a particular transaction contain an identical `typ`, which
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s4_1_transaction_cozies_must_share_one_typ`
+- fails when: a transaction holding cozies of different `typ` is applied (red today: `apply_tx` never compares `typ`).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l535]
+
+SPEC 4.3, line 535. Disposition: `not-testable`.
+
+- spec-line: 535
+- source: supplement
+- disposition: not-testable
+- spec-text: field "seq" is required in the format `"seq": "0/1"`. For example, for two
+- tests: none
+- reason: The `seq` field exists only for a commit transaction made of several cozies. The core has no multi-coz commit transaction (the finalizer is one `commit/create` coz) and `seq` appears nowhere in the Rust crates, so there is no behaviour to fail. Question Q11.
 
 ```claim
 kind: requirement
@@ -283,20 +351,38 @@ kind: requirement
 evaluator: test
 ```
 
-### [sc-l944]
+### [sc-l860]
 
-SPEC 6, line 944. Disposition: `not-testable`.
+SPEC 5.1, line 860. Disposition: `not-testable`.
 
-- spec-line: 944
-- source: rule
+- spec-line: 860
+- source: supplement
 - disposition: not-testable
-- spec-text: "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
+- spec-text: order is not provided, clients should throw error `TRANSACTION_ORDER_UNKNOWN`.
 - tests: none
-- reason: A comment on `prv` in a key-file example; no protocol message carries a private component and no rejected input exists to test. The client keystore is the surface that owns it.
+- reason: `TRANSACTION_ORDER_UNKNOWN` is a 'should throw' for a wire format that omits order; the core wire format always carries order and no error variant of that name exists. The storage engine's order retention (forge U1) is pinned by `manifest_retains_ingest_order_without_search`, a different sentence. Question Q11.
 
 ```claim
 kind: requirement
 evaluator: none
+```
+
+### [sc-l944]
+
+SPEC 6, line 944. Disposition: `covered`.
+
+- spec-line: 944
+- source: rule
+- disposition: covered
+- spec-text: "prv": "bNstg4_H3m3SlROufwRSEgibLrBuRq9114OvdapcpVA" // Private component, never transmitted
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s6_no_wire_form_carries_private_key_material`
+  - `rs/cyphr-server/tests/spec_conformance.rs::s6_no_http_response_carries_private_key_material`
+- fails when: any serialized coz, or any HTTP response (push, tip, patch and its decoded blobs), carries a key's private component. A property over random key sets of both algorithms (core) and an end-to-end push and read (server); they check the wire forms the protocol and server emit, not the client keystore.
+
+```claim
+kind: requirement
+evaluator: test
 ```
 
 ### [sc-l997]
@@ -342,7 +428,7 @@ SPEC 6.2, line 1002. Disposition: `covered`.
 - spec-text: Only actions signed while a ley is active in KT are interpreted. Past signatures
 - tests:
   - `rs/cyphr/tests/negative_vectors.rs::deleted_key_action_backdated_into_old_active_period_is_rejected`
-- fails when: the genuine pre-delete action is dropped after the delete, or a forged action backdated into the old active period is accepted. The test pins the implementation's fail-closed reading; the spec's position is open (forge issue #200). Question Q7.
+- fails when: the genuine pre-delete action is dropped after the delete, or a forged action backdated into the old active period is accepted. The test pins the implementation's fail-closed reading; the spec's position is open (forge issue #200). Question Q6.
 
 ```claim
 kind: requirement
@@ -470,7 +556,58 @@ SPEC 6.4, line 1075. Disposition: `covered`.
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_push`
   - `rs/cyphr-server/tests/naked_revoke.rs::revoked_key_refused_at_login_sibling_survives`
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_revoked_key_fails]`
-- fails when: a revoked key signs a commit, a push, a login or an action and is accepted. Differs in the in-tree SPEC.md: Q4.
+- fails when: a revoked key signs a commit, a push, a login or an action and is accepted. The in-tree copy has drifted here (see the drift table).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l1266]
+
+SPEC 7.6, line 1266. Disposition: `red-existing`.
+
+- spec-line: 1266
+- source: supplement
+- disposition: red-existing
+- spec-text: All actions are idempotent. For data actions, replaying an previously applied
+- tests:
+  - `rs/cyphr/tests/properties.rs::prop_data_action_replay_is_idempotent`
+- fails when: replaying a previously applied data-action coz changes state (red today, node N09).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l1268]
+
+SPEC 7.6, line 1268. Disposition: `red-new`.
+
+- spec-line: 1268
+- source: supplement
+- disposition: red-new
+- spec-text: particular principal is prohibited and results in error `COZ_REUSE`. The first
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s7_6_transaction_coz_reuse_by_the_same_principal_is_rejected`
+- fails when: a transaction coz already included by a principal is applied again (red today: no reuse check and no `COZ_REUSE` variant).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l1278]
+
+SPEC 7.6, line 1278. Disposition: `covered`.
+
+- spec-line: 1278
+- source: supplement
+- disposition: covered
+- spec-text: principal) already exists, the operation fails with error `DUPLICATE`.
+- tests:
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/duplicate_key_fails]`
+- fails when: a `key/create` for a key already in the key set is accepted. Only keys exist at Levels 1-4; `DUPLICATE` for rules and principals is Level 5 or has no creating transaction.
 
 ```claim
 kind: requirement
@@ -479,18 +616,36 @@ evaluator: none
 
 ### [sc-l1287]
 
-SPEC 7.7, line 1287. Disposition: `not-testable`.
+SPEC 7.7, line 1287. Disposition: `covered`.
 
 - spec-line: 1287
 - source: rule
-- disposition: not-testable
+- disposition: covered
 - spec-text: must be performed in exactly one canonical, atomic representation with no
-- tests: none
-- reason: A design principle ('each operation in exactly one canonical representation'), with no rejected input of its own.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s7_7_fork_create_does_not_create_a_principal`
+- fails when: a `principal/fork/create` is accepted as, or changes state like, a principal creation (Example 2, line 1300). Example 1 (genesis does not implicitly create the genesis key) contradicts implicit and explicit genesis, where genesis keys exist without a `key/create`; it is not tested and is Question Q10.
 
 ```claim
 kind: requirement
-evaluator: none
+evaluator: test
+```
+
+### [sc-l1300]
+
+SPEC 7.7, line 1300. Disposition: `covered`.
+
+- spec-line: 1300
+- source: supplement
+- disposition: covered
+- spec-text: Example 2: A principal may only be created using `principal/create`. A
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s7_7_fork_create_does_not_create_a_principal`
+- fails when: `principal/fork/create` is accepted as a creation.
+
+```claim
+kind: requirement
+evaluator: test
 ```
 
 ### [sc-l1515]
@@ -566,7 +721,7 @@ SPEC 10.2, line 1676. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - Nonce values should be cryptographic randomly generated values must match the
 - tests: none
-- reason: The sentence is ungrammatical ('should be cryptographic randomly generated values must match the target strength'), so which of should/must is intended is unknown. Question Q5. Nonces are also Level 5+.
+- reason: The sentence is ungrammatical ('should be cryptographic randomly generated values must match the target strength'), so which of should/must is intended is unknown. Question Q4. Nonces are also Level 5+.
 
 ```claim
 kind: requirement
@@ -674,6 +829,23 @@ kind: requirement
 evaluator: none
 ```
 
+### [sc-l1869]
+
+SPEC 11.2, line 1869. Disposition: `covered`.
+
+- spec-line: 1869
+- source: supplement
+- disposition: covered
+- spec-text: - **Dead**: No transactions or actions possible at all. No active keys remain.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s11_2_dead_principal_accepts_no_transaction_or_action`
+- fails when: a principal with no active key still takes a transaction or an action.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
 ### [sc-l1875]
 
 SPEC 11.2, line 1875. Disposition: `covered`.
@@ -719,7 +891,7 @@ SPEC 11.5.1, line 1951. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: Note the target account must explicitly add keys from the source account (if the
 - tests: none
-- reason: No explicit merge transaction exists in `rs/cyphr` (`CozKind` has no `principal/merge` or `merge-ack`), so there is no behaviour to fail; a red test cannot be written without inventing the API. Question Q6.
+- reason: No explicit merge transaction exists in `rs/cyphr` (`CozKind` has no `principal/merge` or `merge-ack`), so there is no behaviour to fail; a red test cannot be written without inventing the API. Question Q5.
 
 ```claim
 kind: requirement
@@ -735,7 +907,7 @@ SPEC 11.5.1, line 1953. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: must be explicitly added to the target. Also note that the source principal is
 - tests: none
-- reason: Same merge feature as line 1951: no implementation surface. Question Q6.
+- reason: Same merge feature as line 1951: no implementation surface. Question Q5.
 
 ```claim
 kind: requirement
@@ -768,7 +940,7 @@ SPEC 12.3, line 2117. Disposition: `covered`.
 - spec-text: only for operations where the service must interpret. If such an operation is
 - tests:
   - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/unsupported_algorithm_fails]`
-- fails when: a principal using an unsupported algorithm is accepted instead of refused as incompatible (the vector covers genesis; the `key/create` path returns `UnsupportedAlgorithm` untested).
+- fails when: a principal using an unsupported algorithm is accepted instead of refused as incompatible (the vector `unsupported_algorithm_fails` expects `UnknownAlg` at genesis; the `key/create` path returns `UnsupportedAlgorithm` and is untested).
 
 ```claim
 kind: requirement
@@ -784,7 +956,7 @@ SPEC 15.8, line 2814. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: An invalid fork is resolved when the principal unambiguously selects one
 - tests: none
-- reason: Witness-side consensus states (Error, then Active on resolution) have no implementation in `rs/cyphr` or `rs/cyphr-server`, and the sovereignty-model rewrite of the consensus spec (campaign node D1) is open. Question Q8.
+- reason: Witness-side consensus states (Error, then Active on resolution) have no implementation in `rs/cyphr` or `rs/cyphr-server`, and the sovereignty-model rewrite of the consensus spec (campaign node D1) is open. Question Q7.
 
 ```claim
 kind: requirement
@@ -800,7 +972,7 @@ SPEC 15.8, line 2822. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: - **2. PoP assertion** - The principal signs a `resync/create` message
 - tests: none
-- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814. Question Q8.
+- reason: Depends on `resync/create`, which `rs/cyphr` has no coz kind for; the same witness-side surface as line 2814. Question Q7.
 
 ```claim
 kind: requirement
@@ -817,7 +989,7 @@ SPEC 15.8, line 2827. Disposition: `covered`.
 - spec-text: In both cases, the abandoned branch's transactions become permanently invalid.
 - tests:
   - `rs/cyphr/tests/spec_conformance.rs::s2_3_2_second_commit_on_a_stale_pre_is_rejected`
-- fails when: an abandoned branch's commit is accepted onto the chosen chain (core replay; the witness-side half is Q8).
+- fails when: an abandoned branch's commit is accepted onto the chosen chain (core replay; the witness-side half is Q7).
 
 ```claim
 kind: requirement
@@ -850,11 +1022,278 @@ SPEC 15.8, line 2829. Disposition: `not-testable`.
 - disposition: not-testable
 - spec-text: transition the principal's consensus state from Error back to Active upon
 - tests: none
-- reason: The Error-to-Active transition on resolution is witness-side consensus state, with no implementation surface; same as line 2814. Question Q8.
+- reason: The Error-to-Active transition on resolution is witness-side consensus state, with no implementation surface; same as line 2814. Question Q7.
 
 ```claim
 kind: requirement
 evaluator: none
+```
+
+### [sc-l2835]
+
+SPEC 15.9, line 2835. Disposition: `red-new`.
+
+- spec-line: 2835
+- source: supplement
+- disposition: red-new
+- spec-text: includes comparing now to witness time on receipt and rejecting outside ±360 s
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s15_9_future_dated_message_is_rejected_by_default`
+- fails when: a message dated a day ahead is accepted by a default principal (red today: the skew check is off by default). The backdated half (far in the past relative to witness time) is not tested because the corpus uses fixed 2023 timestamps; Question Q9.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l2837]
+
+SPEC 15.9, line 2837. Disposition: `covered`.
+
+- spec-line: 2837
+- source: supplement
+- disposition: covered
+- spec-text: recent valid message, rejecting any now earlier than latest known timestamp to
+- tests:
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/timestamp_past_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/action_timestamp_past_fails]`
+- fails when: a commit or action with `now` earlier than the principal's latest known timestamp is accepted.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l2838]
+
+SPEC 15.9, line 2838. Disposition: `red-new`.
+
+- spec-line: 2838
+- source: supplement
+- disposition: red-new
+- spec-text: prevent history rewriting, and rejecting future-dated messages.
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s15_9_future_dated_message_is_rejected_by_default`
+- fails when: future-dated messages are accepted (same defect as line 2835).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3054]
+
+SPEC 17.2, line 3054. Disposition: `covered`.
+
+- spec-line: 3054
+- source: supplement
+- disposition: covered
+- spec-text: 1. Service generates a 256-bit cryptographic challenge (nonce)
+- tests:
+  - `rs/cyphr-server/tests/spec_conformance.rs::s17_2_challenge_is_256_bits_and_unique`
+- fails when: a challenge is not 32 bytes or repeats.
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+### [sc-l3057]
+
+SPEC 17.2, line 3057. Disposition: `covered`.
+
+- spec-line: 3057
+- source: supplement
+- disposition: covered
+- spec-text: - Signature is valid
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_invalid_signature`
+- fails when: a login with an invalid signature gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3058]
+
+SPEC 17.2, line 3058. Disposition: `covered`.
+
+- spec-line: 3058
+- source: supplement
+- disposition: covered
+- spec-text: - `tmb` belongs to an active key in principal's KR
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_key_revoked_in_claimed_principal`
+  - `rs/cyphr-server/tests/login.rs::login_binds_key_to_claimed_principal_not_thumbprint`
+  - `rs/cyphr-server/tests/login.rs::login_rejects_unknown_principal`
+- fails when: a key that is not active in the claimed principal (revoked, or active only elsewhere) gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3059]
+
+SPEC 17.2, line 3059. Disposition: `covered`.
+
+- spec-line: 3059
+- source: supplement
+- disposition: covered
+- spec-text: - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_frozen_principal`
+  - `rs/cyphr-server/tests/login.rs::login_rejects_deleted_principal`
+- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (Question Q7).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3061]
+
+SPEC 17.2, line 3061. Disposition: `covered`.
+
+- spec-line: 3061
+- source: supplement
+- disposition: covered
+- spec-text: - Challenge matches the one issued (prevents replay)
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_replayed_challenge`
+- fails when: a consumed or unissued challenge gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3081]
+
+SPEC 17.2, line 3081. Disposition: `covered`.
+
+- spec-line: 3081
+- source: supplement
+- disposition: covered
+- spec-text: - Signature is valid
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_invalid_signature`
+- fails when: a login with an invalid signature gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3082]
+
+SPEC 17.2, line 3082. Disposition: `covered`.
+
+- spec-line: 3082
+- source: supplement
+- disposition: covered
+- spec-text: - `tmb` belongs to an active key in principal's KR
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_key_revoked_in_claimed_principal`
+  - `rs/cyphr-server/tests/login.rs::login_binds_key_to_claimed_principal_not_thumbprint`
+  - `rs/cyphr-server/tests/login.rs::login_rejects_unknown_principal`
+- fails when: a key that is not active in the claimed principal (revoked, or active only elsewhere) gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3083]
+
+SPEC 17.2, line 3083. Disposition: `covered`.
+
+- spec-line: 3083
+- source: supplement
+- disposition: covered
+- spec-text: - Principal lifecycle state is Active (reject Frozen, Deleted, Errored,
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_frozen_principal`
+  - `rs/cyphr-server/tests/login.rs::login_rejects_deleted_principal`
+- fails when: a Frozen or Deleted principal gets a token. The Errored case has no test: `Principal::is_errored` is never set by any detector today, so no principal can be Errored (Question Q7).
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3085]
+
+SPEC 17.2, line 3085. Disposition: `covered`.
+
+- spec-line: 3085
+- source: supplement
+- disposition: covered
+- spec-text: - `now` is within acceptable window (e.g., ±60 seconds of server time)
+- tests:
+  - `rs/cyphr-server/tests/login.rs::login_rejects_out_of_window_timestamp`
+- fails when: a timestamp-flow login outside the window gets a token.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3350]
+
+SPEC 19.5, line 3350. Disposition: `covered`.
+
+- spec-line: 3350
+- source: rule
+- disposition: covered
+- spec-text: **Implementations must:**
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s19_5_failed_commit_leaves_no_partial_state`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/duplicate_key_fails]`
+- fails when: a rejected transaction is accepted, or leaves state behind (the two rules below are this line's items).
+
+```claim
+kind: requirement
+evaluator: test
+```
+
+### [sc-l3352]
+
+SPEC 19.5, line 3352. Disposition: `covered`.
+
+- spec-line: 3352
+- source: supplement
+- disposition: covered
+- spec-text: - Reject transactions with any error condition
+- tests:
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/unknown_key_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/revoked_key_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/timestamp_past_fails]`
+  - `rs/cyphr/tests/golden_fixtures.rs::test_golden_errors[errors/duplicate_key_fails]`
+- fails when: a transaction with an error condition (unknown or revoked key, past timestamp, duplicate key) is accepted.
+
+```claim
+kind: requirement
+evaluator: none
+```
+
+### [sc-l3353]
+
+SPEC 19.5, line 3353. Disposition: `covered`.
+
+- spec-line: 3353
+- source: supplement
+- disposition: covered
+- spec-text: - Not apply partial state changes (atomic)
+- tests:
+  - `rs/cyphr/tests/spec_conformance.rs::s19_5_failed_commit_leaves_no_partial_state`
+  - `rs/cyphr/src/principal.rs::abandoned_commit_scope_does_not_leak_state`
+- fails when: the first transaction of a failed commit is visible in the principal.
+
+```claim
+kind: requirement
+evaluator: test
 ```
 
 ## Questions for the spec author
@@ -875,31 +1314,29 @@ reading, so it was left open.
   "results in permanent lockout", but §3.0 says a principal's level is not an
   authorization input, and the implementation and the corpus reject a
   last-key revoke with `NoActiveKeys` at every level. Which governs?
-- **Q4 (line 1075).** At `be0663f`, "further use of the revoked key must be
-  rejected." The in-tree text drops that sentence and says a naked revoke puts
-  the principal in an error state. Was the removal deliberate? The tests that
-  reject a revoked key stay green either way.
-- **Q5 (line 1676).** "Nonce values should be cryptographic randomly
+- **Q4 (line 1676).** "Nonce values should be cryptographic randomly
   generated values must match the target strength": should or must?
-- **Q6 (lines 1951 and 1953).** Explicit merge has no transaction kind in the
+- **Q5 (lines 1951 and 1953).** Explicit merge has no transaction kind in the
   Rust crates. Is it in the Level 1-4 scope that the node list assumes?
-- **Q7 (line 1002).** Does "past signatures from previous active periods
+- **Q6 (line 1002).** Does "past signatures from previous active periods
   remain valid" admit an action whose own `now` claims a past period but
   which arrives after the key was deleted? The implementation rejects it;
   forge issue #200 is open with the spec author.
-- **Q8 (lines 2814, 2822 and 2829).** Witness-side fork resolution (the
+- **Q7 (lines 2814, 2822 and 2829).** Witness-side fork resolution (the
   Error and Active consensus states, the `resync/create` transaction) has no
   implementation. The node that rewrites the consensus specification to the
   sovereignty model is open; is §15.8 still the requirement?
-- **Q9 (lines 1067 and 1069).** "`rvk` and `now` must be a positive integer
+- **Q8 (lines 1067 and 1069).** "`rvk` and `now` must be a positive integer
   less than 2^53 - 1" and "must error if `rvk` is ... larger than 2^53 - 1":
   is 2^53 - 1 itself in range? The tests avoid the boundary value.
 
-## Differences from the in-tree SPEC.md
+## Drift in the in-tree SPEC.md
 
-Compared line by line against the in-tree `SPEC.md` at the base of this
-node. Rows whose `be0663f` sentence does not appear verbatim in the in-tree
-file:
+The `zami` branch governs. These are places where the integration branch's
+`SPEC.md` has drifted from it, compared line by line at the base of this node,
+so whoever syncs the in-tree copy knows what to bring across. They are not
+open questions. Rows whose `be0663f` sentence does not appear verbatim in the
+in-tree file:
 
 | Row  | `be0663f`                                                   | In-tree                                                                                                                     |
 | :--- | :---------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
@@ -915,5 +1352,15 @@ Normative lines present only in the in-tree file, in the same sections, that
 no row covers: "Cyphr must appropriately interpret this event" (naked
 revoke), "cells are never re-sorted" (PT, AT and ST ordering), "Implementors
 must be aware that inner nodes may have different security levels" and the
-KT and DR ordering note. Whether any of these supersede a mapped row is for
-the spec author; no mapped test depends on them.
+KT and DR ordering note. No mapped test depends on them.
+
+- **Q9 (line 2835).** Is the "witness time on receipt" comparison a core
+  rule or a witness rule? The corpus uses fixed 2023 timestamps, so a strict
+  backdating check would reject every golden vector. Only the future side is
+  tested.
+- **Q10 (line 1287).** Example 1 says genesis does not implicitly create the
+  genesis key and every key needs a `key/create`, but implicit and explicit
+  genesis both hold keys with no `key/create`.
+- **Q11 (lines 535 and 860).** `seq` for multi-coz commit transactions and
+  `TRANSACTION_ORDER_UNKNOWN` have no counterpart in the Rust wire format;
+  are they still wanted at Levels 1-4?
