@@ -50,21 +50,27 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: cyphr-x86_64-linux
+            server_artifact: cyphr-server-x86_64-linux
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: cyphr-aarch64-linux
+            server_artifact: cyphr-server-aarch64-linux
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: cyphr-x86_64-macos
+            server_artifact: cyphr-server-x86_64-macos
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: cyphr-aarch64-macos
+            server_artifact: cyphr-server-aarch64-macos
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: cyphr-x86_64-windows
+            server_artifact: cyphr-server-x86_64-windows
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             artifact: cyphr-aarch64-windows
+            server_artifact: cyphr-server-aarch64-windows
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -89,18 +95,20 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p cyphr-cli
+        run: cargo build --release --target ${{ matrix.target }} -p cyphr-cli -p cyphr-server
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ matrix.artifact }}.tar.gz cyphr
+          tar czf ../../../${{ matrix.server_artifact }}.tar.gz cyphr-server
       - name: Package (windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           7z a ../../../${{ matrix.artifact }}.zip cyphr.exe
+          7z a ../../../${{ matrix.server_artifact }}.zip cyphr-server.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -109,17 +117,46 @@ jobs:
           path: |
             rs/${{ matrix.artifact }}.tar.gz
             rs/${{ matrix.artifact }}.zip
+            rs/${{ matrix.server_artifact }}.tar.gz
+            rs/${{ matrix.server_artifact }}.zip
           if-no-files-found: error
 
   release:
     needs: [changelog, build-rs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Both are required by actions/attest-build-provenance: the OIDC token
+      # identifies this workflow run, and the attestation is stored on the
+      # repository.
+      id-token: write
+      attestations: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
+      # Checksums cover every attached archive, sorted for a stable file.
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' \
+            | sort | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      # SLSA v1 build provenance (GitHub artifact attestations, Sigstore
+      # keyless). Verify a download with:
+      #   gh attestation verify <file> --repo Cyphrme/Cyphr
+      # and its checksum with: sha256sum --check --ignore-missing SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -129,4 +166,5 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/SHA256SUMS
           fail_on_unmatched_files: false
