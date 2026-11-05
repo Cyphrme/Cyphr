@@ -27,9 +27,9 @@ predicate documentation conventions when editing prose.
 `docket` binds a claim in prose to the code it describes and refuses a
 claim nothing checks; the root `docket.ncl` registers which genres of
 `docs/` may carry which kind of claim (see that file for the reasoning).
-Two genres are registered: `docs/architecture/**` (`requirement`) and
-`docs/use/**` (`kinds = []` — registered to carry no claim kind, not
-left unregistered).
+Three genres are registered: `docs/architecture/**` (`requirement`),
+`docs/use/**` and `docs/trust-model.md` (both `kinds = []` — registered
+to carry no claim kind, not left unregistered).
 `docs/specs/` and `docs/guides/` are not registered yet.
 
 `kinds = []` and unregistered are not the same thing: an unregistered
@@ -102,10 +102,10 @@ sites; Netlify builds on push.
 The repository root's `docket.ncl` declares two genres, checked via docket
 (ssh://git@github.com/axiosoph/docket.git). `docs/architecture/**` is the
 one tree permitted to carry `requirement` claims — fenced `claim` blocks
-that a Nickel contract validates. `docs/use/**` is declared with an
+that a Nickel contract validates. `docs/trust-model.md` is declared with an
 empty `kinds`, which bars claim blocks there outright; that is the second
-reason to declare a tree, and it gives "this tree must not carry claims"
-a real evaluator. So a
+reason to declare a tree, and it is what gives "this document must not read
+as protocol" a real evaluator, via docket's `normative-prose` check. So a
 tree is declared either because it carries claims or because it must never
 carry one. An undeclared tree is a slot docket leaves unscanned, not a gap.
 
