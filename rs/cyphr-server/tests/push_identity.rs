@@ -12,7 +12,7 @@
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::build_router;
-use cyphr_storage::{Checkpoint, Genesis, load_from_checkpoint, load_principal_from_commits};
+use cyphr_storage::{Genesis, load_principal_from_commits};
 
 mod common;
 
@@ -253,51 +253,5 @@ fn d1_replay_refuses_substituted_key_sidecar() {
     assert!(
         load_principal_from_commits(Genesis::Implicit(dom(golden)), &forged).is_err(),
         "replay accepted a stored key whose pub does not hash to its tmb"
-    );
-}
-
-/// Backs (D1, checkpoint path): `load_from_checkpoint` must refuse a
-/// checkpoint key whose `tmb` is not `H(pub)`. The checkpoint's `auth_root`
-/// is the honest one, which covers only `tmb`s, so a swapped `pub` leaves
-/// it matching. Red now because `Principal::from_checkpoint` builds the
-/// key set from the supplied keys without hashing their `pub`. The honest
-/// checkpoint loads first as a control.
-///
-/// Lives here rather than in `rs/cyphr/tests/key_auth.rs` because `cyphr`
-/// has no dev-dependency on `cyphr-storage`.
-#[test]
-#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
-fn d1_checkpoint_refuses_substituted_key() {
-    let pool = load_pool();
-    let golden = pool.get("golden").expect("golden");
-    let key_a = pool.get("key_a").expect("key_a");
-    let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
-    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
-        alg: pk.alg.clone(),
-        tmb: pk.compute_tmb().expect("tmb"),
-        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
-        first_seen: 0,
-        last_used: None,
-        revocation: None,
-        tag: None,
-    };
-
-    let honest = honest_history(&pool);
-    let checkpoint = |keys: Vec<cyphr::Key>| Checkpoint {
-        auth_root: honest.auth_root().clone(),
-        keys,
-        attestor: None,
-        cr: None,
-    };
-
-    load_from_checkpoint(None, checkpoint(vec![dom(golden), dom(key_a)]), None, &[])
-        .expect("control: honest checkpoint loads");
-
-    let mut forged_a = dom(key_a);
-    forged_a.pub_key = Base64UrlUnpadded::decode_vec(&attacker_pub).expect("pub b64");
-    let r = load_from_checkpoint(None, checkpoint(vec![dom(golden), forged_a]), None, &[]);
-    assert!(
-        r.is_err(),
-        "checkpoint accepted a key whose pub does not hash to its tmb"
     );
 }
