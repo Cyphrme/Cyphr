@@ -161,6 +161,12 @@ pub struct EntityRef {
     /// authorisation decision must re-verify against replayed state.
     #[serde(default)]
     pub principal_id: Option<String>,
+    /// Whether this digest is a Principal Root variant (as opposed to a
+    /// commit id, state, auth or commit root, or a coz digest). Lets a
+    /// caller tell a PR claim from any other digest without loading
+    /// history. `false` in a record written before this field existed.
+    #[serde(default)]
+    pub principal_root: bool,
 }
 
 /// Classification of indexed entities.

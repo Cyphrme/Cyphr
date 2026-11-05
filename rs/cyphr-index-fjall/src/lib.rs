@@ -627,6 +627,7 @@ fn db_index_commit(
                     entity_type,
                     sequence: Some(commit.sequence),
                     principal_id: Some(commit.principal_id.clone()),
+                    principal_root: false,
                 })?,
             );
         }
@@ -649,6 +650,7 @@ fn db_index_commit(
                 entity_type: EntityType::Commit,
                 sequence: Some(commit.sequence),
                 principal_id: Some(commit.principal_id.clone()),
+                principal_root: commit.prs.contains(variant),
             })?,
         );
     }

@@ -1269,8 +1269,10 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 
     /// The principal and commit sequence whose commit has `principal_id`
-    /// (labelled or bare) as a digest variant, as a locator only: the
-    /// caller must verify against replayed state.
+    /// (labelled or bare) as a Principal Root variant, as a locator only:
+    /// the caller must verify against replayed state. Any other digest of
+    /// a commit (id, SR, AR, CR) is not located, so it cannot trigger a
+    /// replay.
     async fn locate_by_pr(&self, principal_id: &str) -> Result<Option<(String, u64)>, EngineError> {
         let candidates: Vec<String> = if principal_id.contains(':') {
             vec![principal_id.to_string()]
@@ -1285,7 +1287,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 continue;
             };
             if let Some(entity) = self.indexer.resolve_digest(&digest).await? {
-                if entity.entity_type == EntityType::Commit {
+                if entity.entity_type == EntityType::Commit && entity.principal_root {
                     if let (Some(principal), Some(sequence)) =
                         (entity.principal_id, entity.sequence)
                     {

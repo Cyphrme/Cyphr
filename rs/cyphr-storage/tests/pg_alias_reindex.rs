@@ -457,3 +457,72 @@ async fn established_principal_current_pr_is_refused_without_replay() {
         "refusing an established principal's current PR read its blobs (a replay)"
     );
 }
+
+/// Backs the pre-establishment DoS bound: before a principal has a PG, only
+/// its current PR (the PG-to-be) may name it, and any other digest of its
+/// latest commit (commit id, state root, auth root) is refused WITHOUT
+/// replaying its history. Turns red if such a digest triggers a replay
+/// (blob reads) before being refused. The control shows the PR itself still
+/// resolves. Not a scenario: the amplification is only observable as a
+/// blob-read count.
+#[tokio::test]
+async fn non_pr_digest_of_latest_commit_is_refused_without_replay() {
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let k = kp(&pool, "key_a");
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    let id = p.pr_tagged().expect("genesis id");
+    commit_one(
+        &mut p,
+        &g,
+        serde_json::json!({"alg": g.alg, "id": k.tmb.to_b64(), "now": NOW,
+                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        Some(key_of(&k)),
+        NOW,
+    );
+    let entry = cyphr_storage::export_commits(&p).expect("export").remove(0);
+
+    let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = StorageEngine::new(
+        CountingBlobs {
+            inner: MemoryBlobStore::new(),
+            gets: gets.clone(),
+        },
+        MemoryIndexer::new(),
+    );
+    let raw = blobs(&p, 0);
+    let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(&id, None, &refs)
+        .await
+        .expect("commit 0");
+
+    let before = gets.load(std::sync::atomic::Ordering::SeqCst);
+    for digest in [&entry.commit_id, &entry.sr, &entry.auth_root] {
+        assert_ne!(digest, &entry.pr, "premise: {digest} is not the PR");
+        for spelling in [
+            digest.to_string(),
+            cyphr_storage::engine::bare_digest(digest).to_string(),
+        ] {
+            let resolved = engine
+                .canonical_principal_id(&spelling)
+                .await
+                .expect("resolve");
+            assert_eq!(resolved, spelling, "a non-PR digest named the principal");
+        }
+    }
+    assert_eq!(
+        gets.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "a non-PR digest of the latest commit replayed the principal's history"
+    );
+    // Control: the PG-to-be (the current PR) does name the principal.
+    assert_eq!(
+        engine
+            .canonical_principal_id(&entry.pr)
+            .await
+            .expect("resolve"),
+        id,
+        "control: the current PR must resolve while the PG is unestablished"
+    );
+}

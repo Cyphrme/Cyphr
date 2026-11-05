@@ -292,6 +292,7 @@ impl IndexerWrite for MemoryIndexer {
                         entity_type,
                         sequence: Some(commit.sequence),
                         principal_id: Some(commit.principal_id.clone()),
+                        principal_root: false,
                     },
                 );
 
@@ -303,6 +304,7 @@ impl IndexerWrite for MemoryIndexer {
                         entity_type,
                         sequence: Some(commit.sequence),
                         principal_id: Some(commit.principal_id.clone()),
+                        principal_root: false,
                     },
                 );
             }
@@ -325,6 +327,7 @@ impl IndexerWrite for MemoryIndexer {
                         entity_type: EntityType::Commit,
                         sequence: Some(commit.sequence),
                         principal_id: Some(commit.principal_id.clone()),
+                        principal_root: commit.prs.contains(variant),
                     },
                 );
             }
