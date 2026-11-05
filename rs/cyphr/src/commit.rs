@@ -578,17 +578,14 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// state; keys added during the commit are also accepted. Shared by
     /// mutation verification and the terminal `commit/create` signer so both
     /// obey one rule.
+    ///
+    /// Both snapshots resolve through the principal's one signer lookup;
+    /// a key active in neither is refused as the pre-commit snapshot
+    /// classifies it.
     fn resolve_signer(&self, tmb: &coz::Thumbprint) -> crate::error::Result<&crate::key::Key> {
-        use crate::error::Error;
-        if self.principal.is_key_active(tmb) {
-            self.principal.get_key(tmb).ok_or(Error::UnknownKey)
-        } else if self.projected.is_key_active(tmb) {
-            self.projected.get_key(tmb).ok_or(Error::UnknownKey)
-        } else if self.principal.is_key_revoked(tmb) {
-            Err(Error::KeyRevoked)
-        } else {
-            Err(Error::UnknownKey)
-        }
+        self.principal
+            .active_signer(tmb)
+            .or_else(|refusal| self.projected.active_signer(tmb).map_err(|_| refusal))
     }
 
     /// Step 1 of the three-step finalize: compute the Arrow and the

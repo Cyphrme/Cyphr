@@ -305,6 +305,28 @@ impl<S: eml::Storage> std::ops::Deref for Principal<S> {
 }
 
 impl<S: eml::Storage> PrincipalCore<S> {
+    /// Resolve `tmb` to the active key that may sign for this principal.
+    ///
+    /// The single signer lookup every verification path uses, so a key is
+    /// classified the same way wherever it signs: an active key resolves,
+    /// a revoked key (SPEC §6.4, never trusted again) is `KeyRevoked`, and
+    /// anything else is `UnknownKey`.
+    ///
+    /// # Errors
+    ///
+    /// `KeyRevoked` or `UnknownKey` as above.
+    pub(crate) fn active_signer(&self, tmb: &Thumbprint) -> Result<&Key> {
+        let tmb_b64 = tmb.to_b64();
+        if let Some(key) = self.auth.keys.get(&tmb_b64) {
+            return Ok(key);
+        }
+        if self.auth.revoked.contains_key(&tmb_b64) {
+            Err(Error::KeyRevoked)
+        } else {
+            Err(Error::UnknownKey)
+        }
+    }
+
     pub(crate) fn active_algs(&self) -> Vec<HashAlg> {
         let key_refs: Vec<&crate::key::Key> = self.auth.keys.values().collect();
         crate::state::derive_hash_algs(&key_refs)
@@ -1378,18 +1400,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // Verify signer is an active key
-        if !self.is_key_active(&action.signer) {
-            // Check if key exists but is revoked
-            if self
-                .auth
-                .revoked
-                .values()
-                .any(|k| *k.tmb() == action.signer)
-            {
-                return Err(Error::KeyRevoked);
-            }
-            return Err(Error::UnknownKey);
-        }
+        self.active_signer(&action.signer)?;
 
         // Update signer's last_used timestamp
         self.update_last_used(&action.signer, action.now);
@@ -1479,15 +1490,7 @@ impl<S: eml::Storage> Principal<S> {
         }
 
         // Signer must be an ACTIVE key
-        if !self.is_key_active(&signer_tmb) {
-            if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {
-                return Err(Error::KeyRevoked);
-            }
-            return Err(Error::UnknownKey);
-        }
-
-        // Look up signer key
-        let signer_key = self.get_key(&signer_tmb).ok_or(Error::UnknownKey)?;
+        let signer_key = self.active_signer(&signer_tmb)?;
 
         // The signed pay must name the key that actually verifies it.
         if pay_value["alg"].as_str() != Some(signer_key.alg()) {
@@ -1663,12 +1666,8 @@ impl<S: eml::Storage> Principal<S> {
             &cz.kind,
             CozKind::SelfRevoke { .. } | CozKind::CommitCreate { .. }
         );
-        if !skip_active_check && !self.is_key_active(&cz.signer) {
-            // Check if key exists but is revoked
-            if self.auth.revoked.contains_key(&cz.signer.to_b64()) {
-                return Err(Error::KeyRevoked);
-            }
-            return Err(Error::UnknownKey);
+        if !skip_active_check {
+            self.active_signer(&cz.signer)?;
         }
 
         // [no-transactions-on-deleted]: SPEC §11.4 -- "no transactions or
@@ -2045,16 +2044,7 @@ impl<S: eml::Storage> Principal<S> {
         let signer_tmb = pay.tmb.as_ref().ok_or(Error::MalformedPayload)?;
 
         // Signer must be an ACTIVE key (not revoked)
-        if !self.is_key_active(signer_tmb) {
-            // Check if it's revoked vs unknown
-            if self.auth.revoked.contains_key(&signer_tmb.to_b64()) {
-                return Err(Error::KeyRevoked);
-            }
-            return Err(Error::UnknownKey);
-        }
-
-        // Look up signer key (guaranteed active now)
-        let signer_key = self.get_key(signer_tmb).ok_or(Error::UnknownKey)?;
+        let signer_key = self.active_signer(signer_tmb)?;
 
         // Verify signature and parse coz
         let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
