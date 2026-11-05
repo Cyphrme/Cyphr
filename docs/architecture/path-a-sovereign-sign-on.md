@@ -7,6 +7,11 @@ first is unavoidable and is what "sovereign" costs. The second and third are
 unavoidable when the website is separate from the record — which is the ordinary
 deployment. A website that keeps the record itself avoids them.
 
+This document is about **Path A**: the sign-on path in which the person's own signing key
+is the only authenticator, with no password and no identity provider (`SPEC.md` §17). The
+website, which the rest of the document calls the **relying party**, is the party relying on
+that key.
+
 This document describes what a relying party does, in two parts. The first part reads
 the decision procedure off the relying party this repository already contains, which is
 co-located with the record it checks against. The second part establishes what changes
@@ -27,14 +32,22 @@ reproduced; a **watcher** cures a monotonicity failure by holding more than one 
 time. A participant trusted for nothing carries no kind — its claims are discharged by an
 evaluator instead.
 
-| participant                | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                           | kind                                                                                                |
-| :------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
-| **The person**             | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
-| **The relying party**      | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
-| **The record authority**   | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**     | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says.                                                                                                                                                                                                                                                                                                                 | **attestor** (cure-name sense)                                                                      |
-| **The recovery authority** | Hold permissions delegated to it as an external account, and exercise them: initiate a freeze, and sign the recovery transaction that links a new Principal Root to the original genesis. `SPEC.md` §14.2: _"**External Recovery** Where some permissions are delegated to an external account, a **Recovery Authority**."_ §14.6: the new PR is _"manually linked to the original PG by the Recovery Authority's recovery transaction."_ | **attestor** (cure-name sense)                                                                      |
-| **The watcher**            | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                             | **watcher**                                                                                         |
+| participant              | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                                           | kind                                                                                                |
+| :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| **The person**           | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
+| **The relying party**    | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
+| **The record authority** | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
+| **The recovery agent**   | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says. Where permissions are delegated to it as an external account it can also initiate a freeze, and it signs the recovery transaction that links a new Principal Root (PR) to the original Principal Genesis (PG), the account's permanent identifier ([`SPEC.md` §3.7.1](../../SPEC.md#371-principal-root-and-principal-genesis)). | **attestor** (this sense)                                                                           |
+| **The watcher**          | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                                             | **watcher**                                                                                         |
+
+One role, two names: `SPEC.md` §14.2 names the external account that holds delegated
+recovery permissions a **Recovery Authority** (_"**External Recovery** Where some
+permissions are delegated to an external account, a **Recovery Authority**."_), and §14.6
+describes the same actor in the recovery flow as the agent, whose recovery transaction
+_"manually links"_ the new PR to the original PG. The specification does not define them
+as separate roles, so this document treats them as one and calls it the recovery agent.
+Whether every admission of such an agent is a fresh trust root is open; see
+[what is open](#what-is-open).
 
 "Attestor" here is the cure name only — not the **server tier** this repository's own
 specifications call `attestor` (`docs/specs/server-identity.md`, `docs/specs/receipts.md`),
@@ -83,9 +96,11 @@ naming the service the signer believes she is authenticating to, and the server 
 against its own configured identity rather than against any transport detail
 (`login.rs:171-179`). Without this, a malicious service can relay a login a person signed
 for it to a victim service and collect her session there — the relay that WebAuthn closes
-by binding the origin inside the signed client data. A separated relying party
-**inherits** this unchanged, and needs it more, because it is exactly the party a relay
-targets.
+by binding the origin inside the signed client data (W3C Web Authentication, the
+[`CollectedClientData` `origin`
+member](https://www.w3.org/TR/webauthn-2/#dictdef-collectedclientdata)). A separated
+relying party **inherits** this unchanged, and needs it more, because it is exactly the
+party a relay targets.
 
 **It requires the signer to name the principal she claims.** The key's thumbprint is not
 used to look up an account, because one key may belong to several principals; the signer
@@ -144,9 +159,12 @@ rather than serve a session that silently means less than it appears to.
 when its keys do; rotation extends the chain and leaves the genesis untouched
 (`docs/specs/server-identity.md:205-211`):
 
-> **The PG is rotation-stable.** … rotation extends the chain with a `key/replace` commit
-> and leaves the genesis untouched … and, at the next list item, **The current key is NOT
-> the identity -- the chain is.**
+> **The PG is rotation-stable.** A server's Principal Genesis never changes across a key
+> rotation -- rotation extends the chain with a `key/replace` commit and leaves the genesis
+> untouched
+
+The next item states the corollary: _"**The current key is NOT the identity -- the chain
+is.**"_
 
 A separated relying party **inherits** this, and it is what makes a durable account
 binding possible at all.
@@ -242,38 +260,45 @@ outage, but it cannot establish currency.
 
 The claim _"the record I hold for this principal is canonical"_ fails monotonicity: it can
 be true when evaluated and false after the record grows, with nothing in the record
-announcing the change. A monotonicity failure has three remedies, each giving up one of
-offline checking, an eternal certificate or a claim about the present: a **watcher** (a
-party holding more than one view over time, which gives up offline checking), a claim
-restricted to "as of" a stated moment, or an accepted expiry. An attestor is not among
-them: its word is a point observation of exactly the kind that goes stale. This is stated as [a requirement](#currency-unmet)
-rather than designed here; see [what this document does not cover](#what-this-document-does-not-cover).
+announcing the change. Such a claim admits no certificate that is at once offline,
+eternal and about the present; it can have at most two, so a design gives one up. There are
+three ways to do that. A **watcher** — a party holding more than one view over time — gives
+up _offline_ checking. A claim restricted to "as of" a stated moment gives up _now_. An
+accepted expiry gives up _eternal_: past the window the certificate says nothing about the
+present. An expiry bounds the damage and never establishes currency. An attestor is none of these: its word is a point
+observation of exactly the kind that goes stale. This is stated as
+[a requirement](#currency-unmet) rather than designed here; see
+[what this document does not cover](#what-this-document-does-not-cover).
 
 ## The claim table
 
 Every claim crossing between participants on this path, in two groups: claims about the
 **record** — what a relying party concludes about a principal — and claims about the
 **exchange** — what it concludes about the request in front of it. **Det/Cert/Mono** are
-the three axes; a claim's **cell** is ["its position once the three axis outcomes are
-fixed"](../trust-model.md#cells). A claim that holds on all three needs an evaluator and no
-trusted party at all. Every row carries a requirement or a note saying why it has none.
+the three axes (determination, certifiability and monotonicity); a claim's **cell** is
+["its position once the three axis outcomes are fixed"](../trust-model.md#cells). A claim
+that holds on all three needs an evaluator and no trusted party at all. Every row carries
+a requirement or a note saying why it has none.
 
 ### Claims about the record
 
-| #   | claim                                                            |  Det   | Cert |  Mono  | cell            | trusted party                                               | a bad one yields                                                  |
-| :-- | :--------------------------------------------------------------- | :----: | :--: | :----: | :-------------- | :---------------------------------------------------------- | :---------------------------------------------------------------- |
-| 1   | This request was signed by key _K_                               |   —    |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, `login.rs:226`        | a forged sign-in is accepted                                      |
-| 2   | This chain derives to identifier _P_                             |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note    | a record is served under an identifier it does not belong to      |
-| 3   | _P_'s identifier is the same one as last session                 |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note    | the account silently becomes a different account after a rotation |
-| 4   | _K_ is an active key of principal _P_                            |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists                                   | a revoked or lost key still signs in                              |
-| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists                                   | a split or frozen view is served indefinitely                     |
-| 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter | the account is served to the wrong human                          |
-| 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                    | over-authorization                                                |
+| #   | claim                                                            |  Det   | Cert |  Mono  | cell            | trusted party                                                     | a bad one yields                                                  |
+| :-- | :--------------------------------------------------------------- | :----: | :--: | :----: | :-------------- | :---------------------------------------------------------------- | :---------------------------------------------------------------- |
+| 1   | This request was signed by key _K_                               |   —    |  —   |   —    | below the floor | none — evaluator: `coz::verify_json`, `login.rs:226`              | a forged sign-in is accepted                                      |
+| 2   | This chain derives to identifier _P_                             |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note          | a record is served under an identifier it does not belong to      |
+| 3   | _P_'s identifier is the same one as last session                 |  yes   | yes  |  yes   | 1 — verifiable  | none — evaluator required; **none exists**, see row note          | the account silently becomes a different account after a rotation |
+| 4   | _K_ is an active key of principal _P_                            |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; no view-age expiry | a revoked or lost key still signs in                              |
+| 5   | The record I hold for _P_ is canonical — _P_ has not equivocated |  yes   | yes  | **no** | 2 / T3          | **watcher** — none exists; no "as of" scoping; no view-age expiry | a split or frozen view is served indefinitely                     |
+| 6   | The person presenting _K_ is the person this account is for      | **no** |  —   |  yes   | 5 / T1          | the person at enrollment, the **recovery agent** thereafter       | the account is served to the wrong human                          |
+| 7   | _P_ may perform operation _X_                                    |   —    |  —   |   —    | decision        | the relying party itself                                          | over-authorization                                                |
 
-**Rows 2 and 3 are [Row-1 claims](../trust-model.md#row-1-claims)**: determined,
+**Rows 2 and 3 are cell-1 claims** (the trust model's
+[Row-1 claims](../trust-model.md#row-1-claims), here called by the cell they occupy so that
+"row" always means a row of this table): determined,
 certifiable and monotone, discharged by running something rather than by trusting someone.
-Row 1 is not one — it sits `below the floor`, where "the message carries everything the
-check needs" and there is no trust residue to type — but all three name no party. Row 1
+Row 1 of this table is not one — it sits `below the floor`, where "the message carries
+everything the check needs" and there is no trust residue to type — but all three name no
+party. Row 1
 carries no requirement of its own, and deliberately: verifying a signature over the bytes
 presented is the precondition every path shares, and what this document has to say about it
 is that satisfying it is not enough — which is what the exchange rows say.
@@ -282,9 +307,8 @@ is that satisfying it is not enough — which is what the exchange rows say.
 engine holds both the derived genesis and the identifier a record is filed under at the
 moment of the write, and does not compare them; its own documentation names the same gap on
 the read path — "storage never binds a derived genesis to the identifier it is filed under"
-(`rs/cyphr-storage/src/engine/mod.rs:403-406`). That comment sends the reader elsewhere in
-its own file for the tracking issue and nothing is there, so the durable handle is the issue
-number, #154. A Row-1 claim left undischarged is
+(`rs/cyphr-storage/src/engine/mod.rs:405-406`). That comment and the one at `:397` both
+name the tracking issue, #154. A cell-1 claim left undischarged is
 [indefensible](../trust-model.md#row-1-claims) — the check is free and nobody is running it.
 Discharging it at every writer is a system-wide task beyond this path; the requirement here
 is only that a relying party must not assume it.
@@ -299,9 +323,11 @@ the two golden fixtures that exercise `key/replace` both leave `pg` empty, which
 survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
-set going stale; row 5 is about the whole view being non-canonical. Both are cured by a
-watcher, a claim restricted to "as of" a stated moment, or an accepted expiry, and neither
-is cured by any party this system contains.
+set going stale; row 5 is about the whole view being non-canonical. Both need one of the
+three remedies for a non-monotone claim, and this system supplies none: no watcher exists,
+nothing a separated party is served is scoped "as of" a moment, and no bound on the age of
+the view is implemented
+([separated-staleness-not-absence](#separated-staleness-not-absence) requires one).
 
 **Row 6 is Path A's determination claim and the one that cannot be engineered away.** No
 evaluator decides that a human is a particular human. At enrollment the person's own
@@ -325,9 +351,10 @@ word's paired sense under [the forcing case](#the-forcing-case).
 
 ### Claims about the exchange
 
-Row 1 — _this request was signed by key K_ — is **true of a relayed login and of a replayed
-one**. The attack succeeds with the row satisfied, so what those attacks defeat is not a
-claim about the record at all. Four requirements trace here rather than to rows 1 and 7.
+Row 1 of the first table — _this request was signed by key K_ — is **true of a relayed
+login and of a replayed one**. The attack succeeds with the row satisfied, so what those
+attacks defeat is not a claim about the record at all. Four requirements trace here rather
+than to rows 1 and 7.
 
 | #   | claim                                        | Det | Cert |  Mono  | cell           | trusted party                                                                                                           | a bad one yields                                               |
 | :-- | :------------------------------------------- | :-: | :--: | :----: | :------------- | :---------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------- |
@@ -338,26 +365,30 @@ claim about the record at all. Four requirements trace here rather than to rows 
 | 12  | A challenge I issue can be redeemed          | yes | yes  |  yes   | 1 — verifiable | none — evaluator: `keyless_login_and_challenge_share_the_same_rejection`, `rs/cyphr-server/tests/keyless_matrix.rs:431` | a person completes a challenge that can never become a session |
 
 **Rows 9 and 10 are one claim under two mechanisms, and the two do not land in the same
-cell.** A single-use challenge checks state the relying party issued and holds, so freshness
-is determined, certifiable and monotone. A timestamp window is [an accepted
-expiry](../trust-model.md#curing-a-non-monotone-claim) — the third of the three cures for a
-non-monotone claim — resting additionally on clock agreement nothing in the record
-establishes. One row cannot carry two cells without prose in an axis column. **No exchange row names a trusted party**: rows 8, 9, 11 and 12 name
-evaluators, and row 10 is discharged by an accepted bound rather than by a watcher — the one
-exchange claim a relying party pays for instead of checking.
+cell.** A single-use challenge checks state the relying party issued and holds, so
+freshness is determined, certifiable and monotone. A timestamp window is [an accepted
+expiry](../trust-model.md#curing-a-non-monotone-claim) — the third of the three cures for
+a non-monotone claim — resting additionally on clock agreement nothing in the record
+establishes. One row cannot carry two cells without prose in an axis column. **No exchange
+row names a trusted party**: rows 8, 9, 11 and 12 name evaluators, and row 10 is
+discharged by an accepted bound rather than by a watcher — the one exchange claim a
+relying party pays for instead of checking.
 
 ## The forcing case
 
 _She loses her device._
 
 **This section grounds the typing of rows 4, 5 and 6** — it is where determination and
-monotonicity are forced rather than chosen. At Level 3+ a designated recovery agent signs a
-`key/create` for her and the account survives, because _"the agent's authority derives from
-the `recovery/create` delegation"_ (`docs/specs/recovery.md:98-100`). Her identifier
-survives; at Level 1 it would not, and `SPEC.md` §14.1 says so — _"Note that sideband
-recovery results in a new Principal identity."_ The account continues. Those mechanics are
-here only to make the participant table's two recovery rows legible; they produce no
-requirements.
+monotonicity are forced rather than chosen. Levels are the key-management tiers of
+`SPEC.md` §3: Level 1 is a single static key, and Level 3 introduces the commit tree and
+the Principal Genesis; `SPEC.md` §14.2 says Level 1 supports no recovery (only sideband)
+and Level 3+ supports it, including adding new keys. At Level 3+ a designated recovery
+agent signs a `key/create` for her and the account survives, because _"the agent's
+authority derives from the `recovery/create` delegation"_
+(`docs/specs/recovery.md:98-100`). Her identifier survives; at Level 1 it would not, and
+`SPEC.md` §14.1 says so — _"Note that sideband recovery results in a new Principal
+identity."_ The account continues. Those mechanics are here only to make the participant
+table's recovery row legible; they produce no requirements.
 
 **Is the case forced?** Yes, and at two layers, which is the honest reading rather than
 one clean answer.
@@ -404,17 +435,24 @@ event that has been handled.
 ## Requirements
 
 Each is traceable to a row of [the claim table](#the-claim-table). Requirements in the
-first group are satisfied by the relying party in this repository. The binding to a test
-runs the other way round: a requirement never names a test, and a `docket:` marker comment
-at the test names the requirement. Requirements in the second group are satisfied by
-nothing here.
+first group are satisfied by the relying party in this repository. Each requirement
+carries a fenced `claim` block read by docket, this repository's documentation claim gate
+([`docs/AGENTS.md`](../AGENTS.md#docket--the-documentation-claim-gate)): `kind` is always
+`requirement` here, `evaluator` is `test` when an automated test backs the requirement and
+`none` when nothing does, and `because` lists the requirement ids it depends on.
+
+The machine binding runs from the test to the requirement: an `@docket: <id> :: <command>`
+marker comment at a test names the requirement id and the command that runs the test, and
+a requirement's claim block never names a test. Prose may still cite tests that carry no
+marker of their own, as several requirements below do. Requirements in the second group
+are satisfied by nothing here.
 
 ### [signon-audience-binding]
 
 A relying party MUST verify that the audience named inside the signed login payload is its
 own identity, and MUST NOT take the audience from any unsigned transport detail. Traces to
-row 8. The MUST NOT clause is closed structurally rather than by a test, which is higher on
-the evaluator hierarchy than one: `parse_login` derives the audience from the signed
+row 8. The MUST NOT clause is closed structurally rather than by a test, which is a
+stronger closure than a test: `parse_login` derives the audience from the signed
 payload's `typ` (`login.rs:171-173`) and compares it to the configured `server_audience`
 (`login.rs:177`), so no transport value reaches the comparison and there is no path a test
 could exercise.
@@ -521,9 +559,12 @@ anything in the record. The replay of
 [separated-key-set-by-replay](#separated-key-set-by-replay) establishes that what is held
 is genuine, never that it is complete. The claim _"the record I hold for this principal is
 canonical"_ fails monotonicity, and the remedies are a **watcher** holding more than one
-view over time, a claim restricted to "as of" a stated moment, or an accepted expiry —
-never an attestor, whose word is a point observation of exactly the kind that goes stale. A relying party MUST state this obligation as unmet rather than treat a
-successful replay as having met it. Traces to rows 4 and 5.
+view over time (giving up offline checking), a claim restricted to "as of" a stated moment
+(giving up _now_), or an accepted expiry (giving up _eternal_, so that past the window the
+view says nothing about the present) — never an attestor, whose word is a point observation
+of exactly the kind that goes stale. None is in place, and none of them, an expiry
+included, establishes that the view is the current one. A relying party MUST state this
+obligation as unmet rather than treat a successful replay as having met it. Traces to rows 4 and 5.
 
 ```claim
 kind: requirement
@@ -534,9 +575,11 @@ because: [separated-key-set-by-replay]
 ### [separated-staleness-not-absence]
 
 A relying party MUST NOT treat "no update observed" as "no update exists". It MUST bound
-the age of its view explicitly and refuse to serve past that bound. An expiry does not
-establish currency — it converts a silent wrong answer into a refusal, which is an
-improvement and not a cure for [currency-unmet](#currency-unmet). Traces to row 5.
+the age of its view explicitly and refuse to serve past that bound. Bounding the
+age of the view is the accepted-expiry remedy: it gives up an eternal certificate, so past
+the bound the view says nothing about the present and the party refuses. That converts a
+silent wrong answer into a refusal, which is an improvement, and it does not establish
+currency, so [currency-unmet](#currency-unmet) stays unmet. Traces to row 5.
 
 ```claim
 kind: requirement
