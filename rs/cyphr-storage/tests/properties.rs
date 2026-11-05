@@ -355,6 +355,16 @@ fn run_engine_recovery_test<B, I>(
             .unwrap()
             .expect("original tip should exist");
 
+        // Read before the rebuild: an entity read after it would compare the
+        // rebuilt index with itself and could never fail.
+        let tagged_pr: cyphr::state::TaggedDigest = original_tip.pr.parse().unwrap();
+        let original_entity = engine
+            .indexer()
+            .resolve_digest(&tagged_pr)
+            .await
+            .unwrap()
+            .unwrap();
+
         // Re-submit the last commit to test idempotency
         let last_commit = merged_commits.last().unwrap();
         let mut raw_blobs = Vec::new();
@@ -429,13 +439,6 @@ fn run_engine_recovery_test<B, I>(
         let recovered_principals = engine.indexer().list_principals().await.unwrap();
         assert_eq!(recovered_principals.len(), 1);
 
-        let tagged_pr: cyphr::state::TaggedDigest = original_tip.pr.parse().unwrap();
-        let original_entity = engine
-            .indexer()
-            .resolve_digest(&tagged_pr)
-            .await
-            .unwrap()
-            .unwrap();
         let recovered_entity = engine
             .indexer()
             .resolve_digest(&tagged_pr)
