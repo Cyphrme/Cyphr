@@ -24,7 +24,7 @@ use cyphr_server::config::{AuthorityIdentity, Cli, ServerConfig, ServerMode, res
 use cyphr_server::sync::{SyncOutcome, sync_from_authority};
 use cyphr_server::{AppState, build_app_router, receipt};
 use cyphr_storage::blob::{Blake3Hash, BlobStore};
-use cyphr_storage::index::{IndexableCommit, Indexer};
+use cyphr_storage::index::{DeriveToken, IndexableCommit, IndexerWrite};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -360,7 +360,7 @@ async fn rejects_unverifiable_delta() {
     auth_state
         .engine
         .indexer()
-        .index_commit(&corrupt_commit)
+        .index_commit(&corrupt_commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("corrupt index_commit");
 
@@ -477,7 +477,7 @@ async fn serves_only_self_verified() {
     auth_state
         .engine
         .indexer()
-        .index_commit(&forged_commit)
+        .index_commit(&forged_commit, &DeriveToken::for_conformance_tests())
         .await
         .expect("index forged commit on authority");
 
