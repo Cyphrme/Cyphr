@@ -1049,3 +1049,222 @@ async fn login_rejects_future_dated_timestamp() {
         "a future-dated timestamp outside the window must be rejected"
     );
 }
+
+// ========================================================================
+// Sign-on typ and role separation (SPEC 17.2: both flows share one typ,
+// `<audience>/cyphr/auth/login`; the challenge field tells them apart)
+// ========================================================================
+
+/// Sign a login-shaped payload under an arbitrary `typ`, so tests can vary
+/// exactly the field the exact-match rule judges.
+fn login_body_typ(
+    pool: &test_fixtures::Pool,
+    signer_name: &str,
+    typ: &str,
+    pr: &str,
+    challenge: Option<&str>,
+    now: i64,
+) -> String {
+    let signer = pool.get(signer_name).expect("signer in pool");
+    let prv = Base64UrlUnpadded::decode_vec(signer.prv.as_ref().expect("signer prv")).unwrap();
+    let pub_key = Base64UrlUnpadded::decode_vec(&signer.pub_key).unwrap();
+
+    let mut pay = coz::Pay::new();
+    pay.alg = Some(signer.alg.clone());
+    pay.now = Some(now);
+    pay.tmb = Some(signer.compute_tmb().expect("signer tmb"));
+    pay.typ = Some(typ.to_string());
+    pay.extra
+        .insert("pr".to_string(), serde_json::Value::String(pr.into()));
+    if let Some(c) = challenge {
+        pay.extra
+            .insert("challenge".to_string(), serde_json::Value::String(c.into()));
+    }
+    let pay_bytes = serde_json::to_vec(&pay).unwrap();
+    let (sig, _cad) = coz::sign_json(&pay_bytes, &signer.alg, &prv, &pub_key).expect("sign");
+    serde_json::to_string(&coz::CozJson {
+        pay: serde_json::to_value(&pay).unwrap(),
+        sig,
+    })
+    .unwrap()
+}
+
+/// Backs: a sign-on statement is accepted only under exactly the typ it was
+/// signed for, `<server audience>/cyphr/auth/login`. Turns red if the typ
+/// match loosens to a prefix/suffix/contains test: a foreign audience, a
+/// trailing segment, a leading segment, or no audience then yields a token.
+/// The control (exact typ accepted) stops a reject-everything no-op.
+/// Characterization (green). End to end: yes.
+#[tokio::test]
+async fn login_typ_is_matched_exactly() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+
+    let exact = format!("{AUDIENCE}/cyphr/auth/login");
+    let (status, json) = post_json(
+        build_router(state.clone()),
+        "/auth/login",
+        login_body_typ(&pool, "golden", &exact, &pid, None, now_secs()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "control: exact typ accepted: {json:?}"
+    );
+
+    for typ in [
+        "evil.example/cyphr/auth/login".to_string(),
+        format!("{AUDIENCE}/cyphr/auth/login/extra"),
+        format!("sub/{AUDIENCE}/cyphr/auth/login"),
+        "/cyphr/auth/login".to_string(),
+        format!("{AUDIENCE}/cyphr/auth/logout"),
+    ] {
+        let (status, json) = post_json(
+            build_router(state.clone()),
+            "/auth/login",
+            login_body_typ(&pool, "golden", &typ, &pid, None, now_secs()),
+        )
+        .await;
+        assert!(
+            !status.is_success() && json["payload"]["token"].is_null(),
+            "typ {typ:?} must not be accepted as this server's login: {status} {json:?}"
+        );
+    }
+}
+
+/// Backs: a statement carrying a challenge is accepted only through
+/// challenge-response, once. Turns red if a challenge-bearing statement can
+/// be re-presented (a consumed challenge, or one this server never issued)
+/// and accepted as a timestamp login because its `now` is in the window.
+/// Characterization (green; the flow is chosen by the challenge field's
+/// presence). End to end: yes.
+#[tokio::test]
+async fn cross_flow_challenge_statement_never_passes_as_timestamp() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let typ = format!("{AUDIENCE}/cyphr/auth/login");
+
+    let (_, cj) = post_json(
+        build_router(state.clone()),
+        "/auth/challenge",
+        String::new(),
+    )
+    .await;
+    let challenge = envelope_payload(&cj)["challenge"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let body = login_body_typ(&pool, "golden", &typ, &pid, Some(&challenge), now_secs());
+
+    let (first, _) = post_json(build_router(state.clone()), "/auth/login", body.clone()).await;
+    assert_eq!(
+        first,
+        StatusCode::OK,
+        "control: challenge flow succeeds once"
+    );
+    let (replay, json) = post_json(build_router(state.clone()), "/auth/login", body).await;
+    assert_eq!(
+        replay,
+        StatusCode::UNAUTHORIZED,
+        "a consumed challenge statement, in-window, must not pass as a timestamp login: {json:?}"
+    );
+
+    let forged = login_body_typ(
+        &pool,
+        "golden",
+        &typ,
+        &pid,
+        Some("never-issued"),
+        now_secs(),
+    );
+    let (status, json) = post_json(build_router(state), "/auth/login", forged).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a timestamp login carrying an unissued challenge must be refused: {json:?}"
+    );
+}
+
+/// Backs: role separation for the roles that exist in code today (bearer
+/// token, naked revoke; the transport binding and pairing have no code yet
+/// and are not testable). A statement signed in another role is never a
+/// login, and a login is never accepted in another role. Turns red if
+/// `/auth/login` accepts a `key/revoke` statement or a server-minted bearer
+/// token, or `/revoke` accepts a login (the key then dies). Characterization
+/// (green). End to end: yes.
+#[tokio::test]
+async fn login_role_is_not_interchangeable_with_other_statements() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let login_typ = format!("{AUDIENCE}/cyphr/auth/login");
+
+    // Other roles presented as a login.
+    let revoke_as_login = login_body_typ(
+        &pool,
+        "golden",
+        "cyphr.me/cyphr/key/revoke",
+        &pid,
+        None,
+        now_secs(),
+    );
+    let (status, json) =
+        post_json(build_router(state.clone()), "/auth/login", revoke_as_login).await;
+    assert!(
+        !status.is_success() && json["payload"]["token"].is_null(),
+        "a key/revoke statement must not be accepted as a login: {status} {json:?}"
+    );
+    let token = state
+        .identity
+        .as_ref()
+        .unwrap()
+        .issue_token(pid.as_str(), vec!["read".into()], now_secs(), 300)
+        .expect("issue token");
+    let (status, json) = post_json(build_router(state.clone()), "/auth/login", token).await;
+    assert!(
+        !status.is_success() && json["payload"]["token"].is_null(),
+        "a bearer token must not be accepted as a login: {status} {json:?}"
+    );
+
+    // A login presented as a naked revoke (with the key disclosed so only
+    // the typ can stop it).
+    let golden = pool.get("golden").unwrap();
+    let mut login: serde_json::Value = serde_json::from_str(&login_body_typ(
+        &pool,
+        "golden",
+        &login_typ,
+        &pid,
+        None,
+        now_secs(),
+    ))
+    .unwrap();
+    login["pay"]["rvk"] = serde_json::json!(now_secs());
+    login.as_object_mut().unwrap().insert(
+        "key".to_string(),
+        serde_json::json!({ "alg": golden.alg, "pub": golden.pub_key }),
+    );
+    let (status, json) = post_json(build_router(state.clone()), "/revoke", login.to_string()).await;
+    assert!(
+        !status.is_success(),
+        "a login must not act as a naked revoke: {status} {json:?}"
+    );
+
+    // Control: the key is still alive and the login role still works.
+    let (status, json) = post_json(
+        build_router(state),
+        "/auth/login",
+        login_body_typ(&pool, "golden", &login_typ, &pid, None, now_secs()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the golden key must not be dead: {json:?}"
+    );
+}
