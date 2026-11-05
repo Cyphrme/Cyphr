@@ -6,21 +6,46 @@ All active development happens here.
 
 ## Crate map
 
-| Crate                          | Role                                                                                                                                                                 |
-| :----------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cyphr`                        | Protocol core: `Principal<S: eml::Storage>`, commit/transaction machinery, Merkle trees (`principal_tree`, `semantic_tree`), multihash. Consumer-agnostic (root I4). |
-| `cyphr-storage`                | `StorageEngine<B: BlobStore, I: Indexer, S>`: validated write path (`submit_commit`), read paths, recovery (`reindex`), import/export                                |
-| `cyphr-blob-fjall`             | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction)                                                                       |
-| `cyphr-index-fjall`            | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version         |
-| `cyphr-server`                 | axum HTTP scaffold: `/tip`, `/patch`, `/push`, `/e/{digest}` wired to durable backends. No auth yet; `Export` subcommand and `witness` mode are non-functional stubs |
-| `cyphr-cli`                    | Single-user dev CLI; plaintext keystore, not secure by design                                                                                                        |
-| `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator)                                                                                                  |
-| `fuzz`                         | cargo-fuzz targets; not run in CI                                                                                                                                    |
+| Crate                          | Role                                                                                                                                                                                                                                                                              |
+| :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cyphr`                        | Protocol core: `Principal<S: eml::Storage>`, commit/transaction machinery, Merkle trees (`principal_tree`, `semantic_tree`), multihash. Consumer-agnostic (root I4).                                                                                                              |
+| `cyphr-storage`                | `StorageEngine<B: BlobStore, I: Indexer, S>`: validated write path (`submit_commit`), read paths, recovery (`reindex`), import/export                                                                                                                                             |
+| `cyphr-blob-fjall`             | Durable fjall `BlobStore` + principal-scoped eml storage opener (multitenancy by construction)                                                                                                                                                                                    |
+| `cyphr-index-fjall`            | fjall KV-backed `Indexer` (production; the SQLite backend is retired per root R3) -- length-prefixed commit keys, one meta partition tracking schema version                                                                                                                      |
+| `cyphr-server`                 | axum HTTP server over the durable backends: envelope and signed receipts, admission, equivocation evidence, witness-mode sync, and the `auth/` modules (server identity, login, bearer-token middleware, route protection). The `Export` subcommand is a stub that exits non-zero |
+| `cyphr-cli`                    | Single-user dev CLI; plaintext keystore, not secure by design                                                                                                                                                                                                                     |
+| `test-fixtures`, `fixture-gen` | Golden-corpus harness + generator (Rust is the canonical generator)                                                                                                                                                                                                               |
+| `fuzz`                         | cargo-fuzz targets (`fuzz_coz_parser`, `fuzz_reindex`); CI runs each as a 60-second smoke                                                                                                                                                                                         |
+
+### Planned crates (not yet in the workspace)
+
+The MVP campaign adds these; do not assume they exist until they appear
+in `Cargo.toml`. Root requirements R5–R9 and R14 govern the first.
+
+| Crate            | Role                                                                                                                                                                         |
+| :--------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cyphr-keystore` | Generic key backends and roots behind one interface each: hardware first (PKCS#11, TPM, Secure Enclave), flagged software fallback, private-key bytes never reach Cyphr code |
+| scenario crate   | End-to-end multi-peer scenario suite (root R13); planned name `cyphr-scenarios`                                                                                              |
+
+Hardware-held keys sign through a signer trait that the Coz Rust library
+(`Cyphrme/coz-rust`) must expose; today `coz::sign_json` takes raw
+private-key bytes, so the seam is an upstream change.
+
+## Testing standard
+
+Root R13 governs. In this workspace: a scenario that exercises real
+`cyphr-server` instances and clients is the default test; `proptest` is
+for invariants, `../tests/golden` for byte-exact formats, `fuzz/` for
+parsers of untrusted input. A unit test needs a stated reason in a
+comment (the scenario cannot reach the case cheaply). Show each new
+test failing for the right reason before implementing, and delete any
+test that backs no stated claim.
 
 ## Gates
 
 - `cargo test --workspace` — green (~3 min; slowest: persistent-engine proptest).
-- `cargo clippy --workspace --all-targets` — clean; keep it that way.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean; CI
+  runs it with `-D warnings`.
 - `cargo fmt --check` — green, on stable or nightly (forge #28, resolved by
   a full-workspace reformat; see below — `.rustfmt.toml`'s nightly-only
   keys were kept, not dropped).
@@ -101,9 +126,18 @@ All active development happens here.
 
 ## Unknowns
 
-Inherited from root (`/AGENTS.md` U1–U3): intra-commit ordering,
-live-principal concurrency, replay-cost/caching. Resolve there, not
-locally.
+Inherited from root (`/AGENTS.md`); resolve there, not locally:
+
+- U1 — intra-commit ordering (resolved);
+- U2 — live-principal concurrency;
+- U3 — replay cost and caching;
+- U4 — EMT→EML conversion;
+- U5 — peer transport;
+- U6 — keychain design details;
+- U7 — restore watermark;
+- U8 — passphrase root defaults and attestation roots;
+- U9 — witness currency and identity binding;
+- U10 — questions for the SPEC author.
 
 ## Spec Pointers
 
