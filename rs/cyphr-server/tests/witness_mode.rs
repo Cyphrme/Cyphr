@@ -29,19 +29,6 @@ mod common;
 
 use common::{attestor_server, build_genesis_push_body, get_json, load_pool, post_json};
 
-/// Render a distinct, valid genesis-identifier string from a repeated
-/// seed byte -- BARE b64ut, no algorithm tag (SPEC §2.2.3's DEFAULT
-/// identifier form; tagging is `roots`/`commit_id`'s labeled exemption,
-/// not a principal's genesis identifier -- `docs/specs/receipts.md`).
-/// `receipt::tip_report`/`commit_receipt` refuse a malformed `pr`, so
-/// these principal identifiers must genuinely parse. Named
-/// `principal_digest` (not `digest`) to stay distinct from the TAGGED
-/// digest helper other test files use for `commit_id`/`roots` fixtures --
-/// same shape, different wire form, never interchangeable.
-fn principal_digest(byte: u8) -> String {
-    Base64UrlUnpadded::encode_string(&[byte; 32])
-}
-
 // ========================================================================
 // Acceptance Criteria N2.1 – N2.6
 // ========================================================================
@@ -95,7 +82,7 @@ async fn all_write_routes_refused() {
     let app = build_app_router(state.clone()).expect("app router initialization");
 
     let pool = load_pool();
-    let push_body = build_genesis_push_body(&pool, "n2-write-refusal-principal", 1_700_000_000);
+    let push_body = build_genesis_push_body(&pool, &common::golden_principal_id(&pool), 1_700_000_000);
 
     // 1. POST /push MUST be refused in witness mode with an unsigned envelope
     let (push_status, push_json) = post_json(app.clone(), "/push", push_body).await;
@@ -113,7 +100,7 @@ async fn all_write_routes_refused() {
 
     // 2. POST /revoke MUST be refused in witness mode with an unsigned envelope
     let revoke_body = serde_json::json!({
-        "principal_id": "n2-write-refusal-principal",
+        "principal_id": common::golden_principal_id(&pool),
         "coz": {}
     })
     .to_string();
@@ -176,8 +163,8 @@ async fn syncs_from_authority() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x01);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 
@@ -246,8 +233,8 @@ async fn rejects_unverifiable_delta() {
         .expect("authority TCP URL must be available");
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x02);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_000_000;
 
     // 1. Establish valid principal on authority
@@ -869,7 +856,7 @@ async fn witness_for(
 #[tokio::test]
 async fn sync_recovers_after_bad_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x11);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let bad_pr = principal.clone();
@@ -955,7 +942,7 @@ async fn sync_recovers_after_bad_entry() {
 #[tokio::test]
 async fn sync_recovers_after_unverifiable_entry() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x12);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let (proxy_url, _proxy) = spawn_patch_proxy(
@@ -1045,7 +1032,7 @@ async fn sync_recovers_after_unverifiable_entry() {
 #[tokio::test]
 async fn patch_envelope_authority_signature() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x14);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
 
     let expected = coz::Alg::Ed25519.generate_keypair();
@@ -1091,7 +1078,7 @@ async fn patch_envelope_authority_signature() {
 #[tokio::test]
 async fn patch_truncated_entries_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1233,7 +1220,7 @@ async fn genuine_entries_and_identity(
 #[tokio::test]
 async fn witness_rejects_malformed_report_at_ingestion() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x18);
+    let principal = common::golden_principal_id(&load_pool());
     let (entries, _real_report, identity, _auth_dir) =
         genuine_entries_and_identity(&principal, now).await;
 
@@ -1329,7 +1316,7 @@ async fn witness_rejects_malformed_report_at_ingestion() {
 #[tokio::test]
 async fn authenticated_channel_accepts_genuine_authority() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x1d);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_genesis(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1474,12 +1461,14 @@ fn build_genesis_push_body_with(
 #[tokio::test]
 async fn cross_principal_substitution_rejected() {
     let now = 1_700_000_000;
-    let principal_a = principal_digest(0x81);
-    let principal_b = principal_digest(0x82);
+    let pool = load_pool();
+    // Distinct genesis keys (`alice` vs `golden`) give genuinely distinct
+    // genesis-derived ids.
+    let principal_a = common::implicit_principal_id(&pool, "alice");
+    let principal_b = common::golden_principal_id(&pool);
 
     let authority = authority_with_two_commits(&principal_b, now).await;
     let authority_identity = authority.identity();
-    let pool = load_pool();
     let (status, body) = post_json(
         authority.instance.router.clone(),
         "/push",
@@ -1540,7 +1529,7 @@ async fn cross_principal_substitution_rejected() {
 #[tokio::test]
 async fn decoy_top_entry_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7a);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1605,7 +1594,7 @@ async fn decoy_top_entry_withholding_rejected() {
 #[tokio::test]
 async fn empty_entries_with_advanced_report_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7b);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1642,7 +1631,7 @@ async fn empty_entries_with_advanced_report_rejected() {
 #[tokio::test]
 async fn request_side_from_rewrite_withholding_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7c);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1708,7 +1697,7 @@ async fn request_side_from_rewrite_withholding_rejected() {
 #[tokio::test]
 async fn synced_outcome_reports_rejected_count_alongside_applied() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7f);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1809,7 +1798,7 @@ async fn spawn_replay_proxy(upstream: String) -> (String, tokio::task::JoinHandl
 #[tokio::test]
 async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x8a);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -1850,7 +1839,7 @@ async fn stale_replay_with_no_new_entries_reports_up_to_date_not_rejected() {
 #[tokio::test]
 async fn stripped_statement_fails_closed_when_configured() {
     let now = 1_700_000_000;
-    let principal = principal_digest(0x7e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
     let authority_identity = authority.identity();
 
@@ -2015,8 +2004,8 @@ async fn spawn_observing_patch_proxy(
 #[tokio::test]
 async fn sync_resumes_from_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa1);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_100_000;
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
 
@@ -2121,10 +2110,11 @@ async fn sync_resumes_from_digest_anchor() {
 #[tokio::test]
 async fn fork_shares_sequence_rejected_by_digest_anchor() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa2);
-    let principal_id = principal_id_digest.as_str();
-    let fork_principal_id_digest = principal_digest(0xa3);
-    let fork_principal_id = fork_principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
+    // The fork lives on a SEPARATE authority and shares the canonical genesis
+    // (hence the genesis-derived id); it diverges only at sequence 1.
+    let fork_principal_id = principal_id;
     let now = 1_700_200_000;
 
     // Canonical authority: three genuinely chained commits.
@@ -2244,8 +2234,8 @@ async fn fork_shares_sequence_rejected_by_digest_anchor() {
 #[tokio::test]
 async fn sequence_only_anchor_does_not_resume() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa4);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_300_000;
 
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b", "alice"]);
@@ -2314,8 +2304,8 @@ async fn sequence_only_anchor_does_not_resume() {
 #[tokio::test]
 async fn anchor_digest_rejects_malformed() {
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0xa5);
-    let principal_id = principal_id_digest.as_str();
+    let principal_id_owned = common::golden_principal_id(&load_pool());
+    let principal_id = principal_id_owned.as_str();
     let now = 1_700_400_000;
 
     let bodies = build_chained_push_bodies(&pool, principal_id, now, &["key_a", "key_b"]);
@@ -2371,7 +2361,7 @@ async fn anchor_digest_rejects_malformed() {
 #[tokio::test]
 async fn patch_bounded_to_is_unsigned_on_attestor() {
     let now = 1_700_500_000;
-    let principal = principal_digest(0x8e);
+    let principal = common::golden_principal_id(&load_pool());
     let authority = authority_with_two_commits(&principal, now).await;
 
     let (unbounded_status, unbounded) = get_json(

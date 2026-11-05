@@ -816,6 +816,12 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             None => self.resolve_genesis(principal_id, raw_blobs).await?,
         };
 
+        // SPEC §3.1: a principal's identifier is derived from its genesis,
+        // never chosen by the caller. Refuse any other id before anything is
+        // read or written, so a genesis cannot be stored under a squatted or
+        // unrelated name.
+        ensure_genesis_derived_id(principal_id, &genesis)?;
+
         // 2. Load (or construct) the principal from existing state.
         let mut principal = self.load_principal(principal_id, genesis).await?;
 
@@ -1176,6 +1182,49 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     pub async fn rebuild_index_from_scratch(&self) -> Result<usize, EngineError> {
         self.indexer.clear(&DeriveToken::new()).await?;
         self.rebuild_index_from_manifests().await
+    }
+}
+
+/// The principal id `genesis` derives (SPEC §3.1): its genesis-time
+/// Principal Root. Canonical spelling: for an implicit genesis the bare
+/// base64url digest (the genesis key's `tmb`); for an explicit genesis the
+/// algorithm-tagged `ALG:digest` form that `principal/create`'s `id`
+/// carries.
+///
+/// # Errors
+///
+/// Returns the protocol error genesis construction raises (e.g. an empty
+/// key set).
+pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
+    let (principal, bare) = match genesis {
+        crate::Genesis::Implicit(key) => (cyphr::Principal::implicit(key.clone())?, true),
+        crate::Genesis::Explicit(keys) => (cyphr::Principal::explicit(keys.clone())?, false),
+    };
+    let tagged = principal.pr_tagged()?;
+    Ok(match tagged.split_once(':') {
+        Some((_, digest)) if bare => digest.to_string(),
+        _ => tagged,
+    })
+}
+
+/// Requires `principal_id` to be the id `genesis` derives. The tagged
+/// spelling of an implicit genesis's id is also accepted: the CLI keys
+/// every principal, single-key included, by its tagged Principal Root.
+fn ensure_genesis_derived_id(
+    principal_id: &str,
+    genesis: &crate::Genesis,
+) -> Result<(), EngineError> {
+    let canonical = genesis_principal_id(genesis)?;
+    let tagged = match genesis {
+        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone())?.pr_tagged()?,
+        crate::Genesis::Explicit(_) => canonical.clone(),
+    };
+    if principal_id == canonical || principal_id == tagged {
+        Ok(())
+    } else {
+        Err(EngineError::InvalidInput(format!(
+            "principal_id is not the genesis-derived id: {principal_id}"
+        )))
     }
 }
 

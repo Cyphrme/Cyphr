@@ -784,7 +784,10 @@ mod commit_count_underflow_tests {
     /// freshly generated keypair rather than the shared `test_fixtures`
     /// pool) because that helper lives in the separate integration-test
     /// crate this unit-test module cannot depend on.
-    async fn push_test_genesis(state: &AppState, principal_id: &str, now: i64) {
+    ///
+    /// Returns the principal id the genesis derives (SPEC §3.1), the only
+    /// id the engine accepts for this commit.
+    async fn push_test_genesis(state: &AppState, now: i64) -> String {
         let golden_kp = coz::Alg::Ed25519.generate_keypair();
         let golden_tmb = golden_kp
             .alg
@@ -887,12 +890,18 @@ mod commit_count_underflow_tests {
         let last = all_blobs.len() - 1;
         all_blobs[last] = closing_blob;
 
+        let principal_id =
+            cyphr_storage::engine::genesis_principal_id(&cyphr_storage::Genesis::Implicit(
+                golden_key.clone(),
+            ))
+            .expect("genesis-derived principal id");
         let blob_refs: Vec<&[u8]> = all_blobs.iter().map(Vec::as_slice).collect();
         state
             .engine
-            .submit_commit(principal_id, None, &blob_refs)
+            .submit_commit(&principal_id, None, &blob_refs)
             .await
             .expect("genesis push succeeds");
+        principal_id
     }
 
     /// Positive control: proves this suite's harness genuinely exercises
@@ -904,8 +913,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_legitimate_tip_signs_correct_sequence() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x61u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_000).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_000).await;
 
         let tip = state
             .engine
@@ -953,8 +961,7 @@ mod commit_count_underflow_tests {
     #[tokio::test]
     async fn sign_tip_attestation_zero_commit_count_never_wraps_or_panics() {
         let (state, _dir) = attestor_state().await;
-        let principal_id = Base64UrlUnpadded::encode_string(&[0x62u8; 32]);
-        push_test_genesis(&state, &principal_id, 1_700_200_100).await;
+        let principal_id = push_test_genesis(&state, 1_700_200_100).await;
 
         let real_tip = state
             .engine

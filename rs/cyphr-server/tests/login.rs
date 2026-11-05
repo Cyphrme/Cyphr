@@ -303,19 +303,22 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
     (status, json)
 }
 
-/// Bootstrap a brand-new Active principal (genesis `golden`, plus one added
-/// key) through the real `/push` wire path, so `golden` and the added key
-/// are both active and the principal is loadable by the login handler.
+/// Bootstrap a brand-new Active principal (implicit genesis `genesis_name`,
+/// plus one added key) through the real `/push` wire path, so the genesis key and the added
+/// key are both active and the principal is loadable by the login handler.
+/// Returns the principal's genesis-derived id.
 async fn bootstrap_active_with_key(
     app: axum::Router,
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    genesis_name: &str,
     add_key: &str,
-) {
-    let golden = pool.get("golden").expect("golden in pool");
+) -> String {
+    let golden = pool.get(genesis_name).expect("genesis key in pool");
+    // SPEC 3.1: an implicit genesis's principal id is its key's thumbprint.
+    let principal_id = golden.compute_tmb_b64().expect("genesis tmb b64");
     let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
     let principal = cyphr::Principal::implicit(golden_key.clone()).expect("implicit genesis");
-    let mut blobs = sign_key_create_commit(principal, pool, "golden", add_key, 1_700_000_000);
+    let mut blobs = sign_key_create_commit(principal, pool, genesis_name, add_key, 1_700_000_000);
 
     // Embed genesis on the closing commit/create -- the wire contract for a
     // brand-new principal's genesis auto-detection.
@@ -342,6 +345,7 @@ async fn bootstrap_active_with_key(
         StatusCode::CREATED,
         "bootstrap active principal push must succeed"
     );
+    principal_id
 }
 
 /// Bootstrap a golden `lifecycle/` fixture so the login handler can load it:
@@ -350,9 +354,11 @@ async fn bootstrap_active_with_key(
 /// fixture's own pre-signed transactions drive the real lifecycle
 /// transition. Only reachable once the storage layer recognizes the
 /// lifecycle transactions (see the module-level note).
-async fn bootstrap_lifecycle(state: &AppState, principal_id: &str, fixture_name: &str) {
+async fn bootstrap_lifecycle(state: &AppState, fixture_name: &str) -> String {
     let fixture = load_golden("lifecycle", fixture_name);
     let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let principal_id = cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+        .expect("fixture genesis derives an id");
     let gk = &genesis_keys[0];
 
     for commit in fixture["commits"].as_array().unwrap() {
@@ -371,10 +377,11 @@ async fn bootstrap_lifecycle(state: &AppState, principal_id: &str, fixture_name:
         let slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
         state
             .engine
-            .submit_commit(principal_id, Some(make_genesis(genesis_keys)), &slices)
+            .submit_commit(&principal_id, Some(make_genesis(genesis_keys)), &slices)
             .await
             .expect("bootstrap lifecycle commit");
     }
+    principal_id
 }
 
 /// Sign a fresh "self-revoke `signer_name`" commit onto `principal`. Mirrors
@@ -442,10 +449,13 @@ fn sign_key_revoke_commit<S: eml::Storage>(
 async fn bootstrap_active_then_revoke(
     state: &Arc<AppState>,
     pool: &test_fixtures::Pool,
-    principal_id: &str,
+    genesis_name: &str,
     revoked_key: &str,
-) {
-    bootstrap_active_with_key(build_router(state.clone()), pool, principal_id, revoked_key).await;
+) -> String {
+    let principal_id =
+        bootstrap_active_with_key(build_router(state.clone()), pool, genesis_name, revoked_key)
+            .await;
+    let principal_id = principal_id.as_str();
 
     let genesis = state
         .engine
@@ -464,6 +474,7 @@ async fn bootstrap_active_then_revoke(
         .submit_commit(principal_id, None, &slices)
         .await
         .expect("submit the revoke commit");
+    principal_id.to_string()
 }
 
 // ========================================================================
@@ -476,8 +487,8 @@ async fn bootstrap_active_then_revoke(
 async fn login_timestamp_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-ts-active";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
 
     let app = build_router(state.clone());
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
@@ -505,8 +516,8 @@ async fn login_timestamp_flow_issues_valid_token() {
 async fn login_challenge_flow_issues_valid_token() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-chal-active";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state.clone());
 
     let (cs, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
@@ -548,8 +559,8 @@ async fn login_challenge_flow_issues_valid_token() {
 async fn login_rejects_replayed_challenge() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-replay";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state.clone());
 
     let (_, cj) = post_json(app.clone(), "/auth/challenge", String::new()).await;
@@ -582,8 +593,8 @@ async fn login_rejects_replayed_challenge() {
 async fn login_rejects_out_of_window_timestamp() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-window";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let stale = now_secs() - 3600;
@@ -606,8 +617,8 @@ async fn login_rejects_out_of_window_timestamp() {
 async fn login_rejects_mismatched_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-aud-mismatch";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", "evil.example", Some(pid), None, now_secs());
@@ -627,8 +638,8 @@ async fn login_rejects_mismatched_audience() {
 async fn login_rejects_missing_audience() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-aud-missing";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", "", Some(pid), None, now_secs());
@@ -657,8 +668,7 @@ async fn login_rejects_missing_audience() {
 async fn login_rejects_missing_principal_claim() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-no-pr";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", AUDIENCE, None, None, now_secs());
@@ -680,11 +690,12 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
     let state = login_state();
     let pool = load_pool();
 
-    // P_other genuinely has key_a active; P_claimed (golden + key_b) does not.
-    let other = "login-share-other";
-    let claimed = "login-share-claimed";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, other, "key_a").await;
-    bootstrap_active_with_key(build_router(state.clone()), &pool, claimed, "key_b").await;
+    // P_other genuinely has key_a active; P_claimed (alice + key_b) does not.
+    // Distinct genesis keys, because a principal's id is derived from its
+    // genesis.
+    let other = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let claimed = bootstrap_active_with_key(build_router(state.clone()), &pool, "alice", "key_b").await;
+    let (other, claimed) = (other.as_str(), claimed.as_str());
 
     // key_a claiming P_other: accepted (key_a is active there).
     let ok_body = login_body(&pool, "key_a", AUDIENCE, Some(other), None, now_secs());
@@ -717,8 +728,8 @@ async fn login_binds_key_to_claimed_principal_not_thumbprint() {
 async fn login_rejects_invalid_signature() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-badsig";
-    bootstrap_active_with_key(build_router(state.clone()), &pool, pid, "key_a").await;
+    let pid = bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
     let app = build_router(state);
 
     let body = login_body(&pool, "golden", AUDIENCE, Some(pid), None, now_secs());
@@ -785,8 +796,8 @@ async fn login_rejects_unknown_principal() {
 async fn login_rejects_frozen_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-frozen";
-    bootstrap_lifecycle(&state, pid, "freeze_create_transitions_to_frozen").await;
+    let pid = bootstrap_lifecycle(&state, "freeze_create_transitions_to_frozen").await;
+    let pid = pid.as_str();
 
     // The reconstructed principal is genuinely Frozen (real state, real path).
     let genesis = state
@@ -823,8 +834,8 @@ async fn login_rejects_frozen_principal() {
 async fn login_rejects_deleted_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-deleted";
-    bootstrap_lifecycle(&state, pid, "principal_delete_transitions_to_deleted").await;
+    let pid = bootstrap_lifecycle(&state, "principal_delete_transitions_to_deleted").await;
+    let pid = pid.as_str();
 
     let genesis = state
         .engine
@@ -869,8 +880,8 @@ async fn login_rejects_deleted_principal() {
 async fn login_rejects_key_revoked_in_claimed_principal() {
     let state = login_state();
     let pool = load_pool();
-    let pid = "login-revoked-key";
-    bootstrap_active_then_revoke(&state, &pool, pid, "key_a").await;
+    let pid = bootstrap_active_then_revoke(&state, &pool, "golden", "key_a").await;
+    let pid = pid.as_str();
 
     let genesis = state
         .engine

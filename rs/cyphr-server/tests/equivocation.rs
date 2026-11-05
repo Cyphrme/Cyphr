@@ -315,8 +315,14 @@ async fn same_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x30);
-    let principal_id = principal_id_digest.as_str();
+    // The principal id must be the genesis-derived id (SPEC 3.1): the
+    // implicit genesis key's thumbprint.
+    let principal_id = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let principal_id = principal_id.as_str();
     let now = 1_700_100_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;
@@ -373,8 +379,14 @@ async fn cross_key_pair_proves_equivocation() {
     let app = build_router(state);
 
     let pool = load_pool();
-    let principal_id_digest = principal_digest(0x31);
-    let principal_id = principal_id_digest.as_str();
+    // The principal id must be the genesis-derived id (SPEC 3.1): the
+    // implicit genesis key's thumbprint.
+    let principal_id = pool
+        .get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb");
+    let principal_id = principal_id.as_str();
     let now = 1_700_200_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
     let (push_status, _) = post_json(app.clone(), "/push", push_body).await;

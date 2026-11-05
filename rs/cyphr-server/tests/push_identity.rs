@@ -64,7 +64,6 @@ async fn d2_control_push_under_derived_id_is_accepted() {
 /// canonical-form gate does not mask the defect). Red now because the
 /// handler stores the genesis under any client-chosen string: here `"bob"`.
 #[tokio::test]
-#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -78,7 +77,7 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     )
     .await;
     assert!(
-        status.is_client_error(),
+        status == StatusCode::BAD_REQUEST,
         "genesis stored under unrelated principal_id {squat:?}: {status} {body:?}"
     );
     assert_eq!(
@@ -94,7 +93,6 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
 /// `routes.rs` `push_test_genesis` shape (`[0x61; 32]`). Red now because
 /// only the id's byte length is checked.
 #[tokio::test]
-#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -109,7 +107,7 @@ async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     )
     .await;
     assert!(
-        status.is_client_error(),
+        status == StatusCode::BAD_REQUEST,
         "genesis stored under a well-formed but unrelated principal_id: {status} {body:?}"
     );
     assert_eq!(

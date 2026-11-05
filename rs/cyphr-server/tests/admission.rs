@@ -116,13 +116,14 @@ struct HttpResponse {
 // Bodies
 // ========================================================================
 
-/// A brand-new principal's genesis push body, wire-ready. `principal_id` is
-/// only a storage label; genesis is resolved from the golden-key blobs, so
-/// distinct labels (with distinct `now`) are distinct new-principal
-/// residency facts.
-fn genesis_body(principal_id: &str, now: i64) -> String {
+/// A brand-new principal's genesis push body, wire-ready, for the principal
+/// whose implicit genesis key is pool key `genesis_name` (its id is derived
+/// from that key, SPEC 3.1). Distinct genesis keys are distinct
+/// new-principal residency facts; `now` does not distinguish principals.
+fn genesis_body(genesis_name: &str, now: i64) -> String {
     let pool = common::load_pool();
-    common::build_genesis_push_body(&pool, principal_id, now)
+    let principal_id = common::implicit_principal_id(&pool, genesis_name);
+    common::build_genesis_push_body_with(&pool, genesis_name, "key_a", &principal_id, now)
 }
 
 /// Assert an admission denial: HTTP 403 (never 401) whose JSON body names the
@@ -160,7 +161,7 @@ fn assert_denied(resp: &HttpResponse, expected_policy: &str) {
 async fn open_policy_admits_new_principal_without_token() {
     let server = TestServer::start_open().await;
     let r = server
-        .post("/push", &genesis_body("open-genesis", NOW_BASE + 10), &[])
+        .post("/push", &genesis_body("golden", NOW_BASE + 10), &[])
         .await;
     assert_eq!(r.status, 201, "open genesis push must succeed: {}", r.body);
 }
@@ -176,7 +177,7 @@ async fn open_policy_admits_new_principal_without_token() {
 async fn invite_missing_token_is_denied() {
     let server = TestServer::start_invite().await;
     let r = server
-        .post("/push", &genesis_body("invite-notoken", NOW_BASE + 20), &[])
+        .post("/push", &genesis_body("golden", NOW_BASE + 20), &[])
         .await;
     assert_denied(&r, "invite");
 }
@@ -189,7 +190,7 @@ async fn invite_wrong_token_is_denied() {
     let r = server
         .post(
             "/push",
-            &genesis_body("invite-wrong", NOW_BASE + 21),
+            &genesis_body("golden", NOW_BASE + 21),
             &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
         )
         .await;
@@ -203,7 +204,7 @@ async fn invite_valid_token_admits_new_principal() {
     let r = server
         .post(
             "/push",
-            &genesis_body("invite-valid", NOW_BASE + 22),
+            &genesis_body("golden", NOW_BASE + 22),
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -227,14 +228,14 @@ async fn invite_wrong_tokens_are_denied_identically() {
     let same_len = server
         .post(
             "/push",
-            &genesis_body("ct-same", NOW_BASE + 23),
+            &genesis_body("golden", NOW_BASE + 23),
             &[(INVITE_HEADER, WRONG_TOKEN_SAME_LEN)],
         )
         .await;
     let diff_len = server
         .post(
             "/push",
-            &genesis_body("ct-diff", NOW_BASE + 24),
+            &genesis_body("alice", NOW_BASE + 24),
             &[(INVITE_HEADER, WRONG_TOKEN_DIFF_LEN)],
         )
         .await;
@@ -255,7 +256,7 @@ async fn invite_token_is_single_use() {
     let first = server
         .post(
             "/push",
-            &genesis_body("single-p1", NOW_BASE + 30),
+            &genesis_body("golden", NOW_BASE + 30),
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -267,7 +268,7 @@ async fn invite_token_is_single_use() {
     let second = server
         .post(
             "/push",
-            &genesis_body("single-p2", NOW_BASE + 31),
+            &genesis_body("alice", NOW_BASE + 31),
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -300,7 +301,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
     let good = server
         .post(
             "/push",
-            &genesis_body("refund-good", NOW_BASE + 40),
+            &genesis_body("golden", NOW_BASE + 40),
             &[(INVITE_HEADER, VALID_TOKEN)],
         )
         .await;
@@ -317,7 +318,7 @@ async fn invite_token_not_consumed_on_protocol_rejection() {
 #[tokio::test]
 async fn invite_resident_principal_bypasses_admission() {
     let server = TestServer::start_invite().await;
-    let body = genesis_body("resident", NOW_BASE + 50);
+    let body = genesis_body("golden", NOW_BASE + 50);
     let seed = server
         .post("/push", &body, &[(INVITE_HEADER, VALID_TOKEN)])
         .await;
@@ -426,7 +427,7 @@ async fn configured_body_cap_governs_push_under_active_admission() {
     // invite policy or the handler's own parse for any reason OTHER than
     // size.
     let mut body: serde_json::Value =
-        serde_json::from_str(&genesis_body("n-body-cap", NOW_BASE + 60))
+        serde_json::from_str(&genesis_body("golden", NOW_BASE + 60))
             .expect("genesis body parses as JSON");
     body.as_object_mut()
         .expect("genesis body is a JSON object")

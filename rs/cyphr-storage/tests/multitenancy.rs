@@ -107,8 +107,14 @@ fn two_principals_share_one_database_without_collision() {
     assert!(commits_a.len() >= 2, "fixture a needs multiple commits");
     assert!(commits_b.len() >= 2, "fixture b needs multiple commits");
 
-    let principal_id_a = "tenant-a";
-    let principal_id_b = "tenant-b";
+    // Each principal is keyed by the id its own (distinct) genesis derives.
+    let principal_id_a =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_a.clone()))
+            .expect("genesis-derived id a");
+    let principal_id_b =
+        cyphr_storage::engine::genesis_principal_id(&Genesis::Implicit(genesis_key_b.clone()))
+            .expect("genesis-derived id b");
+    let (principal_id_a, principal_id_b) = (principal_id_a.as_str(), principal_id_b.as_str());
 
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("db");

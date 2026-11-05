@@ -576,7 +576,8 @@ async fn submit_commit_valid_fixture() {
     let expected = &fixture["expected"];
 
     let engine = test_engine();
-    let principal_id = "submit-test";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Submit each commit in the fixture through the validated write path.
     for commit in commits {
@@ -635,8 +636,9 @@ async fn submit_commit_action_only_bundle_has_no_manifest_hash() {
     );
 
     let engine = test_engine();
-    let principal_id = "action-only-test";
     let genesis = make_genesis(genesis_keys);
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let principal_id = principal_id.as_str();
 
     let blobs = build_raw_blobs(&commits[0]);
     let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
@@ -683,8 +685,9 @@ async fn submit_commit_rejects_blob_missing_typ() {
     let bytes = serde_json::to_vec(&malformed).unwrap();
 
     let engine = test_engine();
+    let principal_id = genesis_principal_id(&genesis).unwrap();
     let result = engine
-        .submit_commit("f29-missing-typ", Some(genesis), &[&bytes])
+        .submit_commit(&principal_id, Some(genesis), &[&bytes])
         .await;
 
     assert!(
@@ -701,7 +704,8 @@ async fn submit_commit_bad_signature_rejected() {
     let commits = fixture["commits"].as_array().unwrap();
 
     let engine = test_engine();
-    let principal_id = "submit-bad-sig";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Build blobs from the first commit but tamper with the signature.
     let first_commit = &commits[0];
@@ -742,7 +746,10 @@ async fn submit_commit_empty_rejected() {
     let engine = test_engine();
     let genesis = make_genesis(genesis_keys);
 
-    let result = engine.submit_commit("empty-test", Some(genesis), &[]).await;
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let result = engine
+        .submit_commit(&principal_id, Some(genesis), &[])
+        .await;
     assert!(result.is_err(), "empty blob list should be rejected");
 }
 
@@ -754,7 +761,8 @@ async fn submit_then_load_round_trip() {
     let expected = &fixture["expected"];
 
     let engine = test_engine();
-    let principal_id = "round-trip-submit";
+    let principal_id = genesis_principal_id(&make_genesis(genesis_keys)).unwrap();
+    let principal_id = principal_id.as_str();
 
     // Submit all commits.
     for commit in commits {
@@ -1172,7 +1180,8 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
     );
 
     let engine = test_engine();
-    let principal_id = "f40-multi-key-genesis";
+    let principal_id = genesis_principal_id(&genesis).unwrap();
+    let principal_id = principal_id.as_str();
 
     engine
         .submit_commit(principal_id, Some(genesis.clone()), &[&pc_blob, &cc1_blob])
@@ -1219,4 +1228,46 @@ async fn submit_commit_explicit_multi_key_genesis_second_commit_succeeds() {
             "a second commit signed on top of a fresh multi-key established genesis must submit \
              without a state-root mismatch (F40)",
         );
+}
+
+/// Backs the KA1/D2 claim: `submit_commit` refuses any `principal_id` that
+/// is not the id the genesis derives (SPEC §3.1), before touching storage.
+/// Fails if `ensure_genesis_derived_id` is removed: the valid genesis commit
+/// would then be accepted under the unrelated id and leave a tip behind.
+#[tokio::test]
+async fn submit_commit_refuses_id_not_derived_from_genesis() {
+    let fixture = load_golden("mutations", "key_add_changes_state");
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    let commits = fixture["commits"].as_array().unwrap();
+    let genesis = make_genesis(genesis_keys);
+    let derived = genesis_principal_id(&genesis).unwrap();
+    let wrong = "unrelated-principal-id";
+    assert_ne!(wrong, derived);
+
+    let blobs = build_raw_blobs(&commits[0]);
+    let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
+    let engine = test_engine();
+
+    let refused = engine
+        .submit_commit(wrong, Some(genesis.clone()), &blob_slices)
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::InvalidInput(_))),
+        "an id not derived from the genesis must be refused as InvalidInput, got {refused:?}"
+    );
+    assert!(
+        engine.get_tip(wrong).await.unwrap().is_none(),
+        "refused submit must leave no commit chain under the wrong id"
+    );
+    assert!(
+        engine.get_tip(&derived).await.unwrap().is_none(),
+        "refused submit must leave no commit chain under the derived id"
+    );
+
+    // Same commit, derived id: succeeds, so the refusal was about the id.
+    engine
+        .submit_commit(&derived, Some(genesis), &blob_slices)
+        .await
+        .expect("the same commit under the genesis-derived id must be accepted");
+    assert!(engine.get_tip(&derived).await.unwrap().is_some());
 }

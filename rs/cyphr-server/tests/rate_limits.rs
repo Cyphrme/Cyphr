@@ -497,7 +497,8 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
 
     // The victim establishes residency with an active key via its genesis push
     // (from its own IP). Under generous per-op/per-IP limits this succeeds.
-    let (genesis, followon) = genesis_and_followon("griefing-victim", NOW_BASE + 700);
+    let victim_id = common::golden_principal_id(&common::load_pool());
+    let (genesis, followon) = genesis_and_followon(&victim_id, NOW_BASE + 700);
     let g = server
         .request("POST", "/push", Some(&genesis), "127.0.0.1")
         .await;
@@ -511,7 +512,7 @@ async fn anti_griefing_attacker_naming_victim_cannot_throttle_victim() {
     // VICTIM's principal_id. Garbage blobs never commit (the handler rejects
     // them), so the victim's chain is untouched -- but a per-principal rate
     // fence keyed on the named principal would drain the victim's bucket.
-    let garbage = push_body("griefing-victim", &[b"not a valid commit".to_vec()]);
+    let garbage = push_body(&victim_id, &[b"not a valid commit".to_vec()]);
     let _ = server
         .burst("POST", "/push", Some(&garbage), "127.0.0.3", BURST)
         .await;
@@ -624,7 +625,10 @@ async fn per_principal_count_quota_refuses_over_cap() {
     limits.count_quota = 1;
     let server = TestServer::with_limits(&limits).await;
 
-    let (genesis, followon) = genesis_and_followon("quota-p", NOW_BASE + 100);
+    let (genesis, followon) = genesis_and_followon(
+        &common::golden_principal_id(&common::load_pool()),
+        NOW_BASE + 100,
+    );
 
     let g = server.post("/push", &genesis).await;
     assert_eq!(
@@ -724,7 +728,13 @@ async fn bare_server_boots_and_self_bootstraps() {
     );
     assert_eq!(
         server
-            .post("/push", &genesis_body("bare-genesis", NOW_BASE + 400))
+            .post(
+                "/push",
+                &genesis_body(
+                    &common::golden_principal_id(&common::load_pool()),
+                    NOW_BASE + 400,
+                ),
+            )
             .await
             .status,
         201,

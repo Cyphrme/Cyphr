@@ -229,7 +229,9 @@ async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, s
 #[tokio::test]
 async fn keyless_push_tip_patch_entity_round_trip_is_honestly_unsigned() {
     let pool = load_pool();
-    let principal_id = "keyless-matrix-repo";
+    // The id the golden implicit genesis derives (SPEC 3.1): its thumbprint.
+    let principal_id_derived = pool.get("golden").expect("golden key in pool").compute_tmb_b64().expect("golden tmb b64");
+    let principal_id = principal_id_derived.as_str();
     let now = 1_700_000_000;
     let push_body = build_genesis_push_body(&pool, principal_id, now);
 

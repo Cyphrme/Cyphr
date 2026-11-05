@@ -236,7 +236,8 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
 
     let state = boot(config, false).await;
     let fixture = common::load_golden("mutations", "key_add_changes_state");
-    let principal_id = "s2-eml-placement-check";
+    let principal_id = common::fixture_principal_id(&fixture);
+    let principal_id = principal_id.as_str();
     common::bootstrap_principal(&state, principal_id, &fixture).await;
 
     // Drop every handle onto the physical databases (the engine, the blob
@@ -332,7 +333,8 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     let app = build_app_router(state.clone()).expect("failed to build app router");
 
     let pool = common::load_pool();
-    let principal_id = "s2-index-rebuild-check";
+    let principal_id = common::golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let push_now = 1_700_000_000;
     let push_body = common::build_genesis_push_body(&pool, principal_id, push_now);
     let (push_status, push_json) = common::post_json(app.clone(), "/push", push_body).await;

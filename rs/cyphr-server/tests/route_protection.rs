@@ -188,6 +188,22 @@ fn sign_key_create_commit(
     (blobs, new_commit.clone())
 }
 
+/// The id the fixture's genesis derives (SPEC 3.1), the only `principal_id`
+/// the engine accepts for it.
+fn fixture_principal_id(fixture: &serde_json::Value) -> String {
+    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
+    cyphr_storage::engine::genesis_principal_id(&make_genesis(genesis_keys))
+        .expect("fixture genesis derives an id")
+}
+
+/// The id the standard `golden` implicit genesis derives (SPEC 3.1).
+fn golden_principal_id(pool: &test_fixtures::Pool) -> String {
+    pool.get("golden")
+        .expect("golden key in pool")
+        .compute_tmb_b64()
+        .expect("golden tmb")
+}
+
 /// Bootstrap a principal into the engine via the validated write path
 /// (explicit genesis), submitting every commit in the fixture in order.
 async fn bootstrap_principal(state: &AppState, principal_id: &str, fixture: &serde_json::Value) {
@@ -320,7 +336,8 @@ fn real_now() -> i64 {
 #[tokio::test]
 async fn push_with_mismatched_token_pr_rejected() {
     let pool = load_pool();
-    let principal_id = "push-admission-mismatch";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
 
     let state = state_with_identity();
@@ -350,7 +367,8 @@ async fn push_with_mismatched_token_pr_rejected() {
 #[tokio::test]
 async fn push_with_matching_token_pr_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-match";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
     let body = build_genesis_push_body(&pool, principal_id, 1_700_000_000);
 
     let state = state_with_identity();
@@ -391,7 +409,8 @@ async fn push_with_matching_token_pr_succeeds() {
 #[tokio::test]
 async fn push_for_existing_principal_with_no_token_succeeds() {
     let pool = load_pool();
-    let principal_id = "push-admission-existing-no-token";
+    let principal_id = golden_principal_id(&pool);
+    let principal_id = principal_id.as_str();
 
     let golden = pool.get("golden").expect("golden key in pool");
     let golden_key = cyphr::Key::new(golden.alg.clone(), golden.compute_tmb().expect("golden tmb"), Base64UrlUnpadded::decode_vec(&golden.pub_key).expect("golden pub b64")).expect("key binds its tmb");
@@ -463,10 +482,10 @@ async fn push_for_existing_principal_with_no_token_succeeds() {
 #[tokio::test]
 async fn tip_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-tip-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()
@@ -488,10 +507,10 @@ async fn tip_succeeds_with_no_bearer_token() {
 #[tokio::test]
 async fn patch_succeeds_with_no_bearer_token() {
     let fixture = load_golden("mutations", "key_add_changes_state");
-    let principal_id = "route-protection-patch-public";
+    let principal_id = fixture_principal_id(&fixture);
 
     let state = test_state();
-    bootstrap_principal(&state, principal_id, &fixture).await;
+    bootstrap_principal(&state, &principal_id, &fixture).await;
     let app = build_router(state);
 
     let req = Request::builder()
