@@ -167,3 +167,32 @@ async fn harness_each_probe_kind_can_report_present() {
             .expect("probe runs")
     );
 }
+
+// Claim: a partition cuts a connection that is already open, not only new
+// ones. S2 and S3 partition peers mid-conversation, so a held connection that
+// kept flowing would hide the partition from the client.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_partition_cuts_an_open_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const REQ: &[u8] = b"GET /server HTTP/1.1\r\nHost: p1\r\nConnection: keep-alive\r\n\r\n";
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    let via = h.route("bob", "p1").await;
+    let mut conn = tokio::net::TcpStream::connect(via).await.expect("connect");
+    let mut buf = vec![0u8; 8192];
+
+    conn.write_all(REQ).await.expect("first request");
+    let n = conn.read(&mut buf).await.expect("first response");
+    assert!(
+        buf[..n].starts_with(b"HTTP/1.1 200"),
+        "healthy connection must answer"
+    );
+
+    h.proxy.partition("bob", "p1");
+    let _ = conn.write_all(REQ).await; // may fail outright once cut
+    let cut = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut buf)).await;
+    assert!(
+        matches!(cut, Ok(Ok(0) | Err(_))),
+        "an open connection must be cut by a partition, got {cut:?}"
+    );
+}
