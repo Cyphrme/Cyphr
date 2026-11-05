@@ -61,6 +61,10 @@ jobs:
       # regressions on every push without a dedicated fuzzing corpus/farm.
       - run: cargo fuzz run fuzz_coz_parser -- -max_total_time=60
       - run: cargo fuzz run fuzz_reindex -- -max_total_time=60
+      - run: cargo fuzz run fuzz_bearer_token -- -max_total_time=60
+      - run: cargo fuzz run fuzz_login_body -- -max_total_time=60
+      - run: cargo fuzz run fuzz_naked_revoke -- -max_total_time=60
+      - run: cargo fuzz run fuzz_push_bundle -- -max_total_time=60
 
   go:
     strategy:

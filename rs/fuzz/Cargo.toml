@@ -16,6 +16,9 @@ tokio         = { workspace = true, features = ["rt", "macros"] }
 [dependencies.cyphr]
 path = "../cyphr"
 
+[dependencies.cyphr-server]
+path = "../cyphr-server"
+
 [dependencies.cyphr-storage]
 path = "../cyphr-storage"
 
@@ -31,4 +34,32 @@ bench = false
 doc   = false
 name  = "fuzz_reindex"
 path  = "fuzz_targets/fuzz_reindex.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_bearer_token"
+path  = "fuzz_targets/fuzz_bearer_token.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_login_body"
+path  = "fuzz_targets/fuzz_login_body.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_naked_revoke"
+path  = "fuzz_targets/fuzz_naked_revoke.rs"
+test  = false
+
+[[bin]]
+bench = false
+doc   = false
+name  = "fuzz_push_bundle"
+path  = "fuzz_targets/fuzz_push_bundle.rs"
 test  = false
