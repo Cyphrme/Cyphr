@@ -54,7 +54,11 @@ async fn tip_after_bootstrap() {
         commits.len() as u64,
         "tip commit_count should match number of submitted commits"
     );
-    assert_eq!(tip["principal_id"], principal_id);
+    assert_eq!(
+        tip["principal_id"],
+        cyphr_storage::engine::bare_digest(principal_id),
+        "the wire spelling of an id is its bare digest"
+    );
 
     let engine_tip = state
         .engine
@@ -85,7 +89,11 @@ async fn patch_after_bootstrap() {
     assert_eq!(status, StatusCode::OK);
     let patch = envelope_payload(&envelope);
 
-    assert_eq!(patch["principal_id"], principal_id);
+    assert_eq!(
+        patch["principal_id"],
+        cyphr_storage::engine::bare_digest(principal_id),
+        "the wire spelling of an id is its bare digest"
+    );
     let entries = patch["entries"].as_array().unwrap();
     let commits = fixture["commits"].as_array().unwrap();
     assert_eq!(

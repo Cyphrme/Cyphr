@@ -25,6 +25,9 @@ const CORRUPT_CR: &str = "SHA-256:CORRUPTED_CR_999999999999999999999999999999999
 /// Helper: Corrupt the indexer's tip state for `principal_id` by injecting a
 /// fake IndexableCommit with sequence 99 and corrupted root strings.
 async fn corrupt_indexer_tip(state: &Arc<cyphr_server::AppState>, principal_id: &str) {
+    // The index is keyed on the canonical (algorithm-labelled) spelling of a
+    // principal id; both principals here have ES256 genesis keys.
+    let principal_id = &format!("SHA-256:{principal_id}");
     let dummy_hash = Blake3Hash::from_bytes([1u8; 32]);
     let corrupt_commit = IndexableCommit {
         principal_id: principal_id.to_string(),
@@ -75,7 +78,7 @@ async fn roots_derive_from_blobs() {
     let index_tip = state
         .engine
         .indexer()
-        .get_tip(principal_id)
+        .get_tip(&format!("SHA-256:{principal_id}"))
         .await
         .unwrap()
         .expect("tip exists");

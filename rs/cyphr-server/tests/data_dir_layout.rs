@@ -249,13 +249,14 @@ async fn eml_commit_tree_lives_under_record_blobs_not_index() {
 
     // Mirrors the fixed keyspace-name suffixes
     // `storage_fjall::FjallStorage::with_database_scoped` opens (see the S1
-    // baseline's `delete_principal_eml_keyspaces`). `principal_id` here uses
-    // only characters already inside `sanitize_fjall_prefix`'s passthrough
-    // charset, so the sanitized name is the identifier itself.
+    // baseline's `delete_principal_eml_keyspaces`). The labelled id's `:` is
+    // outside `sanitize_fjall_prefix`'s passthrough charset and is escaped
+    // as `$3a`; the rest of `principal_id` is already inside it.
+    let keyspace_prefix = principal_id.replace(':', "$3a");
     let eml_keyspaces = [
-        format!("{principal_id}_eml_leaves"),
-        format!("{principal_id}_eml_nodes"),
-        format!("{principal_id}_eml_metadata"),
+        format!("{keyspace_prefix}_eml_leaves"),
+        format!("{keyspace_prefix}_eml_nodes"),
+        format!("{keyspace_prefix}_eml_metadata"),
     ];
 
     let record_blobs_db = fjall::Database::builder(data_dir.join("record").join("blobs"))

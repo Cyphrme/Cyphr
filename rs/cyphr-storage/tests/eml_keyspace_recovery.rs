@@ -159,7 +159,9 @@ async fn snapshot(
 /// suffixes `storage_fjall::FjallStorage::with_database_scoped` opens.
 fn delete_principal_eml_keyspaces(db: &fjall::Database, principal_id: &str) {
     for suffix in ["_eml_leaves", "_eml_nodes", "_eml_metadata"] {
-        let name = format!("{principal_id}{suffix}");
+        // `:` in a labelled id is escaped as `$3a` by the keyspace-name
+        // sanitizer; every other character of the id passes through.
+        let name = format!("{}{suffix}", principal_id.replace(':', "$3a"));
         let handle = db
             .keyspace(&name, KeyspaceCreateOptions::default)
             .unwrap_or_else(|e| panic!("open keyspace {name} for deletion failed: {e}"));

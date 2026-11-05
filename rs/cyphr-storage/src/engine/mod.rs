@@ -293,7 +293,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn get_tip(&self, principal_id: &str) -> Result<Option<TipState>, EngineError> {
         self.ensure_healed().await?;
-        Ok(self.indexer.get_tip(principal_id).await?)
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        Ok(self.indexer.get_tip(&principal_id).await?)
     }
 
     /// Retrieve a patch: commit chain metadata joined with blob content.
@@ -319,6 +320,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         to: Option<u64>,
     ) -> Result<PatchResponse, EngineError> {
         self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let principal_id = principal_id.as_str();
         let from_seq = match from {
             Some(anchor) => Some(self.resolve_anchor_position(principal_id, anchor).await?),
             None => None,
@@ -437,8 +440,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     #[tracing::instrument(skip(self))]
     pub async fn rederive_roots(&self, principal_id: &str) -> Result<DerivedRoots, EngineError> {
         self.ensure_healed().await?;
-        let genesis = self.resolve_genesis(principal_id, &[]).await?;
-        let principal = self.load_principal(principal_id, genesis).await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let genesis = self.resolve_genesis(&principal_id, &[]).await?;
+        let principal = self.load_principal(&principal_id, genesis).await?;
 
         let pr = format_multihash_all(principal.pr().as_multihash())?
             .into_iter()
@@ -677,6 +681,8 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         use crate::import::replay_commits;
 
         self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
+        let principal_id = principal_id.as_str();
 
         // 1. Construct the principal from genesis (no commits yet), backed
         // by a fresh storage instance from this engine's factory.
@@ -776,7 +782,9 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ///
     /// # Arguments
     ///
-    /// * `principal_id` — Tagged-digest identifier for this principal.
+    /// * `principal_id` — The principal's genesis-derived id (SPEC §3.1), labelled (`ALG:digest`,
+    ///   the stored spelling) or bare. Any other id is refused with [`EngineError::InvalidInput`];
+    ///   every key below is the labelled spelling.
     /// * `genesis` — How this principal was originally created, or `None` to auto-detect from
     ///   storage (existing principal) or from the submitted blobs (new principal).
     /// * `raw_blobs` — Raw coz JSON envelopes (`{pay, sig, key?}`).
@@ -802,6 +810,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             return Err(EngineError::InvalidInput("empty commit bundle".into()));
         }
 
+        // 1. Resolve genesis, then the one canonical spelling of the id.
+        //
+        // SPEC §3.1: a principal's identifier is derived from its genesis,
+        // never chosen by the caller. The derived id has one stored
+        // spelling (the algorithm-labelled `ALG:digest`); the bare digest
+        // is accepted as input only when it names that same id. Every
+        // lock, index and storage key below is the canonical spelling, so
+        // one identity cannot be stored as two independent principals
+        // (a fork refused under one spelling accepted under the other, or a
+        // revoked key committing under an alias).
+        let stored = self.stored_id(principal_id).await?;
+        let genesis = match (genesis, &stored) {
+            (Some(g), _) => g,
+            (None, Some(stored_id)) => self.genesis_of_stored(stored_id).await?,
+            (None, None) => Self::genesis_from_raw_blobs(raw_blobs)?,
+        };
+        let canonical = genesis_principal_id(&genesis)?;
+        if principal_id != canonical && principal_id != bare_digest(&canonical) {
+            return Err(EngineError::InvalidInput(format!(
+                "principal_id is not the genesis-derived id: {principal_id}"
+            )));
+        }
+        let principal_id = canonical.as_str();
+
         // Serialize the whole sequence-resolution-through-ingest critical
         // section per principal_id: two concurrent callers for the SAME
         // principal must never both resolve `next_seq` before either has
@@ -809,18 +841,6 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         // caller for a DIFFERENT principal_id never contends on this lock.
         let lock = self.principal_lock(principal_id);
         let _serialize_writes = lock.lock().await;
-
-        // 1. Resolve genesis.
-        let genesis = match genesis {
-            Some(g) => g,
-            None => self.resolve_genesis(principal_id, raw_blobs).await?,
-        };
-
-        // SPEC §3.1: a principal's identifier is derived from its genesis,
-        // never chosen by the caller. Refuse any other id before anything is
-        // read or written, so a genesis cannot be stored under a squatted or
-        // unrelated name.
-        ensure_genesis_derived_id(principal_id, &genesis)?;
 
         // 2. Load (or construct) the principal from existing state.
         let mut principal = self.load_principal(principal_id, genesis).await?;
@@ -890,15 +910,30 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
 
             let mut key_info = None;
             let new_key = if is_key_introducing_typ(&typ) {
-                value.get("key").and_then(|k| {
-                    let ke = key_value_to_entry(k)?;
-                    key_info = Some(crate::PublicKeyInfo {
-                        thumbprint: ke.tmb.clone(),
-                        algorithm: ke.alg.clone(),
-                        public_key: ke.pub_key.clone(),
-                    });
-                    crate::import::key_entry_to_key(&ke).ok()
-                })
+                match value.get("key") {
+                    // A missing sidecar is the protocol layer's to reject
+                    // (`MalformedPayload`); a PRESENT one that is not a
+                    // valid key is reported as such, never swallowed.
+                    None => None,
+                    Some(k) => {
+                        let ke = key_value_to_entry(k).ok_or_else(|| {
+                            EngineError::MalformedBlob(format!(
+                                "blob {i}: 'key' missing required fields (alg, pub, tmb)"
+                            ))
+                        })?;
+                        key_info = Some(crate::PublicKeyInfo {
+                            thumbprint: ke.tmb.clone(),
+                            algorithm: ke.alg.clone(),
+                            public_key: ke.pub_key.clone(),
+                        });
+                        Some(crate::import::key_entry_to_key(&ke).map_err(|e| match e {
+                            // e.g. `TmbMismatch`: a client-facing protocol
+                            // refusal, not an infrastructure failure.
+                            crate::import::LoadError::Protocol(p) => EngineError::Protocol(p),
+                            other => EngineError::MalformedBlob(format!("blob {i}: {other}")),
+                        })?)
+                    },
+                }
             } else {
                 None
             };
@@ -1091,26 +1126,72 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     ) -> Result<crate::Genesis, EngineError> {
         self.ensure_healed().await?;
 
-        // Check if the principal already exists.
-        let chain = self
-            .indexer
-            .get_commit_chain(principal_id, Some(0), Some(0))
-            .await?;
-
-        if let Some(first_commit) = chain.first() {
-            // Existing principal — fetch the first stored commit's blobs from the blob store.
-            let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
-            for hash in &first_commit.blob_hashes {
-                let data = self.blob_store.get(hash).await?.ok_or_else(|| {
-                    EngineError::NotFound(format!("blob {hash} not found in store"))
-                })?;
-                blobs.push(data);
-            }
-            Self::genesis_from_raw_blobs(&blobs)
+        if let Some(stored_id) = self.stored_id(principal_id).await? {
+            // Existing principal: its genesis is in its first stored commit.
+            self.genesis_of_stored(&stored_id).await
         } else {
             // New principal — the caller's own submitted blobs are the first commit.
             Self::genesis_from_raw_blobs(raw_blobs)
         }
+    }
+
+    /// Genesis of the principal stored under exactly `stored_id`, read from
+    /// its first stored commit's blobs.
+    async fn genesis_of_stored(&self, stored_id: &str) -> Result<crate::Genesis, EngineError> {
+        let chain = self
+            .indexer
+            .get_commit_chain(stored_id, Some(0), Some(0))
+            .await?;
+        let first_commit = chain.first().ok_or_else(|| {
+            EngineError::NotFound(format!("principal {stored_id} has no stored commits"))
+        })?;
+        let mut blobs = Vec::with_capacity(first_commit.blob_hashes.len());
+        for hash in &first_commit.blob_hashes {
+            let data =
+                self.blob_store.get(hash).await?.ok_or_else(|| {
+                    EngineError::NotFound(format!("blob {hash} not found in store"))
+                })?;
+            blobs.push(data);
+        }
+        Self::genesis_from_raw_blobs(&blobs)
+    }
+
+    /// The spelling under which `principal_id` is stored, if a principal is.
+    ///
+    /// A labelled id (`ALG:digest`) is its own spelling. A bare digest
+    /// names whichever labelled spelling has a stored chain; at most one
+    /// can, because [`submit_commit`](Self::submit_commit) stores only the
+    /// canonical spelling.
+    async fn stored_id(&self, principal_id: &str) -> Result<Option<String>, EngineError> {
+        let candidates: Vec<String> = if principal_id.contains(':') {
+            vec![principal_id.to_string()]
+        } else {
+            ID_LABELS
+                .iter()
+                .map(|label| format!("{label}:{principal_id}"))
+                .collect()
+        };
+        for candidate in candidates {
+            let chain = self
+                .indexer
+                .get_commit_chain(&candidate, Some(0), Some(0))
+                .await?;
+            if !chain.is_empty() {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The canonical (stored) spelling of `principal_id`, or `principal_id`
+    /// unchanged if no such principal is stored. Read paths key on this so
+    /// the bare and labelled spellings of one id reach one chain.
+    pub async fn canonical_principal_id(&self, principal_id: &str) -> Result<String, EngineError> {
+        self.ensure_healed().await?;
+        Ok(self
+            .stored_id(principal_id)
+            .await?
+            .unwrap_or_else(|| principal_id.to_string()))
     }
 
     /// Scan `blobs` (a single commit bundle, in wire order) for a `commit/create`-typed cozy
@@ -1185,47 +1266,34 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     }
 }
 
-/// The principal id `genesis` derives (SPEC §3.1): its genesis-time
-/// Principal Root. Canonical spelling: for an implicit genesis the bare
-/// base64url digest (the genesis key's `tmb`); for an explicit genesis the
-/// algorithm-tagged `ALG:digest` form that `principal/create`'s `id`
-/// carries.
+/// Hash labels an identifier may carry. A bare digest is mapped to one of
+/// these only by finding which labelled spelling names a stored principal
+/// (or, on first push, the one the genesis derives); the label is never
+/// inferred from the digest's length.
+const ID_LABELS: [&str; 3] = ["SHA-256", "SHA-384", "SHA-512"];
+
+/// The digest part of a labelled id (`ALG:digest`); an unlabelled id is
+/// returned as is. This is the wire spelling SPEC §2.2.3 gives identifiers
+/// by default (the engine stores the labelled spelling).
+pub fn bare_digest(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(_, digest)| digest)
+}
+
+/// The id `genesis` derives (SPEC §3.1): its genesis-time Principal Root in
+/// the algorithm-labelled `ALG:digest` form, the one canonical spelling
+/// every storage and index key uses (for an implicit genesis the digest is
+/// the genesis key's `tmb`).
 ///
 /// # Errors
 ///
 /// Returns the protocol error genesis construction raises (e.g. an empty
 /// key set).
 pub fn genesis_principal_id(genesis: &crate::Genesis) -> Result<String, EngineError> {
-    let (principal, bare) = match genesis {
-        crate::Genesis::Implicit(key) => (cyphr::Principal::implicit(key.clone())?, true),
-        crate::Genesis::Explicit(keys) => (cyphr::Principal::explicit(keys.clone())?, false),
+    let principal = match genesis {
+        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone())?,
+        crate::Genesis::Explicit(keys) => cyphr::Principal::explicit(keys.clone())?,
     };
-    let tagged = principal.pr_tagged()?;
-    Ok(match tagged.split_once(':') {
-        Some((_, digest)) if bare => digest.to_string(),
-        _ => tagged,
-    })
-}
-
-/// Requires `principal_id` to be the id `genesis` derives. The tagged
-/// spelling of an implicit genesis's id is also accepted: the CLI keys
-/// every principal, single-key included, by its tagged Principal Root.
-fn ensure_genesis_derived_id(
-    principal_id: &str,
-    genesis: &crate::Genesis,
-) -> Result<(), EngineError> {
-    let canonical = genesis_principal_id(genesis)?;
-    let tagged = match genesis {
-        crate::Genesis::Implicit(key) => cyphr::Principal::implicit(key.clone())?.pr_tagged()?,
-        crate::Genesis::Explicit(_) => canonical.clone(),
-    };
-    if principal_id == canonical || principal_id == tagged {
-        Ok(())
-    } else {
-        Err(EngineError::InvalidInput(format!(
-            "principal_id is not the genesis-derived id: {principal_id}"
-        )))
-    }
+    Ok(principal.pr_tagged()?)
 }
 
 /// Extract a [`KeyEntry`] from a coz envelope's `"key"` JSON object.

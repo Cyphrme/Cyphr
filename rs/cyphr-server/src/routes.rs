@@ -216,7 +216,7 @@ pub async fn tip(
     let t = tip.ok_or_else(|| AppError::not_found(format!("principal {} not found", query.pr)))?;
 
     let payload = TipResponse {
-        principal_id: t.principal_id.clone(),
+        principal_id: cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         pr: t.pr.clone(),
         sr: t.sr.clone(),
         ar: t.ar.clone(),
@@ -284,7 +284,7 @@ async fn sign_tip_attestation(
     let coz = receipt::tip_report(
         identity,
         crate::auth::server_now(),
-        t.principal_id.clone(),
+        cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
         commit_sequence(t.commit_count)?,
         t.commit_id.clone(),
         &roots,
@@ -373,7 +373,7 @@ pub async fn patch(
         .collect();
 
     let payload = PatchResponseBody {
-        principal_id: response.principal_id,
+        principal_id: cyphr_storage::engine::bare_digest(&response.principal_id).to_string(),
         entries,
     };
 
@@ -468,7 +468,8 @@ pub async fn push(
     // server never attempts to sign a receipt, so it stays free to accept
     // any storage-key-shaped `principal_id`, exactly as before.
     if state.attestor_identity().is_some()
-        && receipt::parse_genesis_id_str(&request.principal_id).is_err()
+        && receipt::parse_genesis_id_str(cyphr_storage::engine::bare_digest(&request.principal_id))
+            .is_err()
     {
         return Err(AppError::bad_request(format!(
             "principal_id is not a canonical genesis identifier: {}",
@@ -584,7 +585,7 @@ pub async fn push(
             let coz = receipt::commit_receipt(
                 identity,
                 crate::auth::server_now(),
-                t.principal_id,
+                cyphr_storage::engine::bare_digest(&t.principal_id).to_string(),
                 commit_sequence(t.commit_count)?,
                 t.commit_id,
                 &roots,
