@@ -35,9 +35,9 @@ private-key bytes, so the seam is an upstream change.
 
 Root R13 governs. In this workspace: a scenario that exercises real
 `cyphr-server` instances and clients is the default test; `proptest` is
-for invariants, `tests/golden` for byte-exact formats, `fuzz/` for
-parsers of untrusted input. A unit test needs a stated reason in its
-doc comment (the scenario cannot reach the case cheaply). Show each new
+for invariants, `../tests/golden` for byte-exact formats, `fuzz/` for
+parsers of untrusted input. A unit test needs a stated reason in a
+comment (the scenario cannot reach the case cheaply). Show each new
 test failing for the right reason before implementing, and delete any
 test that backs no stated claim.
 
@@ -126,10 +126,18 @@ test that backs no stated claim.
 
 ## Unknowns
 
-Inherited from root (`/AGENTS.md` U1–U10): intra-commit ordering,
-live-principal concurrency, replay-cost/caching, transport, the keychain
-design, the restore watermark and the questions for the SPEC author.
-Resolve there, not locally.
+Inherited from root (`/AGENTS.md`); resolve there, not locally:
+
+- U1 — intra-commit ordering (resolved);
+- U2 — live-principal concurrency;
+- U3 — replay cost and caching;
+- U4 — EMT→EML conversion;
+- U5 — peer transport;
+- U6 — keychain design details;
+- U7 — restore watermark;
+- U8 — passphrase root defaults and attestation roots;
+- U9 — witness currency and identity binding;
+- U10 — questions for the SPEC author.
 
 ## Spec Pointers
 

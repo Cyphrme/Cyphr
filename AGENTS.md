@@ -36,8 +36,8 @@ proofs, crash recovery, typed errors, per-principal write serialization)
 and server receipts (response envelope, signed receipts, equivocation
 evidence). The current campaign builds the MVP on an integration branch
 (`campaign/mvp-close`) that merges onward to `server`, then `master`,
-only at its end. Docs under `docs/plans/` are legacy (I6); forge issue
-#23's Roadmap section is the candidate list for what comes after.
+only at its end. Docs under `docs/plans/` are legacy (I6); the Roadmap section
+of PR #23 is the candidate list for what comes after.
 
 ## Structure
 
@@ -131,7 +131,7 @@ Procedure when a contradiction surfaces during any work:
 - **R3 — KV index.** The query index is to be replaced with arbitrary KV
   index tables over the durable store plus a meta-table tracking them,
   behind the existing `Indexer` trait seam.
-  Grounding: human operator decision 2026-07-06 (forge #18/#23 comments).
+  Grounding: human operator decision 2026-07-06 (comments on forge issue #18 and PR #23).
   Signpost: defeated only if the human operator reverses it; in-repo docs recording the
   older KV→SQLite decision are superseded, not authority.
 
@@ -161,7 +161,7 @@ Procedure when a contradiction surfaces during any work:
 - **R7 — Every platform, anyone.** The design is platform-generic,
   WebAssembly included: a passphrase root works everywhere and passkeys
   are an option. Hardware-only paths always have a flagged fallback.
-  Signpost: a capability with no path on some supported platform.
+  Grounding: forge issue #201. Signpost: a capability with no path on some supported platform.
 - **R8 — Best practice everywhere; formal reasoning on the security
   path.** Code is idiomatic, and every design choice cites the practice it
   follows from a primary source, or states its departure and the concrete
@@ -180,21 +180,29 @@ Procedure when a contradiction surfaces during any work:
   and each key slot records whether it is securely shreddable so the
   claim stays falsifiable. Grounding: forge issue #201. Signpost: any
   verdict or label stronger than its evidence.
-- **R10 — Append-only.** History is never rewritten or pruned. Retiring a
-  device is the same as losing one: a removal entry plus rotation. Secure
-  shred is offered where a backend supports it and never replaces
-  rotation. Destroy keys, never record entries; short-lived credentials
-  bound exposure and do not replace revocation. Grounding: SPEC §16.2;
-  I2. Signpost: a design that needs to delete a record.
+- **R10 — Append-only keychain and principal chain.** Keys are
+  destroyed; entries are never deleted. Removals and retirements are new
+  entries. Retiring a device is the same as losing one: a removal entry
+  plus rotation. Secure shred is offered where a backend supports it and
+  is the default there, but never replaces rotation. Short-lived
+  credentials bound exposure and do not replace revocation. This scopes
+  the keychain and each principal's chain; SPEC §16.2 separately lets
+  third-party services discard user data they hold. Grounding: forge issue
+  #201; I2. Signpost: a keychain or principal-chain design that deletes
+  or rewrites an entry.
 - **R11 — The minimal formulation that extends cleanly.** Choose the
   smallest foundation that later levels and backends can extend. Cut what
   has no consumer. Signpost: a mechanism added for one hypothetical
   future use, or a foundation that a later level would have to reshape.
-- **R12 — Self-contained public text.** Every committed document states
-  only the design and its open questions, never the history of discussion
-  or dropped alternatives, and references nothing outside the repository.
-  Nothing cites unpublished work. Signpost: a committed file that is
-  unreadable without the conversation that produced it.
+  Grounding: the decided requirement to choose a foundation that can be
+  extended cleanly.
+- **R12 — Self-contained public text.** Committed text is readable
+  without the conversation that produced it. It states the design and its
+  open questions, not the history of discussion or dropped alternatives,
+  and it may cite public forge issues and published primary sources.
+  Grounding: the decided writing rule for public text. Signpost: a
+  committed file that is unreadable without the conversation that
+  produced it.
 - **R13 — Testing standard.** Every test backs a stated claim, and most
   claims are end-to-end scenarios (multi-peer, forks, partitions,
   rotation, sign-on). Exactly three kinds earn a place without a scenario:
@@ -259,10 +267,17 @@ Procedure when a contradiction surfaces during any work:
 - **I6 — Plans are legacy.** `docs/plans/*.md` are never plan-of-record;
   the campaign workflow (forge issues and git history) supersedes them.
   Grounding: human operator directive 2026-07-06. Signpost: n/a — do not update them as plans.
+- **I7 — Plain hashing.** Hashing uses no domain separation, prefixes or
+  kind tags, and agents do not propose adding them. This is a settled
+  maintainer decision, not an open design question. Grounding: the
+  maintainer decision; SPEC §2.2.2 defines a digest as the plain output of
+  a cryptographic hashing algorithm. Signpost: a change or proposal that
+  adds a tag, prefix or separator to a hash input.
 
 ## Unknowns
 
-Each is open until its signpost fires. None may be resolved unilaterally.
+Each open unknown stays open until its signpost fires; none may be
+resolved unilaterally.
 
 - **U1 — RESOLVED: order retention is implementation work.** The wire
   format already carries intra-commit order (`txs` array); the storage
@@ -294,7 +309,7 @@ Each is open until its signpost fires. None may be resolved unilaterally.
 - **U6 — Keychain design details.** The Coz-encryption entry envelope,
   P-256 ECDH key wrapping, padding, device-to-device sync (including two
   devices writing at once), and recovery. Whether the Coz encryption
-  design is its author's to decide is itself open. Grounding: forge
+  design is Zamicol's to decide is itself open. Grounding: forge
   issues Cyphrme/Cyphr#201 and Cyphrme/Coz#41. Signpost: the keystore
   nodes are blocked until the requirements in #201 are agreed.
 - **U7 — Restore watermark.** A restored store holds a valid older
@@ -306,10 +321,19 @@ Each is open until its signpost fires. None may be resolved unilaterally.
   the passphrase root (recorded per R6). Which vendor attestation roots
   the client offers as choices is likewise open. Signpost: the keystore
   nodes.
-- **U9 — Sign-on residuals.** Currency of the relying-party view, whether
-  each recovery admission is a fresh trust root, and identity binding
-  (forge issues #139, #152, #154). Grounding: `docs/guides/sign-on-integration.md`.
-  Signpost: the sign-on nodes; not settled by any of them.
+- **U9 — Witness currency and identity binding.** Open questions from
+  forge issues #139, #152 and #154. #139 asks whether a witness's signed
+  tip attestation asserts anything about how current the state is, whether
+  the claim should be scoped to the last verified sync time, whether
+  gossip is a liveness holder or only propagation, what witness agreement
+  means and how many witnesses suffice, and where these semantics belong
+  in the specification. #152 records that a genuine report replayed by an
+  on-path party still passes a witness's comparison and reports health;
+  it is gated on #139. #154 asks the storage engine to reject a
+  submission whose derived genesis differs from the identifier it is
+  stored under, after enumerating every legitimate producer of a mismatch.
+  Signpost: #139's answer determines #152's fix; #154's mismatch check
+  must not land before that producer enumeration.
 - **U10 — Questions for the SPEC author.** Not to be resolved here (see
   the contradiction procedure): where the custody self-claim lives (a
   `key/create` field or a Level 4 data action); gossip's discovery claim
