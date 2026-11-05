@@ -72,3 +72,13 @@ async fn principal_summary_tracks_creation_time() {
 async fn test_new_indexer_methods_memory() {
     conformance::new_indexer_methods(&MemoryIndexer::new()).await;
 }
+
+#[tokio::test]
+async fn alias_pg_variants_resolve_to_the_principal_memory() {
+    conformance::alias_pg_variants_resolve_to_the_principal(&MemoryIndexer::new()).await;
+}
+
+#[tokio::test]
+async fn pg_established_marker_tracks_the_pg_commit_memory() {
+    conformance::pg_established_marker_tracks_the_pg_commit(&MemoryIndexer::new()).await;
+}

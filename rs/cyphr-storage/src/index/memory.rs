@@ -22,6 +22,23 @@ struct MemoryState {
     digest_index: HashMap<String, EntityRef>,
     /// Public keys keyed by thumbprint.
     public_keys: HashMap<String, PublicKeyInfo>,
+    /// Alias table: Principal Root variant → the principal id it names.
+    /// Derived state; see [`Indexer::get_tip`] for the resolution rule.
+    aliases: HashMap<String, String>,
+    /// Principals whose PG is established (see [`Indexer::is_pg_established`]).
+    established: std::collections::HashSet<String>,
+}
+
+impl MemoryState {
+    /// The stored principal id `id` names: itself if a principal is stored
+    /// under it, else the principal its alias names, else `id` unchanged.
+    fn canonical<'a>(&'a self, id: &'a str) -> &'a str {
+        if self.tips.contains_key(id) {
+            id
+        } else {
+            self.aliases.get(id).map_or(id, String::as_str)
+        }
+    }
 }
 
 /// In-memory indexer backed by `HashMap`.
@@ -58,7 +75,21 @@ impl Indexer for MemoryIndexer {
                 .state
                 .read()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
-            Ok(state.tips.get(&principal_id).cloned())
+            Ok(state.tips.get(state.canonical(&principal_id)).cloned())
+        }
+    }
+
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let principal_id = principal_id.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.established.contains(&principal_id))
         }
     }
 
@@ -75,7 +106,7 @@ impl Indexer for MemoryIndexer {
                 .read()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
 
-            let Some(commits) = state.commits.get(&principal_id) else {
+            let Some(commits) = state.commits.get(state.canonical(&principal_id)) else {
                 return Ok(Vec::new());
             };
 
@@ -213,6 +244,21 @@ impl IndexerWrite for MemoryIndexer {
                     last_updated: commit.timestamp,
                 });
 
+            // Alias each PG variant to the principal (first writer wins,
+            // and a stored principal id always outranks an alias).
+            for pr in &commit.pg {
+                if *pr != commit.principal_id {
+                    state
+                        .aliases
+                        .entry(pr.clone())
+                        .or_insert_with(|| commit.principal_id.clone());
+                }
+            }
+
+            if !commit.pg.is_empty() {
+                state.established.insert(commit.principal_id.clone());
+            }
+
             // Update tip.
             state.tips.insert(
                 commit.principal_id.clone(),
@@ -245,6 +291,8 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: coz.blob_hash,
                         entity_type,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
+                        principal_root: false,
                     },
                 );
 
@@ -255,6 +303,8 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: coz.blob_hash,
                         entity_type,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
+                        principal_root: false,
                     },
                 );
             }
@@ -276,6 +326,8 @@ impl IndexerWrite for MemoryIndexer {
                         blob_hash: commit.blob_hashes[0],
                         entity_type: EntityType::Commit,
                         sequence: Some(commit.sequence),
+                        principal_id: Some(commit.principal_id.clone()),
+                        principal_root: commit.prs.contains(variant),
                     },
                 );
             }
@@ -301,6 +353,8 @@ impl IndexerWrite for MemoryIndexer {
         state.tips.clear();
         state.digest_index.clear();
         state.public_keys.clear();
+        state.aliases.clear();
+        state.established.clear();
         Ok(())
     }
 }

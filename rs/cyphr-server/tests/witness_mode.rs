@@ -254,6 +254,7 @@ async fn rejects_unverifiable_delta() {
         .expect("put dummy blob");
 
     let corrupt_commit = IndexableCommit {
+        pg: Vec::new(),
         principal_id: principal_id.to_string(),
         commit_ids: vec!["SHA-256:CORRUPTED_COMMIT_999999999999999999999999".to_string()],
         sequence: 99,
@@ -371,6 +372,7 @@ async fn serves_only_self_verified() {
     let now = 1_700_000_000;
     let dummy_hash = Blake3Hash::from_bytes([9u8; 32]);
     let forged_commit = IndexableCommit {
+        pg: Vec::new(),
         principal_id: adversarial_principal.to_string(),
         commit_ids: vec!["SHA-256:FORGED_ADVERSARIAL_COMMIT_12345".to_string()],
         sequence: 0,

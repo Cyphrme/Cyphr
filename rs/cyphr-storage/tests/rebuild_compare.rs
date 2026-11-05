@@ -112,6 +112,7 @@ fn make_commit(principal_id: &str, seq: u64, timestamp: i64) -> IndexableCommit 
     let dummy_hash = Blake3Hash::from_bytes(hash_bytes);
 
     IndexableCommit {
+        pg: Vec::new(),
         principal_id: principal_id.to_string(),
         commit_ids: vec![format!("SHA-256:commit-{principal_id}-{seq}")],
         sequence: seq,
