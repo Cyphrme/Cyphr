@@ -34,6 +34,8 @@ async fn s07_peer_rollover() {
     let before = h.ok(bob.verdict(&pr, &["p1"]).await);
     assert_eq!(before.tip, t1);
     let ident = server_identity(&h).await;
+    // A statement signed before the rollover, held by Bob.
+    let held = h.ok(bob.hold_statement(&pr, "p1").await);
 
     h.ok(h.rotate_peer_key("p1").await);
 
@@ -71,9 +73,18 @@ async fn s07_peer_rollover() {
         after.evidence.is_empty(),
         "a legitimate rollover is not evidence"
     );
+    // The old key is gone from /server, yet the old statement must still be
+    // attributed to P1 and to the key that actually signed it.
+    let who = h.ok(bob.attribute(&held).await);
+    assert_eq!(who.peer, h.peer("p1").id, "attributed to P1");
     assert_eq!(
-        before.peers, after.peers,
-        "old-key statements stay attributable to P1"
+        serde_json::Value::from(who.signing_key_tmb.as_str()),
+        ident["payload"]["tmb"],
+        "attributed to the key P1 held when it signed"
+    );
+    assert_ne!(
+        serde_json::Value::from(who.signing_key_tmb.as_str()),
+        after_ident["payload"]["tmb"]
     );
 }
 

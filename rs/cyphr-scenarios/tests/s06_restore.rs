@@ -50,7 +50,10 @@ async fn s06_restore() {
     assert!(rolled_back.height < held.height);
 
     match bob.verdict(&pr, &["p2"]).await {
-        Err(ActionError::Refused(_)) => {},
+        // PROVISIONAL: the refusal kind for a peer that cannot serve its
+        // newest state is pending an architect ruling (an Unreachable or
+        // rollback kind may replace Stale).
+        Err(ActionError::Refused(r)) => assert_eq!(r.kind, RefusalKind::Stale),
         Ok(v) => assert_ne!(v.tip, first, "a restored peer must not sign a lower tip"),
         Err(e) => h.ok::<()>(Err(e)),
     }

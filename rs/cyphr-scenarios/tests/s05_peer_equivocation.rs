@@ -29,6 +29,8 @@ async fn s05_peer_equivocation() {
 
     let (alice, laptop) = (h.client("alice"), h.client("alice-laptop"));
     let (bob, carol) = (h.client("bob"), h.client("carol"));
+    // Evidence names a peer by identity digest, read from the peer itself.
+    let (p1_id, p2_id) = (h.peer("p1").id.clone(), h.peer("p2").id.clone());
 
     let pr = h.ok(alice.create_principal().await);
     h.ok(alice.pair_device(&pr, &laptop).await);
@@ -62,8 +64,9 @@ async fn s05_peer_equivocation() {
     for who in [&bob, &carol] {
         h.eventually("evidence naming P1", CONVERGE, || async {
             let v = who.verdict(&pr, &["p1", "p2"]).await?;
-            Ok(v.evidence
-                .contains(&Evidence::PeerEquivocation { peer: "p1".into() }))
+            Ok(v.evidence.contains(&Evidence::PeerEquivocation {
+                peer: p1_id.clone(),
+            }))
         })
         .await;
         // Only now, with the positive established, is absence meaningful.
@@ -76,7 +79,12 @@ async fn s05_peer_equivocation() {
                 _ => None,
             })
             .collect();
-        assert_eq!(named, ["p1"], "{}: evidence must name P1 alone", who.name);
+        assert_eq!(
+            named,
+            [p1_id.as_str()],
+            "{}: evidence must name P1 alone",
+            who.name
+        );
     }
 
     // A replayed old genuine view of P2 is a stale prefix, not equivocation.
@@ -98,8 +106,9 @@ async fn s05_peer_equivocation() {
     .await;
     let v = h.ok(carol.verdict(&pr, &["p1", "p2"]).await);
     assert!(
-        !v.evidence
-            .contains(&Evidence::PeerEquivocation { peer: "p2".into() }),
+        !v.evidence.contains(&Evidence::PeerEquivocation {
+            peer: p2_id.clone()
+        }),
         "a replayed genuine view must not frame P2"
     );
     assert_eq!(

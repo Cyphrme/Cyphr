@@ -166,6 +166,8 @@ pub enum Evidence {
     /// Two commits at one height from one principal (SPEC 15.7.1).
     PrincipalFork(Principal),
     /// A peer signed conflicting views of one principal.
+    /// `peer` is the equivocating peer's identity digest (what its
+    /// `GET /server` reports), not the name a scenario gave it.
     PeerEquivocation { peer: String },
 }
 
@@ -231,6 +233,19 @@ pub struct Session {
     /// The canonical token subject: the principal, however the caller
     /// spelled it when signing in.
     pub principal: Principal,
+}
+
+/// A signed statement a client holds from a peer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Statement(pub String);
+
+/// Whom a statement is attributed to once checked against the peer's chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attribution {
+    /// The peer's identity digest.
+    pub peer: String,
+    /// Thumbprint of the key that signed the statement.
+    pub signing_key_tmb: String,
 }
 
 /// A relying party's own configuration, read from it rather than assumed.
@@ -444,6 +459,17 @@ impl Client<'_> {
     /// `from` means the peers this client currently knows for it.
     pub async fn verdict(&self, _p: &Principal, _from: &[&str]) -> ActionResult<Verdict> {
         unsupported("verdict", Capability::CliNetwork)
+    }
+
+    /// Keep a signed statement from `peer` about `p`.
+    pub async fn hold_statement(&self, _p: &Principal, _peer: &str) -> ActionResult<Statement> {
+        unsupported("hold_statement", Capability::CliNetwork)
+    }
+
+    /// Check a held statement against the peer's current chain and say who
+    /// signed it, even if the signing key has since been rotated away.
+    pub async fn attribute(&self, _s: &Statement) -> ActionResult<Attribution> {
+        unsupported("attribute", Capability::CliNetwork)
     }
 
     pub async fn audit(&self, _p: &Principal) -> ActionResult<Verdict> {
