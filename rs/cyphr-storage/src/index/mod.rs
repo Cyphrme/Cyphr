@@ -134,6 +134,15 @@ pub trait Indexer: Send + Sync {
         principal_id: &str,
     ) -> impl std::future::Future<Output = Result<Option<TipState>, IndexerError>> + Send;
 
+    /// Whether the principal stored under exactly `principal_id` has
+    /// established its PG (an indexed commit carried `pg`). A cheap marker
+    /// so a caller can refuse a PG-to-be claim without replaying history.
+    /// Derived state, rebuilt with the index (I1).
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send;
+
     /// Retrieve the commit chain between two sequence numbers.
     ///
     /// Returns commits in sequence order, inclusive of both endpoints.

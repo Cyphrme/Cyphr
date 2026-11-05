@@ -231,3 +231,9 @@ async fn multitenancy_prefix_principals_are_isolated() {
     let alice2_tip = indexer.get_tip("alice2").await.unwrap().unwrap();
     assert_eq!(alice2_tip.commit_count, 2);
 }
+
+#[tokio::test]
+async fn pg_established_marker_tracks_the_pg_commit() {
+    let (indexer, _dir) = FjallIndexer::temp().expect("open temp indexer");
+    conformance::pg_established_marker_tracks_the_pg_commit(&indexer).await;
+}

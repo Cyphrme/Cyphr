@@ -126,6 +126,11 @@ fn commit_key_range(principal_id: &str, from: u64, to: u64) -> (Vec<u8>, Vec<u8>
 /// The stored principal id `id` names: itself if a principal is stored
 /// under it, else the principal its alias names, else `id` unchanged.
 fn canonical_id(tips: &Keyspace, aliases: &Keyspace, id: String) -> Result<String, IndexerError> {
+    // Established-PG markers share this table under a NUL-prefixed key
+    // (see [`pg_marker_key`]); no real id starts with NUL.
+    if id.starts_with('\0') {
+        return Ok(id);
+    }
     if tips.contains_key(id.as_bytes()).map_err(to_backend_err)? {
         return Ok(id);
     }
@@ -134,6 +139,15 @@ fn canonical_id(tips: &Keyspace, aliases: &Keyspace, id: String) -> Result<Strin
             .map_err(|e| IndexerError::Backend(format!("alias value is not utf-8: {e}"))),
         None => Ok(id),
     }
+}
+
+/// Key of the "this principal's PG is established" marker, stored in the
+/// alias table so the index still registers exactly one alias table.
+fn pg_marker_key(principal_id: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + principal_id.len());
+    key.push(0);
+    key.extend_from_slice(principal_id.as_bytes());
+    key
 }
 
 fn to_backend_err(e: fjall::Error) -> IndexerError {
@@ -279,6 +293,19 @@ impl Indexer for FjallIndexer {
             })
             .await
             .map_err(join_err)?
+        }
+    }
+
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let key = pg_marker_key(principal_id);
+        let aliases = self.aliases.clone();
+        async move {
+            tokio::task::spawn_blocking(move || aliases.contains_key(&key).map_err(to_backend_err))
+                .await
+                .map_err(join_err)?
         }
     }
 
@@ -565,6 +592,10 @@ fn db_index_commit(
         if *pr != commit.principal_id && !ks.aliases.contains_key(pr).map_err(to_backend_err)? {
             batch.insert(&ks.aliases, pr.as_bytes(), pid_key);
         }
+    }
+
+    if !commit.pg.is_empty() {
+        batch.insert(&ks.aliases, pg_marker_key(&commit.principal_id), []);
     }
 
     batch.insert(

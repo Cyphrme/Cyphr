@@ -343,3 +343,104 @@ async fn commit_pre_is_the_previous_commits_pr() {
         );
     }
 }
+
+/// Delegates to a [`MemoryBlobStore`], counting `get`s: replaying a
+/// principal reads its blobs, so the count observes a replay.
+struct CountingBlobs {
+    inner: MemoryBlobStore,
+    gets: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl cyphr_storage::blob::BlobStore for CountingBlobs {
+    async fn put(
+        &self,
+        data: &[u8],
+    ) -> Result<cyphr_storage::blob::Blake3Hash, cyphr_storage::blob::BlobStoreError> {
+        self.inner.put(data).await
+    }
+
+    async fn get(
+        &self,
+        hash: &cyphr_storage::blob::Blake3Hash,
+    ) -> Result<Option<Vec<u8>>, cyphr_storage::blob::BlobStoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get(hash).await
+    }
+
+    async fn exists(
+        &self,
+        hash: &cyphr_storage::blob::Blake3Hash,
+    ) -> Result<bool, cyphr_storage::blob::BlobStoreError> {
+        self.inner.exists(hash).await
+    }
+
+    async fn iter(
+        &self,
+    ) -> Result<
+        Box<
+            dyn Iterator<
+                    Item = Result<
+                        cyphr_storage::blob::Blake3Hash,
+                        cyphr_storage::blob::BlobStoreError,
+                    >,
+                > + Send,
+        >,
+        cyphr_storage::blob::BlobStoreError,
+    > {
+        self.inner.iter().await
+    }
+}
+
+/// Backs the read-path DoS bound: once a principal's PG is established, its
+/// current PR (a public value an attacker can name) is refused from the
+/// index alone. The refusal must not replay the principal's history, i.e.
+/// must read no blobs. Turns red if resolving that id loads the principal
+/// (blob reads) before refusing it. Not a scenario: the amplification is
+/// only observable as a blob-read count.
+#[tokio::test]
+async fn established_principal_current_pr_is_refused_without_replay() {
+    let pool = load_pool();
+    let (p, genesis, id) = build(&pool, &["key_a", "diana_es384"]);
+    let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = StorageEngine::new(
+        CountingBlobs {
+            inner: MemoryBlobStore::new(),
+            gets: gets.clone(),
+        },
+        MemoryIndexer::new(),
+    );
+    for i in 0..=2 {
+        let raw = blobs(&p, i);
+        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e}"));
+    }
+    let current = p.pr_tagged().expect("current PR");
+    assert!(
+        !pg_spellings(&p).contains(&current),
+        "premise: the current PR is not the PG"
+    );
+
+    let before = gets.load(std::sync::atomic::Ordering::SeqCst);
+    for spelling in [
+        current.clone(),
+        cyphr_storage::engine::bare_digest(&current).to_string(),
+    ] {
+        let resolved = engine
+            .canonical_principal_id(&spelling)
+            .await
+            .expect("resolve");
+        assert_eq!(
+            resolved, spelling,
+            "the current PR must not name the principal"
+        );
+        assert!(engine.get_tip(&spelling).await.expect("tip").is_none());
+    }
+    assert_eq!(
+        gets.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "refusing an established principal's current PR read its blobs (a replay)"
+    );
+}

@@ -478,3 +478,36 @@ pub async fn alias_pg_variants_resolve_to_the_principal<I: Indexer + IndexerWrit
         );
     }
 }
+
+/// Backs the read-path DoS bound at the index seam: the established-PG
+/// marker is false until the PG-establishing commit is indexed, true for
+/// that principal only (not for a PG variant or another principal), and
+/// dropped by `clear` (derived, I1). Turns red if the marker is set early,
+/// leaks to an alias, or survives `clear`. A unit test: the engine-level
+/// test cannot tell which backend failed.
+pub async fn pg_established_marker_tracks_the_pg_commit<I: Indexer + IndexerWrite>(indexer: &I) {
+    let token = DeriveToken::for_conformance_tests();
+    let id = "SHA-256:genesis-digest";
+    indexer
+        .index_commit(&make_commit(id, 0, 1000), &token)
+        .await
+        .expect("index commit 0");
+    assert!(!indexer.is_pg_established(id).await.unwrap());
+
+    indexer
+        .index_commit(&principal_create_commit(id, 1), &token)
+        .await
+        .expect("index principal/create commit");
+    assert!(indexer.is_pg_established(id).await.unwrap());
+    for v in pg_variants() {
+        assert!(
+            !indexer.is_pg_established(&v).await.unwrap(),
+            "the marker leaked to the alias {v}"
+        );
+    }
+    assert!(!indexer.is_pg_established("SHA-256:other").await.unwrap());
+    assert!(!indexer.is_pg_established("").await.unwrap());
+
+    indexer.clear(&token).await.expect("clear");
+    assert!(!indexer.is_pg_established(id).await.unwrap());
+}

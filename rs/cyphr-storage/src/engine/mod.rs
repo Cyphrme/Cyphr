@@ -1237,10 +1237,20 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
     /// and read under the PG it is about to establish. The index only
     /// locates the candidate; replayed state decides, so a historical PR,
     /// or any PR once the PG exists, names nothing.
+    ///
+    /// A non-create commit pushed under the PG-to-be is accepted: it lands
+    /// on the one principal, so no fork is possible (exercised by
+    /// `principal_with_keys_before_create_is_pushable_under_its_pg`, whose
+    /// commit 0 is a `key/create` pushed under the PG).
     async fn pending_pg_owner(&self, claimed: &str) -> Result<Option<String>, EngineError> {
         let Some((owner, sequence)) = self.locate_by_pr(claimed).await? else {
             return Ok(None);
         };
+        // An established PG is settled from the index alone: no replay,
+        // so naming a public current PR cannot amplify into history loads.
+        if self.indexer.is_pg_established(&owner).await? {
+            return Ok(None);
+        }
         // Cheap filter before the replay: the claim must be the owner's
         // current PR, i.e. its latest commit.
         let Some(tip) = self.indexer.get_tip(&owner).await? else {

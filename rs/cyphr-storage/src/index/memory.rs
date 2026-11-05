@@ -25,6 +25,8 @@ struct MemoryState {
     /// Alias table: Principal Root variant → the principal id it names.
     /// Derived state; see [`Indexer::get_tip`] for the resolution rule.
     aliases: HashMap<String, String>,
+    /// Principals whose PG is established (see [`Indexer::is_pg_established`]).
+    established: std::collections::HashSet<String>,
 }
 
 impl MemoryState {
@@ -74,6 +76,20 @@ impl Indexer for MemoryIndexer {
                 .read()
                 .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
             Ok(state.tips.get(state.canonical(&principal_id)).cloned())
+        }
+    }
+
+    fn is_pg_established(
+        &self,
+        principal_id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, IndexerError>> + Send {
+        let principal_id = principal_id.to_string();
+        async move {
+            let state = self
+                .state
+                .read()
+                .map_err(|e| IndexerError::Backend(format!("lock poisoned: {e}")))?;
+            Ok(state.established.contains(&principal_id))
         }
     }
 
@@ -239,6 +255,10 @@ impl IndexerWrite for MemoryIndexer {
                 }
             }
 
+            if !commit.pg.is_empty() {
+                state.established.insert(commit.principal_id.clone());
+            }
+
             // Update tip.
             state.tips.insert(
                 commit.principal_id.clone(),
@@ -331,6 +351,7 @@ impl IndexerWrite for MemoryIndexer {
         state.digest_index.clear();
         state.public_keys.clear();
         state.aliases.clear();
+        state.established.clear();
         Ok(())
     }
 }
