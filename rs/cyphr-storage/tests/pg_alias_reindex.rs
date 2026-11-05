@@ -88,20 +88,33 @@ fn commit_one(
 }
 
 /// Raw wire blobs of commit `i` of `p`: key-introducing cozies carry the
-/// new key, as the engine's ingest requires.
+/// new key, as the engine's ingest requires, and commit 0's last blob
+/// carries the `golden` genesis key (as the server's wire form does), so a
+/// stored principal's genesis is recoverable from its first commit's blobs
+/// -- a replay of it succeeds rather than failing on an unknown signer.
 fn blobs(p: &cyphr::Principal, i: usize) -> Vec<Vec<u8>> {
     let entry = &cyphr_storage::export_commits(p).expect("export")[i];
     let mut key_idx = 0;
+    let genesis_key = kp(&load_pool(), "golden");
+    let last = entry.cozies.len() - 1;
     entry
         .cozies
         .iter()
-        .map(|c| {
+        .enumerate()
+        .map(|(n, c)| {
             let mut c = c.clone();
             let typ = c["pay"]["typ"].as_str().unwrap_or("").to_string();
             if cyphr::parsed_coz::typ::is_key_introducing(&typ) && key_idx < entry.keys.len() {
                 let k = &entry.keys[key_idx];
                 c["key"] = serde_json::json!({"alg": k.alg, "pub": k.pub_key, "tmb": k.tmb});
                 key_idx += 1;
+            }
+            if i == 0 && n == last {
+                c["key"] = serde_json::json!({
+                    "alg": genesis_key.alg,
+                    "pub": Base64UrlUnpadded::encode_string(&genesis_key.pubb),
+                    "tmb": genesis_key.tmb.to_b64(),
+                });
             }
             serde_json::to_vec(&c).expect("blob")
         })
