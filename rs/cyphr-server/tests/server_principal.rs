@@ -415,7 +415,6 @@ async fn token_after_rotation_is_signed_by_the_new_key() {
 /// it catches: an unsigned 200 fallback, or fixing only one spelling.
 /// E2E: bootstrap, then HTTP.
 #[tokio::test]
-#[ignore = "RED(N15a): GET /tip for the server's own PG answers 500 (key-less genesis blob)"]
 async fn own_tip_keyed_server_signs_its_own_pg_tip() {
     let (state, _identity, _dir) = common::attestor_server().await;
     let pg = state
@@ -446,7 +445,6 @@ async fn own_tip_keyed_server_signs_its_own_pg_tip() {
 /// legacy dir is built by hand because the fixed bootstrap no longer writes
 /// one. E2E: legacy dir, boot, HTTP.
 #[tokio::test]
-#[ignore = "RED(N15a): a key-less genesis data dir boots and then 500s on /tip"]
 async fn own_tip_legacy_keyless_genesis_dir_is_repaired_or_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (key_path, kp) = write_signing_key(dir.path());

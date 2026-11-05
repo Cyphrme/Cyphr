@@ -255,7 +255,6 @@ fn counting_replays() -> (Arc<AtomicUsize>, tracing::subscriber::DefaultGuard) {
 /// invalidation test below, which catches a cache that never invalidates.
 /// E2E: HTTP reads, counted engine replays.
 #[tokio::test]
-#[ignore = "RED(N15a): every keyed GET /tip replays the principal's history"]
 async fn repeated_tip_get_does_not_replay_history() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);

@@ -85,6 +85,15 @@ pub struct AppState {
     /// Reusable HTTP client for witness state sync and upstream calls.
     pub http_client: reqwest::Client,
 
+    /// Memo of `rederive_roots` results keyed by (principal, tip commit id),
+    /// so a keyed `GET /tip` of an unchanged tip does not replay the
+    /// principal's whole history on every request. A new commit changes the
+    /// key, so an entry is never stale; the bound caps what peers can pin.
+    pub derived_roots: cyphr_storage::engine::BoundedCache<
+        (String, String),
+        cyphr_storage::engine::DerivedRoots,
+    >,
+
     /// Per-principal locks for synchronizing witness state sync execution.
     pub sync_locks: std::sync::Arc<
         tokio::sync::Mutex<
@@ -92,6 +101,9 @@ pub struct AppState {
         >,
     >,
 }
+
+/// Entries [`AppState::derived_roots`] holds before evicting the oldest.
+const DERIVED_ROOTS_CACHE_CAPACITY: usize = 1024;
 
 impl AppState {
     /// Construct application state from resolved configuration.
@@ -133,6 +145,7 @@ impl AppState {
             challenges: auth::login::ChallengeStore::new(),
             observations,
             http_client,
+            derived_roots: cyphr_storage::engine::BoundedCache::new(DERIVED_ROOTS_CACHE_CAPACITY),
             sync_locks,
         })
     }

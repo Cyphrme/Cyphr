@@ -122,6 +122,55 @@ struct CommitManifest {
 /// [`StorageEngine`]'s `storage_factory` field docs.
 type StorageFactory<S> = Box<dyn Fn(&str) -> Result<S, String> + Send + Sync>;
 
+/// A small insertion-ordered cache that never holds more than `capacity`
+/// entries: when full, the oldest insertion is evicted.
+///
+/// Used only for memoizing replay-derived answers under keys that name the
+/// exact tip they were derived at, so an entry can never be stale (a new
+/// commit changes the key) and eviction costs only a recomputation.
+pub struct BoundedCache<K, V> {
+    capacity: usize,
+    entries: std::sync::Mutex<(HashMap<K, V>, std::collections::VecDeque<K>)>,
+}
+
+impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedCache<K, V> {
+    /// An empty cache holding at most `capacity` entries.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: std::sync::Mutex::new((HashMap::new(), std::collections::VecDeque::new())),
+        }
+    }
+
+    /// The value stored under `key`, if still held.
+    pub fn get(&self, key: &K) -> Option<V> {
+        let guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        guard.0.get(key).cloned()
+    }
+
+    /// Store `value` under `key`, evicting the oldest entry if over capacity.
+    pub fn insert(&self, key: K, value: V) {
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let (map, order) = &mut *guard;
+        if map.insert(key.clone(), value).is_none() {
+            order.push_back(key);
+            while map.len() > self.capacity {
+                match order.pop_front() {
+                    Some(oldest) => {
+                        map.remove(&oldest);
+                    },
+                    None => break,
+                }
+            }
+        }
+    }
+}
+
+/// Entries the pre-PG classification memo holds. One entry per
+/// (principal, tip, claim) a peer has asked about, so the bound is what
+/// limits the memory an unauthenticated peer can pin.
+const PRE_PG_CACHE_CAPACITY: usize = 4096;
+
 /// Coordinated storage engine joining blob and index layers.
 ///
 /// Generic over backend implementations. Use `MemoryBlobStore` +
@@ -168,6 +217,13 @@ pub struct StorageEngine<B, I, S: cyphr::eml::Storage = cyphr::eml::MemoryStorag
     /// successfully for this engine instance. See `ensure_healed`'s docs for
     /// why this is scoped per-instance rather than per-backend.
     healed: tokio::sync::OnceCell<()>,
+    /// Memo of [`Self::pending_pg_owner`]'s replay-decided answer, keyed by
+    /// (owner, owner's commit count, claimed id): the answer is a pure
+    /// function of the owner's chain, which a new commit extends and so
+    /// re-keys. Without it, an unauthenticated peer naming a pre-PG
+    /// principal's current PR replays that principal's whole history on
+    /// every request.
+    pre_pg_owner: BoundedCache<(String, u64, String), bool>,
 }
 
 impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::MemoryStorage> {
@@ -185,6 +241,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite> StorageEngine<B, I, cyphr::eml::Me
             storage_factory: Box::new(|_principal_id: &str| Ok(cyphr::eml::MemoryStorage::new())),
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             healed: tokio::sync::OnceCell::new(),
+            pre_pg_owner: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
         }
     }
 }
@@ -207,6 +264,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             storage_factory: Box::new(storage_factory),
             principal_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             healed: tokio::sync::OnceCell::new(),
+            pre_pg_owner: BoundedCache::new(PRE_PG_CACHE_CAPACITY),
         }
     }
 
@@ -448,6 +506,25 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         self.ensure_healed().await?;
         let principal_id = self.canonical_principal_id(principal_id).await?;
         let genesis = self.resolve_genesis(&principal_id, &[]).await?;
+        self.rederive_roots_with_genesis(&principal_id, genesis)
+            .await
+    }
+
+    /// [`Self::rederive_roots`] for a caller that already holds the
+    /// principal's genesis.
+    ///
+    /// Needed for an explicit-genesis principal (such as the server's own),
+    /// whose genesis key set cannot be read back from its stored blobs: the
+    /// blob-derived genesis [`Self::rederive_roots`] resolves is always
+    /// implicit.
+    #[tracing::instrument(skip(self, genesis))]
+    pub async fn rederive_roots_with_genesis(
+        &self,
+        principal_id: &str,
+        genesis: crate::Genesis,
+    ) -> Result<DerivedRoots, EngineError> {
+        self.ensure_healed().await?;
+        let principal_id = self.canonical_principal_id(principal_id).await?;
         let principal = self.load_principal(&principal_id, genesis).await?;
 
         let pr = format_multihash_all(principal.pr().as_multihash())?
@@ -1272,12 +1349,17 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         if tip.commit_count.checked_sub(1) != Some(sequence) {
             return Ok(None);
         }
+        let memo_key = (owner.clone(), tip.commit_count, claimed.to_string());
+        if let Some(holds_claim) = self.pre_pg_owner.get(&memo_key) {
+            return Ok(holds_claim.then_some(owner));
+        }
         let genesis = self.genesis_of_stored(&owner).await?;
         let principal = self.replay_stored(&owner, genesis).await?;
         let holds_claim = principal.pg().is_none()
             && format_multihash_all(principal.pr().as_multihash())?
                 .iter()
                 .any(|v| v == claimed || bare_digest(v) == claimed);
+        self.pre_pg_owner.insert(memo_key, holds_claim);
         Ok(holds_claim.then_some(owner))
     }
 

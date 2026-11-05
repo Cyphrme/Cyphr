@@ -266,6 +266,42 @@ fn commit_sequence(commit_count: u64) -> Result<u64, AppError> {
         .ok_or_else(|| AppError::internal("tip commit_count is zero: cannot derive sequence"))
 }
 
+/// The roots re-derived from the blob store for tip `t`, memoized per
+/// (principal, commit id): the replay is a pure function of the chain up to
+/// that commit, so a hit is exact and the next commit misses by construction.
+/// The caller still compares the result against the index's roots, so a
+/// diverging index is caught on every request, cached or not.
+async fn derived_roots(
+    state: &Arc<AppState>,
+    t: &TipState,
+) -> Result<cyphr_storage::engine::DerivedRoots, AppError> {
+    let key = (t.principal_id.clone(), t.commit_id.clone());
+    if let Some(hit) = state.derived_roots.get(&key) {
+        return Ok(hit);
+    }
+    // The server's own principal has an explicit genesis, which its blobs
+    // cannot express, so its genesis is supplied rather than read back.
+    let own = state
+        .principal
+        .as_ref()
+        .filter(|p| p.pg() == t.principal_id);
+    let derived = match own {
+        Some(p) => {
+            state
+                .engine
+                .rederive_roots_with_genesis(
+                    &t.principal_id,
+                    cyphr_storage::Genesis::Explicit(vec![p.genesis_key().clone()]),
+                )
+                .await
+        },
+        None => state.engine.rederive_roots(&t.principal_id).await,
+    }
+    .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
+    state.derived_roots.insert(key, derived.clone());
+    Ok(derived)
+}
+
 /// Sign a tip-report attestation over an already-fetched tip state `t` --
 /// the claim set `/tip` and `/patch` both need (identity, entry/root
 /// binding, `now`), factored out so `/patch`'s envelope signing (K10) reuses
@@ -279,11 +315,7 @@ async fn sign_tip_attestation(
         return Ok(None);
     };
 
-    let derived = state
-        .engine
-        .rederive_roots(&t.principal_id)
-        .await
-        .map_err(|e| AppError::internal(format!("attestation root re-derivation failed: {e}")))?;
+    let derived = derived_roots(state, t).await?;
 
     if derived.pr != t.pr || derived.sr != t.sr || derived.ar != t.ar || derived.cr != t.cr {
         return Err(AppError::internal(
