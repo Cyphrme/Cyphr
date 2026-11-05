@@ -42,10 +42,7 @@ async fn s06_restore() {
     h.ok(h.restore_peer("p2", &backup).await);
     match bob.verdict(&pr, &["p2"]).await {
         Err(ActionError::Refused(_)) => {},
-        Ok(v) => assert!(
-            !(v.tip == first && v.freshness == Freshness::Current),
-            "a restored peer must not sign a lower tip as current"
-        ),
+        Ok(v) => assert_ne!(v.tip, first, "a restored peer must not sign a lower tip"),
         Err(e) => h.ok::<()>(Err(e)),
     }
 

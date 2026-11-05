@@ -44,10 +44,11 @@ async fn s02_partition() {
     };
 
     let during = h.ok(bob.verdict(&pr, &["p2"]).await);
-    match during.freshness {
-        Freshness::Stale { age } => assert!(age > Duration::ZERO, "stale needs an age"),
-        Freshness::Current => panic!("a partitioned view must not read as current"),
-    }
+    // A client cannot know P2 is cut off; it can only report its view's age.
+    assert!(
+        during.freshness.age > Duration::ZERO,
+        "a view reports its age, never \"current\""
+    );
     assert_ne!(during.tip, tip, "P2 cannot have seen the rotation");
 
     h.proxy.heal("p1", "p2");
@@ -57,7 +58,7 @@ async fn s02_partition() {
         CONVERGE,
         || async {
             let v = bob.verdict(&pr, &["p2"]).await?;
-            Ok(v.tip == tip && v.freshness == Freshness::Current)
+            Ok(v.tip == tip && !v.freshness.peer_reported_newer)
         },
     )
     .await;

@@ -54,7 +54,7 @@ async fn s07_peer_rollover() {
     h.ok(alice.push(&pr, &["p1"]).await);
     let after = h.ok(bob.verdict(&pr, &["p1"]).await);
     assert_eq!(after.standing, Standing::Active);
-    assert_eq!(after.freshness, Freshness::Current);
+    assert!(!after.freshness.peer_reported_newer);
     assert!(
         after.evidence.is_empty(),
         "a legitimate rollover is not evidence"

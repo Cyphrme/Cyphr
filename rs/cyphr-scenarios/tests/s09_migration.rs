@@ -30,7 +30,11 @@ async fn s09_migration() {
     h.ok(alice.publish_self_claim(&pr, &["p1"]).await);
     h.ok(bob.trust_genesis(&pr, &["p1"]).await);
     let before = h.ok(bob.verdict(&pr, &[]).await);
-    assert_eq!(before.peers, ["p1"]);
+    assert_eq!(
+        before.peers,
+        ["p1"],
+        "peers lists those used, even for an empty `from`"
+    );
 
     h.ok(alice.push(&pr, &["p3"]).await);
     h.ok(alice.publish_self_claim(&pr, &["p3"]).await);
@@ -40,7 +44,7 @@ async fn s09_migration() {
     let after = h.ok(bob.verdict(&pr, &[]).await);
     assert_eq!(after.peers, ["p3"], "Bob follows the claim to P3");
     assert_eq!(after.tip, before.tip);
-    assert_eq!(after.anchor, before.anchor);
+    assert_eq!(after.anchor, before.anchor, "only the peer list may change");
     assert_eq!(after.standing, Standing::Active);
     assert!(after.evidence.is_empty());
 }

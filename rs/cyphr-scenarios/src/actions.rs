@@ -55,13 +55,32 @@ pub enum Standing {
     Error,
 }
 
+/// All a client can honestly say about freshness (TR-P1): how old its view
+/// is, and whether a peer it asked reported something newer. It cannot say
+/// "current", because nothing it can ask rules out a newer unseen state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Freshness {
-    Current,
-    /// The view is older than the peers' latest known state by `age`.
-    Stale {
-        age: Duration,
-    },
+pub struct Freshness {
+    /// Age of the view: time since a peer last confirmed it.
+    pub age: Duration,
+    /// A peer the client asked reported a tip newer than the view's.
+    pub peer_reported_newer: bool,
+}
+
+/// How a trust anchor was obtained (TR-P3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnchorSource {
+    /// A tip the client pinned earlier.
+    Pinned,
+    /// A genesis the client holds and trusts, obtained out of band.
+    TrustedGenesis,
+    /// A hint (for example a self-claim) not yet independently trusted.
+    Hint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub source: AnchorSource,
+    pub id: String,
 }
 
 /// Evidence a client holds. A strict prefix is not evidence, so a healed
@@ -80,9 +99,10 @@ pub struct Verdict {
     pub standing: Standing,
     pub freshness: Freshness,
     pub tip: Tip,
-    /// The trust anchor the replay started from.
-    pub anchor: String,
-    /// The peers the view was built from.
+    /// The trust anchor the replay started from, and how it was obtained.
+    pub anchor: Anchor,
+    /// The peers actually used; never empty, even when the caller passed
+    /// no `from` and the client chose its own.
     pub peers: Vec<String>,
     /// Every branch kept; more than one under a fork.
     pub branches: Vec<Tip>,

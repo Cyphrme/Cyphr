@@ -47,8 +47,8 @@ async fn s01_first_contact() {
     assert_eq!(vb.tip, vc.tip, "Bob and Carol must replay to the same tip");
     for v in [&vb, &vc] {
         assert_eq!(v.standing, Standing::Active);
-        assert_eq!(v.freshness, Freshness::Current);
-        assert!(!v.anchor.is_empty(), "a verdict names its anchor");
+        assert!(!v.freshness.peer_reported_newer);
+        assert!(!v.anchor.id.is_empty(), "a verdict names its anchor");
         assert!(!v.peers.is_empty(), "a verdict names its peers");
         assert!(v.evidence.is_empty());
     }
