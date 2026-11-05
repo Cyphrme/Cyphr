@@ -48,6 +48,9 @@ pub mod transaction;
 /// Transaction root (TR, TMR, TCR) computations.
 pub mod transaction_root;
 
+#[cfg(test)]
+mod restructure_props;
+
 // Re-exports
 pub use action::Action;
 pub use commit::{Commit, CommitScope, PendingCommit, PreparedCommit};

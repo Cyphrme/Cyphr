@@ -2,8 +2,8 @@
 
 <!--
   SPEC document produced by /spec Apply mode.
-  Source: SPEC.md §2.3, §4, §5, §6, §7
-  Authority: SPEC.md (Zamicol and nrdxp) — this document does NOT replace SPEC.md.
+  Source: SPEC.md at be0663f (spec author's zami branch) §2.3, §3.7, §4, §5, §6, §7.
+  Authority: that SPEC.md — this document does NOT replace it.
 
   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
   "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this
@@ -18,8 +18,9 @@ key lifecycle operations, data actions, and the `typ` action grammar that
 governs intent declaration. This document covers what goes into a commit and
 what happens when it is processed.
 
-**Target System:** `SPEC.md` §2.3 (Core Protocol Constraints), §4 (Commit), §5
-(Genesis), §6 (Key), §7 (`typ` Action Grammar).
+**Target System:** `SPEC.md` at `be0663f` on the `zami` branch:
+§2.3 (Core Protocol Constraints), §3.7 (Root Calculation), §4 (Commit),
+§5 (Genesis), §6 (Key), §7 (Action).
 
 **Model Reference:**
 [`principal-state-model.md`](../models/principal-state-model.md)
@@ -240,14 +241,15 @@ error `DUPLICATE`.
 
 **[transaction-id-required]**: Transaction cozies MUST contain `id` in `pay`,
 identifying the target noun. For example, for `key/create`, `id` is the key's
-`tmb`. (SPEC.md §4.3)
+`tmb`. ([SPEC §4.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#41-transaction) at `be0663f` shows `id` in its
+example; it states no rule in words.)
 `VERIFIED: agent-check — new 2026-03-09 per S-3`
 
 #### Wire Format
 
 **[wire-format-plurals]**: JSON wire format MUST use plural field names. The
 singular forms `tx`, `key`, and `coz` are prohibited. Valid fields: `txs`,
-`keys`, `cozies`. (SPEC.md JSON Wire Format)
+`keys`, `cozies`. ([SPEC §4.6.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#461-plurals) at `be0663f`)
 `VERIFIED: agent-check — new 2026-03-09 per S-2`
 
 **[key-sideband-optional]**: The public key material required to authenticate a transaction (e.g., verifying a `key/create` signature) MAY be transmitted via sideband data or extracted from a parent structure. The `coz` JSON structure itself does not strictly mandate embedding full public key material if it can be retrieved deterministically.
@@ -412,24 +414,27 @@ explicit inclusion transaction, DR is absent from PR (excluded, not zero).
 - **POST**: DR = MR(DT) is included as a component of SR (and thus PR).
   `VERIFIED: agent-check`
 
-**[witness-register-create]**: `cyphr.me/cyphr/witness/register/create` is a
+**[witness-register-create]**: [SPEC §13.5.1](https://github.com/Cyphrme/Cyphr/blob/be0663f58086ac20131cc16a14944cf96c025609/SPEC.md#1351-witness-registration)
+defines `cyphr.me/cyphr/witness/register/create` (no longer routed by `cyphr-server`) as a
 data action that registers an external witness (represented as a principal)
-with the principal's clients. The transaction MUST NOT mutate PT or AT and MUST NOT
+with the principal's clients. The protocol message remains in SPEC and the
+golden corpus (`tests/golden/witness/`); `cyphr-server` has no registration
+endpoint and does not act on it. The transaction MUST NOT mutate PT or AT and MUST NOT
 contain `pre` (per [data-action-stateless] and [data-action-no-pre]). The payload MUST
 include `id` containing the witness principal's Principal Genesis (PG) value.
 
 - **PRE**: Signing key MUST be active in KR.
-- **POST**: Witness registration is recorded in DT (if DT exists). PR and AT remain unmodified.
+- **POST**: The registration message is recorded in DT (if DT exists). PR and AT remain unmodified.
   `VERIFIED: agent-check`
 
-**[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` is a
+**[witness-register-delete]**: `cyphr.me/cyphr/witness/register/delete` (no longer routed by `cyphr-server`) is a
 data action that removes a previously registered external witness. The transaction
 MUST NOT mutate PT or AT and MUST NOT contain `pre` (per [data-action-stateless] and
 [data-action-no-pre]). The payload MUST include `id` identifying the witness
 principal's PG to remove.
 
 - **PRE**: Signing key MUST be active in KR. Witness MUST be currently registered.
-- **POST**: Witness registration is removed from DT (if DT exists). PR and AT remain unmodified.
+- **POST**: The registration message is removed from DT (if DT exists). PR and AT remain unmodified.
   `VERIFIED: agent-check`
 
 #### Nonce Transactions
@@ -518,56 +523,61 @@ included `pre`.
 
 ## Verification
 
-| Constraint                    | Method      | Result | Detail                                                                                   |
-| :---------------------------- | :---------- | :----- | :--------------------------------------------------------------------------------------- |
-| [coz-required-fields]         | agent-check | pass   | Explicit in SPEC.md §2.3.1                                                               |
-| [transaction-classification]  | agent-check | pass   | SPEC.md §4.1 (no `pre` in example); `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
-| [data-action-no-pre]          | agent-check | pass   | SPEC.md §4.4 (updated 2026-03-09)                                                        |
-| [authorization-triple]        | agent-check | pass   | SPEC.md §2.3.2 (Antecedent Authorization Gate)                                           |
-| [pre-mutation-key-rule]       | agent-check | pass   | SPEC.md §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section)    |
-| [commit-append-only]          | agent-check | pass   | Explicit in SPEC.md §2.3.2                                                               |
-| [commit-one-or-more]          | agent-check | pass   | Inferred from §4 ("one or more transaction cozies")                                      |
-| [txs-list-of-lists]           | agent-check | pass   | SPEC.md §4.1 (list of lists structure)                                                   |
-| [tx-grouping]                 | agent-check | pass   | SPEC.md §4 (no interlacing)                                                              |
-| [tx-root-computation]         | agent-check | pass   | SPEC.md §9 (MR of czds)                                                                  |
-| [tmr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of mutation TXs)                                                        |
-| [tcr-computation]             | agent-check | pass   | SPEC.md §4.2 (MR of commit tx czds)                                                      |
-| [tr-computation]              | agent-check | pass   | SPEC.md §4.2 (MR(TMR, TCR))                                                              |
-| [commit-finality-arrow]       | agent-check | pass   | SPEC.md §4.2 (arrow field)                                                               |
-| [arrow-excludes-self]         | agent-check | pass   | SPEC.md §4.2 (fwd is SR, not PR)                                                         |
-| [pr-after-commit]             | agent-check | pass   | SPEC.md §4.2 (PR = MR(SR, CR))                                                           |
-| [typ-grammar]                 | agent-check | pass   | Explicit in SPEC.md §7                                                                   |
-| [typ-verbs]                   | agent-check | pass   | Explicit in SPEC.md §7, §7.2                                                             |
-| [idempotent-transactions]     | agent-check | pass   | Explicit in SPEC.md §7.5                                                                 |
-| [create-uniqueness]           | agent-check | pass   | Explicit in SPEC.md §7.5                                                                 |
-| [transaction-id-required]     | agent-check | pass   | SPEC.md §4.3 (updated 2026-03-10)                                                        |
-| [timestamp-range]             | agent-check | pass   | Explicit in SPEC.md §6.4 (inherited from Coz)                                            |
-| [at-append-only]              | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                                                         |
-| [dt-mutable]                  | agent-check | pass   | Explicit in SPEC.md §2.3.4 table                                                         |
-| [genesis-bootstrap]           | agent-check | pass   | Explicit in SPEC.md §5.1                                                                 |
-| [genesis-pre-bootstrap]       | agent-check | pass   | Explicit in SPEC.md §5.1                                                                 |
-| [genesis-finality]            | agent-check | pass   | SPEC.md §5.1 (id=PG)                                                                     |
-| [key-create]                  | agent-check | pass   | Explicit in SPEC.md §6.1                                                                 |
-| [key-delete]                  | agent-check | pass   | Explicit in SPEC.md §6.2                                                                 |
-| [key-replace]                 | agent-check | pass   | Explicit in SPEC.md §6.3                                                                 |
-| [key-revoke]                  | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
-| [revoke-naked]                | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
-| [revoke-self-signed]          | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
-| [key-active-period]           | agent-check | pass   | Explicit in SPEC.md §6.2                                                                 |
-| [data-action-stateless]       | agent-check | pass   | SPEC.md §4.4 (AR→AT, updated 2026-03-09)                                                 |
-| [dr-inclusion]                | agent-check | pass   | Explicit in SPEC.md §4.5.1                                                               |
-| [witness-register-create]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                                                              |
-| [witness-register-delete]     | agent-check | pass   | Explicit in SPEC.md §13.5.1                                                              |
-| [nonce-path]                  | agent-check | pass   | Explicit in SPEC.md §4.7                                                                 |
-| [no-orphan-pre]               | agent-check | pass   | Inferred from §4 chain semantics                                                         |
-| [no-unauthorized-transaction] | agent-check | pass   | Follows from §3                                                                          |
-| [no-self-revoke-recovery]     | agent-check | pass   | Explicit in SPEC.md §3.1                                                                 |
-| [no-revoke-non-self]          | agent-check | pass   | Explicit in SPEC.md §6.4                                                                 |
-| [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]                                         |
-| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]                                                |
-| [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                                                      |
-| [wire-format-plurals]         | agent-check | pass   | SPEC.md JSON Wire Format (new 2026-03-09)                                                |
-| [intra-commit-ordering]       | agent-check | pass   | Array-order decision (new 2026-03-09)                                                    |
+Section numbers are `SPEC.md` at `be0663f` on the `zami` branch. `pass`
+means consistent with that text, not implemented; `open` means that
+text does not settle the constraint (it is silent, or contradicts
+itself).
+
+| Constraint                    | Method      | Result | Detail                                                                           |
+| :---------------------------- | :---------- | :----- | :------------------------------------------------------------------------------- |
+| [coz-required-fields]         | agent-check | pass   | Explicit in §2.3.1                                                               |
+| [transaction-classification]  | agent-check | pass   | §4.1 (no `pre` in example); `rs/cyphr-storage/src/import.rs::is_transaction_typ` |
+| [data-action-no-pre]          | agent-check | pass   | §4.8.1 (data actions are not chained)                                            |
+| [authorization-triple]        | agent-check | pass   | §2.3.2 (Antecedent Authorization Gate)                                           |
+| [pre-mutation-key-rule]       | agent-check | pass   | §2.3.2; verified against `rs/cyphr/src/commit.rs` (see Authorization section)    |
+| [commit-append-only]          | agent-check | pass   | Explicit in §2.3.2                                                               |
+| [commit-one-or-more]          | agent-check | pass   | §4 ("one to many transactions")                                                  |
+| [txs-list-of-lists]           | agent-check | pass   | §4.6.2 (`txs` wire format; commit transaction last)                              |
+| [tx-grouping]                 | agent-check | open   | No interlacing rule in `be0663f`; §4.6.2 gives a TX as one transaction's cozies  |
+| [tx-root-computation]         | agent-check | pass   | §3.7.5 (TX id is MR of czds; also §4.6.2)                                        |
+| [tmr-computation]             | agent-check | pass   | §3.7.5 (TMR)                                                                     |
+| [tcr-computation]             | agent-check | pass   | §3.7.5 (TCR)                                                                     |
+| [tr-computation]              | agent-check | pass   | §3.7.5 (TR; TCR promoted when no TMR)                                            |
+| [commit-finality-arrow]       | agent-check | pass   | §4.2, §4.3 (`arrow` = MR(pre, fwd, TMR))                                         |
+| [arrow-excludes-self]         | agent-check | pass   | §4.2 (`fwd` is SR, not PR)                                                       |
+| [pr-after-commit]             | agent-check | pass   | §3.3, §5.1 (PR = MR(SR, CR))                                                     |
+| [typ-grammar]                 | agent-check | pass   | Explicit in §7.2                                                                 |
+| [typ-verbs]                   | agent-check | pass   | Explicit in §7.2, §7.5                                                           |
+| [idempotent-transactions]     | agent-check | pass   | Explicit in §7.6                                                                 |
+| [create-uniqueness]           | agent-check | pass   | Explicit in §7.6                                                                 |
+| [transaction-id-required]     | agent-check | pass   | §4.1 (example only; no rule in words)                                            |
+| [timestamp-range]             | agent-check | pass   | Explicit in §6.4 (inherited from Coz)                                            |
+| [at-append-only]              | agent-check | pass   | Explicit in §2.3.3 table                                                         |
+| [dt-mutable]                  | agent-check | pass   | Explicit in §2.3.3 table                                                         |
+| [genesis-bootstrap]           | agent-check | pass   | Explicit in §5.1                                                                 |
+| [genesis-pre-bootstrap]       | agent-check | pass   | Explicit in §5.1                                                                 |
+| [genesis-finality]            | agent-check | pass   | §5.1 (`id` is the future SR); §3.3 (that SR is PG)                               |
+| [key-create]                  | agent-check | pass   | Explicit in §6.1                                                                 |
+| [key-delete]                  | agent-check | pass   | Explicit in §6.2                                                                 |
+| [key-replace]                 | agent-check | pass   | Explicit in §6.3                                                                 |
+| [key-revoke]                  | agent-check | pass   | Explicit in §6.4                                                                 |
+| [revoke-naked]                | agent-check | pass   | Explicit in §6.4                                                                 |
+| [revoke-self-signed]          | agent-check | pass   | Explicit in §6.4                                                                 |
+| [key-active-period]           | agent-check | pass   | Explicit in §6.2                                                                 |
+| [data-action-stateless]       | agent-check | pass   | §4.8.1                                                                           |
+| [dr-inclusion]                | agent-check | pass   | §4.8.2 (`ds/create` example)                                                     |
+| [witness-register-create]     | agent-check | pass   | Explicit in §13.5.1 (server does not route it)                                   |
+| [witness-register-delete]     | agent-check | pass   | §13.5.1 ("removed with a `delete`")                                              |
+| [nonce-path]                  | agent-check | pass   | Explicit in §10.1                                                                |
+| [no-orphan-pre]               | agent-check | pass   | Inferred from §4.2 (`pre` is the prior PR)                                       |
+| [no-unauthorized-transaction] | agent-check | pass   | Follows from §2.3.2 (Antecedent Authorization Gate)                              |
+| [no-self-revoke-recovery]     | agent-check | pass   | Explicit in §3.1                                                                 |
+| [no-revoke-non-self]          | agent-check | open   | §6.4 requires a self-signed revoke; §3.3 says any key can `key/revoke` another   |
+| [commit-deterministic]        | agent-check | pass   | Follows from state-tree.md [deterministic-state]                                 |
+| [genesis-irreversible]        | agent-check | pass   | Follows from state-tree.md [pg-immutable]; §2.3.2 (PG is immutable)              |
+| [revoke-propagation]          | agent-check | pass   | Inferred from §6.4 revoke semantics                                              |
+| [wire-format-plurals]         | agent-check | pass   | Explicit in §4.6.1                                                               |
+| [intra-commit-ordering]       | agent-check | pass   | §4 ("applied one-by-one using the given order")                                  |
 
 ## Implications
 

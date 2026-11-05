@@ -23,9 +23,11 @@ jobs:
       - uses: actions/checkout@v4
       # The spec-conformance map test reads SPEC.md at be0663f, which lives
       # only on the zami branch and is absent from the shallow checkout.
-      - name: Fetch the spec branch
+      # Fetch the pinned commit, not the moving branch tip: the map is
+      # checked against one fixed spec.
+      - name: Fetch the pinned spec commit
         working-directory: .
-        run: git fetch --no-tags origin zami
+        run: git fetch --no-tags origin be0663f58086ac20131cc16a14944cf96c025609
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

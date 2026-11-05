@@ -16,6 +16,7 @@
 # would.
 #
 # Usage: docket-run <claim-id>
+#        docket-run --self-check   (prove the zero-test rule; see below)
 set -uo pipefail
 
 # claim id -> name of the bash array holding its command list. Bash
@@ -26,37 +27,18 @@ declare -A CLAIMS_INDEX=(
   [list-valued-both-green]="_claim_list_valued_both_green"
   [list-valued-one-failing]="_claim_list_valued_one_failing"
 
-  # EQ0 (docs/architecture/equivocation-detection.md, unmerged branch
-  # node/eq0-watcher-genre-input) requirement claims. Five have a
-  # verified evaluator today: arch-tip-reports-are-material and
-  # arch-evidence-is-portable resolve against tests already in this
-  # worktree; arch-detection-is-comparison, arch-signing-stays-stateless,
-  # and arch-finding-never-clears resolve against tests written on the
-  # unmerged node/eq1-detector-correctness branch (see
-  # .scratch/campaign-mvp-close/deposits/eq1-red-evaluators.md) and are
-  # not present here yet. The other six name a test that exists nowhere
-  # yet: eq1's own survey found no production code path through which
-  # arch-detection-is-automatic, arch-answer-carries-contested,
-  # arch-evidence-rides-along, or arch-resolution-ends-fork could be
-  # tested at all today; arch-behind-is-not-fork is new since that
-  # survey and untested for the same reason. arch-owner-alone-resolves
-  # is untestable from this crate's equivocation/consistency code (per
-  # that survey it belongs to tests/push.rs's ordinary push-acceptance
-  # suite instead), so its entry points there, not at equivocation.rs
-  # like the rest. Each of these six resolves today to a real cargo
-  # invocation that matches zero tests -- verified empirically, not
-  # assumed.
+  # Equivocation claims (docs/architecture/equivocation-detection.md).
+  # Entries for claims the documents no longer define, and for claims
+  # with no test yet, are absent rather than vacuous: `docket run` then
+  # reports them absent until their owner writes the test and adds the
+  # entry. Four claims below name a test that does not exist yet; they
+  # FAIL on purpose (see the zero-test rule at the foot of this file).
   [arch-detection-is-comparison]="_claim_arch_detection_is_comparison"
   [arch-tip-reports-are-material]="_claim_arch_tip_reports_are_material"
   [arch-behind-is-not-fork]="_claim_arch_behind_is_not_fork"
   [arch-signing-stays-stateless]="_claim_arch_signing_stays_stateless"
-  [arch-evidence-is-portable]="_claim_arch_evidence_is_portable"
   [arch-finding-never-clears]="_claim_arch_finding_never_clears"
-  [arch-detection-is-automatic]="_claim_arch_detection_is_automatic"
-  [arch-answer-carries-contested]="_claim_arch_answer_carries_contested"
-  [arch-evidence-rides-along]="_claim_arch_evidence_rides_along"
-  [arch-owner-alone-resolves]="_claim_arch_owner_alone_resolves"
-  [arch-resolution-ends-fork]="_claim_arch_resolution_ends_fork"
+  [arch-verifier-chooses-peers]="_claim_arch_verifier_chooses_peers"
 
   # Sign-on claims (docs/architecture/path-a-sovereign-sign-on.md); each
   # names the one scenario test that closes it.
@@ -67,6 +49,34 @@ declare -A CLAIMS_INDEX=(
   [signon-key-active-in-principal]="_claim_signon_key_active_in_principal"
   [signon-replay-bound]="_claim_signon_replay_bound"
   [signon-audience-binding]="_claim_signon_audience_binding"
+
+  # SPEC conformance claims (SC1): each id is the SPEC line a
+  # `@docket: sc-l<N>` marker in a spec_conformance.rs names.
+  [sc-l119]="_claim_sc_l119"
+  [sc-l203]="_claim_sc_l203"
+  [sc-l237]="_claim_sc_l237"
+  [sc-l240]="_claim_sc_l240"
+  [sc-l246]="_claim_sc_l246"
+  [sc-l592]="_claim_sc_l592"
+  [sc-l944]="_claim_sc_l944"
+  [sc-l1059]="_claim_sc_l1059"
+  [sc-l1287]="_claim_sc_l1287"
+  [sc-l1300]="_claim_sc_l1300"
+  [sc-l1869]="_claim_sc_l1869"
+  [sc-l2827]="_claim_sc_l2827"
+  [sc-l2828]="_claim_sc_l2828"
+  [sc-l3054]="_claim_sc_l3054"
+  [sc-l3350]="_claim_sc_l3350"
+  [sc-l3353]="_claim_sc_l3353"
+
+  # Self-checks of the zero-test rule itself, run by
+  # `docket-run --self-check`; not project claims. The first must FAIL
+  # (its test name matches nothing), the second must pass.
+  [selfcheck-zero-tests]="_claim_selfcheck_zero_tests"
+  [selfcheck-env-prefix-zero]="_claim_selfcheck_env_prefix_zero"
+  [selfcheck-cd-prefix-zero]="_claim_selfcheck_cd_prefix_zero"
+  [selfcheck-piped-failure]="_claim_selfcheck_piped_failure"
+  [selfcheck-real-test]="_claim_selfcheck_real_test"
 )
 
 # scripts/docket-fixtures/list-valued-map/CONTRACT.md's own self-check
@@ -94,27 +104,11 @@ _claim_arch_behind_is_not_fork=(
 _claim_arch_signing_stays_stateless=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation signing_is_unaffected_by_running_a_fork_comparison -- --exact"
 )
-_claim_arch_evidence_is_portable=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_verifies_offline -- --exact"
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test cross_witness evidence_offline_false_path -- --exact"
-)
 _claim_arch_finding_never_clears=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation conflicting_pair_still_proven_after_unrelated_agreement_evaluated -- --exact"
 )
-_claim_arch_detection_is_automatic=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_detection_is_automatic -- --exact"
-)
-_claim_arch_answer_carries_contested=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_answer_carries_contested -- --exact"
-)
-_claim_arch_evidence_rides_along=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_evidence_rides_along -- --exact"
-)
-_claim_arch_owner_alone_resolves=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test push arch_owner_alone_resolves -- --exact"
-)
-_claim_arch_resolution_ends_fork=(
-  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test equivocation arch_resolution_ends_fork -- --exact"
+_claim_arch_verifier_chooses_peers=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test no_registration register_route_is_gone_and_push_never_dials_out -- --exact"
 )
 
 _claim_signon_honest_refusal=(
@@ -139,8 +133,103 @@ _claim_signon_audience_binding=(
   "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test login login_rejects_mismatched_audience -- --exact"
 )
 
+# SC1: each array runs the spec_conformance test(s) its marker sits on.
+_claim_sc_l119=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_2_non_canonical_b64ut_is_rejected -- --exact"
+)
+_claim_sc_l203=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_2_13_key_create_without_revealed_pub_is_rejected -- --exact"
+)
+_claim_sc_l237=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s2_3_2_push_on_a_stale_pre_is_refused_and_the_chain_stays_put -- --exact"
+)
+_claim_sc_l240=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_no_operation_changes_the_principal_genesis -- --exact"
+)
+_claim_sc_l246=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_inactive_key_cannot_authorize_its_own_admission -- --exact"
+)
+_claim_sc_l592=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s4_6_commit_coz_must_be_last_in_txs -- --exact"
+)
+_claim_sc_l944=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_no_wire_form_carries_private_key_material -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s6_no_http_response_carries_private_key_material -- --exact"
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s6_exported_commits_carry_no_private_key_material -- --exact"
+)
+_claim_sc_l1059=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s6_4_one_key_cannot_revoke_another -- --exact"
+)
+_claim_sc_l1287=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_7_fork_create_does_not_create_a_principal -- --exact"
+)
+_claim_sc_l1300=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s7_7_fork_create_does_not_create_a_principal -- --exact"
+)
+_claim_sc_l1869=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s11_2_dead_principal_accepts_no_transaction_or_action -- --exact"
+)
+_claim_sc_l2827=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_sc_l2828=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s2_3_2_second_commit_on_a_stale_pre_is_rejected -- --exact"
+)
+_claim_sc_l3054=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --test spec_conformance s17_2_challenge_is_256_bits_and_unique -- --exact"
+)
+_claim_sc_l3350=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s19_5_failed_commit_leaves_no_partial_state -- --exact"
+)
+_claim_sc_l3353=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --test spec_conformance s19_5_failed_commit_leaves_no_partial_state -- --exact"
+)
+
+_claim_selfcheck_zero_tests=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+_claim_selfcheck_env_prefix_zero=(
+  "CARGO_TERM_COLOR=never cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+_claim_selfcheck_cd_prefix_zero=(
+  "cd rs && cargo test -p cyphr-server --lib no_such_test_exists_anywhere -- --exact"
+)
+# One target fails (fork_evidence's ignored RED(G0) test, forced by
+# --include-ignored), one passes, and a pipe sits between cargo and the
+# exit code: the failure must still red the claim.
+_claim_selfcheck_piped_failure=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr --no-fail-fast --test fork_evidence --test signer_seam -- --include-ignored | cat"
+)
+_claim_selfcheck_real_test=(
+  "cargo test --manifest-path rs/Cargo.toml -p cyphr-server --lib verify_rejects_valid_signature_with_wrong_typ"
+)
+
+# --self-check: the zero-test rule's own acceptance test. A command
+# naming a missing test must fail, one naming a real test must pass;
+# each assertion runs independently and the exit code is nonzero iff any
+# failed.
+if [ "${1:-}" = "--self-check" ]; then
+  bad=0
+  for sc in selfcheck-zero-tests selfcheck-env-prefix-zero selfcheck-cd-prefix-zero selfcheck-piped-failure; do
+    if "${BASH_SOURCE[0]}" "$sc" >/dev/null 2>&1; then
+      echo "FAIL  $sc passed though it must fail" >&2
+      bad=1
+    else
+      echo "PASS  $sc fails"
+    fi
+  done
+  if "${BASH_SOURCE[0]}" selfcheck-real-test >/dev/null 2>&1; then
+    echo "PASS  a command naming a real test passes"
+  else
+    echo "FAIL  a command naming a real test failed" >&2
+    bad=1
+  fi
+  exit "$bad"
+fi
+
 if [ "$#" -ne 1 ]; then
-  echo "usage: docket-run <claim-id>" >&2
+  echo "usage: docket-run <claim-id> | --self-check" >&2
   exit 2
 fi
 
@@ -156,10 +245,42 @@ declare -n cmds="$arrname"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 2
 
+# Zero-test rule: a command that runs no test proves nothing, so it
+# fails. cargo exits 0 for a name filter that matches nothing ("0 passed;
+# 0 failed; N filtered out"), which let a claim pass by naming a test
+# that does not exist. The rule sums the "N passed" counts of every
+# "test result:" line a command printed, and applies to EVERY command
+# however it is spelled (env prefix, `cd x &&`, wrapper): a rule keyed on
+# the command's text is dodged by rewording it. Only the fixture claims
+# below are exempt, because their `true`/`false` commands run no test by
+# design.
+_exempt_from_zero_test_rule=(list-valued-both-green list-valued-one-failing)
+
 failures=0
+out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 for cmd in "${cmds[@]}"; do
-  if ! bash -c "$cmd"; then
+  # pipefail: a claim command that pipes cargo through another tool
+  # must not let the tool's exit 0 hide cargo's failure.
+  bash -o pipefail -c "$cmd" 2>&1 | tee "$out"
+  rc="${PIPESTATUS[0]}"
+  if [ "$rc" -ne 0 ]; then
     echo "docket-run: '$id' command failed: $cmd" >&2
+    failures=1
+    continue
+  fi
+  # A FAILED summary line fails the command whatever its exit code said.
+  if grep -q '^test result: FAILED' "$out"; then
+    echo "docket-run: '$id' command reported failing tests: $cmd" >&2
+    failures=1
+    continue
+  fi
+  for ex in "${_exempt_from_zero_test_rule[@]}"; do
+    [ "$id" = "$ex" ] && continue 2
+  done
+  passed="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' "$out" | awk '{n += $1} END {print n + 0}')"
+  if [ "${passed:-0}" -lt 1 ]; then
+    echo "docket-run: '$id' command ran zero tests: $cmd" >&2
     failures=1
   fi
 done
