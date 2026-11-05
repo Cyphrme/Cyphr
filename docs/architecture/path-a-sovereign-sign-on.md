@@ -18,12 +18,11 @@ the normative source is `SPEC.md`.
 
 ## Participants
 
-Each is described by what it is trying to accomplish. The **kind** column names the party by
-what it supplies when the check cannot, as distinct from any role name a Cyphr specification
-gives a component. The kinds follow from the axes of [the claim table](#the-claim-table) below: an
-**attestor** is a party whose word stands in for a determination nobody can re-run; a
-**watcher** is a party that holds more than one view over time, which is what a claim that
-can go stale needs. A participant trusted for nothing carries no kind — its claims are discharged by an
+Each is described by what it is trying to accomplish. The **kind** column is the party
+kind the framework below assigns — a **cure name**, which names the party by the failure it
+cures, as distinct from any role name a Cyphr specification gives a component: an **attestor** cures a determination failure and its word cannot be
+reproduced; a **watcher** cures a monotonicity failure by holding more than one view over
+time. A participant trusted for nothing carries no kind — its claims are discharged by an
 evaluator instead.
 
 | participant                | what it is trying to accomplish                                                                                                                                                                                                                                                                                                                                                                                                           | kind                                                                                                |
@@ -31,11 +30,11 @@ evaluator instead.
 | **The person**             | Prove she controls her account without a password and without an identity provider standing between her and the site.                                                                                                                                                                                                                                                                                                                     | **attestor** at enrollment — see below                                                              |
 | **The relying party**      | Decide whether to serve this person as the holder of a particular account, and decide it again on every session.                                                                                                                                                                                                                                                                                                                          | none — it is the party doing the trusting                                                           |
 | **The record authority**   | Serve a correct, replayable view of a principal's chain to anyone who asks.                                                                                                                                                                                                                                                                                                                                                               | none — it is _not_ sufficient for the claims that need one; see [the claim table](#the-claim-table) |
-| **The recovery agent**     | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says.                                                                                                                                                                                                                                                                                                                 | **attestor** (this sense)                                                                      |
-| **The recovery authority** | Hold permissions delegated to it as an external account, and exercise them: initiate a freeze, and sign the recovery transaction that links a new Principal Root to the original genesis. `SPEC.md` §14.2: _"**External Recovery** Where some permissions are delegated to an external account, a **Recovery Authority**."_ §14.6: the new PR is _"manually linked to the original PG by the Recovery Authority's recovery transaction."_ | **attestor** (this sense)                                                                      |
+| **The recovery agent**     | Restore a person's control of her account after she loses her keys, having verified out of band that she is who she says.                                                                                                                                                                                                                                                                                                                 | **attestor** (cure-name sense)                                                                      |
+| **The recovery authority** | Hold permissions delegated to it as an external account, and exercise them: initiate a freeze, and sign the recovery transaction that links a new Principal Root to the original genesis. `SPEC.md` §14.2: _"**External Recovery** Where some permissions are delegated to an external account, a **Recovery Authority**."_ §14.6: the new PR is _"manually linked to the original PG by the Recovery Authority's recovery transaction."_ | **attestor** (cure-name sense)                                                                      |
 | **The watcher**            | Establish that the view of a principal one party holds is not a stale or partial one. **The specification names this participant; nothing implements it.** `SPEC.md` §13 is headed _"State Synchronization and Gossip // TODO"_ and its §13.7 _"Gossip"_ is a stub with an empty Prover and Verifier, so the protocol is unwritten rather than undesigned; `git grep -in gossip -- rs/ go/` returns no match.                             | **watcher**                                                                                         |
 
-"Attestor" here means only a party whose word stands in for a check nobody can re-run — not the **server tier** this repository's own
+"Attestor" here is the cure name only — not the **server tier** this repository's own
 specifications call `attestor` (`docs/specs/server-identity.md`, `docs/specs/receipts.md`),
 and not the industry sense (RATS, TPM, SPIFFE), which addresses the _same_ failure by a
 different means, its evidence being re-runnable where an attestor's word is not, so
@@ -45,7 +44,7 @@ are harder to keep apart than two opposite ones.
 **Why the person is an attestor for her own account.** At enrollment nothing establishes
 that the human presenting a key is the human the account is meant for. The relying party
 takes her word, once, and binds the account to the key set from then on. That is a
-determination failure made up for by a party whose word cannot be re-run — the definition of an
+determination failure cured by a party whose word cannot be re-run — the definition of an
 attestor — and the party is the person herself. This is what "sovereign" means in
 practice: no third party is interposed, and correspondingly no third party can be blamed
 or appealed to. `SPEC.md` §17.5 states the design intent:
@@ -241,7 +240,7 @@ outage, but it cannot establish currency.
 
 The claim _"the record I hold for this principal is canonical"_ fails monotonicity: it can
 be true when evaluated and false after the record grows, with nothing in the record
-announcing the change. A monotonicity failure is made up for by a **watcher** — a party holding
+announcing the change. Monotonicity failures are cured by a **watcher** — a party holding
 more than one view over time — and never by an attestor, whose word is a point observation
 of exactly the kind that goes stale. This is stated as [a requirement](#currency-unmet)
 rather than designed here; see [what this document does not cover](#what-this-document-does-not-cover).
@@ -296,8 +295,8 @@ the two golden fixtures that exercise `key/replace` both leave `pg` empty, which
 survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
-set going stale; row 5 is about the whole view being non-canonical. Both are made up for by a
-watcher and neither is made up for by any party this system contains.
+set going stale; row 5 is about the whole view being non-canonical. Both are cured by a
+watcher and neither is cured by any party this system contains.
 
 **Row 6 is Path A's determination claim and the one that cannot be engineered away.** No
 evaluator decides that a human is a particular human. At enrollment the person's own
@@ -362,7 +361,7 @@ The first layer is determination and it is forced for every relying party. The a
 verified her identity out of band by a method the specification does not fix. The relying
 party cannot re-run that verification — there is no scheme at any level that would let it —
 and it cannot check-and-decline, because declining means locking out a person who has done
-everything correctly. It must extend trust it cannot audit. That is row 6, made up for by an
+everything correctly. It must extend trust it cannot audit. That is row 6, cured by an
 attestor, and it is the irreducible cost of not having an identity provider.
 
 The second layer is monotonicity and it is forced only for a separated relying party. Her
@@ -516,7 +515,7 @@ A relying party's obligation to hold a _current_ view of a principal is not met 
 anything in the record. The replay of
 [separated-key-set-by-replay](#separated-key-set-by-replay) establishes that what is held
 is genuine, never that it is complete. The claim _"the record I hold for this principal is
-canonical"_ fails monotonicity, and the party kind that makes up for a monotonicity failure is a
+canonical"_ fails monotonicity, and the party kind that cures a monotonicity failure is a
 **watcher** — never an attestor, whose word is a point observation of exactly the kind that
 goes stale. A relying party MUST state this obligation as unmet rather than treat a
 successful replay as having met it. Traces to rows 4 and 5.
@@ -532,7 +531,7 @@ because: [separated-key-set-by-replay]
 A relying party MUST NOT treat "no update observed" as "no update exists". It MUST bound
 the age of its view explicitly and refuse to serve past that bound. An expiry does not
 establish currency — it converts a silent wrong answer into a refusal, which is an
-improvement and not a remedy for [currency-unmet](#currency-unmet). Traces to row 5.
+improvement and not a cure for [currency-unmet](#currency-unmet). Traces to row 5.
 
 ```claim
 kind: requirement
@@ -632,12 +631,12 @@ participant that keeps another principal's state:
 > communicates state through gossip.
 
 The gossip clause has to be answered rather than passed over: gossip is one of the two
-instances of the party that makes up for a monotonicity failure. What that party kind
-names, though, is a **collective** — a witness _quorum_
+instances of the party that cures a monotonicity failure. What that party kind names,
+though, is a **collective** — a witness _quorum_
 or a gossip _protocol_ — and a participant in a gossip protocol is not the protocol. A
 single gossiping witness can receive information that leaves its view less stale, but it
 cannot detect that its own view _is_ stale: detecting staleness means comparing two views,
 and the comparison belongs to the protocol rather than to any client running it. So a
-witness is a participant in the remedy rather than an instance of it, and what closes the gap
+witness is a participant in a cure rather than an instance of one, and what closes the gap
 is the party holding the comparison. Naming that requirement is this document's job.
 Designing that party is not.
