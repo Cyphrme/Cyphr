@@ -72,13 +72,13 @@ impl Principal<eml::MemoryStorage> {
         trees: Option<crate::commit_root::CommitTrees>,
     ) -> Result<Self> {
         match trees {
-            Some(t) => Self::restore_checkpoint(pg, ar, keys, t, true),
+            Some(t) => Self::restore_checkpoint(pg, ar, keys, t, |_| true),
             None => Self::restore_checkpoint(
                 pg,
                 ar,
                 keys,
                 crate::commit_root::CommitTrees::new(eml::MemoryStorage::new()),
-                false,
+                |_| false,
             ),
         }
     }
@@ -201,8 +201,7 @@ impl<S: eml::Storage> Principal<S> {
         // (e.g. a fresh backend with no prior commits) does not. Decided
         // by the tree's own emptiness rather than by an `Option` at the
         // API boundary, as `from_checkpoint` does.
-        let restore_cr = !trees.is_empty();
-        Self::restore_checkpoint(pg, ar, keys, trees, restore_cr)
+        Self::restore_checkpoint(pg, ar, keys, trees, |t| !t.is_empty())
     }
 
     /// The one checkpoint-restore body behind [`Principal::from_checkpoint`]
@@ -210,6 +209,8 @@ impl<S: eml::Storage> Principal<S> {
     /// `trees` carries a commit log whose Commit Root enters the Principal
     /// Tree; the two public constructors decide it differently (an
     /// explicit `Some` versus a non-empty tree), so it is theirs to pass.
+    /// It is a predicate rather than a `bool` so the tree is inspected
+    /// after the key checks, the order both constructors always had.
     ///
     /// # Errors
     ///
@@ -220,7 +221,7 @@ impl<S: eml::Storage> Principal<S> {
         ar: AuthRoot,
         keys: Vec<Key>,
         trees: crate::commit_root::CommitTrees<S>,
-        restore_cr: bool,
+        restore_cr: impl FnOnce(&crate::commit_root::CommitTrees<S>) -> bool,
     ) -> Result<Self> {
         if keys.is_empty() {
             return Err(Error::NoActiveKeys);
@@ -236,7 +237,7 @@ impl<S: eml::Storage> Principal<S> {
         let thumbprints: Vec<&Thumbprint> = keys.iter().map(|k| k.tmb()).collect();
         let kr = KeyTree::build(&thumbprints, &active_algs)?;
 
-        let cr = if restore_cr {
+        let cr = if restore_cr(&trees) {
             Some(crate::commit_root::commit_root_from_trees(
                 &trees,
                 &active_algs,
