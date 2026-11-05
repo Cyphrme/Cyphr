@@ -12,8 +12,9 @@ The vocabulary comes from a formal trust taxonomy developed in a separate reposi
 > <https://github.com/nrdxp/factoring-trust>
 
 That work is not part of this repository, but it is public, so every attribution below can
-be checked against it. Its author is the same person as this repository's: a separate
-repository does not mean an arm's-length one.
+be checked against it, at the ref named for it in [the pin
+table](#where-each-attribution-is-checked). Its author is the same person as this
+repository's: a separate repository does not mean an arm's-length one.
 
 **What stands on its own here, and what does not.** The definitions below are
 self-contained — a reader who never opens the source can type a claim with them. The
@@ -23,14 +24,16 @@ present-tense certificate are the source's theorems, and this document defers to
 rather than re-deriving them. Where the text extends the model's vocabulary rather than
 restating it, it says so.
 
-**How a claim made here can be checked.** The Lean theorem names cited here are those of
-the source's `rc1` tag, whose tag message reads "the frozen Lean model". The later tags
-(`rc2`, `rc3`) restructure the development, and of the names cited here only
-`eon_trilemma_impossibility` still appears at the source's current head. The written paper
-is a work-in-progress draft. So a mechanized result is cited by its Lean theorem name at
-`rc1`, and a point of prose is quoted rather than cited by section — a section number in
-an unfrozen draft is the same unstable handle this repository warns readers to verify
-before trusting for `SPEC.md`.
+**How a claim made here can be checked.** Each attribution is pinned to a ref of the
+source repository. The Lean theorem names are those of the source's `rc1` tag, whose tag
+message reads "the frozen Lean model"; the later tags (`rc2`, `rc3`) restructure the
+development, and of the names cited here only `eon_trilemma_impossibility` and
+`divergence_permanent` still appear at the source's current head. A point of prose is quoted
+rather than cited by section, because the source's paper text changes: most of the quoted
+sentences are verbatim at commit `5f9f7fb`, the last commit before a later commit removed
+those section skeletons, and are not at the source's current head. The pin table at the end
+of this document gives the ref for every quotation, and a quotation that no ref holds
+verbatim would be marked a paraphrase.
 
 **Scope.** This is a lens for reasoning about what a Cyphr deployment trusts. It is not
 part of the Cyphr protocol and not a proposal to one; `SPEC.md` is the normative source
@@ -215,10 +218,10 @@ party's own rule: nothing to determine, certify, or preserve under growth, and n
 trusted for it beyond the party making the decision.
 
 This label is not the source's **elective**, and the two are easy to conflate. The source
-reserves that word for trust a verifier could discharge but declines to: "the trichotomy
+reserves that word for trust a verifier could discharge but declines to: "The trichotomy
 characterizes trust that is _forced_ — no scheme exists, at any stratum, for the claim in
 question. It says nothing about _elective_ trust, where a verifier could check but chooses
-reliance for cost or convenience." A `decision` claim is neither forced nor elective,
+reliance for cost or convenience". A `decision` claim is neither forced nor elective,
 because no scheme is being declined — there is no fact of the matter to check.
 
 ## Party kinds
@@ -242,7 +245,7 @@ produces about itself, and that sense is not the opposite of the cure name: thos
 frameworks address the _same_ failure. The source makes that point over a list of its
 own — SLSA, in-toto, C2PA, PROV-DM and RFC 9334, the last being the RATS architecture —
 observing that "provenance and attestation frameworks exist precisely because genuineness
-is not recoverable from an artifact's bytes alone." TPM and SPIFFE are this repository's
+is not recoverable from an artifact's bytes alone". TPM and SPIFFE are this repository's
 own examples of the same sense; the source does not name them. What differs is the
 means. Industry attestation produces evidence another party can re-run; the cure-name
 attestor's word cannot be re-run, and that is what makes it trust rather than evidence. Two adjacent
@@ -358,7 +361,7 @@ bare unscoped signature is not one of them. It does not establish:
   `Total`, the trust surface of a chain is _exactly_ the genesis binding and nothing
   else" — the totality condition is an antecedent, carried in the mechanization as an
   explicit hypothesis (`principal_trust_bounded`), not a detail of the statement's
-  phrasing. The chain it mechanizes is structural, "with no hash function in it," so what
+  phrasing. The chain it mechanizes is structural, "with no hash function in it", so what
   the instance exercises is the accounting rather than the cryptography.
 - **What a trust failure costs.** The model factors the residue by cause; it does not
   quantify what any particular failure is worth.
@@ -368,6 +371,38 @@ Each of those sits with `SPEC.md` and with this repository's own designs.
 **What the source declares open.** These are not choices left to a designer but results
 the model does not have, in its own words: "the polynomial stratum, the source-integrity
 instance's frontier tightness results, and the floor's two residuals, which concern
-physical realization rather than the model." Nothing in this repository closes any of
+physical realization rather than the model". Nothing in this repository closes any of
 them. A design leaning on polynomial-time certifiability, or on the floor holding, is
 leaning on something unproved rather than on something settled.
+
+## Where each attribution is checked
+
+Every quotation of the source above is verbatim, after markup (emphasis, code spans, math
+macros) is removed, at the ref in this table of the source repository
+(`github.com/nrdxp/factoring-trust`). Tag `rc1` is a tagged release; `5f9f7fb` is an
+ancestor of the source's `master` and not of `rc1`. The quoted theorem names are cited at
+`rc1`, where each is a Lean declaration.
+
+| quotation (opening words)                         | ref       |
+| :------------------------------------------------ | :-------- |
+| "is free everywhere"                              | `5f9f7fb` |
+| "an explicit modeling hypothesis about the fiber" | `5f9f7fb` |
+| "one self-contained certificate serves forever"   | `5f9f7fb` |
+| "Row 1 is inclusion"                              | `5f9f7fb` |
+| "Row 1 — (D, C, M), the verifiable cell"          | `rc1`     |
+| "The trichotomy characterizes trust that is"      | `5f9f7fb` |
+| "an admitted signer or attestor"                  | `5f9f7fb` |
+| "provenance and attestation frameworks exist"     | `rc1`     |
+| "an admitted judgment"                            | `5f9f7fb` |
+| "A corroboration is an admitted party's"          | `5f9f7fb` |
+| "honesty is only ever refutative"                 | `rc1`     |
+| "for every repair this model's mechanized"        | `5f9f7fb` |
+| "Monotonicity's identification with"              | `rc1`     |
+| "under `Total`, the trust surface of a chain"     | `5f9f7fb` |
+| "with no hash function in it"                     | `5f9f7fb` |
+| "the polynomial stratum, the source-integrity"    | `5f9f7fb` |
+| "the frozen Lean model" (tag message)             | `rc1`     |
+
+The paper title cited at the top is that of `rc1` and `5f9f7fb`; it does not appear at the
+source's current head. The `SPEC.md` quotation under [party kinds](#party-kinds) is from this
+repository's `SPEC.md` §2.2.16.
