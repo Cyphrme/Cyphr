@@ -106,8 +106,6 @@ async fn push_never_reports_failure_for_a_write_that_landed() {
 /// broken).
 #[tokio::test]
 async fn push_with_canonical_principal_id_is_accepted_and_receipted() {
-    use coz::base64ct::{Base64UrlUnpadded, Encoding};
-
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
 
