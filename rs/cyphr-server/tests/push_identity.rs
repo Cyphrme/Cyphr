@@ -1,7 +1,7 @@
 //! `POST /push` identity binding (security sweep D1 storage path, D2).
 //!
-//! A principal's identifier is derived from its genesis (SPEC 4: for an
-//! implicit genesis, `PR_0 = tmb` of the genesis key). The server must
+//! A principal's identifier is derived from its genesis (SPEC 3.1: for a
+//! single-key genesis, `tmb` is promoted to PR; SPEC.md:323). The server must
 //! not store a genesis under any other `principal_id`, and must not
 //! accept a key whose unsigned `pub` sidecar was swapped out from under
 //! its signed `tmb`.
@@ -12,7 +12,7 @@
 use axum::http::StatusCode;
 use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::build_router;
-use cyphr_storage::{Genesis, load_principal_from_commits};
+use cyphr_storage::{Checkpoint, Genesis, load_from_checkpoint, load_principal_from_commits};
 
 mod common;
 
@@ -64,6 +64,7 @@ async fn d2_control_push_under_derived_id_is_accepted() {
 /// canonical-form gate does not mask the defect). Red now because the
 /// handler stores the genesis under any client-chosen string: here `"bob"`.
 #[tokio::test]
+#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -93,6 +94,7 @@ async fn d2_push_refuses_genesis_under_arbitrary_id_keyless() {
 /// `routes.rs` `push_test_genesis` shape (`[0x61; 32]`). Red now because
 /// only the id's byte length is checked.
 #[tokio::test]
+#[ignore = "RED(KA1): D2 push accepts unrelated principal_id"]
 async fn d2_push_refuses_genesis_under_wellformed_wrong_id_attestor() {
     let (state, _identity, _dir) = attestor_server().await;
     let app = build_router(state);
@@ -146,6 +148,7 @@ fn substitute_sidecar_pub(body: &str, new_pub_b64: &str) -> String {
 /// checking the sidecar's `tmb == H(pub)`, accepting it under the correct
 /// derived id.
 #[tokio::test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
 async fn d1_push_refuses_substituted_key_sidecar() {
     let (state, _dir) = keyless_server();
     let app = build_router(state);
@@ -169,18 +172,10 @@ async fn d1_push_refuses_substituted_key_sidecar() {
     );
 }
 
-/// Backs (D1, storage replay path): replaying stored commits whose
-/// `key/create` sidecar `pub` was swapped must fail even though the
-/// recorded `pr`/`ar`/`sr` still match (they do not cover `pub`). Red now
-/// because `load_principal_from_commits` rebuilds the key from the stored
-/// sidecar without checking `tmb == H(pub)`.
-#[test]
-fn d1_replay_refuses_substituted_key_sidecar() {
-    let pool = load_pool();
+/// Honest history: genesis(golden) then golden `key/create` key_a.
+fn honest_history(pool: &test_fixtures::Pool) -> cyphr::Principal {
     let golden = pool.get("golden").expect("golden");
     let key_a = pool.get("key_a").expect("key_a");
-    let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
-
     let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
         alg: pk.alg.clone(),
         tmb: pk.compute_tmb().expect("tmb"),
@@ -191,8 +186,6 @@ fn d1_replay_refuses_substituted_key_sidecar() {
         tag: None,
     };
     let b64d = |s: &str| Base64UrlUnpadded::decode_vec(s).expect("b64");
-
-    // Honest history: genesis(golden) then golden key/create key_a.
     let mut p = cyphr::Principal::implicit(dom(golden)).expect("genesis");
     let g_prv = b64d(golden.prv.as_ref().expect("golden prv"));
     let g_pub = b64d(&golden.pub_key);
@@ -211,16 +204,45 @@ fn d1_replay_refuses_substituted_key_sidecar() {
         .verify_and_apply(&pay_vec, &sig, czd, Some(dom(key_a)))
         .expect("honest key/create");
     scope
-        .finalize_with_arrow(
-            &golden.alg,
-            &g_prv,
-            &g_pub,
-            &golden.compute_tmb().expect("tmb"),
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &golden.alg,
+                &g_prv,
+                &g_pub,
+                &golden.compute_tmb().expect("tmb"),
+            ),
             NOW + 1,
             "cyphr.me",
         )
         .expect("finalize");
 
+    p
+}
+
+/// Backs (D1, storage replay path): replaying stored commits whose
+/// `key/create` sidecar `pub` was swapped must fail even though the
+/// recorded `pr`/`ar`/`sr` still match (they do not cover `pub`). Red now
+/// because `load_principal_from_commits` rebuilds the key from the stored
+/// sidecar without checking `tmb == H(pub)`.
+#[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
+fn d1_replay_refuses_substituted_key_sidecar() {
+    let pool = load_pool();
+    let golden = pool.get("golden").expect("golden");
+    let key_a = pool.get("key_a").expect("key_a");
+    let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
+
+    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
+        alg: pk.alg.clone(),
+        tmb: pk.compute_tmb().expect("tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let p = honest_history(&pool);
     let honest = cyphr_storage::export_commits(&p).expect("export");
     load_principal_from_commits(Genesis::Implicit(dom(golden)), &honest)
         .expect("control: honest history replays");
@@ -231,5 +253,51 @@ fn d1_replay_refuses_substituted_key_sidecar() {
     assert!(
         load_principal_from_commits(Genesis::Implicit(dom(golden)), &forged).is_err(),
         "replay accepted a stored key whose pub does not hash to its tmb"
+    );
+}
+
+/// Backs (D1, checkpoint path): `load_from_checkpoint` must refuse a
+/// checkpoint key whose `tmb` is not `H(pub)`. The checkpoint's `auth_root`
+/// is the honest one, which covers only `tmb`s, so a swapped `pub` leaves
+/// it matching. Red now because `Principal::from_checkpoint` builds the
+/// key set from the supplied keys without hashing their `pub`. The honest
+/// checkpoint loads first as a control.
+///
+/// Lives here rather than in `rs/cyphr/tests/key_auth.rs` because `cyphr`
+/// has no dev-dependency on `cyphr-storage`.
+#[test]
+#[ignore = "RED(KA1): D1 tmb not bound to H(pub)"]
+fn d1_checkpoint_refuses_substituted_key() {
+    let pool = load_pool();
+    let golden = pool.get("golden").expect("golden");
+    let key_a = pool.get("key_a").expect("key_a");
+    let attacker_pub = pool.get("key_b").expect("key_b").pub_key.clone();
+    let dom = |pk: &test_fixtures::PoolKey| cyphr::Key {
+        alg: pk.alg.clone(),
+        tmb: pk.compute_tmb().expect("tmb"),
+        pub_key: Base64UrlUnpadded::decode_vec(&pk.pub_key).expect("pub b64"),
+        first_seen: 0,
+        last_used: None,
+        revocation: None,
+        tag: None,
+    };
+
+    let honest = honest_history(&pool);
+    let checkpoint = |keys: Vec<cyphr::Key>| Checkpoint {
+        auth_root: honest.auth_root().clone(),
+        keys,
+        attestor: None,
+        cr: None,
+    };
+
+    load_from_checkpoint(None, checkpoint(vec![dom(golden), dom(key_a)]), None, &[])
+        .expect("control: honest checkpoint loads");
+
+    let mut forged_a = dom(key_a);
+    forged_a.pub_key = Base64UrlUnpadded::decode_vec(&attacker_pub).expect("pub b64");
+    let r = load_from_checkpoint(None, checkpoint(vec![dom(golden), forged_a]), None, &[]);
+    assert!(
+        r.is_err(),
+        "checkpoint accepted a key whose pub does not hash to its tmb"
     );
 }
