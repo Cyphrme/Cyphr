@@ -756,11 +756,7 @@ async fn revoked_key_session() -> (Arc<AppState>, String, String, String) {
 #[tokio::test]
 async fn token_key_survivor_session_outlives_sibling_revoke() {
     let (state, followup, _revoked, survivor) = revoked_key_session().await;
-    let (status, json) = send(
-        push_request(followup, Some(&survivor)),
-        build_router(state),
-    )
-    .await;
+    let (status, json) = send(push_request(followup, Some(&survivor)), build_router(state)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -778,11 +774,7 @@ async fn token_key_survivor_session_outlives_sibling_revoke() {
 #[ignore = "RED(SO1): a token outlives the revocation of the key that logged in (#162)"]
 async fn token_key_revoked_session_refused_at_push() {
     let (state, followup, revoked, _survivor) = revoked_key_session().await;
-    let (status, json) = send(
-        push_request(followup, Some(&revoked)),
-        build_router(state),
-    )
-    .await;
+    let (status, json) = send(push_request(followup, Some(&revoked)), build_router(state)).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
