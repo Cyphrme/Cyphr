@@ -308,13 +308,13 @@ split is not arbitrary and it decides your backup policy: everything under
 `record/` is irrecoverable if lost, and `index/` is the only directory you
 may ever `rm -rf`.
 
-| Path                            | Rebuildable?                  | Lose it and…                                |
-| :------------------------------ | :----------------------------- | :------------------------------------------ |
-| `record/blobs/`                 | No — this is the data         | Every principal you host is gone.           |
-| `index/`                        | Yes, from `record/`           | Nothing, after a rebuild.                   |
-| `record/observations/`          | No                            | Every key declared dead comes back to life. |
-| `record/admission/`             | No                            | Every spent invite token becomes reusable.  |
-| `record/server-principal.json`  | By hand, from the signing key | The server will not start. See below.       |
+| Path                           | Rebuildable?                  | Lose it and…                                |
+| :----------------------------- | :---------------------------- | :------------------------------------------ |
+| `record/blobs/`                | No — this is the data         | Every principal you host is gone.           |
+| `index/`                       | Yes, from `record/`           | Nothing, after a rebuild.                   |
+| `record/observations/`         | No                            | Every key declared dead comes back to life. |
+| `record/admission/`            | No                            | Every spent invite token becomes reusable.  |
+| `record/server-principal.json` | By hand, from the signing key | The server will not start. See below.       |
 
 **The invite tokens file belongs in your backup plan even though it is not
 in this table.** Under `policy = "invite"` it does not have to live inside
@@ -360,7 +360,7 @@ ERROR cyphr_server: server exited with error error=missing data/record/server-pr
 ```
 
 That detection only works before the signing key's first rotation — it
-recomputes the genesis key from the *current* key to check whether the
+recomputes the genesis key from the _current_ key to check whether the
 engine already has a chain there, which is the genesis key only pre-rotation.
 After a rotation, a missing sidecar goes undetected: the server assumes a
 fresh boot and creates a second, unrelated principal instead of erring.

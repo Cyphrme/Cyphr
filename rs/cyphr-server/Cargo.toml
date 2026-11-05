@@ -46,14 +46,16 @@ tracing-subscriber.workspace = true
 uuid.workspace               = true
 
 [dev-dependencies]
-blake3         = { workspace = true }
-coz            = { workspace = true }
+blake3 = { workspace = true }
+coz = { workspace = true }
+cyphr-storage = { path = "../cyphr-storage", version = "0.1.0", features = [
+  "conformance-tests",
+] }
 http-body-util = "0.1"
-proptest       = { workspace = true }
-serde_json     = { workspace = true }
-socket2        = "0.6"
-cyphr-storage  = { path = "../cyphr-storage", version = "0.1.0", features = ["conformance-tests"] }
-tempfile       = "3"
-test-fixtures  = { path = "../test-fixtures" }
-tokio          = { workspace = true }
-tower          = { version = "0.5", features = ["util"] }
+proptest = { workspace = true }
+serde_json = { workspace = true }
+socket2 = "0.6"
+tempfile = "3"
+test-fixtures = { path = "../test-fixtures" }
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
