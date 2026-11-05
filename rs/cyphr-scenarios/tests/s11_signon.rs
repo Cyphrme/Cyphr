@@ -80,4 +80,10 @@ async fn s11_signon() {
         removed_at.elapsed() <= window,
         "the session outlived the window"
     );
+    // The ended session's token is dead on the channel it came from, too.
+    // PROVISIONAL: the kind for an ended session awaits the architect.
+    match h.ok(rp.present(&session.token, Channel::Original).await) {
+        Presented::Refused(r) => assert_eq!(r.kind, RefusalKind::KeyNotActive),
+        Presented::Accepted => panic!("an ended session's token was accepted"),
+    }
 }
