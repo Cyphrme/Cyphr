@@ -915,8 +915,7 @@ async fn crash_before_manifest_write_leaves_commit_fully_absent() {
 }
 
 /// The commit's intra-commit transaction order must be readable directly
-/// from its durable manifest -- not via `reindex`'s permutation search --
-/// and must match the exact order `ingest_commit` was called with.
+/// from its durable manifest, and must match the exact order `ingest_commit` was called with.
 #[tokio::test]
 async fn manifest_retains_ingest_order_without_search() {
     let engine = test_engine();
@@ -948,8 +947,7 @@ async fn manifest_retains_ingest_order_without_search() {
     ];
 
     // Read the manifest back directly from the blob store -- the same
-    // mechanism `rebuild_index_from_manifests` uses -- rather than via
-    // `reindex`'s permutation search.
+    // mechanism `rebuild_index_from_manifests` uses.
     let manifest_bytes = engine
         .blob_store()
         .get(
@@ -980,204 +978,6 @@ async fn manifest_retains_ingest_order_without_search() {
     // needs to re-derive it via search.
     let tip = engine.get_tip("alice").await.unwrap().unwrap();
     assert_eq!(manifest.commit.ars, vec![tip.ar]);
-}
-
-#[tokio::test]
-async fn test_reindex_recovery() {
-    use coz::base64ct::Encoding;
-
-    let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let blob_store = MemoryBlobStore::new();
-    let indexer = MemoryIndexer::new();
-    let engine = StorageEngine::new(blob_store.clone(), indexer);
-
-    // Compute the actual principal_id from the genesis key
-    let key = golden_key_to_domain(&genesis_keys[0]);
-    let temp_principal = cyphr::Principal::implicit(key).unwrap();
-    let pr_bytes = temp_principal
-        .pr()
-        .as_multihash()
-        .get(cyphr::state::HashAlg::Sha256)
-        .unwrap();
-    let principal_id = format!(
-        "SHA-256:{}",
-        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
-    );
-
-    // Submit all commits.
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-
-        engine
-            .submit_commit(&principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    // Create and write a mock genesis cozy to the BlobStore so reindex() can bootstrap the
-    // principal.
-    let genesis_key = &genesis_keys[0];
-    let genesis_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/create",
-            "now": 1000000,
-            "pre": "",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig",
-        "key": genesis_key
-    });
-
-    let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let _genesis_blob_hash = blob_store.put(&genesis_coz_bytes).await.unwrap();
-
-    // Get original tip state.
-    let original_tip = engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("tip should exist");
-
-    // Get a digest to resolve later as a sanity check.
-    let tagged_digest: TaggedDigest = original_tip.pr.parse().unwrap();
-    let original_entity = engine
-        .indexer
-        .resolve_digest(&tagged_digest)
-        .await
-        .unwrap()
-        .unwrap();
-
-    // Create a new engine sharing the same blob store but with a completely empty indexer.
-    let new_indexer = MemoryIndexer::new();
-    let recovery_engine = StorageEngine::new(blob_store, new_indexer);
-
-    // Reindex from the blobs.
-    recovery_engine
-        .reindex(&[], false)
-        .await
-        .expect("reindex failed");
-
-    // Verify recovery.
-    let recovered_tip = recovery_engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("recovered tip should exist");
-
-    // Recovered tip should have 1 more commit (the mock genesis commit).
-    assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
-    assert_eq!(recovered_tip.pr, original_tip.pr);
-    assert_eq!(recovered_tip.sr, original_tip.sr);
-    assert_eq!(recovered_tip.ar, original_tip.ar);
-
-    // Verify digest resolution.
-    let recovered_entity = recovery_engine
-        .indexer
-        .resolve_digest(&tagged_digest)
-        .await
-        .unwrap()
-        .expect("digest should resolve in recovered indexer");
-
-    assert_eq!(recovered_entity.blob_hash, original_entity.blob_hash);
-}
-
-#[tokio::test]
-async fn test_reindex_recovery_with_crashed_commit() {
-    use coz::base64ct::Encoding;
-
-    let fixture = load_golden("mutations", "transaction_sequence_replay");
-    let genesis_keys = fixture["genesis_keys"].as_array().unwrap();
-    let commits = fixture["commits"].as_array().unwrap();
-
-    let blob_store = MemoryBlobStore::new();
-    let indexer = MemoryIndexer::new();
-    let engine = StorageEngine::new(blob_store.clone(), indexer);
-
-    // Compute the actual principal_id from the genesis key
-    let key = golden_key_to_domain(&genesis_keys[0]);
-    let temp_principal = cyphr::Principal::implicit(key).unwrap();
-    let pr_bytes = temp_principal
-        .pr()
-        .as_multihash()
-        .get(cyphr::state::HashAlg::Sha256)
-        .unwrap();
-    let principal_id = format!(
-        "SHA-256:{}",
-        coz::base64ct::Base64UrlUnpadded::encode_string(pr_bytes)
-    );
-
-    // Submit all commits.
-    for commit in commits {
-        let blobs = build_raw_blobs(commit);
-        let blob_slices: Vec<&[u8]> = blobs.iter().map(|b| b.as_slice()).collect();
-        let genesis = make_genesis(genesis_keys);
-
-        engine
-            .submit_commit(&principal_id, Some(genesis), &blob_slices)
-            .await
-            .expect("submit_commit failed");
-    }
-
-    // Write a mock genesis cozy to the BlobStore
-    let genesis_key = &genesis_keys[0];
-    let genesis_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/create",
-            "now": 1000000,
-            "pre": "",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig",
-        "key": genesis_key
-    });
-
-    let genesis_coz_bytes = serde_json::to_vec(&genesis_coz_json).unwrap();
-    let _ = blob_store.put(&genesis_coz_bytes).await.unwrap();
-
-    // Now write a random transaction cozy simulating a crashed commit write (missing finalizer
-    // cozy)
-    let crashed_coz_json = serde_json::json!({
-        "pay": {
-            "typ": "cyphr.me/cyphr/key/add",
-            "now": 1800000000,
-            "pre": "some-pre-hash",
-            "tmb": genesis_key["tmb"].as_str().unwrap(),
-            "alg": genesis_key["alg"].as_str().unwrap(),
-        },
-        "sig": "mock-sig-crashed",
-        "key": genesis_key
-    });
-    let crashed_coz_bytes = serde_json::to_vec(&crashed_coz_json).unwrap();
-    let _ = blob_store.put(&crashed_coz_bytes).await.unwrap();
-
-    // Create a new engine sharing the same blob store but with a completely empty indexer.
-    let new_indexer = MemoryIndexer::new();
-    let recovery_engine = StorageEngine::new(blob_store, new_indexer);
-
-    // Reindex from the blobs. This must succeed, skipping the crashed/unfinalized cozy.
-    recovery_engine
-        .reindex(&[], false)
-        .await
-        .expect("reindex recovery with crashed commit failed");
-
-    // Verify recovery.
-    let recovered_tip = recovery_engine
-        .get_tip(&principal_id)
-        .await
-        .expect("get_tip failed")
-        .expect("recovered tip should exist");
-
-    // Tip commit count should match original_tip + 1 (for genesis_coz), completely ignoring the
-    // crashed cozy.
-    let original_tip = engine.get_tip(&principal_id).await.unwrap().unwrap();
-    assert_eq!(recovered_tip.commit_count, original_tip.commit_count + 1);
 }
 
 // ========================================================================

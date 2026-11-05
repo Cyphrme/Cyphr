@@ -53,7 +53,7 @@ fn main() -> ExitCode {
                     "Starting total index rebuild in {}",
                     state.config.data_dir.display()
                 );
-                state.engine.reindex(&[], true).await?;
+                state.engine.rebuild_index_from_scratch().await?;
                 tracing::info!("Index rebuild completed successfully");
                 Ok::<(), Box<dyn std::error::Error>>(())
             }) {

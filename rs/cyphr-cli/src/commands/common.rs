@@ -157,8 +157,6 @@ fn extract_key_from_obj(key_obj: &serde_json::Value) -> crate::Result<Key> {
 /// Parse the CLI options into a CliStorageEngine.
 pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
     let store_uri = &cli.store;
-    let keystore_path = &cli.keystore;
-    let total_check = cli.total_check;
 
     if let Some(path) = store_uri.strip_prefix("file:") {
         let path = std::path::Path::new(path);
@@ -175,19 +173,12 @@ pub fn parse_store(cli: &crate::Cli) -> crate::Result<CliStorageEngine> {
                     .map_err(|e| e.to_string())
             });
 
-        // Open keystore and extract keys
-        let keystore = JsonKeyStore::open(keystore_path)?;
-        let thumbprints = keystore.list();
-        let mut keys = Vec::new();
-        for tmb in &thumbprints {
-            if let Ok(key) = load_key_from_keystore(&keystore, tmb) {
-                keys.push(key);
-            }
+        // The engine heals manifest-backed gaps lazily on first use; only an
+        // explicit total check discards the index and rebuilds it.
+        if cli.total_check {
+            block_on(engine.rebuild_index_from_scratch())?
+                .map_err(|e| crate::Error::Storage(e.to_string()))?;
         }
-
-        // Reindex on startup synchronously
-        block_on(engine.reindex(&keys, total_check))?
-            .map_err(|e| crate::Error::Storage(e.to_string()))?;
 
         Ok(engine)
     } else {
