@@ -131,8 +131,7 @@ impl AppState {
         let http_client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("failed to build http client");
+            .build()?;
 
         let sync_locks =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
@@ -338,7 +337,7 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     // --workspace` run, where scheduler contention widens it enough to
     // lose the race in practice, not just in principle.
     #[cfg(unix)]
-    let signals = UnixShutdownSignals::install();
+    let signals = UnixShutdownSignals::install()?;
 
     let listen_addr = config.listen.clone();
     let mut state = AppState::new(config)?;
@@ -424,12 +423,12 @@ struct UnixShutdownSignals {
 
 #[cfg(unix)]
 impl UnixShutdownSignals {
-    fn install() -> Self {
+    fn install() -> std::io::Result<Self> {
         use tokio::signal::unix::{SignalKind, signal};
-        Self {
-            interrupt: signal(SignalKind::interrupt()).expect("failed to install SIGINT handler"),
-            terminate: signal(SignalKind::terminate()).expect("failed to install SIGTERM handler"),
-        }
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+        })
     }
 }
 
@@ -459,9 +458,12 @@ async fn shutdown_signal(mut signals: UnixShutdownSignals) {
 /// `ctrl_c()` is the portable signal tokio exposes there.
 #[cfg(not(unix))]
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to listen for ctrl_c");
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        // Returning would start a graceful shutdown nobody asked for; with
+        // no way to observe Ctrl-C the server keeps running until killed.
+        tracing::error!(%err, "cannot listen for ctrl_c; graceful shutdown unavailable");
+        std::future::pending::<()>().await;
+    }
     tracing::info!("shutdown signal received, draining connections");
 }
 
