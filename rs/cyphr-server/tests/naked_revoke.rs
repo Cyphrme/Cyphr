@@ -368,11 +368,8 @@ fn sign_key_create_commit(
         Base64UrlUnpadded::decode_vec(&signer_tmb_b64).expect("valid signer tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &signer.alg,
-            &signer_prv,
-            &signer_pub,
-            &signer_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(&signer.alg, &signer_prv, &signer_pub, &signer_tmb),
             now,
             "cyphr.me",
         )
@@ -1324,11 +1321,13 @@ fn poison_genesis_push_body(
         Base64UrlUnpadded::decode_vec(&genesis_tmb_b64).expect("genesis tmb base64"),
     );
     scope
-        .finalize_with_arrow(
-            &genesis.alg,
-            &genesis_prv,
-            &genesis_pub,
-            &genesis_tmb,
+        .finalize_with_software(
+            &cyphr::signer::SoftwareSigner::new(
+                &genesis.alg,
+                &genesis_prv,
+                &genesis_pub,
+                &genesis_tmb,
+            ),
             now,
             "cyphr.me",
         )

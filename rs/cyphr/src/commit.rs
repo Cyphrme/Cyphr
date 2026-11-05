@@ -5,6 +5,7 @@
 //! single commit, not cumulatively.
 
 use crate::parsed_coz::VerifiedCoz;
+use crate::signer::{Signer, SoftwareSigner};
 use crate::state::{AuthRoot, PrincipalRoot, StateRoot, TaggedCzd};
 
 // ============================================================================
@@ -450,25 +451,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
             .as_ref()
             .ok_or(crate::error::Error::MalformedPayload)?;
 
-        // [pre-mutation-key-rule]: Check authorization against the snapshot
-        // of keys that were active when this commit began, not the eagerly
-        // mutated live state. Keys added during the commit are also accepted.
-        let signer_key = {
-            if self.principal.is_key_active(signer_tmb) {
-                self.principal
-                    .get_key(signer_tmb)
-                    .ok_or(crate::error::Error::UnknownKey)?
-            } else if self.projected.is_key_active(signer_tmb) {
-                // Key was added during this commit — accept it
-                self.projected
-                    .get_key(signer_tmb)
-                    .ok_or(crate::error::Error::UnknownKey)?
-            } else if self.principal.is_key_revoked(signer_tmb) {
-                return Err(crate::error::Error::KeyRevoked);
-            } else {
-                return Err(crate::error::Error::UnknownKey);
-            }
-        };
+        let signer_key = self.resolve_signer(signer_tmb)?;
 
         // Verify signature and parse coz
         let vtx = verify_coz(pay_json, sig, signer_key, czd, new_key)?;
@@ -567,41 +550,57 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         claimed_digest == computed_digest.as_slice()
     }
 
-    /// Finalize the commit by generating and signing a `commit/create` coz with the `arrow` field.
+    /// Resolve `tmb` to the key authorized to sign in this scope.
     ///
-    /// This replaces `finalize_with_commit` and splits the mutation from finality.
-    /// The caller MUST have previously applied transactions via `verify_and_apply` or `apply`.
-    ///
-    /// # Arguments
-    ///
-    /// * `alg` - Signer algorithm string (e.g. "ES256")
-    /// * `prv_key` - Private key bytes for signing the Arrow
-    /// * `pub_key` - Public key bytes
-    /// * `tmb` - The thumbprint of the signer key
-    /// * `now` - Timestamp for the commit coz
+    /// [pre-mutation-key-rule]: authorization is checked against the keys
+    /// that were active when this commit began, not the eagerly mutated live
+    /// state; keys added during the commit are also accepted. Shared by
+    /// mutation verification and the terminal `commit/create` signer so both
+    /// obey one rule.
+    fn resolve_signer(&self, tmb: &coz::Thumbprint) -> crate::error::Result<&crate::key::Key> {
+        use crate::error::Error;
+        if self.principal.is_key_active(tmb) {
+            self.principal.get_key(tmb).ok_or(Error::UnknownKey)
+        } else if self.projected.is_key_active(tmb) {
+            self.projected.get_key(tmb).ok_or(Error::UnknownKey)
+        } else if self.principal.is_key_revoked(tmb) {
+            Err(Error::KeyRevoked)
+        } else {
+            Err(Error::UnknownKey)
+        }
+    }
+
+    /// Step 1 of the three-step finalize: compute the Arrow and the
+    /// `commit/create` payload for `signer`'s key, without signing and
+    /// without touching the scope. Pass [`PreparedCommit::cad`] to
+    /// [`Signer::sign`] on the caller's own executor, then hand the result to
+    /// [`finish_commit`](Self::finish_commit).
     ///
     /// # Errors
     ///
     /// - `EmptyCommit`: if no mutations exist.
-    pub fn finalize_with_arrow(
-        mut self,
-        alg: &str,
-        prv_key: &[u8],
-        pub_key: &[u8],
-        tmb: &coz::Thumbprint,
+    pub fn prepare_commit<K: Signer + ?Sized>(
+        &self,
+        signer: &K,
         now: i64,
         authority: &str,
-    ) -> crate::error::Result<&'a Commit> {
+    ) -> crate::error::Result<PreparedCommit> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
-        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
         use crate::state::{compute_dr, hash_alg_from_str, hash_sorted_concat_bytes};
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
         }
 
+        // The signer is only a claim: bind it to the principal. The stored
+        // key (never the signer's own copy) supplies alg and public key.
+        let stored = self.resolve_signer(signer.tmb())?;
+        if signer.alg() != stored.alg {
+            return Err(crate::error::Error::InvalidSignature);
+        }
+        let alg = stored.alg.as_str();
         let signer_hash_alg = hash_alg_from_str(alg)?;
 
         // 1. Recompute KT → AR-node → SR-node to get post-mutation SR for Arrow construction. This
@@ -624,22 +623,17 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let (tmr, ..) = self.pending.compute_roots(&[signer_hash_alg]);
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
-        // 2. Compute Arrow = MR(pre, sr, tmr)
-        // Arrow computation requires pre, sr, tmr slices
-        // pre is the principal root of the previous state!
+        // 2. Compute Arrow = MR(pre, sr, tmr); pre is the previous state's principal root.
         let pre = &self.principal.pr;
 
         let pre_bytes = pre.0.arrow_component_bytes(signer_hash_alg)?;
         let sr_bytes = sr.0.arrow_component_bytes(signer_hash_alg)?;
         let tmr_bytes = tmr.0.arrow_component_bytes(signer_hash_alg)?;
 
-        // Arrow = MR(pre, fwd, TMR)
         let arrow_digest = hash_sorted_concat_bytes(
             signer_hash_alg,
             &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
         );
-
-        // Arrow string format
         let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
@@ -653,7 +647,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         pay.insert("alg".to_string(), json!(alg));
         pay.insert("arrow".to_string(), json!(arrow_tagged));
         pay.insert("now".to_string(), json!(now));
-        pay.insert("tmb".to_string(), json!(tmb.to_b64()));
+        pay.insert("tmb".to_string(), json!(stored.tmb.to_b64()));
         pay.insert("typ".to_string(), json!(commit_typ));
 
         let mut pay_obj = serde_json::Value::Object(pay);
@@ -664,25 +658,131 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
 
         let pay_vec =
             serde_json::to_vec(&pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
-        let (sig, cad) = coz::sign_json(&pay_vec, alg, prv_key, pub_key)
+        let cad = coz::canonical_hash_for_alg(&pay_vec, alg, None)
             .ok_or(crate::error::Error::MalformedPayload)?;
-        let czd = coz::czd_for_alg(&cad, &sig, alg).ok_or(crate::error::Error::MalformedPayload)?;
+
+        Ok(PreparedCommit {
+            alg: alg.to_string(),
+            pub_key: stored.pub_key.clone(),
+            signer_hash_alg,
+            pay_obj,
+            pay_vec,
+            cad,
+        })
+    }
+
+    /// Step 3 of the three-step finalize: verify `sig` over the prepared pay
+    /// and append the commit. A signature that does not verify under the
+    /// principal's stored key for the signer (resolved in `prepare_commit`,
+    /// not the signer's own copy) (empty, malformed, wrong message, high-S) is
+    /// `InvalidSignature` and the scope is dropped unchanged; the core never
+    /// normalizes S (see [`crate::signer`]).
+    ///
+    /// This is synchronous and reaches the commit-root bridge's
+    /// `futures::executor::block_on`, so it must not run inside a
+    /// `futures` executor until that bridge is removed. Await the signature
+    /// first, then call this outside any such executor.
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidSignature`: `sig` does not verify.
+    pub fn finish_commit(
+        mut self,
+        prepared: PreparedCommit,
+        sig: Vec<u8>,
+    ) -> crate::error::Result<&'a Commit> {
+        use crate::parsed_coz::{ParsedCoz, VerifiedCoz};
+
+        let PreparedCommit {
+            alg,
+            pub_key,
+            signer_hash_alg,
+            pay_obj,
+            pay_vec,
+            cad,
+        } = prepared;
+
+        if coz::verify_json(&pay_vec, &sig, &alg, &pub_key) != Some(true) {
+            return Err(crate::error::Error::InvalidSignature);
+        }
+        let czd =
+            coz::czd_for_alg(&cad, &sig, &alg).ok_or(crate::error::Error::MalformedPayload)?;
 
         let raw = coz::CozJson {
             pay: pay_obj.clone(),
-            sig: sig.clone(),
+            sig,
         };
-
-        let parsed_pay: coz::Pay = serde_json::from_value(pay_obj.clone())
-            .map_err(|_| crate::error::Error::MalformedPayload)?;
+        let parsed_pay: coz::Pay =
+            serde_json::from_value(pay_obj).map_err(|_| crate::error::Error::MalformedPayload)?;
 
         let arrow_tx = ParsedCoz::from_pay(&parsed_pay, czd, signer_hash_alg, raw)?;
         let arrow_vtx = VerifiedCoz::from_parts(arrow_tx, None);
 
-        // 4. Push commit marker and finalize
+        // Push commit marker and finalize
         self.pending
             .push_tx(crate::transaction::Transaction(vec![arrow_vtx]));
         self.finalize()
+    }
+
+    /// Async convenience over prepare, sign, finish.
+    ///
+    /// Do NOT drive this future with a `futures::executor` (`block_on`,
+    /// `LocalPool`) until W1 removes the commit-root bridge's `block_on`:
+    /// the finish step would nest executors and panic. Tokio and
+    /// wasm-bindgen-futures are fine. Under a `futures` executor, call the
+    /// three steps separately with the sign step awaited there and
+    /// `finish_commit` called after it returns.
+    ///
+    /// # Errors
+    ///
+    /// - `Signer`: the backend failed.
+    /// - `InvalidSignature`: see [`finish_commit`](Self::finish_commit).
+    /// - `EmptyCommit`: if no mutations exist.
+    pub async fn finalize_with_signer<K: Signer + ?Sized>(
+        self,
+        signer: &K,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<&'a Commit> {
+        let prepared = self.prepare_commit(signer, now, authority)?;
+        let sig = signer.sign(prepared.cad()).await?;
+        self.finish_commit(prepared, sig)
+    }
+
+    /// Synchronous finalize for an in-memory [`SoftwareSigner`], which never
+    /// suspends. Safe under any executor.
+    ///
+    /// # Errors
+    ///
+    /// As [`finalize_with_signer`](Self::finalize_with_signer).
+    pub fn finalize_with_software(
+        self,
+        signer: &SoftwareSigner,
+        now: i64,
+        authority: &str,
+    ) -> crate::error::Result<&'a Commit> {
+        let prepared = self.prepare_commit(signer, now, authority)?;
+        let sig = signer.sign_now(prepared.cad())?;
+        self.finish_commit(prepared, sig)
+    }
+}
+
+/// Output of [`CommitScope::prepare_commit`]: the unsigned `commit/create`
+/// payload awaiting a signature over [`cad`](Self::cad).
+#[derive(Debug)]
+pub struct PreparedCommit {
+    alg: String,
+    pub_key: Vec<u8>,
+    signer_hash_alg: crate::state::HashAlg,
+    pay_obj: serde_json::Value,
+    pay_vec: Vec<u8>,
+    cad: coz::Cad,
+}
+
+impl PreparedCommit {
+    /// The canonical hash of the commit pay: the message to sign.
+    pub fn cad(&self) -> &coz::Cad {
+        &self.cad
     }
 }
 
@@ -1068,7 +1168,7 @@ mod tests {
     /// Post-mutation SR then has only 2 variants (SHA-256, SHA-512) --
     /// neither matching the SHA-384 signer -- forcing
     /// `arrow_component_bytes`'s multi-variant fold branch.
-    /// `finalize_with_arrow` (construction) must succeed, and
+    /// `finalize_with_software` (construction) must succeed, and
     /// `matches_arrow` (independent verification) must accept the
     /// resulting arrow via the same fallback.
     #[test]
@@ -1099,11 +1199,8 @@ mod tests {
         let genesis_pub = coz::base64ct::Base64UrlUnpadded::decode_vec(&genesis.pub_key)
             .expect("genesis pub base64");
         scope
-            .finalize_with_arrow(
-                &genesis.alg,
-                &genesis_prv,
-                &genesis_pub,
-                &genesis_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&genesis.alg, &genesis_prv, &genesis_pub, &genesis_tmb),
                 now + 1,
                 "cyphr.me",
             )
@@ -1132,11 +1229,8 @@ mod tests {
         let diana_pub =
             coz::base64ct::Base64UrlUnpadded::decode_vec(&diana.pub_key).expect("diana pub base64");
         let commit2 = scope_a
-            .finalize_with_arrow(
-                &diana.alg,
-                &diana_prv,
-                &diana_pub,
-                &diana_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&diana.alg, &diana_prv, &diana_pub, &diana_tmb),
                 now + 3,
                 "cyphr.me",
             )
@@ -1197,7 +1291,7 @@ mod tests {
     /// SHA-256) with ZERO shared hash algorithms at arrow-computation time.
     /// The fwd side has no SHA-384 variant and len==1, so genesis promotion
     /// returns its lone SHA-256 variant for the requested SHA-384.
-    /// `finalize_with_arrow` (construction) and `matches_arrow` (independent
+    /// `finalize_with_software` (construction) and `matches_arrow` (independent
     /// verification) MUST agree. This is the scenario behind forge issue #51.
     #[test]
     fn matches_arrow_accepts_sole_key_algorithm_change() {
@@ -1237,11 +1331,8 @@ mod tests {
         let old_pub =
             coz::base64ct::Base64UrlUnpadded::decode_vec(&old_key.pub_key).expect("old pub base64");
         let commit = scope_a
-            .finalize_with_arrow(
-                &old_key.alg,
-                &old_prv,
-                &old_pub,
-                &old_tmb,
+            .finalize_with_software(
+                &SoftwareSigner::new(&old_key.alg, &old_prv, &old_pub, &old_tmb),
                 now + 1,
                 "cyphr.me",
             )
@@ -1272,7 +1363,7 @@ mod tests {
     /// Storage double that delegates to a real in-memory backend until
     /// armed, then fails every operation. Genesis setup (and any mutation
     /// apply, which never touches storage) succeeds normally; arming right
-    /// before `finalize`/`finalize_with_arrow` isolates the injected
+    /// before `finalize`/`finalize_with_software` isolates the injected
     /// failure to `finalize_commit`'s own durable-write path.
     #[derive(Debug)]
     struct ToggledFailureStorage {
@@ -1478,18 +1569,15 @@ mod tests {
         // failure to finalize_commit's own durable-write path.
         armed.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scope.finalize_with_arrow(
-            &genesis.alg,
-            &prv_bytes,
-            &pub_bytes,
-            &genesis_tmb,
+        let result = scope.finalize_with_software(
+            &SoftwareSigner::new(&genesis.alg, &prv_bytes, &pub_bytes, &genesis_tmb),
             now + 1,
             "cyphr.me",
         );
 
         assert!(
             result.is_err(),
-            "finalize_with_arrow must surface the injected storage failure"
+            "finalize_with_software must surface the injected storage failure"
         );
         assert_eq!(
             principal.pr(),
