@@ -1610,14 +1610,7 @@ impl<S: eml::Storage> Principal<S> {
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
         let tmr = tmr_opt.ok_or(Error::EmptyCommit)?;
 
-        // Compute arrow = hash_sorted_concat(pre, sr, tmr)
-        let pre = &self.pr;
-        let pre_bytes = pre.0.get_or_err(tx_alg)?;
-        let sr_bytes = sr.0.get_or_err(tx_alg)?;
-        let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
-
-        let arrow_digest =
-            crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let arrow_digest = crate::commit::arrow_digest(tx_alg, &self.pr, &sr, &tmr)?;
         let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest)?;
         // Create synthetic commit/create coz with arrow
         let commit_coz = ParsedCoz {
@@ -1923,14 +1916,7 @@ impl<S: eml::Storage> Principal<S> {
             // yet (that happens at the end of this function), so it correctly
             // holds the prior value.
             let tx_alg = tx_algs[0];
-            let pre_bytes = core.pr.0.arrow_component_bytes(tx_alg)?;
-            let sr_bytes = sr.0.arrow_component_bytes(tx_alg)?;
-            let tmr_bytes = tmr.0.get(tx_alg).ok_or(Error::EmptyCommit)?;
-
-            let computed_digest = crate::state::hash_sorted_concat_bytes(
-                tx_alg,
-                &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes],
-            );
+            let computed_digest = crate::commit::arrow_digest(tx_alg, &core.pr, &sr, &tmr)?;
 
             let claimed_digest = claimed_arrow.get(tx_alg).ok_or(Error::CommitMismatch)?;
             if claimed_digest != computed_digest.as_slice() {
@@ -2793,13 +2779,7 @@ mod tests {
         let (tmr_opt, _tcr, _tr) = pending.compute_roots(&[tx_alg]);
         let tmr = tmr_opt.unwrap();
 
-        let pre = &principal.pr;
-        let pre_bytes = pre.0.get_or_err(tx_alg).unwrap();
-        let sr_bytes = sr.0.get_or_err(tx_alg).unwrap();
-        let tmr_bytes = tmr.0.get(tx_alg).unwrap();
-
-        let arrow_digest =
-            crate::state::hash_sorted_concat_bytes(tx_alg, &[pre_bytes, sr_bytes, tmr_bytes]);
+        let arrow_digest = crate::commit::arrow_digest(tx_alg, &principal.pr, &sr, &tmr).unwrap();
         let arrow_md = MultihashDigest::from_single(tx_alg, arrow_digest).unwrap();
 
         let commit_coz = ParsedCoz {

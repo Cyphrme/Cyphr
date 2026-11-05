@@ -297,6 +297,41 @@ impl PendingCommit {
 }
 
 // ============================================================================
+// Arrow
+// ============================================================================
+
+/// Compute the Arrow digest `MR(pre, fwd, TMR)` (SPEC §4.4) at `alg`.
+///
+/// The single definition shared by the write path
+/// ([`CommitScope::prepare_commit`]), the pre-finalize check
+/// ([`CommitScope::matches_arrow`]) and the verifier
+/// (`Principal::finalize_commit`), so the Arrow a commit signs and the one
+/// it is checked against cannot drift apart. Each component is resolved
+/// through [`MultihashDigest::arrow_component_bytes`], which covers a
+/// component that does not carry `alg` (e.g. a `pre` predating the
+/// signer's algorithm).
+///
+/// [`MultihashDigest::arrow_component_bytes`]: crate::multihash::MultihashDigest::arrow_component_bytes
+///
+/// # Errors
+///
+/// `EmptyMultihash` if a component has no variants.
+pub(crate) fn arrow_digest(
+    alg: crate::state::HashAlg,
+    pre: &PrincipalRoot,
+    sr: &StateRoot,
+    tmr: &crate::transaction_root::TransactionMutationRoot,
+) -> crate::error::Result<Vec<u8>> {
+    let pre_bytes = pre.0.arrow_component_bytes(alg)?;
+    let sr_bytes = sr.0.arrow_component_bytes(alg)?;
+    let tmr_bytes = tmr.0.arrow_component_bytes(alg)?;
+    Ok(crate::state::hash_sorted_concat_bytes(
+        alg,
+        &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
+    ))
+}
+
+// ============================================================================
 // CommitScope
 // ============================================================================
 
@@ -340,9 +375,6 @@ pub struct CommitScope<'a, S: eml::Storage = eml::MemoryStorage> {
     projected: crate::principal::Principal<S>,
 }
 
-/// Get `digest`'s bytes for `alg`, falling back to its sole variant when
-/// `digest` doesn't carry `alg` but has exactly one variant of a different
-/// algorithm.
 impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Create a new commit scope for the given principal.
     pub(crate) fn new(principal: &'a mut crate::principal::Principal<S>) -> Self {
@@ -492,7 +524,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
     /// Check if a claimed arrow matches the expected arrow for this commit scope.
     pub fn matches_arrow(&self, claimed_arrow: &crate::multihash::MultihashDigest) -> bool {
         use crate::semantic_tree::derive_state_roots;
-        use crate::state::{compute_dr, derive_hash_algs, hash_sorted_concat_bytes};
+        use crate::state::{compute_dr, derive_hash_algs};
 
         if self.is_empty() {
             return false;
@@ -527,21 +559,10 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         };
 
         // 3. Compute Arrow = MR(pre, sr, tmr)
-        let pre = &self.principal.pr;
-        let Ok(pre_bytes) = pre.0.arrow_component_bytes(signer_hash_alg) else {
+        let Ok(computed_digest) = arrow_digest(signer_hash_alg, &self.principal.pr, &sr, &tmr)
+        else {
             return false;
         };
-        let Ok(sr_bytes) = sr.0.arrow_component_bytes(signer_hash_alg) else {
-            return false;
-        };
-        let Ok(tmr_bytes) = tmr.0.arrow_component_bytes(signer_hash_alg) else {
-            return false;
-        };
-
-        let computed_digest = hash_sorted_concat_bytes(
-            signer_hash_alg,
-            &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
-        );
 
         let Some(claimed_digest) = claimed_arrow.get(signer_hash_alg) else {
             return false;
@@ -588,7 +609,7 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         use coz::base64ct::{Base64UrlUnpadded, Encoding};
         use serde_json::json;
 
-        use crate::state::{compute_dr, hash_alg_from_str, hash_sorted_concat_bytes};
+        use crate::state::{compute_dr, hash_alg_from_str};
 
         if self.is_empty() {
             return Err(crate::error::Error::EmptyCommit);
@@ -624,20 +645,11 @@ impl<'a, S: eml::Storage> CommitScope<'a, S> {
         let tmr = tmr.ok_or(crate::error::Error::EmptyCommit)?;
 
         // 2. Compute Arrow = MR(pre, sr, tmr); pre is the previous state's principal root.
-        let pre = &self.principal.pr;
-
-        let pre_bytes = pre.0.arrow_component_bytes(signer_hash_alg)?;
-        let sr_bytes = sr.0.arrow_component_bytes(signer_hash_alg)?;
-        let tmr_bytes = tmr.0.arrow_component_bytes(signer_hash_alg)?;
-
-        let arrow_digest = hash_sorted_concat_bytes(
-            signer_hash_alg,
-            &[pre_bytes.as_ref(), sr_bytes.as_ref(), tmr_bytes.as_ref()],
-        );
+        let arrow = arrow_digest(signer_hash_alg, &self.principal.pr, &sr, &tmr)?;
         let arrow_tagged = format!(
             "{}:{}",
             signer_hash_alg,
-            Base64UrlUnpadded::encode_string(&arrow_digest)
+            Base64UrlUnpadded::encode_string(&arrow)
         );
 
         // 3. Construct commit/create payload
