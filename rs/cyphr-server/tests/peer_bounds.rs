@@ -175,7 +175,6 @@ const WELL_FORMED_UNKNOWN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 /// impl it catches: validating only on `/tip` (the loop covers `/patch`),
 /// or only emptiness/length. E2E: HTTP in, counted outbound request.
 #[tokio::test]
-#[ignore = "RED(N15a): witness syncs from the authority for any pr string"]
 async fn malformed_pr_triggers_no_outbound_sync() {
     let (url, hits, _authority) = counting_authority().await;
     let (app, _dir) = witness_against(&url).await;

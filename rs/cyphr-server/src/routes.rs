@@ -184,28 +184,48 @@ pub enum IdentityResponse {
 // Handlers
 // ========================================================================
 
+/// Whether `raw` is shaped like a principal identifier: an `ALG:digest`
+/// tagged digest or a bare canonical base64url digest of a supported
+/// length. Peer input, so checked before it can reach an outbound request.
+fn is_principal_ref(raw: &str) -> bool {
+    if raw.contains(':') {
+        raw.parse::<cyphr::state::TaggedDigest>().is_ok()
+    } else {
+        receipt::parse_genesis_id_str(raw).is_ok()
+    }
+}
+
+/// Witness mode only: sync `pr` from the authority before the local read.
+///
+/// A `pr` that is not shaped like a principal identifier is never forwarded:
+/// the local lookup alone answers (not found), so unauthenticated garbage
+/// costs the witness no outbound request. Authority mode is unchanged.
+async fn witness_sync(state: &Arc<AppState>, pr: &str) {
+    if state.config.mode != crate::config::ServerMode::Witness {
+        return;
+    }
+    if !is_principal_ref(pr) {
+        tracing::debug!("witness sync skipped: pr is not a principal identifier");
+        return;
+    }
+    match crate::sync::sync_from_authority(state, pr).await {
+        SyncOutcome::Synced { applied, rejected } => {
+            tracing::debug!(principal = %pr, applied, rejected, "witness sync applied entries");
+        },
+        SyncOutcome::UpToDate => {},
+        SyncOutcome::Failed { reason } => {
+            tracing::warn!(principal = %pr, ?reason, "witness sync failed");
+        },
+    }
+}
+
 /// `GET /tip?pr=<PG>` — current principal state.
 #[tracing::instrument(skip(state))]
 pub async fn tip(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TipQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    if state.config.mode == crate::config::ServerMode::Witness {
-        match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied, rejected } => {
-                tracing::debug!(
-                    principal = %query.pr,
-                    applied,
-                    rejected,
-                    "witness sync applied entries"
-                );
-            },
-            SyncOutcome::UpToDate => {},
-            SyncOutcome::Failed { reason } => {
-                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
-            },
-        }
-    }
+    witness_sync(&state, &query.pr).await;
 
     let tip = state
         .engine
@@ -303,22 +323,7 @@ pub async fn patch(
 ) -> Result<impl IntoResponse, AppError> {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
-    if state.config.mode == crate::config::ServerMode::Witness {
-        match crate::sync::sync_from_authority(&state, &query.pr).await {
-            SyncOutcome::Synced { applied, rejected } => {
-                tracing::debug!(
-                    principal = %query.pr,
-                    applied,
-                    rejected,
-                    "witness sync applied entries"
-                );
-            },
-            SyncOutcome::UpToDate => {},
-            SyncOutcome::Failed { reason } => {
-                tracing::warn!(principal = %query.pr, ?reason, "witness sync failed");
-            },
-        }
-    }
+    witness_sync(&state, &query.pr).await;
 
     // Retyped from a bare sequence to a content digest (Zami #140; S0.1: the
     // anchor root is PR). Parsed here, once, at the same boundary the
