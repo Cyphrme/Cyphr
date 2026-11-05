@@ -135,8 +135,9 @@ sites; Netlify builds on push.
 ## Trust calibration (verified 2026-07-06)
 
 - **Do not trust `VERIFIED`/`pass` annotations in `docs/specs/*.md`.**
-  They have no single meaning. Worst offenders: `consensus.md` (27/27
-  "pass", zero implementation), `authentication.md` (24/24, no
+  They have no single meaning. Worst offenders: `consensus.md` (every
+  row "pass" means SPEC-consistent; its Implementation Status lists the
+  little that is built), `authentication.md` (24/24, no
   login/bearer/embedding code), `principal-lifecycle.md` (25/25, no
   lifecycle state machine; `level()` cannot return L2). The storage-layer
   specs are closer to reality; `storage-engine.md`'s claim that the
