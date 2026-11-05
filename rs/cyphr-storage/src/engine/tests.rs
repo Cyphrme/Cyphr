@@ -886,6 +886,45 @@ async fn crash_between_manifest_and_index_write_is_recoverable() {
 /// This must resolve to full absence -- the orphaned blob is harmless,
 /// content-addressed leftover data (never surfaced through the index),
 /// not a half-formed commit.
+/// Claim: `rebuild_index_from_scratch` discards the index before rebuilding,
+/// so an entry no manifest backs does not survive it, and the returned count
+/// is the number of manifests replayed. Turns red if the `clear` is dropped
+/// (the orphan stays indexed). End-to-end scenario: yes, a stale index
+/// healed through the public recovery entry point.
+#[tokio::test]
+async fn rebuild_from_scratch_drops_entries_no_manifest_backs() {
+    let engine = test_engine();
+    let blob = b"{\"pay\":{\"now\":1000}}";
+    engine
+        .ingest_commit(&[blob.as_slice()], make_meta("alice", 0, 1000))
+        .await
+        .expect("ingest_commit failed");
+
+    // An indexed commit with no manifest: what a corrupted or stale index
+    // holds that the blob store cannot account for.
+    engine
+        .indexer()
+        .index_commit(&make_meta("orphan", 0, 1000), &DeriveToken::new())
+        .await
+        .expect("index orphan");
+    assert!(engine.indexer().get_tip("orphan").await.unwrap().is_some());
+
+    let rebuilt = engine
+        .rebuild_index_from_scratch()
+        .await
+        .expect("rebuild_index_from_scratch failed");
+
+    assert_eq!(rebuilt, 1, "count must equal the manifests replayed");
+    assert!(
+        engine.indexer().get_tip("orphan").await.unwrap().is_none(),
+        "an entry with no backing manifest must not survive a from-scratch rebuild"
+    );
+    assert!(
+        engine.indexer().get_tip("alice").await.unwrap().is_some(),
+        "the manifest-backed principal must be rebuilt"
+    );
+}
+
 #[tokio::test]
 async fn crash_before_manifest_write_leaves_commit_fully_absent() {
     let engine = test_engine();
