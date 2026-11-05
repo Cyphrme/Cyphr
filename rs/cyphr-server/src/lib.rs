@@ -330,8 +330,8 @@ pub async fn serve(config: config::ServerConfig) -> Result<(), Box<dyn std::erro
     let listen_addr = config.listen.clone();
     let mut state = AppState::new(config)?;
 
-    // Run incremental reindexing on startup
-    state.engine.reindex(&[], false).await?;
+    // Heal any crash-window manifests the index missed before serving
+    state.engine.rebuild_index_from_manifests().await?;
 
     // On a keyed boot, establish (or load) the server's own principal so
     // its genesis chain exists and is served like any other principal. The
@@ -529,7 +529,11 @@ mod tests {
             ..Default::default()
         };
         let mut state = AppState::new(config).expect("AppState::new with a valid key");
-        state.engine.reindex(&[], false).await.expect("reindex");
+        state
+            .engine
+            .rebuild_index_from_manifests()
+            .await
+            .expect("rebuild index");
 
         let identity = state
             .identity

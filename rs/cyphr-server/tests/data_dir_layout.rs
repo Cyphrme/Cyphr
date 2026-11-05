@@ -57,7 +57,7 @@ mod common;
 
 /// Construct an `AppState` and run it through the same startup sequence
 /// `serve()` runs (`lib.rs`'s `serve` function): open storage, run
-/// incremental reindex, and -- when keyed and asked for -- bootstrap the
+/// manifest heal, and -- when keyed and asked for -- bootstrap the
 /// server's own principal (the `record/server-principal.json` sidecar).
 ///
 /// `bootstrap_own_principal` is a separate knob from "keyed" because two of
@@ -71,9 +71,9 @@ async fn boot(config: ServerConfig, bootstrap_own_principal: bool) -> Arc<AppSta
     let mut state = AppState::new(config).expect("failed to open AppState");
     state
         .engine
-        .reindex(&[], false)
+        .rebuild_index_from_manifests()
         .await
-        .expect("incremental reindex on boot failed");
+        .expect("manifest heal on boot failed");
 
     if bootstrap_own_principal {
         if let (Some(identity), Some(key_path)) = (
@@ -399,14 +399,14 @@ async fn index_deletion_and_rebuild_restores_identical_answers() {
     );
     std::fs::remove_dir_all(&index_path).expect("remove index directory");
 
-    // -- rebuild: reopen storage at the same data_dir, then a full reindex --
+    // -- rebuild: reopen storage at the same data_dir, then a full rebuild --
 
     let state = boot(config, false).await;
     state
         .engine
-        .reindex(&[], true)
+        .rebuild_index_from_scratch()
         .await
-        .expect("full reindex after index deletion failed");
+        .expect("full rebuild after index deletion failed");
     let app = build_app_router(state.clone()).expect("failed to build app router (post-rebuild)");
 
     // -- after: re-issue the same three requests and compare --
