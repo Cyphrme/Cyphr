@@ -158,9 +158,16 @@ async fn d1_push_refuses_substituted_key_sidecar() {
     assert_ne!(honest, forged, "premise: the body was altered");
 
     let (status, body) = post_json(app.clone(), "/push", forged).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "push accepted a key/create whose sidecar pub does not hash to its tmb: {body:?}"
+    );
+    // The refusal names the binding failure itself, not a generic malformed
+    // payload that would also fit a dropped sidecar.
     assert!(
-        status.is_client_error(),
-        "push accepted a key/create whose sidecar pub does not hash to its tmb: {status} {body:?}"
+        body.to_string().contains("does not match its public key"),
+        "the refusal must report the tmb/pub mismatch: {body:?}"
     );
     assert_eq!(
         tip_status(app, &id).await,

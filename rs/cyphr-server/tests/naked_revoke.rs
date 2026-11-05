@@ -59,7 +59,8 @@ use coz::base64ct::{Base64UrlUnpadded, Encoding};
 use cyphr_server::config::ServerConfig;
 use cyphr_server::observation::ObservationStore;
 use cyphr_server::{AppState, build_router};
-use cyphr_storage::index::Indexer;
+use cyphr_storage::blob::Blake3Hash;
+use cyphr_storage::index::{DeriveToken, IndexableCommit, Indexer, IndexerWrite};
 use tempfile::TempDir;
 use test_fixtures::Pool;
 
@@ -696,6 +697,10 @@ async fn poisoned_index_does_not_block_victims_own_revoke() {
         "index[V] must still resolve to the victim's real pub"
     );
 
+    // Poison the index directly: the wire can no longer do it, but the
+    // victim's emergency revoke must not depend on the index being clean.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
+
     // The victim's OWN emergency revoke: discloses key_a's REAL key, self-signed
     // by key_a. It must succeed despite the poisoned index.
     let coz = self_revoke_coz(&pool, "key_a", serde_json::json!(RVK));
@@ -1231,6 +1236,58 @@ fn golden(name: &str) -> String {
 // 12 -- HARDENING R1: the unauthenticated index-poisoning key-kill forge
 // ========================================================================
 
+/// Overwrite `index[victim tmb]` with `attacker_key_name`'s pub, directly
+/// through the test-only indexer write.
+///
+/// The wire can no longer do this (a sidecar whose `tmb` is not its pub's
+/// thumbprint is refused), so this stands in for any residual path that
+/// could corrupt the index (a bug, a bad import, disk corruption). The
+/// revoke path must not depend on the index being clean: it verifies the
+/// DISCLOSED key, never the indexed one.
+async fn poison_index_directly(
+    state: &Arc<AppState>,
+    pool: &Pool,
+    victim_tmb_b64: &str,
+    attacker_key_name: &str,
+) {
+    let attacker = pool.get(attacker_key_name).expect("attacker key in pool");
+    let poison = IndexableCommit {
+        principal_id: "SHA-256:nr-poisoned-index".to_string(),
+        commit_ids: vec!["SHA-256:POISON_COMMIT".to_string()],
+        sequence: 0,
+        pre: None,
+        prs: vec!["SHA-256:POISON_PR".to_string()],
+        srs: vec!["SHA-256:POISON_SR".to_string()],
+        ars: vec!["SHA-256:POISON_AR".to_string()],
+        crs: vec!["SHA-256:POISON_CR".to_string()],
+        blob_hashes: vec![Blake3Hash::from_bytes([7u8; 32])],
+        cozies: vec![],
+        timestamp: 1_700_000_000,
+        keys: vec![cyphr_storage::index::PublicKeyInfo {
+            thumbprint: victim_tmb_b64.to_string(),
+            algorithm: attacker.alg.clone(),
+            public_key: attacker.pub_key.clone(),
+        }],
+    };
+    state
+        .engine
+        .indexer()
+        .index_commit(&poison, &DeriveToken::for_conformance_tests())
+        .await
+        .expect("direct index poisoning");
+    let indexed = state
+        .engine
+        .indexer()
+        .get_key(victim_tmb_b64)
+        .await
+        .expect("index lookup succeeds")
+        .expect("the poisoned entry is indexed");
+    assert_eq!(
+        indexed.public_key, attacker.pub_key,
+        "precondition: index[V] must now resolve to the attacker's pub"
+    );
+}
+
 /// Build a fresh ATTACKER principal's genesis push that tries to POISON the
 /// global key index: the signed `key/create` introduces `victim_key_name`'s
 /// real thumbprint, but the unsigned sidecar's `pub` is swapped for
@@ -1420,8 +1477,11 @@ async fn index_poisoning_naked_revoke_forge_is_rejected() {
         "index[V] must still resolve to the victim's real pub"
     );
 
-    // Attack step 2: forge a naked revoke of V, signed with and disclosing the
-    // ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
+    // Poison the index directly instead: a wire push can no longer do it.
+    poison_index_directly(&state, &pool, &victim_tmb, "alice").await;
+
+    // Attack step 2 (against the directly poisoned index): forge a naked revoke of V, signed with
+    // and disclosing the ATTACKER key. The disclosed attacker pub does not hash to V, so the bind
     // rejects it.
     let coz = revoke_body(
         &pool,
