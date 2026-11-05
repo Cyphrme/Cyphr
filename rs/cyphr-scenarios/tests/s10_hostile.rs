@@ -10,12 +10,24 @@
 use std::time::{Duration, Instant};
 
 use cyphr_scenarios::actions::*;
+use cyphr_scenarios::peer::Limits;
 use cyphr_scenarios::{Capability, Harness};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "RED(transport): TR1"]
 async fn s10_hostile() {
-    let h = Harness::start(&["p1", "p2"]).await.expect("start peers");
+    // The body limit is pinned in the peers' own config and the oversized
+    // blob derived from it, so a change to the compiled default cannot make
+    // the oversized case pass or fail for the wrong reason.
+    const LIMIT: u64 = 64 * 1024;
+    let h = Harness::start_with(
+        &["p1", "p2"],
+        Limits {
+            max_body_bytes: Some(LIMIT),
+        },
+    )
+    .await
+    .expect("start peers");
     h.require(&[
         Capability::Transport,
         Capability::VersionCheck,
@@ -27,31 +39,37 @@ async fn s10_hostile() {
     let via = h.route("mallory", "p1").await;
     let url = format!("http://{via}");
 
-    // The limit comes from the peer's own configuration, not a guess; this
-    // scenario assumes the compiled default is exceeded by 16 MiB.
-    // A valid-shaped push whose single blob is oversized, and a malformed one.
-    let big = "A".repeat(16 * 1024 * 1024);
-    let oversized = format!(r#"{{"principal_id":"SHA-512:AAAA","blobs":["{big}"]}}"#);
-    for (what, body) in [("malformed", "{".to_owned()), ("oversized", oversized)] {
+    // A valid-shaped push whose single blob is sized relative to the pinned
+    // limit: one under it (so the limit, not the shape, decides) and one over.
+    let push_body = |blob_bytes: u64| {
+        let blob = "A".repeat(blob_bytes as usize);
+        format!(r#"{{"principal_id":"SHA-512:AAAA","blobs":["{blob}"]}}"#)
+    };
+    let cases: [(&str, String, &[u16]); 3] = [
+        ("malformed", "{".to_owned(), &[400, 422]),
+        (
+            "under the limit",
+            push_body(LIMIT / 2),
+            &[400, 401, 403, 404, 422],
+        ),
+        ("oversized", push_body(LIMIT * 4), &[413]),
+    ];
+    for (what, body, want) in cases {
+        // A reset or timeout is a failure here, not a pass: the peer must
+        // answer a hostile body, never hang up on it.
         let r = h
             .http
             .post(format!("{url}/push"))
             .header("content-type", "application/json")
             .body(body)
             .send()
-            .await;
-        if let Ok(r) = r {
-            let want: &[u16] = if what == "oversized" {
-                &[413]
-            } else {
-                &[400, 422]
-            };
-            assert!(
-                want.contains(&r.status().as_u16()),
-                "{what} body got {}",
-                r.status()
-            );
-        }
+            .await
+            .unwrap_or_else(|e| panic!("{what} body: no response: {e}"));
+        assert!(
+            want.contains(&r.status().as_u16()),
+            "{what} body got {}",
+            r.status()
+        );
         let t = Instant::now();
         let ok = h
             .http
@@ -98,7 +116,7 @@ async fn s10_hostile() {
         Err(e) => h.ok::<()>(Err(e)),
     }
     assert_eq!(
-        h.peer_view("p1", &pr).await.map(|v| v.tip),
+        h.settled_view("p1", &pr).await.map(|v| v.tip),
         Some(tip),
         "the hostile traffic must not have moved P1"
     );

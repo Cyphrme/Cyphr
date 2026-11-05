@@ -47,30 +47,27 @@ async fn s08_forgery() {
     assert_ne!(applied, pre, "the legitimate action must change P1's state");
     let p2_before = h.settled_view("p2", &pr).await;
 
-    // A backdated action from the retired key is refused everywhere, and
-    // changes nothing.
+    // A backdated action from the key we retired with key/delete is refused
+    // everywhere as not active, and changes nothing.
     let forged = h.ok(alice.forge_backdated(&pr, &retired).await);
     for peer in peers {
         let out = h.ok(alice.submit(&forged, peer).await);
         assert_eq!(
             out.refused(&format!("{peer} on a forgery")),
-            RefusalKind::Revoked
+            RefusalKind::KeyNotActive,
+            "{peer}: a key retired by key/delete is not active"
         );
     }
 
-    // A replayed data action and a re-pushed old commit change nothing (SPEC 7.6).
+    // A replayed data action is accepted as a no-op (SPEC 7.6); a re-pushed
+    // old commit is refused as stale. Neither moves state.
     let replay = h.ok(alice.submit(&act, "p1").await);
-    if let PushOutcome::Refused(r) = replay {
-        assert_eq!(
-            r.kind,
-            RefusalKind::CozReuse,
-            "a replay is refused as reuse, if at all"
-        );
-    }
+    assert!(
+        matches!(replay, PushOutcome::Accepted(_)),
+        "a replayed data action is a no-op, not a refusal: {replay:?}"
+    );
     let repush = h.ok(alice.repush_commit(&pr, "p1", 1).await);
-    if let PushOutcome::Refused(r) = repush {
-        assert!(matches!(r.kind, RefusalKind::CozReuse | RefusalKind::Stale));
-    }
+    assert_eq!(repush.refused("re-pushed old commit"), RefusalKind::Stale);
 
     // Absence is only meaningful once the peers have gone quiet.
     assert_eq!(

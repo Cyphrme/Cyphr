@@ -228,12 +228,29 @@ async fn harness_peer_view_reads_the_peer_itself() {
     assert_eq!(
         PeerTip::parse(&envelope),
         Some(PeerTip {
+            principal_id: "x".into(),
             tip: Tip("C2".into()),
             height: 2,
             pr: "PR".into(),
             ar: "AR".into()
         })
     );
+}
+
+// Claim: a principal handle compares in one spelling. Peers report a bare
+// digest while handles may carry an algorithm tag, and a mismatch there
+// would make every "the peer holds Alice's principal" assertion fail or,
+// worse, pass on the wrong string.
+// (Pure logic: no scenario reaches the spelling cases cheaply.)
+#[test]
+fn harness_principal_handles_compare_by_bare_digest() {
+    use cyphr_scenarios::actions::Principal;
+
+    let tagged = Principal("SHA-512:abcDEF_-123".into());
+    assert_eq!(tagged.bare(), "abcDEF_-123");
+    assert!(tagged.same_as("abcDEF_-123"));
+    assert!(tagged.same_as("SHA-512:abcDEF_-123"));
+    assert!(!tagged.same_as("abcDEF_-124"));
 }
 
 // Claim: a partition cuts a peer-to-peer link, not only client traffic. A

@@ -43,9 +43,12 @@ pub enum RefusalKind {
     Stale,
     /// The signer lacks authority for the action.
     Unauthorized,
-    /// The signing key has been revoked or removed.
+    /// The signing key was revoked (`key/revoke` or a naked revoke).
     Revoked,
-    /// A coz already applied was submitted again (SPEC 7.6).
+    /// The signing key was retired by `key/delete`: it is no longer active.
+    KeyNotActive,
+    /// A transaction coz already applied was submitted again (SPEC 7.6).
+    /// A replayed data action is not refused: it is accepted as a no-op.
     CozReuse,
     /// The input does not parse or violates the protocol's shape.
     Malformed,
@@ -69,9 +72,27 @@ fn unsupported<T>(action: &'static str, capability: Capability) -> ActionResult<
     Err(ActionError::Unsupported { action, capability })
 }
 
-/// A principal's genesis identifier (tagged digest), as peers key it.
+/// A principal's canonical address: the PG once it is established, or the
+/// genesis tmb (equal to its PR) while it is a nascent Level 1-2 principal.
+/// A principal that added keys before `principal/create` has a PG that
+/// differs from its genesis tmb, so the handle can change spelling over its
+/// life. Peers report it as a bare digest, so compare handles with
+/// [`Principal::bare`], never as raw strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal(pub String);
+
+impl Principal {
+    /// The handle without any algorithm tag (`SHA-512:abc` and `abc` are
+    /// one address).
+    pub fn bare(&self) -> &str {
+        self.0.rsplit(':').next().unwrap_or(&self.0)
+    }
+
+    /// Whether `other` names the same principal in any spelling.
+    pub fn same_as(&self, other: &str) -> bool {
+        self.bare() == Principal(other.to_owned()).bare()
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +102,8 @@ pub struct Tip(pub String);
 /// What a peer itself holds for a principal, read from its own `GET /tip`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerTip {
+    /// The principal as the peer reports it (a bare digest).
+    pub principal_id: String,
     pub tip: Tip,
     pub height: u64,
     pub pr: String,
@@ -92,6 +115,7 @@ impl PeerTip {
     pub fn parse(envelope: &serde_json::Value) -> Option<PeerTip> {
         let t = &envelope["payload"];
         Some(PeerTip {
+            principal_id: t["principal_id"].as_str()?.to_owned(),
             tip: Tip(t["commit_id"].as_str()?.to_owned()),
             height: t["commit_count"].as_u64()?,
             pr: t["pr"].as_str()?.to_owned(),

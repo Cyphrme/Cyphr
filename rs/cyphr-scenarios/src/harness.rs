@@ -9,7 +9,7 @@ use crate::actions::{ActionResult, PeerTip, Principal};
 use crate::bins::Bins;
 use crate::capability::{Capability, ProbeError};
 use crate::carrier::TcpCarrier;
-use crate::peer::{Peer, PeerError, Role};
+use crate::peer::{Limits, Peer, PeerError, Role};
 use crate::proxy::Proxy;
 
 pub struct Harness {
@@ -18,6 +18,8 @@ pub struct Harness {
     pub bins: &'static Bins,
     pub http: reqwest::Client,
     pub seed: u64,
+    /// The body limit pinned on every peer, when the scenario set one.
+    pub max_body_bytes: Option<u64>,
     /// Servers started on request (witnesses); kept alive with the harness.
     extra: Mutex<Vec<Peer>>,
     routes: Mutex<HashMap<(String, String), SocketAddr>>,
@@ -38,6 +40,11 @@ impl Harness {
     /// `CYPHR_SCENARIO_SEED` when set (to replay a run), else from the
     /// clock; it is printed so any failure can be replayed.
     pub async fn start(names: &[&str]) -> Result<Harness, PeerError> {
+        Self::start_with(names, Limits::default()).await
+    }
+
+    /// Like [`Harness::start`], with server limits pinned explicitly.
+    pub async fn start_with(names: &[&str], limits: Limits) -> Result<Harness, PeerError> {
         let seed = std::env::var("CYPHR_SCENARIO_SEED")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -51,7 +58,7 @@ impl Harness {
         let http = http_client();
         let mut peers = Vec::with_capacity(names.len());
         for name in names {
-            peers.push(Peer::start(bins, name, &http, Role::Attestor).await?);
+            peers.push(Peer::start(bins, name, &http, Role::Attestor, limits).await?);
         }
         Ok(Harness {
             peers,
@@ -59,6 +66,7 @@ impl Harness {
             bins,
             http,
             seed,
+            max_body_bytes: limits.max_body_bytes,
             extra: Mutex::default(),
             routes: Mutex::default(),
         })
@@ -107,7 +115,14 @@ impl Harness {
     /// witness's own address (clients may read it directly).
     pub async fn start_witness(&self, name: &str, of: &str) -> Result<SocketAddr, PeerError> {
         let authority = self.route(name, of).await;
-        let w = Peer::start(self.bins, name, &self.http, Role::Witness { authority }).await?;
+        let w = Peer::start(
+            self.bins,
+            name,
+            &self.http,
+            Role::Witness { authority },
+            Limits::default(),
+        )
+        .await?;
         let addr = w.addr;
         self.extra.lock().expect("extra servers").push(w);
         Ok(addr)
@@ -150,7 +165,15 @@ impl Harness {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
-        PeerTip::parse(&v)
+        let held = PeerTip::parse(&v)?;
+        // The observer must be reading the principal it asked about.
+        assert!(
+            p.same_as(&held.principal_id),
+            "peer `{peer}` answered for {}, asked about {}",
+            held.principal_id,
+            p.0
+        );
+        Some(held)
     }
 
     /// Read `peer`'s view of `p` until two reads 600ms apart agree, then

@@ -39,6 +39,14 @@ pub enum Role {
     Witness { authority: SocketAddr },
 }
 
+/// Server settings a scenario may pin explicitly instead of inheriting a
+/// default that could change underneath it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Limits {
+    /// `[limits] max_body_bytes`.
+    pub max_body_bytes: Option<u64>,
+}
+
 pub struct Peer {
     pub name: String,
     /// The server's real address; clients should dial a proxy route instead.
@@ -58,6 +66,7 @@ impl Peer {
         name: &str,
         http: &reqwest::Client,
         role: Role,
+        limits: Limits,
     ) -> Result<Peer, PeerError> {
         let io_err = |what| {
             let name = name.to_owned();
@@ -77,9 +86,15 @@ impl Peer {
         });
         std::fs::write(&key_path, key.to_string()).map_err(io_err("writing signing key"))?;
 
+        // Without pinned limits the file is never created: compiled defaults.
+        let config_path = dir.path().join("server.toml");
+        if let Some(n) = limits.max_body_bytes {
+            std::fs::write(&config_path, format!("[limits]\nmax_body_bytes = {n}\n"))
+                .map_err(io_err("writing config"))?;
+        }
         let mut cmd = Command::new(&bins.server);
         cmd.arg("--config")
-            .arg(dir.path().join("absent.toml")) // never created: compiled defaults
+            .arg(&config_path)
             .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
             .arg(&data_dir);
         match role {
