@@ -933,3 +933,119 @@ async fn login_rejects_key_revoked_in_claimed_principal() {
         "a key genuinely revoked from the claimed principal must be rejected: {json:?}"
     );
 }
+
+// ========================================================================
+// Sign-on hardening (SO1)
+// ========================================================================
+
+/// Backs: one principal has one token subject. A login claiming the bare
+/// spelling and one claiming the algorithm-labelled spelling of the same
+/// identity both succeed and mint tokens naming the same subject. Turns
+/// red if: `parsed.pr` reaches `issue_token` as typed, giving a relying
+/// party two account rows for one identity. A no-op that canonicalizes
+/// only one flow (or lowercases) still fails the equality. End to end: yes.
+#[tokio::test]
+#[ignore = "RED(SO1): token subject follows the spelling that logged in"]
+async fn token_subject_is_one_whatever_spelling_logged_in() {
+    let state = login_state();
+    let pool = load_pool();
+    let bare =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let labelled = format!("SHA-256:{bare}");
+
+    let mut subjects = Vec::new();
+    for spelling in [bare.as_str(), labelled.as_str()] {
+        let body = login_body(&pool, "golden", AUDIENCE, Some(spelling), None, now_secs());
+        let (status, json) = post_json(build_router(state.clone()), "/auth/login", body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "login under {spelling} must succeed (same identity): {json:?}"
+        );
+        let token = envelope_payload(&json)["token"].as_str().expect("token");
+        let claims = state
+            .identity
+            .as_ref()
+            .unwrap()
+            .verify_token(token, now_secs())
+            .expect("issued token verifies");
+        subjects.push(claims.pr);
+    }
+    assert_eq!(
+        subjects[0], subjects[1],
+        "two spellings of one principal produced two token subjects"
+    );
+}
+
+/// Backs: signon-honest-refusal. A server that holds a signing key but no
+/// audience cannot complete any login (login answers "not configured"), so
+/// it must not hand out a challenge a login can never redeem, and must
+/// refuse both steps alike. Turns red if: `challenge` checks the identity
+/// only and issues a nonce (200) while `login` refuses. A no-op that makes
+/// challenge fail with a different status/body than login still fails the
+/// equality. End to end: yes.
+#[tokio::test]
+#[ignore = "RED(SO1): challenge is issued by a server whose login cannot succeed"]
+async fn login_and_challenge_refuse_alike_without_audience() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let key_path = temp_dir.path().join("signing-key.json");
+    let kp = coz::Alg::Ed25519.generate_keypair();
+    let key_file = serde_json::json!({
+        "alg": kp.alg.name(),
+        "pub_key": Base64UrlUnpadded::encode_string(&kp.pub_bytes),
+        "prv_key": Base64UrlUnpadded::encode_string(&kp.prv_bytes),
+    });
+    std::fs::write(&key_path, serde_json::to_vec(&key_file).unwrap()).unwrap();
+    let config = ServerConfig {
+        data_dir: temp_dir.path().join("data"),
+        signing_key_path: Some(key_path),
+        audience: None,
+        ..Default::default()
+    };
+    std::mem::forget(temp_dir);
+    let state = Arc::new(AppState::new(config).expect("open audience-less AppState"));
+
+    let pool = load_pool();
+    let body = login_body(&pool, "golden", AUDIENCE, Some("any"), None, now_secs());
+    let (login_status, login_json) =
+        post_json(build_router(state.clone()), "/auth/login", body).await;
+    let (challenge_status, challenge_json) =
+        post_json(build_router(state), "/auth/challenge", String::new()).await;
+
+    assert!(
+        !login_status.is_success(),
+        "premise: a server with no audience cannot log anyone in: {login_json:?}"
+    );
+    assert_eq!(
+        challenge_status, login_status,
+        "challenge must refuse with login's status: {challenge_json:?}"
+    );
+    assert_eq!(
+        challenge_json, login_json,
+        "challenge must refuse with login's body"
+    );
+}
+
+/// Backs: signon-replay-bound (window arm), future side. A timestamp as far
+/// ahead of server time as the stale one is behind is refused too: the
+/// window is two-sided. Turns red if: the bound is one-sided (only
+/// `server - client` is checked), letting a pre-dated signature live for
+/// hours. Characterization (green today); the existing stale-timestamp test
+/// covers only the past side. End to end: yes.
+#[tokio::test]
+async fn login_rejects_future_dated_timestamp() {
+    let state = login_state();
+    let pool = load_pool();
+    let pid =
+        bootstrap_active_with_key(build_router(state.clone()), &pool, "golden", "key_a").await;
+    let app = build_router(state);
+
+    let future = now_secs() + 3600;
+    let body = login_body(&pool, "golden", AUDIENCE, Some(&pid), None, future);
+    let (status, _) = post_json(app, "/auth/login", body).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a future-dated timestamp outside the window must be rejected"
+    );
+}
