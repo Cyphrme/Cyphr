@@ -51,13 +51,13 @@ use cyphr_server::receipt::{self, EquivocationVerdict, Roots, TipReport};
 use proptest::prelude::*;
 
 // ========================================================================
-// Fixture helpers (mirrored from tests/equivocation.rs / cross_witness.rs,
-// which are separate integration-test crates and cannot be imported here)
+// Fixture helpers (mirrored from tests/equivocation.rs, a separate
+// integration-test crate that cannot be imported here)
 // ========================================================================
 
 /// Write a fresh signing key file for a fixed 32-byte Ed25519 seed and load
 /// it -- deterministic, reproducible identities (mirrors `tests/
-/// equivocation.rs`/`tests/cross_witness.rs`'s `identity_with_seed`).
+/// equivocation.rs`'s `identity_with_seed`).
 fn identity_with_seed(seed: u8) -> (tempfile::TempDir, ServerIdentity) {
     use coz::base64ct::{Base64UrlUnpadded, Encoding};
 
@@ -186,9 +186,8 @@ fn roots_from(pr: &str, sr: &str, ar: &str, cr: &str) -> Roots {
 /// `"sequence"`) or one level nested (`"roots.<field>"`) -- on an
 /// already-signed report and re-sign under the SAME identity -- the
 /// "dishonest signer hand-crafts its own report" pattern already
-/// established ad hoc in `tests/equivocation.rs` and `tests/
-/// cross_witness.rs`, lifted into a shared helper since every
-/// malformed-field property in this file needs it.
+/// established ad hoc in `tests/equivocation.rs`, lifted into a shared
+/// helper since every malformed-field property in this file needs it.
 fn resign_with_field(
     identity: &ServerIdentity,
     mut coz: coz::CozJson,
