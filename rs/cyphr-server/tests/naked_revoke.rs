@@ -873,7 +873,7 @@ async fn idempotent_re_revoke() {
 
 /// After a naked revoke, the resulting refusal survives BOTH a full `AppState`
 /// rebuild over the same data dir (a restart) AND an in-process engine
-/// `reindex` -- proving the death record is durable and is NOT held in the
+/// `rebuild_index_from_scratch` -- proving the death record is durable and is NOT held in the
 /// rebuildable index. Observed through the login gate: the revoked key stays
 /// refused across both.
 ///
@@ -911,9 +911,9 @@ async fn death_record_survives_restart_and_reindex() {
     // the rebuildable index would be wiped here.
     state2
         .engine
-        .reindex(&[], true)
+        .rebuild_index_from_scratch()
         .await
-        .expect("engine reindex");
+        .expect("engine rebuild");
 
     assert_eq!(
         login_status(&state2, &pool, "key_a", pid).await,
