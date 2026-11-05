@@ -31,8 +31,36 @@ pub enum ActionError {
         capability: Capability,
     },
     /// The system refused the action (a verdict, not a defect).
-    #[error("refused: {0}")]
-    Refused(String),
+    #[error("refused ({:?}): {}", .0.kind, .0.detail)]
+    Refused(Refusal),
+}
+
+/// Why the system refused something. Must-holds assert the kind; the detail
+/// is for humans only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalKind {
+    /// The sender's view is behind the peer's tip; rebase and retry.
+    Stale,
+    /// The signer lacks authority for the action.
+    Unauthorized,
+    /// The signing key has been revoked or removed.
+    Revoked,
+    /// A coz already applied was submitted again (SPEC 7.6).
+    CozReuse,
+    /// The input does not parse or violates the protocol's shape.
+    Malformed,
+    /// The input would fork the principal.
+    Forked,
+    /// The input exceeds a size bound.
+    TooLarge,
+    /// The envelope version is not one this client understands.
+    UnknownVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    pub kind: RefusalKind,
+    pub detail: String,
 }
 
 pub type ActionResult<T> = Result<T, ActionError>;
@@ -41,11 +69,13 @@ fn unsupported<T>(action: &'static str, capability: Capability) -> ActionResult<
     Err(ActionError::Unsupported { action, capability })
 }
 
+/// A principal's genesis identifier (tagged digest), as peers key it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Principal(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A commit id, as a peer's `GET /tip` reports it.
 pub struct Tip(pub String);
 
 /// What a peer itself holds for a principal, read from its own `GET /tip`.
@@ -82,7 +112,7 @@ pub enum Standing {
 /// "current", because nothing it can ask rules out a newer unseen state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Freshness {
-    /// Age of the view: time since a peer last confirmed it.
+    /// Age of the view: time since the tip it reports was last updated.
     pub age: Duration,
     /// A peer the client asked reported a tip newer than the view's.
     pub peer_reported_newer: bool,
@@ -136,9 +166,32 @@ pub struct Verdict {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
     Accepted(Tip),
-    /// The peer already has a newer tip; the pusher must rebase.
-    RefusedStale,
-    Rejected(String),
+    Refused(Refusal),
+}
+
+impl PushOutcome {
+    /// The accepted tip; any refusal fails the scenario step with its kind.
+    pub fn accepted(self, what: &str) -> Tip {
+        match self {
+            PushOutcome::Accepted(t) => t,
+            PushOutcome::Refused(r) => panic!("{what}: refused ({:?}): {}", r.kind, r.detail),
+        }
+    }
+
+    /// The refusal kind, or a failure if the push was accepted.
+    pub fn refused(self, what: &str) -> RefusalKind {
+        match self {
+            PushOutcome::Refused(r) => r.kind,
+            PushOutcome::Accepted(t) => panic!("{what}: unexpectedly accepted at {t:?}"),
+        }
+    }
+}
+
+/// The result of presenting a session token to a relying party.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Presented {
+    Accepted,
+    Refused(Refusal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +204,19 @@ pub struct Token(pub String);
 pub struct Session {
     pub token: Token,
     pub key: KeyRef,
+    /// The canonical token subject: the principal, however the caller
+    /// spelled it when signing in.
+    pub principal: Principal,
+}
+
+/// A relying party's own configuration, read from it rather than assumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpConfig {
+    /// How old the relying party's view of the principal may grow before it
+    /// ends the session. `None` when the relying party states no bound.
+    pub view_age_bound: Option<Duration>,
+    /// How often the relying party refreshes its view.
+    pub refresh_interval: Duration,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Backup(pub String);
@@ -227,6 +293,18 @@ impl Harness {
         unsupported("equivocate", Capability::Evidence)
     }
 
+    /// Make a peer serve `to` an old, genuine tip of `principal`: a stale
+    /// view, which is a strict prefix of the real chain and not equivocation.
+    pub async fn serve_stale_view(
+        &self,
+        _peer: &str,
+        _principal: &Principal,
+        _to: &Client<'_>,
+        _tip: &Tip,
+    ) -> ActionResult<()> {
+        unsupported("serve_stale_view", Capability::Evidence)
+    }
+
     /// Make a peer answer with an envelope of version `v`.
     pub async fn serve_envelope_version(&self, _peer: &str, _v: u32) -> ActionResult<()> {
         unsupported("serve_envelope_version", Capability::VersionCheck)
@@ -287,9 +365,16 @@ impl Client<'_> {
 
     // ---- commits and publication ----
 
-    /// Commit a data change locally, on top of this device's current tip.
+    /// Commit a data change locally, on top of this device's current local
+    /// tip. It does not pull first, as an offline device would not; pulling
+    /// is the separate, explicit [`Client::sync`].
     pub async fn commit_data(&self, _p: &Principal, _msg: &str) -> ActionResult<Tip> {
         unsupported("commit_data", Capability::CliNetwork)
+    }
+
+    /// Pull the peers' latest state for `p` into this device's local view.
+    pub async fn sync(&self, _p: &Principal, _from: &[&str]) -> ActionResult<Tip> {
+        unsupported("sync", Capability::CliNetwork)
     }
 
     pub async fn push(&self, _p: &Principal, _to: &[&str]) -> ActionResult<PushOutcome> {
@@ -378,11 +463,15 @@ impl RelyingParty<'_> {
     }
 
     /// Present a token on a channel and learn whether it was accepted.
-    pub async fn present(&self, _t: &Token, _on: Channel) -> ActionResult<bool> {
+    pub async fn present(&self, _t: &Token, _on: Channel) -> ActionResult<Presented> {
         unsupported("present", Capability::SessionBinding)
     }
 
     /// Let the relying party's view catch up with the principal.
+    pub async fn config(&self) -> ActionResult<RpConfig> {
+        unsupported("config", Capability::RelyingParty)
+    }
+
     pub async fn refresh_view(&self) -> ActionResult<()> {
         unsupported("refresh_view", Capability::RelyingParty)
     }

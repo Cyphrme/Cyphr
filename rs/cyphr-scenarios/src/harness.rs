@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::actions::{ActionResult, PeerTip, Principal, Tip};
+use crate::actions::{ActionResult, PeerTip, Principal};
 use crate::bins::Bins;
 use crate::capability::{Capability, ProbeError};
 use crate::carrier::TcpCarrier;
