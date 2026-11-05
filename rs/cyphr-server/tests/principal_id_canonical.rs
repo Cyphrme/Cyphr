@@ -672,3 +672,125 @@ async fn attestor_server_accepts_a_push_under_the_pg() {
         );
     }
 }
+
+/// A nascent principal (genesis golden, then key_a, then diana added in two
+/// non-create commits) and the PR it holds after commit 0 -- its PG-to-be.
+fn nascent_principal(pool: &test_fixtures::Pool) -> (cyphr::Principal, Kp, String) {
+    let (g, a, d) = (
+        kp(pool, "golden"),
+        kp(pool, "key_a"),
+        kp(pool, "diana_es384"),
+    );
+    let add = |new: &Kp, now: i64| {
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": new.tmb.to_b64(), "now": now,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        )
+    };
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(&mut p, &g, add(&a, NOW), Some(key_of(&a)), NOW);
+    let pg_to_be = p.pr_tagged().expect("pr");
+    commit_one(&mut p, &g, add(&d, NOW + 1), Some(key_of(&d)), NOW + 1);
+    (p, g, pg_to_be)
+}
+
+/// Backs "a stored commit is never reported as a failure": a non-create
+/// commit pushed under the PG-to-be moves the principal's PR, so the
+/// claimed id is historical by the time the route reads the result back.
+/// The push must still answer 201 with the new tip (and, on an attestor, a
+/// signed receipt for the canonical principal), not 500 "accepted commit
+/// has no tip" with the commit already stored (whose retry is then 422).
+/// Turns red on the 500. End to end: yes.
+async fn push_under_pg_to_be_reports_the_stored_commit(attestor: bool) {
+    let pool = load_pool();
+    let (p, g, pg_to_be) = nascent_principal(&pool);
+    let genesis_id = spellings(&pool).1;
+    let (state, _dir) = if attestor {
+        let (state, _identity, dir) = common::attestor_server().await;
+        (state, dir)
+    } else {
+        keyless_server()
+    };
+    let app = build_router(state);
+
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &g, &genesis_id)).await;
+    assert_eq!(status, StatusCode::CREATED, "commit 0: {body:?}");
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 1, &g, &pg_to_be)).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a stored commit under the PG-to-be {pg_to_be} was not reported: {body:?}"
+    );
+    assert_eq!(body["payload"]["sequence"], serde_json::json!(1));
+    if attestor {
+        assert_eq!(body["statement"]["kind"], serde_json::json!("signed"));
+    }
+    if !attestor {
+        // `tip` reads an unsigned envelope, so only a keyless server can use it.
+        let (status, t) = tip(app, &genesis_id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(t["commit_count"], serde_json::json!(2), "{t:?}");
+    }
+}
+
+#[tokio::test]
+async fn keyless_push_under_pg_to_be_reports_the_stored_commit() {
+    push_under_pg_to_be_reports_the_stored_commit(false).await;
+}
+
+#[tokio::test]
+async fn attestor_push_under_pg_to_be_reports_the_stored_commit() {
+    push_under_pg_to_be_reports_the_stored_commit(true).await;
+}
+
+/// Backs option B on the first push: a principal that establishes its PG in
+/// commit 0 has the genesis-time PR as its PG, so its own post-commit PR is
+/// a historical root, not an id. Pushing commit 0 under that PR is refused
+/// with a client error and stores nothing (it used to be stored, then
+/// reported as a 500 because the claimed id resolved to nothing). Turns red
+/// on the 500 or on a stored principal. End to end: yes.
+#[tokio::test]
+async fn first_commit_under_its_own_post_commit_pr_is_refused_cleanly() {
+    use cyphr::StateDigest;
+
+    let pool = load_pool();
+    let g = kp(&pool, "golden");
+    let genesis_id = spellings(&pool).1;
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": genesis_id, "now": NOW,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW,
+    );
+    let post = p
+        .pr()
+        .as_multihash()
+        .tagged_first()
+        .expect("pr")
+        .to_string();
+    assert_ne!(
+        post, genesis_id,
+        "premise: the post-commit PR is not the PG"
+    );
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    let (status, body) = post_json(app.clone(), "/push", wire(&p, 0, &g, &post)).await;
+    assert!(
+        status.is_client_error(),
+        "a non-PG historical root was accepted or failed as a server error: {status} {body:?}"
+    );
+    let (status, _) = tip(app, &genesis_id).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the refused push stored a principal"
+    );
+}

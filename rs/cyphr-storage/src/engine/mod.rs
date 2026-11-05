@@ -84,6 +84,11 @@ struct ParsedCozInfo {
 /// [`StorageEngine::submit_commit`].
 #[derive(Debug, Clone)]
 pub struct IngestResult {
+    /// The canonical (genesis-derived) id the commit was stored under, which
+    /// may differ from the spelling the caller submitted. Read back under
+    /// this id: a claimed alias can stop resolving once the commit moves
+    /// the principal's state.
+    pub principal_id: String,
     /// BLAKE3 hashes of the stored blobs.
     pub blob_hashes: Vec<Blake3Hash>,
     /// BLAKE3 hash of this commit's durable [`CommitManifest`] blob.
@@ -580,6 +585,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
             .await?;
 
         Ok(IngestResult {
+            principal_id: commit.principal_id.clone(),
             blob_hashes,
             manifest_hash: Some(manifest_hash),
         })
@@ -1076,7 +1082,13 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
         };
 
         if let Some((commit_ids, ar, sr, pr, cr)) = digest_info {
-            if unproven_alias && !pr.iter().any(|v| v == claimed || bare_digest(v) == claimed) {
+            // A new principal's non-genesis id must be its PG-to-be: the PR
+            // it holds after this commit, and only while this commit does
+            // not itself establish the PG (then the PG is the genesis-time
+            // PR, and the post-commit PR is a historical root, not an id).
+            let names_pg_to_be = principal.pg().is_none()
+                && pr.iter().any(|v| v == claimed || bare_digest(v) == claimed);
+            if unproven_alias && !names_pg_to_be {
                 return Err(EngineError::InvalidInput(format!(
                     "principal_id is not the genesis-derived id: {claimed}"
                 )));
@@ -1141,6 +1153,7 @@ impl<B: BlobStore, I: Indexer + IndexerWrite, S: cyphr::eml::Storage> StorageEng
                 blob_hashes.push(hash);
             }
             Ok(IngestResult {
+                principal_id: principal_id.to_string(),
                 blob_hashes,
                 manifest_hash: None,
             })
