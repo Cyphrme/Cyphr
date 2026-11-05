@@ -22,10 +22,22 @@ use crate::faults::{FaultKind, Link, Schedule, World};
 
 type Shared = Arc<watch::Sender<World>>;
 
+/// Connection attempts a link has seen: those forwarded to the far end and
+/// those the fault state stopped. Lets a scenario prove that a fault was
+/// actually exercised by traffic, not merely declared.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinkStats {
+    pub forwarded: u64,
+    pub blocked: u64,
+}
+
+type Stats = Arc<Mutex<std::collections::BTreeMap<Link, LinkStats>>>;
+
 pub struct Proxy {
     carrier: Arc<dyn Carrier>,
     world: Shared,
     rng: Arc<Mutex<ChaCha8Rng>>,
+    stats: Stats,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -36,6 +48,7 @@ impl Proxy {
             carrier,
             world: Arc::new(watch::channel(World::default()).0),
             rng: Arc::new(Mutex::new(ChaCha8Rng::seed_from_u64(seed))),
+            stats: Stats::default(),
             tasks: Mutex::default(),
         }
     }
@@ -57,6 +70,7 @@ impl Proxy {
             Arc::clone(&self.carrier),
             Arc::clone(&self.world),
             Arc::clone(&self.rng),
+            Arc::clone(&self.stats),
         ));
         self.tasks.lock().expect("proxy task list").push(task);
         Ok(addr)
@@ -90,6 +104,15 @@ impl Proxy {
         self.apply(&FaultKind::Online(node.to_owned()));
     }
 
+    pub fn stats(&self, a: &str, b: &str) -> LinkStats {
+        self.stats
+            .lock()
+            .expect("proxy stats")
+            .get(&Link::new(a, b))
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub fn snapshot(&self) -> World {
         self.world.borrow().clone()
     }
@@ -120,22 +143,36 @@ async fn accept_loop(
     carrier: Arc<dyn Carrier>,
     world: Shared,
     rng: Arc<Mutex<ChaCha8Rng>>,
+    stats: Stats,
 ) {
     while let Ok((client, _)) = acceptor.accept().await {
-        let (link, carrier, world, rng) = (
+        let (link, carrier, world, rng, stats) = (
             link.clone(),
             Arc::clone(&carrier),
             Arc::clone(&world),
             Arc::clone(&rng),
+            Arc::clone(&stats),
         );
         tokio::spawn(async move {
             let fault = {
                 let w = world.borrow();
                 if w.blocked(&link) {
+                    stats
+                        .lock()
+                        .expect("proxy stats")
+                        .entry(link.clone())
+                        .or_default()
+                        .blocked += 1;
                     return;
                 }
                 w.fault(&link)
             };
+            stats
+                .lock()
+                .expect("proxy stats")
+                .entry(link.clone())
+                .or_default()
+                .forwarded += 1;
             // The lock is held only for one draw and never across an await.
             if rng
                 .lock()

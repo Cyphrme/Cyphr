@@ -48,6 +48,28 @@ pub struct KeyRef(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tip(pub String);
 
+/// What a peer itself holds for a principal, read from its own `GET /tip`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerTip {
+    pub tip: Tip,
+    pub height: u64,
+    pub pr: String,
+    pub ar: String,
+}
+
+impl PeerTip {
+    /// Parse a `GET /tip` response envelope.
+    pub fn parse(envelope: &serde_json::Value) -> Option<PeerTip> {
+        let t = &envelope["payload"];
+        Some(PeerTip {
+            tip: Tip(t["commit_id"].as_str()?.to_owned()),
+            height: t["commit_count"].as_u64()?,
+            pr: t["pr"].as_str()?.to_owned(),
+            ar: t["ar"].as_str()?.to_owned(),
+        })
+    }
+}
+
 /// SPEC 15.5 principal consensus state, the two a verdict can report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Standing {

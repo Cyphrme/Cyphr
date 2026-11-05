@@ -29,6 +29,16 @@ pub enum PeerError {
     Identity { name: String, reason: String },
 }
 
+/// What a started server is.
+#[derive(Clone, Copy, Debug)]
+pub enum Role {
+    /// A keyed attestor with its own identity.
+    Attestor,
+    /// A witness that pulls from the authority at this address. Give it the
+    /// address of a proxy route, so the pull rides a link the proxy can cut.
+    Witness { authority: SocketAddr },
+}
+
 pub struct Peer {
     pub name: String,
     /// The server's real address; clients should dial a proxy route instead.
@@ -43,7 +53,12 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub async fn start(bins: &Bins, name: &str, http: &reqwest::Client) -> Result<Peer, PeerError> {
+    pub async fn start(
+        bins: &Bins,
+        name: &str,
+        http: &reqwest::Client,
+        role: Role,
+    ) -> Result<Peer, PeerError> {
         let io_err = |what| {
             let name = name.to_owned();
             move |source| PeerError::Io { name, what, source }
@@ -62,13 +77,21 @@ impl Peer {
         });
         std::fs::write(&key_path, key.to_string()).map_err(io_err("writing signing key"))?;
 
-        let mut child = Command::new(&bins.server)
-            .arg("--config")
+        let mut cmd = Command::new(&bins.server);
+        cmd.arg("--config")
             .arg(dir.path().join("absent.toml")) // never created: compiled defaults
             .args(["serve", "--listen", "127.0.0.1:0", "--data-dir"])
-            .arg(&data_dir)
-            .arg("--signing-key-path")
-            .arg(&key_path)
+            .arg(&data_dir);
+        match role {
+            Role::Attestor => {
+                cmd.arg("--signing-key-path").arg(&key_path);
+            },
+            Role::Witness { authority } => {
+                cmd.args(["--mode", "witness", "--authority-url"])
+                    .arg(format!("http://{authority}"));
+            },
+        }
+        let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(std::fs::File::create(&log).map_err(io_err("creating log"))?)
@@ -106,7 +129,11 @@ impl Peer {
             }
         });
 
-        let id = fetch_id(http, name, addr).await?;
+        // A witness holds no identity of its own, so its id is synthetic.
+        let id = match role {
+            Role::Attestor => fetch_id(http, name, addr).await?,
+            Role::Witness { .. } => format!("witness-{name}-{}", addr.port()),
+        };
         Ok(Peer {
             name: name.to_owned(),
             addr,

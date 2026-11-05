@@ -1,13 +1,15 @@
 //! The scenario harness: peers, the fault proxy, and the red gate.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::actions::ActionResult;
+use crate::actions::{ActionResult, PeerTip, Principal, Tip};
 use crate::bins::Bins;
 use crate::capability::{Capability, ProbeError};
 use crate::carrier::TcpCarrier;
-use crate::peer::{Peer, PeerError};
+use crate::peer::{Peer, PeerError, Role};
 use crate::proxy::Proxy;
 
 pub struct Harness {
@@ -16,6 +18,9 @@ pub struct Harness {
     pub bins: &'static Bins,
     pub http: reqwest::Client,
     pub seed: u64,
+    /// Servers started on request (witnesses); kept alive with the harness.
+    extra: Mutex<Vec<Peer>>,
+    routes: Mutex<HashMap<(String, String), SocketAddr>>,
 }
 
 /// A client that never reuses connections, so a fault injected between two
@@ -46,7 +51,7 @@ impl Harness {
         let http = http_client();
         let mut peers = Vec::with_capacity(names.len());
         for name in names {
-            peers.push(Peer::start(bins, name, &http).await?);
+            peers.push(Peer::start(bins, name, &http, Role::Attestor).await?);
         }
         Ok(Harness {
             peers,
@@ -54,6 +59,8 @@ impl Harness {
             bins,
             http,
             seed,
+            extra: Mutex::default(),
+            routes: Mutex::default(),
         })
     }
 
@@ -64,13 +71,103 @@ impl Harness {
             .unwrap_or_else(|| panic!("no peer named `{name}`"))
     }
 
-    /// The address `client` must dial to reach peer `to` through the proxy.
-    pub async fn route(&self, client: &str, to: &str) -> std::net::SocketAddr {
-        let peer = self.peer(to);
-        self.proxy
-            .route(client, &peer.name, peer.addr)
+    /// The address `client` must dial to reach `to` through the proxy. One
+    /// route per (client, peer), reused, so a fault on the link applies to
+    /// everything that client sends.
+    pub async fn route(&self, client: &str, to: &str) -> SocketAddr {
+        let key = (client.to_owned(), to.to_owned());
+        if let Some(a) = self.routes.lock().expect("route cache").get(&key) {
+            return *a;
+        }
+        let upstream = self.upstream(to);
+        let addr = self
+            .proxy
+            .route(client, to, upstream)
             .await
-            .unwrap_or_else(|e| panic!("opening route {client}->{to}: {e}"))
+            .unwrap_or_else(|e| panic!("opening route {client}->{to}: {e}"));
+        self.routes.lock().expect("route cache").insert(key, addr);
+        addr
+    }
+
+    fn upstream(&self, name: &str) -> SocketAddr {
+        if let Some(p) = self.peers.iter().find(|p| p.name == name) {
+            return p.addr;
+        }
+        self.extra
+            .lock()
+            .expect("extra servers")
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no server named `{name}`"))
+            .addr
+    }
+
+    /// Start a witness named `name` that pulls from peer `of` over a proxy
+    /// route, so partitioning `name` from `of` cuts the pull. Returns the
+    /// witness's own address (clients may read it directly).
+    pub async fn start_witness(&self, name: &str, of: &str) -> Result<SocketAddr, PeerError> {
+        let authority = self.route(name, of).await;
+        let w = Peer::start(self.bins, name, &self.http, Role::Witness { authority }).await?;
+        let addr = w.addr;
+        self.extra.lock().expect("extra servers").push(w);
+        Ok(addr)
+    }
+
+    /// Whether `from` can complete a request to `to` through the proxy.
+    pub async fn reach(&self, from: &str, to: &str) -> bool {
+        let via = self.route(from, to).await;
+        self.http
+            .get(format!("http://{via}/server"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+    }
+
+    /// Whether the peer process itself no longer answers (read directly,
+    /// not through the proxy).
+    pub async fn peer_down(&self, peer: &str) -> bool {
+        let addr = self.upstream(peer);
+        self.http
+            .get(format!("http://{addr}/server"))
+            .send()
+            .await
+            .is_err()
+    }
+
+    /// What peer `peer` itself holds for `p`, read from its own `GET /tip`
+    /// directly, independent of every action under test. `None` if the peer
+    /// does not know the principal.
+    pub async fn peer_view(&self, peer: &str, p: &Principal) -> Option<PeerTip> {
+        let addr = self.upstream(peer);
+        let resp = self
+            .http
+            .get(format!("http://{addr}/tip"))
+            .query(&[("pr", p.0.as_str())])
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+        PeerTip::parse(&v)
+    }
+
+    /// Read `peer`'s view of `p` until two reads 600ms apart agree, then
+    /// return it. A negative claim ("nothing changed") is only meaningful
+    /// once in-flight work has settled, so assert on this, never on an
+    /// immediate read.
+    pub async fn settled_view(&self, peer: &str, p: &Principal) -> Option<PeerTip> {
+        let mut last = self.peer_view(peer, p).await;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let now = self.peer_view(peer, p).await;
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        panic!("peer `{peer}` never settled");
     }
 
     /// The red gate. Probes each capability in table order and panics on

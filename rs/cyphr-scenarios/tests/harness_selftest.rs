@@ -207,3 +207,65 @@ async fn harness_unsupported_action_ends_red() {
     let h = Harness::start(&["p1"]).await.expect("start peer");
     h.ok(h.client("alice").create_principal().await);
 }
+
+// Claim: the observer parses a peer's `GET /tip` envelope and reports `None`
+// for a principal the peer does not hold. (The server's own principal cannot
+// serve as a live positive control: its `/tip` currently answers 500, so the
+// parse is pinned against the documented response shape instead.)
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_peer_view_reads_the_peer_itself() {
+    use cyphr_scenarios::actions::{PeerTip, Principal, Tip};
+
+    let h = Harness::start(&["p1"]).await.expect("start peer");
+    assert_eq!(
+        h.peer_view("p1", &Principal("SHA-512:AAAA".into())).await,
+        None
+    );
+
+    let envelope = serde_json::json!({"v": 1, "payload": {
+        "principal_id": "x", "pr": "PR", "sr": "SR", "ar": "AR", "cr": "CR",
+        "commit_id": "C2", "commit_count": 2, "last_updated": 5, "now": 9}});
+    assert_eq!(
+        PeerTip::parse(&envelope),
+        Some(PeerTip {
+            tip: Tip("C2".into()),
+            height: 2,
+            pr: "PR".into(),
+            ar: "AR".into()
+        })
+    );
+}
+
+// Claim: a partition cuts a peer-to-peer link, not only client traffic. A
+// witness pulls from its authority over a proxy route; with the link
+// partitioned its pull attempt is counted as blocked and nothing is
+// forwarded, and healed it is forwarded. S02 and S03 use the same counters
+// to prove their partition was exercised by real traffic.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_partition_cuts_a_peer_to_peer_link() {
+    use cyphr_scenarios::actions::Principal;
+
+    let h = Harness::start(&["p1"]).await.expect("start authority");
+    h.start_witness("w1", "p1").await.expect("start witness");
+    let asked = Principal("SHA-512:AAAA".into()); // any pr makes the witness pull
+
+    h.proxy.partition("w1", "p1");
+    let before = h.proxy.stats("w1", "p1");
+    h.peer_view("w1", &asked).await;
+    let cut = h.proxy.stats("w1", "p1");
+    assert_eq!(
+        cut.forwarded, before.forwarded,
+        "a partitioned pull must not be forwarded"
+    );
+    assert!(
+        cut.blocked > before.blocked,
+        "the pull must reach the proxy and be blocked"
+    );
+
+    h.proxy.heal("w1", "p1");
+    h.peer_view("w1", &asked).await;
+    assert!(
+        h.proxy.stats("w1", "p1").forwarded > cut.forwarded,
+        "a healed pull is forwarded"
+    );
+}
