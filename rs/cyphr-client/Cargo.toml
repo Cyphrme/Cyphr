@@ -1,0 +1,30 @@
+[package]
+categories             = ["authentication", "cryptography"]
+description            = "Carrier-independent Cyphr sync client: verify core plus transports"
+documentation          = "https://docs.rs/cyphr-client"
+edition.workspace      = true
+homepage.workspace     = true
+keywords               = ["identity", "sync", "cryptography", "self-sovereign"]
+license-file.workspace = true
+name                   = "cyphr-client"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
+
+[features]
+default = ["http"]
+# The HTTP transport. Everything outside `http` is the I/O-free verify core:
+# `cargo tree --no-default-features` must list no async runtime or socket
+# crate.
+http = ["dep:reqwest"]
+
+[dependencies]
+coz        = { workspace = true }
+cyphr      = { path = "../cyphr", version = "0.1.0" }
+reqwest    = { version = "0.12", default-features = false, optional = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util"] }

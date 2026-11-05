@@ -514,6 +514,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyphr-client"
+version = "0.1.0"
+dependencies = [
+ "coz-rs",
+ "cyphr",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "cyphr-fuzz"
 version = "0.0.0"
 dependencies = [
