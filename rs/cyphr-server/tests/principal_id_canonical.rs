@@ -518,3 +518,158 @@ async fn variant_labels_and_bare_digests_address_one_principal() {
         "a forged label moved the principal"
     );
 }
+
+/// Backs SPEC §3.7.1 (the PG is THE permanent identifier; no other root is
+/// an id): a Principal Root the principal held in the past that is not its
+/// PG -- one before the PG was established, and one after -- names nothing.
+/// A read or a push under either is refused with a client error and moves
+/// nothing, while the PG and the genesis-derived id keep working. Turns red
+/// if the index aliases every PR the principal has had: the historical PR
+/// then reads the principal (200) or accepts its push (201). End to end:
+/// yes.
+#[tokio::test]
+#[ignore = "RED(AD1): every historical PR is aliased, not only the PG"]
+async fn historical_pr_is_not_an_alias() {
+    use cyphr::StateDigest;
+
+    let pool = load_pool();
+    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let (d, e) = (kp(&pool, "diana_es384"), kp(&pool, "eve_ed25519"));
+    let add = |signer: &Kp, new: &Kp, now: i64| {
+        sign(
+            signer,
+            serde_json::json!({"alg": signer.alg, "id": new.tmb.to_b64(), "now": now,
+                               "tmb": signer.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        )
+    };
+    let tagged_pr = |p: &cyphr::Principal| {
+        p.pr()
+            .as_multihash()
+            .tagged_first()
+            .expect("pr")
+            .to_string()
+    };
+
+    // commit 0 adds diana, commit 1 adds eve, commit 2 is principal/create
+    // (PG = the PR after commit 1), commit 3 adds key_a.
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(&mut p, &g, add(&g, &d, NOW), Some(key_of(&d)), NOW);
+    let pr_before_pg = tagged_pr(&p);
+    commit_one(&mut p, &g, add(&g, &e, NOW + 1), Some(key_of(&e)), NOW + 1);
+    let pr_after_keys = p.pr_tagged().expect("pr");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 2,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW + 2,
+    );
+    let pr_after_create = tagged_pr(&p);
+    commit_one(&mut p, &g, add(&g, &a, NOW + 3), Some(key_of(&a)), NOW + 3);
+
+    let pg = pg_spellings(&p);
+    let genesis_id = spellings(&pool).1;
+    let historical = [pr_before_pg, pr_after_create];
+    for h in &historical {
+        assert!(
+            !pg.contains(h) && *h != genesis_id,
+            "premise: {h} is a historical PR, not the PG or the genesis id"
+        );
+    }
+
+    let (state, _dir) = keyless_server();
+    let app = build_router(state);
+    for i in 0..3 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &genesis_id)).await;
+        assert_eq!(status, StatusCode::CREATED, "commit {i}: {body:?}");
+    }
+    let (status, want) = tip(app.clone(), &genesis_id).await;
+    assert_eq!(status, StatusCode::OK, "control: {want:?}");
+    let want = without_now(want);
+    // Control: the PG reads the principal.
+    let (status, body) = tip(app.clone(), &pg[0]).await;
+    assert_eq!(status, StatusCode::OK, "control, the PG: {body:?}");
+
+    for h in &historical {
+        let (status, body) = tip(app.clone(), h).await;
+        assert!(
+            status.is_client_error(),
+            "historical PR {h} read the principal: {status} {body:?}"
+        );
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, 3, &g, h)).await;
+        assert!(
+            status.is_client_error(),
+            "historical PR {h} accepted a push: {status} {body:?}"
+        );
+    }
+    let (_, after) = tip(app, &genesis_id).await;
+    assert_eq!(
+        without_now(after),
+        want,
+        "a historical-PR push moved the principal"
+    );
+}
+
+/// Backs SPEC §3.7.1 on an attestor-mode server: a principal that added
+/// keys before `principal/create` is pushed under its PG exactly as on a
+/// keyless server, and the receipt is signed. Turns red if the attestor
+/// route gate (`principal_id` must be genesis-shaped, routes.rs) refuses
+/// the PG, or if the push lands without an attestation. End to end: yes.
+#[tokio::test]
+async fn attestor_server_accepts_a_push_under_the_pg() {
+    use cyphr::StateDigest;
+
+    let pool = load_pool();
+    let (g, a) = (kp(&pool, "golden"), kp(&pool, "key_a"));
+    let mut p = cyphr::Principal::implicit(key_of(&g)).expect("genesis");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": a.tmb.to_b64(), "now": NOW,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/key/create"}),
+        ),
+        Some(key_of(&a)),
+        NOW,
+    );
+    let pr_after_keys = p.pr_tagged().expect("pr");
+    commit_one(
+        &mut p,
+        &g,
+        sign(
+            &g,
+            serde_json::json!({"alg": g.alg, "id": pr_after_keys, "now": NOW + 1,
+                               "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        ),
+        None,
+        NOW + 1,
+    );
+    let pg = p
+        .pg()
+        .expect("PG")
+        .as_multihash()
+        .tagged_first()
+        .expect("PG digest")
+        .to_string();
+
+    let (state, _identity, _dir) = common::attestor_server().await;
+    let app = build_router(state);
+    for i in 0..2 {
+        let (status, body) = post_json(app.clone(), "/push", wire(&p, i, &g, &pg)).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "attestor: commit {i} pushed under the PG {pg}: {body:?}"
+        );
+        assert_eq!(
+            body["statement"]["kind"],
+            serde_json::json!("signed"),
+            "attestor: commit {i} landed without a signed receipt: {body:?}"
+        );
+    }
+}

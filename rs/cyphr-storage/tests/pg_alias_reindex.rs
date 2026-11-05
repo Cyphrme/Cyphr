@@ -254,3 +254,94 @@ async fn alias_resolution_survives_reindex_on_fjall() {
     )
     .await;
 }
+
+/// Backs SPEC §3.7.1: an explicit multi-algorithm genesis that establishes
+/// its PG in commit 0 has, as its PG, the genesis-time PR in every hash
+/// variant its keys span (ES256, ES384 and Ed25519 give SHA-256, SHA-384
+/// and SHA-512). Each variant label and bare digest must resolve to the
+/// one stored principal after that single commit. Turns red if only the
+/// canonical (first-variant) spelling, or the post-create PR's variants,
+/// resolve. End to end at the engine seam: yes.
+#[tokio::test]
+#[ignore = "RED(AD1): the PG of a create-in-commit-0 principal is not aliased"]
+async fn alias_explicit_genesis_create_in_commit_zero_resolves_every_pg_variant() {
+    let pool = load_pool();
+    let (g, d, e) = (
+        kp(&pool, "golden"),
+        kp(&pool, "diana_es384"),
+        kp(&pool, "eve_ed25519"),
+    );
+    let keys = vec![key_of(&g), key_of(&d), key_of(&e)];
+    let mut p = cyphr::Principal::explicit(keys.clone()).expect("explicit genesis");
+    let id = p.pr_tagged().expect("genesis id");
+    commit_one(
+        &mut p,
+        &g,
+        serde_json::json!({"alg": g.alg, "id": id, "now": NOW,
+                           "tmb": g.tmb.to_b64(), "typ": "cyphr.me/cyphr/principal/create"}),
+        None,
+        NOW,
+    );
+    let spellings = pg_spellings(&p);
+    assert_eq!(
+        spellings.len(),
+        6,
+        "premise: three PG variants: {spellings:?}"
+    );
+    assert!(
+        spellings.contains(&id),
+        "premise: the PG is the genesis-time PR, so it contains the genesis id {id}"
+    );
+
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    let raw = blobs(&p, 0);
+    let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+    engine
+        .submit_commit(&id, Some(Genesis::Explicit(keys)), &refs)
+        .await
+        .expect("create in commit 0");
+
+    for s in &spellings {
+        assert_eq!(
+            engine.canonical_principal_id(s).await.expect("resolve"),
+            id,
+            "PG spelling {s} does not resolve to the stored principal"
+        );
+        let tip = engine.get_tip(s).await.expect("tip");
+        assert_eq!(tip.map(|t| t.commit_count), Some(1), "tip under {s}");
+    }
+}
+
+/// Probe for the chain link the index records: commit n's `pre` is commit
+/// n-1's PR (and commit 0 has none). The engine fills `pre` from
+/// `principal.pr()` read after the commit is finalized, which would be the
+/// commit's own post-commit PR. Turns red if any `pre` equals its own
+/// commit's PR or otherwise differs from the previous commit's PR.
+#[tokio::test]
+#[ignore = "RED(AD1): the indexed pre is not the previous commit's PR"]
+async fn commit_pre_is_the_previous_commits_pr() {
+    let pool = load_pool();
+    let (p, genesis, id) = build(&pool, &["key_a", "diana_es384"]);
+    let engine = StorageEngine::new(MemoryBlobStore::new(), MemoryIndexer::new());
+    for i in 0..3 {
+        let raw = blobs(&p, i);
+        let refs: Vec<&[u8]> = raw.iter().map(Vec::as_slice).collect();
+        engine
+            .submit_commit(&id, Some(genesis.clone()), &refs)
+            .await
+            .unwrap_or_else(|e| panic!("commit {i}: {e}"));
+    }
+    let patch = engine.get_patch(&id, None, None).await.expect("patch");
+    let chain: Vec<_> = patch.entries.iter().map(|e| &e.commit).collect();
+    assert_eq!(chain.len(), 3, "control: three commits");
+    assert_eq!(chain[0].pre, None, "commit 0 has no predecessor");
+    for n in 1..chain.len() {
+        assert_eq!(
+            chain[n].pre.as_deref(),
+            Some(chain[n - 1].pr.as_str()),
+            "commit {n}: pre must be commit {}'s PR (own PR is {})",
+            n - 1,
+            chain[n].pr
+        );
+    }
+}
