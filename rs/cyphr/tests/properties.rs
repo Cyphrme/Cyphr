@@ -622,3 +622,53 @@ fn test_explicit_multi_key_genesis_second_commit_succeeds() {
              without a state-root mismatch (F40)",
         );
 }
+
+// Practice: SPEC.md section 7.6 (Idempotency, Uniqueness and Reuse): "For data actions, replaying
+// an previously applied coz is ignored and produces no state change." Claim P1 (RED, owner N09).
+// Mutation that makes this green: `verify_and_record_action` detecting an already-recorded `czd`
+// and returning the current PR without recording it again.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    #[test]
+    #[ignore = "RED(N09): SPEC 7.6"]
+    fn prop_data_action_replay_is_idempotent(
+        signer_name in prop_oneof![Just("key_a"), Just("alice"), Just("bob")],
+        now_offset in 0i64..1_000,
+        msg in "[a-z]{1,12}",
+    ) {
+        let pool = arrow_pool();
+        let golden = arrow_pool_key(&pool, "golden");
+        let signer = arrow_pool_key(&pool, signer_name);
+        let mut p = Principal::explicit(vec![arrow_domain_key(golden), arrow_domain_key(signer)])
+            .expect("principal");
+
+        let pay = serde_json::to_vec(&serde_json::json!({
+            "alg": signer.alg,
+            "tmb": signer.compute_tmb_b64().expect("tmb"),
+            "typ": "cyphr.me/comment/create",
+            "now": 1_700_000_000 + now_offset,
+            "msg": msg,
+        })).expect("serialize action");
+        let pub_bytes = Base64UrlUnpadded::decode_vec(&signer.pub_key).expect("pub base64");
+        let (sig, cad) = coz::sign_json(&pay, &signer.alg, &arrow_prv_bytes(signer), &pub_bytes)
+            .expect("sign");
+        let czd = coz::czd_for_alg(&cad, &sig, &signer.alg).expect("czd");
+
+        let pr_once = p.verify_and_record_action(&pay, &sig, czd.clone()).expect("first apply").clone();
+        let count_once = p.action_count();
+        let dr_once = p.data_root().cloned();
+
+        // Ignored is satisfied by Ok or Err; the property is state, not result.
+        let _ = p.verify_and_record_action(&pay, &sig, czd);
+
+        prop_assert!(
+            p.action_count() == count_once
+                && p.data_root().cloned() == dr_once
+                && *p.pr() == pr_once,
+            "RED(N09): SPEC 7.6: replayed data action changed state (actions {} -> {})",
+            count_once,
+            p.action_count()
+        );
+    }
+}
