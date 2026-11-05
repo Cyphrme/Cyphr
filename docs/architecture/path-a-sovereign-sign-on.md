@@ -4,7 +4,8 @@ When someone signs in to a website with Cyphr, the website trusts three things i
 cannot check: that the key presented belongs to the person the account is for, that
 the key set it is checking against is complete, and that the key set is current. The
 first is unavoidable and is what "sovereign" costs. The second and third are
-unavoidable only when the website keeps the record itself — and no website does.
+unavoidable when the website is separate from the record — which is the ordinary
+deployment. A website that keeps the record itself avoids them.
 
 This document describes what a relying party does, in two parts. The first part reads
 the decision procedure off the relying party this repository already contains, which is
@@ -241,9 +242,11 @@ outage, but it cannot establish currency.
 
 The claim _"the record I hold for this principal is canonical"_ fails monotonicity: it can
 be true when evaluated and false after the record grows, with nothing in the record
-announcing the change. Monotonicity failures are cured by a **watcher** — a party holding
-more than one view over time — and never by an attestor, whose word is a point observation
-of exactly the kind that goes stale. This is stated as [a requirement](#currency-unmet)
+announcing the change. A monotonicity failure has three remedies, each giving up one of
+offline checking, an eternal certificate or a claim about the present: a **watcher** (a
+party holding more than one view over time, which gives up offline checking), a claim
+restricted to "as of" a stated moment, or an accepted expiry. An attestor is not among
+them: its word is a point observation of exactly the kind that goes stale. This is stated as [a requirement](#currency-unmet)
 rather than designed here; see [what this document does not cover](#what-this-document-does-not-cover).
 
 ## The claim table
@@ -297,7 +300,8 @@ survives her own rotation.
 
 **Rows 4 and 5 are the same failure at two scopes.** Row 4 is about one principal's key
 set going stale; row 5 is about the whole view being non-canonical. Both are cured by a
-watcher and neither is cured by any party this system contains.
+watcher, a claim restricted to "as of" a stated moment, or an accepted expiry, and neither
+is cured by any party this system contains.
 
 **Row 6 is Path A's determination claim and the one that cannot be engineered away.** No
 evaluator decides that a human is a particular human. At enrollment the person's own
@@ -338,8 +342,7 @@ cell.** A single-use challenge checks state the relying party issued and holds, 
 is determined, certifiable and monotone. A timestamp window is [an accepted
 expiry](../trust-model.md#curing-a-non-monotone-claim) — the third of the three cures for a
 non-monotone claim — resting additionally on clock agreement nothing in the record
-establishes. One row cannot carry two cells without prose in an axis column, the defect row
-7 just lost. **No exchange row names a trusted party**: rows 8, 9, 11 and 12 name
+establishes. One row cannot carry two cells without prose in an axis column. **No exchange row names a trusted party**: rows 8, 9, 11 and 12 name
 evaluators, and row 10 is discharged by an accepted bound rather than by a watcher — the one
 exchange claim a relying party pays for instead of checking.
 
@@ -517,9 +520,9 @@ A relying party's obligation to hold a _current_ view of a principal is not met 
 anything in the record. The replay of
 [separated-key-set-by-replay](#separated-key-set-by-replay) establishes that what is held
 is genuine, never that it is complete. The claim _"the record I hold for this principal is
-canonical"_ fails monotonicity, and the party kind that cures a monotonicity failure is a
-**watcher** — never an attestor, whose word is a point observation of exactly the kind that
-goes stale. A relying party MUST state this obligation as unmet rather than treat a
+canonical"_ fails monotonicity, and the remedies are a **watcher** holding more than one
+view over time, a claim restricted to "as of" a stated moment, or an accepted expiry —
+never an attestor, whose word is a point observation of exactly the kind that goes stale. A relying party MUST state this obligation as unmet rather than treat a
 successful replay as having met it. Traces to rows 4 and 5.
 
 ```claim
